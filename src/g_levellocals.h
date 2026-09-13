@@ -46,6 +46,7 @@
 #include "doom_aabbtree.h"
 #include "doom_levelmesh.h"
 #include "p_visualthinker.h"
+#include "particledefs.h"	// [PARTICLEDEFS] InlineParticleDefinition, ResolveParticleDefinitionHandle
 #include <memory>
 
 EXTERN_CVAR(Bool, sv_autocompat)
@@ -1628,14 +1629,29 @@ public:
 	// Record, SHADER space (y up), five vec4s, 80 bytes, std430 with no padding.
 	// Must match GpuParticleBuffer::RECORD_BYTES and the GpuParticle struct in
 	// vk_shader.cpp's prolog.
+	//
+	// [PARTICLEDEFS] THE STAGE 2 LAYOUT ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md"
+	// 2b). What a particle looks like over its life lives in a particle definition
+	// (gamedata/particledefs.h, set 1 binding 7); the record keeps what differs per
+	// particle. Same size, same ring, same sync rule as stage 1.
 	struct GpuParticleRecord
 	{
 		float a[4];   // xyz spawn position,               w birth, level seconds
 		float b[4];   // xyz initial velocity, units/s,    w life, seconds (0 = free slot)
-		float c[4];   // rgb colour 0..1,                  w intensity
-		float d[4];   // x size start, y size end (diameter), z gravity u/s^2, w drag 1/s
-		float e[4];   // x orient mode, y stretch (s), z floor height, w restitution (both phase 2)
+		float c[4];   // rgb tint 0..1 (times the definition's colour),  w intensity scale
+		float d[4];   // x definition slot, y size scale, z ambient light at spawn 0..1, w seed 0..1
+		float e[4];   // xy surface normal, octahedral (x = 2: no plane), z plane offset, w floor height (-32768: none)
 	};
+	// e.x of a record with no collision plane. An octahedral normal's x is in [-1, 1].
+	static constexpr float GPUPARTICLE_NO_PLANE = 2.f;
+	// e.w of a record with no floor.
+	static constexpr float GPUPARTICLE_NO_FLOOR = -32768.f;
+	// [2b] LEGACY records, written only while r_gpuparticles_legacy is on (the
+	// bring-up A/B), keep the stage 1 layout -- c rgb colour and intensity; d size
+	// start, size end, gravity, drag; e.y stretch -- with e.x = this + orient
+	// (-16..-14), which no stage 2 record can hold. gpuparticles.vp draws them with
+	// the stage 1 code. Goes when the A/B does.
+	static constexpr float GPUPARTICLE_LEGACY_TAG = -16.f;
 
 	TArray<GpuParticleRecord> GpuParticles;   // empty until the first spawn this process
 	// Every record ever written this level; the write cursor is Written % size.
@@ -1690,6 +1706,11 @@ public:
 	//
 	// Inline and on the level, like SpawnSurfaceStamp, so native gameplay code
 	// can publish these as well as script.
+	//
+	// [PARTICLEDEFS] Since stage 2b the look is an inline particle definition
+	// (InlineParticleDefinition) and the colour and intensity ride in the record;
+	// the look on screen is stage 1's. Returns nothing: particles are presentation,
+	// and nothing in the simulation may read them back.
 	void SpawnGpuParticles(const DVector3 &pos, const DVector3 &dir, int count,
 		double spread, double speed, double speedJitter,
 		PalEntry color, double intensity, double life, double lifeJitter,
@@ -1726,7 +1747,27 @@ public:
 		// Birth on the tic clock, the same basis as FogDisturb. Sub-tic
 		// smoothness comes from uLevelTime including TicFrac.
 		const float birth = (float)(maptime / (double)TICRATE);
-		const float mode = (float)(orient < 0 ? 0 : (orient > 2 ? 2 : orient));
+		const int mode = orient < 0 ? 0 : (orient > 2 ? 2 : orient);
+
+		// [PARTICLEDEFS] Where the look goes (stage 2b). By default the look --
+		// sizes, gravity, drag, orient, stretch -- becomes an inline particle
+		// definition (gamedata/particledefs.h), shared by every burst with the same
+		// tuple. Colour and intensity stay in the record as its tint and intensity
+		// scale, so one look is one definition whatever its colour or brightness.
+		// With r_gpuparticles_legacy on (the bring-up A/B) the stage 1 record is
+		// written instead, tagged, and gpuparticles.vp draws it with stage 1's code.
+		extern bool GpuParticlesLegacyPath();   // hw_cvars.cpp, r_gpuparticles_legacy
+		const bool legacy = GpuParticlesLegacyPath();
+		int definition = 0;
+		if (!legacy)
+		{
+			// The longest life any record below can get, so the definition's slot
+			// is kept until the last of them has died.
+			double longestLife = life * (1.0 + fabs(lifeJitter));
+			if (longestLife < 1e-3) longestLife = 1e-3;
+			definition = InlineParticleDefinition((float)sizeStart, (float)sizeEnd, (float)gravity, (float)drag,
+				mode, (float)stretch, GpuParticleSerial, birth, longestLife);
+		}
 
 		for (int i = 0; i < count; i++)
 		{
@@ -1754,8 +1795,175 @@ public:
 			r.a[0] = (float)pos.X;      r.a[1] = (float)pos.Z;      r.a[2] = (float)pos.Y;      r.a[3] = birth;
 			r.b[0] = (float)(vx * spd); r.b[1] = (float)(vz * spd); r.b[2] = (float)(vy * spd); r.b[3] = (float)lf;
 			r.c[0] = color.r / 255.f;   r.c[1] = color.g / 255.f;   r.c[2] = color.b / 255.f;   r.c[3] = (float)intensity;
-			r.d[0] = (float)sizeStart;  r.d[1] = (float)sizeEnd;    r.d[2] = (float)gravity;    r.d[3] = (float)drag;
-			r.e[0] = mode;              r.e[1] = (float)stretch;    r.e[2] = 0.f;               r.e[3] = 0.f;
+			if (legacy)
+			{
+				// [2b] Stage 1 layout, e.x tagged.
+				r.d[0] = (float)sizeStart;  r.d[1] = (float)sizeEnd;    r.d[2] = (float)gravity;    r.d[3] = (float)drag;
+				r.e[0] = GPUPARTICLE_LEGACY_TAG + (float)mode;  r.e[1] = (float)stretch;  r.e[2] = 0.f;  r.e[3] = 0.f;
+			}
+			else
+			{
+				// [PARTICLEDEFS] Stage 2 layout: the inline definition, size scale 1,
+				// ambient 1 (inline definitions are unlit), a seed; no plane, no floor.
+				r.d[0] = (float)definition; r.d[1] = 1.f; r.d[2] = 1.f; r.d[3] = (float)GpuParticleRand(s, (uint32_t)i, 4);
+				r.e[0] = GPUPARTICLE_NO_PLANE; r.e[1] = 0.f; r.e[2] = 0.f; r.e[3] = GPUPARTICLE_NO_FLOOR;
+			}
+			GpuParticleWritten++;
+		}
+	}
+
+	// [PARTICLEDEFS] Emission directions in game space, for SpawnParticles. A basis
+	// around `dir` (unit axis a, across t1 and t2), then a direction from two
+	// uniform numbers. The cone is SpawnGpuParticles' own maths, line for line;
+	// SpawnGpuParticles keeps its inline copy until the stage 2b A/B has proven the
+	// definitions path, and can call these after.
+	struct GpuParticleBasis
+	{
+		double ax, ay, az;
+		double t1x, t1y, t1z;
+		double t2x, t2y, t2z;
+	};
+
+	static GpuParticleBasis GpuParticleMakeBasis(const DVector3 &dir)
+	{
+		GpuParticleBasis B;
+		B.ax = dir.X; B.ay = dir.Y; B.az = dir.Z;
+		const double al = sqrt(B.ax * B.ax + B.ay * B.ay + B.az * B.az);
+		if (al < 1e-9) { B.ax = 0.0; B.ay = 0.0; B.az = 1.0; }
+		else { B.ax /= al; B.ay /= al; B.az /= al; }
+
+		const double sx = (B.az < 0.9 && B.az > -0.9) ? 0.0 : 1.0;
+		const double sz = (B.az < 0.9 && B.az > -0.9) ? 1.0 : 0.0;
+		B.t1x = -sz * B.ay; B.t1y = sz * B.ax - sx * B.az; B.t1z = sx * B.ay;
+		const double tl = sqrt(B.t1x * B.t1x + B.t1y * B.t1y + B.t1z * B.t1z);
+		B.t1x /= tl; B.t1y /= tl; B.t1z /= tl;
+		B.t2x = B.ay * B.t1z - B.az * B.t1y; B.t2y = B.az * B.t1x - B.ax * B.t1z; B.t2z = B.ax * B.t1y - B.ay * B.t1x;
+		return B;
+	}
+
+	// Uniform over the spherical cap within acos(cosMax) of the axis.
+	static DVector3 GpuParticleConeDirection(const GpuParticleBasis &B, double cosMax, double u1, double u2)
+	{
+		const double kPi = 3.14159265358979323846;
+		const double cosT = 1.0 - u1 * (1.0 - cosMax);
+		const double sin2 = 1.0 - cosT * cosT;
+		const double sinT = sin2 > 0.0 ? sqrt(sin2) : 0.0;
+		const double phi = u2 * 2.0 * kPi;
+		const double cp = cos(phi) * sinT, sp = sin(phi) * sinT;
+		return DVector3(B.ax * cosT + B.t1x * cp + B.t2x * sp,
+			B.ay * cosT + B.t1y * cp + B.t2y * sp,
+			B.az * cosT + B.t1z * cp + B.t2z * sp);
+	}
+
+	// A disc across the axis, lifted toward it by up to liftMax radians: fire
+	// splashing along the wall it hit (FLAME_ENGINE_PLAN F4).
+	static DVector3 GpuParticleDiscDirection(const GpuParticleBasis &B, double liftMax, double u1, double u2)
+	{
+		const double kPi = 3.14159265358979323846;
+		const double lift = u1 * liftMax;
+		const double cl = cos(lift), sl = sin(lift);
+		const double phi = u2 * 2.0 * kPi;
+		const double cp = cos(phi) * cl, sp = sin(phi) * cl;
+		return DVector3(B.ax * sl + B.t1x * cp + B.t2x * sp,
+			B.ay * sl + B.t1y * cp + B.t2y * sp,
+			B.az * sl + B.t1z * cp + B.t2z * sp);
+	}
+
+	// [PARTICLEDEFS] SPAWN FROM A NAMED DEFINITION (stage 2b). `definition` is a
+	// handle from LevelLocals.ParticleDefinition(name) (ParticleDefinitionHandle).
+	// The look over life -- size, colour, occlusion and light ramps, gravity, drag,
+	// spin, collision -- is the definition's; this call gives what differs per
+	// burst: where, which way, how many, how fast, how long, and a tint, a
+	// brightness and a size scale on top.
+	//
+	//   shape          0 cone: `spread` is the half-angle around dir, as SpawnGpuParticles
+	//                  1 disc: across dir, lifted toward it by up to `spread` degrees (0..90)
+	//   surfacePoint,  a plane the particles stay in front of, when the definition says
+	//   surfaceNormal  `collide = plane`; a zero normal is no plane (FLAME_ENGINE_PLAN F4)
+	//   floorZ         a floor they skid along (same condition); -32768 is none
+	//
+	// NEVER REFUSES for space: the ring overwrites its oldest, as SpawnGpuParticles.
+	// A handle with no definition on this machine spawns nothing and says so once.
+	// NETPLAY: returns nothing, and what happens here only ever changes this
+	// machine's pixels (particledefs.h). All jitter is GpuParticleHash, never
+	// playsim RNG. The ambient light at spawn (for lit definitions, drawn from 2d)
+	// is the sector light at pos, read once per call from map data.
+	void SpawnParticles(int definition, const DVector3 &pos, const DVector3 &dir, int count,
+		double spread, double speed, double speedJitter, double life, double lifeJitter,
+		PalEntry tint, double intensity, double sizeScale, int seed,
+		int shape, const DVector3 &surfacePoint, const DVector3 &surfaceNormal, double floorZ)
+	{
+		if (count <= 0 || life <= 0.0) return;
+
+		const int defSlot = ResolveParticleDefinitionHandle(definition, true);
+		if (defSlot < 0) return;
+
+		EnsureGpuParticleRing();
+		const unsigned size = GpuParticles.Size();
+		if (size == 0) return;
+		if ((unsigned)count > size) count = (int)size;
+
+		const uint32_t s = seed != 0 ? (uint32_t)seed
+			: GpuParticleHash((uint32_t)GpuParticleWritten ^ (uint32_t)(GpuParticleWritten >> 32) ^ 0x9e3779b9U);
+
+		const double kPi = 3.14159265358979323846;
+		const GpuParticleBasis basis = GpuParticleMakeBasis(dir);
+		const bool disc = shape == 1;
+		const double cosMax = cos(clamp(spread, 0.0, 180.0) * kPi / 180.0);
+		const double liftMax = clamp(spread, 0.0, 90.0) * kPi / 180.0;
+
+		// Birth on the tic clock, as SpawnGpuParticles.
+		const float birth = (float)(maptime / (double)TICRATE);
+
+		float ambient = 1.f;
+		if (sector_t *sec = PointInSector(pos))
+			ambient = (float)clamp(sec->lightlevel / 255.0, 0.0, 1.0);
+
+		// The plane in SHADER space (game x, y, z -> shader x, z, y) as an octahedral
+		// normal with shader z as the pole -- gpuparticles.vp's OctahedralDecode --
+		// and its offset along that normal.
+		float planeX = GPUPARTICLE_NO_PLANE, planeY = 0.f, planeOffset = 0.f;
+		const double normalLength = surfaceNormal.Length();
+		if (normalLength > 1e-6)
+		{
+			const double nx = surfaceNormal.X / normalLength;
+			const double ny = surfaceNormal.Z / normalLength;
+			const double nz = surfaceNormal.Y / normalLength;
+			const double sum = fabs(nx) + fabs(ny) + fabs(nz);
+			double ox = nx / sum, oy = ny / sum;
+			if (nz < 0.0)
+			{
+				const double fx = (1.0 - fabs(oy)) * (ox >= 0.0 ? 1.0 : -1.0);
+				const double fy = (1.0 - fabs(ox)) * (oy >= 0.0 ? 1.0 : -1.0);
+				ox = fx;
+				oy = fy;
+			}
+			planeX = (float)ox;
+			planeY = (float)oy;
+			planeOffset = (float)(nx * surfacePoint.X + ny * surfacePoint.Z + nz * surfacePoint.Y);
+		}
+		const float floorHeight = floorZ > -32768.0 ? (float)floorZ : GPUPARTICLE_NO_FLOOR;
+
+		for (int i = 0; i < count; i++)
+		{
+			const double u1 = GpuParticleRand(s, (uint32_t)i, 0);
+			const double u2 = GpuParticleRand(s, (uint32_t)i, 1);
+			const double u3 = GpuParticleRand(s, (uint32_t)i, 2);
+			const double u4 = GpuParticleRand(s, (uint32_t)i, 3);
+			const double u5 = GpuParticleRand(s, (uint32_t)i, 4);
+
+			const DVector3 v = disc ? GpuParticleDiscDirection(basis, liftMax, u1, u2) : GpuParticleConeDirection(basis, cosMax, u1, u2);
+			const double spd = speed * (1.0 + speedJitter * (2.0 * u3 - 1.0));
+			double lf = life * (1.0 + lifeJitter * (2.0 * u4 - 1.0));
+			if (lf < 1e-3) lf = 1e-3;
+
+			GpuParticleRecord &r = GpuParticles[(unsigned)(GpuParticleWritten % size)];
+			// Game (x, y, z) -> shader (x, z, y): y is up in shader space.
+			r.a[0] = (float)pos.X;        r.a[1] = (float)pos.Z;        r.a[2] = (float)pos.Y;        r.a[3] = birth;
+			r.b[0] = (float)(v.X * spd);  r.b[1] = (float)(v.Z * spd);  r.b[2] = (float)(v.Y * spd);  r.b[3] = (float)lf;
+			r.c[0] = tint.r / 255.f;      r.c[1] = tint.g / 255.f;      r.c[2] = tint.b / 255.f;      r.c[3] = (float)intensity;
+			r.d[0] = (float)defSlot;      r.d[1] = (float)sizeScale;    r.d[2] = ambient;             r.d[3] = (float)u5;
+			r.e[0] = planeX;              r.e[1] = planeY;              r.e[2] = planeOffset;         r.e[3] = floorHeight;
 			GpuParticleWritten++;
 		}
 	}

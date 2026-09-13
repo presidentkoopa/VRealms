@@ -970,6 +970,8 @@ set (PCH_SOURCES
 	gamedata/a_keys.cpp
 	gamedata/a_weapons.cpp
 	gamedata/decallib.cpp
+	gamedata/defblocks.cpp
+	gamedata/particledefs.cpp
 	gamedata/g_mapinfo.cpp
 	gamedata/g_skill.cpp
 	gamedata/gi.cpp
@@ -1272,6 +1274,7 @@ set (PCH_SOURCES
 	common/rendering/hwrenderer/data/hw_bonebuffer.cpp
 	common/rendering/hwrenderer/data/hw_gpuparticlebuffer.cpp
 	common/rendering/hwrenderer/data/hw_drawnlinebuffer.cpp
+	common/rendering/hwrenderer/data/hw_particledefbuffer.cpp
 	common/rendering/hwrenderer/data/hw_aabbtree.cpp
 	common/rendering/hwrenderer/data/hw_shadowmap.cpp
 	common/rendering/hwrenderer/data/hw_shaderpatcher.cpp

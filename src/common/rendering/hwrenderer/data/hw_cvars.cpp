@@ -249,6 +249,26 @@ CUSTOM_CVARD(Int, r_gpuparticles_ringsize, 65536, CVAR_ARCHIVE | CVAR_GLOBALCONF
 // Diagnostics: a line every two seconds with written / uploaded / drawn counts.
 // Off by default so nothing prints per frame unless asked.
 CVARD(Bool, r_gpuparticles_debug, false, 0, "print GPU particle spawn, upload and draw counts every two seconds")
+// [PARTICLEDEFS] The `particles` CCMD -- the particle definitions and how full the
+// inline cache is -- lives beside the table, in gamedata/particledefs.cpp.
+
+// [2b] THE LEGACY PARTICLE PATH -- a temporary A/B switch for stage 2b ("Engine
+// docs/GPU_PARTICLES_STAGE2_PLAN.md" 2b). OFF, the default, SpawnGpuParticles
+// bursts become inline particle definitions (gamedata/particledefs.cpp) and draw
+// through gpuparticles.vp's definitions path. ON, they write stage 1 records,
+// tagged, which the shader draws with the stage 1 code. The two must look the
+// same; this switch exists to prove that in the headset and goes once it has.
+//
+// Read at SPAWN, in C++ (GpuParticlesLegacyPath), because it chooses the layout a
+// record is written with; a ring holding both kinds draws correctly. Nothing spawns
+// while a menu is open, so the first burst after closing it uses the chosen path.
+// Not CVAR_ARCHIVE: an A/B lasts one session, like r_beams_drawn. SpawnParticles
+// (named definitions) is not affected.
+CVARD(Bool, r_gpuparticles_legacy, false, CVAR_GLOBALCONFIG, "SpawnGpuParticles writes stage 1 records instead of inline particle definitions (stage 2b A/B test, Vulkan only)")
+bool GpuParticlesLegacyPath()
+{
+	return r_gpuparticles_legacy;
+}
 
 // The ring size, latched the first time anything asks. The CPU ring on
 // FLevelLocals and the GPU ring both size from this, so they can never

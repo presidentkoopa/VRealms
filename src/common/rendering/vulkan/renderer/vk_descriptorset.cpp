@@ -97,6 +97,12 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 	// drawnlines effect reads it, gated on DrawnLineBuffer::IsDrawable.
 	VkHardwareDataBuffer* drawnLineSSO = fb->GetBufferManager()->DrawnLineSSO ? fb->GetBufferManager()->DrawnLineSSO : fb->GetBufferManager()->BoneBufferSSO;
 
+	// [PARTICLEDEFS] Binding 7, the same arrangement: always written, the bone
+	// buffer standing in if the definitions buffer is somehow absent -- only the
+	// gpuparticles effect reads it, and its draw is gated on the real buffer
+	// (HWDrawInfo::RenderTranslucent).
+	VkHardwareDataBuffer* particleDefinitionSSO = fb->GetBufferManager()->ParticleDefinitionSSO ? fb->GetBufferManager()->ParticleDefinitionSSO : fb->GetBufferManager()->BoneBufferSSO;
+
 	WriteDescriptors()
 		.AddBuffer(HWBufferSet.get(), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->ViewpointUBO->mBuffer.get(), 0, viewpointRange)
 		.AddBuffer(HWBufferSet.get(), 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->MatrixBuffer->UniformBuffer->mBuffer.get(), 0, sizeof(MatricesUBO))
@@ -105,6 +111,7 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 		.AddBuffer(HWBufferSet.get(), 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, fb->GetBufferManager()->BoneBufferSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gpuParticleSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, drawnLineSSO->mBuffer.get())
+		.AddBuffer(HWBufferSet.get(), 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, particleDefinitionSSO->mBuffer.get())
 		.Execute(fb->device.get());
 }
 
@@ -336,6 +343,10 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 		.AddBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)
 		.AddBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)	// [GPUPARTICLES] GpuParticleSSO
 		.AddBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)	// [DRAWNLINES] DrawnLineSSO
+		// [PARTICLEDEFS] ParticleDefinitionSSO. Fragment too: stage 2c's flipbooks and
+		// 2d's lit/soft read the definition per pixel, and the layout should not have
+		// to change again then. Binding 8 is reserved for 2d's view light list.
+		.AddBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 		.DebugName("VkDescriptorSetManager.HWBufferSetLayout")
 		.Create(fb->device.get());
 }
@@ -362,7 +373,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 		.AddPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3 * maxSets)
 		// [GPUPARTICLES] 3, not 2: lights (binding 3), bones (4), particles (5).
 		// [DRAWNLINES] 4: and drawn lines (6). Too few here fails set allocation.
-		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * maxSets)
+		// [PARTICLEDEFS] 5: and particle definitions (7).
+		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * maxSets)
 		.MaxSets(maxSets)
 		.DebugName("VkDescriptorSetManager.HWBufferDescriptorPool")
 		.Create(fb->device.get());

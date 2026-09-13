@@ -36,6 +36,7 @@
 #include "hw_bonebuffer.h"
 #include "hw_drawnlinebuffer.h"	// [DRAWNLINES]
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES]
+#include "hw_particledefbuffer.h"	// [PARTICLEDEFS]
 #include "hw_clock.h"
 #include "hw_lightbuffer.h"
 #include "hw_skydome.h"
@@ -362,6 +363,9 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	// [DRAWNLINES] beside the particles, which it is created beside
 	delete mDrawnLines;
 	mDrawnLines = nullptr;
+	// [PARTICLEDEFS] beside the particles, which index it
+	delete mParticleDefinitions;
+	mParticleDefinitions = nullptr;
 	mShadowMap.Reset();
 
 	if (mDescriptorSetManager)
@@ -431,6 +435,9 @@ void VulkanRenderDevice::InitializeState()
 	mGpuParticles = new GpuParticleBuffer();
 	// [DRAWNLINES] Beside the particles and for the same reasons; set 1 binding 6.
 	mDrawnLines = new DrawnLineBuffer();
+	// [PARTICLEDEFS] The definitions the particle records index; set 1 binding 7.
+	// Filled from the CPU table (gamedata/particledefs.cpp) by ProcessScene.
+	mParticleDefinitions = new ParticleDefinitionBuffer();
 
 	mShaderManager.reset(new VkShaderManager(this));
 	mDescriptorSetManager->Init();

@@ -387,6 +387,7 @@ void G_BuildTiccmd (usercmd_t* cmd);
 void D_DoAdvanceDemo ();
 void D_LoadWadSettings ();
 void ParseGLDefs();
+void LoadParticleDefinitions();	// [PARTICLEDEFS] gamedata/particledefs.cpp
 void DrawFullscreenSubtitle(FFont* font, const char *text);
 void D_Cleanup();
 void FreeSBarInfoScript();
@@ -4280,6 +4281,12 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	if (StartScreen) StartScreen->Progress (1);
 
 	ParseGLDefs();
+
+	// [PARTICLEDEFS] GPU particle definitions from every PARTICLEDEFS lump
+	// (gamedata/particledefs.cpp). After the textures, which stage 2c's flipbooks
+	// look their frames up in. A bad definition is refused with a console line;
+	// nothing here can stop the game from starting.
+	LoadParticleDefinitions();
 
 	if (!batchrun) Printf ("R_Init: Init %s refresh subsystem.\n", gameinfo.ConfigName.GetChars());
 	if (StartScreen) StartScreen->LoadingStatus ("Loading graphics", 0x3f);

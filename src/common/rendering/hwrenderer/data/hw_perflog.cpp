@@ -210,6 +210,8 @@ namespace
 		// [2a] So a window with soft particles on (and the fx.depthread switch it
 		// costs) can be told from one with it off in the same run.
 		out.AppendFormat(" r_gpuparticles_soft=%g", (double)(float)*r_gpuparticles_soft);
+		// [2b] Likewise for the legacy particle path A/B, so the two windows label themselves.
+		out.AppendFormat(" r_gpuparticles_legacy=%d", (int)*r_gpuparticles_legacy);
 		out.AppendFormat(" t=%.1fs window=%.1fs frames=%u fps=%.1f frame_ms avg=%.2f p95=%.2f max=%.2f\n",
 			I_msTime() / 1000.0, windowS, frames, fps, W.Frame.Avg(), W.Frame.P95(), W.Frame.Max);
 

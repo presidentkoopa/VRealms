@@ -5,15 +5,26 @@
 ** this shader works out where the particle is NOW. Nothing is simulated per
 ** frame. See "Engine docs/GPU_PARTICLES_PLAN.md" and hw_gpuparticlebuffer.h.
 **
-** Vulkan only. The record buffer (GpuParticleSSO, set 1 binding 5) is declared
-** in vk_shader.cpp's prolog; GL and GLES never load this effect.
+** Vulkan only. The record buffer (GpuParticleSSO, set 1 binding 5) and the
+** particle definitions (ParticleDefinitionSSO, set 1 binding 7) are declared in
+** vk_shader.cpp's prolog; GL and GLES never load this effect.
 **
-** Record, shader space (y is up), 80 bytes:
+** [PARTICLEDEFS] Stage 2 record, shader space (y is up), 80 bytes
+** ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2b):
 **   a  xyz spawn position                 w  birth, level seconds
 **   b  xyz initial velocity, units/s      w  life, seconds (0 = free slot)
-**   c  rgb colour 0..1                    w  intensity
-**   d  x size start  y size end (diameter, map units)  z gravity u/s^2  w drag 1/s
-**   e  x orient mode  y stretch (seconds of travel drawn as trail)  zw phase 2
+**   c  rgb tint (x definition colour)     w  intensity scale
+**   d  x definition slot  y size scale  z ambient light at spawn 0..1  w seed 0..1
+**   e  xy surface normal (octahedral; x = 2 no plane)  z plane offset  w floor height (-32768 none)
+**
+** What a particle looks like over its life is its definition's: size, colour,
+** alpha and emissive ramps on shared time keys, gravity, drag, a size cap, orient,
+** stretch, spin, collision and flags (layout: particledefs.h / the prolog).
+**
+** [2b] LEGACY records (r_gpuparticles_legacy on, the bring-up A/B) keep the stage
+** 1 layout -- c rgb colour, w intensity; d size start, size end, gravity, drag;
+** e.y stretch -- with e.x = orient - 16. No stage 2 record has e.x below -1, so
+** each record says which kind it is, and DrawLegacyParticle is the stage 1 code.
 **
 **---------------------------------------------------------------------------
 **
@@ -35,6 +46,9 @@ const vec2 kParticleCorners[6] = vec2[6](
 	vec2(-1.0, -1.0), vec2( 1.0, -1.0), vec2( 1.0,  1.0),
 	vec2(-1.0, -1.0), vec2( 1.0,  1.0), vec2(-1.0,  1.0));
 
+// ParticleDefinitionBuffer::SLOTS: 256 named + 256 inline.
+const int kParticleDefinitionSlots = 512;
+
 // A particle outside its life puts all six vertices on one point outside the
 // clip volume: zero-area triangles never rasterise, so a dead slot costs six
 // vertex invocations and nothing else.
@@ -43,6 +57,220 @@ void CollapseParticle()
 	gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 	vParticleCorner = vec2(0.0);
 	vParticleColor = vec4(0.0);
+}
+
+// Where one corner of the quad goes, in eye space.
+//   orient 0  CAMERA-FACING, offset in eye space. Each eye has its own view
+//             matrix, so stereo is correct, and any scale/mirror baked into the
+//             view matrix is already applied to the centre.
+//   orient 1  VELOCITY-STRETCHED: the long axis follows the velocity projected
+//             onto the view plane, so a spark flying at the eye stays short.
+//   orient 2  WORLD-FLAT: a quad whose normal is faceDir (the initial velocity),
+//             so a flake faces the way it was thrown.
+// `c` is the corner in quad units, already turned if the particle spins.
+vec4 ParticleEyePosition(vec3 pos, vec3 vel, vec3 faceDir, vec2 c, float halfSize, int orient, float stretch)
+{
+	vec3 up = vec3(0.0, 1.0, 0.0);
+
+	if (orient == 2)
+	{
+		vec3 n = faceDir;
+		float nl = length(n);
+		n = (nl > 1e-5) ? n / nl : up;
+		vec3 seedAxis = (abs(n.y) < 0.9) ? up : vec3(1.0, 0.0, 0.0);
+		vec3 tx = normalize(cross(seedAxis, n));
+		vec3 ty = cross(n, tx);
+		return ViewMatrix * vec4(pos + (tx * c.x + ty * c.y) * halfSize, 1.0);
+	}
+
+	vec4 eyePos = ViewMatrix * vec4(pos, 1.0);
+	vec2 offs = c * halfSize;
+
+	if (orient == 1)
+	{
+		vec3 ve = mat3(ViewMatrix) * vel;
+		float sl = length(ve.xy);
+		if (sl > 1e-3)
+		{
+			vec2 along = ve.xy / sl;
+			vec2 across = vec2(-along.y, along.x);
+			float halfLen = halfSize + sl * stretch * uGpuParticleParams.z;
+			offs = along * (c.x * halfLen) + across * (c.y * halfSize);
+		}
+	}
+	eyePos.xy += offs;
+	return eyePos;
+}
+
+void EmitParticle(vec4 eyePos, vec2 corner, vec3 rgb)
+{
+	gl_Position = ProjectionMatrix * eyePos;
+
+#ifdef VULKAN_COORDINATE_SYSTEM
+	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+#endif
+
+	vParticleColor = vec4(rgb, 1.0);
+	vParticleCorner = corner;
+}
+
+// [2b] A stage 1 record, drawn with the stage 1 maths. Temporary: it goes with
+// r_gpuparticles_legacy once the A/B has shown the two paths look the same.
+void DrawLegacyParticle(GpuParticle part, int corner, float age, float life)
+{
+	float t = age / life;
+	float diameter = min(mix(part.d.x, part.d.y, t) * uGpuParticleParams.x, uGpuParticleParams.y);
+	if (diameter <= 0.0)
+	{
+		CollapseParticle();
+		return;
+	}
+	float halfSize = 0.5 * diameter;
+
+	// Closed-form motion with linear drag. k is clamped so drag 0 needs no
+	// branch: (1 - e^-ka)/k tends to a as k tends to 0.
+	float k = max(part.d.w, 1e-4);
+	float decay = exp(-k * age);
+	vec3 up = vec3(0.0, 1.0, 0.0);
+	vec3 pos = part.a.xyz + part.b.xyz * ((1.0 - decay) / k) - up * (part.d.z * 0.5 * age * age);
+	vec3 vel = part.b.xyz * decay - up * (part.d.z * age);
+
+	vec2 c = kParticleCorners[corner];
+	int orient = int(part.e.x + 16.5);
+	vec4 eyePos = ParticleEyePosition(pos, vel, part.b.xyz, c, halfSize, orient, part.e.y);
+
+	float fade = 1.0 - smoothstep(0.6, 1.0, t);
+	EmitParticle(eyePos, c, part.c.rgb * (part.c.w * uGpuParticleParams.w * fade));
+}
+
+// [PARTICLEDEFS] Key i's colour, 0..1. Stored as 0xRRGGBB in a float, which holds
+// it exactly (below 2^24), so a plain conversion recovers the integer.
+vec3 ParticleKeyColor(int defSlot, int keyIndex)
+{
+	uint rgbBits = uint(particleDefinitions[defSlot].keyColor[keyIndex / 4][keyIndex % 4]);
+	return vec3(float((rgbBits >> 16u) & 255u), float((rgbBits >> 8u) & 255u), float(rgbBits & 255u)) / 255.0;
+}
+
+// [PARTICLEDEFS] A unit normal from its octahedral encoding (shader z is the pole).
+// Matches the encoder in FLevelLocals::SpawnParticles.
+vec3 OctahedralDecode(vec2 e)
+{
+	vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+	float fold = max(-n.z, 0.0);
+	n.x += (n.x >= 0.0) ? -fold : fold;
+	n.y += (n.y >= 0.0) ? -fold : fold;
+	return normalize(n);
+}
+
+// [PARTICLEDEFS] A stage 2 record: everything about its look from its definition.
+void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
+{
+	int defSlot = clamp(int(part.d.x + 0.5), 0, kParticleDefinitionSlots - 1);
+	float t = age / life;
+
+	// THE RAMPS. Size, alpha, emissive and colour share the definition's time
+	// keys: find the key at or before t and the fraction to the next. Held flat
+	// before the first key and after the last.
+	int keyCount = clamp(int(particleDefinitions[defSlot].motion.w + 0.5), 1, 8);
+	int k0 = 0;
+	int k1 = 0;
+	float f = 0.0;
+	if (keyCount > 1 && t > particleDefinitions[defSlot].key[0].x)
+	{
+		k0 = keyCount - 1;
+		k1 = k0;
+		for (int i = 1; i < keyCount; i++)
+		{
+			if (t < particleDefinitions[defSlot].key[i].x)
+			{
+				k0 = i - 1;
+				k1 = i;
+				float t0 = particleDefinitions[defSlot].key[k0].x;
+				f = (t - t0) / (particleDefinitions[defSlot].key[k1].x - t0);
+				break;
+			}
+		}
+	}
+	vec4 key0 = particleDefinitions[defSlot].key[k0];
+	vec4 key1 = particleDefinitions[defSlot].key[k1];
+
+	// Size through mix(), exactly as stage 1 interpolated it, so an inline
+	// definition (keys at 0 and 1, so f == t) gives stage 1's size. Emissive and
+	// colour as a + (b - a) * f, which is exact where both keys agree -- an inline
+	// definition's constant 1 and white -- so its brightness is stage 1's too.
+	// Alpha (key.z) is not drawn until stage 2d.
+	float rampSize = mix(key0.y, key1.y, f);
+	float emissive = key0.w + (key1.w - key0.w) * f;
+	vec3 color0 = ParticleKeyColor(defSlot, k0);
+	vec3 rampColor = color0 + (ParticleKeyColor(defSlot, k1) - color0) * f;
+
+	// The size cap: the definition's own, if it has one, never above the cvar.
+	float cap = uGpuParticleParams.y;
+	if (particleDefinitions[defSlot].motion.z > 0.0)
+		cap = min(particleDefinitions[defSlot].motion.z, cap);
+	float diameter = min(rampSize * part.d.y * uGpuParticleParams.x, cap);
+	if (diameter <= 0.0)
+	{
+		CollapseParticle();
+		return;
+	}
+	float halfSize = 0.5 * diameter;
+
+	// Stage 1's closed-form motion, with the definition's gravity and drag.
+	float gravity = particleDefinitions[defSlot].motion.x;
+	float k = max(particleDefinitions[defSlot].motion.y, 1e-4);
+	float decay = exp(-k * age);
+	vec3 up = vec3(0.0, 1.0, 0.0);
+	vec3 pos = part.a.xyz + part.b.xyz * ((1.0 - decay) / k) - up * (gravity * 0.5 * age * age);
+	vec3 vel = part.b.xyz * decay - up * (gravity * age);
+
+	// COLLISION (FLAME_ENGINE_PLAN F4), only for `collide = plane` definitions.
+	// The emission's plane: closer than the particle's radius, it is pushed out
+	// along the normal and slides, its velocity (which orients a streak) losing the
+	// normal part. The floor: below floor + radius it is clamped and skids.
+	if (particleDefinitions[defSlot].look.z > 0.5)
+	{
+		if (part.e.x < 1.5)
+		{
+			vec3 n = OctahedralDecode(part.e.xy);
+			float d = dot(pos, n) - part.e.z;
+			if (d < halfSize)
+			{
+				pos += n * (halfSize - d);
+				vel -= n * dot(vel, n);
+			}
+		}
+		if (part.e.w > -32767.0 && pos.y < part.e.w + halfSize)
+		{
+			pos.y = part.e.w + halfSize;
+			vel.y = 0.0;
+		}
+	}
+
+	// SPIN: degrees a second picked between the definition's min and max by the
+	// particle's seed, turning the quad's corners (a streak keeps its velocity's
+	// direction). vParticleCorner stays unturned, so a texture turns with the quad.
+	vec2 c = kParticleCorners[corner];
+	vec2 offsetCorner = c;
+	int orient = int(particleDefinitions[defSlot].shape.x + 0.5);
+	float spinMin = particleDefinitions[defSlot].shape.z;
+	float spinMax = particleDefinitions[defSlot].shape.w;
+	if (orient != 1 && (spinMin != 0.0 || spinMax != 0.0))
+	{
+		float angle = radians(mix(spinMin, spinMax, part.d.w)) * age;
+		float ca = cos(angle);
+		float sa = sin(angle);
+		offsetCorner = vec2(c.x * ca - c.y * sa, c.x * sa + c.y * ca);
+	}
+	vec4 eyePos = ParticleEyePosition(pos, vel, part.b.xyz, offsetCorner, halfSize, orient, particleDefinitions[defSlot].shape.y);
+
+	// Flag 1: stage 1's fade over the last 40% of life. Every inline definition has
+	// it; a lump asks with `fade = smooth`.
+	float fade = 1.0;
+	if ((int(particleDefinitions[defSlot].look.w + 0.5) & 1) != 0)
+		fade = 1.0 - smoothstep(0.6, 1.0, t);
+
+	EmitParticle(eyePos, c, part.c.rgb * rampColor * (part.c.w * emissive * uGpuParticleParams.w * fade));
 }
 
 void main()
@@ -63,71 +291,8 @@ void main()
 		return;
 	}
 
-	float t = age / life;
-	float diameter = min(mix(part.d.x, part.d.y, t) * uGpuParticleParams.x, uGpuParticleParams.y);
-	if (diameter <= 0.0)
-	{
-		CollapseParticle();
-		return;
-	}
-	float halfSize = 0.5 * diameter;
-
-	// Closed-form motion with linear drag. k is clamped so drag 0 needs no
-	// branch: (1 - e^-ka)/k tends to a as k tends to 0.
-	float k = max(part.d.w, 1e-4);
-	float decay = exp(-k * age);
-	vec3 up = vec3(0.0, 1.0, 0.0);
-	vec3 pos = part.a.xyz + part.b.xyz * ((1.0 - decay) / k) - up * (part.d.z * 0.5 * age * age);
-	vec3 vel = part.b.xyz * decay - up * (part.d.z * age);
-
-	vec2 c = kParticleCorners[corner];
-	int orient = int(part.e.x + 0.5);
-	vec4 eyePos;
-
-	if (orient == 2)
-	{
-		// WORLD-FLAT: a quad whose normal is the initial velocity direction, so
-		// a flake faces the way it was thrown.
-		vec3 n = part.b.xyz;
-		float nl = length(n);
-		n = (nl > 1e-5) ? n / nl : up;
-		vec3 seedAxis = (abs(n.y) < 0.9) ? up : vec3(1.0, 0.0, 0.0);
-		vec3 tx = normalize(cross(seedAxis, n));
-		vec3 ty = cross(n, tx);
-		eyePos = ViewMatrix * vec4(pos + (tx * c.x + ty * c.y) * halfSize, 1.0);
-	}
+	if (part.e.x < -8.0)
+		DrawLegacyParticle(part, corner, age, life);
 	else
-	{
-		// CAMERA-FACING, offset in eye space. Each eye has its own view matrix,
-		// so stereo is correct, and any scale/mirror baked into the view matrix
-		// is already applied to the centre.
-		eyePos = ViewMatrix * vec4(pos, 1.0);
-		vec2 offs = c * halfSize;
-
-		if (orient == 1)
-		{
-			// VELOCITY-STRETCHED: the long axis follows the velocity projected
-			// onto the view plane, so a spark flying at the eye stays short.
-			vec3 ve = mat3(ViewMatrix) * vel;
-			float sl = length(ve.xy);
-			if (sl > 1e-3)
-			{
-				vec2 along = ve.xy / sl;
-				vec2 across = vec2(-along.y, along.x);
-				float halfLen = halfSize + sl * part.e.y * uGpuParticleParams.z;
-				offs = along * (c.x * halfLen) + across * (c.y * halfSize);
-			}
-		}
-		eyePos.xy += offs;
-	}
-
-	gl_Position = ProjectionMatrix * eyePos;
-
-#ifdef VULKAN_COORDINATE_SYSTEM
-	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
-#endif
-
-	float fade = 1.0 - smoothstep(0.6, 1.0, t);
-	vParticleColor = vec4(part.c.rgb * (part.c.w * uGpuParticleParams.w * fade), 1.0);
-	vParticleCorner = c;
+		DrawDefinedParticle(part, corner, age, life);
 }

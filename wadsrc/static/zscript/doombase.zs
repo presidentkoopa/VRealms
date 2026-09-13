@@ -1496,6 +1496,34 @@ struct LevelLocals native
 	native clearscope void SpawnGpuParticles(Vector3 pos, Vector3 dir, int count, double spread, double speed, double speedJitter, color col, double intensity, double life, double lifeJitter, double sizeStart, double sizeEnd, double gravity, double drag, int orient = 0, double stretch = 0, int seed = 0);
 	native clearscope void ClearGpuParticles();
 
+	// [PARTICLEDEFS] GPU particle DEFINITIONS (stage 2b): what a particle looks like
+	// over its life -- size, colour, occlusion and light ramps, gravity, drag, spin,
+	// collision -- written once in a PARTICLEDEFS lump (keys: src/gamedata/
+	// particledefs.cpp). A later definition of the same name replaces an earlier one.
+	//
+	// ParticleDefinition(name) gives a HANDLE to cache and pass to SpawnParticles.
+	// NETPLAY: the handle comes from the name's text alone -- the same number on every
+	// machine, never 0, never negative -- and says NOTHING about whether the definition
+	// loaded here. Particles are presentation: never branch on a handle, and never let
+	// anything that affects play depend on a particle. A handle with no definition on
+	// this machine draws nothing (and prints one console line).
+	//
+	// SpawnParticles: where, which way, how many, how fast and how long; the definition
+	// supplies the rest. Vulkan only, like SpawnGpuParticles, and like it: never refuses
+	// for space, jitters from a hash of (seed, i) and never from playsim RNG, returns
+	// nothing.
+	//   pos, dir, count, spread, speed, speedJitter, life, lifeJitter   as SpawnGpuParticles
+	//   tint           multiplies the definition's colour ramp
+	//   intensity      multiplies its emissive ramp
+	//   sizeScale      multiplies its size ramp (its maxsize and r_gpuparticles_maxsize still cap)
+	//   seed           0 derives one from the ring cursor
+	//   shape          0 a cone around dir (spread = half-angle), 1 a disc across dir (spread = lift toward dir, 0..90)
+	//   surfacePoint,  a plane the particles stay in front of, for `collide = plane` definitions;
+	//   surfaceNormal  a zero normal is no plane
+	//   floorZ         a floor they skid along, for `collide = plane` definitions; -32768 is none
+	native clearscope int ParticleDefinition(Name defName);
+	native clearscope void SpawnParticles(int def, Vector3 pos, Vector3 dir, int count, double spread, double speed, double speedJitter, double life, double lifeJitter, color tint = 0xffffffff, double intensity = 1.0, double sizeScale = 1.0, int seed = 0, int shape = 0, Vector3 surfacePoint = (0,0,0), Vector3 surfaceNormal = (0,0,0), double floorZ = -32768);
+
 	native clearscope void SetBeam(int index, Vector3 start, Vector3 end, double thick, double soft, color col, double intensity);
 	// WHERE THIS BEAM STARTS FROM: 0 the point given to SetBeam, 1 the main
 	// hand, 2 the off hand. Anchored, the origin is resolved every FRAME rather

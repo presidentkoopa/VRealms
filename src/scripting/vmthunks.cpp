@@ -5523,6 +5523,59 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearGpuParticles, ClearGpuParticles
 	return 0;
 }
 
+// [PARTICLEDEFS] LevelLocals.ParticleDefinition(name): the HANDLE for a particle
+// definition name (gamedata/particledefs.h), for script to cache and pass to
+// SpawnParticles. NETPLAY: worked out from the name's text alone -- the same number
+// on every machine, never 0 or negative -- so it says nothing about whether this
+// machine's PARTICLEDEFS loaded that definition, and nothing in the simulation
+// can come to depend on a particle through it.
+static int ParticleDefinition(FLevelLocals *self, int name)
+{
+	return ParticleDefinitionHandle(FName(ENamedName(name)).GetChars());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ParticleDefinition, ParticleDefinition)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_NAME(name);
+	ACTION_RETURN_INT(ParticleDefinition(self, name.GetIndex()));
+}
+
+// [PARTICLEDEFS] Script's way in to FLevelLocals::SpawnParticles. Returns nothing;
+// a handle with no definition on this machine only ever costs this machine pixels.
+static void SpawnParticles(FLevelLocals *self, int definition, double px, double py, double pz,
+	double dx, double dy, double dz, int count, double spread, double speed, double speedJitter,
+	double life, double lifeJitter, int tint, double intensity, double sizeScale, int seed,
+	int shape, double spx, double spy, double spz, double snx, double sny, double snz, double floorZ)
+{
+	self->SpawnParticles(definition, DVector3(px, py, pz), DVector3(dx, dy, dz), count,
+		spread, speed, speedJitter, life, lifeJitter, (PalEntry)tint, intensity, sizeScale, seed,
+		shape, DVector3(spx, spy, spz), DVector3(snx, sny, snz), floorZ);
+}
+
+// _NATIVE0, like SpawnGpuParticles: 26 VM arguments (self, handle, four Vector3s at
+// three floats each, and twelve more) are past asmjit's 16-argument direct-call cap,
+// which kills the process at load with nothing in any log.
+DEFINE_ACTION_FUNCTION_NATIVE0(FLevelLocals, SpawnParticles, SpawnParticles)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(definition);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(dx); PARAM_FLOAT(dy); PARAM_FLOAT(dz);
+	PARAM_INT(count);
+	PARAM_FLOAT(spread); PARAM_FLOAT(speed); PARAM_FLOAT(speedJitter);
+	PARAM_FLOAT(life); PARAM_FLOAT(lifeJitter);
+	PARAM_COLOR(tint);
+	PARAM_FLOAT(intensity); PARAM_FLOAT(sizeScale);
+	PARAM_INT(seed); PARAM_INT(shape);
+	PARAM_FLOAT(spx); PARAM_FLOAT(spy); PARAM_FLOAT(spz);
+	PARAM_FLOAT(snx); PARAM_FLOAT(sny); PARAM_FLOAT(snz);
+	PARAM_FLOAT(floorZ);
+	SpawnParticles(self, definition, px, py, pz, dx, dy, dz, count, spread, speed, speedJitter,
+		life, lifeJitter, tint, intensity, sizeScale, seed, shape, spx, spy, spz, snx, sny, snz, floorZ);
+	return 0;
+}
+
 static void SetBeam(FLevelLocals *self, int index,
 	double ax, double ay, double az, double bx, double by, double bz,
 	double thick, double soft, int color, double intensity)

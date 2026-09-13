@@ -130,7 +130,9 @@ EXTERN_CVAR(Float, r_gpuparticles_intensity)
 EXTERN_CVAR(Float, r_gpuparticles_soft)	// [2a] soft particles, 0 = off
 EXTERN_CVAR(Int, r_gpuparticles_ringsize)
 EXTERN_CVAR(Bool, r_gpuparticles_debug)
+EXTERN_CVAR(Bool, r_gpuparticles_legacy)	// [2b] A/B: stage 1 records instead of inline definitions
 int GpuParticleRingCapacity();
+bool GpuParticlesLegacyPath();	// [2b] r_gpuparticles_legacy, for FLevelLocals::SpawnGpuParticles
 
 // [DRAWNLINES] + [BEAMLINES] see hw_cvars.cpp
 EXTERN_CVAR(Bool, r_beams_drawn)

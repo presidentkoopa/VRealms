@@ -52,6 +52,7 @@ class FRenderState;
 class BoneBuffer;
 class GpuParticleBuffer;
 class DrawnLineBuffer;
+class ParticleDefinitionBuffer;
 
 enum EHWCaps
 {
@@ -159,6 +160,10 @@ public:
 	// created beside mGpuParticles and null on GL/GLES -- null-check every use.
 	// See hw_drawnlinebuffer.h.
 	DrawnLineBuffer* mDrawnLines = nullptr;
+	// [PARTICLEDEFS] The particle definitions table that GPU particle records
+	// index. Vulkan only, created beside mGpuParticles and null on GL/GLES --
+	// null-check every use. See hw_particledefbuffer.h.
+	ParticleDefinitionBuffer* mParticleDefinitions = nullptr;
 	IShadowMap mShadowMap;
 
 	int mGameScreenWidth = 0;

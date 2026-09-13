@@ -37,6 +37,8 @@
 #include "hw_drawnlinebuffer.h"	// [DRAWNLINES]
 #include "i_time.h"	// [DRAWNLINES] r_beams_debug's two-second gate
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES]
+#include "hw_particledefbuffer.h"	// [PARTICLEDEFS] the GPU copy of the definitions
+#include "particledefs.h"	// [PARTICLEDEFS] the CPU table it syncs from
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
 #include "hw_vrmodes.h"
 #include "hw_vrwheel.h"
@@ -2174,8 +2176,11 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 	//     infos with mCurrentPortal set, and phase one skips them
 	//   - this level's ring has been written at least once -- an empty room
 	//     costs nothing at all
+	//   - [PARTICLEDEFS] the definitions buffer exists: every record indexes it
+	//     (set 1 binding 7), and the bone buffer only stands in for binding's sake
 	if (r_gpuparticles && screen->IsVulkan() && mCurrentPortal == nullptr && Level != nullptr &&
-		Level->GpuParticleWritten > 0 && screen->mGpuParticles != nullptr && screen->mGpuParticles->IsDrawable())
+		Level->GpuParticleWritten > 0 && screen->mGpuParticles != nullptr && screen->mGpuParticles->IsDrawable() &&
+		screen->mParticleDefinitions != nullptr)
 	{
 		auto particles = screen->mGpuParticles;
 
@@ -2802,6 +2807,16 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// savegame loads and bursts bigger than the ring -- see
 	// GpuParticleBuffer::Sync. Unlike the bones this is NOT cleared per frame:
 	// records persist until they expire or are overwritten. Null on GL/GLES.
+	//
+	// [PARTICLEDEFS] The definitions those records index go up first. Only slots
+	// changed since the last sync are copied: the whole named table once at
+	// startup, then a slot whenever a SpawnGpuParticles look first appears. Null
+	// on GL/GLES.
+	if (screen->mParticleDefinitions != nullptr)
+	{
+		screen->mParticleDefinitions->Sync(ParticleDefinitionTableData(), ParticleDefinitionSlotGenerations(),
+			ParticleDefinitionSlotCount(), ParticleDefinitionGeneration());
+	}
 	if (screen->mGpuParticles != nullptr && Level != nullptr)
 	{
 		screen->mGpuParticles->Sync(Level->GpuParticles.Data(), Level->GpuParticles.Size(),

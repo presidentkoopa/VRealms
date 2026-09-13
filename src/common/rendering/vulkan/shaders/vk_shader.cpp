@@ -677,6 +677,33 @@ static const char *shaderBindings = R"(
 	    DrawnLine drawnLines[];
 	};
 
+	// [PARTICLEDEFS] The particle definitions table (hw_particledefbuffer.h),
+	// indexed by a particle record's d.x. Sixteen vec4s, 256 bytes, std430 with no
+	// padding -- must match ParticleDefinitionGpu (particledefs.h), which asserts
+	// the offsets. Declared for every shader like the ring; gpuparticles.vp reads
+	// it, gpuparticles.fp will from stage 2c, so the layout entry is vertex and
+	// fragment.
+	//   key[i]       x t (life fraction)  y size  z alpha  w emissive
+	//   keyColor[j]  per key 0xRRGGBB as an exact float, keys 0-3 then 4-7
+	//   motion       x gravity  y drag  z maxsize (0 none)  w key count
+	//   shape        x orient  y stretch  z spin min  w spin max (deg/s)
+	//   look         x lit  y soft (-1 unset)  z collide  w flags (1 fade smooth)
+	//   flipbook     x first atlas layer (-1 none)  y frames  z fps  w 0 loop 1 once
+	struct ParticleDefinitionData
+	{
+		vec4 key[8];
+		vec4 keyColor[2];
+		vec4 motion;
+		vec4 shape;
+		vec4 look;
+		vec4 flipbook;
+		vec4 spare[2];
+	};
+	layout(set = 1, binding = 7, std430) buffer readonly ParticleDefinitionSSO
+	{
+	    ParticleDefinitionData particleDefinitions[];
+	};
+
 	// textures
 	layout(set = 2, binding = 0) uniform sampler2D tex;
 	layout(set = 2, binding = 1) uniform sampler2D texture2;

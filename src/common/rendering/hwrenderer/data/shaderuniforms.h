@@ -34,7 +34,10 @@ enum
 	GPUPARTICLE_BINDINGPOINT = 8,
 	// [DRAWNLINES] The drawn-line records (hw_drawnlinebuffer.h). Vulkan only,
 	// keyed on by VkBufferManager::CreateDataBuffer like the particle ring.
-	DRAWNLINE_BINDINGPOINT = 9
+	DRAWNLINE_BINDINGPOINT = 9,
+	// [PARTICLEDEFS] The particle definitions table (hw_particledefbuffer.h).
+	// Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
+	PARTICLEDEF_BINDINGPOINT = 10
 };
 
 enum class UniformType

@@ -59,6 +59,8 @@ public:
 	VkHardwareDataBuffer* GpuParticleSSO = nullptr;
 	// [DRAWNLINES] set 1 binding 6 -- see hw_drawnlinebuffer.h
 	VkHardwareDataBuffer* DrawnLineSSO = nullptr;
+	// [PARTICLEDEFS] set 1 binding 7 -- see hw_particledefbuffer.h
+	VkHardwareDataBuffer* ParticleDefinitionSSO = nullptr;
 
 	std::unique_ptr<VkStreamBuffer> MatrixBuffer;
 	std::unique_ptr<VkStreamBuffer> StreamBuffer;
