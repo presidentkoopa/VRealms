@@ -3836,8 +3836,12 @@ static void ReportBadShapeId(const char *setter, int id)
 //   mode 0 off
 //        1 cylinder from origin -- rings expanding outward across a room
 //        2 plane along X        -- bars sweeping east/west down a corridor
+//                                  (both sides of the origin)
 //        3 plane along Y        -- the same, north/south
 //        4 sphere from origin   -- shells, so a band rises as it expands
+//        5 rise                 -- one sheet climbing along Z (signed)
+//        6 +X  7 +Y  8 -X  9 -Y -- one signed front crossing the level
+// [round2 SW-21] 5-9 were missing from this list.
 //
 // Set the origin and count once, then each band's own position and colour.
 // Script drives the radii each tic: grow them for a ping, oscillate for a
@@ -3987,10 +3991,12 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepTrail, SetSweepTrail)
 // while the playsim is paused. That is what lets these sliders move the
 // picture while you are still looking at the page.
 //
-// The origin cannot: resolving "follows you" or "the nearest live monster"
-// means reading the playsim. So it is its own play-scope call, made from the
-// world tic, and it simply keeps its last value while the game is paused --
-// which is correct, because nothing in the world is moving either.
+// The origin is its own call: resolving "follows you" or "the nearest live
+// monster" means reading the playsim, so callers make it from the world tic,
+// and it simply keeps its last value while the game is paused -- which is
+// correct, because nothing in the world is moving either. [round2 X1] It is
+// DECLARED clearscope all the same: the resolving happens in the caller, and
+// this setter only stores the point.
 static void SetGlowWave(FLevelLocals *self, double wavelength, double speed,
 	double sharpness, int shape)
 {
@@ -5151,6 +5157,46 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetFogGradient, SetFogGradient)
 	return 0;
 }
 
+// [round2 B3] A TRANSIENT FOG GRADIENT THAT WINS OVER THE STANDING ONE.
+//
+// SetFogGradient is one shared slot, and a fog mod re-pushes it every tic, so a
+// passing caller's tint (a sweep colouring the mist) was overwritten before it
+// reached a frame. Same fix as SetFogSlabOverride: a second slot the renderer
+// prefers while it is set. FogColor2/FogColor2Mix are never touched, so
+// ClearFogGradientOverride hands the view straight back to them. Mix 0 is a
+// valid override (one colour while it lasts); only Clear ends it. One
+// override, not a stack. Look-only, so both are clearscope.
+static void ClearFogGradientOverride(FLevelLocals *self)
+{
+	if (r_visualstate_log && self->FogColor2OverrideActive)
+		Printf("ClearFogGradientOverride: the standing fog gradient is active again\n");
+	self->FogColor2OverrideActive = false;
+}
+
+static void SetFogGradientOverride(FLevelLocals *self, int color, double mix)
+{
+	if (r_visualstate_log && !self->FogColor2OverrideActive)
+		Printf("SetFogGradientOverride: the OVERRIDE fog gradient is active (mix %.2f), standing gradient held underneath\n", mix);
+	self->FogColor2OverrideActive = true;
+	self->FogColor2OverrideColor = (PalEntry)color;
+	self->FogColor2OverrideMix = mix;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetFogGradientOverride, SetFogGradientOverride)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_COLOR(color); PARAM_FLOAT(mix);
+	SetFogGradientOverride(self, color, mix);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearFogGradientOverride, ClearFogGradientOverride)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ClearFogGradientOverride(self);
+	return 0;
+}
+
 // [RS fork] THE COLOUR AN IGNITE DISTURBANCE BURNS (FogDisturb mode 2).
 //
 // Ignite was lit with the gradient colour above -- a colour picked for the top
@@ -5311,7 +5357,9 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepFillMotion, SetSweepFillMoti
 	return 0;
 }
 
-// Per band: 0 none, 1 grid, 2 dots (where the axes cross), 3 solid slab.
+// Per band: 0 none, 1 grid, 2 dots (where the axes cross), 3 solid slab,
+// 4 pickets (bars along U only, spacing snapped to the published room; on the
+// surfaces as well as in the air since [round2 C1]).
 static void SetSweepBandFill(FLevelLocals *self, int index, int fill)
 {
 	if (index < 0 || index >= FLevelLocals::MAX_SWEEP_BANDS) return;
@@ -5327,6 +5375,50 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepBandFill, SetSweepBandFill)
 	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
 	PARAM_INT(index); PARAM_INT(fill);
 	SetSweepBandFill(self, index, fill);
+	return 0;
+}
+
+// [round2 B2] THE PASSED REGION. Grade everything BEHIND a band's front --
+// per pixel, so the look follows the line exactly instead of flipping a whole
+// sector when its centre crosses. See FLevelLocals::SweepBandPassed and
+// SweepPassedAt in main.fp. Uploaded as +256 in the packed band word.
+// Look-only render state, so both setters are clearscope.
+//   on: 0 off, 1 grade this band's passed side
+static void SetSweepBandPassed(FLevelLocals *self, int index, int on)
+{
+	if (index < 0 || index >= FLevelLocals::MAX_SWEEP_BANDS) return;
+	self->SweepBandPassed[index] = on != 0 ? 1 : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepBandPassed, SetSweepBandPassed)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(index); PARAM_INT(on);
+	SetSweepBandPassed(self, index, on);
+	return 0;
+}
+
+// [round2 B2] What the passed side looks like, shared by every band with the
+// bit. tintMix multiplies the light toward the tint, darken takes that much
+// light away, desat drains colour toward grey (all 0..1). soft is the map
+// units the look fades in over behind the front (at least 1).
+static void SetSweepPassedLook(FLevelLocals *self, int tint, double tintMix,
+	double darken, double desat, double soft)
+{
+	self->SweepPassedTint = (PalEntry)tint;
+	self->SweepPassedTintMix = clamp(tintMix, 0., 1.);
+	self->SweepPassedDarken = clamp(darken, 0., 1.);
+	self->SweepPassedDesat = clamp(desat, 0., 1.);
+	self->SweepPassedSoft = max(soft, 1.);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepPassedLook, SetSweepPassedLook)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_COLOR(tint);
+	PARAM_FLOAT(tintMix); PARAM_FLOAT(darken);
+	PARAM_FLOAT(desat); PARAM_FLOAT(soft);
+	SetSweepPassedLook(self, tint, tintMix, darken, desat, soft);
 	return 0;
 }
 
@@ -5812,6 +5904,7 @@ static void ClearDarkness(FLevelLocals *self)
 	self->DarkMode = 0;
 	self->DarkDistDepth = 0;
 	self->DarkHeightDepth = 0;
+	self->DarkHeightFollow = 0;   // [round2 B4] back to the absolute reference
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearDarkness, ClearDarkness)
@@ -5821,12 +5914,43 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearDarkness, ClearDarkness)
 	return 0;
 }
 
+// [round2 B4] WHERE THE DARKNESS HEIGHT REFERENCE COMES FROM.
+//   mode 0  SetDarknessSpace's heightRef as written (the old behaviour)
+//   mode 1  the viewer's feet at draw rate -- the camera's interpolated Z --
+//           plus offset, so the pool edge rides lifts and stairs smoothly
+//           instead of stepping with a 35Hz WorldTick write
+// Anything else is 0. Look-only, so clearscope.
+static void SetDarknessHeightFollow(FLevelLocals *self, int mode, double offset)
+{
+	self->DarkHeightFollow = (mode == 1) ? 1 : 0;
+	self->DarkHeightOffset = offset;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetDarknessHeightFollow, SetDarknessHeightFollow)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(mode); PARAM_FLOAT(offset);
+	SetDarknessHeightFollow(self, mode, offset);
+	return 0;
+}
+
 static void ClearSweep(FLevelLocals *self)
 {
 	self->SweepMode = 0;
 	self->SweepCount = 0;
 	self->SweepTrail = 0;
 	for (int i = 0; i < FLevelLocals::MAX_SWEEP_BANDS; i++) { self->SweepBandMode[i] = 0; self->SweepBandDraw[i] = 0; }
+
+	// [round2 A5] Fill, air and the room box too. hw_drawinfo.cpp re-applies
+	// any band whose SweepBandFill is above 0, so a cleared sweep used to hand
+	// the next caller a grid or a solid slab it never asked for. This is the
+	// same set ClearLevelData (p_setup.cpp) resets, so the two clears agree.
+	// [round2 B2] The passed bits too; the passed look settings stay, as
+	// ClearLevelData leaves look settings alone.
+	for (int i = 0; i < FLevelLocals::MAX_SWEEP_BANDS; i++) { self->SweepBandFill[i] = 0; self->SweepBandPassed[i] = 0; }
+	self->SweepFillAir = 0;
+	self->SweepRoomSoft = 0;
+	self->SweepRoomMin = self->SweepRoomMax = DVector3(0, 0, 0);
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearSweep, ClearSweep)

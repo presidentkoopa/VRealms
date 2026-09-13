@@ -96,6 +96,41 @@ void CollectLights(FLevelLocals* Level)
 
 //-----------------------------------------------------------------------------
 //
+// [round2 B1] Pose every anchored dynamic light from THIS frame's tracked pose.
+//
+// Called after VRMode::SetUp(), which is what writes this frame's AttackPos /
+// OffhandPos, and before the eye loop's ++gl_dynlight_viewid, so the spot
+// direction and relative-position caches keyed on that id rebuild from the
+// new pose. The shadow map's CollectLights runs earlier in RenderViewpoint, so
+// the SHADOW of a shadow-mapped anchored light lags one frame; the light does not.
+//
+// Relinks (rebuilds the per-section light lists) only once the light is more
+// than 4 map units from where it was last linked. Without a relink a surface at
+// the edge of the radius can miss the light for a frame; relinking for every
+// sub-unit hand tremor would be wasted work.
+//
+// THREADING. This runs on the main thread before any RenderBSP of the frame,
+// and RenderBSP starts and joins its worker threads inside itself, so nothing
+// else is reading light lists or positions. The registry is only changed on the
+// main thread -- by the light tick, SetAttachedLightAnchor and level teardown --
+// none of which can run while a frame is being set up.
+//
+//-----------------------------------------------------------------------------
+
+static void R_UpdatePoseAnchoredLights(FLevelLocals *Level)
+{
+	if (Level == nullptr) return;
+	for (auto light : Level->PoseAnchoredLights)
+	{
+		if (!light->IsActive()) continue;
+		if (!light->ResolvePoseAnchor()) continue;
+		if ((light->Pos - light->LinkedPos).LengthSquared() > 4.0 * 4.0)
+			light->LinkLight();
+	}
+}
+
+//-----------------------------------------------------------------------------
+//
 // Renders one viewpoint in a scene
 //
 //-----------------------------------------------------------------------------
@@ -131,6 +166,9 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	// Fixme. The view offsetting should be done with a static table and not require setup of the entire render state for the mode.
 	auto vrmode = VRMode::GetVRModeCached(mainview && toscreen);
 	vrmode->SetUp();
+	// [round2 B1] Anchored lights read the pose SetUp just wrote. The real frame
+	// only: a camera texture's mono SetUp poses the hand from its own viewpoint.
+	if (mainview && toscreen) R_UpdatePoseAnchoredLights(camera->Level);
 	const int eyeCount = vrmode->mEyeCount;
 	const bool useMultiviewScene = mainview && toscreen && vrmode->ShouldUseMultiviewThisFrame() && eyeCount >= 2;
 	int sharedPostprocessColormap = CM_DEFAULT;

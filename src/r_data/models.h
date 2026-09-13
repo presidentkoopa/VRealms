@@ -102,6 +102,17 @@ FSpriteModelFrame * FindModelFrame(AActor * thing, int sprite, int frame, bool d
 FSpriteModelFrame * FindModelFrame(const PClass * ti, bool is_decoupled, int sprite, int frame, bool dropped);
 FSpriteModelFrame * FindModelFrame(const PClass * ti, int sprite, int frame, bool dropped);
 FSpriteModelFrame * FindVoxelFrame(int sprite, int frame, bool dropped);
+
+// RS FORK -- r_voxels_mode / r_voxeldistance helpers, defined beside
+// FindVoxelFrame in models.cpp (see the notes there).
+//   VoxelsEffectiveMode     r_voxels_mode with auto (-1) resolved against
+//                           r_voxelpack_loaded: 0 all, 1 VoxelOverride only, 2 none
+//   SpriteFrameHasTexture   the frame has a real sprite to draw if its voxel is refused
+//   KeepVoxelWithoutSprite  a refused voxel must be kept because there is no sprite
+//                           (logs once per sprite name)
+int VoxelsEffectiveMode();
+bool SpriteFrameHasTexture(int sprite, int frame);
+bool KeepVoxelWithoutSprite(int sprite, int frame);
 //FSpriteModelFrame * FindModelFrameRaw(const AActor * actorDefaults, const PClass * ti, int sprite, int frame, bool dropped);
 
 bool IsHUDModelForPlayerAvailable(player_t * player);

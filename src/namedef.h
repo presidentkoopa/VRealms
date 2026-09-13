@@ -667,6 +667,8 @@ xx(SpotInnerAngle)
 xx(SpotOuterAngle)
 xx(lightflags)
 xx(lighttype)
+xx(PoseAnchor)          // [round2 B1] DynamicLight's anchor fields
+xx(PoseAnchorOffset)
 xx(InternalDynamicLight)
 xx(_a_chase_default)
 xx(MapMarker)

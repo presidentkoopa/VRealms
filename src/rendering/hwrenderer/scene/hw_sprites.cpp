@@ -70,6 +70,7 @@ EXTERN_CVAR(Float, transsouls)
 EXTERN_CVAR(Float, r_actorspriteshadowalpha)
 EXTERN_CVAR(Float, r_actorspriteshadowfadeheight)
 EXTERN_CVAR(Float, r_voxeldistance)
+EXTERN_CVAR(Float, r_voxeldistance_band)	// RS fork -- hysteresis for the voxel distance cull
 EXTERN_CVAR(Bool, gl_texture_thread)
 EXTERN_CVAR(Bool, gl_texture_thread_models)
 
@@ -1151,14 +1152,43 @@ void HWSprite::Process(HWDrawInfo *di, AActor* thing, sector_t * sector, area_t 
 	// compare.
 	//
 	// Squared throughout, so this adds no sqrt to a per-sprite path.
+	//
+	// RS FORK, 2026-09-13 -- three changes:
+	//
+	// THINGPOS, not a fresh InterpolatedPosition. thingpos carries the
+	// line-portal displacement (above); the old measurement put a thing seen
+	// through a line portal at the wrong distance.
+	//
+	// HYSTERESIS, r_voxeldistance_band. Voxel -> sprite past the limit; sprite
+	// -> voxel only back inside (limit - band), so a thing on the line does not
+	// flicker. The last side is AActor::VoxelFarLatch. Only the MAIN pass writes
+	// it; mirrors, other portals and the sprite-shadow pass only read it, so a
+	// second view of the same thing cannot flip it. The band is held to half
+	// the limit, so a large band can never strand a thing as a sprite.
+	//
+	// NEVER INVISIBLE. A voxel whose frame has no sprite texture is kept
+	// (KeepVoxelWithoutSprite, models.cpp): nulling it would draw nothing.
+	const bool voxelLatchPass = di->mCurrentPortal == nullptr && !isSpriteShadow;
 	if (modelframe != nullptr && modelframe->isVoxel && !thing->VoxelOverride && r_voxeldistance > 0)
 	{
-		double lim = (double)r_voxeldistance;
-		DVector3 vpos = thing->InterpolatedPosition(vp.TicFrac);
-		double dx = vpos.X - vp.CenterEyePos.X;
-		double dy = vpos.Y - vp.CenterEyePos.Y;
-		double dz = vpos.Z - vp.CenterEyePos.Z;
-		if ((dx * dx + dy * dy + dz * dz) > (lim * lim)) modelframe = nullptr;
+		const double lim = (double)r_voxeldistance;
+		const double band = min<double>(max<double>((double)r_voxeldistance_band, 0.), lim * 0.5);
+		const double nearLim = lim - band;
+		const double dx = thingpos.X - vp.CenterEyePos.X;
+		const double dy = thingpos.Y - vp.CenterEyePos.Y;
+		const double dz = thingpos.Z - vp.CenterEyePos.Z;
+		const double d2 = dx * dx + dy * dy + dz * dz;
+		// isFar, not "far": minwindef.h defines far (and near) as empty macros.
+		const bool isFar = thing->VoxelFarLatch ? (d2 >= nearLim * nearLim) : (d2 > lim * lim);
+		if (voxelLatchPass) thing->VoxelFarLatch = isFar ? 1 : 0;
+		if (isFar && !KeepVoxelWithoutSprite(spritenum, thing->frame)) modelframe = nullptr;
+	}
+	else if (voxelLatchPass && thing->VoxelFarLatch)
+	{
+		// Held, not a voxel this frame, or the cull is off: forget the old side,
+		// so the next time the cull applies it starts from "voxel" and the plain
+		// limit rather than from a stale "far".
+		thing->VoxelFarLatch = 0;
 	}
 
 	modelframeflags = modelframe ? modelframe->getFlags(thing->modelData) : 0;

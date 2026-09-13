@@ -116,12 +116,25 @@ public:
 		m_explicitPitch = false;
 	}
 
+	// [round2 B1] The pose anchor for the light this definition builds. Kept on
+	// the DEFINITION, not only on the FDynamicLight, because A_AttachLight only
+	// marks the actor for light recreation -- no FDynamicLight exists until the
+	// next tick -- and every recreate (state change, savegame load, gl_lights
+	// toggle) builds the light from here again. See FDynamicLight::PoseAnchor.
+	void SetPoseAnchor(int anchor, const DVector3 &offset) { m_poseAnchor = anchor; m_poseAnchorOffset = offset; }
+
 	void SetType(ELightType type) { m_type = type; }
 	void CopyFrom(const FLightDefaults &other)
 	{
 		auto n = m_Name;
+		// [round2 B1] The anchor belongs to the light ID the actor named, not
+		// to the GLDEFS definition being copied in, so A_AttachLightDef keeps it.
+		auto anchor = m_poseAnchor;
+		auto anchorOffset = m_poseAnchorOffset;
 		*this = other;
 		m_Name = n;
+		m_poseAnchor = anchor;
+		m_poseAnchorOffset = anchorOffset;
 	}
 	void SetFlags(LightFlags lf)
 	{
@@ -154,6 +167,8 @@ protected:
 	DAngle m_spotOuterAngle = DAngle::fromDeg(25.0);
 	DAngle m_pitch = nullAngle;
 	double m_LightDefIntensity = 1.0; // Light over/underbright multiplication for GLDEFS-defined lights
+	int m_poseAnchor = 0;                     // [round2 B1] see SetPoseAnchor
+	DVector3 m_poseAnchorOffset = { 0,0,0 };  // [round2 B1]
 
 	friend FSerializer &Serialize(FSerializer &arc, const char *key, FLightDefaults &value, FLightDefaults *def);
 };
@@ -321,6 +336,37 @@ public:
 	bool owned;
 	bool swapped;
 	bool explicitpitch;
+
+	// [round2 B1] HELD IN A TRACKED POSE, re-posed every frame.
+	//
+	//   PoseAnchor        0 none (target + m_off, as always), 1 main hand,
+	//                     2 off hand, 3 head -- SetVolumetricBeamAnchor's ids
+	//   PoseAnchorOffset  (forward, right, up) map units in the pose's frame
+	//
+	// A light is posed only in the tick (Tick -> UpdateLocation), so a torch
+	// held in a tracked hand stepped at 35Hz against a 90Hz+ hand. Anchored, the
+	// tick poses it from the hand too (so tic relinks follow the hand, not the
+	// target), and hw_entrypoint.cpp re-poses it every frame from the pose the
+	// VR backend wrote that frame (R_UpdatePoseAnchoredLights).
+	//
+	// While anchored the pose supplies position, yaw AND pitch. m_off, the
+	// bob, the floor/ceiling clamp and explicitpitch are all ignored:
+	// A_AttachLight's default spotp of 0 is an explicit pitch and would
+	// otherwise pin a hand torch level.
+	//
+	// Anchored lights are listed in FLevelLocals::PoseAnchoredLights so the
+	// frame step never walks every light. PoseRegistered says this one is in
+	// it; ReleaseLight takes it out before the memory returns to the free list.
+	int      PoseAnchor = 0;
+	DVector3 PoseAnchorOffset = { 0, 0, 0 };
+	int      PoseSource = 0;          // last ETrackedPoseSource, for the log line
+	bool     PoseRegistered = false;
+	// Where LinkLight last built the section light lists from. The frame step
+	// relinks only once the pose has moved a few units away from it.
+	DVector3 LinkedPos = { 0, 0, 0 };
+
+	void SetPoseAnchor(int anchor, const DVector3 &offset);
+	bool ResolvePoseAnchor();   // false = not anchored or no pose; nothing written
 
 	double lightDefIntensity;
 

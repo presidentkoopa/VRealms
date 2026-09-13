@@ -95,7 +95,10 @@ static TArray<DVector3a> InterpolationPath;
 
 CVAR (Bool, r_deathcamera, false, CVAR_ARCHIVE)
 CVAR (Int, r_clearbuffer, 0, 0)
-CVAR (Bool, r_drawvoxels, true, 0)
+// RS FORK -- r_drawvoxels is ARCHIVED now; it was flags 0, so turning it off
+// was lost at the next launch. It stays as the console switch (and still
+// feeds RFF_VOXELS at startup); the Voxel Options menu row is r_voxels_mode.
+CVAR (Bool, r_drawvoxels, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
 // [BB] How far away a voxel is still drawn as a voxel, in map units. 0 is
 // unlimited, which is the old behaviour and the default.
@@ -110,6 +113,40 @@ CVAR (Bool, r_drawvoxels, true, 0)
 // something is deliberately holding this object as a solid thing, and a
 // held object is never far away -- culling it would only ever be a bug.
 CVAR (Float, r_voxeldistance, 0.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// RS FORK -- r_voxels_mode: which actors may be drawn as their voxel.
+//  -1  auto, the default: 1 when r_voxelpack_loaded, else 0. So nothing
+//      changes without a pack, and with one only held and grabbed things are
+//      voxels -- the owner's ask.
+//   0  all, the stock behaviour
+//   1  only actors with VoxelOverride set (held, laser-locked, gravity-grabbed
+//      in flight); everything else draws its sprite
+//   2  none, not even those
+// Auto is a sentinel in this one cvar rather than a separate archived "user
+// touched it" flag, so "never set" and "reset to default" are the same state
+// and nothing can fall out of step. Read through VoxelsEffectiveMode in
+// models.cpp. A frame that exists only as a voxel is kept in every mode.
+CUSTOM_CVAR (Int, r_voxels_mode, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < -1) self = -1;
+	else if (self > 2) self = 2;
+}
+
+// RS FORK -- r_voxeldistance_band: hysteresis for r_voxeldistance, map units.
+// A voxel turns into its sprite past r_voxeldistance and back only inside
+// r_voxeldistance minus this, so a thing on the boundary does not flicker.
+// 32 is about a metre. Held to half the distance where it is read
+// (HWSprite::Process, hw_sprites.cpp).
+CUSTOM_CVAR (Float, r_voxeldistance_band, 32.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.f) self = 0.f;
+}
+
+// RS FORK -- r_voxelpack_loaded: set once at startup (R_DetectVoxelPack,
+// sprites.cpp) when any voxel came from a file loaded after the IWAD -- a pwad,
+// pk3 or autoload. Resolves auto in r_voxels_mode and drives the Voxel Options
+// status line. Not settable from the console.
+CVAR (Bool, r_voxelpack_loaded, false, CVAR_NOSET)
 CVAR (Bool, r_drawplayersprites, true, 0)	// [RH] Draw player sprites?
 CVAR(Int, r_PlayerSprites3DMode, 1, CVAR_ARCHIVE); // Back only as default
 CVAR(Float, gl_fatItemWidth, 0.5f, CVAR_ARCHIVE);
@@ -1388,4 +1425,104 @@ bool R_ShouldDrawSpriteShadow(AActor *thing)
 	}
 	return doit;
 
+}
+
+//==========================================================================
+//
+// [round2 B1] ResolveTrackedPose -- see r_utility.h.
+//
+// Lifted from hw_drawinfo.cpp's ResolveVolBeamPose, which now calls this, so
+// beams and lights share one answer. The numbers are unchanged for beams.
+//
+// Angle conventions, which are NOT the obvious ones: AttackAngle/OffhandAngle
+// are stored as world yaw MINUS 90 and AttackPitch/OffhandPitch are negated
+// (g_game.cpp, hw_vrmodes.cpp). HmdYaw is plain world yaw and HmdPitch is
+// already Doom-signed, positive down (vk_openxrdevice.cpp). Doom pitch
+// positive is down, so forward.Z = -sin(pitch).
+//
+// `who` exists so a light on a player's pawn follows THAT player's hand in a
+// network game. The console player's hands and head are written per frame by
+// the VR backend; any other player's are whatever the playsim rebuilt from
+// their input, so their held light moves at tic rate, which is still their hand.
+// Only the console player has a view here, so another player's head without a
+// headset pose falls back to their pawn at their view height.
+//
+//==========================================================================
+
+int ResolveTrackedPose(const FLevelLocals *Level, int anchor, const DVector3 &offset,
+	DVector3 &pos, DAngle &yaw, DAngle &pitch, const player_t *who)
+{
+	if (anchor <= 0 || anchor > 3) return TPOSE_NONE;
+	if (Level == nullptr) return TPOSE_NOPLAYER;
+
+	const player_t *console = Level->GetConsolePlayer();
+	const player_t *pl = (who != nullptr) ? who : console;
+	if (pl == nullptr || pl->mo == nullptr) return TPOSE_NOPLAYER;
+	const AActor *mo = pl->mo;
+
+	DVector3 origin;
+	DAngle poseYaw, posePitch;
+	int source;
+	if (anchor == 1)
+	{
+		origin = mo->AttackPos;
+		poseYaw = mo->AttackAngle + DAngle::fromDeg(90.);
+		posePitch = -mo->AttackPitch;
+		source = TPOSE_MAINHAND;
+	}
+	else if (anchor == 2)
+	{
+		origin = mo->OffhandPos;
+		poseYaw = mo->OffhandAngle + DAngle::fromDeg(90.);
+		posePitch = -mo->OffhandPitch;
+		source = TPOSE_OFFHAND;
+	}
+	else if (mo->HmdPos.LengthSquared() > 0.0)
+	{
+		origin = mo->HmdPos;
+		poseYaw = mo->HmdYaw;
+		posePitch = mo->HmdPitch;
+		source = TPOSE_HMD;
+	}
+	else if (pl == console)
+	{
+		// No headset pose (flat screen, or a backend that does not write
+		// HmdPos): the centre eye of the main view is the head.
+		origin = r_viewpoint.CenterEyePos;
+		poseYaw = r_viewpoint.Angles.Yaw;
+		posePitch = r_viewpoint.Angles.Pitch;
+		source = TPOSE_VIEW;
+	}
+	else
+	{
+		origin = DVector3(mo->Pos().XY(), pl->viewz);
+		poseYaw = mo->Angles.Yaw;
+		posePitch = mo->Angles.Pitch;
+		source = TPOSE_VIEW;
+	}
+
+	const DVector3 forward = TrackedPoseForward(poseYaw, posePitch);
+	const double cp = posePitch.Cos(), sp = posePitch.Sin();
+	const double cy = poseYaw.Cos(), sy = poseYaw.Sin();
+	const DVector3 right(sy, -cy, 0.);
+	const DVector3 up(sp * cy, sp * sy, cp);
+
+	pos = origin + forward * offset.X + right * offset.Y + up * offset.Z;
+	yaw = poseYaw;
+	pitch = posePitch;
+	return source;
+}
+
+const char *TrackedPoseSourceName(int source)
+{
+	static const char *const names[TPOSE_COUNT] =
+	{
+		"not anchored",
+		"main hand, per frame (AttackPos)",
+		"off hand, per frame (OffhandPos)",
+		"headset, per frame (HmdPos)",
+		"view (no headset pose written)",
+		"anchored but no player to read -- keeping its own position",
+	};
+	return (source >= 0 && source < TPOSE_COUNT) ? names[source] : "?";
 }

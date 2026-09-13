@@ -1373,6 +1373,13 @@ public:
 	int				lastScaleFlags;
 	int				lastModelSprite;
 	uint8_t			lastModelFrame;
+	// RS FORK -- r_voxeldistance / r_voxeldistance_band: which side of the voxel
+	// distance cull this actor was on last frame (0 voxel, 1 sprite), so the
+	// swap has hysteresis instead of flickering on the boundary. A render cache
+	// like the two above: written by HWSprite::Process on the main pass only
+	// (never a portal or sprite-shadow pass), not serialized, not exposed to
+	// script. A one-byte race between BSP threads costs one frame's choice.
+	uint8_t			VoxelFarLatch;
 
 	uint32_t			RenderRequired;		// current renderer must have this feature set
 	uint32_t			RenderHidden;		// current renderer must *not* have any of these features
@@ -1408,6 +1415,10 @@ public:
 	// [BB] Draw this actor as its voxel, if it has one, regardless of
 	// r_drawvoxels and in preference to any model. See FindModelFrame in
 	// r_data/models.cpp for why both of those are deliberate.
+	//
+	// RS FORK -- r_voxels_mode: in mode 1 (auto with a voxel pack) this flag is
+	// the ONLY way an actor is drawn as a voxel; mode 2 refuses it too, except
+	// for a frame that has no sprite. VoxelFarLatch above is its cull companion.
 	//
 	// Exists so a single object can become a real 3D thing for as long as
 	// something is true of it -- being held in a hand, most obviously, since a

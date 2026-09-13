@@ -18,6 +18,8 @@
 #include "filesystem.h"
 #include "cmdlib.h"
 #include "sc_man.h"
+#include <mutex>          // RS fork -- KeepVoxelWithoutSprite's log-once (r_voxels_mode)
+#include <vector>
 #include "m_crc32.h"
 #include "c_console.h"
 #include "g_game.h"
@@ -598,7 +600,18 @@ DEFINE_ACTION_FUNCTION(AActor, HasModelFrame)
 DEFINE_ACTION_FUNCTION(AActor, HasVoxelFrame)
 {
 	PARAM_SELF_PROLOGUE(AActor);
-	ACTION_RETURN_BOOL(FindVoxelFrame(self->sprite, self->frame, !!(self->flags & MF_DROPPED)) != nullptr);
+	if (FindVoxelFrame(self->sprite, self->frame, !!(self->flags & MF_DROPPED)) == nullptr) ACTION_RETURN_BOOL(false);
+
+	// RS FORK -- r_voxels_mode 2 ("none") ANSWERS WHAT THE RENDERER WILL DO.
+	//
+	// Required, not tidy-up. RS_Held decides solidInHand from
+	// HasModelFrame() || (VoxelHeld && HasVoxelFrame()). In mode 2 the override
+	// is refused (FindModelFrame below), so a yes here puts the hand frame on a
+	// billboard -- the caught-barrels-disappearing bug described above.
+	// HasModelFrame needs nothing: it already goes through the gated lookup.
+	// A frame that exists only as a voxel still says yes, because the renderer
+	// keeps that voxel in every mode (KeepVoxelWithoutSprite).
+	ACTION_RETURN_BOOL(VoxelsEffectiveMode() != 2 || !SpriteFrameHasTexture(self->sprite, self->frame));
 }
 
 // PLACEMENT CVARS ARE `user` CVARS, AND FindCVar CANNOT READ THOSE.
@@ -1539,7 +1552,15 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(AActor * actor, float x, float y
 	// all on those that do not.
 	// MDL_VOXELBODYAXIS rides along so the matrix overload below -- which is
 	// handed flags and no actor -- knows this one is held.
-	if (actor->VoxelOverride) smf_flags |= MDL_USEACTORPITCH | MDL_USEACTORROLL | MDL_VOXELBODYAXIS;
+	//
+	// RS FORK -- r_voxels_mode 2 refuses VoxelOverride (FindModelFrame), so an
+	// actor carrying the flag can reach here drawn as its MODELDEF model rather
+	// than its voxel -- RS_Pull sets the flag on every grab regardless of mode.
+	// The held-voxel treatment (this line, the trace below, the mid-height
+	// pivot further down) belongs to the voxel, so it stays off a model the
+	// mode put back. Modes 0 and 1 are unchanged: the right side is true.
+	const bool voxelOverrideDrawn = actor->VoxelOverride && (isVoxel || VoxelsEffectiveMode() != 2);
+	if (voxelOverrideDrawn) smf_flags |= MDL_USEACTORPITCH | MDL_USEACTORROLL | MDL_VOXELBODYAXIS;
 
 	// The same opt-in without the voxel, for an actor wearing a model it does
 	// not own -- a holstered weapon above all. See the field note in actor.h.
@@ -1559,7 +1580,7 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(AActor * actor, float x, float y
 	// Throttled to once a second per actor rather than once per draw: this runs
 	// on the render path, which is called per eye, so an unthrottled Printf
 	// would be two lines a frame and would itself cost frametime.
-	if (actor->VoxelOverride && vr_voxel_debug)
+	if (voxelOverrideDrawn && vr_voxel_debug)	// RS fork -- r_voxels_mode, see above
 	{
 		static const AActor *lastActor = nullptr;
 		static int lastTic = -1000;
@@ -1652,7 +1673,8 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(AActor * actor, float x, float y
 	// hand actually gripped it, which nothing here knows; the midpoint is right
 	// for the upright cylinders this mostly picks up and wrong by less than half
 	// a height for everything else.
-	const float bodyPivotZ = actor->VoxelOverride ? float(actor->Height * 0.5) : 0.f;
+	// RS fork -- voxelOverrideDrawn, not the raw flag: r_voxels_mode 2 (see above).
+	const float bodyPivotZ = voxelOverrideDrawn ? float(actor->Height * 0.5) : 0.f;
 
 	// AActor::FollowActor -- inside another model's drawn frame. One pointer
 	// test for every actor that never sets it. See ModelFollowFrame.
@@ -4345,6 +4367,94 @@ FSpriteModelFrame * FindVoxelFrame(int sprite, int frame, bool dropped)
 	return &SpriteModelFrames[index];
 }
 
+//===========================================================================
+//
+// RS FORK -- r_voxels_mode: WHICH ACTORS THE LOOKUP HANDS A VOXEL TO
+//
+// The cvars live beside r_drawvoxels in r_utility.cpp. Values:
+//  -1  auto (the default): 1 when r_voxelpack_loaded, else 0
+//   0  all -- every actor with a voxel, the stock behaviour
+//   1  only actors carrying VoxelOverride (held, grabbed, gravity-grabbed in
+//      flight); everything else draws its sprite
+//   2  none, not even those
+//
+// Auto is a sentinel inside the one cvar rather than a second archived "has
+// the user touched this" flag. A flag has to be kept in step with the value it
+// describes, and a menu reset would have to clear both; here "never set" and
+// "reset to default" are the same value. Without a pack auto resolves to 0,
+// so a build without one behaves exactly as before. r_voxelpack_loaded is set
+// once at startup (R_DetectVoxelPack, sprites.cpp).
+//
+// Render-only: both cvars are client-side, and nothing here writes playsim
+// state or draws a random number.
+//
+//===========================================================================
+
+EXTERN_CVAR(Int, r_voxels_mode)
+EXTERN_CVAR(Bool, r_voxelpack_loaded)
+
+int VoxelsEffectiveMode()
+{
+	const int mode = r_voxels_mode;
+	if (mode >= 0) return mode;
+	return r_voxelpack_loaded ? 1 : 0;
+}
+
+//===========================================================================
+//
+// RS FORK -- SpriteFrameHasTexture: IS THERE A SPRITE TO FALL BACK TO?
+//
+// r_voxels_mode and r_voxeldistance both work by refusing a voxel, and a
+// refused voxel draws the sprite. That is only safe when a sprite exists. A
+// frame that ships only as a voxel lump has no texture -- R_InitSpriteDefs
+// starts every rotation at 0xFF -- and HWSprite::Process returns before
+// drawing anything, so the actor would vanish. Stock GZDoom does exactly that
+// with r_drawvoxels 0.
+//
+// Tests what that early return tests: a valid, non-null texture. Rotation 0
+// answers for the frame because R_InstallSprite fills every rotation from it
+// or fails the load.
+//
+//===========================================================================
+
+bool SpriteFrameHasTexture(int sprite, int frame)
+{
+	if (sprite < 0 || sprite >= (int)sprites.Size()) return false;
+
+	const spritedef_t *sprdef = &sprites[sprite];
+	if (frame < 0 || frame >= sprdef->numframes) return false;
+
+	const FTextureID tid = SpriteFrames[sprdef->spriteframes + frame].Texture[0];
+	if (!tid.isValid()) return false;
+
+	auto tex = TexMan.GetGameTexture(tid, false);
+	return tex != nullptr && tex->isValid();
+}
+
+// The guard itself, for every place that refuses a voxel (r_voxels_mode here,
+// r_voxeldistance in hw_sprites.cpp): true when the voxel has to be kept
+// because there is no sprite behind it. Logs once per sprite name. The lookup
+// runs on the BSP worker threads, so the log-once takes a lock; it is only
+// reached by voxel-only frames something refused, which is rare.
+bool KeepVoxelWithoutSprite(int sprite, int frame)
+{
+	if (sprite < 0 || sprite >= (int)sprites.Size()) return false;
+	if (SpriteFrameHasTexture(sprite, frame)) return false;
+
+	static std::mutex logLock;
+	static std::vector<uint8_t> logged;
+	std::lock_guard<std::mutex> guard(logLock);
+	if ((size_t)sprite >= logged.size()) logged.resize((size_t)sprite + 1, 0);
+	if (!logged[sprite])
+	{
+		logged[sprite] = 1;
+		char sprname[5] = { 0 };
+		memcpy(sprname, sprites[sprite].name, 4);
+		Printf("r_voxels_mode: %s kept as voxel, no sprite\n", sprname);
+	}
+	return true;
+}
+
 FSpriteModelFrame * FindModelFrameRaw(const AActor * actorDefaults, const PClass * ti, int sprite, int frame, bool dropped)
 {
 	if(actorDefaults->hasmodel)
@@ -4367,10 +4477,17 @@ FSpriteModelFrame * FindModelFrameRaw(const AActor * actorDefaults, const PClass
 	}
 
 	// Check for voxel replacements
-	if (r_drawvoxels)
+	//
+	// RS FORK -- r_voxels_mode: the ordinary path hands a voxel out only in
+	// mode 0 ("all"), and only with r_drawvoxels on, as before. Anything else
+	// draws the sprite, unless there is no sprite to draw, in which case the
+	// voxel is kept rather than leaving the actor invisible
+	// (KeepVoxelWithoutSprite). That guard also covers r_drawvoxels 0.
+	FSpriteModelFrame *vox = FindVoxelFrame(sprite, frame, dropped);
+	if (vox != nullptr)
 	{
-		FSpriteModelFrame *vox = FindVoxelFrame(sprite, frame, dropped);
-		if (vox != nullptr) return vox;
+		if (r_drawvoxels && VoxelsEffectiveMode() == 0) return vox;
+		if (KeepVoxelWithoutSprite(sprite, frame)) return vox;
 	}
 
 	return nullptr;
@@ -4444,6 +4561,14 @@ FSpriteModelFrame * FindModelFrame(AActor * thing, int sprite, int frame, bool d
 	{
 		FSpriteModelFrame *vox = FindVoxelFrame(sprite, frame, dropped);
 
+		// RS FORK -- r_voxels_mode 2 ("none") REFUSES THE OVERRIDE TOO.
+		//
+		// Mode 1 is exactly this path, so it needs nothing. Refused here rather
+		// than by asking mods not to set the flag, so no mod has to know the
+		// mode: RS_Pull sets VoxelOverride on every grab. A voxel with no
+		// sprite behind it is kept even in mode 2 (KeepVoxelWithoutSprite).
+		const bool refusedByMode = vox != nullptr && VoxelsEffectiveMode() == 2 && !KeepVoxelWithoutSprite(sprite, frame);
+
 		// [BB] REPORT THE MISS, NOT JUST THE HIT.
 		//
 		// The first cut of this trace lived in ObjectToWorldMatrix, which only
@@ -4466,11 +4591,11 @@ FSpriteModelFrame * FindModelFrame(AActor * thing, int sprite, int frame, bool d
 				Printf("[RSVOX] %s  sprite=%s frame=%d dropped=%d  ->  %s\n",
 					thing->GetClass()->TypeName.GetChars(),
 					sprname, frame, (int)dropped,
-					vox ? "VOXEL FOUND" : "no voxel for this frame");
+					vox ? (refusedByMode ? "VOXEL FOUND, refused by r_voxels_mode 2" : "VOXEL FOUND") : "no voxel for this frame");
 			}
 		}
 
-		if (vox != nullptr) return vox;
+		if (vox != nullptr && !refusedByMode) return vox;	// RS fork -- r_voxels_mode 2
 	}
 
 	return FindModelFrame((thing->modelData != nullptr && thing->modelData->modelDef != nullptr) ? thing->modelData->modelDef : thing->GetClass(), (thing->flags9 & MF9_DECOUPLEDANIMATIONS), sprite, frame, dropped);

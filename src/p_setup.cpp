@@ -363,6 +363,7 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 		if (DarkMode != 0) live += " darkness";
 		if (FogSlabActive) live += " fogslab";
 		if (FogSlabOverrideActive) live += " fogslaboverride";
+		if (FogColor2OverrideActive) live += " foggradientoverride";   // [round2 B3]
 		if (TornadoDensity != 0) live += " tornado";
 		if (FogBowStrength != 0) live += " fogbow";
 		if (SweepRoomSoft != 0) live += " sweeproom";
@@ -383,6 +384,7 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 			SweepBandMode[i] = 0;
 			SweepBandDraw[i] = 0;
 			SweepBandFill[i] = 0;
+			SweepBandPassed[i] = 0;   // [round2 B2]
 		}
 		SweepFillAir = 0;
 		SweepRoomSoft = 0;
@@ -403,12 +405,14 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 		DarkMode = 0;
 		DarkDistDepth = 0;
 		DarkHeightDepth = 0;
+		DarkHeightFollow = 0;   // [round2 B4]
 
 		FogSlabActive = false;
 		FogSlabDensity = 0;
 		FogSlabWakeStrength = 0;
 		FogSlabOverrideActive = false;   // a transient mist never outlives its map
 		FogSlabOverrideDensity = 0;
+		FogColor2OverrideActive = false; // [round2 B3] nor does a transient gradient
 		TornadoDensity = 0;
 		FogBowStrength = 0;
 
@@ -426,6 +430,13 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 	Thinkers.DestroyAllThinkers(fullgc);
 	ClientSideThinkers.DestroyAllThinkers(fullgc);
 	ClearAllSubsectorLinks(); // can't be done as part of the polyobj deletion process.
+
+	// [round2 B1] The anchored-light registry (FDynamicLight::PoseAnchor). Every
+	// light freed above left it through ReleaseLight, so anything still listed is
+	// a live light: it is forgotten rather than freed, with its flag dropped so a
+	// later SetPoseAnchor registers it again. Nothing can dangle into the next map.
+	for (auto light : PoseAnchoredLights) light->PoseRegistered = false;
+	PoseAnchoredLights.Clear();
 
 	total_monsters = total_items = total_secrets =
 	killed_monsters = found_items = found_secrets = 0;

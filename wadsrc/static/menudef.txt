@@ -4379,8 +4379,14 @@ OptionMenu ModOptionsMenu protected
  *
  * RS FORK -- Voxel Options
  *
- * r_drawvoxels was console-only, which is no use at all in a headset. The
- * distance limit is new.
+ * r_voxels_mode picks which things are voxels: Auto, All, Held & grabbed
+ * only, None. Auto (-1, the default) is "held & grabbed only" when a voxel
+ * pack came in with a loaded file (r_voxelpack_loaded) and "all" otherwise,
+ * so nothing changes without a pack. "Held & grabbed only" means actors with
+ * VoxelOverride set, which RS_WorldHands sets on held, laser-locked and
+ * gravity-grabbed things, in flight too. r_drawvoxels stays a console switch
+ * (archived now); the headset has no console, so the menu row is the mode.
+ * This page is also linked from VR Performance.
  *
  * WHY A DISTANCE LIMIT. A decoration voxel pack tags every column, torch,
  * barrel and pickup in the game, so a room that cost a few hundred billboards
@@ -4388,31 +4394,49 @@ OptionMenu ModOptionsMenu protected
  * is drawn -- which is exactly what the player saw before the pack was loaded,
  * and is indistinguishable at range.
  *
- * WHY "OFF" IS A REAL SETTING HERE AND NOT JUST A FALLBACK. An actor carrying
- * VoxelOverride ignores both of these entirely, so a pack can sit loaded and
- * inert while only the thing in your hand goes solid -- a monster you are
- * holding becomes a voxel without every other monster in the level costing
- * you frames. Held objects are never distance-culled either.
+ * r_voxeldistance_band is hysteresis on that limit: a sprite turns back into
+ * a voxel only that much closer, so a thing on the line does not flicker.
+ *
+ * Held and grabbed things (VoxelOverride) are never distance-culled, and stay
+ * voxels in every mode but None. A voxel with no sprite behind it is kept in
+ * every mode and at any distance, since refusing it would draw nothing.
  *
  *=======================================*/
+
+// RS fork -- r_voxels_mode. -1 is auto; see the note above and r_utility.cpp.
+OptionValue "VoxelModes"
+{
+	-1, "Auto"
+	0, "All"
+	1, "Held & grabbed only"
+	2, "None"
+}
 
 OptionMenu "VRVoxelOptions" protected
 {
 	Title "Voxel Options"
 
 	StaticText ""
-	StaticText "Voxels for the whole world. Needs a voxel pack", gold
-	StaticText "loaded to do anything.", gold
+	StaticText "Which things are drawn as voxels. Auto is", gold
+	StaticText "held & grabbed only when a voxel pack is", gold
+	StaticText "loaded, and all otherwise.", gold
 	StaticText ""
-	Option "Voxels",				r_drawvoxels,		OnOff
+	// r_voxelpack_loaded: exactly one of these two shows.
+	StaticText "Voxel pack loaded", white, true, r_voxelpack_loaded, 1, HideInv
+	StaticText "No voxel pack loaded", white, true, r_voxelpack_loaded, 1, Hide
+	Option "Voxels",				r_voxels_mode,		"VoxelModes", r_voxelpack_loaded
 	StaticText ""
 	StaticText "How far away they stay voxels. 34 units is a", gold
 	StaticText "metre; 0 is no limit. Beyond it the ordinary", gold
 	StaticText "sprite is drawn instead.", gold
 	Slider "Voxel distance",		r_voxeldistance,	0, 2048, 64, 0
 	StaticText ""
-	StaticText "Anything held in your hand ignores both of", gold
-	StaticText "these and is always a voxel, always drawn.", gold
+	StaticText "Band: a sprite turns back into a voxel only", gold
+	StaticText "this much closer, so the edge does not flicker.", gold
+	Slider "Voxel distance band",	r_voxeldistance_band,	0, 256, 8, 0
+	StaticText ""
+	StaticText "Held and grabbed things are never distance", gold
+	StaticText "culled, and stay voxels unless Voxels is None.", gold
 	StaticText ""
 	StaticText "Held voxels turn with your wrist. -1 works the", gold
 	StaticText "correction out from the pack itself and is right", gold
@@ -4422,7 +4446,7 @@ OptionMenu "VRVoxelOptions" protected
 	StaticText ""
 	Slider "Held voxel roll axis",	vr_voxel_rollaxis,	-1, 270, 90, 0
 	StaticText ""
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar r_drawvoxels r_voxeldistance vr_voxel_rollaxis"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar r_voxels_mode r_drawvoxels r_voxeldistance r_voxeldistance_band vr_voxel_rollaxis"
 }
 
 /*=======================================
@@ -4490,6 +4514,10 @@ OptionMenu VRPerfTweakMenu protected
 	ScaleSlider "$DSPLYMNU_SPRITECULL",			gl_sprite_distance_cull, 0.0, 8000.0, 100.0, "$GLPREFMNU_CULLING_DISABLED"
 	ScaleSlider "$DSPLYMNU_LINECULL",			gl_line_distance_cull, 0.0, 16000.0, 100.0, "$GLPREFMNU_CULLING_DISABLED"
 	StaticText "$VRPERFMNU_CULL_TIP", "Brown"
+	// RS fork -- r_voxels_mode / r_voxeldistance: the Voxel Options page, linked
+	// here beside the culls because it is a performance setting and a headset
+	// has no console. The Mod Options link stays.
+	Submenu "Voxel Options",			"VRVoxelOptions"
 	Command "$DSPLYMNU_DISABLERENDERCULL",		"disablerendercull"
 
 	StaticText " "

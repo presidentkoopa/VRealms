@@ -26,6 +26,7 @@
 #include "d_netinf.h"
 #include "gi.h"
 #include "c_dispatch.h"
+#include "c_cvars.h"	// RS fork -- r_voxelpack_loaded (R_DetectVoxelPack)
 #include "v_text.h"
 #include "r_data/sprites.h"
 #include "voxels.h"
@@ -956,6 +957,38 @@ static void R_CreateSkinTranslation (const char *palname)
 }
 
 
+//===========================================================================
+//
+// RS FORK -- R_DetectVoxelPack: publish r_voxelpack_loaded
+//
+// Counts voxel definitions whose .kvx came from a file loaded after the IWAD
+// (a pwad, pk3 or autoload -- the same test c_bind.cpp and gametexture.cpp
+// use). Walks VoxelDefs, which both loaders fill (sprite-named lumps in
+// R_InitSpriteDefs, VOXELDEF in R_InitVoxels), so it runs after both. Names no
+// mod. Resolves auto in r_voxels_mode (r_utility.cpp) and the status line on
+// the Voxel Options page. ForceSet because the cvar is CVAR_NOSET.
+//
+//===========================================================================
+
+EXTERN_CVAR(Bool, r_voxelpack_loaded)
+
+static void R_DetectVoxelPack()
+{
+	const int maxIwad = fileSystem.GetMaxIwadNum();
+	unsigned count = 0;
+	for (unsigned i = 0; i < VoxelDefs.Size(); i++)
+	{
+		const FVoxelDef *def = VoxelDefs[i];
+		if (def == nullptr || def->Voxel == nullptr || def->Voxel->LumpNum < 0) continue;
+		if (fileSystem.GetFileContainer(def->Voxel->LumpNum) > maxIwad) count++;
+	}
+
+	UCVarValue val;
+	val.Bool = count > 0;
+	r_voxelpack_loaded->ForceSet(val, CVAR_Bool);   // FBoolCVarRef reaches its cvar through ->
+	Printf("r_voxelpack_loaded: %u voxel definitions from loaded files\n", count);
+}
+
 //
 // R_InitSprites
 // Called at program start.
@@ -998,6 +1031,7 @@ void R_InitSprites ()
 
 	R_InitSpriteDefs ();
 	R_InitVoxels();		// [RH] Parse VOXELDEF
+	R_DetectVoxelPack();	// RS fork -- r_voxelpack_loaded, after both voxel loaders
 	NumStdSprites = sprites.Size();
 	R_InitSkins ();		// [RH] Finish loading skin data
 

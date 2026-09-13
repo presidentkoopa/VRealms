@@ -432,6 +432,12 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 			// by offset: per uploaded beam line, x air glow, y halo, z taper,
 			// w flare. main.fp reads it on GL too.
 			vec4 uBeamLook[128];
+
+			// [round2 B2] APPENDED LAST, matching HWViewpointUniforms::
+			// mSweepPassed / mSweepPassedColor by offset. The passed-region look:
+			// x tint mix, y darken, z desaturate, w soft; rgb tint, w enable.
+			vec4 uSweepPassed;
+			vec4 uSweepPassedColor;
 		};
 
 		uniform int uTextureMode;

@@ -333,11 +333,11 @@ extern int portalsPerEye;
 // (SetupVolumetricBeam) and the fog glow (mFogBeam* in StartScene), so the two
 // can never disagree about where the torch is.
 //
-// Angle conventions, which are NOT the obvious ones: AttackAngle/OffhandAngle
-// are stored as world yaw MINUS 90 and AttackPitch/OffhandPitch are negated
-// (g_game.cpp, hw_vrmodes.cpp). HmdYaw is plain world yaw and HmdPitch is
-// already Doom-signed, positive down (vk_openxrdevice.cpp). Doom pitch
-// positive is down, so forward.Z = -sin(pitch).
+// [round2 B1] The pose itself is ResolveTrackedPose (r_utility.cpp), shared
+// with anchored dynamic lights so the cone and the light it throws cannot
+// disagree about where a hand is. The angle conventions are documented there.
+// This keeps only what is the beam's own: the script's world pos/dir as the
+// fallback, and the cone direction along the pose.
 //
 // Returns an EVolBeamPoseSource so the caller can log where the pose came from.
 //
@@ -345,13 +345,13 @@ extern int portalsPerEye;
 
 enum EVolBeamPoseSource
 {
-	VBPOSE_WORLD,       // not anchored: script's pos/dir
-	VBPOSE_MAINHAND,
-	VBPOSE_OFFHAND,
-	VBPOSE_HMD,
-	VBPOSE_VIEW,        // head anchor, no headset pose written: r_viewpoint
-	VBPOSE_NOPLAYER,    // anchored, but no console player: script's pos/dir
-	VBPOSE_COUNT
+	VBPOSE_WORLD    = TPOSE_NONE,       // not anchored: script's pos/dir
+	VBPOSE_MAINHAND = TPOSE_MAINHAND,
+	VBPOSE_OFFHAND  = TPOSE_OFFHAND,
+	VBPOSE_HMD      = TPOSE_HMD,
+	VBPOSE_VIEW     = TPOSE_VIEW,       // head anchor, no headset pose written: r_viewpoint
+	VBPOSE_NOPLAYER = TPOSE_NOPLAYER,   // anchored, but no console player: script's pos/dir
+	VBPOSE_COUNT    = TPOSE_COUNT
 };
 
 static int ResolveVolBeamPose(const FLevelLocals *Level, int slot, DVector3 &pos, DVector3 &dir)
@@ -359,56 +359,14 @@ static int ResolveVolBeamPose(const FLevelLocals *Level, int slot, DVector3 &pos
 	pos = Level->VolBeamPos[slot];
 	dir = Level->VolBeamDir[slot];
 
-	const int anchor = Level->VolBeamAnchor[slot];
-	if (anchor <= 0 || anchor > 3) return VBPOSE_WORLD;
-
-	const player_t *pl = Level->GetConsolePlayer();
-	if (pl == nullptr || pl->mo == nullptr) return VBPOSE_NOPLAYER;
-	const AActor *mo = pl->mo;
-
-	DVector3 origin;
+	DVector3 posed;
 	DAngle yaw, pitch;
-	int source;
-	if (anchor == 1)
-	{
-		origin = mo->AttackPos;
-		yaw = mo->AttackAngle + DAngle::fromDeg(90.);
-		pitch = -mo->AttackPitch;
-		source = VBPOSE_MAINHAND;
-	}
-	else if (anchor == 2)
-	{
-		origin = mo->OffhandPos;
-		yaw = mo->OffhandAngle + DAngle::fromDeg(90.);
-		pitch = -mo->OffhandPitch;
-		source = VBPOSE_OFFHAND;
-	}
-	else if (mo->HmdPos.LengthSquared() > 0.0)
-	{
-		origin = mo->HmdPos;
-		yaw = mo->HmdYaw;
-		pitch = mo->HmdPitch;
-		source = VBPOSE_HMD;
-	}
-	else
-	{
-		// No headset pose (flat screen, or a backend that does not write
-		// HmdPos): the centre eye of the main view is the head.
-		origin = r_viewpoint.CenterEyePos;
-		yaw = r_viewpoint.Angles.Yaw;
-		pitch = r_viewpoint.Angles.Pitch;
-		source = VBPOSE_VIEW;
-	}
+	const int source = ResolveTrackedPose(Level, Level->VolBeamAnchor[slot],
+		Level->VolBeamAnchorOffset[slot], posed, yaw, pitch);
+	if (source == TPOSE_NONE || source == TPOSE_NOPLAYER) return source;
 
-	const double cp = pitch.Cos(), sp = pitch.Sin();
-	const double cy = yaw.Cos(), sy = yaw.Sin();
-	const DVector3 forward(cp * cy, cp * sy, -sp);
-	const DVector3 right(sy, -cy, 0.);
-	const DVector3 up(sp * cy, sp * sy, cp);
-
-	const DVector3 &ofs = Level->VolBeamAnchorOffset[slot];
-	pos = origin + forward * ofs.X + right * ofs.Y + up * ofs.Z;
-	dir = forward;
+	pos = posed;
+	dir = TrackedPoseForward(yaw, pitch);
 	return source;
 }
 
@@ -716,6 +674,28 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 			Level->SweepFillColor.b / 255.f, (float)Level->SweepFillGap };
 		VPUniforms.mSweepAir = { (float)Level->SweepFillAir, 0.f, 0.f, 0.f };
 
+		// [round2 B2] The passed-region look. Enabled (w = 1) only when a live
+		// band carries the passed bit AND some look term would change a pixel,
+		// so the shader's band loop never runs for a look that does nothing.
+		// The bands are only uploaded under this same SweepMode/SweepCount gate.
+		{
+			bool passedBand = false;
+			if (Level->SweepMode > 0 && Level->SweepCount > 0)
+			{
+				const int n = min(Level->SweepCount, FLevelLocals::MAX_SWEEP_BANDS);
+				for (int i = 0; i < n; i++)
+					if (Level->SweepBandPassed[i] != 0) { passedBand = true; break; }
+			}
+			const bool passedLook = Level->SweepPassedTintMix > 0 ||
+				Level->SweepPassedDarken > 0 || Level->SweepPassedDesat > 0;
+			VPUniforms.mSweepPassed = {
+				(float)Level->SweepPassedTintMix, (float)Level->SweepPassedDarken,
+				(float)Level->SweepPassedDesat,   (float)Level->SweepPassedSoft };
+			VPUniforms.mSweepPassedColor = {
+				Level->SweepPassedTint.r / 255.f, Level->SweepPassedTint.g / 255.f,
+				Level->SweepPassedTint.b / 255.f, (passedBand && passedLook) ? 1.f : 0.f };
+		}
+
 		// [BB] Darkness. Frame-global for the same reason: the curve and its
 		// gains are the same everywhere, and only the FRAGMENT it is asked
 		// about differs.
@@ -725,8 +705,14 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		VPUniforms.mDarkness2 = {
 			(float)Level->DarkPostGain, (float)Level->DarkDistDepth,
 			(float)Level->DarkDistRange, 0.0f };
+		// [round2 B4] With height follow on, the reference is the viewer's feet
+		// THIS frame, interpolated like the view itself, rather than the Z a
+		// WorldTick last wrote into DarkHeightRef.
+		double darkHeightRef = Level->DarkHeightRef;
+		if (Level->DarkHeightFollow == 1 && Viewpoint.camera != nullptr)
+			darkHeightRef = Viewpoint.camera->InterpolatedPosition(Viewpoint.TicFrac).Z + Level->DarkHeightOffset;
 		VPUniforms.mDarkness3 = {
-			(float)Level->DarkHeightDepth, (float)Level->DarkHeightRef,
+			(float)Level->DarkHeightDepth, (float)darkHeightRef,
 			(float)Level->DarkHeightRange, 0.0f };
 
 		// [BB] Fog slab. Doom's Z is the shader's Y, the same swizzle the
@@ -1126,9 +1112,14 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 			// Was an unread 0 -- the shader never looked at uGlowTex4.w.
 			(float)Level->GlowPulseRate };
 
-		VPUniforms.mFogColor2 = { Level->FogColor2.r / 255.f,
-			Level->FogColor2.g / 255.f, Level->FogColor2.b / 255.f,
-			(float)Level->FogColor2Mix };
+		// [round2 B3] A transient gradient wins while it is set
+		// (SetFogGradientOverride); the standing FogColor2 is untouched under
+		// it. Ignite's unset fallback reads uFogColor2, so it follows too.
+		const bool gradOvr = Level->FogColor2OverrideActive;
+		const PalEntry fogCol2 = gradOvr ? Level->FogColor2OverrideColor : Level->FogColor2;
+		VPUniforms.mFogColor2 = { fogCol2.r / 255.f,
+			fogCol2.g / 255.f, fogCol2.b / 255.f,
+			(float)(gradOvr ? Level->FogColor2OverrideMix : Level->FogColor2Mix) };
 
 		// The torch cone in WORLD space, so mist can be lit by it. The
 		// volumetric beam pass gets its own copy in VIEW space and cannot
@@ -2056,10 +2047,12 @@ void HWDrawInfo::RenderScene(FRenderState &state)
 			// the call out when SweepBandDraw is 0 would silently drop the
 			// fill for every band that never overrode its draw mode --
 			// which is most of them.
-			if (Level->SweepBandDraw[i] > 0 || Level->SweepBandFill[i] > 0)
+			// [round2 B2] ...and so does a band whose only override is its
+			// passed bit, which rides in the same word.
+			if (Level->SweepBandDraw[i] > 0 || Level->SweepBandFill[i] > 0 || Level->SweepBandPassed[i] > 0)
 			{
 				int dm = Level->SweepBandDraw[i] > 0 ? Level->SweepBandDraw[i] : 1;
-				state.SetSweepBandDraw(i, dm, Level->SweepBandFill[i]);
+				state.SetSweepBandDraw(i, dm, Level->SweepBandFill[i], Level->SweepBandPassed[i]);
 			}
 
 			if (Level->SweepBandMode[i] > 0)

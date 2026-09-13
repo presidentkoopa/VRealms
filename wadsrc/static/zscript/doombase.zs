@@ -1157,34 +1157,54 @@ struct LevelLocals native
 	//   mode 0 off
 	//        1 cylinder from origin -- rings expanding outward across a room
 	//        2 plane along X        -- bars sweeping east/west down a corridor
+	//                                  (both sides of the origin)
 	//        3 plane along Y        -- the same, north/south
 	//        4 sphere from origin   -- shells, so a band rises as it expands
+	//        5 rise                 -- one sheet climbing along Z (signed)
+	//        6 +X  7 +Y  8 -X  9 -Y -- one signed front crossing the level
+	// [round2 SW-21] 5-9 were missing from this list.
+	//
+	// Draw modes (SetSweepBandDraw): 0 default/add, 1 add, 2 lift, 3 crush,
+	// 4 recolour. Fill (SetSweepBandFill): 0 none, 1 grid, 2 dots, 3 solid slab,
+	// 4 pickets. Uploaded as drawmode + 16*fill + 256*passed.
 	//
 	// Set the origin and how many bands are live, then each band's position
 	// and colour. Drive the radii each tic: grow them for a ping, oscillate
 	// for a sweep, stagger them for a train chasing itself down a corridor.
-	native void SetSweepOrigin(int mode, Vector3 origin, int count);
-	native void SetSweepBand(int index, double radius, double thickness, double softness, color col, double intensity);
-	native void SetSweepBandDraw(int index, int drawmode);
-	native void SetSweepCount(int count);
-	native void SetSweepBandAt(int index, Vector3 origin, int shape);
-	native void SetSweepTrail(double trail);
-	native void ClearSweep();
+	//
+	// [round2 X1] CLEARSCOPE, and they were play-scope for no reason. Every one
+	// of these only stores render state: no playsim code reads the sweep --
+	// band light, fog bow, glow wave and air lattice are all shader side -- so a
+	// UiTick may push them (RS_Sweeps already does) and a menu slider moves the
+	// picture while the playsim is paused, as with the glow and darkness
+	// setters. A mod that makes things HAPPEN when a front passes does that from
+	// its own play code, from its own record of where the front is.
+	native clearscope void SetSweepOrigin(int mode, Vector3 origin, int count);
+	native clearscope void SetSweepBand(int index, double radius, double thickness, double softness, color col, double intensity);
+	native clearscope void SetSweepBandDraw(int index, int drawmode);
+	native clearscope void SetSweepCount(int count);
+	native clearscope void SetSweepBandAt(int index, Vector3 origin, int shape);
+	native clearscope void SetSweepTrail(double trail);
+	native clearscope void ClearSweep();
 
 	// [BB] Glow wave: peaks and valleys along a glow, per pixel. Reach moves
 	// the band's edge, brightness moves its light, colour moves the two-colour
 	// boundary inside a band that never changes shape. Phases are per channel,
 	// so offsetting them makes one wave climb a room. Wavelength 0 = off.
 	//
-	// CLEARSCOPE, all but the origin. These are render settings, not
-	// simulation: nothing downstream of them can change what happens in the
-	// world, so a menu may push them while the playsim is paused and a slider
-	// moves the picture as it is dragged. The ORIGIN is play-scope, because
-	// resolving "follows you" or "the nearest live monster" means reading the
-	// world -- it keeps its last value while the game is stopped, which is
-	// right, since nothing in the world is moving either.
+	// CLEARSCOPE. These are render settings, not simulation: nothing
+	// downstream of them can change what happens in the world, so a menu may
+	// push them while the playsim is paused and a slider moves the picture as
+	// it is dragged.
+	//
+	// [round2 X1] The origin too. It used to be play-scope because resolving
+	// "follows you" or "the nearest live monster" means reading the world --
+	// but that reading happens in the CALLER. The setter only stores a point the
+	// shader reads, so its scope protected nothing. A caller that resolves the
+	// origin from the world still does it from its world tic, and the point
+	// keeps its last value while the game is stopped.
 	native clearscope void SetGlowWave(double wavelength, double speed, double sharpness, int shape);
-	native void SetGlowWaveOrigin(Vector3 origin);
+	native clearscope void SetGlowWaveOrigin(Vector3 origin);
 	native clearscope void SetGlowWaveDepth(double reach, double bright, double colour, double detune, double seed);
 	native clearscope void SetGlowWavePhase(double wallTop, double wallBottom, double floorPhase, double ceilPhase);
 	native clearscope void ClearGlowWave();
@@ -1195,6 +1215,12 @@ struct LevelLocals native
 	// Mode 0 = off. Clearscope for the same reason as above.
 	native clearscope void SetDarkness(int mode, double adjust, double minLight, double preGain, double postGain);
 	native clearscope void SetDarknessSpace(double distDepth, double distRange, double heightDepth, double heightRef, double heightRange);
+	// [round2 B4] Where heightRef comes from. mode 0 uses SetDarknessSpace's
+	// value as written (as before); mode 1 follows the viewer's feet at draw
+	// rate -- the camera's interpolated Z plus offset -- so the pool edge rides
+	// lifts and stairs smoothly instead of stepping with a WorldTick write.
+	// ClearDarkness sets it back to 0.
+	native clearscope void SetDarknessHeightFollow(int mode, double offset);
 	// [BB] How much of the darkness actors are spared, 0 to 1. The darkness pass
 	// takes the whole scene down together, monsters included; 0 is that old
 	// behaviour, 1 leaves actors at full brightness, and the useful settings are
@@ -1243,6 +1269,14 @@ struct LevelLocals native
 	// gentleness -- 0.3 turns a staircase into a slope rather than steps.
 	native clearscope void SetFogFollow(double top, double bottom);
 	native clearscope void SetFogGradient(color col, double mix);
+	// [round2 B3] A transient gradient over the standing one, for a caller that
+	// comes and goes (a sweep tinting the mist) beside a fog mod that re-pushes
+	// SetFogGradient every tic. Same arguments. While set it wins, and
+	// ClearFogGradientOverride hands the view back to the standing gradient,
+	// which it never touched. Mix 0 is a valid override (one colour while it
+	// lasts). One override, not a stack; a map change ends it.
+	native clearscope void SetFogGradientOverride(color col, double mix);
+	native clearscope void ClearFogGradientOverride();
 	// [RS fork] The colour an IGNITE disturbance (mode 2) burns. Unset, or
 	// after ClearFogIgniteColor, it follows the gradient colour as before.
 	native clearscope void SetFogIgniteColor(color col);
@@ -1385,10 +1419,23 @@ struct LevelLocals native
 	// no lines in that axis, so grid / slats / a single tripwire are one mode.
 	// The band's own colour is the field; this colour is the lines. Gap 0 =
 	// only the lines are lit and the room shows between them.
-	// Per band: 0 none, 1 grid, 2 dots, 3 solid slab.
+	// Per band: 0 none, 1 grid, 2 dots, 3 solid slab, 4 pickets (bars along U
+	// only, snapped to the room; on surfaces too since [round2 C1]).
 	native clearscope void SetSweepFill(double spacingU, double spacingV, double width, double soft, color col, double gap);
 	native clearscope void SetSweepFillMotion(double rotate, double drift, double major, double majorBoost, double jitter, double flicker, double grad, int gradAxis);
 	native clearscope void SetSweepBandFill(int index, int fill);
+	// [round2 B2] THE PASSED REGION. A band with its passed bit on grades
+	// everything its front has already crossed, per pixel, so the look follows
+	// the line exactly instead of flipping a sector when its centre crosses.
+	// on: 0 off, 1 grade this band's passed side. The look is shared by all such
+	// bands: tintMix multiplies the room's light toward tint, darken takes light
+	// away, desat drains colour (all 0..1); soft is the map units the look fades
+	// in over behind the front. It grades room light only -- glow, bands, beams
+	// and fullbright draws are untouched -- and lasts while the band is live:
+	// park a finished sweep past the far edge to keep it. Gameplay that must
+	// outlive the sweep belongs in the mod. ClearSweep turns the bits off.
+	native clearscope void SetSweepBandPassed(int index, int on);
+	native clearscope void SetSweepPassedLook(color tint, double tintMix, double darken, double desat, double soft);
 	// How strongly the band's lattice is drawn IN THE AIR rather than only on
 	// the surfaces it lands on. 0 = painted only.
 	native clearscope void SetSweepFillAir(double amount);

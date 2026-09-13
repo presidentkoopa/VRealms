@@ -824,6 +824,157 @@ void SweepPlaneAxis(int shape, out int axis, out float away)
 	else if (shape == 8 || shape == 9)               away = -1.0;
 }
 
+// [round2 C2] THE (ARC, HEIGHT) FRAME OF A RING OR SHELL, shared by the surface
+// fill and the air lattice (C5), so the painted and air patterns cannot drift.
+//
+// uv.x is arc length at p's own distance from the vertical axis, uv.y height.
+// Arc length rather than raw angle, so a line keeps its world width as the band
+// grows. Shader space: Doom's Z is .y.
+//
+// Two things drew a seam along the -X ray, where atan wraps from +pi to -pi:
+//   - the arc coordinate jumps by 2*pi*r there, so fwidth() of it was about
+//     2*pi*r and the antialias smeared one solid line out from the origin.
+//     aaU is how far the pixel moves in the world instead,
+//     length(dFdx(rel)) + length(dFdy(rel)), which has no jump. (The spec's
+//     length(vec2(dFdx(rel), dFdy(rel))) is not valid GLSL: two vec2s.)
+//   - a spacing that does not divide the circumference left a part line at
+//     the wrap. The U spacing is snapped so a WHOLE number of lines goes round
+//     at the band's radius. The lines are then radial, meet across the wrap at
+//     every distance, and wrapCount lets per-line hashes (jitter, flicker,
+//     majors) agree across it too.
+//
+// Costs: the snap moves lines slightly, and while the band's radius changes the
+// whole-line count steps by one every spacing / 2pi units, which re-spaces the
+// lines by up to half a spacing on the -X side. A rotated pattern
+// (uSweepFill2.x) mixes arc into height, so it still meets imperfectly at the wrap.
+void SweepArcFrame(vec3 p, vec3 origin, float bandRadius, out vec2 uv, out float spacingU,
+	out float wrapCount, out float aaU, out float aaV)
+{
+	vec2 rel = p.xz - origin.xz;
+	float r = max(length(rel), 0.001);
+	uv = vec2(atan(rel.y, rel.x) * r, p.y);
+
+	spacingU = uSweepFill.x;
+	wrapCount = 0.0;
+	if (spacingU > 0.0)
+	{
+		wrapCount = max(floor(6.28318531 * max(bandRadius, 0.0) / spacingU + 0.5), 1.0);
+		spacingU = 6.28318531 * r / wrapCount;
+	}
+
+	aaU = length(dFdx(rel)) + length(dFdy(rel));
+	aaV = fwidth(p.y);
+}
+
+// [round2 C2] Turn a caller-supplied antialias width with the pattern's axes.
+// aaU < 0 means "no supplied width" (SweepLineAxisAA takes fwidth itself), and
+// is left alone. Otherwise each rotated axis gets the bound of the two it mixes.
+void SweepRotateAA(float cs, float sn, inout float aaU, inout float aaV)
+{
+	if (aaU < 0.0) return;
+	float u = abs(cs) * aaU + abs(sn) * aaV;
+	aaV = abs(sn) * aaU + abs(cs) * aaV;
+	aaU = u;
+}
+
+// [round2 C1] PICKET SPACING FOR A PLANE BAND, shared by the air pickets and
+// the painted ones, so the bars on the wall are the bars in the air. (Fill 4
+// used to exist only in the air, and drew as a grid on the walls behind.)
+//
+// The U spacing, SNAPPED TO A WHOLE NUMBER OF BARS across the published room
+// along the plane's U axis: the z extent for 2/6/8, the x extent for 3/7/9 and
+// 5. The spacing cvar stays the spacing you asked for; this only nudges it so
+// the run divides the room exactly, which is the difference between bars that
+// belong to the wall they end at and a pattern with a half-bar sliced off at
+// the edge. With no room published it is the spacing as given.
+float SweepPicketSpacing(int axis)
+{
+	float across = uSweepFill.x;
+	if (uSweepRoomMax.w > 0.0)
+	{
+		float span;
+		if (axis == 0) span = uSweepRoomMax.z - uSweepRoomMin.z;
+		else           span = uSweepRoomMax.x - uSweepRoomMin.x;
+		if (span > 1.0)
+		{
+			float n = max(floor(span / max(across, 1.0) + 0.5), 1.0);
+			across = span / n;
+		}
+	}
+	return across;
+}
+
+// [round2 C5] Where a ray e + d*t is within distance r of the origin: [tIn, tOut].
+// d need not be unit length. False when the ray never gets that close. A ray
+// that does not move across the measure at all (a ring's xz measure seen
+// straight up or down) is inside for all of t or for none of it.
+bool SweepRayInsideRadius(vec3 e, vec3 d, float r, out float tIn, out float tOut)
+{
+	tIn = 0.0;
+	tOut = 0.0;
+	float c = dot(e, e) - r * r;
+	float a = dot(d, d);
+	if (a < 0.000001)
+	{
+		if (c > 0.0) return false;
+		tIn = -1.0e10;
+		tOut = 1.0e10;
+		return true;
+	}
+	float b = dot(e, d);
+	float disc = b * b - a * c;
+	if (disc <= 0.0) return false;
+	float s = sqrt(disc);
+	tIn = (-b - s) / a;
+	tOut = (-b + s) / a;
+	return true;
+}
+
+// [round2 C5] WHERE A VIEW RAY CROSSES A RING OR SHELL BAND'S WALL.
+//
+// A plane band is a slab, crossed once. A ring band is a thick-walled cylinder
+// about the vertical axis and a shell a thick-walled sphere, and a ray can cross
+// the wall twice: on its way into the hollow and on its way out. The nearer
+// stretch that lies in front of the eye and in front of the pixel is the one
+// drawn; the far one only when the near one is behind the eye or behind the
+// surface. The walls are the plane slab's faces: outer at radius + aheadW,
+// inner at radius - behindW (a growing ring's ahead is outward).
+//
+// Writes the stretch into [t0, t1] and returns false when none is visible.
+bool SweepShellCrossing(int shape, vec3 eye, vec3 dir, vec3 o, float radius,
+	float aheadW, float behindW, float fragDist, out float t0, out float t1)
+{
+	t0 = 0.0;
+	t1 = 0.0;
+	vec3 e = eye - o;
+	vec3 d = dir;
+	if (shape == 1) { e.y = 0.0; d.y = 0.0; }   // ring: measured in xz only
+
+	float outerIn, outerOut;
+	if (!SweepRayInsideRadius(e, d, radius + aheadW, outerIn, outerOut)) return false;
+
+	// Near stretch: entering the outer wall to entering the hollow (or to
+	// leaving the outer wall when the ray misses the hollow). Far stretch:
+	// leaving the hollow to leaving the outer wall.
+	float nearEnd = outerOut;
+	float farStart = outerOut;
+	float innerR = radius - behindW;
+	float innerIn, innerOut;
+	if (innerR > 0.0 && SweepRayInsideRadius(e, d, innerR, innerIn, innerOut))
+	{
+		nearEnd = innerIn;
+		farStart = innerOut;
+	}
+
+	float n0 = max(outerIn, 0.0);
+	float n1 = min(nearEnd, fragDist);
+	if (n1 > n0) { t0 = n0; t1 = n1; return true; }
+	float f0 = max(farStart, 0.0);
+	float f1 = min(outerOut, fragDist);
+	if (f1 > f0) { t0 = f0; t1 = f1; return true; }
+	return false;
+}
+
 float SweepBandAttenAt(int sb)
 {
 	vec4 sband = uSweepBands[sb];
@@ -864,6 +1015,34 @@ float SweepBandAttenAt(int sb)
 	float b = abs(ssigned);
 	if (b >= swidth) return 0.0;
 	return pow(1.0 - b / swidth, max(sband.z, 0.01));
+}
+
+// [round2 B2] HOW FAR BEHIND A SWEEP FRONT THIS PIXEL IS, 0..1.
+//
+// A band whose word carries the passed bit (+256, SetSweepBandPassed) grades
+// everything its front has already crossed. SweepShapeDist < radius is exactly
+// "behind the front" for every shape -- inside a ring or shell, on both inner
+// sides of the 2/3 bars, behind the signed 5-9 -- so this one test makes an
+// after-look that tracks the line per pixel instead of per sector.
+//
+// Ramps in over uSweepPassed.w map units behind the front; the strongest band
+// wins. The caller gates on uSweepPassedColor.w, so this never runs when off.
+float SweepPassedAt()
+{
+	float strongest = 0.0;
+	float ramp = max(uSweepPassed.w, 1.0);
+	for (int sb = 0; sb < 8; sb++)
+	{
+		if (sb >= uSweepCount) break;
+		int bandword = int(uSweepBands[sb].w);
+		if (((bandword >> 8) & 1) == 0) continue;
+		vec4 sorg = uSweepBandOrigin[sb];
+		int shape = int(sorg.w);
+		if (shape <= 0) continue;
+		float ahead = SweepShapeDist(shape, pixelpos.xyz, sorg.xyz) - uSweepBands[sb].x;
+		strongest = max(strongest, clamp(-ahead / ramp, 0.0, 1.0));
+	}
+	return strongest;
 }
 
 //===========================================================================
@@ -1962,16 +2141,18 @@ vec3 BeamAirGlow(vec3 fragPos)
 // each pixel a question about where it is, instead of building the thing out
 // of objects.
 //
-// Ring and shell are not handled here. A ray meets a cylinder in two places
-// and the near one needs a quadratic; the bars are what a corridor wants and
-// what was actually asked for, so the others fall through to the surface fill
-// they already had.
+// [round2 C5] Rings and shells are handled too. This used to say a ray meets a
+// cylinder in two places and the near one needs a quadratic, so only the bars
+// were drawn -- and five RS_Sweeps presets (Wall of Colour, Hologram,
+// Interference, Bloodrush, Carnival) asked for air on a ring or shell and got
+// nothing. SweepShellCrossing (beside SweepPlaneAxis) solves that quadratic and
+// takes the nearer stretch of the wall.
 //
-// Forward declaration. SweepLineAxis is defined further down, beside the
+// Forward declaration. SweepLineAxisAA is defined further down, beside the
 // surface fill it was written for, and GLSL will not call a function it has
 // not seen. Declaring it here rather than moving the definition keeps the two
 // lattice paths -- painted and in the air -- next to the code they belong to.
-float SweepLineAxis(float coord, float spacing, float width, float soft, float t);
+float SweepLineAxisAA(float coord, float spacing, float width, float soft, float t, float aa, float wrapCount);
 
 // [BB] Returns the light the lattice ADDS, and writes how much of the view it
 // OCCLUDES into occOut with the colour to occlude toward in occColOut.
@@ -2055,39 +2236,51 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		int axis;
 		float away;
 		SweepPlaneAxis(shape, axis, away);
-		if (axis < 0) continue;
 
-		float planeAxisEye = eye[axis];
-		float planeAxisDir = dir[axis];
-		float planeAt = o[axis];
+		// Where along the view ray the band is: [t0, t1].
+		float t0 = 0.0;
+		float t1 = 0.0;
+		if (axis < 0)
+		{
+			// [round2 C5] RINGS AND SHELLS IN THE AIR. A ray can cross their
+			// wall twice; SweepShellCrossing takes the nearer visible stretch.
+			if (shape != 1 && shape != 4) continue;
+			if (!SweepShellCrossing(shape, eye, dir, o, radius, aheadW, behindW, fragDist, t0, t1)) continue;
+		}
+		else
+		{
+			float planeAxisEye = eye[axis];
+			float planeAxisDir = dir[axis];
+			float planeAt = o[axis];
 
-		// Only the unsigned bars (2, 3) sit at +radius AND -radius from the
-		// origin. Test whichever side the eye is on -- that is the one coming
-		// at you rather than the one already gone past. A signed shape is one
-		// plane and keeps the direction SweepPlaneAxis gave it.
-		if (away == 0.0) away = (planeAxisEye >= planeAt) ? 1.0 : -1.0;
+			// Only the unsigned bars (2, 3) sit at +radius AND -radius from the
+			// origin. Test whichever side the eye is on -- that is the one coming
+			// at you rather than the one already gone past. A signed shape is one
+			// plane and keeps the direction SweepPlaneAxis gave it.
+			if (away == 0.0) away = (planeAxisEye >= planeAt) ? 1.0 : -1.0;
 
-		// Parallel view: the ray never crosses, so there is nothing to draw.
-		if (abs(planeAxisDir) < 0.0001) continue;
+			// Parallel view: the ray never crosses, so there is nothing to draw.
+			if (abs(planeAxisDir) < 0.0001) continue;
 
-		// THE BAND IS A SLAB, NOT A SHEET, so solve for the whole crossing
-		// rather than one plane. Where the ray enters its front face, where it
-		// leaves the back, and how much of that is actually in front of the
-		// pixel we are shading.
-		//
-		// The previous version intersected the centre plane and then measured
-		// how far the hit was from that plane -- which is zero by construction,
-		// every time. The softening it was reaching for never happened, and a
-		// grid clipped by a wall popped out of existence instead of fading.
-		//
-		// [round2 A4] The faces are built in signed distance along `away`:
-		// ahead at radius + aheadW, behind at radius - behindW.
-		float faceAhead  = planeAt + away * (radius + aheadW);
-		float faceBehind = planeAt + away * (radius - behindW);
-		float tA = (faceBehind - planeAxisEye) / planeAxisDir;
-		float tB = (faceAhead - planeAxisEye) / planeAxisDir;
-		float t0 = max(min(tA, tB), 0.0);
-		float t1 = min(max(tA, tB), fragDist);
+			// THE BAND IS A SLAB, NOT A SHEET, so solve for the whole crossing
+			// rather than one plane. Where the ray enters its front face, where it
+			// leaves the back, and how much of that is actually in front of the
+			// pixel we are shading.
+			//
+			// The previous version intersected the centre plane and then measured
+			// how far the hit was from that plane -- which is zero by construction,
+			// every time. The softening it was reaching for never happened, and a
+			// grid clipped by a wall popped out of existence instead of fading.
+			//
+			// [round2 A4] The faces are built in signed distance along `away`:
+			// ahead at radius + aheadW, behind at radius - behindW.
+			float faceAhead  = planeAt + away * (radius + aheadW);
+			float faceBehind = planeAt + away * (radius - behindW);
+			float tA = (faceBehind - planeAxisEye) / planeAxisDir;
+			float tB = (faceAhead - planeAxisEye) / planeAxisDir;
+			t0 = max(min(tA, tB), 0.0);
+			t1 = min(max(tA, tB), fragDist);
+		}
 		if (t1 <= t0) continue;   // entirely behind you, or entirely behind a wall
 
 		// Sample at the middle of the crossing, and weigh by how much of the
@@ -2133,8 +2326,17 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		// [round2 A2] Keyed on the plane's axis, not the shape id, so 6/8 take
 		// (z, y) like 2 and 7/9 take (x, y) like 3. They used to fall through to
 		// the (x, z) fallback, which is 5's plane, not theirs.
+		// [round2 C5] A ring or shell takes SweepArcFrame, the surface fill's
+		// own (arc, height) frame, with its snapped spacing and wrap-safe
+		// antialias widths (C2). Plane bands keep aaU/aaV at -1, which leaves
+		// SweepLineAxisAA taking fwidth exactly as SweepLineAxis did.
 		vec2 uv;
-		if (axis == 0)      uv = vec2(hit.z, hit.y);
+		float spacingU = uSweepFill.x;
+		float wrapU = 0.0;
+		float aaU = -1.0;
+		float aaV = -1.0;
+		if (axis < 0)       SweepArcFrame(hit, o, radius, uv, spacingU, wrapU, aaU, aaV);
+		else if (axis == 0) uv = vec2(hit.z, hit.y);
 		else if (axis == 2) uv = vec2(hit.x, hit.y);
 		else                uv = vec2(hit.x, hit.z);
 
@@ -2145,6 +2347,7 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 			float a = radians(uSweepFill2.x);
 			float cs = cos(a), sn = sin(a);
 			uv = vec2(uv.x * cs - uv.y * sn, uv.x * sn + uv.y * cs);
+			SweepRotateAA(cs, sn, aaU, aaV);
 		}
 
 		float cov;
@@ -2162,34 +2365,18 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 			// No vertical term at all. A bar unbroken from floor to ceiling
 			// gets its height from the geometry for free and can never be
 			// mistaken for a grid.
-			float across = uSweepFill.x;
-			if (uSweepRoomMax.w > 0.0)
-			{
-				// The extent along whichever axis uv.x is reading, in the same
-				// shader space the box was uploaded in.
-				// [round2 A2] Keyed on the plane's axis: the z extent for
-				// 2/6/8, the x extent for 3/7/9 (and 5, as before).
-				float span;
-				if (axis == 0) span = uSweepRoomMax.z - uSweepRoomMin.z;
-				else           span = uSweepRoomMax.x - uSweepRoomMin.x;
-
-				// SNAPPED TO A WHOLE NUMBER OF BARS. The spacing cvar stays
-				// the spacing you asked for; this only nudges it so the run
-				// divides the room exactly, which is the difference between
-				// bars that belong to the wall they end at and a pattern with
-				// a half-bar sliced off at the edge.
-				if (span > 1.0)
-				{
-					float n = max(floor(span / max(across, 1.0) + 0.5), 1.0);
-					across = span / n;
-				}
-			}
-			cov = SweepLineAxis(uv.x, across, uSweepFill.z, uSweepFill.w, tt);
+			//
+			// [round2 C1] The room snap lives in SweepPicketSpacing now, shared
+			// with the painted pickets. A ring or shell snaps round its own
+			// circumference instead (SweepArcFrame), since a room span means
+			// nothing to a curved wall.
+			float across = (axis < 0) ? spacingU : SweepPicketSpacing(axis);
+			cov = SweepLineAxisAA(uv.x, across, uSweepFill.z, uSweepFill.w, tt, aaU, wrapU);
 		}
 		else
 		{
-			float lu = SweepLineAxis(uv.x, uSweepFill.x, uSweepFill.z, uSweepFill.w, tt);
-			float lv = SweepLineAxis(uv.y, uSweepFill.y, uSweepFill.z, uSweepFill.w, tt);
+			float lu = SweepLineAxisAA(uv.x, spacingU, uSweepFill.z, uSweepFill.w, tt, aaU, wrapU);
+			float lv = SweepLineAxisAA(uv.y, uSweepFill.y, uSweepFill.z, uSweepFill.w, tt, aaV, 0.0);
 			cov = (bfill == 2) ? min(lu, lv) : max(lu, lv);
 			if (bfill == 3) cov = 1.0;
 		}
@@ -2963,19 +3150,27 @@ vec4 FogSlabAt(vec3 fragPos)
 //
 // Returns line coverage 0..1.
 //
-float SweepLineAxis(float coord, float spacing, float width, float soft, float t)
+// [round2 C2] The body is SweepLineAxisAA, which lets the caller supply the
+// antialias width and a wrap count. aa < 0 takes fwidth(coord) at the same
+// point this always did, so every plane band draws exactly as before. A ring or
+// shell passes a width that does not jump where its arc coordinate wraps, and
+// wrapCount > 0 hashes the line index modulo it, so jitter, flicker and majors
+// give a line the same look on both sides of the wrap (see SweepArcFrame).
+float SweepLineAxisAA(float coord, float spacing, float width, float soft, float t, float aa, float wrapCount)
 {
 	if (spacing <= 0.0) return 0.0;
 
 	float idx = floor(coord / spacing + 0.5);
+	float key = (wrapCount > 0.0) ? mod(idx, wrapCount) : idx;
 
 	// JITTER -- push each line off the lattice by a stable hash of its own
 	// index, so it reads as a row of emitters rather than a printed texture.
 	if (uSweepFill2.w > 0.0)
 	{
-		float h = fract(sin(idx * 78.233) * 43758.5453);
+		float h = fract(sin(key * 78.233) * 43758.5453);
 		coord += (h - 0.5) * spacing * uSweepFill2.w;
 		idx = floor(coord / spacing + 0.5);
+		key = (wrapCount > 0.0) ? mod(idx, wrapCount) : idx;
 	}
 
 	// FLICKER -- individual lines dropping out and returning. Instantly reads
@@ -2983,13 +3178,13 @@ float SweepLineAxis(float coord, float spacing, float width, float soft, float t
 	// what stops it looking like the whole thing is blinking.
 	if (uSweepFill3.z > 0.0)
 	{
-		float h = fract(sin(idx * 12.9898 + floor(t * 8.0) * 3.717) * 43758.5453);
+		float h = fract(sin(key * 12.9898 + floor(t * 8.0) * 3.717) * 43758.5453);
 		if (h < uSweepFill3.z) return 0.0;
 	}
 
 	// MAJOR LINES -- every Nth one wider. Graph-paper structure for one mod.
 	float w = width;
-	if (uSweepFill2.z >= 2.0 && mod(abs(idx), uSweepFill2.z) < 0.5)
+	if (uSweepFill2.z >= 2.0 && mod(abs(key), uSweepFill2.z) < 0.5)
 		w *= max(uSweepFill3.w, 1.0);
 
 	// Distance to the nearest line, in world units.
@@ -2998,11 +3193,19 @@ float SweepLineAxis(float coord, float spacing, float width, float soft, float t
 	// Antialias against the screen-space derivative as well as the authored
 	// softness, so a line a hundred units away is still one clean line rather
 	// than a moire.
-	float aa = max(fwidth(coord), 0.0001);
-	return 1.0 - smoothstep(w, w + soft + aa, d);
+	float fw = fwidth(coord);
+	float aaw = max((aa < 0.0) ? fw : aa, 0.0001);
+	return 1.0 - smoothstep(w, w + soft + aaw, d);
 }
 
-float SweepFillAt(int fill, int shape, vec3 origin)
+float SweepLineAxis(float coord, float spacing, float width, float soft, float t)
+{
+	return SweepLineAxisAA(coord, spacing, width, soft, t, -1.0, 0.0);
+}
+
+// [round2 C2] bandRadius is the band's own radius (uSweepBands[sb].x), which a
+// ring or shell snaps its arc spacing against. Plane bands ignore it.
+float SweepFillAt(int fill, int shape, vec3 origin, float bandRadius)
 {
 	if (fill <= 0) return 1.0;   // no fill: the band is a wash, as before
 
@@ -3014,19 +3217,33 @@ float SweepFillAt(int fill, int shape, vec3 origin)
 	float faway;
 	SweepPlaneAxis(shape, faxis, faway);
 	vec2 uv;
-	if (faxis == 0)       uv = vec2(pixelpos.z, pixelpos.y);
-	else if (faxis == 2)  uv = vec2(pixelpos.x, pixelpos.y);
-	else if (faxis == 1)  uv = vec2(pixelpos.x, pixelpos.z);
+	vec2 originUV;              // [round2 C3] the origin in the same two axes
+	float spacingU = uSweepFill.x;
+	float wrapU = 0.0;
+	float aaU = -1.0;           // -1: SweepLineAxisAA takes fwidth, as before
+	float aaV = -1.0;
+	if (faxis == 0)       { uv = vec2(pixelpos.z, pixelpos.y); originUV = vec2(origin.z, origin.y); }
+	else if (faxis == 2)  { uv = vec2(pixelpos.x, pixelpos.y); originUV = vec2(origin.x, origin.y); }
+	else if (faxis == 1)  { uv = vec2(pixelpos.x, pixelpos.z); originUV = vec2(origin.x, origin.z); }
 	else
 	{
 		// Ring and shell: arc length around the axis, and height. Arc length
 		// rather than raw angle so the spacing stays constant in world units
 		// as the band expands -- an angular grid would spread apart as it
 		// grew, which is not a cage, it is a fan.
-		vec2 rel = pixelpos.xz - origin.xz;
-		float r = max(length(rel), 0.001);
-		uv = vec2(atan(rel.y, rel.x) * r, pixelpos.y);
+		// [round2 C2] SweepArcFrame, which also snaps the arc spacing to a
+		// whole number of lines and hands back wrap-safe antialias widths, so
+		// the -X ray no longer carries a solid seam line. Shared with the air.
+		SweepArcFrame(pixelpos.xyz, origin, bandRadius, uv, spacingU, wrapU, aaU, aaV);
+		originUV = vec2(0.0, origin.y);   // arc is measured from the +X ray already
 	}
+
+	// [round2 C3] THE GRADIENT'S OWN COORDINATE, measured from the band's
+	// origin along the same tangent axes, and taken BEFORE drift and rotation.
+	// It used to read the drifted, rotated uv in absolute world units, so the
+	// fade depended on where on the map the band happened to be and slid with
+	// the drift. Now 0.5 sits at the origin and the fade holds still.
+	vec2 gradUV = uv - originUV;
 
 	// DRIFT -- the pattern sliding within the band as the band travels. This
 	// is what makes it read as projected rather than painted onto the band.
@@ -3040,21 +3257,35 @@ float SweepFillAt(int fill, int shape, vec3 origin)
 		float a = radians(uSweepFill2.x);
 		float cs = cos(a), sn = sin(a);
 		uv = vec2(uv.x * cs - uv.y * sn, uv.x * sn + uv.y * cs);
+		SweepRotateAA(cs, sn, aaU, aaV);
 	}
 
-	float lu = SweepLineAxis(uv.x, uSweepFill.x, uSweepFill.z, uSweepFill.w, t);
-	float lv = SweepLineAxis(uv.y, uSweepFill.y, uSweepFill.z, uSweepFill.w, t);
-	float cov = max(lu, lv);
+	float cov;
+	if (fill == 4)
+	{
+		// [round2 C1] PICKETS ON THE SURFACE TOO. Fill 4 used to exist only in
+		// the air, so the walls behind a picket wall drew a grid. Same bars as
+		// the air: the room-snapped spacing for a plane, the circumference snap
+		// for a ring or shell, and no vertical term.
+		float across = (faxis < 0) ? spacingU : SweepPicketSpacing(faxis);
+		cov = SweepLineAxisAA(uv.x, across, uSweepFill.z, uSweepFill.w, t, aaU, wrapU);
+	}
+	else
+	{
+		float lu = SweepLineAxisAA(uv.x, spacingU, uSweepFill.z, uSweepFill.w, t, aaU, wrapU);
+		float lv = SweepLineAxisAA(uv.y, uSweepFill.y, uSweepFill.z, uSweepFill.w, t, aaV, 0.0);
+		cov = max(lu, lv);
 
-	// DOTS -- fill 2 keeps only where the two axes CROSS, so the lattice
-	// becomes a field of points. Same maths, one operator changed.
-	if (fill == 2) cov = min(lu, lv);
+		// DOTS -- fill 2 keeps only where the two axes CROSS, so the lattice
+		// becomes a field of points. Same maths, one operator changed.
+		if (fill == 2) cov = min(lu, lv);
+	}
 
 	// GRADIENT along one axis, so the lattice can be hot at floor level and
 	// fade out overhead. Cheap, and it stops a grid looking like a decal.
 	if (uSweepFill3.x > 0.0)
 	{
-		float g = (uSweepFill3.y > 0.5) ? uv.x : uv.y;
+		float g = (uSweepFill3.y > 0.5) ? gradUV.x : gradUV.y;
 		g = clamp(g * 0.002 + 0.5, 0.0, 1.0);
 		cov *= mix(1.0, g, uSweepFill3.x);
 	}
@@ -3121,6 +3352,26 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 		// and actors sit somewhere in between so a blacked-out room still has
 		// things visible moving in it.
 		color.rgb *= mix(DarknessAt(dl), 1.0, clamp(uDarknessExempt, 0.0, 1.0));
+	}
+
+	// [round2 B2] THE PASSED REGION, graded right after darkness and for the
+	// same reason: it changes the light the room HAS, so the glow, the bands,
+	// beams and stamps added below stay untouched. Same 2D gate as darkness.
+	//
+	// Draws fully exempt from darkness (uDarknessExempt 1: fullbright sprites,
+	// UI billboards) are spared too, because they are not lit by the room. A
+	// PARTIAL darkness exemption is not applied here: that is RS_Darkness's actor
+	// setting, and a passed room grades what stands in it along with the room.
+	if (uSweepPassedColor.w > 0.0 && uSweepCount > 0 && uFogEnabled != -3 && uDarknessExempt < 1.0)
+	{
+		float passed = SweepPassedAt();
+		if (passed > 0.0)
+		{
+			vec3 graded = color.rgb * (1.0 - clamp(uSweepPassed.y, 0.0, 1.0));
+			graded = mix(graded, vec3(grayscale(vec4(graded, 1.0))), clamp(uSweepPassed.z, 0.0, 1.0));
+			graded = mix(graded, graded * uSweepPassedColor.rgb, clamp(uSweepPassed.x, 0.0, 1.0));
+			color.rgb = mix(color.rgb, graded, passed);
+		}
 	}
 
 	//
@@ -3370,7 +3621,9 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 			// draw batching in every frame of the game.
 			int bandpack = int(sband.w);
 			int bmode = bandpack & 15;
-			int bfill = bandpack >> 4;
+			// [round2 B2] Masked: bit 8 (+256) is the passed-region flag, so
+			// an unmasked shift would read passed + fill as fill 16+.
+			int bfill = (bandpack >> 4) & 15;
 
 			if (bmode <= 0) continue;
 			// Recolour bands already had their say, above the glow.
@@ -3391,7 +3644,8 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 			// A negative gap inverts: lit gaps, dark lines. A grid of shadow.
 			if (bfill > 0)
 			{
-				float cov = SweepFillAt(bfill, int(uSweepBandOrigin[sb].w), uSweepBandOrigin[sb].xyz);
+				// [round2 C2] + the band radius, for the ring/shell arc snap.
+				float cov = SweepFillAt(bfill, int(uSweepBandOrigin[sb].w), uSweepBandOrigin[sb].xyz, sband.x);
 
 				// Fill 3 is SOLID -- the band ignores its own falloff and
 				// becomes a flat slab of light with hard edges. A wall

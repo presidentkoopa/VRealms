@@ -23,6 +23,13 @@ class DynamicLight : Actor
 	double SpotOuterAngle;
 	private int lighttype;
 	private int lightflags;
+	// [round2 B1] Set by Actor.SetAttachedLightAnchor and read natively whenever
+	// this actor's light is built: 0 none, 1 main hand, 2 off hand, 3 head;
+	// offset (forward, right, up) in the pose's frame. On the actor so savegames
+	// and light rebuilds keep it. Private so nothing can change one without the
+	// native light hearing about it.
+	private int PoseAnchor;
+	private Vector3 PoseAnchorOffset;
 
 	property SpotInnerAngle: SpotInnerAngle;
 	property SpotOuterAngle: SpotOuterAngle;

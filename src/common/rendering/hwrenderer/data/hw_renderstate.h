@@ -239,8 +239,10 @@ struct StreamData
 	// every surface. Origin xyz + mode is shared; each band carries its own
 	// radius/thickness/softness and its own colour + intensity.
 	FVector4 uSweepOrigin;
-	FVector4 uSweepBands[8];      // radius, thickness, softness, mode
-	                              // mode: 0 off, 1 add, 2 lift, 3 crush
+	FVector4 uSweepBands[8];      // radius, thickness, softness, packed word
+	                              // w: drawmode (0 default/add, 1 add, 2 lift,
+	                              // 3 crush, 4 recolour) + 16*fill (0-4)
+	                              // + 256*passed. [round2 SW-21]
 	FVector4 uSweepColors[8];     // r, g, b, intensity
 	FVector4 uSweepBandOrigin[8]; // per band: xyz origin, w = shape (0 = off)
 	int uSweepCount;
@@ -651,14 +653,16 @@ public:
 	}
 
 	// Overrides one band's origin and shape. Call AFTER SetSweepOrigin, which
-	// seeds all eight.
+	// seeds all eight. Shapes 0-9: 0 off, 1 ring, 2/3 bars, 4 sphere, 5 rise,
+	// 6-9 signed crossings (SweepShapeDist in main.fp). [round2 SW-21]
 	void SetSweepBandOrigin(int i, float ox, float oy, float oz, int mode)
 	{
 		if (i < 0 || i >= 8) return;
 		mStreamData.uSweepBandOrigin[i] = { ox, oy, oz, (float)mode };
 	}
 
-	// What this band does to the pixels it covers: 1 add, 2 lift, 3 crush.
+	// What this band does to the pixels it covers: 0 default (add), 1 add,
+	// 2 lift, 3 crush, 4 recolour. [round2 SW-21] This used to stop at 3.
 	// Call after SetSweepBand, which writes the default.
 	//
 	// [BB] AND WHAT IS DRAWN INSIDE IT, PACKED INTO THE SAME FLOAT.

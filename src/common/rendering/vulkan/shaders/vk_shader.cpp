@@ -390,6 +390,12 @@ static const char *shaderBindings = R"(
 		// [BEAMLINES] APPENDED LAST, matching HWViewpointUniforms::mBeamLook by
 		// offset: per uploaded beam line, x air glow, y halo, z taper, w flare.
 		vec4 uBeamLook[128];
+
+		// [round2 B2] APPENDED LAST, matching HWViewpointUniforms::mSweepPassed /
+		// mSweepPassedColor by offset. The passed-region look: x tint mix,
+		// y darken, z desaturate, w soft; rgb tint, w enable.
+		vec4 uSweepPassed;
+		vec4 uSweepPassedColor;
 	};
 
 	layout(set = 1, binding = 0, std140) uniform readonly ViewpointUBO {
@@ -477,6 +483,9 @@ static const char *shaderBindings = R"(
 	#define uGpuParticleParams viewpoints[HW_VIEWPOINT_INDEX].uGpuParticleParams
 	// [BEAMLINES] and this one
 	#define uBeamLook viewpoints[HW_VIEWPOINT_INDEX].uBeamLook
+	// [round2 B2] and these
+	#define uSweepPassed viewpoints[HW_VIEWPOINT_INDEX].uSweepPassed
+	#define uSweepPassedColor viewpoints[HW_VIEWPOINT_INDEX].uSweepPassedColor
 
 	layout(set = 1, binding = 1, std140) uniform readonly MatricesUBO {
 		mat4 ModelMatrix;

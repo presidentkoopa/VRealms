@@ -534,7 +534,24 @@ struct HWViewpointUniforms
 	// APPENDED LAST, and last in both GLSL copies (gl_shader.cpp's ViewpointUBO,
 	// vk_shader.cpp's ViewpointData plus its #define) in the same change.
 	// Anything added after this goes after IT, in all three places.
+	// (No longer the last members: [round2 B2] mSweepPassed follows.)
 	FVector4 mBeamLook[128];
+
+	// [round2 B2] THE PASSED-REGION LOOK. See FLevelLocals::SweepBandPassed and
+	// SweepPassedAt in main.fp.
+	//
+	//   mSweepPassed       x tint mix, y darken, z desaturate, w soft (map units)
+	//   mSweepPassedColor  rgb tint, w enable -- 1 only when a live band has its
+	//                      passed bit AND some look term is non-zero, so the
+	//                      shader pays one compare when nothing asks for it
+	//
+	// +32 bytes per viewpoint: 24,560 -> 24,592. APPENDED LAST, after mBeamLook,
+	// so no existing member moves (mBeamA, mBeamParams and mBeamLook keep their
+	// offsets), and last in both GLSL copies (gl_shader.cpp's ViewpointUBO,
+	// vk_shader.cpp's ViewpointData plus its #defines) in the same change.
+	// Anything added after these goes after THEM, in all three places.
+	FVector4 mSweepPassed = { 0.f, 0.f, 0.f, 32.f };
+	FVector4 mSweepPassedColor = { 1.f, 1.f, 1.f, 0.f };
 
 	void CalcDependencies()
 	{
@@ -565,6 +582,7 @@ static_assert(sizeof(HWViewpointUniforms) <= 65536, "HWViewpointUniforms exceeds
 //
 // Rounded here to 256, the largest minUniformBufferOffsetAlignment the Vulkan
 // spec allows, so it holds on any device: with mBeamLook the block is 24,560
-// bytes, aligned 24,576, bound 49,152 of 65,536.
+// bytes, aligned 24,576, bound 49,152 of 65,536. [round2 B2] With mSweepPassed
+// and mSweepPassedColor it is 24,592, aligned 24,832, bound 49,664.
 static_assert(((sizeof(HWViewpointUniforms) + 255) / 256) * 256 * 2 <= 65536,
 	"Two aligned HWViewpointUniforms blocks exceed the 65,536-byte range Vulkan binds them with.");

@@ -149,6 +149,13 @@ void hw_PrecacheTexture(uint8_t *texhitlist, TMap<PClassActor*, bool> &actorhitl
 	memset(modellist, 0, Models.Size());
 	memset(spritehitlist, 0, sizeof(SpriteHits**) * TexMan.NumTextures());
 
+	// RS FORK -- r_voxels_mode 1 (VoxelOverride only). The lookup below is the
+	// gated one and refuses voxels in this mode, so without this every voxel
+	// model stays unmarked, loses its vertex buffer further down, and the first
+	// grab of each rebuilds it mid-frame. Marked anyway: VRAM for the pack, not
+	// frame time. Modes 0 and 2 need nothing (0 finds them; 2 never draws them).
+	const bool precacheOverrideVoxels = VoxelsEffectiveMode() == 1;
+
 	// Check all used actors.
 	// 1. mark all sprites associated with its states
 	// 2. mark all model data and skins associated with its states
@@ -163,6 +170,18 @@ void hw_PrecacheTexture(uint8_t *texhitlist, TMap<PClassActor*, bool> &actorhitl
 			auto &state = cls->GetStates()[i];
 			spritelist[state.sprite].Insert(gltrans, true);
 			FSpriteModelFrame * smf = FindModelFrame(cls, state.sprite, state.Frame, false);
+
+			// RS fork -- r_voxels_mode 1, see precacheOverrideVoxels. A voxel frame is
+			// always one model with its palette as the skin (InitModels, models.cpp).
+			if (precacheOverrideVoxels)
+			{
+				FSpriteModelFrame *vox = FindVoxelFrame(state.sprite, state.Frame, false);
+				if (vox != nullptr && vox != smf && vox->modelsAmount > 0 && vox->modelIDs[0] != -1)
+				{
+					if (vox->skinIDs[0].isValid()) texhitlist[vox->skinIDs[0].GetIndex()] |= FTextureManager::HIT_Flat;
+					modellist[vox->modelIDs[0]] = 1;
+				}
+			}
 			if (smf != NULL)
 			{
 				for (int i = 0; i < smf->modelsAmount; i++)

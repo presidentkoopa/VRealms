@@ -370,10 +370,13 @@ class Actor : Thinker native
 	native uint freezetics;
 	native Vector2 AutomapOffsets;
 	native double LandingSpeed;
-	// Draw this actor as its voxel if it has one, ignoring r_drawvoxels and
-	// outranking any model. Set it on grab and clear it on release to make a
-	// held object a real 3D thing you can turn over; a billboard cannot be.
-	// Costs a null check on actors that have no voxel. See FindModelFrame.
+	// Draw this actor as its voxel if it has one, outranking any model, unless
+	// r_voxels_mode is 2 (no voxels at all). With a voxel pack loaded, that
+	// cvar's auto default draws ONLY actors with this set as voxels. A frame
+	// that exists only as a voxel always keeps its voxel. Set it on grab and
+	// clear it on release to make a held object a real 3D thing you can turn
+	// over; a billboard cannot be. Costs a null check on actors that have no
+	// voxel. See FindModelFrame. [round2 X3: this said "ignoring r_drawvoxels"]
 	native bool VoxelOverride;
 	native bool ForceModelAngles;
 	native int HardpointButtons;
@@ -2013,6 +2016,22 @@ class Actor : Thinker native
 	native bool A_AttachLightDef(Name lightid, Name lightdef);
 	native bool A_AttachLight(Name lightid, int type, Color lightcolor, int radius1, int radius2, int flags = 0, Vector3 ofs = (0,0,0), double param = 0, double spoti = 10, double spoto = 25, double spotp = 0, double intensity = 1.0);
 	native bool A_RemoveLight(Name lightid);
+	// [round2 B1] Hold an attached light in a tracked pose, re-posed every frame
+	// instead of every tic. mode 0 none (follows this actor, as always), 1 main
+	// hand, 2 off hand, 3 head; offset is (forward, right, up) in map units in the
+	// pose's own frame. While anchored the light takes position, yaw and pitch
+	// from the pose (A_AttachLight's offset and spotp are ignored).
+	//
+	// Finds the light by the id given to A_AttachLight / A_AttachLightDef, as
+	// A_RemoveLight does, and may be called straight after them. The anchor stays
+	// with that id through light rebuilds and savegames until mode 0 or
+	// A_RemoveLight. On a DynamicLight actor (SpotLight and the rest) the id is
+	// ignored and the actor's own light is anchored.
+	//
+	// The pose is this actor's player's when the actor is a player pawn, and the
+	// local player's otherwise. Look-only: no gameplay reads a light's position.
+	// Returns false when no light of that id exists.
+	native bool SetAttachedLightAnchor(Name lightid, int mode, Vector3 offset = (0,0,0));
 
 	//================================================
 	//

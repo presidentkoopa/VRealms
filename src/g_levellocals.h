@@ -1156,6 +1156,12 @@ public:
 	FGlobalDLightLists lightlists;
 
 	FDynamicLight *lights;
+	// [round2 B1] The dynamic lights held in a tracked pose (FDynamicLight::
+	// PoseAnchor), so hw_entrypoint.cpp can re-pose them every frame without
+	// walking `lights`. A light leaves it in FDynamicLight::ReleaseLight, which
+	// every free passes through -- NOT UnlinkLight, which LinkLight calls on every
+	// relink -- and ClearLevelData empties it. Main thread only.
+	TArray<FDynamicLight*> PoseAnchoredLights;
 	DVisualThinker* VisualThinkerHead = nullptr;
 
 	// [BB] Billboards: world-anchored oriented quads backing the in-world
@@ -1223,19 +1229,6 @@ public:
 		return s > 0.0 ? s : 0.0;
 	}
 
-	// [BB] Sweep: a thin band of light at a fixed distance from an origin,
-	// measured in WORLD space and tested on every surface. Because the test
-	// is world-space rather than per-surface, the band wraps continuously
-	// across floor, wall and ceiling on its own -- a cylinder expanding from
-	// a point slices all three at the same radius, and a plane travelling
-	// down a corridor draws an unbroken rectangle around it.
-	//
-	// This is not a sector property and deliberately not one of the four
-	// lanes: it is a single world-space overlay, so it costs one set of
-	// uniforms per frame rather than anything per sector.
-	//
-	// mode: 0 off, 1 cylinder from origin, 2 plane along X, 3 plane along Y,
-	//       4 sphere from origin
 	// [BB] VOLUMETRIC BEAMS -- lit air rather than lit surfaces.
 	//
 	// THIRTY-TWO SLOTS (MAX_VOL_BEAMS below), and it used to be one. A
@@ -1322,9 +1315,27 @@ public:
 		return -1;
 	}
 
+	// [BB] Sweep: a thin band of light at a fixed distance from an origin,
+	// measured in WORLD space and tested on every surface. Because the test
+	// is world-space rather than per-surface, the band wraps continuously
+	// across floor, wall and ceiling on its own -- a cylinder expanding from
+	// a point slices all three at the same radius, and a plane travelling
+	// down a corridor draws an unbroken rectangle around it.
+	//
+	// This is not a sector property and deliberately not one of the four
+	// lanes: it is a single world-space overlay, so it costs one set of
+	// uniforms per frame rather than anything per sector.
+	//
+	// [round2 SW-21] This header sat stranded above the volumetric beams with a
+	// shape list that stopped at 4. Both now live here, beside the fields.
+	//
 	// Up to eight bands travel at once, so a train of them can chase each
 	// other with their own colours and spacing.
 	static const int MAX_SWEEP_BANDS = 8;
+	// The shared shape, and each band's own SweepBandMode below:
+	//   0 off, 1 ring (cylinder from origin), 2 bar along X (both sides),
+	//   3 bar along Y (both sides), 4 sphere from origin, 5 rise (signed, Z),
+	//   6 +X, 7 +Y, 8 -X, 9 -Y (the signed crossings). SweepShapeDist in main.fp.
 	int SweepMode = 0;
 	DVector3 SweepOrigin;
 	int SweepCount = 0;
@@ -1339,7 +1350,10 @@ public:
 	// SetSweepBandAt. Shape 0 means the band is off.
 	DVector3 SweepBandOrigin[MAX_SWEEP_BANDS];
 	int SweepBandMode[MAX_SWEEP_BANDS] = {};
-	// What each band does to the pixels it covers: 1 add, 2 lift, 3 crush.
+	// What each band does to the pixels it covers: 0 default (add), 1 add,
+	// 2 lift, 3 crush, 4 recolour. Uploaded with the band's fill and passed bit
+	// as drawmode + 16*fill + 256*passed (FRenderState::SetSweepBandDraw).
+	// [round2 SW-21] This used to stop at 3.
 	int SweepBandDraw[MAX_SWEEP_BANDS] = {};
 
 	// [BB] WHAT IS *INSIDE* A BAND.
@@ -1397,6 +1411,24 @@ public:
 	// than only on the surfaces the band lands on. 0 = the old behaviour.
 	double   SweepFillAir = 0;
 
+	// [round2 B2] THE PASSED REGION: a look on everything a band's front has
+	// already crossed, graded per pixel, so it follows the line exactly instead
+	// of flipping a whole sector when its centre crosses. "Passed", not "wake":
+	// SweepTrail is the wake. The test is the band light's own measure --
+	// SweepShapeDist < radius -- which is behind the front for every shape.
+	//
+	// Look only: it grades the room's light in main.fp's getLightColor, not the
+	// glow, bands, beams or stamps, the same line darkness draws. It lasts while
+	// the band is live. Gameplay that must outlive the sweep stays per sector in
+	// the mod. ClearSweep and ClearLevelData zero the per-band bits; the look
+	// settings are left alone, per ClearLevelData's convention.
+	int      SweepBandPassed[MAX_SWEEP_BANDS] = {};   // 0 off, 1 grade this band's passed side
+	PalEntry SweepPassedTint = 0xFFFFFF;
+	double   SweepPassedTintMix = 0;   // 0..1, multiply the light toward the tint
+	double   SweepPassedDarken = 0;    // 0..1 of the light taken away
+	double   SweepPassedDesat = 0;     // 0..1 toward grey
+	double   SweepPassedSoft = 32;     // map units the look fades in over behind the front
+
 	// [BB] REAL BEAMS.
 	//
 	// A laser in Doom is usually a sprite, or a chain of puffs spawned close
@@ -1419,9 +1451,7 @@ public:
 	//
 	// Not a sweep band, though, and deliberately so: a band's radius is a
 	// distance that grows, and a beam does not travel. It simply is.
-	//
-	// Eight, because that is enough for a weapon beam plus a tripwire grid,
-	// and the per-fragment cost is eight cheap segment tests.
+	// (How many: see MAX_BEAMS. [round2 SW-22])
 // [BB] SHAPES. More than eight (16 when written, MAX_SHAPES = 128 now) -- eight was the beam budget, chosen for a
 	// system where every slot costs a segment solve per fragment. A shape is a
 	// couple of ALU behind an early reject, so the old cap was being copied
@@ -1749,6 +1779,12 @@ public:
 		GpuParticleSerial = GpuParticleNewSerial();
 	}
 
+	// [round2 SW-22] 128 beam slots. The note for this used to read "eight,
+	// because that is enough for a weapon beam plus a tripwire grid, and the
+	// per-fragment cost is eight cheap segment tests", orphaned above the
+	// SHAPES block long after the count grew. It must match mBeamA[128] and
+	// mBeamLook[128] in hw_viewpointuniforms.h and both GLSL copies; the upload
+	// carries the live count in mBeamParams.x.
 	static const int MAX_BEAMS = 128;
 	int      BeamCount = 0;
 	// RS FORK -- WHERE A BEAM'S ORIGIN COMES FROM, per slot.
@@ -2117,6 +2153,15 @@ public:
 	double DarkHeightRef = 0;       // world Z the pooling starts from
 	double DarkHeightRange = 256;
 
+	// [round2 B4] WHERE DarkHeightRef COMES FROM (SetDarknessHeightFollow).
+	//   0 absolute: DarkHeightRef as the caller wrote it, as before
+	//   1 the viewer's feet: the camera's interpolated Z at draw rate, plus
+	//     DarkHeightOffset. A mod writing pmo.pos.z from WorldTick holds each
+	//     value for 2-3 frames, so the pool edge stepped on lifts and stairs.
+	// ClearDarkness and ClearLevelData set it back to 0.
+	int    DarkHeightFollow = 0;
+	double DarkHeightOffset = 0;
+
 	// [BB] HOW MUCH OF THE DARKNESS ACTORS ARE SPARED, 0 to 1.
 	//
 	// The darkness pass takes the whole scene down together, which takes the
@@ -2265,6 +2310,17 @@ public:
 
 	PalEntry FogColor2 = 0xffb38059;
 	double   FogColor2Mix = 0;       // 0 = one colour, as before
+
+	// [round2 B3] A TRANSIENT GRADIENT TINT THAT WINS OVER THE STANDING ONE
+	// (SetFogGradientOverride / ClearFogGradientOverride), on the fog slab
+	// override's pattern. A fog mod re-pushes SetFogGradient every tic, so a
+	// passing caller's tint (a sweep's) written there never reached a frame.
+	// While active the renderer uploads these instead; FogColor2/FogColor2Mix are
+	// never touched, so clearing hands the view straight back. One override,
+	// not a stack. ClearLevelData ends it.
+	bool     FogColor2OverrideActive = false;
+	PalEntry FogColor2OverrideColor = 0;
+	double   FogColor2OverrideMix = 0;
 
 	// [RS fork] The colour an IGNITE disturbance burns (SetFogIgniteColor).
 	// Ignite used FogColor2, a colour chosen for the top of the layer and left

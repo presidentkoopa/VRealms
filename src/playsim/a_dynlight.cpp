@@ -33,6 +33,9 @@
 #include "actorinlines.h"
 #include "hw_clock.h"
 #include "memarena.h"
+#include "d_player.h"	// [round2 B1] a pawn's player, for whose pose a light follows
+
+EXTERN_CVAR(Bool, r_visualstate_log)	// [round2 B1] RS fork: defined in vmthunks.cpp
 
 static FMemArena DynLightArena(sizeof(FDynamicLight) * 200);
 static TArray<FDynamicLight*> FreeList;
@@ -104,6 +107,10 @@ void AttachLight(AActor *self)
 	light->m_active = false;
 	light->visibletoplayer = true;
 	light->lighttype = (uint8_t)self->IntVar(NAME_lighttype);
+	// [round2 B1] A SpotLight (or any light actor) can be held in a tracked pose
+	// (Actor.SetAttachedLightAnchor). The anchor lives on the actor's fields, so
+	// it comes back whenever the light is rebuilt from the actor.
+	light->SetPoseAnchor(self->IntVar(NAME_PoseAnchor), *(DVector3*)self->ScriptVar(NAME_PoseAnchorOffset, nullptr));
 	self->AttachedLights.Push(light);
 
 	// Disable postponed processing of dynamic light because its setup has been completed by this function
@@ -186,6 +193,21 @@ DEFINE_ACTION_FUNCTION_NATIVE(ADynamicLight, SetOffset, SetOffset)
 
 void FDynamicLight::ReleaseLight()
 {
+	// [round2 B1] Out of the anchored-light registry BEFORE the memory goes back
+	// to the free list. Every free passes through here (Tick with no target,
+	// DeleteAttachedLights from OnDestroy, level unlink, gl_lights off), which is
+	// why the removal is here and not in UnlinkLight: LinkLight calls UnlinkLight
+	// on every relink. Searched whenever the registry is non-empty, not only when
+	// PoseRegistered says so, so a stale flag still cannot leave a dangling entry.
+	// The registry is a handful of lights at most.
+	if (Level->PoseAnchoredLights.Size() > 0)
+	{
+		unsigned i = Level->PoseAnchoredLights.Find(this);
+		if (i < Level->PoseAnchoredLights.Size()) Level->PoseAnchoredLights.Delete(i);
+	}
+	PoseRegistered = false;
+	PoseAnchor = 0;
+
 	assert(prev != nullptr || this == Level->lights);
 	if (prev != nullptr) prev->next = next;
 	else Level->lights = next;
@@ -363,27 +385,34 @@ void FDynamicLight::UpdateLocation()
 		dynlights_active_updates++;
 		AActor *target = this->target;	// perform the read barrier only once.
 
-		// Offset is calculated in relation to the owning actor.
-		DAngle angle = target->Angles.Yaw;
-		double s = angle.Sin();
-		double c = angle.Cos();
-		if (IsSpot())
+		// [round2 B1] Held in a tracked pose: position, yaw and pitch come from
+		// the hand or head, so a tic relink follows the hand rather than the
+		// target. No m_off, no bob and no floor/ceiling clamp -- a held torch goes
+		// where the hand goes. Not anchored, or no pose to read: as always.
+		if (!ResolvePoseAnchor())
 		{
-			Yaw = angle;
-			if (!explicitpitch)
-				Pitch = target->Angles.Pitch;
-		}
+			// Offset is calculated in relation to the owning actor.
+			DAngle angle = target->Angles.Yaw;
+			double s = angle.Sin();
+			double c = angle.Cos();
+			if (IsSpot())
+			{
+				Yaw = angle;
+				if (!explicitpitch)
+					Pitch = target->Angles.Pitch;
+			}
 
-		Pos = target->Vec3Offset(m_off.X * c + m_off.Y * s, m_off.X * s - m_off.Y * c, m_off.Z + target->GetBobOffset());
-		Sector = target->subsector->sector;	// Get the render sector. target->Sector is the sector according to play logic.
+			Pos = target->Vec3Offset(m_off.X * c + m_off.Y * s, m_off.X * s - m_off.Y * c, m_off.Z + target->GetBobOffset());
+			Sector = target->subsector->sector;	// Get the render sector. target->Sector is the sector according to play logic.
 
-		if (!(target->flags5 & MF5_NOINTERACTION))
-		{
-			// Some z-coordinate fudging to prevent the light from getting too close to the floor or ceiling planes. With proper attenuation this would render them invisible.
-			// A distance of 5 is needed so that the light's effect doesn't become too small.
-			// [SP] don't do this if +NOINTERACTION is set, since the object can fly right through floors and ceilings with that flag
-			if (Z() < target->floorz + 5.) Pos.Z = target->floorz + 5.;
-			else if (Z() > target->ceilingz - 5.) Pos.Z = target->ceilingz - 5.;
+			if (!(target->flags5 & MF5_NOINTERACTION))
+			{
+				// Some z-coordinate fudging to prevent the light from getting too close to the floor or ceiling planes. With proper attenuation this would render them invisible.
+				// A distance of 5 is needed so that the light's effect doesn't become too small.
+				// [SP] don't do this if +NOINTERACTION is set, since the object can fly right through floors and ceilings with that flag
+				if (Z() < target->floorz + 5.) Pos.Z = target->floorz + 5.;
+				else if (Z() > target->ceilingz - 5.) Pos.Z = target->ceilingz - 5.;
+			}
 		}
 
 		// The radius being used here is always the maximum possible with the
@@ -643,6 +672,7 @@ void FDynamicLight::LinkLight()
 {
 	dynlights_link_calls++;	// [UZDXREMA] perf instrumentation
 	UnlinkLight();
+	LinkedPos = Pos;	// [round2 B1] where these lists were built from; see R_UpdatePoseAnchoredLights
 	if (radius>0)
 	{
 		// passing in radius*radius allows us to do a distance check without any calls to sqrt
@@ -921,6 +951,124 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, A_RemoveLight, RemoveLight)
 	PARAM_SELF_PROLOGUE(AActor);
 	PARAM_NAME(lightid);
 	ACTION_RETURN_BOOL(RemoveLight(self, lightid.GetIndex()));
+}
+
+//==========================================================================
+//
+// [round2 B1] ANCHORED DYNAMIC LIGHTS. See FDynamicLight::PoseAnchor.
+//
+// SetPoseAnchor keeps PoseAnchoredLights in step with PoseAnchor. It is only
+// called on the main thread (ApplyProperties, AttachLight, the script setter).
+//
+//==========================================================================
+
+void FDynamicLight::SetPoseAnchor(int anchor, const DVector3 &offset)
+{
+	if (anchor < 0 || anchor > 3) anchor = 0;
+	PoseAnchor = anchor;
+	PoseAnchorOffset = offset;
+
+	auto &registry = Level->PoseAnchoredLights;
+	if (anchor != 0 && !PoseRegistered)
+	{
+		registry.Push(this);
+		PoseRegistered = true;
+	}
+	else if (anchor == 0 && PoseRegistered)
+	{
+		unsigned i = registry.Find(this);
+		if (i < registry.Size()) registry.Delete(i);
+		PoseRegistered = false;
+	}
+}
+
+// Pose this light from its anchor. Called by the tick (UpdateLocation) and,
+// every frame, by hw_entrypoint.cpp's R_UpdatePoseAnchoredLights. Writes only
+// this client-side light's own Pos/Yaw/Pitch/Sector -- lights are not part of
+// the simulation and no gameplay code reads where one is.
+bool FDynamicLight::ResolvePoseAnchor()
+{
+	if (PoseAnchor <= 0) return false;
+
+	// Whose pose: the player whose pawn this light is attached to, so in a
+	// network game each player's torch follows that player's hand. A light on any
+	// other actor reads the local player's, as volumetric beams do.
+	AActor *owner = target;	// one read barrier
+	const player_t *who = (owner != nullptr && owner->player != nullptr && owner->player->mo == owner)
+		? owner->player : nullptr;
+
+	DVector3 pos;
+	DAngle yaw, pitch;
+	const int source = ResolveTrackedPose(Level, PoseAnchor, PoseAnchorOffset, pos, yaw, pitch, who);
+	if (source != PoseSource)
+	{
+		PoseSource = source;
+		if (r_visualstate_log)
+			Printf("dynlight: light on %s (anchor %d) pose source: %s\n",
+				owner != nullptr ? owner->GetClass()->TypeName.GetChars() : "(no actor)",
+				PoseAnchor, TrackedPoseSourceName(source));
+	}
+	if (source == TPOSE_NONE || source == TPOSE_NOPLAYER) return false;
+
+	Pos = pos;
+	Yaw = yaw;
+	Pitch = pitch;
+	// The render sector at the hand, not the target's: PosRelative reads its
+	// portal group.
+	Sector = Level->PointInRenderSubsector(Pos)->sector;
+	return true;
+}
+
+int SetAttachedLightAnchor(AActor *self, int _lightid, int mode, double ox, double oy, double oz)
+{
+	if (mode < 0 || mode > 3)
+	{
+		static int lastBad = 0;	// 0 is valid, so it is never reported
+		if (mode != lastBad)
+		{
+			lastBad = mode;
+			Printf("SetAttachedLightAnchor: mode %d is outside 0..3, treated as 0\n", mode);
+		}
+		mode = 0;
+	}
+	const DVector3 offset(ox, oy, oz);
+
+	// A light ACTOR (SpotLight and the rest) has one light of its own, built by
+	// ::AttachLight from the actor's fields -- so the anchor goes on the actor,
+	// where savegames and light rebuilds read it back from.
+	if (self->IsKindOf(NAME_DynamicLight))
+	{
+		self->IntVar(NAME_PoseAnchor) = mode;
+		*(DVector3*)self->ScriptVar(NAME_PoseAnchorOffset, nullptr) = offset;
+		for (auto l : self->AttachedLights) l->SetPoseAnchor(mode, offset);
+		return 1;
+	}
+
+	// Otherwise the light id, found the way A_RemoveLight finds it. The anchor
+	// goes on the definition, which every rebuild applies.
+	FName lightid = FName(ENamedName(_lightid));
+	unsigned index = FindUserLight(self, lightid, false);
+	if (index >= self->UserLights.Size()) return 0;
+	self->UserLights[index]->SetPoseAnchor(mode, offset);
+
+	// SetDynamicLights attaches user lights first and in order, so while no
+	// rebuild is pending the live light is AttachedLights[index] and can take the
+	// anchor now. With a rebuild pending (A_AttachLight or A_RemoveLight this
+	// tic) the slots may not line up yet; the rebuild applies the definition.
+	if (!(self->flags8 & MF8_RECREATELIGHTS) && index < self->AttachedLights.Size())
+		self->AttachedLights[index]->SetPoseAnchor(mode, offset);
+	return 1;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, SetAttachedLightAnchor, SetAttachedLightAnchor)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(lightid);
+	PARAM_INT(mode);
+	PARAM_FLOAT(ox);
+	PARAM_FLOAT(oy);
+	PARAM_FLOAT(oz);
+	ACTION_RETURN_BOOL(SetAttachedLightAnchor(self, lightid.GetIndex(), mode, ox, oy, oz));
 }
 
 

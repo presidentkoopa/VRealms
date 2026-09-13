@@ -176,4 +176,55 @@ bool R_ShouldDrawSpriteShadow(AActor *thing);
 
 int WorldPaused(bool checkLag);
 
+//==========================================================================
+//
+// [round2 B1] WHERE A TRACKED POSE IS RIGHT NOW -- one resolver for everything
+// that can be held in a hand or worn on the head.
+//
+// Volumetric beam cones (hw_drawinfo.cpp, ResolveVolBeamPose) and dynamic
+// lights (FDynamicLight::ResolvePoseAnchor) both call this, so a torch's cone
+// and the light it throws on the wall can never disagree about where the hand
+// is, including the yaw-90 and negated-pitch conventions described at the
+// definition. Lives here rather than in a renderer header because the light
+// tick (playsim side) needs it too, and r_utility is linked into both.
+//
+//   anchor  0 none, 1 main hand, 2 off hand, 3 head
+//   offset  (forward, right, up) in map units in the pose's own yaw/pitch frame
+//   who     whose pose; nullptr = the console player (what beams use)
+//
+// On success pos/yaw/pitch are written as plain Doom values -- yaw is world
+// yaw, pitch is positive DOWN, the convention Actor.Angles and FDynamicLight's
+// Yaw/Pitch use. On TPOSE_NONE and TPOSE_NOPLAYER nothing is written.
+//
+// READ-ONLY: no playsim state is written and no random number is drawn.
+//
+//==========================================================================
+
+enum ETrackedPoseSource
+{
+	TPOSE_NONE,         // not anchored
+	TPOSE_MAINHAND,     // AttackPos
+	TPOSE_OFFHAND,      // OffhandPos
+	TPOSE_HMD,          // HmdPos
+	TPOSE_VIEW,         // head anchor, no headset pose written: the view
+	TPOSE_NOPLAYER,     // anchored, but no player (or no pawn) to read
+	TPOSE_COUNT
+};
+
+class player_t;
+
+int ResolveTrackedPose(const FLevelLocals *Level, int anchor, const DVector3 &offset,
+	DVector3 &pos, DAngle &yaw, DAngle &pitch, const player_t *who = nullptr);
+
+// One line of text per ETrackedPoseSource, for the logs that say where a held
+// thing is really reading its pose from.
+const char *TrackedPoseSourceName(int source);
+
+// The unit vector a pose looks along. Doom pitch is positive down, hence -sin.
+inline DVector3 TrackedPoseForward(DAngle yaw, DAngle pitch)
+{
+	const double cp = pitch.Cos(), sp = pitch.Sin();
+	return DVector3(cp * yaw.Cos(), cp * yaw.Sin(), -sp);
+}
+
 #endif

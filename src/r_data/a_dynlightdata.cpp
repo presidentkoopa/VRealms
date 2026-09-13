@@ -71,6 +71,9 @@ FSerializer &Serialize(FSerializer &arc, const char *key, FLightDefaults &value,
 			("spotouter", value.m_spotOuterAngle)
 			("pitch", value.m_pitch)
 			("lightdefintensity", value.m_LightDefIntensity)
+			// [round2 B1] Additive keys: an old save lacks them and loads unanchored.
+			("poseanchor", value.m_poseAnchor)
+			("poseanchoroffset", value.m_poseAnchorOffset)
 		.EndObject();
 	}
 	return arc;
@@ -141,6 +144,9 @@ void FLightDefaults::ApplyProperties(FDynamicLight * light) const
 		if (light->m_currentRadius <= 0) light->m_currentRadius = 1;
 		light->swapped = m_swapped;
 	}
+	// [round2 B1] Every (re)build re-applies the definition's anchor; 0 takes
+	// the light back out of the anchored registry if this slot held one.
+	light->SetPoseAnchor(m_poseAnchor, m_poseAnchorOffset);
 	light->SetOffset(m_Pos);	// this must be the last thing to do.
 }
 
