@@ -657,6 +657,16 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		VPUniforms.mGpuParticleParams = {
 			(float)r_gpuparticles_sizescale, (float)r_gpuparticles_maxsize,
 			(float)r_gpuparticles_stretch,   (float)r_gpuparticles_intensity };
+		// [2a] Read only by scene-depth shader variants (vk_shader.cpp). The pair
+		// that turns a raw depth sample into distance is the post passes' own
+		// LinearizeDepthA/B (the volumetric beam's fill further down) -- right for
+		// the flat projection and for BuildOpenXREyeProjection, which both use
+		// screen->GetZNear/GetZFar. Then the soft-particle distance, renderer-read
+		// every frame like the knobs above so the menu slider responds live.
+		VPUniforms.mLinearizeDepth = {
+			1.0f / screen->GetZFar() - 1.0f / screen->GetZNear(),
+			max(1.0f / screen->GetZNear(), 1.e-8f), 0.f, 0.f };
+		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), 0.f, 0.f, 0.f };
 
 		// [BB] Sweep fill -- the pattern inside a band. Frame-global style;
 		// only the mode is per band, packed into the draw mode.
@@ -2168,6 +2178,32 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 		Level->GpuParticleWritten > 0 && screen->mGpuParticles != nullptr && screen->mGpuParticles->IsDrawable())
 	{
 		auto particles = screen->mGpuParticles;
+
+		// [2a] SOFT PARTICLES -- readable scene depth for this ONE draw. With
+		// r_gpuparticles_soft above 0 and gpuparticles' scene-depth variants
+		// compiled, the scene pass is switched to hold depth read-only, and the
+		// particle draw below uses the variant that fades each particle where it
+		// meets a surface.
+		//
+		// Legal here because depth writing is already off: SetDepthMask(false)
+		// runs right after the translucent BORDER list, which still draws above
+		// with depth writes on, in the ordinary pass -- the switch never reaches
+		// it. Scoped to the particle draw alone: the drawn lines below keep the
+		// ordinary pass and exactly their pre-2a pipelines until drawnlines.fp
+		// reads depth itself; then the "off" below moves under their draw.
+		//
+		// SetSceneDepthReadable refuses targets it cannot serve (camera textures,
+		// save pictures, per-layer stereo) and particles there draw hard, as
+		// before. At 0, the default, none of this runs: no switch, no extra pass,
+		// no extra pipeline. fx.depthread times each switch, main view only.
+		bool sceneDepthReadable = false;
+		if ((float)r_gpuparticles_soft > 0.f && particles->SceneDepthShaderReady)
+		{
+			if (perfGroups) state.PushGroup("fx.depthread");	// [2a] r_perflog
+			sceneDepthReadable = state.SetSceneDepthReadable(true);
+			if (perfGroups) state.PopGroup();	// [2a] r_perflog: fx.depthread
+		}
+
 		if (perfGroups) state.PushGroup("fx.gpuparticles");	// RS FORK -- r_perflog
 		state.SetEffect(EFF_GPUPARTICLES);
 		state.SetRenderStyle(STYLE_Add);
@@ -2181,6 +2217,15 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 		state.SetRenderStyle(STYLE_Translucent);
 		state.SetVertexBuffer(screen->mVertexData);
 		if (perfGroups) state.PopGroup();	// RS FORK -- r_perflog: fx.gpuparticles
+
+		// [2a] Back to the ordinary, writable pass before anything else draws --
+		// the drawn lines next, then everything after RenderTranslucent.
+		if (sceneDepthReadable)
+		{
+			if (perfGroups) state.PushGroup("fx.depthread");	// [2a] r_perflog
+			state.SetSceneDepthReadable(false);
+			if (perfGroups) state.PopGroup();	// [2a] r_perflog: fx.depthread
+		}
 	}
 
 	// [DRAWNLINES] Glowing lines drawn as boxes (drawnlines.vp/.fp): SetDrawnLine

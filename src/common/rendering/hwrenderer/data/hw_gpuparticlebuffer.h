@@ -82,6 +82,13 @@ public:
 	bool ShaderReady = false;
 	bool ShaderFailed = false;
 
+	// [2a] Set by VkShaderManager once gpuparticles' scene-depth fragment
+	// variants (single/multisample x flat/layered) have compiled for every pass.
+	// The soft fade (r_gpuparticles_soft) asks for readable scene depth only when
+	// this is set; without it particles draw with hard edges, exactly as before
+	// 2a, and no read-only depth pass is ever begun.
+	bool SceneDepthShaderReady = false;
+
 	bool IsDrawable() const { return ShaderReady && !ShaderFailed && mBuffer != nullptr && mQuads != nullptr; }
 
 	// Diagnostics. CountDraw is called per particle draw; DebugReport prints at

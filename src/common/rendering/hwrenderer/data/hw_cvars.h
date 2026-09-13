@@ -127,6 +127,7 @@ EXTERN_CVAR(Float, r_gpuparticles_sizescale)
 EXTERN_CVAR(Float, r_gpuparticles_maxsize)
 EXTERN_CVAR(Float, r_gpuparticles_stretch)
 EXTERN_CVAR(Float, r_gpuparticles_intensity)
+EXTERN_CVAR(Float, r_gpuparticles_soft)	// [2a] soft particles, 0 = off
 EXTERN_CVAR(Int, r_gpuparticles_ringsize)
 EXTERN_CVAR(Bool, r_gpuparticles_debug)
 int GpuParticleRingCapacity();

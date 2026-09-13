@@ -553,6 +553,30 @@ struct HWViewpointUniforms
 	FVector4 mSweepPassed = { 0.f, 0.f, 0.f, 32.f };
 	FVector4 mSweepPassedColor = { 1.f, 1.f, 1.f, 0.f };
 
+	// [2a] READABLE SCENE DEPTH -- see "Engine docs/GPU_PARTICLES_STAGE2_PLAN.md"
+	// 2a and FRenderState::SetSceneDepthReadable.
+	//
+	//   mLinearizeDepth      x LinearizeDepthA, y LinearizeDepthB: the pair the
+	//                        post passes use (lineardepth.fp, volumetricbeam.fp),
+	//                        distance along the view axis = 1 / (raw * A + B).
+	//                        zw spare.
+	//   mGpuParticleParams2  x soft distance in map units (r_gpuparticles_soft,
+	//                        0 = hard edges, as before 2a); yzw spare for the
+	//                        later stage-2 particle knobs.
+	//
+	// mLinearizeDepth is general, named for what it holds: any forward effect that
+	// reads scene depth through the read-only depth pass linearizes with it --
+	// gpuparticles.fp now, drawnlines.fp later. Both are filled beside
+	// mGpuParticleParams in HWDrawInfo::StartScene.
+	//
+	// +32 bytes per viewpoint: 24,592 -> 24,624. APPENDED LAST, after
+	// mSweepPassedColor, so no existing member moves, and last in both GLSL copies
+	// (gl_shader.cpp's ViewpointUBO, vk_shader.cpp's ViewpointData plus its
+	// #defines) in the same change. Anything added after these goes after THEM,
+	// in all three places.
+	FVector4 mLinearizeDepth = { 0.f, 1.f, 0.f, 0.f };
+	FVector4 mGpuParticleParams2 = { 0.f, 0.f, 0.f, 0.f };
+
 	void CalcDependencies()
 	{
 		mNormalViewMatrix.computeNormalMatrix(mViewMatrix);
@@ -583,6 +607,8 @@ static_assert(sizeof(HWViewpointUniforms) <= 65536, "HWViewpointUniforms exceeds
 // Rounded here to 256, the largest minUniformBufferOffsetAlignment the Vulkan
 // spec allows, so it holds on any device: with mBeamLook the block is 24,560
 // bytes, aligned 24,576, bound 49,152 of 65,536. [round2 B2] With mSweepPassed
-// and mSweepPassedColor it is 24,592, aligned 24,832, bound 49,664.
+// and mSweepPassedColor it is 24,592, aligned 24,832, bound 49,664. [2a] With
+// mLinearizeDepth and mGpuParticleParams2 it is 24,624, still aligned 24,832,
+// bound 49,664.
 static_assert(((sizeof(HWViewpointUniforms) + 255) / 256) * 256 * 2 <= 65536,
 	"Two aligned HWViewpointUniforms blocks exceed the 65,536-byte range Vulkan binds them with.");

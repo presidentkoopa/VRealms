@@ -34,6 +34,16 @@
 #include "hw_cvars.h"	// [DRAWNLINES] r_beams_drawn, for the compile line
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES] ShaderReady / ShaderFailed
 
+// [2a] Effects that read the scene depth inside a read-only depth pass, and so get
+// four extra fragment variants each (single-sample / multisample x flat / layered,
+// see mSceneDepthEffectFrag). Only gpuparticles in 2a, for its soft edge;
+// drawnlines joins when drawnlines.fp clamps its glow at the surface. Per effect,
+// never per mod: any caller that sets one of these effects gets the same shader.
+static bool EffectHasSceneDepthVariants(int effect)
+{
+	return effect == EFF_GPUPARTICLES;
+}
+
 ShaderIncludeResult VkShaderManager::OnInclude(FString headerName, FString includerName, size_t depth)
 {
 	if (depth > 8)
@@ -156,6 +166,39 @@ bool VkShaderManager::CompileNextShader()
 			prog.vert = LoadVertShader(effectshaders[i].ShaderName, effectshaders[i].vp, effectshaders[i].defines);
 			prog.frag = LoadFragShader(effectshaders[i].ShaderName, effectshaders[i].fp1, effectshaders[i].fp2, effectshaders[i].fp3, effectshaders[i].defines, true, compilePass == GBUFFER_PASS);
 		}
+
+		// [2a] The scene-depth variants of an effect that reads scene depth,
+		// compiled here beside the effect rather than when first drawn: a glslang
+		// compile of this prolog is a visible hitch in a headset, and turning soft
+		// particles on must not cost one mid-fight. Only after the effect itself
+		// compiled, and in their own try -- a variant that fails leaves the
+		// effect's ordinary program untouched, and the effect keeps hard edges.
+		if (prog.frag && EffectHasSceneDepthVariants(i))
+		{
+			for (int variant = 0; variant < SCENE_DEPTH_VARIANTS; variant++)
+			{
+				FString defines = effectshaders[i].defines;
+				defines << "#define SCENE_DEPTH_READ\n";
+				if (variant & 1) defines << "#define SCENE_DEPTH_MULTISAMPLE\n";
+				if (variant & 2) defines << "#define SCENE_DEPTH_LAYERED\n";
+				FString name;
+				name.Format("%s_scenedepth%d", effectshaders[i].ShaderName, variant);
+				try
+				{
+					mSceneDepthEffectFrag[compilePass][i][variant] = LoadFragShader(name, effectshaders[i].fp1, effectshaders[i].fp2, effectshaders[i].fp3, defines.GetChars(), true, compilePass == GBUFFER_PASS, true);
+				}
+				catch (const std::exception &err)
+				{
+					Printf(TEXTCOLOR_RED "%s: scene depth variant failed to compile (%s pass, %s, %s) -- soft edges unavailable:\n%s\n",
+						effectshaders[i].ShaderName,
+						compilePass == GBUFFER_PASS ? "gbuffer" : "normal",
+						(variant & 1) ? "multisample" : "single-sample",
+						(variant & 2) ? "layered" : "flat", err.what());
+					mSceneDepthEffectFrag[compilePass][i][variant].reset();
+				}
+			}
+		}
+
 		mEffectShaders[compilePass].push_back(std::move(prog));
 
 		compileIndex++;
@@ -181,6 +224,18 @@ bool VkShaderManager::CompileNextShader()
 					fb->mGpuParticles->ShaderFailed = !ok;
 					fb->mGpuParticles->ShaderReady = ok;
 					Printf("GpuParticles: effect shader %s for %d passes\n", ok ? "compiled" : "NOT available", (int)MAX_PASS_TYPES);
+
+					// [2a] Soft particles need every scene-depth variant for every
+					// pass: which one a pipeline uses depends on the sample count and
+					// layering of the target at draw time, which a menu can change.
+					bool depthOk = ok;
+					for (int pass = 0; pass < MAX_PASS_TYPES; pass++)
+						for (int variant = 0; variant < SCENE_DEPTH_VARIANTS; variant++)
+							if (!mSceneDepthEffectFrag[pass][EFF_GPUPARTICLES][variant])
+								depthOk = false;
+					fb->mGpuParticles->SceneDepthShaderReady = depthOk;
+					Printf("GpuParticles: scene depth variants %s -- r_gpuparticles_soft %s\n",
+						depthOk ? "compiled" : "NOT available", depthOk ? "can soften edges" : "keeps hard edges");
 				}
 
 				// [DRAWNLINES] The same rule: the effect for every pass, or no draw
@@ -230,6 +285,14 @@ VkShaderProgram *VkShaderManager::GetEffect(int effect, EPassType passType)
 		return &mEffectShaders[passType][effect];
 	}
 	return nullptr;
+}
+
+// [2a] See the declaration in vk_shader.h.
+VulkanShader *VkShaderManager::GetSceneDepthEffectFrag(int effect, EPassType passType, bool multisample, bool layered)
+{
+	if (compileIndex != -1 || effect < 0 || effect >= MAX_EFFECTS || (int)passType < 0 || (int)passType >= MAX_PASS_TYPES)
+		return nullptr;
+	return mSceneDepthEffectFrag[passType][effect][(multisample ? 1 : 0) | (layered ? 2 : 0)].get();
 }
 
 VkShaderProgram *VkShaderManager::Get(unsigned int eff, bool alphateston, EPassType passType)
@@ -396,6 +459,13 @@ static const char *shaderBindings = R"(
 		// y darken, z desaturate, w soft; rgb tint, w enable.
 		vec4 uSweepPassed;
 		vec4 uSweepPassedColor;
+
+		// [2a] APPENDED LAST, matching HWViewpointUniforms::mLinearizeDepth /
+		// mGpuParticleParams2 by offset. uLinearizeDepth: x LinearizeDepthA,
+		// y LinearizeDepthB (distance = 1 / (raw * A + B)), for effects reading
+		// scene depth. uGpuParticleParams2.x: soft distance, map units, 0 = off.
+		vec4 uLinearizeDepth;
+		vec4 uGpuParticleParams2;
 	};
 
 	layout(set = 1, binding = 0, std140) uniform readonly ViewpointUBO {
@@ -486,6 +556,9 @@ static const char *shaderBindings = R"(
 	// [round2 B2] and these
 	#define uSweepPassed viewpoints[HW_VIEWPOINT_INDEX].uSweepPassed
 	#define uSweepPassedColor viewpoints[HW_VIEWPOINT_INDEX].uSweepPassedColor
+	// [2a] and these
+	#define uLinearizeDepth viewpoints[HW_VIEWPOINT_INDEX].uLinearizeDepth
+	#define uGpuParticleParams2 viewpoints[HW_VIEWPOINT_INDEX].uGpuParticleParams2
 
 	layout(set = 1, binding = 1, std140) uniform readonly MatricesUBO {
 		mat4 ModelMatrix;
@@ -736,6 +809,58 @@ static const char *shaderBindings = R"(
 	vec4 noise4(vec4) { return vec4(0); }
 )";
 
+// [2a] THE SCENE DEPTH, READABLE -- declared ONLY in an effect's scene-depth
+// variants (LoadFragShader's sceneDepth), never in shaderBindings above. Binding 3
+// of the fixed set holds the screen's scene depth (VkDescriptorSetManager::
+// UpdateFixedSet), and that image is a WRITABLE depth attachment for nearly the
+// whole scene. A pipeline whose shaders merely declare a binding counts as using
+// it, so a declaration in the shared prolog would put every surface draw in
+// breach of the attachment-feedback and layout rules. Only these variants
+// declare it, and they are only built for read-only depth passes
+// (VkRenderPassKey::DepthReadOnly), where the image is
+// DEPTH_STENCIL_READ_ONLY_OPTIMAL, the layout binding 3 is written with.
+//
+// The defines pick the sampler to match the view binding 3 holds:
+//   flat, single-sample   sampler2D         (DepthOnlyView)
+//   flat, multisample     sampler2DMS       (DepthOnlyView)
+//   layered               sampler2DArray    (DepthOnlyArrayView, one layer per eye,
+//   layered, multisample  sampler2DMSArray   indexed by the multiview view index)
+//
+// texelFetch at the fragment's own pixel: the depth image IS the pass's depth
+// attachment, so gl_FragCoord.xy is its texel with no scene-viewport scaling.
+// Multisample reads sample 0, as volumetricbeam.fp and the SSAO depth pass do.
+static const char *sceneDepthBindings = R"(
+
+	#if defined(SCENE_DEPTH_LAYERED) && defined(SCENE_DEPTH_MULTISAMPLE)
+	layout(set = 0, binding = 3) uniform sampler2DMSArray SceneDepthTexture;
+	#elif defined(SCENE_DEPTH_LAYERED)
+	layout(set = 0, binding = 3) uniform sampler2DArray SceneDepthTexture;
+	#elif defined(SCENE_DEPTH_MULTISAMPLE)
+	layout(set = 0, binding = 3) uniform sampler2DMS SceneDepthTexture;
+	#else
+	layout(set = 0, binding = 3) uniform sampler2D SceneDepthTexture;
+	#endif
+
+	// The raw 0..1 depth-buffer value of the scene under this fragment.
+	float SceneDepthRaw()
+	{
+		ivec2 texelPos = ivec2(gl_FragCoord.xy);
+	#if defined(SCENE_DEPTH_LAYERED)
+		return texelFetch(SceneDepthTexture, ivec3(texelPos, HW_VIEWPOINT_INDEX), 0).x;
+	#else
+		return texelFetch(SceneDepthTexture, texelPos, 0).x;
+	#endif
+	}
+
+	// A raw depth value as distance along the view axis, map units: the post
+	// passes' LinearizeDepthA/B, carried in uLinearizeDepth. Put a fragment's own
+	// gl_FragCoord.z through the same function to compare it with the scene.
+	float SceneDepthLinear(float rawDepth)
+	{
+		return 1.0 / (clamp(rawDepth, 0.0, 1.0) * uLinearizeDepth.x + uLinearizeDepth.y);
+	}
+)";
+
 std::unique_ptr<VulkanShader> VkShaderManager::LoadVertShader(FString shadername, const char *vert_lump, const char *defines)
 {
 	FString code = GetTargetGlslVersion();
@@ -762,7 +887,7 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadVertShader(FString shadername
 		.Create(shadername.GetChars(), fb->device.get());
 }
 
-std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass)
+std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth)
 {
 	FString code = GetTargetGlslVersion();
 	code << "#extension GL_GOOGLE_include_directive : enable\n";
@@ -781,6 +906,11 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername
 	if (!fb->device->EnabledFeatures.Features.shaderClipDistance) code << "#define NO_CLIPDISTANCE_SUPPORT\n";
 	if (!alphatest) code << "#define NO_ALPHATEST\n";
 	if (gbufferpass) code << "#define GBUFFER_PASS\n";
+
+	// [2a] Only an effect's scene-depth variant gets the scene depth declaration;
+	// see sceneDepthBindings. After the prolog, so it can use HW_VIEWPOINT_INDEX
+	// and uLinearizeDepth; before the effect's own lump, which calls it.
+	if (sceneDepth) code << sceneDepthBindings;
 
 	// [STAMP] The surface-stamp shape library, ahead of main.fp so main.fp can
 	// call it without a forward declaration. It needs only what the preamble

@@ -95,6 +95,12 @@ public:
 	void Deinit();
 
 	VkShaderProgram *GetEffect(int effect, EPassType passType);
+	// [2a] The fragment shader an effect draws with inside a read-only scene depth
+	// pass (FRenderState::SetSceneDepthReadable): its scene-depth variant for that
+	// pass's sample count and layering, or null when the effect has no variants or
+	// they did not compile -- VkRenderPassSetup::CreatePipeline then keeps the
+	// effect's ordinary fragment shader. See EffectHasSceneDepthVariants.
+	VulkanShader *GetSceneDepthEffectFrag(int effect, EPassType passType, bool multisample, bool layered);
 	VkShaderProgram *Get(unsigned int eff, bool alphateston, EPassType passType);
 	bool CompileNextShader();
 
@@ -105,7 +111,10 @@ public:
 
 private:
 	std::unique_ptr<VulkanShader> LoadVertShader(FString shadername, const char *vert_lump, const char *defines);
-	std::unique_ptr<VulkanShader> LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass);
+	// [2a] sceneDepth adds the effect-scoped scene depth declaration (binding 3 of
+	// the fixed set) after the shared prolog; the caller's defines pick the variant.
+	// Default false, so every existing caller compiles exactly what it did.
+	std::unique_ptr<VulkanShader> LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth = false);
 
 	FString GetTargetGlslVersion();
 	FString LoadPublicShaderLump(const char *lumpname);
@@ -118,6 +127,12 @@ private:
 	std::vector<VkShaderProgram> mMaterialShaders[MAX_PASS_TYPES];
 	std::vector<VkShaderProgram> mMaterialShadersNAT[MAX_PASS_TYPES];
 	std::vector<VkShaderProgram> mEffectShaders[MAX_PASS_TYPES];
+	// [2a] Scene-depth fragment variants, [pass][effect][variant], where variant is
+	// (multisample ? 1 : 0) | (layered ? 2 : 0). Only effects that read scene depth
+	// get them (EffectHasSceneDepthVariants in vk_shader.cpp); the rest stay null.
+	// Fragment only: the variant draws with the effect's own vertex shader.
+	static constexpr int SCENE_DEPTH_VARIANTS = 4;
+	std::unique_ptr<VulkanShader> mSceneDepthEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS][SCENE_DEPTH_VARIANTS];
 	uint8_t compilePass = 0, compileState = 0;
 	int compileIndex = 0;
 

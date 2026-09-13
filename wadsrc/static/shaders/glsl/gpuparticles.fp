@@ -34,6 +34,25 @@ void main()
 	float falloff = clamp(1.0 - r2, 0.0, 1.0);
 	falloff *= falloff;
 
+#ifdef SCENE_DEPTH_READ
+	// [2a] SOFT EDGE. Only in the scene-depth variants (vk_shader.cpp,
+	// sceneDepthBindings), which are only drawn inside the read-only depth pass
+	// RenderTranslucent opens while r_gpuparticles_soft is above 0. The ordinary
+	// gpuparticles program never sees this block.
+	//
+	// Fade to nothing over uGpuParticleParams2.x map units in front of whatever
+	// surface is behind this pixel, so a spark meeting a wall fades into it rather
+	// than cutting off along the intersection. Both distances go through the same
+	// linearization, so the fade reaches exactly 0 at the surface.
+	float softDistance = uGpuParticleParams2.x;
+	if (softDistance > 0.0)
+	{
+		float sceneDistance = SceneDepthLinear(SceneDepthRaw());
+		float ownDistance = SceneDepthLinear(gl_FragCoord.z);
+		falloff *= clamp((sceneDistance - ownDistance) / softDistance, 0.0, 1.0);
+	}
+#endif
+
 	FragColor = vec4(vParticleColor.rgb, falloff);
 
 #ifdef GBUFFER_PASS

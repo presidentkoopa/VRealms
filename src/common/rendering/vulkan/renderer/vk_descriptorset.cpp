@@ -124,7 +124,63 @@ void VkDescriptorSetManager::UpdateFixedSet()
 	update.AddCombinedImageSampler(FixedSet.get(), 1, fb->GetTextureManager()->Lightmap.View.get(), fb->GetSamplerManager()->LightmapSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	if (fb->RaytracingEnabled())
 		update.AddAccelerationStructure(FixedSet.get(), 2, fb->GetRaytrace()->GetAccelStruct());
+
+	// [2a] Binding 3: the scene depth, depth aspect only, for effects drawn inside
+	// a read-only depth pass (FRenderState::SetSceneDepthReadable). Written with
+	// DEPTH_STENCIL_READ_ONLY_OPTIMAL, the layout the image has only inside such a
+	// pass (VkRenderPassSetup::CreateRenderPass with DepthReadOnly). Everywhere
+	// else no bound pipeline declares binding 3 (only the scene-depth variants in
+	// vk_shader.cpp do), so its layout is never checked against the writable one.
+	//
+	// Here because this runs every frame right after VkRenderBuffers::BeginFrame
+	// has (re)built the scene images, so the view is always this frame's. Left
+	// unwritten before the scene images exist; IsSceneDepthReadTarget then refuses
+	// every target, so nothing that reads it is ever drawn.
+	SceneDepthReadTexture = nullptr;
+	SceneDepthReadImage = nullptr;
+	SceneDepthReadLayered = false;
+	if (VkRenderBuffers* buffers = fb->GetBuffers())
+	{
+		VkTextureImage& depth = buffers->SceneDepthStencil;
+		if (depth.Image)
+		{
+			const bool layered = depth.Image->layerCount > 1;
+			VulkanImageView* view = layered ? depth.DepthOnlyArrayView.get() : depth.DepthOnlyView.get();
+			if (view)
+			{
+				// Nearest and clamped; the shaders texelFetch anyway, and a
+				// multisampled image ignores the sampler.
+				update.AddCombinedImageSampler(FixedSet.get(), 3, view, fb->GetSamplerManager()->Get(PPFilterMode::Nearest, PPWrapMode::Clamp), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+				SceneDepthReadTexture = &depth;
+				SceneDepthReadImage = depth.Image.get();
+				SceneDepthReadLayered = layered;
+			}
+		}
+	}
+
 	update.Execute(fb->device.get());
+}
+
+bool VkDescriptorSetManager::IsSceneDepthReadTarget(VulkanImageView* depthStencilView, int layers, uint32_t viewMask) const
+{
+	// [2a] See the declaration, and binding 3 in UpdateFixedSet above.
+	const VkTextureImage* depth = SceneDepthReadTexture;
+	if (!depthStencilView || !depth || !depth->Image || depth->Image.get() != SceneDepthReadImage)
+		return false;
+
+	if (SceneDepthReadLayered)
+	{
+		// Multiview into every layer at once: VulkanRenderDevice::SetSceneRenderTarget's
+		// layered branch. Per-layer stereo into ONE layer of this image is refused --
+		// the array view would also cover a layer that is not attached and is still
+		// in the writable layout.
+		return viewMask != 0 && layers == (int)depth->Image->layerCount && depthStencilView == depth->GetFramebufferView();
+	}
+
+	// One layer, no multiview: SetSceneRenderTarget's flat branch (GetLayerView(0),
+	// which is View for a one-layer image).
+	return viewMask == 0 && layers == 1 &&
+		(depthStencilView == depth->GetLayerView(0) || depthStencilView == depth->GetFramebufferView());
 }
 
 void VkDescriptorSetManager::ResetHWTextureSets()
@@ -291,6 +347,11 @@ void VkDescriptorSetManager::CreateFixedSetLayout()
 	builder.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	if (fb->RaytracingEnabled())
 		builder.AddBinding(2, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	// [2a] The scene depth, readable in a read-only depth pass (UpdateFixedSet).
+	// In the layout of every pipeline, because every pipeline shares this set, but
+	// declared in GLSL only by the effects' scene-depth variants -- so no other
+	// pipeline ever uses it while the image is a writable attachment.
+	builder.AddBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	builder.DebugName("VkDescriptorSetManager.FixedSetLayout");
 	FixedSetLayout = builder.Create(fb->device.get());
 }
@@ -310,7 +371,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 void VkDescriptorSetManager::CreateFixedSetPool()
 {
 	DescriptorPoolBuilder poolbuilder;
-	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * maxSets);
+	// [2a] 3, not 2: shadowmap (binding 0), lightmap (1), scene depth (3).
+	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * maxSets);
 	if (fb->RaytracingEnabled())
 		poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * maxSets);
 	poolbuilder.MaxSets(maxSets);

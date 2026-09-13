@@ -1096,6 +1096,18 @@ public:
 	virtual void PushGroup(const FString& name) {}
 	virtual void PopGroup() {}
 
+	// [2a] READABLE SCENE DEPTH ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2a).
+	// true: make the scene depth readable by the effects drawn next -- on Vulkan,
+	// end the scene pass and begin it again holding depth read-only (no writes, no
+	// clears), where an effect's scene-depth shader variant samples it. false: back
+	// to the ordinary writable pass. Returns whether depth is readable afterwards.
+	// A backend or target that cannot -- GL, GLES, a camera texture, a save
+	// picture -- returns false and changes nothing, and the caller draws exactly as
+	// it did before 2a. Whatever is drawn in between must not need depth writes.
+	// No-op by default, so GL and GLES are untouched. Every true needs its false on
+	// the same path, before anything that writes depth.
+	virtual bool SetSceneDepthReadable(bool on) { return false; }
+
 	void SetColorMask(bool on)
 	{
 		SetColorMask(on, on, on, on);

@@ -69,6 +69,13 @@ public:
 	int Layers;
 	uint32_t ViewMask;
 	VkFormat DrawBufferFormat;
+	// [2a] Nonzero: the subpass holds the depth/stencil attachment as
+	// DEPTH_STENCIL_READ_ONLY_OPTIMAL, never clears or writes it, and effects
+	// drawn in it may sample the scene depth (fixed binding 3). Set only between
+	// FRenderState::SetSceneDepthReadable(true) and (false); zero -- the pass as
+	// it was before 2a -- everywhere else. An int after the last int-sized member,
+	// so this memcmp'd key (and VkRenderTargetFramebufferKey) gains no padding.
+	int DepthReadOnly;
 
 	bool operator<(const VkRenderPassKey &other) const { return memcmp(this, &other, sizeof(VkRenderPassKey)) < 0; }
 	bool operator==(const VkRenderPassKey &other) const { return memcmp(this, &other, sizeof(VkRenderPassKey)) == 0; }

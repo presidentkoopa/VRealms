@@ -69,6 +69,7 @@ public:
 		for (auto& it : LayerDepthOnlyViews)
 			deletelist->Add(std::move(it));
 		LayerDepthOnlyViews.clear();
+		deletelist->Add(std::move(DepthOnlyArrayView));	// [2a]
 		deletelist->Add(std::move(DepthOnlyView));
 		deletelist->Add(std::move(View));
 		deletelist->Add(std::move(Image));
@@ -90,6 +91,11 @@ public:
 	std::unique_ptr<VulkanImageView> FramebufferView;
 	std::unique_ptr<VulkanImageView> ArrayView;
 	std::unique_ptr<VulkanImageView> DepthOnlyView;
+	// [2a] Depth aspect only, 2D_ARRAY over every layer: what a layered (multiview)
+	// read of the scene depth samples, one layer per eye (fixed binding 3,
+	// VkDescriptorSetManager::UpdateFixedSet). Created by CreateDepthTargetViews
+	// for depth images with more than one layer; null otherwise.
+	std::unique_ptr<VulkanImageView> DepthOnlyArrayView;
 	std::vector<std::unique_ptr<VulkanImageView>> LayerViews;
 	std::vector<std::unique_ptr<VulkanImageView>> LayerDepthOnlyViews;
 	VkImageLayout Layout = VK_IMAGE_LAYOUT_UNDEFINED;

@@ -38,6 +38,7 @@
 #include "flatvertices.h"
 #include "hwrenderer/data/hw_viewpointbuffer.h"
 #include "hwrenderer/data/shaderuniforms.h"
+#include "printf.h"	// [2a] the scene-depth variant line in SetSceneDepthReadable
 
 CVAR(Int, vk_submit_size, 1000, 0);
 EXTERN_CVAR(Bool, r_skipmats)
@@ -504,6 +505,7 @@ void VkRenderState::BeginFrame()
 {
 	mMaterial.Reset();
 	mApplyCount = 0;
+	mSceneDepthReadOnly = false;	// [2a] never carried into a new frame
 }
 
 void VkRenderState::EndRenderPass()
@@ -548,6 +550,73 @@ void VkRenderState::PopGroup()
 	fb->GetCommands()->PopGroup(TimestampViewCount());
 }
 
+// [2a] READABLE SCENE DEPTH (FRenderState::SetSceneDepthReadable).
+//
+// Vulkan cannot sample an image that is a writable attachment of the pass being
+// drawn. So "readable" means: end the scene pass and begin it again with the
+// depth/stencil attachment referenced as DEPTH_STENCIL_READ_ONLY_OPTIMAL
+// (VkRenderPassKey::DepthReadOnly). Same attachments, LOAD/STORE, no clears, the
+// same initial and final layouts, so every pass after it sees what it saw before
+// 2a; pipelines built for it never write depth or stencil. No copy is made.
+//
+// Only for the depth image that fixed binding 3 holds this frame, attached the
+// same way (VkDescriptorSetManager::IsSceneDepthReadTarget), and never while a
+// depth or stencil clear is still queued, which a read-only pass cannot perform.
+// Otherwise it returns false and changes nothing.
+//
+// The next pass begins HERE rather than lazily at the next draw, so a perf group
+// around the call (fx.depthread) times the whole switch, and its Push and Pop
+// both sit inside a pass on the same target and take the same number of
+// timestamp views (TimestampViewCount).
+bool VkRenderState::SetSceneDepthReadable(bool on)
+{
+	const bool readable = on && !(mClearTargets & (CT_Depth | CT_Stencil)) &&
+		fb->GetDescriptorSetManager()->IsSceneDepthReadTarget(mRenderTarget.DepthStencil, mRenderTarget.Layers, mRenderTarget.ViewMask);
+
+	if (on)
+	{
+		// One console line per distinct outcome per session, so a log from a
+		// headset run shows which variant soft particles used, or that a target
+		// was refused. Once each, not on change: the main view and a camera texture
+		// in the same frame would otherwise alternate every frame.
+		static unsigned loggedOutcomes = 0;
+		const int outcome = !readable ? 0 : 1 + (mRenderTarget.Samples > 1 ? 1 : 0) + (mRenderTarget.ViewMask != 0 ? 2 : 0);
+		if (!(loggedOutcomes & (1u << outcome)))
+		{
+			loggedOutcomes |= 1u << outcome;
+			if (readable)
+				Printf("Scene depth: read-only depth pass, %s %s variant\n",
+					mRenderTarget.Samples > 1 ? "multisample" : "single-sample",
+					mRenderTarget.ViewMask != 0 ? "layered" : "flat");
+			else
+				Printf("Scene depth: a target was refused (layers %d, view mask %u) -- its effects draw as before\n",
+					mRenderTarget.Layers, (unsigned)mRenderTarget.ViewMask);
+		}
+	}
+
+	if (readable == mSceneDepthReadOnly)
+		return readable;
+
+	const bool wasInPass = mCommandBuffer != nullptr;
+	EndRenderPass();
+	mSceneDepthReadOnly = readable;
+	mNeedApply = true;
+
+	if (wasInPass)
+	{
+		// What ApplyRenderPass does when it has to begin a pass; EndRenderPass has
+		// already cleared the pipeline, viewpoint and vertex buffer bindings, and
+		// BeginRenderPass marks the descriptor sets for rebinding.
+		mCommandBuffer = fb->GetCommands()->GetDrawCommands();
+		mScissorChanged = true;
+		mViewportChanged = true;
+		mStencilRefChanged = true;
+		mBias.mChanged = true;
+		BeginRenderPass(mCommandBuffer);
+	}
+	return readable;
+}
+
 void VkRenderState::EndFrame()
 {
 	mMatrixBufferWriter.Reset();
@@ -566,6 +635,7 @@ void VkRenderState::EnableDrawBuffers(int count, bool apply)
 void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat format, VkSampleCountFlagBits samples, int layers, uint32_t viewMask, int layerIndex)
 {
 	EndRenderPass();
+	mSceneDepthReadOnly = false;	// [2a] a new target never inherits a read-only depth pass
 
 	mRenderTarget.Image = image;
 	mRenderTarget.DepthStencil = depthStencilView;
@@ -587,6 +657,10 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 	key.DepthStencil = !!mRenderTarget.DepthStencil;
 	key.Layers = mRenderTarget.Layers;
 	key.ViewMask = mRenderTarget.ViewMask;
+	// [2a] Zero unless SetSceneDepthReadable(true) accepted this target, so every
+	// other pass gets exactly the key -- and so the render pass, framebuffer and
+	// pipelines -- it had before 2a.
+	key.DepthReadOnly = (mSceneDepthReadOnly && key.DepthStencil) ? 1 : 0;
 
 	mPassSetup = fb->GetRenderPassManager()->GetRenderPass(key);
 

@@ -438,6 +438,14 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 			// x tint mix, y darken, z desaturate, w soft; rgb tint, w enable.
 			vec4 uSweepPassed;
 			vec4 uSweepPassedColor;
+
+			// [2a] APPENDED LAST, matching HWViewpointUniforms::mLinearizeDepth /
+			// mGpuParticleParams2 by offset. GL never reads scene depth in a
+			// forward effect and never draws particles; declared only so the
+			// block keeps agreeing with the C++ struct for whatever is appended
+			// after these. No GL shader reads them.
+			vec4 uLinearizeDepth;
+			vec4 uGpuParticleParams2;
 		};
 
 		uniform int uTextureMode;

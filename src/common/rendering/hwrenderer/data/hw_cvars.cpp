@@ -232,6 +232,16 @@ CVARD(Float, r_gpuparticles_sizescale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "
 CVARD(Float, r_gpuparticles_maxsize, 8.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "world-unit cap on a GPU particle's drawn size")
 CVARD(Float, r_gpuparticles_stretch, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies GPU particle velocity stretch")
 CVARD(Float, r_gpuparticles_intensity, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies GPU particle brightness")
+// [2a] Soft particles ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2a). A particle
+// fades over this many map units where it meets a surface, instead of cutting
+// hard into it. It needs the scene depth readable during the particle draw, so a
+// value above 0 makes RenderTranslucent switch the scene pass to a read-only
+// depth pass around that one draw (FRenderState::SetSceneDepthReadable).
+// DEFAULT 0 = OFF: no switch, no new pass or pipeline, the frame exactly as
+// before 2a. Renderer-read every frame into HWViewpointUniforms::
+// mGpuParticleParams2.x, so the menu slider responds while the menu is open.
+// Vulkan only; GL and GLES never draw GPU particles.
+CVARD(Float, r_gpuparticles_soft, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "GPU particles fade over this many map units where they meet a surface; 0 = off (Vulkan only)")
 CUSTOM_CVARD(Int, r_gpuparticles_ringsize, 65536, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "GPU particle ring capacity; takes effect on restart")
 {
 	Printf("You must restart " GAMENAME " for this change to take effect.\n");

@@ -69,6 +69,9 @@ public:
 	void PushGroup(const FString& name) override;
 	void PopGroup() override;
 
+	// [2a] Readable scene depth: a read-only depth pass; see vk_renderstate.cpp.
+	bool SetSceneDepthReadable(bool on) override;
+
 	void BeginFrame();
 	void SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat Format, VkSampleCountFlagBits samples, int layers = 1, uint32_t viewMask = 0, int layerIndex = 0);
 	void Bind(int bindingpoint, uint32_t offset);
@@ -100,6 +103,10 @@ protected:
 	VkPipelineKey mPipelineKey = {};
 	VkRenderPassSetup *mPassSetup = nullptr;
 	int mClearTargets = 0;
+	// [2a] The scene pass holds depth read-only (VkRenderPassKey::DepthReadOnly).
+	// Set only by SetSceneDepthReadable; cleared by SetRenderTarget and BeginFrame,
+	// so no other target or frame can inherit it.
+	bool mSceneDepthReadOnly = false;
 	float mQueuedClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	bool mNeedApply = true;
 

@@ -100,6 +100,16 @@ void CreateDepthTargetViews(VulkanRenderDevice* fb, VkTextureImage& texture, VkF
 			.DebugName(depthViewName)
 			.Create(fb->device.get());
 
+		// [2a] Every layer, depth aspect only, for a layered scene-depth read
+		// (sampler2DArray / sampler2DMSArray in an effect's scene-depth variant).
+		// Same full-range call as FramebufferView above, minus the stencil aspect,
+		// which a sampled view may not include alongside depth.
+		texture.DepthOnlyArrayView = ImageViewBuilder()
+			.Type(VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+			.Image(texture.Image.get(), format, VK_IMAGE_ASPECT_DEPTH_BIT)
+			.DebugName(depthViewName)
+			.Create(fb->device.get());
+
 		texture.LayerViews.resize(layers);
 		texture.LayerDepthOnlyViews.resize(layers);
 		for (int layer = 0; layer < layers; ++layer)

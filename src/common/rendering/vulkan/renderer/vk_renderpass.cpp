@@ -229,7 +229,22 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 			(clearTargets & CT_Color) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	}
-	if (PassKey.DepthStencil)
+	if (PassKey.DepthStencil && PassKey.DepthReadOnly)
+	{
+		// [2a] THE READ-ONLY DEPTH PASS (FRenderState::SetSceneDepthReadable). Load
+		// and store both aspects, never clear -- a CLEAR load op is not allowed on an
+		// attachment first used read-only, and "readable" means the depth drawn so
+		// far. Initial and final layouts stay DEPTH_STENCIL_ATTACHMENT_OPTIMAL like
+		// every other scene pass, so the pass after this one, and post-processing,
+		// see exactly what they saw before 2a. The subpass reference below is what
+		// makes it read-only.
+		builder.AddDepthStencilAttachment(
+			buffers->SceneDepthStencilFormat, (VkSampleCountFlagBits)PassKey.Samples,
+			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+	}
+	else if (PassKey.DepthStencil)
 	{
 		builder.AddDepthStencilAttachment(
 			buffers->SceneDepthStencilFormat, (VkSampleCountFlagBits)PassKey.Samples,
@@ -240,7 +255,20 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 	builder.AddSubpass();
 	for (int i = 0; i < PassKey.DrawBuffers; i++)
 		builder.AddSubpassColorAttachmentRef(i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	if (PassKey.DepthStencil)
+	if (PassKey.DepthStencil && PassKey.DepthReadOnly)
+	{
+		// [2a] Depth and stencil referenced read-only, so a fragment shader may
+		// sample the same image through binding 3 (the layout that binding is
+		// written with). The dependency adds the fragment-shader read, as the
+		// post-process passes that sample scene depth declare it.
+		builder.AddSubpassDepthStencilAttachmentRef(PassKey.DrawBuffers, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+		builder.AddExternalSubpassDependency(
+			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT);
+	}
+	else if (PassKey.DepthStencil)
 	{
 		builder.AddSubpassDepthStencilAttachmentRef(PassKey.DrawBuffers, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 		builder.AddExternalSubpassDependency(
@@ -284,16 +312,25 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	builder.Cache(fb->GetRenderPassManager()->GetCache());
 
 	VkShaderProgram *program;
+	// [2a] In a read-only depth pass, an effect that reads scene depth draws with
+	// its scene-depth fragment variant for this pass's sample count and layering
+	// (layered = multiview, which is the only layered target
+	// VkDescriptorSetManager::IsSceneDepthReadTarget accepts). Null otherwise --
+	// every other pipeline, and every pipeline of every ordinary pass, keeps the
+	// fragment shader it always had.
+	VulkanShader *sceneDepthFrag = nullptr;
 	if (key.SpecialEffect != EFF_NONE)
 	{
 		program = fb->GetShaderManager()->GetEffect(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
+		if (PassKey.DepthReadOnly)
+			sceneDepthFrag = fb->GetShaderManager()->GetSceneDepthEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, PassKey.Samples > 1, PassKey.ViewMask != 0);
 	}
 	else
 	{
 		program = fb->GetShaderManager()->Get(key.EffectState, key.AlphaTest, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
 	}
 	builder.AddVertexShader(program->vert.get());
-	builder.AddFragmentShader(program->frag.get());
+	builder.AddFragmentShader(sceneDepthFrag ? sceneDepthFrag : program->frag.get());
 
 	const VkVertexFormat &vfmt = *fb->GetRenderPassManager()->GetVertexFormat(key.VertexFormat);
 
@@ -349,8 +386,15 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	static const VkStencilOp op2vk[] = { VK_STENCIL_OP_KEEP, VK_STENCIL_OP_INCREMENT_AND_CLAMP, VK_STENCIL_OP_DECREMENT_AND_CLAMP };
 	static const VkCompareOp depthfunc2vk[] = { VK_COMPARE_OP_LESS, VK_COMPARE_OP_LESS_OR_EQUAL, VK_COMPARE_OP_ALWAYS };
 
+	// [2a] A pipeline for a read-only depth pass never writes depth or stencil:
+	// Vulkan forbids depth writes and non-KEEP stencil ops against a read-only
+	// depth/stencil layout (VUID-vkCmdDraw-None-06886 / 06887). The effects drawn
+	// there already have depth writes off and the stencil op at KEEP; this makes
+	// it hold for anything, and changes nothing for the ordinary pass.
+	const bool depthReadOnly = PassKey.DepthReadOnly != 0;
+
 	builder.Topology(vktopology[key.DrawType]);
-	builder.DepthStencilEnable(key.DepthTest, key.DepthWrite, key.StencilTest);
+	builder.DepthStencilEnable(key.DepthTest, depthReadOnly ? 0 : key.DepthWrite, key.StencilTest);
 	builder.DepthFunc(depthfunc2vk[key.DepthFunc]);
 	if (fb->device->EnabledFeatures.Features.depthClamp)
 		builder.DepthClampEnable(key.DepthClamp);
@@ -360,7 +404,7 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	// main.vp addresses this by patching up gl_Position.z, which has the side effect of flipping the sign of the front face calculations.
 	builder.Cull(key.CullMode == Cull_None ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT, key.CullMode == Cull_CW ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
 
-	builder.Stencil(VK_STENCIL_OP_KEEP, op2vk[key.StencilPassOp], VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 0xffffffff, 0xffffffff, 0);
+	builder.Stencil(VK_STENCIL_OP_KEEP, depthReadOnly ? VK_STENCIL_OP_KEEP : op2vk[key.StencilPassOp], VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 0xffffffff, 0xffffffff, 0);	// [2a] KEEP when read-only
 
 	ColorBlendAttachmentBuilder blendbuilder;
 	blendbuilder.ColorWriteMask((VkColorComponentFlags)key.ColorMask);

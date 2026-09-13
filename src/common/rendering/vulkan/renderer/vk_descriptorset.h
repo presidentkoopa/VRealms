@@ -27,6 +27,7 @@
 #include "tarray.h"
 
 class VulkanRenderDevice;
+class VkTextureImage;	// [2a]
 class VkMaterial;
 class PPTextureInput;
 class VkPPRenderPassSetup;
@@ -51,6 +52,14 @@ public:
 	VulkanDescriptorSet* GetHWBufferDescriptorSet() { return HWBufferSet.get(); }
 	VulkanDescriptorSet* GetFixedDescriptorSet() { return FixedSet.get(); }
 	VulkanDescriptorSet* GetNullTextureDescriptorSet();
+
+	// [2a] Whether a render target's depth attachment is the scene depth image that
+	// fixed binding 3 was written with this frame, attached the same way (flat, or
+	// every layer under multiview). The condition for
+	// VkRenderState::SetSceneDepthReadable to open a read-only depth pass whose
+	// effects sample binding 3; anything else -- a camera texture, a save picture,
+	// one layer of a layered image -- is refused and draws as before 2a.
+	bool IsSceneDepthReadTarget(VulkanImageView* depthStencilView, int layers, uint32_t viewMask) const;
 
 	std::unique_ptr<VulkanDescriptorSet> AllocateTextureDescriptorSet(int numLayers);
 
@@ -87,6 +96,13 @@ private:
 	std::unique_ptr<VulkanDescriptorSet> NullTextureDescriptorSet;
 
 	std::list<VkMaterial*> Materials;
+
+	// [2a] What UpdateFixedSet last put in binding 3: the texture, the exact image
+	// it held then (so a rebuild after the write is noticed), and whether the view
+	// was the layered array view. Null texture = binding 3 left unwritten.
+	VkTextureImage* SceneDepthReadTexture = nullptr;
+	VulkanImage* SceneDepthReadImage = nullptr;
+	bool SceneDepthReadLayered = false;
 
 	static const int maxSets = 10;
 };
