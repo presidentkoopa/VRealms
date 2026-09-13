@@ -3885,11 +3885,30 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepBand, SetSweepBand)
 	return 0;
 }
 
-// What a band does to the pixels it covers: 1 add (the original), 2 lift --
-// multiply up, which is a reveal -- 3 crush, multiply down.
+// [round2 A6] Sweep band draw and fill values are 0..4. Out of range is
+// treated as 0 and reported once per distinct setter/value, exactly like
+// ReportBadShapeId above. Unchecked, a draw of 16+ spilled into the packed fill
+// bits and a negative fill made the air lattice draw a band the surfaces did not.
+static void ReportBadSweepValue(const char *setter, int value)
+{
+	static const char *lastSetter = nullptr;
+	static int lastValue = 0;   // 0 is valid, so it is never reported
+	if (setter == lastSetter && value == lastValue) return;
+	lastSetter = setter;
+	lastValue = value;
+	Printf("%s: %d is outside 0..4, treated as 0\n", setter, value);
+}
+
+// What a band does to the pixels it covers:
+//   0 default (add), 1 add (the original), 2 lift -- multiply up, which is a
+//   reveal -- 3 crush, multiply down (and occludes in the air lattice),
+//   4 recolour -- blends the glow toward the band's colour.
+// Uploaded packed as drawmode + 16*fill (0-4) + 256*passed (0/1); see
+// FRenderState::SetSweepBandDraw. [round2 SW-21]
 static void SetSweepBandDraw(FLevelLocals *self, int index, int drawmode)
 {
 	if (index < 0 || index >= FLevelLocals::MAX_SWEEP_BANDS) return;
+	if (drawmode < 0 || drawmode > 4) { ReportBadSweepValue("SetSweepBandDraw", drawmode); drawmode = 0; }
 	self->SweepBandDraw[index] = drawmode;
 }
 
@@ -4891,8 +4910,11 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearShapes, ClearShapes)
 static void SetSweepRoom(FLevelLocals *self, double minx, double miny,
 	double minz, double maxx, double maxy, double maxz, double soft)
 {
-	self->SweepRoomMin = DVector3(minx, miny, minz);
-	self->SweepRoomMax = DVector3(maxx, maxy, maxz);
+	// [round2 A6] Component-wise min/max. One swapped corner made the box
+	// inside-out, every point "outside" it, and the air lattice faded out
+	// everywhere with nothing to say why.
+	self->SweepRoomMin = DVector3(min(minx, maxx), min(miny, maxy), min(minz, maxz));
+	self->SweepRoomMax = DVector3(max(minx, maxx), max(miny, maxy), max(minz, maxz));
 	self->SweepRoomSoft = soft;
 }
 
@@ -5293,6 +5315,10 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSweepFillMotion, SetSweepFillMoti
 static void SetSweepBandFill(FLevelLocals *self, int index, int fill)
 {
 	if (index < 0 || index >= FLevelLocals::MAX_SWEEP_BANDS) return;
+	// [round2 A6] 0..4 only, see ReportBadSweepValue. A negative fill made the
+	// air lattice draw a band the surfaces did not; 16+ would collide with the
+	// packed passed bit.
+	if (fill < 0 || fill > 4) { ReportBadSweepValue("SetSweepBandFill", fill); fill = 0; }
 	self->SweepBandFill[index] = fill;
 }
 

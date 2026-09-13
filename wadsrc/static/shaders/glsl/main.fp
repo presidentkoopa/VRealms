@@ -799,6 +799,31 @@ float SweepShapeDist(int shape, vec3 p, vec3 o)
 	return length(p - o);   // 4, the sphere
 }
 
+// [round2 A2] WHICH AXIS A PLANE SHAPE IS PERPENDICULAR TO, AND WHICH WAY IT
+// TRAVELS -- one answer shared by the air lattice and the surface fill.
+//
+// The air lattice used to know only 2, 3 and 5 and mirrored 5 onto the eye's
+// side, while the surface fill picked its tangents from its own list. So Purge
+// (6) and Curtain (7) painted a band on the walls and drew nothing in the air,
+// and a rising sheet seen from below hung at origin - radius. Both paths now ask
+// this, so the painted and air patterns cannot drift apart again.
+//
+//   axis   0 = x for 2/6/8,  2 = z for 3/7/9,  1 = y for 5,  -1 = not a plane
+//   away   +1 for 5/6/7, -1 for 8/9, 0 for the unsigned bars 2/3, whose band
+//          sits on BOTH sides of the origin -- the caller picks the eye's side.
+//
+// Shader space, so Doom's Z is .y, the same swizzle SweepShapeDist uses.
+void SweepPlaneAxis(int shape, out int axis, out float away)
+{
+	axis = -1;
+	away = 0.0;
+	if (shape == 2 || shape == 6 || shape == 8)      axis = 0;
+	else if (shape == 3 || shape == 7 || shape == 9) axis = 2;
+	else if (shape == 5)                             axis = 1;
+	if (shape == 5 || shape == 6 || shape == 7)      away = 1.0;
+	else if (shape == 8 || shape == 9)               away = -1.0;
+}
+
 float SweepBandAttenAt(int sb)
 {
 	vec4 sband = uSweepBands[sb];
@@ -1965,7 +1990,10 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 	occColOut = vec3(0.0);
 	if (uSweepCount <= 0) return sum;
 	if (uSweepAir.x <= 0.0) return sum;
-	if (uSweepFill.x <= 0.0 && uSweepFill.y <= 0.0) return sum;
+	// [round2 A3] No global "both spacings are 0" early-out here any more. A
+	// solid slab (fill 3) and a crush wall need no lines at all, and that test
+	// made them draw nothing whenever both spacing sliders were at 0. Each band
+	// decides for itself below, by its own fill.
 
 	vec3 eye = uCameraPos.xyz;
 	vec3 toFrag = fragPos - eye;
@@ -1980,7 +2008,9 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		vec4 sband = uSweepBands[sb];
 		int bandpack = int(sband.w);
 		int bmode = bandpack & 15;
-		int bfill = bandpack >> 4;
+		// [round2 B2] MASKED: the word is now drawmode + 16*fill + 256*passed,
+		// so an unmasked shift would read the passed bit as fill 16.
+		int bfill = (bandpack >> 4) & 15;
 		if (bmode <= 0) continue;
 
 		// AIR STRENGTH IS ITSELF THE SWITCH.
@@ -1995,25 +2025,47 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		// A band that explicitly asks for dots or a solid slab still gets them.
 		if (bfill <= 0) bfill = 1;
 
+		// [round2 A3] SKIP PER BAND, BY WHAT THE FILL ACTUALLY NEEDS. Lines
+		// (grid 1, dots 2) need a spacing in at least one axis; pickets (4) run
+		// along U only; a solid slab (3) needs no spacing at all and is never
+		// skipped, so a crush wall draws with both spacing sliders at 0.
+		if ((bfill == 1 || bfill == 2) && uSweepFill.x <= 0.0 && uSweepFill.y <= 0.0) continue;
+		if (bfill == 4 && uSweepFill.x <= 0.0) continue;
+
 		int shape = int(uSweepBandOrigin[sb].w);
 		vec3 o = uSweepBandOrigin[sb].xyz;
 		float radius = sband.x;
 		float thick = max(sband.y, 1.0);
 
-		// Which axis the plane is perpendicular to, and where along the ray
-		// it sits. Shape 2 is the east/west bar, 3 north/south, 5 the rising
-		// sheet -- in shader space those are x, z and y.
-		float planeAxisEye, planeAxisDir, planeAt;
-		if (shape == 2)      { planeAxisEye = eye.x; planeAxisDir = dir.x; planeAt = o.x; }
-		else if (shape == 3) { planeAxisEye = eye.z; planeAxisDir = dir.z; planeAt = o.z; }
-		else if (shape == 5) { planeAxisEye = eye.y; planeAxisDir = dir.y; planeAt = o.y; }
-		else continue;
+		// [round2 A4] HOW FAR THE SLAB REACHES EACH SIDE OF THE BAND'S LINE.
+		//
+		// This was max(thick, 1) * 0.5 either side -- half of what the painted
+		// band lights. SweepBandAttenAt lights out to thick on both sides and to
+		// |uSweepTrail| on the passed side, so the air slab now takes the same
+		// two widths: the ahead face widens only for a negative trail, the
+		// behind face only for a positive one (its `sbehind` rule).
+		float airTrail = abs(uSweepTrail);
+		float aheadW  = (uSweepTrail < 0.0 && airTrail > thick) ? airTrail : thick;
+		float behindW = (uSweepTrail >= 0.0 && airTrail > thick) ? airTrail : thick;
 
-		// A band sits at +radius AND -radius from its origin, since distance
-		// is unsigned. Test whichever side the eye is on -- that is the one
-		// coming at you rather than the one already gone past.
-		float side = (planeAxisEye >= planeAt) ? 1.0 : -1.0;
-		float target = planeAt + radius * side;
+		// Which axis the plane is perpendicular to, and which way it travels.
+		// [round2 A2] From SweepPlaneAxis, so the signed crossings 6-9 get an
+		// air pattern too (they fell to `continue` here before) and 5 keeps its
+		// sign instead of being mirrored onto the eye's side.
+		int axis;
+		float away;
+		SweepPlaneAxis(shape, axis, away);
+		if (axis < 0) continue;
+
+		float planeAxisEye = eye[axis];
+		float planeAxisDir = dir[axis];
+		float planeAt = o[axis];
+
+		// Only the unsigned bars (2, 3) sit at +radius AND -radius from the
+		// origin. Test whichever side the eye is on -- that is the one coming
+		// at you rather than the one already gone past. A signed shape is one
+		// plane and keeps the direction SweepPlaneAxis gave it.
+		if (away == 0.0) away = (planeAxisEye >= planeAt) ? 1.0 : -1.0;
 
 		// Parallel view: the ray never crosses, so there is nothing to draw.
 		if (abs(planeAxisDir) < 0.0001) continue;
@@ -2027,9 +2079,13 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		// how far the hit was from that plane -- which is zero by construction,
 		// every time. The softening it was reaching for never happened, and a
 		// grid clipped by a wall popped out of existence instead of fading.
-		float halfT = max(thick, 1.0) * 0.5;
-		float tA = (target - halfT - planeAxisEye) / planeAxisDir;
-		float tB = (target + halfT - planeAxisEye) / planeAxisDir;
+		//
+		// [round2 A4] The faces are built in signed distance along `away`:
+		// ahead at radius + aheadW, behind at radius - behindW.
+		float faceAhead  = planeAt + away * (radius + aheadW);
+		float faceBehind = planeAt + away * (radius - behindW);
+		float tA = (faceBehind - planeAxisEye) / planeAxisDir;
+		float tB = (faceAhead - planeAxisEye) / planeAxisDir;
 		float t0 = max(min(tA, tB), 0.0);
 		float t1 = min(max(tA, tB), fragDist);
 		if (t1 <= t0) continue;   // entirely behind you, or entirely behind a wall
@@ -2038,7 +2094,7 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		// slab survived the clip. A grazing view crosses more of it and pins at
 		// full; a crossing half eaten by geometry fades out instead of popping.
 		float t = 0.5 * (t0 + t1);
-		float slab = clamp((t1 - t0) / max(thick, 1.0), 0.0, 1.0);
+		float slab = clamp((t1 - t0) / (aheadW + behindW), 0.0, 1.0);
 
 		vec3 hit = eye + dir * t;
 
@@ -2074,10 +2130,13 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		// The same two tangent axes the surface fill uses, so the lattice in
 		// the air and the lattice on the wall line up exactly rather than
 		// being two grids that nearly agree.
+		// [round2 A2] Keyed on the plane's axis, not the shape id, so 6/8 take
+		// (z, y) like 2 and 7/9 take (x, y) like 3. They used to fall through to
+		// the (x, z) fallback, which is 5's plane, not theirs.
 		vec2 uv;
-		if (shape == 2)      uv = vec2(hit.z, hit.y);
-		else if (shape == 3) uv = vec2(hit.x, hit.y);
-		else                 uv = vec2(hit.x, hit.z);
+		if (axis == 0)      uv = vec2(hit.z, hit.y);
+		else if (axis == 2) uv = vec2(hit.x, hit.y);
+		else                uv = vec2(hit.x, hit.z);
 
 		float tt = timer;
 		uv.x += tt * uSweepFill2.y;
@@ -2108,10 +2167,11 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 			{
 				// The extent along whichever axis uv.x is reading, in the same
 				// shader space the box was uploaded in.
+				// [round2 A2] Keyed on the plane's axis: the z extent for
+				// 2/6/8, the x extent for 3/7/9 (and 5, as before).
 				float span;
-				if (shape == 2)      span = uSweepRoomMax.z - uSweepRoomMin.z;
-				else if (shape == 3) span = uSweepRoomMax.x - uSweepRoomMin.x;
-				else                 span = uSweepRoomMax.x - uSweepRoomMin.x;
+				if (axis == 0) span = uSweepRoomMax.z - uSweepRoomMin.z;
+				else           span = uSweepRoomMax.x - uSweepRoomMin.x;
 
 				// SNAPPED TO A WHOLE NUMBER OF BARS. The spacing cvar stays
 				// the spacing you asked for; this only nudges it so the run
@@ -2139,7 +2199,11 @@ vec3 SweepAirLattice(vec3 fragPos, out float occOut, out vec3 occColOut)
 		// CRUSH OCCLUDES INSTEAD OF ADDING. Same meaning the mode already has
 		// on a surface -- take light away rather than put it in -- so a solid
 		// slab in crush is a wall you cannot see through.
-		if (int(uSweepBands[sb].w) == 3)
+		// [round2 A1] bmode, NOT the whole word. .w is drawmode + 16*fill, and
+		// RS_Sweeps always sends a fill, so crush with a solid slab packed as 51
+		// and never equalled 3: crush walls added their colour instead of
+		// occluding, and Wall of Darkness / Wall of Fog drew no wall.
+		if (bmode == 3)
 		{
 			float o = clamp(amt, 0.0, 1.0);
 			if (o > occOut) { occOut = o; occColOut = uSweepFillCol.rgb; }
@@ -2943,10 +3007,16 @@ float SweepFillAt(int fill, int shape, vec3 origin)
 	if (fill <= 0) return 1.0;   // no fill: the band is a wash, as before
 
 	// Pick the band's two tangent axes.
+	// [round2 A2] From SweepPlaneAxis, the same answer the air lattice uses, so
+	// the painted grid and the grid in the air share their tangents by
+	// construction rather than by two lists that happen to agree.
+	int faxis;
+	float faway;
+	SweepPlaneAxis(shape, faxis, faway);
 	vec2 uv;
-	if (shape == 2 || shape == 6 || shape == 8)  uv = vec2(pixelpos.z, pixelpos.y);
-	else if (shape == 3 || shape == 7 || shape == 9) uv = vec2(pixelpos.x, pixelpos.y);
-	else if (shape == 5)  uv = vec2(pixelpos.x, pixelpos.z);
+	if (faxis == 0)       uv = vec2(pixelpos.z, pixelpos.y);
+	else if (faxis == 2)  uv = vec2(pixelpos.x, pixelpos.y);
+	else if (faxis == 1)  uv = vec2(pixelpos.x, pixelpos.z);
 	else
 	{
 		// Ring and shell: arc length around the axis, and height. Arc length

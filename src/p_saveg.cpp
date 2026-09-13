@@ -312,6 +312,20 @@ FSerializer &Serialize(FSerializer &arc, const char *key, sector_t::splane &p, s
 			("alpha", p.alpha, def->alpha)
 			("glowcolor", p.GlowColor, def->GlowColor)
 			("glowheight", p.GlowHeight, def->GlowHeight)
+			// [round2 A7] The rest of the plane's glow. Only colour and height
+			// were saved, so after a load or a hub return a plane came back with
+			// its falloff, intensity, far colour and the whole flat-face glow at
+			// the map's defaults while its colour was the scripted one. Additive
+			// keys with def-> defaults: an old save lacks them and keeps the
+			// map-loaded value, an untouched plane writes nothing. No version bump.
+			("glowfalloff", p.GlowFalloff, def->GlowFalloff)
+			("glowintensity", p.GlowIntensity, def->GlowIntensity)
+			("glowcolorfar", p.GlowColorFar, def->GlowColorFar)
+			("flatglowcolor", p.FlatGlowColor, def->FlatGlowColor)
+			("flatglowheight", p.FlatGlowHeight, def->FlatGlowHeight)
+			("flatglowfalloff", p.FlatGlowFalloff, def->FlatGlowFalloff)
+			("flatglowintensity", p.FlatGlowIntensity, def->FlatGlowIntensity)
+			("flatglowcolorfar", p.FlatGlowColorFar, def->FlatGlowColorFar)
 			("texturefx", p.TextureFx, def->TextureFx)
 			.EndObject();
 	}

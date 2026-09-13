@@ -675,10 +675,23 @@ public:
 	// so that band 3 could have a different pattern from band 4.
 	//
 	// Decode in the shader with a modulo and a divide. Keep fill under 16.
-	void SetSweepBandDraw(int i, int drawmode, int fill = 0)
+	//
+	// [round2 A6] CLAMPED HERE TOO, not only in the script setters. A draw
+	// mode of 16 or more spilled into the fill bits and a negative fill made
+	// the air lattice draw a band the surfaces did not, so anything outside
+	// the vocabulary (draw 0-4, fill 0-4) is sent as 0 whoever calls this.
+	//
+	// [round2 B2] AND THE PASSED BIT, as + 256 * passed. Still an exact
+	// integer in a float, still no StreamData growth. main.fp decodes it with
+	// (word >> 8) & 1 in SweepPassedAt; every other decode site masks the fill
+	// with (word >> 4) & 15 so this bit never reads as fill 16.
+	void SetSweepBandDraw(int i, int drawmode, int fill = 0, int passed = 0)
 	{
 		if (i < 0 || i >= 8) return;
-		mStreamData.uSweepBands[i].W = (float)(drawmode + 16 * fill);
+		if (drawmode < 0 || drawmode > 4) drawmode = 0;
+		if (fill < 0 || fill > 4) fill = 0;
+		passed = passed != 0 ? 1 : 0;
+		mStreamData.uSweepBands[i].W = (float)(drawmode + 16 * fill + 256 * passed);
 	}
 
 	void SetSweepBand(int i, float radius, float thickness, float softness,
