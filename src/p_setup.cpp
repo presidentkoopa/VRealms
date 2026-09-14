@@ -345,6 +345,14 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 	// fade counts from the old map's clock.
 	ClearHeatSources();
 
+	// [EFFECTQUEUES] + [SMOKEVOLUME] Nor does a queued effect event (its position is the
+	// old map's), nor the smoke look and wind a mod set (it re-applies them on
+	// WorldLoaded). The new level-data serial tells renderer-side effects -- the smoke
+	// volume, the sector plane poll -- that the level they built their state for is gone.
+	ClearEffectQueues();
+	ResetSmokeState();
+	LevelDataSerial = NewLevelDataSerial();
+
 	// [RS fork] NOR DOES THE REST OF THE LEVEL'S VISUAL STATE.
 	//
 	// FLevelLocals is one static object, so everything a mod pushed -- a sweep,

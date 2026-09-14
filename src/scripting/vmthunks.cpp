@@ -72,6 +72,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>	// [BLOOMOVERRIDE] std::isfinite in SetBloomOverride
+#include <initializer_list>	// [SMOKEVOLUME] EffectArgsFinite
 #include "d_net.h"
 
 extern int paused;
@@ -3954,6 +3955,237 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HeatSourceCapacity, HeatSourceCapaci
 {
 	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
 	ACTION_RETURN_INT(HeatSourceCapacity(self));
+}
+
+//==========================================================================
+//
+// [SMOKEVOLUME] + [EFFECTQUEUES] THE SMOKE VOLUME'S API AND THE ONE BLAST CALL --
+// EmitSmoke, CarveSmoke, SetSmokeLook, SetSmokeWind, ClearSmoke, PushEffectImpulse.
+// See FEffectTicQueue and FLevelLocals::SmokeLook (g_levellocals.h), and
+// "Engine docs/SMOKE_VOLUME_PLAN.md" 13b, SH3 and SH4.
+//
+// ONE-WAY. Every native here only queues an event on the level's per-tic queues or
+// sets a render-only look. None returns anything, so no gameplay code can branch on
+// smoke, and nothing is serialized. Safe from play code on every machine in a
+// netgame: each machine queues the same event, and its renderer draws it -- or
+// drops it, when its smoke is off or its quality lower -- without touching the
+// playsim. No RNG anywhere: the smoke's swirl is noise over world position and time
+// on the GPU.
+//
+// A call with a non-finite number is ignored (logged once per native per session).
+// A queue full for this tic drops the event (logged once per map).
+//
+//==========================================================================
+
+static bool EffectArgsFinite(const char *who, bool &logged, std::initializer_list<double> values)
+{
+	for (double v : values)
+	{
+		if (!std::isfinite(v))
+		{
+			if (!logged)
+			{
+				logged = true;
+				Printf("%s: ignored a call with a non-finite argument (logged once)\n", who);
+			}
+			return false;
+		}
+	}
+	return true;
+}
+
+static void LogEffectQueueFull(bool &fullLogged, const char *who, int capacity)
+{
+	if (fullLogged) return;
+	fullLogged = true;
+	Printf("%s: more than %d this tic -- the rest of this tic's are dropped (logged once per map)\n", who, capacity);
+}
+
+static DVector3 ClampEffectVector(double x, double y, double z, double limit)
+{
+	return DVector3(clamp(x, -limit, limit), clamp(y, -limit, limit), clamp(z, -limit, limit));
+}
+
+// A segment longer than maxLength keeps its start and direction.
+static DVector3 LimitEffectSegmentEnd(const DVector3 &start, const DVector3 &end, double maxLength)
+{
+	const DVector3 d = end - start;
+	const double length = d.Length();
+	return length > maxLength ? start + d * (maxLength / length) : end;
+}
+
+// 13 VM arguments: under the JIT's direct-call cap of 16 (see SetHeatSource).
+static void EmitSmoke(FLevelLocals *self, double px, double py, double pz, double radius, double amount, double heat,
+	double vx, double vy, double vz, double ex, double ey, double ez)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("EmitSmoke", badLogged, { px, py, pz, radius, amount, heat, vx, vy, vz, ex, ey, ez }))
+		return;
+
+	const double amountC = clamp(amount, 0., 16.);
+	const double heatC = clamp(heat, 0., 16.);
+	const DVector3 vel = ClampEffectVector(vx, vy, vz, 4096.);
+	// Nothing to add: not queued, so it asks for no volume either.
+	if (amountC <= 0. && heatC <= 0. && vel.LengthSquared() <= 0.)
+		return;
+
+	FSmokeEmitEvent *e = self->SmokeEmits.Push();
+	if (e == nullptr)
+	{
+		LogEffectQueueFull(self->SmokeEmits.FullLogged, "EmitSmoke", FLevelLocals::MAX_SMOKE_EMITS_PER_TIC);
+		return;
+	}
+	e->Pos = DVector3(px, py, pz);
+	// posEnd (0,0,0) is "not given" -- the ZScript default.
+	e->Capsule = !(ex == 0. && ey == 0. && ez == 0.);
+	e->End = e->Capsule ? LimitEffectSegmentEnd(e->Pos, DVector3(ex, ey, ez), 4096.) : e->Pos;
+	e->Vel = vel;
+	// 256 at most: the GPU tests every cell it reaches for a wall in between
+	// (smoke_inject.comp, Reachable), which a bigger ball would make costly. Bigger
+	// clouds are several emits.
+	e->Radius = clamp(radius, 1., 256.);
+	e->Amount = amountC;
+	e->Heat = heatC;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, EmitSmoke, EmitSmoke)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(amount);
+	PARAM_FLOAT(heat);
+	PARAM_FLOAT(vx); PARAM_FLOAT(vy); PARAM_FLOAT(vz);
+	PARAM_FLOAT(ex); PARAM_FLOAT(ey); PARAM_FLOAT(ez);
+	EmitSmoke(self, px, py, pz, radius, amount, heat, vx, vy, vz, ex, ey, ez);
+	return 0;
+}
+
+static void CarveSmoke(FLevelLocals *self, double sx, double sy, double sz, double ex, double ey, double ez,
+	double radius, double amount)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("CarveSmoke", badLogged, { sx, sy, sz, ex, ey, ez, radius, amount }))
+		return;
+
+	const double amountC = clamp(amount, 0., 1.);
+	if (amountC <= 0.)
+		return;
+
+	FSmokeCarveEvent *c = self->SmokeCarves.Push();
+	if (c == nullptr)
+	{
+		LogEffectQueueFull(self->SmokeCarves.FullLogged, "CarveSmoke", FLevelLocals::MAX_SMOKE_CARVES_PER_TIC);
+		return;
+	}
+	c->Start = DVector3(sx, sy, sz);
+	c->End = LimitEffectSegmentEnd(c->Start, DVector3(ex, ey, ez), 8192.);
+	c->Radius = clamp(radius, 1., 256.);
+	c->Amount = amountC;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, CarveSmoke, CarveSmoke)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(sx); PARAM_FLOAT(sy); PARAM_FLOAT(sz);
+	PARAM_FLOAT(ex); PARAM_FLOAT(ey); PARAM_FLOAT(ez);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(amount);
+	CarveSmoke(self, sx, sy, sz, ex, ey, ez, radius, amount);
+	return 0;
+}
+
+// One look for the level's smoke. Clamps as FLevelLocals::SmokeLookSettings documents;
+// the tint's alpha is ignored.
+static void SetSmokeLook(FLevelLocals *self, int tint, double absorption, double scatter, double ambient,
+	double dissipation, double buoyancy)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("SetSmokeLook", badLogged, { absorption, scatter, ambient, dissipation, buoyancy }))
+		return;
+
+	FLevelLocals::SmokeLookSettings &look = self->SmokeLook;
+	look.Tint = PalEntry(0xff000000u | ((uint32_t)tint & 0xffffffu));
+	look.Absorption = clamp(absorption, 0., 16.);
+	look.Scatter = clamp(scatter, 0., 1.);
+	look.Ambient = clamp(ambient, 0., 4.);
+	look.Dissipation = clamp(dissipation, 0., 10.);
+	look.Buoyancy = clamp(buoyancy, -4., 4.);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSmokeLook, SetSmokeLook)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_COLOR(tint);
+	PARAM_FLOAT(absorption);
+	PARAM_FLOAT(scatter);
+	PARAM_FLOAT(ambient);
+	PARAM_FLOAT(dissipation);
+	PARAM_FLOAT(buoyancy);
+	SetSmokeLook(self, tint, absorption, scatter, ambient, dissipation, buoyancy);
+	return 0;
+}
+
+static void SetSmokeWind(FLevelLocals *self, double wx, double wy, double wz)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("SetSmokeWind", badLogged, { wx, wy, wz }))
+		return;
+	self->SmokeWind = ClampEffectVector(wx, wy, wz, 1024.);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetSmokeWind, SetSmokeWind)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(wx); PARAM_FLOAT(wy); PARAM_FLOAT(wz);
+	SetSmokeWind(self, wx, wy, wz);
+	return 0;
+}
+
+// Empties the volume; the look and the wind stay.
+static void ClearSmoke(FLevelLocals *self)
+{
+	self->SmokeClearSerial++;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearSmoke, ClearSmoke)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ClearSmoke(self);
+	return 0;
+}
+
+// SH3: one blast, one call. The smoke volume reads it now; debris (#9) reads the same
+// queue later.
+static void PushEffectImpulse(FLevelLocals *self, double px, double py, double pz, double radius, double strength)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("PushEffectImpulse", badLogged, { px, py, pz, radius, strength }))
+		return;
+
+	const double strengthC = clamp(strength, -4096., 4096.);
+	if (strengthC == 0.)
+		return;
+
+	FEffectImpulseEvent *i = self->EffectImpulses.Push();
+	if (i == nullptr)
+	{
+		LogEffectQueueFull(self->EffectImpulses.FullLogged, "PushEffectImpulse", FLevelLocals::MAX_EFFECT_IMPULSES_PER_TIC);
+		return;
+	}
+	i->Pos = DVector3(px, py, pz);
+	i->Radius = clamp(radius, 1., 4096.);
+	i->Strength = strengthC;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, PushEffectImpulse, PushEffectImpulse)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(strength);
+	PushEffectImpulse(self, px, py, pz, radius, strength);
+	return 0;
 }
 
 // [RS fork] DIAGNOSTICS FOR THE LEVEL VISUAL STATE -- the sweep, glow, fog and

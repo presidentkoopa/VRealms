@@ -154,3 +154,4 @@ EXTERN_CVAR(Bool, r_heatrefraction_test)
 EXTERN_CVAR(Bool, r_smoke)
 EXTERN_CVAR(Int, r_smoke_quality)
 EXTERN_CVAR(Bool, r_smoke_computetest)
+EXTERN_CVAR(Float, r_smoke_dissipation_scale)	// [13b]

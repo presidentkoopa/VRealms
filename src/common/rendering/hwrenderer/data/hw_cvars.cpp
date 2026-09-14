@@ -385,14 +385,15 @@ CVARD(Float, r_heatrefraction_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "he
 CVARD(Bool, r_heatrefraction_test, false, CVAR_GLOBALCONFIG, "a test heat source ahead of where you look when switched on (heat shimmer A/B, Vulkan only)")
 
 // [SMOKEVOLUME] THE SMOKE VOLUME ("Engine docs/SMOKE_VOLUME_PLAN.md" #13): a world-aligned
-// 3D grid around the eye that gunsmoke fills, walls stop and blasts clear. Step 1 (13a) is
-// the compute foundation only -- nothing draws yet. All three are renderer-read every frame
-// (PrepareFrameCompute, hw_entrypoint.cpp), so they respond with a menu open. Vulkan only:
-// GL and GLES run no compute.
+// 3D grid around the eye that gunsmoke fills, walls stop and blasts clear. 13a is the
+// compute foundation, 13b the simulation and the mod API (EmitSmoke, CarveSmoke,
+// PushEffectImpulse...); the drawing is 13c, so nothing draws yet. All of these are
+// renderer-read every frame (PrepareFrameCompute, hw_entrypoint.cpp), so they respond with
+// a menu open. Vulkan only: GL and GLES run no compute.
 //
 // ON BY DEFAULT (owner, 2026-09-14: effects our mods use default ON). The capability is
 // inert until something asks for smoke -- a mod's first EmitSmoke / CarveSmoke of a map
-// (13b) or r_smoke_computetest -- so a map nobody smokes allocates and dispatches nothing.
+// or r_smoke_computetest -- so a map nobody smokes allocates and dispatches nothing.
 // Off frees the volume at once. Archived.
 CVARD(Bool, r_smoke, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the smoke volume; nothing is allocated until a mod emits smoke (Vulkan only)")
 // Resolution and area together, 25 bytes a cell (SmokeGridForQuality, hw_framecompute.h):
@@ -404,8 +405,17 @@ CUSTOM_CVARD(Int, r_smoke_quality, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "smoke v
 	if (self < 1) { self = 1; return; }
 	if (self > 4) { self = 4; return; }
 }
-// A desk test that needs no mod: allocates the volume at the current quality and runs one
-// minimal compute step per world tic (at most 2 a frame), plus the level solidity mask on
-// the CPU, so the perf log shows fx.compute, fx.smokesim and fx.solidity. Draws nothing.
-// Not archived: a measurement, not a setting.
-CVARD(Bool, r_smoke_computetest, false, CVAR_GLOBALCONFIG, "run the smoke volume's compute test with no mod: allocates it and steps a test pattern, draws nothing (Vulkan only)")
+// A test source that needs no mod ([13b]; 13a's was a test pattern): placed 128 map units
+// ahead of where you look when switched on, fixed in the world until switched off -- a
+// puff every tic, a round carving through it every 10 tics, a blast every 3 seconds --
+// through the same queues-to-GPU path as a mod's events, so the perf log shows fx.compute,
+// fx.smokesim and fx.smokemask for the real simulation. Renderer-side only: no level slot,
+// nothing in the playsim sees it. Not archived: a measurement, not a setting.
+CVARD(Bool, r_smoke_computetest, false, CVAR_GLOBALCONFIG, "a smoke test source ahead of where you look when switched on: runs the real smoke simulation with no mod (Vulkan only)")
+// [13b] The player's "Smoke fade speed": multiplies the dissipation of the level's smoke
+// look (SetSmokeLook), so how long smoke hangs can be judged without a script change -- a
+// script-fed value would do nothing while a menu is open (review S9). 1 = the mod's own
+// look, 0 = smoke never thins on its own; clamped 0..16 where it is read. Renderer-read at
+// every simulation step (a menu pauses the world, so the change shows the moment it
+// closes). Archived.
+CVARD(Float, r_smoke_dissipation_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies how fast smoke thins (the mod's dissipation), 0-16; 0 = it hangs (Vulkan only)")

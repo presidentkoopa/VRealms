@@ -558,6 +558,13 @@ void P_Ticker (void)
 			Level->SnapshotDrawnLines();
 		}
 
+		// [EFFECTQUEUES] A new generation of the per-tic effect queues (EmitSmoke,
+		// CarveSmoke, PushEffectImpulse -- FEffectTicQueue, g_levellocals.h). HERE for the
+		// beam snapshot's reason: every writer runs below this line, so each tic's events
+		// land in that tic's generation. Unconditional -- whether or not any renderer reads
+		// them -- so the queues never grow.
+		Level->BeginEffectTic();
+
 		for (i = 0; i < MAXPLAYERS; i++)
 			if (Level->PlayerInGame(i))
 				P_PlayerThink(Level->Players[i]);

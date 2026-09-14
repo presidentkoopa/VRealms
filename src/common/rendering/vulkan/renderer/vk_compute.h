@@ -76,7 +76,9 @@ public:
 	// shader behind "#version 450", with set 0 made of `bindings` and a push constant
 	// range of `pushConstantBytes` (0 = none). A missing lump, a compile error or a
 	// pipeline failure is logged once and returns null -- never a fatal error mid-frame.
-	std::unique_ptr<VkComputeProgram> CreateProgram(const char* lumpName, const std::vector<VkComputeBinding>& bindings, uint32_t pushConstantBytes);
+	// [13b] `defines` (e.g. "#define TARGET_R8\n") goes between the version line and the
+	// lump, for variants of one lump -- a storage image's format qualifier, say.
+	std::unique_ptr<VkComputeProgram> CreateProgram(const char* lumpName, const std::vector<VkComputeBinding>& bindings, uint32_t pushConstantBytes, const char* defines = nullptr);
 
 	// A descriptor set for `program`'s set layout from this manager's own pools.
 	// Null if even a fresh pool cannot hold it.

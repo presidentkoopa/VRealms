@@ -1,0 +1,192 @@
+// [SMOKEVOLUME] 13b: one kernel -- an EmitSmoke, a CarveSmoke or a PushEffectImpulse --
+// applied in place to a box of cells at the start of a simulation step ("Engine docs/
+// SMOKE_VOLUME_PLAN.md" 13b). The CPU side (hw_smokevolume.cpp) turned the event into
+// grid cells and cut a long capsule into disjoint slabs; this runs once per slab, over
+// that slab's cells only, so the cost follows what the event covers.
+//
+// Cells: cell (i, j, k) spans [i, i + 1) on each axis, its centre at i + 0.5. The
+// shape is the capsule from ShapeStart to ShapeEnd (equal: a ball) of radius
+// ShapeStart.w; the weight falls smoothly from 1 on its axis to 0 at the radius.
+//   emit    adds density and heat (only in open air) and a push
+//   carve   removes a share of the density
+//   impulse pushes away from the centre (toward it when the strength is negative)
+//
+// WALLS. An emit or a push reaches a cell only if air can get there from the shape's
+// centre line without passing a wall: a voxel walk from the closest point on the line to
+// the cell, one axis at a time (Reachable). Without it a puff beside a thin wall would
+// fill the room behind it. A point inside a wall cell -- the mask marks a whole cell for
+// a wall thinner than one -- starts from the open face-neighbour it is nearest to, so a
+// puff against a wall fills its own side. A carve is not tested (it only removes). The
+// walk is limited to EMIT_REACH_CELLS / PUSH_REACH_CELLS of distance: EmitSmoke's radius
+// (256 map units at most) always fits; a push further out than that is not tested.
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension and
+// "#line 1". Push constants: SmokeInjectConstants in vk_smokevolume.cpp (96 bytes).
+// GLSL reserved-word rule (NVIDIA GL): no identifier here is a reserved word.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0, rg16f) uniform image3D DensityHeat;
+layout(set = 0, binding = 1, rgba16f) uniform image3D Velocity;
+layout(set = 0, binding = 2) uniform sampler3D SolidMask;
+
+layout(push_constant) uniform SmokeInjectConstants
+{
+	ivec4 RegionMin;	// xyz first cell; w the kind: 0 emit, 1 carve, 2 impulse
+	ivec4 RegionMax;	// xyz one past the last cell; w unused
+	vec4 ShapeStart;	// xyz capsule start, grid cells; w radius, cells
+	vec4 ShapeEnd;		// xyz capsule end, grid cells; w amount (emit: density; carve: share removed)
+	vec4 HeatStrength;	// x heat (emit); y strength, cells per step (impulse)
+	vec4 PushVelocity;	// xyz cells per step added at the centre (emit)
+};
+
+const float EMIT_REACH_CELLS = 64.0;
+const float PUSH_REACH_CELLS = 32.0;
+
+vec3 ClosestOnSegment(vec3 p, vec3 a, vec3 b)
+{
+	vec3 ab = b - a;
+	float len2 = dot(ab, ab);
+	float t = len2 > 1e-8 ? clamp(dot(p - a, ab) / len2, 0.0, 1.0) : 0.0;
+	return a + ab * t;
+}
+
+bool SolidAt(ivec3 c)
+{
+	if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, textureSize(SolidMask, 0))))
+		return false;
+	return texelFetch(SolidMask, c, 0).r > 0.5;
+}
+
+// Can air get from `source` (grid cells) to the centre of `target` without entering a
+// wall cell? See the file comment. A target further than maxCells is not tested.
+bool Reachable(vec3 source, ivec3 target, float maxCells)
+{
+	vec3 goal = vec3(target) + vec3(0.5);
+	if (length(goal - source) > maxCells)
+		return true;
+
+	ivec3 c = ivec3(floor(source));
+	if (SolidAt(c))
+	{
+		// Out through the nearest open face.
+		vec3 f = source - vec3(c);
+		float best = 2.0;
+		ivec3 bestCell = c;
+		vec3 bestPoint = source;
+		for (int a = 0; a < 3; a++)
+		{
+			ivec3 e = ivec3(0);
+			e[a] = 1;
+			if (f[a] < best && !SolidAt(c - e))
+			{
+				best = f[a];
+				bestCell = c - e;
+				bestPoint = source;
+				bestPoint[a] = float(c[a]) - 0.001;
+			}
+			if (1.0 - f[a] < best && !SolidAt(c + e))
+			{
+				best = 1.0 - f[a];
+				bestCell = c + e;
+				bestPoint = source;
+				bestPoint[a] = float(c[a] + 1) + 0.001;
+			}
+		}
+		if (best > 1.5)
+			return false;	// deep in a wall
+		c = bestCell;
+		source = bestPoint;
+	}
+	if (c == target)
+		return true;
+
+	vec3 delta = goal - source;
+	ivec3 dirCell = ivec3(sign(delta));
+	vec3 tMax = vec3(2.0);
+	vec3 tDelta = vec3(2.0);
+	for (int a = 0; a < 3; a++)
+	{
+		if (dirCell[a] > 0)
+		{
+			tMax[a] = (float(c[a] + 1) - source[a]) / delta[a];
+			tDelta[a] = 1.0 / delta[a];
+		}
+		else if (dirCell[a] < 0)
+		{
+			tMax[a] = (source[a] - float(c[a])) / -delta[a];
+			tDelta[a] = 1.0 / -delta[a];
+		}
+	}
+
+	// At most 3 x 64 cells are entered within EMIT_REACH_CELLS.
+	for (int i = 0; i < 200; i++)
+	{
+		int a = 0;
+		if (tMax.y < tMax[a]) a = 1;
+		if (tMax.z < tMax[a]) a = 2;
+		if (tMax[a] >= 1.0)
+			return true;
+		c[a] += dirCell[a];
+		if (c == target)
+			return true;
+		if (SolidAt(c))
+			return false;
+		tMax[a] += tDelta[a];
+	}
+	return true;
+}
+
+void main()
+{
+	ivec3 cell = RegionMin.xyz + ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(cell, RegionMax.xyz)))
+		return;
+
+	vec3 centre = vec3(cell) + vec3(0.5);
+	vec3 closest = ClosestOnSegment(centre, ShapeStart.xyz, ShapeEnd.xyz);
+	vec3 away = centre - closest;
+	float radius = max(ShapeStart.w, 0.001);
+	float d2 = dot(away, away) / (radius * radius);
+	if (d2 >= 1.0)
+		return;
+	float weight = (1.0 - d2) * (1.0 - d2);
+
+	int kind = RegionMin.w;
+	if (kind == 0)
+	{
+		// Smoke is never put into a wall, nor behind one.
+		if (SolidAt(cell) || !Reachable(closest, cell, EMIT_REACH_CELLS))
+			return;
+		vec4 dh = imageLoad(DensityHeat, cell);
+		dh.r += ShapeEnd.w * weight;
+		dh.g += HeatStrength.x * weight;
+		imageStore(DensityHeat, cell, dh);
+		if (dot(PushVelocity.xyz, PushVelocity.xyz) > 0.0)
+		{
+			vec4 vel = imageLoad(Velocity, cell);
+			vel.xyz += PushVelocity.xyz * weight;
+			imageStore(Velocity, cell, vel);
+		}
+	}
+	else if (kind == 1)
+	{
+		vec4 dh = imageLoad(DensityHeat, cell);
+		dh.r *= 1.0 - clamp(ShapeEnd.w, 0.0, 1.0) * weight;
+		imageStore(DensityHeat, cell, dh);
+	}
+	else
+	{
+		// Not into a wall, nor behind one (within PUSH_REACH_CELLS).
+		if (SolidAt(cell) || !Reachable(closest, cell, PUSH_REACH_CELLS))
+			return;
+		// Outward from the centre line. Within half a cell of it the direction is
+		// undefined, so the push fades out there instead of flipping.
+		float dist = length(away);
+		vec3 dir = dist > 1e-4 ? away / dist : vec3(0.0);
+		float nearCentre = clamp(dist / 0.5, 0.0, 1.0);
+		vec4 vel = imageLoad(Velocity, cell);
+		vel.xyz += dir * (HeatStrength.y * weight * nearCentre);
+		imageStore(Velocity, cell, vel);
+	}
+}

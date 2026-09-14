@@ -481,6 +481,113 @@ inline void BillboardBasis(const FBillboard &bb, const DVector3 &bpos, const DVe
 	halfh = bb.height * 0.5 * g;
 }
 
+//============================================================================
+//
+// [EFFECTQUEUES] PER-TIC EFFECT EVENT QUEUES ("Engine docs/SMOKE_VOLUME_PLAN.md"
+// SH3 and SH4, review S7 and X4).
+//
+// An effect the renderer simulates on its own clock -- the smoke volume (#13)
+// first, then debris (#9) and surface damage (#17) -- is told about events by play
+// code: a blast here, a round's path there. Those events cannot go straight to the
+// renderer (play code never sees it) and must not pile up when nothing reads them
+// (GL, smoke off, a minimised window, a menu), so each kind of event has a fixed
+// queue on the level:
+//
+//   - N events per TIC. BeginTic, at the top of every level tic before any writer
+//     runs (P_Ticker), starts a new generation whether or not anything read the last
+//     one, so a queue never grows. The event past N in one tic is dropped, and the
+//     queue's writer logs that once per map.
+//   - TWO generations are kept -- the tic being written and the one before it -- so a
+//     renderer frame that follows two tics at once (a consumer steps at most twice a
+//     frame) still sees both. A reader keeps its own cursor (the last Serial it read
+//     and how many of that generation), so several readers share one queue and none
+//     of them writes to it; SH3's impulse queue is read by the smoke volume now and
+//     by debris (#9) later.
+//
+// PRESENTATION ONLY: nothing in the playsim reads a queue, nothing is serialized, and
+// ClearLevelData empties them on a map change or savegame load. A queue is written
+// the same way on every machine; what a renderer then does with it -- or drops,
+// because a feature is off or a quality is lower -- changes only that machine's
+// pixels.
+//
+//============================================================================
+
+template<class T, int N>
+struct FEffectTicQueue
+{
+	static constexpr int CAPACITY = N;
+
+	T        Items[2][N];
+	int      Count[2] = { 0, 0 };
+	int      Tic[2] = { 0, 0 };        // Level->maptime while that generation was written
+	uint64_t Serial[2] = { 0, 0 };     // 0 = never written; otherwise rises by one per generation
+	int      Current = 0;
+	uint64_t NextSerial = 1;           // never reset, so a serial is never reused in a process
+	bool     FullLogged = false;       // the writer's "more than N this tic" line, once per map
+
+	// A new generation for the tic about to run. The older of the two is overwritten.
+	void BeginTic(int maptime)
+	{
+		Current ^= 1;
+		Count[Current] = 0;
+		Tic[Current] = maptime;
+		Serial[Current] = NextSerial++;
+	}
+
+	// Room for one more event in this tic's generation, or null when its N are used.
+	T *Push()
+	{
+		if (Count[Current] >= N) return nullptr;
+		return &Items[Current][Count[Current]++];
+	}
+
+	// Map change and savegame load: both generations emptied, a fresh one open, so
+	// events written before the new map's first tic are kept for it.
+	void Reset(int maptime)
+	{
+		Count[0] = Count[1] = 0;
+		Serial[0] = Serial[1] = 0;
+		Current = 0;
+		Tic[0] = maptime;
+		Serial[0] = NextSerial++;
+		FullLogged = false;
+	}
+};
+
+// [SMOKEVOLUME] One EmitSmoke: smoke, heat and a push added in a ball of Radius around
+// Pos, or along the capsule from Pos to End when Capsule. Map units; Vel in map units
+// per second. Clamped by the native (vmthunks.cpp).
+struct FSmokeEmitEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	DVector3 End{ 0., 0., 0. };
+	DVector3 Vel{ 0., 0., 0. };
+	double   Radius = 0.;
+	double   Amount = 0.;
+	double   Heat = 0.;
+	bool     Capsule = false;
+};
+
+// [SMOKEVOLUME] One CarveSmoke: smoke removed along the capsule from Start to End.
+struct FSmokeCarveEvent
+{
+	DVector3 Start{ 0., 0., 0. };
+	DVector3 End{ 0., 0., 0. };
+	double   Radius = 0.;
+	double   Amount = 0.;
+};
+
+// [EFFECTQUEUES] One PushEffectImpulse (SH3): a push away from Pos (toward it when
+// Strength is negative), Strength map units per second at the centre, fading to
+// nothing at Radius. One blast, one call: the smoke volume reads it, and debris (#9)
+// will read the same event.
+struct FEffectImpulseEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	double   Radius = 0.;
+	double   Strength = 0.;
+};
+
 struct FLevelLocals
 {
 	void *level;
@@ -1436,6 +1543,82 @@ public:
 	void ClearHeatSources()
 	{
 		for (int i = 0; i < MAX_HEAT_SOURCES; i++) HeatSources[i] = HeatSource();
+	}
+
+	// [EFFECTQUEUES] THE PER-TIC EFFECT QUEUES (FEffectTicQueue above; SH3, SH4). All of
+	// FLevelLocals' queue members live here, in one place, because every edit to this
+	// header rebuilds nearly the whole engine: debris spawns (#9) and surface damage
+	// paints (#17) add their queue beside these, and a line to BeginEffectTic and
+	// ClearEffectQueues. Written by the natives in vmthunks.cpp; read by the renderer
+	// (hw_smokevolume.cpp) and nothing else.
+	static constexpr int MAX_SMOKE_EMITS_PER_TIC = 128;
+	static constexpr int MAX_SMOKE_CARVES_PER_TIC = 128;
+	static constexpr int MAX_EFFECT_IMPULSES_PER_TIC = 128;
+
+	FEffectTicQueue<FSmokeEmitEvent, MAX_SMOKE_EMITS_PER_TIC> SmokeEmits;
+	FEffectTicQueue<FSmokeCarveEvent, MAX_SMOKE_CARVES_PER_TIC> SmokeCarves;
+	FEffectTicQueue<FEffectImpulseEvent, MAX_EFFECT_IMPULSES_PER_TIC> EffectImpulses;
+
+	// P_Ticker, at the top of this level's tic, before any writer runs.
+	void BeginEffectTic()
+	{
+		SmokeEmits.BeginTic(maptime);
+		SmokeCarves.BeginTic(maptime);
+		EffectImpulses.BeginTic(maptime);
+	}
+
+	// ClearLevelData. maptime restarts at 0 on the new map.
+	void ClearEffectQueues()
+	{
+		SmokeEmits.Reset(0);
+		SmokeCarves.Reset(0);
+		EffectImpulses.Reset(0);
+	}
+
+	// [EFFECTQUEUES] THE LEVEL-DATA SERIAL: renewed by ClearLevelData on every map change
+	// and savegame load, from a process-wide counter (never this object's address -- a
+	// new level can sit where the last one was). A renderer-side effect compares it to
+	// know the level it built its state for is gone (hw_entrypoint.cpp, LevelDataSerial).
+	uint64_t LevelDataSerial = 0;
+
+	static uint64_t NewLevelDataSerial()
+	{
+		static uint64_t counter = 0;
+		return ++counter;
+	}
+
+	// [SMOKEVOLUME] THE SMOKE VOLUME'S LOOK AND WIND ("Engine docs/SMOKE_VOLUME_PLAN.md"
+	// 13b, "API and look"; SetSmokeLook / SetSmokeWind / ClearSmoke, vmthunks.cpp).
+	//
+	// Render-only settings a mod publishes; the renderer reads them every frame. The
+	// simulation (13b) uses Dissipation and Buoyancy and the wind; the drawing (13c)
+	// uses Tint, Absorption, Scatter and Ambient. One look per level, not per emitter:
+	// the volume is one body of air. The player's live sliders scale it on the renderer
+	// side (r_smoke_dissipation_scale, 13c's r_smoke_density_scale), because a script
+	// cannot change anything while a menu is open.
+	//
+	// Not serialized: ClearLevelData puts the defaults back on a map change and savegame
+	// load, so a mod re-applies its look on WorldLoaded. Setters only -- nothing hands a
+	// look back to script. SmokeClearSerial rises with every ClearSmoke; the renderer
+	// empties the volume when it sees it change.
+	struct SmokeLookSettings
+	{
+		PalEntry Tint = 0xff8c8c8c;   // the smoke's colour
+		double   Absorption = 1.0;    // 0..16: how strongly it blocks what is behind it
+		double   Scatter = 0.8;       // 0..1: how much of the light it blocks it reflects
+		double   Ambient = 0.4;       // 0..4: how bright it is with no light on it
+		double   Dissipation = 0.15;  // 0..10 per second: how fast it thins (0 = it hangs)
+		double   Buoyancy = 1.0;      // -4..4: how strongly heat lifts it (negative sinks)
+	};
+
+	SmokeLookSettings SmokeLook;
+	DVector3 SmokeWind{ 0., 0., 0. };  // map units per second, each axis -1024..1024
+	uint32_t SmokeClearSerial = 0;
+
+	void ResetSmokeState()
+	{
+		SmokeLook = SmokeLookSettings();
+		SmokeWind = DVector3(0., 0., 0.);
 	}
 
 	// [BB] Sweep: a thin band of light at a fixed distance from an origin,

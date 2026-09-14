@@ -1,8 +1,8 @@
 /*
 ** hw_smokevolume.h
 **
-** [SMOKEVOLUME] The smoke volume's CPU side: when it exists, where its box is, how
-** many steps a frame runs.
+** [SMOKEVOLUME] The smoke volume's CPU side: when it exists, where its box is, what
+** goes into it this frame, and its solid mask.
 **
 **---------------------------------------------------------------------------
 **
@@ -12,28 +12,39 @@
 **
 **---------------------------------------------------------------------------
 **
-** "Engine docs/SMOKE_VOLUME_PLAN.md" #13. Everything here survives a render rebuild:
-** it only reads the level and fills SmokeVolumeFrame (hw_framecompute.h); the GPU
-** side (vk_smokevolume.cpp) acts on it.
+** "Engine docs/SMOKE_VOLUME_PLAN.md" #13 (13a, 13b). Everything here survives a render
+** rebuild: it only reads the level and fills SmokeVolumeFrame (hw_framecompute.h); the
+** GPU side (vk_smokevolume.cpp) acts on it.
 **
-** Step 1 (13a) has:
 **   - DEMAND: the volume exists while r_smoke is on and something asked for smoke on
-**     this map within the last LINGER_SECONDS of level time. In 13a the only asker is
-**     r_smoke_computetest; [13b] a mod's EmitSmoke / CarveSmoke (the SH4 queues) joins
-**     it. Level time freezes in a menu, so pausing never frees and re-makes 150 MB, and
-**     the linger carries into the next map, so a map change does not either.
+**     this map within the last LINGER_SECONDS of level time -- an EmitSmoke or
+**     CarveSmoke reaching the level's per-tic queues (FEffectTicQueue, g_levellocals.h),
+**     or the test source r_smoke_computetest -- or while smoke may still be in the air.
+**     Level time freezes in a menu, so pausing never frees and re-makes 150 MB, and the
+**     linger carries into the next map. A PushEffectImpulse alone asks for nothing.
 **   - STEPS: one per world tic, at most SmokeVolumeFrame::MAX_STEPS_PER_FRAME a frame;
-**     a bigger jump (a hitch, a load) drops the backlog (review S7).
-**   - PLACEMENT: a world-aligned box in whole cells, centred on the eye in x and y
-**     with the eye at EYE_HEIGHT_FRACTION of its height (more room above than below:
-**     smoke rises to ceilings), recentred when the eye strays more than
-**     RECENTRE_FRACTION of an extent. [13b] recentring shifts the contents
-**     (smoke_shift.comp) and re-masks the newly exposed slabs.
-**   - SH2: the box is an active box for SectorPlanes, polled every active frame.
-**   - The desk MASK TEST (r_smoke_computetest): SH1's LevelSolidity rasterises the
-**     whole box on the CPU, MASK_TEST_ROWS_PER_FRAME rows a frame, timed as
-**     fx.solidity, and logs the solid share and cost when done. [13b] the same
-**     rasterisation feeds the R8 mask texture.
+**     a bigger jump drops the backlog (review S7).
+**   - EVENTS: every frame the queues are read from this side's own cursors (nothing is
+**     written to the level). An event becomes one or more SmokeKernels for the step of
+**     the tic it was queued in. An event whose cells are not yet in the solid mask waits
+**     (at most MAX_HOLD_TICS) while the tiles under it are rasterised first, so smoke is
+**     never injected before the walls around it exist.
+**   - PLACEMENT: a world-aligned box of whole TILES (SMOKE_TILE_CELLS), centred on the
+**     eye in x and y with the eye at EYE_HEIGHT_FRACTION of its height, recentred when
+**     the eye strays more than RECENTRE_FRACTION of an extent. A recentre shifts the
+**     contents on the GPU; a jump further than the box starts a new box.
+**   - THE SOLID MASK: SH1's LevelSolidity rasterises the box on the CPU in world-aligned
+**     MASK_TILE_CELLS x MASK_TILE_CELLS columns, within MASK_BUDGET_MS a frame (plus up to
+**     MASK_EVENT_TILES_PER_FRAME tiles events are waiting on), nearest the eye first, and
+**     the backend copies each tile in. A new box starts ALL SOLID; a recentre makes what
+**     it exposes solid until rasterised; SH2 (SectorPlanes) names the sectors that moved
+**     -- a door, a lift -- and their tiles are done again.
+**   - QUIET: upper bounds on the density, heat and speed anywhere in the volume, from what
+**     went in and how fast it decays. Below SMOKE_EMPTY_* nothing is simulated or drawn,
+**     and the volume is emptied once.
+**   - THE TEST SOURCE (r_smoke_computetest): a renderer-side source placed ahead of the
+**     view when switched on -- a puff a tic, a round through it every 10 tics, a blast
+**     every 3 seconds -- through the same path as a mod's events. Local only.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim.
 **
@@ -45,9 +56,10 @@
 #include <vector>
 
 #include "vectors.h"
+#include "hw_framecompute.h"
 
 struct FLevelLocals;
-struct SmokeVolumeFrame;
+class SectorPlanes;
 
 class SmokeVolume
 {
@@ -55,17 +67,103 @@ public:
 	static constexpr int LINGER_SECONDS = 60;
 	static constexpr double EYE_HEIGHT_FRACTION = 0.375;
 	static constexpr double RECENTRE_FRACTION = 0.125;
-	static constexpr int MASK_TEST_ROWS_PER_FRAME = 8;
+
+	// The solid mask's CPU work.
+	static constexpr int MASK_TILE_CELLS = 32;
+	static constexpr double MASK_BUDGET_MS = 1.0;
+	static constexpr int MASK_EVENT_TILES_PER_FRAME = 8;
+
+	// Events.
+	static constexpr int MAX_PENDING_EVENTS = 1024;
+	static constexpr int MAX_HOLD_TICS = 70;
+	static constexpr int MAX_KERNELS_PER_FRAME = 4096;
+	static constexpr int SLAB_MIN_CELLS = 32;
+	static constexpr int MAX_SLABS_PER_EVENT = 4;
+
+	// The simulation's own constants (the look and the cvars scale some of them).
+	static constexpr double HEAT_COOLING_PER_SECOND = 0.8;
+	static constexpr double VELOCITY_DAMPING_PER_SECOND = 2.0;
+	static constexpr double DIFFUSION_PER_STEP = 0.06;
+	static constexpr double HEAT_LIFT = 160.0;			// map units per second squared, per unit of heat, x buoyancy
+	static constexpr double DENSITY_LIFT = 12.0;		// the same per unit of density (up to 1), x buoyancy
+	static constexpr double TURBULENCE_SPEED = 20.0;	// map units per second of swirl
+	static constexpr double TURBULENCE_WAVELENGTH = 96.0;	// map units
+	static constexpr double MAX_CELLS_PER_STEP = 4.0;	// at most half a tile, so one tile of margin always holds a step
 
 	static SmokeVolume& Get();
 
 	// Once per frame for the main view, after SectorPlanes::BeginFrame. eye is the view
-	// position (map units), levelSerial changes on every map change and savegame load.
-	void PrepareFrame(FLevelLocals* Level, const DVector3& eye, double ticFrac, uint64_t levelSerial, SmokeVolumeFrame& out);
+	// position (map units), viewYaw the view's yaw in radians (only the test source
+	// uses it), levelSerial FLevelLocals::LevelDataSerial.
+	void PrepareFrame(FLevelLocals* Level, const DVector3& eye, double viewYaw, double ticFrac, uint64_t levelSerial, SmokeVolumeFrame& out);
 
 private:
-	void RunMaskTest(FLevelLocals* Level, const SmokeVolumeFrame& frame);
-	void ResetMaskTest();
+	struct QueueCursor
+	{
+		uint64_t Serial = 0;
+		int Count = 0;
+	};
+
+	struct PendingEvent
+	{
+		int Kind = SmokeKernel::EMIT;
+		int Tic = 0;				// maptime of the tic it was queued in
+		int HeldSince = -1;			// maptime it was first held back for the mask, or -1
+		DVector3 Start{ 0., 0., 0. };
+		DVector3 End{ 0., 0., 0. };
+		DVector3 Vel{ 0., 0., 0. };	// map units per second
+		double Radius = 0;			// map units
+		double Amount = 0;
+		double Heat = 0;
+		double Strength = 0;		// map units per second
+	};
+
+	// An event in this frame's box, in grid cells.
+	struct EventShape
+	{
+		double A[3] = { 0, 0, 0 };
+		double B[3] = { 0, 0, 0 };
+		double Radius = 0;			// cells, at least SmokeKernel::MIN_RADIUS
+		double Scale = 1;			// what widening to MIN_RADIUS costs the amount
+		int Min[3] = { 0, 0, 0 };	// the cells it can reach, clipped to the grid
+		int Max[3] = { 0, 0, 0 };
+	};
+
+	// A world-aligned column block of mask work. Absolute cells: tile (TileX, TileY)
+	// covers cells [TileX, TileX + 1) x MASK_TILE_CELLS, likewise y, full height.
+	struct MaskTile
+	{
+		int TileX = 0;
+		int TileY = 0;
+		bool Unbuilt = false;		// part of it is solid only because it was never rasterised
+		int UnbuiltZMin = 0;		// absolute cells: the layers that are unbuilt
+		int UnbuiltZMax = 0;
+	};
+
+	struct Bounds
+	{
+		double Density = 0;
+		double Heat = 0;
+		double Speed = 0;			// cells per step
+	};
+
+	void ForgetEvents();
+	void ReadQueues(FLevelLocals* Level, bool keep);
+	void AddPending(const PendingEvent& e);
+	bool HasPendingSmoke() const;
+	void AddTestSourceEvents(int tic);
+
+	void StartMaskBuild(const SmokeVolumeFrame& frame);
+	void AddExposedWork(const SmokeVolumeFrame& frame, const int shift[3]);
+	void AddTileWork(int cellX0, int cellY0, int cellX1, int cellY1, bool unbuilt, int zMin, int zMax);
+	void MarkDirtySectors(const SmokeVolumeFrame& frame, SectorPlanes& planes);
+	void RunMaskWork(FLevelLocals* Level, const SmokeVolumeFrame& frame, const DVector3& eye);
+	bool TouchesUnbuilt(const EventShape& shape, const SmokeVolumeFrame& frame) const;
+
+	bool MakeShape(const PendingEvent& e, const SmokeVolumeFrame& frame, EventShape& shape) const;
+	void BuildKernels(const SmokeVolumeFrame& frame, double sums[][3]);
+	void AppendKernels(const PendingEvent& e, const EventShape& shape, int step, const SmokeVolumeFrame& frame);
+	void FillSimSettings(FLevelLocals* Level, SmokeVolumeFrame& out) const;
 
 	uint64_t mLevelSerial = 0;
 
@@ -81,16 +179,35 @@ private:
 	bool mPlaced = false;
 	int mPlacedQuality = 0;
 	int mOriginCell[3] = { 0, 0, 0 };
+	uint64_t mBoxEpoch = 0;
+	uint32_t mPlanesGeneration = 0;
 
-	// The desk mask test.
-	std::vector<uint8_t> mMask;
-	bool mMaskStarted = false;
-	bool mMaskDone = false;
-	uint64_t mMaskSerial = 0;
-	int mMaskQuality = 0;
-	int mMaskOrigin[3] = { 0, 0, 0 };
-	int mMaskRow = 0;
-	int mMaskFrames = 0;
-	uint64_t mMaskNs = 0;
-	uint64_t mMaskSolidCells = 0;
+	// Events.
+	QueueCursor mEmitCursor;
+	QueueCursor mCarveCursor;
+	QueueCursor mImpulseCursor;
+	uint32_t mClearSerial = 0;
+	std::vector<PendingEvent> mPending;
+	bool mPendingFullLogged = false;
+	Bounds mBound;
+	bool mResidue = false;			// the GPU may hold values under the bounds' empty line
+
+	// The mask.
+	std::vector<MaskTile> mMaskTiles;
+	int mUnbuiltTiles = 0;
+	bool mBuildLogPending = false;
+	uint64_t mBuildNs = 0;
+	int mBuildFrames = 0;
+	uint64_t mBuildSolidCells = 0;
+	uint64_t mBuildCells = 0;
+
+	// The test source.
+	bool mTestPlaced = false;
+	DVector3 mTestPos{ 0., 0., 0. };
+	DVector3 mTestDir{ 1., 0., 0. };
+
+	// This frame's hand-over to the backend; the frame points into these.
+	std::vector<SmokeKernel> mKernels;
+	std::vector<SmokeMaskUpload> mMaskUploads;
+	std::vector<uint8_t> mMaskBytes;
 };

@@ -1,0 +1,45 @@
+// [SMOKEVOLUME] 13b: a whole-cell copy of one volume into another, offset -- the smoke
+// volume's recentre ("Engine docs/SMOKE_VOLUME_PLAN.md" 13b: "it recentres in whole
+// cells; a compute pass shifts the contents"). Target cell c takes source cell c + Shift;
+// a target cell with no source cell (what came into the box) gets Fill. Shift (0,0,0)
+// is a plain copy, which puts both images of a ping-pong pair on the new origin.
+//
+// A storage image needs its format in the declaration, so this lump has a variant per
+// target format, chosen by the define VkComputeManager::CreateProgram puts in front of
+// it: TARGET_RG16F (density and heat, and the mask carried through them), TARGET_RGBA16F
+// (velocity), TARGET_R8 (the solid mask).
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension, the
+// define and "#line 1". Push constants: SmokeShiftConstants in vk_smokevolume.cpp (48
+// bytes). GLSL reserved-word rule (NVIDIA GL): no identifier here is a reserved word.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler3D Source;
+#if defined(TARGET_RG16F)
+layout(set = 0, binding = 1, rg16f) uniform writeonly image3D Target;
+#elif defined(TARGET_RGBA16F)
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image3D Target;
+#else
+layout(set = 0, binding = 1, r8) uniform writeonly image3D Target;
+#endif
+
+layout(push_constant) uniform SmokeShiftConstants
+{
+	ivec4 GridSize;	// xyz cells
+	ivec4 Shift;	// xyz: target cell c takes source cell c + Shift
+	vec4 Fill;		// what a target cell with no source cell gets
+};
+
+void main()
+{
+	ivec3 cell = ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(cell, GridSize.xyz)))
+		return;
+
+	ivec3 from = cell + Shift.xyz;
+	vec4 value = Fill;
+	if (all(greaterThanEqual(from, ivec3(0))) && all(lessThan(from, GridSize.xyz)))
+		value = texelFetch(Source, from, 0);
+	imageStore(Target, cell, value);
+}

@@ -35,11 +35,14 @@
 #include "v_video.h"
 #include "hw_clock.h"
 #include "hw_cvars.h"
+#include "hwrenderer/postprocessing/hw_postprocess.h"	// [LIGHTMASK] the frame's light mask decision
 #include "hw_drawnlinebuffer.h"
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
 EXTERN_CVAR(Bool, r_meshparticles)	// [MESHPARTICLES] hw_meshparticles.cpp
+EXTERN_CVAR(Bool, gl_bloom_pin_beams)	// [LIGHTMASK] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK] hw_postprocess_cvars.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -195,13 +198,15 @@ namespace
 				"the window total, dlights (walls+flats) is avg/max, sprites/walls/flats are avg, the rest are max. "
 				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill; fx.heatsources: "
 				"the heat source fill), avg/p95/max per frame with same-name samples summed. pp.heatoffset and pp.heatwarp "
-				"are the heat shimmer passes (r_heatrefraction).\n\n";
+				"are the heat shimmer passes (r_heatrefraction); pp.lightmaskcarry moves the light mask with them, and "
+				"pp.lightmaskdebug is the light mask's debug view (r_lightmask_debug), drawn in place of bloom.\n\n";
 			// [COMPUTE] The compute names, on a legend line of their own.
 			out << "Legend (compute): fx.compute is the frame's compute hook -- on cpu_fx_ms every frame while this log "
 				"is on (its cost when nothing has compute work), on gpu_ms only when compute work was recorded. fx.smokesim "
 				"is ONE smoke volume step, counted per step, not per frame (avg/p95/max per step; its GPU group nests inside "
-				"fx.compute). fx.sectorplanes is the renderer's sector plane poll; fx.solidity the level solidity mask "
-				"(r_smoke_computetest).\n\n";
+				"fx.compute: its kernels, advection and tile maps). fx.smokeshift is one recentre of the volume, per run. "
+				"fx.sectorplanes is the renderer's sector plane poll; fx.smokemask the solid mask's rasterisation on the CPU "
+				"(frames with mask work only).\n\n";
 			HeaderWritten = true;
 		}
 
@@ -235,10 +240,14 @@ namespace
 		// [HEATREFRACTION] And the heat shimmer switch, so a pp.heatoffset / pp.heatwarp
 		// before/after labels itself.
 		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);
-		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.solidity
+		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.smokemask
 		// before/after labels itself.
-		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d",
-			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest);
+		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g",
+			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest, (double)(float)*r_smoke_dissipation_scale);
+		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
+		// (lightmask: 1 while the scene draws the mask this frame).
+		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",
+			(int)*gl_bloom_pin_beams, (int)*r_lightmask_debug, (int)hw_postprocess.lightmask.Active());
 		out.AppendFormat(" t=%.1fs window=%.1fs frames=%u fps=%.1f frame_ms avg=%.2f p95=%.2f max=%.2f\n",
 			I_msTime() / 1000.0, windowS, frames, fps, W.Frame.Avg(), W.Frame.P95(), W.Frame.Max);
 

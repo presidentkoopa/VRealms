@@ -62,6 +62,7 @@ void SectorPlanes::BeginFrame(FLevelLocals* Level, uint64_t levelSerial)
 		// Wrapped (after 136 years at 90 Hz): forget which sectors this frame polled.
 		mFrame = 1;
 		std::fill(mPolledFrame.begin(), mPolledFrame.end(), 0u);
+		std::fill(mChangedFrame.begin(), mChangedFrame.end(), 0u);
 	}
 }
 
@@ -80,6 +81,7 @@ void SectorPlanes::EnsureLevel(FLevelLocals* Level)
 	mSeen.assign(count, Seen());
 	mChangedAt.assign(count, 0u);
 	mPolledFrame.assign(count, 0u);
+	mChangedFrame.assign(count, 0u);
 	mExtent.assign((size_t)count * 4, 0.0);
 
 	// Each sector's extent from its own lines. A sector with no lines (rare; a control
@@ -122,6 +124,28 @@ uint32_t SectorPlanes::ChangedAt(int sectorIndex) const
 	return mChangedAt[sectorIndex];
 }
 
+bool SectorPlanes::GetExtent(int sectorIndex, double& minX, double& minY, double& maxX, double& maxY) const
+{
+	if (!mLevelReady || sectorIndex < 0 || (unsigned)sectorIndex >= mSectorCount || (size_t)sectorIndex * 4 + 3 >= mExtent.size())
+		return false;
+	const double* extent = &mExtent[(size_t)sectorIndex * 4];
+	minX = extent[0];
+	minY = extent[1];
+	maxX = extent[2];
+	maxY = extent[3];
+	return minX <= maxX && minY <= maxY;
+}
+
+// [13b] One change of a sector's open space: a new generation, once a frame.
+void SectorPlanes::MarkChanged(int index)
+{
+	if (mChangedFrame[index] == mFrame)
+		return;
+	mChangedFrame[index] = mFrame;
+	mChangedAt[index] = ++mGeneration;
+	mChangedThisFrame.push_back(index);
+}
+
 void SectorPlanes::PollBox(FLevelLocals* Level, double minX, double minY, double maxX, double maxY)
 {
 	// Only for the level this frame began with.
@@ -142,32 +166,39 @@ void SectorPlanes::PollBox(FLevelLocals* Level, double minX, double minY, double
 		sector_t* sector = &Level->sectors[i];
 		PollSector(sector);
 
-		// What the renderer's CheckUpdate also watches for this sector.
+		// What the renderer's CheckUpdate also watches for this sector. [13b] When one of
+		// those moved, this sector's open space moved with it (a 3D lift's platform, a
+		// deep-water transfer), so it is marked changed too -- a user re-doing the area
+		// under a changed sector would otherwise look at the model's control sector,
+		// usually somewhere off the map, and never here.
+		bool modelChanged = false;
 		if (sector_t* heightSector = sector->GetHeightSec())
-			PollSector(heightSector);
+			modelChanged |= PollSector(heightSector);
 		if (sector->e != nullptr)
 		{
 			for (F3DFloor* ffloor : sector->e->XFloor.ffloors)
 			{
 				if (ffloor != nullptr && ffloor->model != nullptr)
-					PollSector(ffloor->model);
+					modelChanged |= PollSector(ffloor->model);
 			}
 		}
+		if (modelChanged)
+			MarkChanged((int)i);
 	}
 
 	if (timed)
 		PerfLog::AddCpuSample("fx.sectorplanes", (double)(I_nsTime() - startNs) / 1e6);
 }
 
-void SectorPlanes::PollSector(sector_t* sector)
+bool SectorPlanes::PollSector(sector_t* sector)
 {
 	if (sector == nullptr)
-		return;
+		return false;
 	const int index = sector->Index();
 	if (index < 0 || (unsigned)index >= mSectorCount)
-		return;
+		return false;
 	if (mPolledFrame[index] == mFrame)
-		return;
+		return mChangedFrame[index] == mFrame;
 	mPolledFrame[index] = mFrame;
 	mPolledThisFrame++;
 
@@ -183,7 +214,7 @@ void SectorPlanes::PollSector(sector_t* sector)
 	if (seen.Valid && seen.TexZ[0] == floorTexZ && seen.TexZ[1] == ceilingTexZ &&
 		memcmp(&seen.Record, &record, sizeof(record)) == 0)
 	{
-		return;
+		return mChangedFrame[index] == mFrame;
 	}
 
 	seen.TexZ[0] = floorTexZ;
@@ -191,9 +222,9 @@ void SectorPlanes::PollSector(sector_t* sector)
 	seen.Record = record;
 	seen.Valid = true;
 
-	mChangedAt[index] = ++mGeneration;
-	mChangedThisFrame.push_back(index);
+	MarkChanged(index);
 
 	if (screen != nullptr && screen->mSectorPlanes != nullptr && (unsigned)index < SectorPlaneBuffer::CAPACITY)
 		screen->mSectorPlanes->Write((unsigned)index, record);
+	return true;
 }

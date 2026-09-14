@@ -86,7 +86,7 @@ void VkComputeManager::BeginWork()
 	fb->GetCommands()->PushGroup("fx.compute");
 }
 
-std::unique_ptr<VkComputeProgram> VkComputeManager::CreateProgram(const char* lumpName, const std::vector<VkComputeBinding>& bindings, uint32_t pushConstantBytes)
+std::unique_ptr<VkComputeProgram> VkComputeManager::CreateProgram(const char* lumpName, const std::vector<VkComputeBinding>& bindings, uint32_t pushConstantBytes, const char* defines)
 {
 	int lump = fileSystem.CheckNumForFullName(lumpName, 0);
 	if (lump == -1)
@@ -96,11 +96,23 @@ std::unique_ptr<VkComputeProgram> VkComputeManager::CreateProgram(const char* lu
 	}
 
 	FString code;
-	code << "#version 450\n#extension GL_GOOGLE_include_directive : enable\n#line 1\n";
+	code << "#version 450\n#extension GL_GOOGLE_include_directive : enable\n";
+	if (defines != nullptr)
+		code << defines;	// [13b] a variant's defines, before the lump's #line 1
+	code << "#line 1\n";
 	code << GetStringFromLump(lump).GetChars() << "\n";
 
 	auto program = std::make_unique<VkComputeProgram>();
 	program->Name = lumpName;
+	if (defines != nullptr && defines[0] != 0)
+	{
+		// The variant in the name, so the log lines say which one: "lump (TARGET_R8)".
+		FString variant = defines;
+		variant.Substitute("#define ", "");
+		variant.Substitute("\n", " ");
+		variant.StripRight();
+		program->Name.AppendFormat(" (%s)", variant.GetChars());
+	}
 	program->PushConstantBytes = pushConstantBytes;
 
 	try

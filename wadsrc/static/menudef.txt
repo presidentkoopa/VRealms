@@ -2245,24 +2245,37 @@ OptionMenu DeveloperOptionsMenu protected
 	// off. Only draws while "Heat shimmer" is On. Not saved. Vulkan only.
 	Option "Heat shimmer test source (ahead of you)", "r_heatrefraction_test", "OnOff"
 	// [SMOKEVOLUME] r_smoke -- the smoke volume ("Engine docs/SMOKE_VOLUME_PLAN.md" #13): a 3D
-	// grid of gunsmoke around you that walls stop and blasts clear. Step 1 is its compute
-	// foundation only: nothing draws yet. On by default (owner, 2026-09-14) and inert until a
-	// mod emits smoke on a map (or the compute test below asks): nothing is allocated before
-	// that. Off frees the volume. RS_Ballistics' "Ballistics & Effects" page carries this row
-	// and the next one. Renderer-read every frame. Vulkan only.
+	// grid of gunsmoke around you that walls stop and blasts clear. 13a and 13b are its
+	// compute foundation and simulation: nothing draws until 13c. On by default (owner,
+	// 2026-09-14) and inert until a mod emits smoke on a map (or the test source below asks):
+	// nothing is allocated before that. Off frees the volume. RS_Ballistics' "Ballistics &
+	// Effects" page carries this row, quality and fade speed. Renderer-read every frame.
+	// Vulkan only.
 	Option "Smoke volume", "r_smoke", "OnOff"
 	// r_smoke_quality -- resolution and area together: 1 = 192 x 192 x 64 cells at 10 units
 	// (59 MB), 2 = 256 x 256 x 96 at 8 (157 MB, the default), 3 = 320 x 320 x 128 at 8 (328 MB),
 	// 4 = 384 x 384 x 128 at 8 (472 MB). A change re-allocates the volume and clears its smoke.
 	// Renderer-read every frame. Vulkan only.
 	Slider "Smoke quality (1 = 59 MB, 2 = 157 MB, 3 = 328 MB, 4 = 472 MB)", "r_smoke_quality", 1, 4, 1, 0
-	// r_smoke_computetest -- step 1's desk check, no mod needed: allocates the volume at the
-	// current quality, runs one test compute step per world tic, and builds the level solidity
-	// mask on the CPU. Draws nothing. With the performance log on, perflog.txt shows fx.compute,
-	// fx.smokesim (per step) and fx.solidity; the console log names the allocation and the
-	// mask's solid share and cost. Switched off, the steps stop at once and the volume is freed
-	// after a minute of game time. Not saved. Vulkan only.
-	Option "Smoke compute test (no mod needed)", "r_smoke_computetest", "OnOff"
+	// [13b] r_smoke_dissipation_scale -- how fast smoke thins, times the mod's own look: 1 = as
+	// the mod made it, 2 = twice as fast, 0 = it hangs until cleared. Read at every simulation
+	// step, so the change shows as soon as the game runs again. RS_Ballistics' "Ballistics &
+	// Effects" page mirrors this row. Vulkan only.
+	Slider "Smoke fade speed (1 = the mod's own, 0 = hangs)", "r_smoke_dissipation_scale", 0, 4, 0.25, 2
+	// r_smoke_computetest -- a smoke test source, no mod needed: placed ahead of where you look
+	// when switched on -- a puff every tic, a round through it every 10 tics, a blast every 3
+	// seconds -- running the real simulation. Draws nothing until 13c. With the performance log
+	// on, perflog.txt shows fx.compute, fx.smokesim (per step) and fx.smokemask; the console log
+	// names the allocation, the source and the solid mask's build. Switched off, the steps
+	// stop once the smoke has thinned away and the volume is freed a minute of game time after.
+	// Not saved. Vulkan only.
+	Option "Smoke test source (ahead of you)", "r_smoke_computetest", "OnOff"
+	// [LIGHTMASK] r_lightmask_debug -- the light mask ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6a): shows,
+	// per pixel, how much of the light is beam light (green) and emissive light (red), measured against
+	// the image bloom reads. 1 = over a grey scene, 2 = beam light alone. It switches the mask on by itself
+	// (the first time in a session: a pause while its shaders compile) and is drawn in bloom's place, so
+	// the picture has no bloom while it shows. Not saved. Vulkan only.
+	Slider "Show light mask (debug: 1 overlay, 2 beam light only)", "r_lightmask_debug", 0, 2, 1, 0
 	StaticText " "
 	StaticText "$DEVOPTMNU_OPTIONS_MARKED_WITH_RESTART", "Brown"
 	StaticText " "

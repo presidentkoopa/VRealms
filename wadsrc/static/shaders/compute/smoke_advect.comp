@@ -1,0 +1,247 @@
+// [SMOKEVOLUME] 13b: the simulation step's body ("Engine docs/SMOKE_VOLUME_PLAN.md" 13b):
+// forces, advection, diffusion and dissipation in ONE pass, reading one state of each
+// ping-pong pair and writing the other. One pass, not three, because the pair must
+// hold the last two whole states -- 13c's march blends them by TicFrac for smoothing
+// (owner answer 3) -- and a separate diffusion pass would leave an intermediate there.
+//
+// Per cell (semi-Lagrangian):
+//   - a tile with nothing in or next to it (TileActive 0), or a wall cell: empty
+//   - what carries this cell's air: its velocity, the wind and a divergence-free swirl
+//     (the curl of world-space value noise -- no RNG, the same on every machine), with
+//     the component into a wall face removed and the length capped
+//   - back along it CELL BY CELL, stopping before the first wall cell: nothing is ever
+//     carried through a wall, however thin (the mask makes even a 1-unit wall a whole
+//     cell, and every sample below reads only cells beside the one the point is in)
+//   - density and heat there, each filtered sample averaged over OPEN cells only, so a
+//     wall neither soaks smoke up nor bleeds its zeros into the air beside it; blurred
+//     a little toward a half-cell diagonal pair that turns every step (diffusion)
+//   - velocity carried the same way, damped, lifted by heat and density (buoyancy),
+//     kept off wall faces and under the speed limit
+//   - density, heat and velocity scaled by their keep factors; what is too small to see
+//     snaps to zero
+//
+// Outside the box is open, empty air: smoke that drifts out is gone.
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension and
+// "#line 1". Push constants: SmokeAdvectConstants in vk_smokevolume.cpp (96 bytes).
+// GLSL reserved-word rule (NVIDIA GL): no identifier here is a reserved word.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler3D DensityHeatSource;
+layout(set = 0, binding = 1) uniform sampler3D VelocitySource;
+layout(set = 0, binding = 2) uniform sampler3D SolidMask;
+layout(set = 0, binding = 3, r8) uniform readonly image3D TileActive;
+layout(set = 0, binding = 4, rg16f) uniform writeonly image3D DensityHeatTarget;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image3D VelocityTarget;
+
+layout(push_constant) uniform SmokeAdvectConstants
+{
+	ivec4 GridSize;		// xyz cells; w cells per tile
+	ivec4 OriginCell;	// xyz the box's first cell in world cells; w this step's time, tics
+	vec4 Wind;			// xyz cells per step; w the furthest a step carries anything, cells
+	vec4 Keep;			// x density, y heat, z velocity multipliers per step; w diffusion share
+	vec4 Lift;			// x per unit heat, y per unit density: cells per step added upward per step; z speed limit; w swirl, cells per step
+	vec4 Swirl;			// x noise cells per world cell; y noise cells the swirl drifts per tic; z the blur diagonal (0..3); w unused
+};
+
+const float MIN_OPEN_SHARE = 0.25;	// a sample this far into a wall is averaged over no less than this
+const float SNAP = 1.0 / 16384.0;
+
+// volumetricbeam.fp's hash, as heatoffset.fp has it, so this noise matches the rest.
+float hash13(vec3 p)
+{
+	p = fract(p * 0.1031);
+	p += dot(p, p.zyx + 31.32);
+	return fract((p.x + p.y) * p.z);
+}
+
+// heatoffset.fp's analytic gradient of the same value noise.
+vec3 valueNoiseGrad(vec3 p)
+{
+	vec3 i = floor(p);
+	vec3 f = fract(p);
+	vec3 u = f * f * (3.0 - 2.0 * f);
+	vec3 du = 6.0 * f * (1.0 - f);
+
+	float n000 = hash13(i);
+	float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+	float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+	float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+	float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+	float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+	float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+	float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+
+	float k1 = n100 - n000;
+	float k2 = n010 - n000;
+	float k3 = n001 - n000;
+	float k4 = n000 - n100 - n010 + n110;
+	float k5 = n000 - n010 - n001 + n011;
+	float k6 = n000 - n100 - n001 + n101;
+	float k7 = -n000 + n100 + n010 - n110 + n001 - n101 - n011 + n111;
+
+	return du * vec3(
+		k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,
+		k2 + k5 * u.z + k4 * u.x + k7 * u.z * u.x,
+		k3 + k6 * u.x + k5 * u.y + k7 * u.x * u.y);
+}
+
+// The swirl at a world position (world cells): the curl of the vector potential
+// (n2, 0, n1), so it moves air around without piling it up anywhere. Roughly unit size.
+vec3 SwirlAt(vec3 worldCell, float tics)
+{
+	vec3 p = worldCell * Swirl.x;
+	float drift = tics * Swirl.y;
+	vec3 g1 = valueNoiseGrad(p + vec3(0.0, 0.0, drift));
+	vec3 g2 = valueNoiseGrad(p + vec3(31.7 - drift, 11.3, 5.9));
+	return vec3(g1.y, g2.z - g1.x, -g2.y) * 0.6;
+}
+
+bool SolidAt(ivec3 c)
+{
+	if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, GridSize.xyz)))
+		return false;
+	return texelFetch(SolidMask, c, 0).r > 0.5;
+}
+
+// The component pointing into a wall face beside this cell is removed.
+vec3 WallSlip(ivec3 cell, vec3 v)
+{
+	if (v.x > 0.0 && SolidAt(cell + ivec3(1, 0, 0))) v.x = 0.0;
+	else if (v.x < 0.0 && SolidAt(cell - ivec3(1, 0, 0))) v.x = 0.0;
+	if (v.y > 0.0 && SolidAt(cell + ivec3(0, 1, 0))) v.y = 0.0;
+	else if (v.y < 0.0 && SolidAt(cell - ivec3(0, 1, 0))) v.y = 0.0;
+	if (v.z > 0.0 && SolidAt(cell + ivec3(0, 0, 1))) v.z = 0.0;
+	else if (v.z < 0.0 && SolidAt(cell - ivec3(0, 0, 1))) v.z = 0.0;
+	return v;
+}
+
+// From this cell's centre back along -carry, visiting every cell the segment enters
+// (one axis at a time, so a corner is never skipped), and returning the furthest point
+// before the first wall cell -- or the end, when there is none.
+vec3 BackTrace(ivec3 cell, vec3 centre, vec3 carry)
+{
+	vec3 delta = -carry;
+	float len = length(delta);
+	if (len < 1e-5)
+		return centre;
+
+	ivec3 c = cell;
+	ivec3 dirCell = ivec3(sign(delta));
+	vec3 tMax = vec3(2.0);
+	vec3 tDelta = vec3(2.0);
+	for (int a = 0; a < 3; a++)
+	{
+		if (dirCell[a] > 0)
+		{
+			tMax[a] = (float(c[a] + 1) - centre[a]) / delta[a];
+			tDelta[a] = 1.0 / delta[a];
+		}
+		else if (dirCell[a] < 0)
+		{
+			tMax[a] = (centre[a] - float(c[a])) / -delta[a];
+			tDelta[a] = 1.0 / -delta[a];
+		}
+	}
+
+	// |carry| is at most Wind.w (4 cells), so at most 3 x 4 + 3 cells are entered.
+	for (int i = 0; i < 16; i++)
+	{
+		int a = 0;
+		if (tMax.y < tMax[a]) a = 1;
+		if (tMax.z < tMax[a]) a = 2;
+		float tNext = tMax[a];
+		if (tNext >= 1.0)
+			break;
+		c[a] += dirCell[a];
+		if (SolidAt(c))
+			return centre + delta * max(tNext - 0.001 / len, 0.0);
+		tMax[a] += tDelta[a];
+	}
+	return centre + delta;
+}
+
+vec3 GridUVW(vec3 p)
+{
+	return p / vec3(GridSize.xyz);
+}
+
+bool OutsideBox(vec3 p)
+{
+	return any(lessThan(p, vec3(0.0))) || any(greaterThan(p, vec3(GridSize.xyz)));
+}
+
+vec2 OpenDensityHeat(vec3 p)
+{
+	if (OutsideBox(p))
+		return vec2(0.0);
+	vec3 uvw = GridUVW(p);
+	float openShare = 1.0 - textureLod(SolidMask, uvw, 0.0).r;
+	if (openShare <= 0.0)
+		return vec2(0.0);
+	return textureLod(DensityHeatSource, uvw, 0.0).rg / max(openShare, MIN_OPEN_SHARE);
+}
+
+vec3 OpenVelocity(vec3 p)
+{
+	if (OutsideBox(p))
+		return vec3(0.0);
+	vec3 uvw = GridUVW(p);
+	float openShare = 1.0 - textureLod(SolidMask, uvw, 0.0).r;
+	if (openShare <= 0.0)
+		return vec3(0.0);
+	return textureLod(VelocitySource, uvw, 0.0).xyz / max(openShare, MIN_OPEN_SHARE);
+}
+
+void main()
+{
+	ivec3 cell = ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(cell, GridSize.xyz)))
+		return;
+
+	ivec3 tile = cell / GridSize.w;
+	if (imageLoad(TileActive, tile).r < 0.5 || texelFetch(SolidMask, cell, 0).r > 0.5)
+	{
+		imageStore(DensityHeatTarget, cell, vec4(0.0));
+		imageStore(VelocityTarget, cell, vec4(0.0));
+		return;
+	}
+
+	vec3 centre = vec3(cell) + vec3(0.5);
+
+	// What carries this cell's air this step.
+	vec3 here = texelFetch(VelocitySource, cell, 0).xyz;
+	vec3 carry = here + Wind.xyz + SwirlAt(vec3(OriginCell.xyz) + centre, float(OriginCell.w)) * Lift.w;
+	carry = WallSlip(cell, carry);
+	float carryLen = length(carry);
+	if (carryLen > Wind.w)
+		carry *= Wind.w / carryLen;
+
+	vec3 from = BackTrace(cell, centre, carry);
+
+	// Density and heat there, diffused toward a half-cell diagonal pair that turns through
+	// the four body diagonals, one a step -- a 3-wide blur, even over four steps.
+	int diagonal = int(Swirl.z) & 3;
+	vec3 h = diagonal == 0 ? vec3(0.5, 0.5, 0.5) : diagonal == 1 ? vec3(0.5, -0.5, -0.5) : diagonal == 2 ? vec3(-0.5, 0.5, -0.5) : vec3(-0.5, -0.5, 0.5);
+	vec2 dhHere = OpenDensityHeat(from);
+	vec2 dhAround = 0.5 * (OpenDensityHeat(from + h) + OpenDensityHeat(from - h));
+	vec2 dh = mix(dhHere, dhAround, Keep.w);
+	dh.r *= Keep.x;
+	dh.g *= Keep.y;
+
+	// The velocity, carried the same way, damped, lifted, kept off walls and capped.
+	vec3 v = OpenVelocity(from) * Keep.z;
+	v.z += Lift.x * dh.g + Lift.y * min(dh.r, 1.0);
+	v = WallSlip(cell, v);
+	float speed = length(v);
+	if (speed > Lift.z)
+		v *= Lift.z / speed;
+
+	if (dh.r < SNAP) dh.r = 0.0;
+	if (dh.g < SNAP) dh.g = 0.0;
+	if (speed < SNAP) v = vec3(0.0);
+
+	imageStore(DensityHeatTarget, cell, vec4(dh, 0.0, 0.0));
+	imageStore(VelocityTarget, cell, vec4(v, 0.0));
+}

@@ -1,0 +1,95 @@
+// [SMOKEVOLUME] 13b: the simulation's tile maps ("Engine docs/SMOKE_VOLUME_PLAN.md" 13b,
+// "an empty room costs nothing"). The grid is cut into tiles of GridSize.w cells a side
+// (SMOKE_TILE_CELLS); smoke_advect.comp skips every tile whose TileActive is 0, so a
+// step costs what the smoke covers, not the whole box. [13c] The march can skip the
+// same tiles.
+//
+// One lump, three passes (TileCount.w):
+//   0 CONTENT: after a step, per tile that was active during it, does any cell hold more
+//     than EmptyBelow (density, heat or speed)? -> TileHasContent. A tile inactive during
+//     the step was written empty by it, so it is not scanned.
+//   1 SPREAD: TileActive = a tile or any of its 26 neighbours has content. One tile of
+//     margin holds a whole step: nothing moves further than half a tile in one.
+//   2 MARK: before a step, every tile in [RegionMin, RegionMax) is made active -- the
+//     tiles a kernel (an emit, a carve, a push) touches, with their margin.
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension and
+// "#line 1". Push constants: SmokeTilesConstants in vk_smokevolume.cpp (80 bytes).
+// GLSL reserved-word rule (NVIDIA GL): no identifier here is a reserved word.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler3D DensityHeat;
+layout(set = 0, binding = 1) uniform sampler3D Velocity;
+layout(set = 0, binding = 2, r8) uniform image3D TileHasContent;
+layout(set = 0, binding = 3, r8) uniform image3D TileActive;
+
+layout(push_constant) uniform SmokeTilesConstants
+{
+	ivec4 GridSize;		// xyz cells; w cells per tile
+	ivec4 TileCount;	// xyz tiles; w the pass: 0 content, 1 spread, 2 mark
+	ivec4 RegionMin;	// pass 2: first tile
+	ivec4 RegionMax;	// pass 2: one past the last tile
+	vec4 EmptyBelow;	// x density, y heat, z speed (cells per step)
+};
+
+void main()
+{
+	ivec3 tile = ivec3(gl_GlobalInvocationID);
+	int pass = TileCount.w;
+
+	if (pass == 2)
+	{
+		tile += RegionMin.xyz;
+		if (any(greaterThanEqual(tile, RegionMax.xyz)))
+			return;
+		imageStore(TileActive, tile, vec4(1.0));
+		return;
+	}
+
+	if (any(greaterThanEqual(tile, TileCount.xyz)))
+		return;
+
+	if (pass == 0)
+	{
+		bool content = false;
+		if (imageLoad(TileActive, tile).r >= 0.5)
+		{
+			ivec3 first = tile * GridSize.w;
+			ivec3 last = min(first + ivec3(GridSize.w), GridSize.xyz);
+			float speed2 = EmptyBelow.z * EmptyBelow.z;
+			for (int z = first.z; z < last.z && !content; z++)
+			{
+				for (int y = first.y; y < last.y && !content; y++)
+				{
+					for (int x = first.x; x < last.x && !content; x++)
+					{
+						ivec3 c = ivec3(x, y, z);
+						vec2 dh = texelFetch(DensityHeat, c, 0).rg;
+						vec3 vel = texelFetch(Velocity, c, 0).xyz;
+						if (dh.r > EmptyBelow.x || dh.g > EmptyBelow.y || dot(vel, vel) > speed2)
+							content = true;
+					}
+				}
+			}
+		}
+		imageStore(TileHasContent, tile, vec4(content ? 1.0 : 0.0));
+	}
+	else
+	{
+		float nearby = 0.0;
+		for (int dz = -1; dz <= 1; dz++)
+		{
+			for (int dy = -1; dy <= 1; dy++)
+			{
+				for (int dx = -1; dx <= 1; dx++)
+				{
+					ivec3 n = tile + ivec3(dx, dy, dz);
+					if (all(greaterThanEqual(n, ivec3(0))) && all(lessThan(n, TileCount.xyz)))
+						nearby = max(nearby, imageLoad(TileHasContent, n).r);
+				}
+			}
+		}
+		imageStore(TileActive, tile, vec4(nearby));
+	}
+}

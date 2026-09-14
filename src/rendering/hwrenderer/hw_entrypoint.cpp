@@ -140,17 +140,17 @@ static void R_UpdatePoseAnchoredLights(FLevelLocals *Level)
 // demand, box and steps. Main view only, after VRMode::SetUp and the pose-anchored
 // lights, before the eye loop. The backend acts on it in RunFrameCompute.
 //
-// THE LEVEL-DATA SERIAL. FLevelLocals::ResetGpuParticles renews GpuParticleSerial in
-// ClearLevelData on EVERY map change and savegame load (p_setup.cpp), so it is the
-// level-data serial in practice, whatever its name. This is the one place that reads
-// it for that; when the batched g_levellocals.h edit (smoke plan SH4) gives
-// FLevelLocals a general serial, switch it here.
+// THE LEVEL-DATA SERIAL. [13b] FLevelLocals::LevelDataSerial, which ClearLevelData renews
+// on EVERY map change and savegame load (p_setup.cpp) -- the general serial the batched
+// g_levellocals.h edit (smoke plan SH4) added. This is the one place that reads it for the
+// compute clients. (13a read GpuParticleSerial here, which ClearLevelData renews at the
+// same moment.)
 //
 //-----------------------------------------------------------------------------
 
 static uint64_t LevelDataSerial(FLevelLocals* Level)
 {
-	return Level != nullptr ? Level->GpuParticleSerial : 0;
+	return Level != nullptr ? Level->LevelDataSerial : 0;
 }
 
 static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp, FrameComputeInput& input)
@@ -161,7 +161,7 @@ static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp,
 
 	const uint64_t serial = LevelDataSerial(Level);
 	SectorPlanes::Get().BeginFrame(Level, serial);
-	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.TicFrac, serial, input.Smoke);
+	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.Angles.Yaw.Radians(), vp.TicFrac, serial, input.Smoke);
 }
 
 //-----------------------------------------------------------------------------

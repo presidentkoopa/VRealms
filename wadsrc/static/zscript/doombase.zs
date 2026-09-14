@@ -1175,6 +1175,57 @@ struct LevelLocals native
 	// A fixed engine number (64), the same on every machine.
 	native clearscope int HeatSourceCapacity();
 
+	// [SMOKEVOLUME] THE SMOKE VOLUME -- gunsmoke and blast smoke that fill the air around
+	// the player, drift through open doorways, stop at walls and closed doors, rise with
+	// heat and are shoved by blasts ("Engine docs/SMOKE_VOLUME_PLAN.md" #13). The engine
+	// simulates it on the GPU. Nothing exists until a mod emits smoke on a map; the
+	// player's "Smoke volume" switch (on by default) and quality decide what their
+	// machine does with it. Vulkan only.
+	//
+	// EVENTS, not slots: each call adds to this tic's queue -- 128 of each kind a tic;
+	// more are dropped (logged once per map). Call once per event: a puff, a round, a
+	// blast. A source that keeps producing (a burning flame) emits a little every tic.
+	//
+	// CLEARSCOPE: look-only render state. ONE-WAY: nothing reads smoke back, so it never
+	// blocks sight and gameplay cannot branch on it -- safe from play code in a netgame.
+	// A call with a non-finite number is ignored.
+	//
+	// EmitSmoke: smoke in a ball of `radius` map units around pos (1..256), densest at
+	// the centre and fading to nothing at the edge -- only where air can get from pos
+	// without passing a wall, so a puff beside a wall stays on its side. A bigger cloud
+	// is several emits. amount (0..16) is the density added
+	// at the centre: 1 is thick haze (at absorption 1, 64 map units of it dim what is
+	// behind to about a third), 0.1 a thin veil. heat (0..16) makes it rise: heat 1
+	// lifts it at up to about 80 map units a second while it cools over a second or so.
+	// vel (map units per second, each axis -4096..4096) pushes the air there -- a muzzle
+	// blast forward. posEnd, when not (0,0,0), makes it a capsule from pos to posEnd (at
+	// most 4096 long): a flame's length, a trail.
+	native clearscope void EmitSmoke(Vector3 pos, double radius, double amount, double heat = 0.0, Vector3 vel = (0,0,0), Vector3 posEnd = (0,0,0));
+	// Removes smoke along the capsule from start to end: radius 1..256 map units; amount
+	// (0..1) is the share removed on the centre line (1 = a clean tunnel). The tunnel
+	// closes again as the smoke drifts and spreads. At most 8192 long.
+	native clearscope void CarveSmoke(Vector3 start, Vector3 end, double radius, double amount = 1.0);
+	// The level's smoke look. tint: its colour. absorption (0..16): how strongly it hides
+	// what is behind it. scatter (0..1): how much of the light reaching it it reflects.
+	// ambient (0..4): how bright it is with no light on it. dissipation (0..10 per
+	// second): how fast it thins -- at 0.15 thick haze is gone in about half a minute, 0
+	// hangs until cleared. buoyancy (-4..4): how strongly heat lifts it; negative sinks.
+	// Back to these defaults on a map change and savegame load: re-apply on WorldLoaded.
+	// The player's "Smoke fade speed" slider multiplies dissipation.
+	native clearscope void SetSmokeLook(color tint = 0xff8c8c8c, double absorption = 1.0, double scatter = 0.8, double ambient = 0.4, double dissipation = 0.15, double buoyancy = 1.0);
+	// A steady drift for all smoke, map units per second per axis (-1024..1024); walls
+	// still stop it. (0,0,0) is still air, the default. Resets on a map change.
+	native clearscope void SetSmokeWind(Vector3 wind);
+	// Empties the volume -- a scripted clear, a new room after a teleport. The look and
+	// the wind stay.
+	native clearscope void ClearSmoke();
+	// [EFFECTQUEUES] ONE BLAST, ONE CALL: pushes the air away from pos -- toward it when
+	// strength is negative -- at strength map units per second at the centre
+	// (-4096..4096), fading to nothing at radius (1..4096). The smoke volume moves with
+	// it; debris will read the same call. A blast that also clears the smoke at its
+	// centre calls CarveSmoke with start == end as well.
+	native clearscope void PushEffectImpulse(Vector3 pos, double radius, double strength);
+
 	// [BB] Sweep -- up to eight thin bands of light travelling through the
 	// world, each tested per pixel against world position on every surface,
 	// so they wrap across floor, wall and ceiling as continuous unbroken

@@ -1,7 +1,7 @@
 /*
 ** vk_smokevolume.h
 **
-** [SMOKEVOLUME] The smoke volume's GPU side: its 3D images and its compute steps.
+** [SMOKEVOLUME] The smoke volume's GPU side: its 3D images and its simulation step.
 **
 **---------------------------------------------------------------------------
 **
@@ -11,29 +11,37 @@
 **
 **---------------------------------------------------------------------------
 **
-** "Engine docs/SMOKE_VOLUME_PLAN.md" #13. The first client of VkComputeManager.
+** "Engine docs/SMOKE_VOLUME_PLAN.md" #13 (13a, 13b). The first client of
+** VkComputeManager.
 **
-** What exists after step 1 (13a):
-**   - the volume, allocated only while SmokeVolumeFrame::Active, at the quality it
-**     names (r_smoke_quality): density and heat RG16F and velocity RGBA16F, each a
-**     ping-pong pair, and the R8 solid mask -- 25 bytes a cell. Formats probed first;
-**     a device that cannot, or an allocation that fails, logs one line and leaves
-**     smoke off at that quality.
-**   - every image kept in layout GENERAL for its whole life (storage writes need it;
-**     readers declare GENERAL in their descriptors), cleared on creation and on a new
-**     level serial.
-**   - the minimal step (shaders/compute/smoke_test.comp, r_smoke_computetest): reads
-**     the latest density as a sampler3D, writes the other image of the pair, then
-**     the pair's "latest" flips -- the pattern 13b's steps use, so the pair always
-**     holds the last two states for 13c's smoothing.
+** THE VOLUME, allocated only while SmokeVolumeFrame::Active, at the quality it names
+** (r_smoke_quality): density and heat RG16F and velocity RGBA16F, each a ping-pong pair,
+** the R8 solid mask -- 25 bytes a cell -- plus two tiny R8 tile maps (one texel per
+** SMOKE_TILE_CELLS^3 cells). Formats are probed first; a device that cannot, an
+** allocation that fails, or a simulation program that does not build logs one line and
+** leaves smoke off at that quality. Every image stays in layout GENERAL for its life.
 **
-** Hooks for the later steps, by name: [13b] the simulation step in Run and the
-** velocity pair; [13c] GetDensityHeatView(0 / 1) for the march's ExternalImage
-** resolve; [13d] the light grid is a separate allocation beside this one.
+** A FRAME (Run), in SmokeVolumeFrame's order: a new box (all empty, the mask all solid)
+** or a recentre (smoke_shift.comp moves every volume by whole tiles), a clear, the mask
+** tiles the CPU rasterised copied in, then each simulation step:
+**   1. every kernel of that step (smoke_inject.comp, in place on the latest images),
+**      each also marking its tiles active (smoke_tiles.comp pass 2);
+**   2. smoke_advect.comp: the latest state of each pair -> the other image;
+**   3. smoke_tiles.comp passes 0 and 1: which tiles hold anything, spread by a tile;
+**   4. the pairs' "latest" flips.
+** So after a step each pair holds the last two whole states, which 13c's march blends by
+** TicFrac (owner answer 3). A kernel changes the latest image in place before the step
+** reads it, so the older state already carries that tic's event: a puff appears at the
+** start of the blend rather than fading in over one tic. After a recentre both images of
+** a pair hold the moved latest state (no blend across the move).
 **
-** CPU-side decisions -- when the volume exists, where its box is, how many steps a
-** frame runs -- are made in hw_smokevolume.cpp and arrive in SmokeVolumeFrame, so a
-** render rebuild replaces only this file.
+** Hooks for the later steps, by name: [13c] GetDensityHeatView(0 / 1) for the march's
+** ExternalImage resolve, GetTileActiveView to skip empty tiles, GetOriginCell and
+** HasSmoke; [13d] the light grid is a separate allocation beside this one.
+**
+** CPU-side decisions -- when the volume exists, where its box is, what goes in, the
+** mask -- are made in hw_smokevolume.cpp and arrive in SmokeVolumeFrame, so a render
+** rebuild replaces only this file and the shaders.
 **
 */
 
@@ -55,8 +63,8 @@ public:
 	explicit VkSmokeVolume(VkComputeManager* compute);
 	~VkSmokeVolume();
 
-	// One frame: allocate, re-allocate, clear or release as the frame says, then run
-	// its steps. Records GPU commands only when there is something to do.
+	// One frame: allocate, re-allocate, clear or release as the frame says, then do its
+	// work. Records GPU commands only when there is something to do.
 	void Run(const SmokeVolumeFrame& frame);
 
 	bool IsAllocated() const { return mDensityHeat[0].Image != nullptr; }
@@ -66,10 +74,16 @@ public:
 	// [13c] Density (r) and heat (g). stepsAgo 0 = the latest state, 1 = the state one
 	// step before it; the march blends the two by TicFrac.
 	VulkanImageView* GetDensityHeatView(int stepsAgo) const;
-	// [13b] Velocity (xyz), the same way.
+	// Velocity (xyz, cells per step), the same way.
 	VulkanImageView* GetVelocityView(int stepsAgo) const;
-	// [13b] 1 = solid (SH1's LevelSolidity mask), 0 = open.
+	// 1 = solid (SH1's LevelSolidity mask), 0 = open.
 	VulkanImageView* GetSolidMaskView() const { return mSolidMask.View.get(); }
+	// [13c] One texel per SMOKE_TILE_CELLS^3 cells: 1 = the tile may hold smoke.
+	VulkanImageView* GetTileActiveView() const { return mTileActive.View.get(); }
+	// [13c] The box's first cell in world cells (x CellSize = map units), and whether the
+	// CPU's bounds say visible smoke may exist -- both as of the last Run.
+	const int* GetOriginCell() const { return mOriginCell; }
+	bool HasSmoke() const { return mHasSmoke; }
 
 private:
 	struct Volume
@@ -79,35 +93,64 @@ private:
 	};
 
 	bool Allocate(int quality, const SmokeGridSpec& grid);
-	bool CreateVolume(Volume& volume, VkFormat format, const SmokeGridSpec& grid, const char* name);
+	bool CreateVolume(Volume& volume, VkFormat format, int width, int height, int depth, const char* name);
 	void DestroyVolumesNow();
 	void Release(const char* why);
+	void ClearImage(Volume& volume, float value);
 	void ClearContents();
-	bool EnsureTestProgram();
-	void RunTestStep(const SmokeVolumeFrame& frame, int stepIndex);
+	void ClearEverything();
+	bool EnsurePrograms();
+	bool EnsureSets();
+	void UploadMask(const SmokeVolumeFrame& frame);
+	void Shift(const int shift[3]);
+	void RunStep(const SmokeVolumeFrame& frame, int stepIndex);
+	void DispatchTiles(int pass, int latest, const int tileMin[3], const int tileMax[3]);
+	void DispatchGrid(VkComputeProgram* program, VulkanDescriptorSet* set, const void* constants);
 
 	VkComputeManager* mCompute = nullptr;
 	VulkanRenderDevice* fb = nullptr;
 
-	// The images first, so the descriptor sets below (which name their views) are
-	// destroyed before them.
+	// Programs first, then the images, the staging buffer and the descriptor sets, so on
+	// destruction the sets (which name the views) go before the images.
+	std::unique_ptr<VkComputeProgram> mInjectProgram;
+	std::unique_ptr<VkComputeProgram> mAdvectProgram;
+	std::unique_ptr<VkComputeProgram> mTilesProgram;
+	std::unique_ptr<VkComputeProgram> mShiftRG;		// target rg16f
+	std::unique_ptr<VkComputeProgram> mShiftRGBA;	// target rgba16f
+	std::unique_ptr<VkComputeProgram> mShiftR8;		// target r8
+	bool mProgramsReady = false;
+	bool mProgramsFailed = false;
+
 	Volume mDensityHeat[2];
 	Volume mVelocity[2];
 	Volume mSolidMask;
-	int mLatestDensityHeat = 0;	// which of the pair holds the latest state
-	int mLatestVelocity = 0;
+	Volume mTileContent;
+	Volume mTileActive;
+	int mLatest = 0;	// which image of both pairs holds the latest state
+
+	std::unique_ptr<VulkanBuffer> mStaging;	// SMOKE_MASK_UPLOAD_BYTES_PER_FRAME, for the mask tiles
+
+	// [i] = the sets whose "latest" is image i of the pairs.
+	std::unique_ptr<VulkanDescriptorSet> mInjectSets[2];			// storage D[i], V[i]; sampled mask
+	std::unique_ptr<VulkanDescriptorSet> mAdvectSets[2];			// sampled D[i], V[i], mask; storage tiles, D[1-i], V[1-i]
+	std::unique_ptr<VulkanDescriptorSet> mTilesSets[2];				// sampled D[i], V[i]; storage both tile maps
+	std::unique_ptr<VulkanDescriptorSet> mShiftDensitySets[2];		// D[i] -> D[1-i]
+	std::unique_ptr<VulkanDescriptorSet> mShiftVelocitySets[2];		// V[i] -> V[1-i]
+	std::unique_ptr<VulkanDescriptorSet> mShiftMaskOutSets[2];		// mask -> D[i] (scratch)
+	std::unique_ptr<VulkanDescriptorSet> mShiftMaskInSets[2];		// D[i] -> mask
+	bool mSetsReady = false;
 
 	SmokeGridSpec mGrid;
+	int mTiles[3] = { 0, 0, 0 };
 	int mAllocatedQuality = 0;
 	uint64_t mTexelBytes = 0;
 	uint64_t mLevelSerial = 0;
+	int mOriginCell[3] = { 0, 0, 0 };
+	bool mHasSmoke = false;
+	bool mUploadWarned = false;
 
-	// A quality this device refused (format or memory): not retried until the quality
-	// changes or smoke stops being asked for, so a refusal logs once, not every frame.
+	// A quality this device refused (format, memory, a program, a descriptor set): not
+	// retried until the quality changes or smoke stops being asked for, so a refusal
+	// logs once, not every frame.
 	int mRefusedQuality = 0;
-
-	std::unique_ptr<VkComputeProgram> mTestProgram;
-	bool mTestProgramFailed = false;
-	// [i] reads density-heat image i and writes image 1 - i.
-	std::unique_ptr<VulkanDescriptorSet> mTestSets[2];
 };

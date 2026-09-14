@@ -69,17 +69,28 @@ public:
 	uint32_t Generation() const { return mGeneration; }
 
 	// The generation at which a sector last changed (0 = not since the level began).
+	//
+	// "Changed" means its OPEN SPACE may have moved: its own floor or ceiling, or -- [13b]
+	// -- the height-transfer sector or a 3D floor model sector it uses (a 3D lift, a
+	// deep-water transfer). Such a sector is marked changed with its model, though its own
+	// GPU record, which holds only its own planes, is not rewritten.
 	uint32_t ChangedAt(int sectorIndex) const;
 
-	// Sector indices that changed in this frame's polls.
+	// Sector indices that changed in this frame's polls (the same meaning).
 	const std::vector<int>& ChangedThisFrame() const { return mChangedThisFrame; }
 
 	// How many sectors this frame's polls compared (for the perf log and tests).
 	int PolledThisFrame() const { return mPolledThisFrame; }
 
+	// [13b] The x/y extent of a sector's own lines, map units -- where a change to it can
+	// matter. False for an index the level does not have, or before its first poll.
+	bool GetExtent(int sectorIndex, double& minX, double& minY, double& maxX, double& maxY) const;
+
 private:
 	void EnsureLevel(FLevelLocals* Level);
-	void PollSector(sector_t* sector);
+	// Compares one sector; true when it changed this frame (now or in an earlier poll).
+	bool PollSector(sector_t* sector);
+	void MarkChanged(int index);
 
 	struct Seen
 	{
@@ -91,6 +102,7 @@ private:
 	std::vector<Seen> mSeen;
 	std::vector<uint32_t> mChangedAt;
 	std::vector<uint32_t> mPolledFrame;
+	std::vector<uint32_t> mChangedFrame;	// [13b] the frame a sector was last marked changed in
 	std::vector<double> mExtent;		// per sector: min x, min y, max x, max y of its lines
 	std::vector<int> mChangedThisFrame;
 
