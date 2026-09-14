@@ -1540,6 +1540,19 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetMissileDamage, ZS_GetMissileDamage)
 	ACTION_RETURN_INT(ZS_GetMissileDamage(self, mask, add, pick_pointer));
 }
 
+// [ABSDAMAGE] GZSelaco 96096c0228's CalculateMissileDamage: the actor's fixed damage value, which GetMissileDamage
+// returns unrolled for an ABSDAMAGE actor. Negative when the damage is a script expression instead.
+static int ZS_CalculateMissileDamage(AActor *self)
+{
+	return self->DamageVal;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, CalculateMissileDamage, ZS_CalculateMissileDamage)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	ACTION_RETURN_INT(ZS_CalculateMissileDamage(self));
+}
+
 DEFINE_ACTION_FUNCTION_NATIVE(AActor, SoundAlert, P_NoiseAlert)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -2226,6 +2239,7 @@ DEFINE_FIELD(AActor, friendlyseeblocks)
 DEFINE_FIELD(AActor, SpawnTime)
 DEFINE_FIELD(AActor, InventoryID)
 DEFINE_FIELD(AActor, ThruBits)
+DEFINE_FIELD(AActor, lineBlockBits)	// [BLOCKBITS]
 DEFINE_FIELD(AActor, ViewPos)
 DEFINE_FIELD(AActor, OverrideAttackPosDir)
 DEFINE_FIELD(AActor, AttackPos)

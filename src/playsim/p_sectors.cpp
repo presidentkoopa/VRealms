@@ -1051,7 +1051,8 @@ double NextHighestCeilingAt(sector_t *sec, double x, double y, double bottomz, d
 		for (int i = sec->e->XFloor.ffloors.Size() - 1; i >= 0; --i)
 		{
 			F3DFloor *rover = sec->e->XFloor.ffloors[i];
-			if (!(rover->flags & FF_SOLID) || !(rover->flags & FF_EXISTS)) continue;
+			// [WATERFLOORS] GZSelaco 5e832016ca: with FFCF_ALLOWWATER a swimmable 3D floor counts as well as a solid one.
+			if (!(rover->flags & FF_EXISTS) || !((rover->flags & FF_SOLID) || ((flags & FFCF_ALLOWWATER) && (rover->flags & FF_SWIMMABLE)))) continue;
 
 			double ff_bottom = rover->bottom.plane->ZatPoint(x, y);
 			double ff_top = rover->top.plane->ZatPoint(x, y);
@@ -1102,7 +1103,8 @@ double NextLowestFloorAt(sector_t *sec, double x, double y, double z, int flags,
 
 
 			// either with feet above the 3D floor or feet with less than 'stepheight' map units inside
-			if ((ff->flags & (FF_EXISTS | FF_SOLID)) == (FF_EXISTS | FF_SOLID))
+			// [WATERFLOORS] GZSelaco 5e832016ca: with FFCF_ALLOWWATER a swimmable 3D floor counts as well as a solid one.
+			if ((ff->flags & FF_EXISTS) && ((ff->flags & FF_SOLID) || ((flags & FFCF_ALLOWWATER) && (ff->flags & FF_SWIMMABLE))))
 			{
 				double ffz = ff->top.plane->ZatPoint(x, y);
 				double ffb = ff->bottom.plane->ZatPoint(x, y);

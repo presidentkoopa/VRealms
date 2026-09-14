@@ -52,6 +52,12 @@ enum
 	STAT_MAPMARKER,							// Map marker actors
 	STAT_DLIGHT,
 
+	// [SLEEP] Thinker sleep (GZSelaco f6ebcea025, b60c4d4ebd). RunThinkers never ticks these two lists. A thinker
+	// parked in STAT_SLEEP by Sleep(tics) wakes on a timer, one in STAT_SLEEP_FOREVER (SleepIndefinite) only by
+	// Wake(). Names and values are GZSelaco's, which its scripts use. See DThinker::Sleep in dthinker.cpp.
+	STAT_SLEEP = 60,							// Pool of sleepers, don't add to this without Sleep()
+	STAT_SLEEP_FOREVER = 61,				// Pool of indefinite sleepers. Adding to this pool is OK.
+
 	STAT_USER = 70,
 	STAT_USER_MAX = 90,
 

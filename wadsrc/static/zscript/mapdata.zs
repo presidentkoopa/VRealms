@@ -244,6 +244,7 @@ struct Line native play
 	native readonly Vector2			delta;		// precalculated v2 - v1 for side checking
 	native uint						flags;
 	native uint						flags2;
+	native uint						blockBits;	// [BLOCKBITS] blocks actors whose lineBlockBits share a bit (GZSelaco 14d9255578; DEFINE_FIELD_X in vmthunks.cpp)
 	native uint						activation;	// activation type
 	native int						special;
 	native int						args[5];	// <--- hexen-style arguments (expanded to ZDoom's full width)

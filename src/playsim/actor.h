@@ -408,6 +408,7 @@ enum ActorFlag8
 	MF8_FALLDAMAGE		= 0x00000800,	// Monster will take fall damage regardless of map settings.
 	MF8_MINVISIBLE		= 0x00001000,	// Actor not visible to monsters
 	MF8_MVISBLOCKED		= 0x00002000,	// Monster(only) sight checks to actor always fail
+	MF8_BLOCKLOF		= 0x00004000,	// [LOFBLOCKERS] stops CheckLOF like cover (GZSelaco 7c117a8013, same bit)
 	MF8_ALLOWTHRUBITS	= 0x00008000,	// [MC] Enable ThruBits property
 	MF8_FULLVOLSEE		= 0x00010000,	// Play see sound at full volume
 	MF8_E1M8BOSS		= 0x00020000,	// MBF21 boss death.
@@ -440,6 +441,10 @@ enum ActorFlag9
 	MF9_FORCESECTORDAMAGE		= 0x00000080,	// [inkoalawetrust] Actor ALWAYS takes hurt floor damage if there's any. Even if the floor doesn't have SECMF_HURTMONSTERS.
 	MF9_NOAUTOOFFSKULLFLY		= 0x00000100,	// Don't automatically disable MF_SKULLFLY if velocity is 0.
 	MF9_PRECACHEALWAYS			= 0x00000200,	// [Selaco] Load this class's graphics at every level start, placed or not (p_setup.cpp PrecacheLevel, hw_precache.cpp)
+	// GZSelaco flags whose MF8 bits are taken here, so they live in MF9's top bits (scripts only use the flag names).
+	MF9_HITSCANTHRU				= 0x20000000,	// [HITCALLBACKS] hitscans hurt this actor and carry on through it (c7527eead1)
+	MF9_ABSDAMAGE				= 0x40000000,	// [ABSDAMAGE] missile/puff damage is DamageVal exactly, no dice roll (96096c0228)
+	MF9_BLOCKLOS				= 0x80000000,	// [LOFBLOCKERS] stops CheckLOF like cover unless CLOFF_SKIPLOS (fe21bdb831, same bit)
 };
 
 // --- mobj.renderflags ---
@@ -1854,6 +1859,7 @@ public:
 	double			dropoffz;		// killough 11/98: the lowest floor over all contacted Sectors.
 
 	uint32_t		ThruBits;
+	uint32_t		lineBlockBits;	// [BLOCKBITS] blocked by lines whose blockBits share a bit (P_IsBlockedByLine). 0 = none
 	FTextureID		floorpic;			// contacted sec floorpic
 	int				floorterrain;
 	FTextureID		ceilingpic;			// contacted sec ceilingpic

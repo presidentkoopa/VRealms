@@ -2151,6 +2151,16 @@ DEFINE_ACTION_FUNCTION(AActor, PlayerSkinCheck)
 //
 //==========================================================================
 
+// [LOFBLOCKERS] Which question CheckLOF answers: a server switch, off by default.
+//   Off: the stock contract. True when the line of fire stops at an actor: the target, or one a CLOFF_JUMP* flag
+//        asked for. Cover (a BLOCKLOF or BLOCKLOS actor) answers like a wall.
+//   On:  GZSelaco's contract (7c117a8013). True only when the line reaches the target (or, with CLOFF_SKIPWORLD,
+//        when no actor stops it), false when anything else is in the way. CLOFF_BEYONDTARGET does nothing.
+// Existing callers get different answers under GZSelaco's contract (A_CheckLOF with CLOFF_JUMPENEMY; a line that
+// hits nothing), so it is opt-in. It is serverinfo: identical on every machine in a netgame, saved in savegames and
+// demos, never archived. The proof that both contracts hold is in "Engine docs/SELACO_S1_PLAYSIM_IMPL_NOTES.md".
+CVAR(Bool, sv_checklofreachable, false, CVAR_SERVERINFO)
+
 enum CLOF_flags
 {
 	CLOFF_NOAIM_VERT =			0x00000001,
@@ -2188,6 +2198,17 @@ enum CLOF_flags
 	CLOFF_SETTARGET =			0x00800000,
 	CLOFF_SETMASTER =			0x01000000,
 	CLOFF_SETTRACER =			0x02000000,
+
+	// [LOFBLOCKERS] GZSelaco's CheckLOF flags (7c117a8013, fe147f7d3c, fe21bdb831), same names and bits. That uses all
+	// 32 bits: GZSelaco took CLOFF_BEYONDTARGET's bit for CLOFF_SKIPLOF, and here the bit keeps both meanings (see
+	// CheckLOFTraceFunc). CLOFF_SKIPLOS is cast because 0x80000000 does not fit an int enumerator.
+	CLOFF_SKIPLOF =             0x00020000, // skip BLOCKLOF actors (the same bit as CLOFF_BEYONDTARGET)
+	CLOFF_BLOCKLOF_ALWAYS =     0x04000000, // always stop at a BLOCKLOF actor, whatever the other flags say
+	CLOFF_BLOCKLOS_ALWAYS =     0x08000000, // always stop at a BLOCKLOS actor, whatever the other flags say
+	CLOFF_JUMPMONSTER =         0x10000000, // stop (jump) at any monster in the way
+	CLOFF_SKIPMONSTER =         0x20000000, // skip any monster
+	CLOFF_SKIPWORLD =           0x40000000, // skip walls, floors and ceilings
+	CLOFF_SKIPLOS =             (int)0x80000000,    // skip BLOCKLOS actors
 };
 
 struct LOFData
@@ -2196,6 +2217,8 @@ struct LOFData
 	AActor *Target;
 	int Flags;
 	bool BadActor;
+	bool Blocker;		// [LOFBLOCKERS] a BLOCKLOF or BLOCKLOS actor stopped the line (cover)
+	bool Reachable;		// [LOFBLOCKERS] answer with GZSelaco's contract (sv_checklofreachable)
 };
 
 ETraceStatus CheckLOFTraceFunc(FTraceResults &trace, void *userdata)
@@ -2205,18 +2228,27 @@ ETraceStatus CheckLOFTraceFunc(FTraceResults &trace, void *userdata)
 
 	if (trace.HitType != TRACE_HitActor)
 	{
-		return TRACE_Stop;
+		// [LOFBLOCKERS] CLOFF_SKIPWORLD passes over floors and ceilings (and CheckLOF then traces with no wall mask).
+		return (flags & CLOFF_SKIPWORLD) ? TRACE_Skip : TRACE_Stop;
 	}
 	if (trace.Actor == data->Target)
 	{
 		if (flags & CLOFF_SKIPTARGET)
 		{
-			if (flags & CLOFF_BEYONDTARGET)
+			// [LOFBLOCKERS] GZSelaco's contract has no CLOFF_BEYONDTARGET: it gave that bit to CLOFF_SKIPLOF.
+			if ((flags & CLOFF_BEYONDTARGET) && !data->Reachable)
 			{
 				return TRACE_Skip;
 			}
 			return TRACE_Abort;
 		}
+		return TRACE_Stop;
+	}
+	// [LOFBLOCKERS] Cover asked to block whatever the other flags say (GZSelaco 7c117a8013, fe21bdb831).
+	if (((flags & CLOFF_BLOCKLOF_ALWAYS) && (trace.Actor->flags8 & MF8_BLOCKLOF)) ||
+		((flags & CLOFF_BLOCKLOS_ALWAYS) && (trace.Actor->flags9 & MF9_BLOCKLOS)))
+	{
+		data->Blocker = true;
 		return TRACE_Stop;
 	}
 	if (flags & CLOFF_MUSTBESHOOTABLE)
@@ -2249,6 +2281,7 @@ ETraceStatus CheckLOFTraceFunc(FTraceResults &trace, void *userdata)
 		}
 	}
 	if (
+			((flags & CLOFF_JUMPMONSTER) && (trace.Actor->flags3 & MF3_ISMONSTER)) ||	// [LOFBLOCKERS]
 			((flags & CLOFF_JUMPENEMY) && data->Self->IsHostile(trace.Actor)) ||
 			((flags & CLOFF_JUMPFRIEND) && data->Self->IsFriend(trace.Actor)) ||
 			((flags & CLOFF_JUMPOBJECT) && !(trace.Actor->flags3 & MF3_ISMONSTER)) ||
@@ -2258,13 +2291,22 @@ ETraceStatus CheckLOFTraceFunc(FTraceResults &trace, void *userdata)
 		return TRACE_Stop;
 	}
 	if (
+			((flags & CLOFF_SKIPMONSTER) && (trace.Actor->flags3 & MF3_ISMONSTER)) ||	// [LOFBLOCKERS]
 			((flags & CLOFF_SKIPENEMY) && data->Self->IsHostile(trace.Actor)) ||
 			((flags & CLOFF_SKIPFRIEND) && data->Self->IsFriend(trace.Actor)) ||
-			((flags & CLOFF_SKIPOBJECT) && !(trace.Actor->flags3 & MF3_ISMONSTER)) ||
+			((flags & CLOFF_SKIPLOF) && (trace.Actor->flags8 & MF8_BLOCKLOF)) ||	// [LOFBLOCKERS]
+			// [LOFBLOCKERS] cover is never skipped as a mere object (GZSelaco 7c117a8013)
+			((flags & CLOFF_SKIPOBJECT) && !(trace.Actor->flags3 & MF3_ISMONSTER) && !(trace.Actor->flags8 & MF8_BLOCKLOF)) ||
 			((flags & CLOFF_SKIPNONHOSTILE) && (trace.Actor->flags3 & MF3_ISMONSTER) && !data->Self->IsHostile(trace.Actor))
 		)
 	{
 		return TRACE_Skip;
+	}
+	// [LOFBLOCKERS] Cover that was not skipped stops the line: BLOCKLOF always, BLOCKLOS unless CLOFF_SKIPLOS.
+	if ((trace.Actor->flags8 & MF8_BLOCKLOF) || (!(flags & CLOFF_SKIPLOS) && (trace.Actor->flags9 & MF9_BLOCKLOS)))
+	{
+		data->Blocker = true;
+		return TRACE_Stop;
 	}
 	data->BadActor = true;
 	return TRACE_Abort;
@@ -2409,22 +2451,51 @@ DEFINE_ACTION_FUNCTION(AActor, CheckLOF)
 	lof_data.Target = target;
 	lof_data.Flags = flags;
 	lof_data.BadActor = false;
+	lof_data.Blocker = false;                           // [LOFBLOCKERS]
+	lof_data.Reachable = sv_checklofreachable;          // [LOFBLOCKERS]
 
-	Trace(pos, sec, vel, range, ActorFlags::FromInt(0xFFFFFFFF), ML_BLOCKEVERYTHING, self, trace, TRACE_PortalRestrict,
+	// [LOFBLOCKERS] CLOFF_SKIPWORLD traces with no wall mask, so walls do not stop the line (GZSelaco fe147f7d3c).
+	Trace(pos, sec, vel, range, ActorFlags::FromInt(0xFFFFFFFF), (flags & CLOFF_SKIPWORLD) ? 0 : ML_BLOCKEVERYTHING, self, trace, TRACE_PortalRestrict,
 		CheckLOFTraceFunc, &lof_data);
 
-	if (trace.HitType == TRACE_HitActor ||
+	if (lof_data.Reachable)
+	{
+		// [LOFBLOCKERS] GZSelaco's contract (7c117a8013, fe147f7d3c): true when the line reaches the target (or, with
+		// CLOFF_SKIPWORLD, when no actor stops it), false when anything else stops it. CLOFF_JUMP_ON_MISS still jumps.
+		if (trace.HitType == TRACE_HitActor ||
+			((flags & CLOFF_JUMP_ON_MISS) && !lof_data.BadActor && trace.HitType != TRACE_HitNone))
+		{
+			if (minrange > 0 && trace.Distance < minrange)
+			{
+				ACTION_RETURN_BOOL(false);
+			}
+			if ((trace.HitType == TRACE_HitActor) && (trace.Actor != NULL) && !(lof_data.BadActor))
+			{
+				if (flags & (CLOFF_SETTARGET))  self->target = trace.Actor;
+				if (flags & (CLOFF_SETMASTER))  self->master = trace.Actor;
+				if (flags & (CLOFF_SETTRACER))  self->tracer = trace.Actor;
+			}
+			ACTION_RETURN_BOOL((trace.HitType == TRACE_HitActor && trace.Actor == target) || (flags & CLOFF_JUMP_ON_MISS));
+		}
+		ACTION_RETURN_BOOL((flags & CLOFF_SKIPWORLD) ? true : trace.HitType == TRACE_HitNone);
+	}
+
+	// The stock contract: true when the line stops at an actor (the target, or one a CLOFF_JUMP* flag asked for).
+	// [LOFBLOCKERS] Cover (a BLOCKLOF or BLOCKLOS actor that stopped the line) answers like a wall instead: true only
+	// with CLOFF_JUMP_ON_MISS, and it never becomes the target, master or tracer.
+	const bool hitActor = trace.HitType == TRACE_HitActor && !lof_data.Blocker;
+	if (hitActor ||
 		((flags & CLOFF_JUMP_ON_MISS) && !lof_data.BadActor && trace.HitType != TRACE_HitNone))
 	{
 		if (minrange > 0 && trace.Distance < minrange)
 		{
 			ACTION_RETURN_BOOL(false);
 		}
-		if ((trace.HitType == TRACE_HitActor) && (trace.Actor != NULL) && !(lof_data.BadActor))
+		if (hitActor && (trace.Actor != NULL) && !(lof_data.BadActor))
 		{
-			if (flags & (CLOFF_SETTARGET))	self->target = trace.Actor;
-			if (flags & (CLOFF_SETMASTER))	self->master = trace.Actor;
-			if (flags & (CLOFF_SETTRACER))	self->tracer = trace.Actor;
+			if (flags & (CLOFF_SETTARGET))  self->target = trace.Actor;
+			if (flags & (CLOFF_SETMASTER))  self->master = trace.Actor;
+			if (flags & (CLOFF_SETTRACER))  self->tracer = trace.Actor;
 		}
 		ACTION_RETURN_BOOL(true);
 	}

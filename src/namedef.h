@@ -712,6 +712,8 @@ xx(Burn)
 //xx(Ice)			// already defined above
 xx(Disintegrate)
 xx(Smash)
+xx(Splash)		// [HITCALLBACKS] puff state for a hitscan's water crossing (P_SpawnPuff, PF_SPLASHING)
+xx(HitThrough)	// [HITCALLBACKS] puff state for a HITSCANTHRU victim (P_SpawnPuff, PF_HITTHRU)
 
 // Weapon animator names.
 xx(Select)
@@ -1022,6 +1024,7 @@ xx(Passuse)
 xx(Repeatspecial)
 xx(Conversation)
 xx(Locknumber)
+xx(BlockBits)	// [BLOCKBITS] UDMF linedef key
 xx(Midtex3dimpassible)
 xx(Revealed)
 xx(AutomapStyle)

@@ -30,12 +30,21 @@
 #include "g_levellocals.h"
 #include "p_terrain.h"
 #include "vm.h"
+#include "c_cvars.h"	// [EXACT3DWATER] sv_traceexact3dwater
 
 //==========================================================================
 //
 //
 //
 //==========================================================================
+
+// [EXACT3DWATER] Server switch for GZSelaco's line trace fix 1d86f5cdca, off by default. Off keeps stock behaviour:
+// a trace takes a sector's 3D water as crossed wherever the trace is in that sector, so a shot that never touches
+// a pool can still splash in it. On, a trace counts 3D water only where it really crosses the water surface before
+// it stops. It changes gameplay traces (hitscan splashes, LineTracer results), so it is a serverinfo cvar:
+// identical on every machine in a netgame, saved in savegames and demos, never archived. Owner review item: see
+// "Engine docs/SELACO_S1_PLAYSIM_IMPL_NOTES.md".
+CVAR(Bool, sv_traceexact3dwater, false, CVAR_SERVERINFO)
 
 struct FTraceInfo
 {
@@ -56,6 +65,7 @@ struct FTraceInfo
 	double startfrac;
 	double limitz;
 	int ptflags;
+	bool Exact3DWater;	// [EXACT3DWATER] sv_traceexact3dwater, read once per trace
 
 	// These are required for 3D-floor checking
 	// to create a fake sector with a floor
@@ -70,6 +80,7 @@ struct FTraceInfo
 	bool CheckPlane(const secplane_t &plane);
 	void EnterLinePortal(FPathTraverse &pt, intercept_t *in);
 	void EnterSectorPortal(FPathTraverse &pt, int position, double frac, sector_t *entersec);
+	void Check3DFloorsForWater(double dist);	// [EXACT3DWATER]
 
 
 	bool CheckSectorPlane(const sector_t *sector, bool checkFloor)
@@ -162,6 +173,7 @@ bool Trace(const DVector3 &start, sector_t *sector, const DVector3 &direction, d
 	inf.TraceCallback = callback;
 	inf.TraceCallbackData = callbackdata;
 	inf.TraceFlags = flags;
+	inf.Exact3DWater = sv_traceexact3dwater;	// [EXACT3DWATER]
 	inf.Results = &res;
 	inf.inshootthrough = true;
 	inf.sectorsel=0;
@@ -298,7 +310,13 @@ void FTraceInfo::Setup3DFloors()
 			if (!(rover->flags&FF_EXISTS))
 				continue;
 
-			if (Results->Crossed3DWater == NULL)
+			// [EXACT3DWATER] GZSelaco 1d86f5cdca replaces this start-of-trace water check with one that only counts a surface
+			// the trace crosses (Check3DFloorsForWater). Without sv_traceexact3dwater the stock check below runs.
+			if (Exact3DWater)
+			{
+				if (Results->Crossed3DWater == NULL) Check3DFloorsForWater(sdist);
+			}
+			else if (Results->Crossed3DWater == NULL)
 			{
 				if (Check3DFloorPlane(rover, false) && isLiquid(rover))
 				{
@@ -364,6 +382,40 @@ void FTraceInfo::Setup3DFloors()
 	}
 }
 
+
+//==========================================================================
+//
+// [EXACT3DWATER] GZSelaco 1d86f5cdca: records the first 3D water surface in
+// the current sector that the trace crosses inside its reach and before
+// `dist`. Used only with sv_traceexact3dwater, in place of the stock checks,
+// which took the sector's water as crossed wherever the trace was.
+//
+//==========================================================================
+
+void FTraceInfo::Check3DFloorsForWater(double dist)
+{
+	if (Results->Crossed3DWater != nullptr) return;
+
+	for (auto rover : CurSector->e->XFloor.ffloors)
+	{
+		if ((rover->flags & FF_EXISTS) && isLiquid(rover))
+		{
+			const secplane_t &plane = *rover->top.plane;
+			double den = plane.Normal() | Vec;
+			if (den != 0)
+			{
+				double num = (plane.Normal() | Start) + plane.fD();
+				double hitdist = -num / den;
+				if (hitdist > EnterDist && hitdist < MaxDist && hitdist < dist)
+				{
+					Results->Crossed3DWaterPos = Start + Vec * hitdist;
+					Results->Crossed3DWater = rover;
+					return;
+				}
+			}
+		}
+	}
+}
 
 //==========================================================================
 //
@@ -448,6 +500,10 @@ bool FTraceInfo::LineCheck(intercept_t *in, double dist, DVector3 hit, bool spec
 			Results->Distance = 0;
 		}
 	}
+
+	// [EXACT3DWATER] GZSelaco 1d86f5cdca: water in the sector the trace is in counts only if its surface is crossed
+	// before this line.
+	if (Exact3DWater) Check3DFloorsForWater(dist);
 
 	if (hit.Z <= ff)
 	{
@@ -785,7 +841,9 @@ bool FTraceInfo::TraceTraverse (int ptflags)
 	while ((in = it.Next()))
 	{
 		// Deal with splashes in 3D floors (but only run once per sector, not each iteration - and stop if something was found.)
-		if (Results->Crossed3DWater == NULL && lastsplashsector != CurSector->sectornum)
+		// [EXACT3DWATER] With sv_traceexact3dwater LineCheck does this check instead, counting only a surface the trace
+		// crosses in the sector (GZSelaco 1d86f5cdca removed this one).
+		if (!Exact3DWater && Results->Crossed3DWater == NULL && lastsplashsector != CurSector->sectornum)
 		{
 			for (auto rover : CurSector->e->XFloor.ffloors)
 			{
@@ -940,6 +998,12 @@ bool FTraceInfo::TraceTraverse (int ptflags)
 			break;
 		}
 	}
+	// [EXACT3DWATER] GZSelaco 1d86f5cdca: forget a 3D water crossing that lies at or beyond where the trace stopped.
+	if (Exact3DWater && Results->Crossed3DWater != nullptr && (Results->Crossed3DWaterPos - Start).LengthSquared() >= Results->Distance * Results->Distance)
+	{
+		Results->Crossed3DWater = nullptr;
+	}
+
 	return Results->HitType != TRACE_HitNone;
 }
 

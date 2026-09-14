@@ -101,10 +101,11 @@ class StateProvider : Inventory
 	//
 	//---------------------------------------------------------------------------
 
-	action void A_FireBullets(double spread_xy, double spread_z, int numbullets, int damageperbullet, class<Actor> pufftype = "BulletPuff", int flags = 1, double range = 0, class<Actor> missile = null, double Spawnheight = 0, double Spawnofs_xy = 0)
+	// [HITCALLBACKS] Returns the puff of the last bullet fired, or null (GZSelaco 2e964dd657).
+	action Actor A_FireBullets(double spread_xy, double spread_z, int numbullets, int damageperbullet, class<Actor> pufftype = "BulletPuff", int flags = 1, double range = 0, class<Actor> missile = null, double Spawnheight = 0, double Spawnofs_xy = 0)
 	{
 		let player = player;
-		if (!player) return;
+		if (!player) return null;
 
 		let pawn = PlayerPawn(self);
 		let weapon = invoker == player.OffhandWeapon ? player.OffhandWeapon : player.ReadyWeapon;
@@ -122,11 +123,12 @@ class StateProvider : Inventory
 			ofs = AngleToVector(ang, Spawnofs_xy);
 		}
 		FTranslatedLineTarget t;
+		Actor puff = null;
 
 		if ((flags & FBF_USEAMMO) && weapon &&  stateinfo != null && stateinfo.mStateType == STATE_Psprite)
 		{
 			if (!weapon.DepleteAmmo(weapon.bAltFire, true))
-				return;	// out of ammo
+				return null;	// out of ammo
 		}
 
 		// UZDXREMA: hoisted ahead of the aim calculation (upstream keeps it after
@@ -172,7 +174,7 @@ class StateProvider : Inventory
 			if (!(flags & FBF_NORANDOM))
 				damage *= random[cabullet](1, 3);
 
-			let puff = LineAttack(bangle, range, bslope, damage, 'Hitscan', pufftype, laflags, t);
+			puff = LineAttack(bangle, range, bslope, damage, 'Hitscan', pufftype, laflags, t);
 
 			if (missile != null)
 			{
@@ -222,7 +224,7 @@ class StateProvider : Inventory
 				if (!(flags & FBF_NORANDOM))
 					damage *= random[cabullet](1, 3);
 
-				let puff = LineAttack(pangle, range, slope, damage, 'Hitscan', pufftype, laflags, t);
+				puff = LineAttack(pangle, range, slope, damage, 'Hitscan', pufftype, laflags, t);
 
 				if (missile != null)
 				{
@@ -248,6 +250,8 @@ class StateProvider : Inventory
 				}
 			}
 		}
+
+		return puff;
 	}
 
 

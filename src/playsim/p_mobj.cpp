@@ -394,6 +394,7 @@ void AActor::Serialize(FSerializer &arc)
 		A("angledrolloffset", AngledRollOffset)
 		("alternative", alternative)
 		A("thrubits", ThruBits)
+		A("lineblockbits", lineBlockBits)	// [BLOCKBITS]
 		A("cameraheight", CameraHeight)
 		A("camerafov", CameraFOV)
 		A("tag", Tag)
@@ -3796,6 +3797,11 @@ int AActor::GetMissileDamage (int mask, int add)
 {
 	if (DamageVal >= 0)
 	{
+		// [ABSDAMAGE] GZSelaco 96096c0228: an ABSDAMAGE missile or puff deals exactly its damage value, no dice roll.
+		if (flags9 & MF9_ABSDAMAGE)
+		{
+			return DamageVal;
+		}
 		if (mask == 0)
 		{
 			return add * DamageVal;
@@ -7152,7 +7158,18 @@ AActor *P_SpawnPuff (AActor *source, PClassActor *pufftype, const DVector3 &pos1
 	// it will enter the crash state. This is used by the StrifeSpark
 	// and BlasterPuff.
 	FState *crashstate;
-	if ((flags & PF_HITSKY) && (crashstate = puff->FindState(NAME_Death, NAME_Sky, true)) != NULL)
+	// [HITCALLBACKS] GZSelaco c7527eead1: a puff spawned for a hitscan's water crossing (PF_SPLASHING) enters its Splash
+	// state, one spawned for a HITSCANTHRU victim (PF_HITTHRU) its HitThrough state. Only p_map.cpp's hit callbacks pass
+	// these flags; without them this chain is the stock one.
+	if ((flags & PF_SPLASHING) && (crashstate = puff->FindState(NAME_Splash)) != NULL)
+	{
+		puff->SetState(crashstate);
+	}
+	else if ((flags & PF_HITTHRU) && (crashstate = puff->FindState(NAME_HitThrough)) != NULL)
+	{
+		puff->SetState(crashstate);
+	}
+	else if ((flags & PF_HITSKY) && (crashstate = puff->FindState(NAME_Death, NAME_Sky, true)) != NULL)
 	{
 		puff->SetState (crashstate);
 	}
@@ -7209,6 +7226,51 @@ DEFINE_ACTION_FUNCTION(AActor, SpawnPuff)
 	PARAM_INT(flags);
 	PARAM_OBJECT(victim, AActor);
 	ACTION_RETURN_OBJECT(P_SpawnPuff(self, pufftype, DVector3(x, y, z), hitdir, particledir, updown, flags, victim));
+}
+
+//---------------------------------------------------------------------------
+//
+// [HITCALLBACKS] What hitscans and rails tell their puff (GZSelaco c7527eead1;
+// the engine side is in p_map.cpp). The engine calls these only on a puff
+// class that overrides them, so the native versions do nothing: PuffSplash
+// answers false, "not handled", and the engine makes its own splash.
+//
+//---------------------------------------------------------------------------
+
+struct FLineTraceData;
+
+DEFINE_ACTION_FUNCTION(AActor, PuffSplash)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_FLOAT(x);
+	PARAM_FLOAT(y);
+	PARAM_FLOAT(z);
+	PARAM_FLOAT(dx);
+	PARAM_FLOAT(dy);
+	PARAM_FLOAT(dz);
+	PARAM_POINTER(sect, sector_t);
+	PARAM_POINTER(floor3D, F3DFloor);
+	ACTION_RETURN_BOOL(false);
+}
+
+DEFINE_ACTION_FUNCTION(AActor, PuffHit)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_POINTER(trace, FLineTraceData);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(AActor, PuffThrough)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_OBJECT(victim, AActor);
+	PARAM_FLOAT(x);
+	PARAM_FLOAT(y);
+	PARAM_FLOAT(z);
+	PARAM_FLOAT(dx);
+	PARAM_FLOAT(dy);
+	PARAM_FLOAT(dz);
+	return 0;
 }
 
 //---------------------------------------------------------------------------

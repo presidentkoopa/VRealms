@@ -95,7 +95,11 @@ enum EPuffFlags
 	PF_TEMPORARY = 4,
 	PF_HITTHINGBLEED = 8,
 	PF_NORANDOMZ = 16,
-	PF_HITSKY = 32
+	PF_HITSKY = 32,
+	// [HITCALLBACKS] GZSelaco c7527eead1: P_SpawnPuff puts a puff spawned for a hitscan's water crossing in its Splash
+	// state, and one spawned for a HITSCANTHRU victim in its HitThrough state. Only p_map.cpp's hit callbacks pass them.
+	PF_SPLASHING = 64,
+	PF_HITTHRU = 128
 };
 
 AActor *P_SpawnPuff(AActor *source, PClassActor *pufftype, const DVector3 &pos, DAngle hitdir, DAngle particledir, int updown, int flags = 0, AActor *vict = NULL);
@@ -290,6 +294,7 @@ enum
 	FFCF_NOCEILING = 64,
 	FFCF_RESTRICTEDPORTAL = 128,	// current values in the iterator's return are through a restricted portal type (i.e. some features are blocked.)
 	FFCF_NODROPOFF = 256,			// Caller does not need a dropoff (saves some time when checking portals)
+	FFCF_ALLOWWATER = 512,			// [WATERFLOORS] NextHighestCeilingAt/NextLowestFloorAt also stop at swimmable 3D floors (GZSelaco 819c46537f)
 };
 void	P_FindFloorCeiling (AActor *actor, int flags=0);
 

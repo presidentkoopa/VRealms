@@ -46,6 +46,7 @@ struct FThinkerList
 {
 	// No destructor. If this list goes away it's the GC's task to clean the orphaned thinkers. Otherwise this may clash with engine shutdown.
 	void AddTail(DThinker *thinker);
+	void AddHead(DThinker *thinker);					// [SLEEP] for LinkSleeper
 	DThinker *GetHead() const;
 	DThinker *GetTail() const;
 	bool IsEmpty() const;
@@ -54,6 +55,7 @@ struct FThinkerList
 	void RemoveTravellers(bool saveGame);
 	void OnLoad();
 	int TickThinkers(FThinkerList *dest, int& counter);	// Returns: # of thinkers ticked
+	int CheckSleepingThinkers(int ticsElapsed = 1);		// [SLEEP] one tic of a sleep list; returns # woken
 	int ProfileThinkers(FThinkerList *dest, int& counter, TMap<FName, ProfileInfo>& profiles);
 	void SaveList(FSerializer &arc);
 
@@ -80,10 +82,21 @@ struct FThinkerCollection
 	void OnLoad();
 	DThinker *FirstThinker(int statnum);
 	void Link(DThinker *thinker, int statnum);
+	// [SLEEP] Thinker sleep (GZSelaco): see DThinker::Sleep in dthinker.cpp.
+	void LinkSleeper(DThinker *thinker, int statnum);
+	void RunSleepCycle();		// once per tic, before anything ticks: count sleepers down, wake the due
+	bool IsSleepCycle() const { return inSleepCycle; }
+	void AddWaker(DThinker *thinker) { tempWakers.Push(thinker); }
 
 private:
 	FThinkerList Thinkers[MAX_STATNUM + 2];
 	FThinkerList FreshThinkers[MAX_STATNUM + 1];
+
+	// [SLEEP] While RunSleepCycle walks STAT_SLEEP, a thinker woken by its timer or by a callback is moved back to its
+	// list only after the walk, so a ShouldWake or Wake override that wakes others cannot send the walk into another
+	// list (GZSelaco aad9387aa0). Raw pointers: the collector does not run inside a tic, and destroyed ones are skipped.
+	bool inSleepCycle = false;
+	TArray<DThinker*> tempWakers;
 
 	friend class FThinkerIterator;
 };
@@ -111,6 +124,20 @@ public:
 	// This is temporary and should only be used with the rollback functionality.
 	inline void RollbackStatNum(int statNum) { _statNum = statNum; }
 
+	// [SLEEP] Thinker sleep, GZSelaco's script API (f6ebcea025 and its fixes; "Engine docs/SELACO_S1_PLAYSIM_IMPL_NOTES.md").
+	// A sleeping thinker is not ticked. Sleep(tics) parks it in STAT_SLEEP until its timer runs out and ShouldWake
+	// agrees; SleepIndefinite parks it in STAT_SLEEP_FOREVER until Wake. It stays linked into the world, keeps its TID
+	// and pointers, and can be found, iterated (in its sleep list) and destroyed. Waking returns it to the list it
+	// slept from, and it ticks that same tic. All of it is playsim state, saved with the thinker.
+	virtual bool ShouldWake();          // asked when a timed sleep is up; false keeps it asleep, asked again next tic
+	virtual void Wake();
+	virtual void Sleep(int tics = 10);  // tics <= 0 does nothing (GZSelaco 8a2ca710d3)
+	virtual void SleepIndefinite();
+	void CallSleep(int tics);
+	bool CallShouldWake();
+	void CallWake();
+	inline bool IsSleeping() const { return sleepInterval != 0; }
+
 private:
 	void Remove();
 
@@ -121,7 +148,16 @@ private:
 	friend class FDoomSerializer;
 
 	int8_t _statNum = -1;
+	// [SLEEP] The statnum list this thinker is linked into right now (FThinkerCollection::Link, LinkSleeper and loading
+	// keep it; _statNum is only set by ChangeStatNum), and the list it returns to when it wakes.
+	int8_t linkedStatNum = -1;
+	int8_t sleepWakeStatNum = -1;
 	DThinker *NextThinker = nullptr, *PrevThinker = nullptr;
+	// [SLEEP] GZSelaco's sleep fields: the interval (> 0 timed, -1 indefinite, 0 awake) and the countdown.
+	int sleepInterval = 0;
+	int sleepTimer = 0;
+	int SleepReturnStatNum() const;
+	FThinkerCollection &OwnCollection() const;
 
 public:
 	FLevelLocals *Level;

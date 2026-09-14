@@ -72,7 +72,13 @@ DThinker *NextToThink;
 void FThinkerCollection::Link(DThinker *thinker, int statnum)
 {
 	FThinkerList *list;
-	if ((thinker->ObjectFlags & OF_JustSpawned) && statnum >= STAT_FIRST_THINKING)
+	if (statnum == STAT_SLEEP || statnum == STAT_SLEEP_FOREVER)
+	{
+		// [SLEEP] Sleep lists are never ticked, so a sleeper never goes through FreshThinkers, and it keeps
+		// OF_JustSpawned: a thinker put to sleep before its first tick still gets PostBeginPlay when it wakes.
+		list = &Thinkers[statnum];
+	}
+	else if ((thinker->ObjectFlags & OF_JustSpawned) && statnum >= STAT_FIRST_THINKING)
 	{
 		list = &FreshThinkers[statnum];
 	}
@@ -82,6 +88,55 @@ void FThinkerCollection::Link(DThinker *thinker, int statnum)
 		list = &Thinkers[statnum];
 	}
 	list->AddTail(thinker);
+	thinker->linkedStatNum = (int8_t)statnum;	// [SLEEP]
+}
+
+//==========================================================================
+//
+// [SLEEP] Thinker sleep (GZSelaco f6ebcea025, b60c4d4ebd, 4038928c40,
+// aad9387aa0, 8a2ca710d3). GZSelaco's sorted insert (b60c4d4ebd) is left
+// out: it reverted it in dc2d9a4401 for lag spikes.
+//
+// Sleep(tics) parks a thinker at the head of STAT_SLEEP, SleepIndefinite at
+// the tail of STAT_SLEEP_FOREVER. The tick loops skip both lists. Once per
+// tic, before any thinker ticks, RunSleepCycle walks STAT_SLEEP: each timed
+// sleeper's countdown drops by one, and when it reaches 0 the thinker wakes
+// if ShouldWake agrees (asked again every tic until it does). A thinker woken
+// during the walk is moved back to its list after it and ticks that same tic.
+//
+// Timing (GZSelaco's): Sleep(n) called from a thinker's own Tick in tic T
+// makes it tick again in tic T+n, so it misses n-1 tics.
+//
+// Netplay: all of it runs on playsim tics with playsim state, and the sleep
+// fields are saved with the thinker. Client-side thinkers sleep in their own
+// collection, run by RunClientSideThinkers.
+//
+//==========================================================================
+
+void FThinkerCollection::LinkSleeper(DThinker *thinker, int statnum)
+{
+	Thinkers[statnum].AddHead(thinker);
+	thinker->linkedStatNum = (int8_t)statnum;
+}
+
+void FThinkerCollection::RunSleepCycle()
+{
+	inSleepCycle = true;
+	Thinkers[STAT_SLEEP].CheckSleepingThinkers(1);
+
+	// Wake the waiting dreamers, unless a later callback in the walk destroyed one, put it back to sleep or moved it
+	// out of the sleep lists itself.
+	for (unsigned i = 0; i < tempWakers.Size(); i++)
+	{
+		DThinker *dreamer = tempWakers[i];
+		if (dreamer != nullptr && !(dreamer->ObjectFlags & OF_EuthanizeMe) && dreamer->sleepInterval == 0 &&
+			(dreamer->linkedStatNum == STAT_SLEEP || dreamer->linkedStatNum == STAT_SLEEP_FOREVER))
+		{
+			dreamer->ChangeStatNum(dreamer->SleepReturnStatNum());
+		}
+	}
+	tempWakers.Clear();
+	inSleepCycle = false;
 }
 
 //==========================================================================
@@ -102,11 +157,15 @@ void FThinkerCollection::RunThinkers(FLevelLocals *Level)
 
 	ThinkCycles.Clock();
 
+	// [SLEEP] Count sleepers down and wake the due before anything ticks, so a woken thinker ticks this tic.
+	RunSleepCycle();
+
 	if (!profilethinkers)
 	{
 		// Tick every thinker left from last time
 		for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 		{
+			if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 			Thinkers[i].TickThinkers(nullptr, ThinkCount);
 		}
 
@@ -116,6 +175,7 @@ void FThinkerCollection::RunThinkers(FLevelLocals *Level)
 			count = 0;
 			for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 			{
+				if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 				count += FreshThinkers[i].TickThinkers(&Thinkers[i], ThinkCount);
 			}
 		} while (count != 0);
@@ -126,6 +186,7 @@ void FThinkerCollection::RunThinkers(FLevelLocals *Level)
 		// Tick every thinker left from last time
 		for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 		{
+			if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 			Thinkers[i].ProfileThinkers(nullptr, ThinkCount, Profiles);
 		}
 
@@ -135,6 +196,7 @@ void FThinkerCollection::RunThinkers(FLevelLocals *Level)
 			count = 0;
 			for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 			{
+				if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 				count += FreshThinkers[i].ProfileThinkers(&Thinkers[i], ThinkCount, Profiles);
 			}
 		} while (count != 0);
@@ -267,10 +329,13 @@ void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
 	// Tick every thinker left from last time
 	if (!paused)
 	{
+		// [SLEEP] As in RunThinkers, for client-side sleepers (their own collection, local by design).
+		RunSleepCycle();
 		if (!csprofilethinkers)
 		{
 			for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 			{
+				if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 				Thinkers[i].TickThinkers(nullptr, ClientSideThinkCount);
 			}
 
@@ -280,6 +345,7 @@ void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
 				count = 0;
 				for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 				{
+					if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 					count += FreshThinkers[i].TickThinkers(&Thinkers[i], ClientSideThinkCount);
 				}
 			} while (count != 0);
@@ -290,6 +356,7 @@ void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
 			// Tick every thinker left from last time
 			for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 			{
+				if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 				Thinkers[i].ProfileThinkers(nullptr, ClientSideThinkCount, ClientSideProfiles);
 			}
 
@@ -299,6 +366,7 @@ void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
 				count = 0;
 				for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
 				{
+					if (i == STAT_SLEEP || i == STAT_SLEEP_FOREVER) continue;	// [SLEEP] never ticked
 					count += FreshThinkers[i].ProfileThinkers(&Thinkers[i], ClientSideThinkCount, ClientSideProfiles);
 				}
 			} while (count != 0);
@@ -521,14 +589,16 @@ void FThinkerCollection::SerializeThinkers(FSerializer &arc, bool hubLoad)
 									// This thinker was destroyed during the loading process. Do
 									// not link it into any list.
 								}
-								else if (thinker->ObjectFlags & OF_JustSpawned)
+								else if ((thinker->ObjectFlags & OF_JustSpawned) && i != STAT_SLEEP && i != STAT_SLEEP_FOREVER)	// [SLEEP] sleepers never go to FreshThinkers (Link)
 								{
 									FreshThinkers[i].AddTail(thinker);
+									thinker->linkedStatNum = (int8_t)i;	// [SLEEP]
 									thinker->CallPostSerialize();
 								}
 								else
 								{
 									Thinkers[i].AddTail(thinker);
+									thinker->linkedStatNum = (int8_t)i;	// [SLEEP]
 									thinker->CallPostSerialize();
 								}
 							}
@@ -571,6 +641,37 @@ void FThinkerList::AddTail(DThinker *thinker)
 	GC::WriteBarrier(thinker, tail);
 	GC::WriteBarrier(thinker, Sentinel);
 	GC::WriteBarrier(tail, thinker);
+	GC::WriteBarrier(Sentinel, thinker);
+}
+
+//==========================================================================
+//
+// [SLEEP] AddTail's mirror, for FThinkerCollection::LinkSleeper (GZSelaco).
+//
+//==========================================================================
+
+void FThinkerList::AddHead(DThinker *thinker)
+{
+	assert(thinker->PrevThinker == nullptr && thinker->NextThinker == nullptr);
+	assert(!(thinker->ObjectFlags & OF_EuthanizeMe));
+	if (Sentinel == nullptr)
+	{
+		// This cannot use CreateThinker because it must not be added to the list automatically.
+		Sentinel = (DThinker*)RUNTIME_CLASS(DThinker)->CreateNew();
+		Sentinel->ObjectFlags |= OF_Sentinel;
+		Sentinel->NextThinker = Sentinel;
+		Sentinel->PrevThinker = Sentinel;
+		GC::WriteBarrier(Sentinel);
+	}
+	DThinker *head = Sentinel->NextThinker;
+	assert(head->PrevThinker == Sentinel);
+	thinker->PrevThinker = Sentinel;
+	thinker->NextThinker = head;
+	head->PrevThinker = thinker;
+	Sentinel->NextThinker = thinker;
+	GC::WriteBarrier(thinker, head);
+	GC::WriteBarrier(thinker, Sentinel);
+	GC::WriteBarrier(head, thinker);
 	GC::WriteBarrier(Sentinel, thinker);
 }
 
@@ -805,6 +906,43 @@ void FThinkerList::OnLoad()
 
 //==========================================================================
 //
+// [SLEEP] One tic of a sleep list (GZSelaco): count every timed sleeper down
+// and wake those whose time is up, if ShouldWake agrees. A ShouldWake or Wake
+// override may put others to sleep, wake them or destroy them: NextToThink
+// keeps the walk on the list, as it does for TickThinkers.
+//
+//==========================================================================
+
+int FThinkerList::CheckSleepingThinkers(int ticsElapsed)
+{
+	int count = 0;
+	DThinker *node = GetHead();
+	if (node == nullptr)
+	{
+		return 0;
+	}
+	while (node != Sentinel)
+	{
+		NextToThink = node->NextThinker;
+		if (!(node->ObjectFlags & OF_EuthanizeMe))
+		{ // Only check thinkers not scheduled for destruction
+			node->sleepTimer -= ticsElapsed;
+			if (node->sleepTimer <= 0)
+			{
+				if (node->sleepInterval <= 0 || node->CallShouldWake())
+				{
+					++count;
+					node->CallWake();
+				}
+			}
+		}
+		node = NextToThink;
+	}
+	return count;
+}
+
+//==========================================================================
+//
 //
 //
 //==========================================================================
@@ -920,6 +1058,7 @@ void DThinker::OnDestroy()
 		Remove();
 	}
 	_statNum = -1;
+	linkedStatNum = -1;	// [SLEEP]
 	Super::OnDestroy();
 }
 
@@ -928,6 +1067,13 @@ void DThinker::Serialize(FSerializer &arc)
 	Super::Serialize(arc);
 	arc("level", Level)
 		("statnum", _statNum);
+	// [SLEEP] Sleep state (GZSelaco's keys for the first two). Written only when set, so an awake thinker saves as
+	// before and an old save loads every thinker awake. Which list it is in comes from the thinker array index.
+	int zero = 0;
+	int8_t none = -1;
+	arc("sleepInterval", sleepInterval, zero)
+		("sleepTimer", sleepTimer, zero)
+		("sleepWakeStatNum", sleepWakeStatNum, none);
 }
 
 //==========================================================================
@@ -1023,6 +1169,157 @@ void DThinker::CallPostSerialize()
 		VMValue params[] = { this };
 		VMCall(func, params, 1, nullptr, 0);
 	}
+}
+
+//==========================================================================
+//
+// [SLEEP] Thinker sleep, DThinker's side (see FThinkerCollection::LinkSleeper).
+//
+//==========================================================================
+
+FThinkerCollection &DThinker::OwnCollection() const
+{
+	return IsClientSide() ? Level->ClientSideThinkers : Level->Thinkers;
+}
+
+// The list a sleeper goes back to: the one it slept from. GZSelaco always used STAT_DEFAULT, which is the same for
+// an actor; a thinker from any other list (inventory, a user list) keeps its own.
+int DThinker::SleepReturnStatNum() const
+{
+	const int stat = sleepWakeStatNum;
+	if (stat >= STAT_FIRST_THINKING && stat <= MAX_STATNUM && stat != STAT_SLEEP && stat != STAT_SLEEP_FOREVER)
+	{
+		return stat;
+	}
+	return STAT_DEFAULT;
+}
+
+bool DThinker::ShouldWake()
+{
+	return true;	// A thinker that does not override ShouldWake wakes when its time is up.
+}
+
+// TODO (GZSelaco): Provide WAKE with the amount of tics slept
+void DThinker::Wake()
+{
+	if (ObjectFlags & OF_EuthanizeMe) return;
+	if (sleepInterval == 0) return;	// only wake if asleep
+
+	// During the sleep cycle the list move waits until the walk is over (GZSelaco aad9387aa0).
+	FThinkerCollection &collection = OwnCollection();
+	if (collection.IsSleepCycle())
+	{
+		collection.AddWaker(this);
+	}
+	else
+	{
+		ChangeStatNum(SleepReturnStatNum());
+	}
+	sleepInterval = 0;
+	sleepTimer = 0;
+}
+
+void DThinker::Sleep(int tics)
+{
+	// Not when about to be destroyed, and not for 0 tics (GZSelaco 8a2ca710d3: that left a thinker neither asleep
+	// nor awake). A thinker outside the thinking lists (static, travelling, a decal) does not tick anyway.
+	if ((ObjectFlags & OF_EuthanizeMe) || tics <= 0 || linkedStatNum < STAT_FIRST_THINKING) return;
+
+	if (sleepInterval == 0 && linkedStatNum != STAT_SLEEP && linkedStatNum != STAT_SLEEP_FOREVER)
+	{
+		sleepWakeStatNum = linkedStatNum;	// the list to wake into; kept if it was already asleep
+	}
+	Remove();
+	sleepInterval = tics;
+	sleepTimer = tics;
+	OwnCollection().LinkSleeper(this, STAT_SLEEP);
+	_statNum = STAT_SLEEP;	// what GetStatNum reports, as ChangeStatNum would have set it
+}
+
+void DThinker::SleepIndefinite()
+{
+	// Only sleep if we are not going to be destroyed (GZSelaco 4038928c40).
+	if ((ObjectFlags & OF_EuthanizeMe) || linkedStatNum < STAT_FIRST_THINKING) return;
+
+	if (sleepInterval == 0 && linkedStatNum != STAT_SLEEP && linkedStatNum != STAT_SLEEP_FOREVER)
+	{
+		sleepWakeStatNum = linkedStatNum;
+	}
+	ChangeStatNum(STAT_SLEEP_FOREVER);
+	sleepInterval = -1;
+	sleepTimer = -1;
+}
+
+void DThinker::CallSleep(int tics)
+{
+	IFVIRTUAL(DThinker, Sleep)
+	{
+		VMValue params[] = { (DObject*)this, tics };
+		VMCall(func, params, 2, nullptr, 0);
+	}
+	else Sleep(tics);
+}
+
+bool DThinker::CallShouldWake()
+{
+	IFVIRTUAL(DThinker, ShouldWake)
+	{
+		VMValue params[] = { (DObject*)this };
+		int retb = 0;
+		VMReturn ret(&retb);
+		VMCall(func, params, 1, &ret, 1);
+		return !!retb;
+	}
+	return ShouldWake();
+}
+
+// Thinker.Wake is a plain native in ZScript for now (virtual in GZSelaco; see the notes' [VIRTUALSHADOW] item), so
+// IFVIRTUAL's assert does not fit it: look the slot up once, and honour a script override if Wake is made virtual.
+void DThinker::CallWake()
+{
+	static unsigned VIndex = ~0u;
+	static bool looked = false;
+	if (!looked)
+	{
+		VIndex = GetVirtualIndex(RUNTIME_CLASS(DThinker), "Wake");
+		looked = true;
+	}
+	auto clss = GetClass();
+	VMFunction *func = (VIndex != ~0u && clss->Virtuals.Size() > VIndex) ? clss->Virtuals[VIndex] : nullptr;
+	if (func != nullptr)
+	{
+		VMValue params[] = { (DObject*)this };
+		VMCall(func, params, 1, nullptr, 0);
+	}
+	else Wake();
+}
+
+DEFINE_ACTION_FUNCTION(DThinker, Sleep)
+{
+	PARAM_SELF_PROLOGUE(DThinker);
+	PARAM_INT(tics);
+	self->Sleep(tics);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(DThinker, SleepIndefinite)
+{
+	PARAM_SELF_PROLOGUE(DThinker);
+	self->SleepIndefinite();
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(DThinker, ShouldWake)
+{
+	PARAM_SELF_PROLOGUE(DThinker);
+	ACTION_RETURN_BOOL(self->ShouldWake());
+}
+
+DEFINE_ACTION_FUNCTION(DThinker, Wake)
+{
+	PARAM_SELF_PROLOGUE(DThinker);
+	self->Wake();
+	return 0;
 }
 
 //==========================================================================

@@ -193,6 +193,7 @@ class Actor : Thinker native
 	native readonly vector3 Pos;
 	native vector3 Prev;
 	native uint ThruBits;
+	native uint lineBlockBits;	// [BLOCKBITS] lines whose blockBits share a bit block this actor (GZSelaco 14d9255578)
 	native vector2 SpriteOffset;
 	native vector3 WorldOffset;
 	native double spriteAngle;
@@ -856,6 +857,7 @@ class Actor : Thinker native
 	property RenderRequired: RenderRequired;
 	property FriendlySeeBlocks: FriendlySeeBlocks;
 	property ThruBits: ThruBits;
+	property LineBlockBits: lineBlockBits;	// [BLOCKBITS]
 	property LightLevel: LightLevel;
 	property ShadowAimFactor: ShadowAimFactor;
 	property ShadowPenaltyFactor: ShadowPenaltyFactor;
@@ -1290,6 +1292,19 @@ class Actor : Thinker native
 
 	native Actor OldSpawnMissile(Actor dest, class<Actor> type, Actor owner = null);
 	native Actor SpawnPuff(class<Actor> pufftype, vector3 pos, double hitdir, double particledir, int updown, int flags = 0, Actor victim = null);
+
+	// [HITCALLBACKS] GZSelaco c7527eead1, 90bdbba77c: hitscans (LineAttack) and rails report to their puff. The engine
+	// calls these only on a puff class that overrides them; the native versions do nothing.
+	// PuffSplash: the attack crossed water. Return true when you handled the splash, and the engine makes none. A
+	// hitscan puff class that overrides this is called on a temporary puff of its type at the water (in its Splash
+	// state, if it has one), which may be destroyed right after the call.
+	virtual native bool PuffSplash(Vector3 position, Vector3 direction, Sector sect, F3DFloor floor3D);
+	// PuffHit: the attack stopped at a wall, floor or ceiling (not an actor), described as a LineTrace result.
+	virtual native void PuffHit(FLineTraceData trace);
+	// PuffThrough: the attack went through victim and hurt it: a HITSCANTHRU actor for a hitscan (on a puff in its
+	// HitThrough state, often temporary), every pierced actor for a rail.
+	virtual native void PuffThrough(Actor victim, Vector3 pos, Vector3 dir);
+
 	native Actor SpawnBlood (Vector3 pos1, double dir, int damage);
 	native void BloodSplatter (Vector3 pos, double hitangle, bool axe = false);
 	native bool HitWater (sector sec, Vector3 pos, bool checkabove = false, bool alert = true, bool force = false, int flags = 0);
@@ -1455,6 +1470,7 @@ class Actor : Thinker native
 	native int GetPlayerInput(int inputnum, int ptr = AAPTR_DEFAULT);
 	native int CountProximity(class<Actor> classname, double distance, int flags = 0, int ptr = AAPTR_DEFAULT);
 	native int GetMissileDamage(int mask, int add, int ptr = AAPTR_DEFAULT);
+	native int CalculateMissileDamage();	// [ABSDAMAGE] GZSelaco 96096c0228: the fixed damage value (DamageVal); negative for a damage expression
 	action native int OverlayID();
 	action native double OverlayX(int layer = 0);
 	action native double OverlayY(int layer = 0);

@@ -243,6 +243,10 @@ class Thinker : Object native play
 		STAT_MAPMARKER,							// Map marker actors
 		STAT_DLIGHT,							// Dynamic lights
 
+		// [SLEEP] Thinker sleep (GZSelaco): these two lists are never ticked. See Sleep() below.
+		STAT_SLEEP = 60,						// Pool of sleepers, don't add to this without Sleep()
+		STAT_SLEEP_FOREVER = 61,				// Pool of indefinite sleepers. Adding to this pool is OK.
+
 		STAT_USER = 70,
 		STAT_USER_MAX = 90,
 
@@ -263,6 +267,17 @@ class Thinker : Object native play
 	native void AddToTravellingList();
 	native void ChangeStatNum(int stat);
 	native clearscope int GetStatNum() const;
+
+	// [SLEEP] Thinker sleep, GZSelaco's API (engine side: DThinker::Sleep in dthinker.cpp).
+	// Sleep(tics): stop ticking, and wake after `tics` tics once ShouldWake agrees (asked every tic from then on).
+	// SleepIndefinite(): stop ticking until Wake(). Wake(): tick again from this tic, in the statnum list it slept from.
+	// A sleeper keeps its place in the world and can still be found (ThinkerIterator; STAT_SLEEP lists) and destroyed.
+	// Wake is virtual in GZSelaco. It stays a plain function here until the owner rules on the [VIRTUALSHADOW] compiler
+	// proposal: RS_Main (ZScript 4.14) declares its own Wake() in a Thinker subclass, which a virtual Wake would break.
+	virtual native void Sleep(int tics);
+	virtual native bool ShouldWake();
+	native void Wake();
+	virtual native void SleepIndefinite();
 
 	static clearscope int Tics2Seconds(int tics)
 	{

@@ -1125,6 +1125,11 @@ public:
 				ld->locknumber = CheckInt(key);
 				continue;
 
+			// [BLOCKBITS] Line block bits (GZSelaco 14d9255578): this line blocks actors whose lineBlockBits share a bit.
+			case NAME_BlockBits:
+				ld->blockBits = CheckInt(key);
+				continue;
+
 			// [TP] Causes a 3d midtex to behave like an impassible line
 			case NAME_Midtex3dimpassible:
 				Flag(ld->flags, ML_3DMIDTEX_IMPASS, key);

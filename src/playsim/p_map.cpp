@@ -975,7 +975,10 @@ bool PIT_CheckLine(FMultiBlockLinesIterator &mit, FMultiBlockLinesIterator::Chec
 	uint32_t ProjectileBlocking = ML_BLOCKEVERYTHING | ML_BLOCKPROJECTILE;
 	if ( tm.thing->flags8 & MF8_BLOCKASPLAYER ) ProjectileBlocking |= ML_BLOCK_PLAYERS | ML_BLOCKING;
 
-	if (!(Projectile) || (ld->flags & ProjectileBlocking) )
+	// [BLOCKBITS] A projectile is also checked against a line whose block bits match its own, so a grate or glass line
+	// can stop the missiles it shares a bit with (GZSelaco 14d9255578 only blocked non-missiles; a bullet here is often
+	// a FastProjectile). With both masks at their default 0 the extra test is false and nothing changes.
+	if (!(Projectile) || (ld->flags & ProjectileBlocking) || (tm.thing->lineBlockBits & ld->blockBits))
 	{
 		if (ld->flags & ML_RAILING)
 		{
@@ -4728,6 +4731,14 @@ DAngle P_AimLineAttack(AActor *t1, DAngle angle, double distance, FTranslatedLin
 //
 //==========================================================================
 
+// [HITCALLBACKS] One HITSCANTHRU actor a P_LineAttack trace went through (GZSelaco c7527eead1's ActorHitS).
+struct SHitscanThruHit
+{
+	AActor *HitActor;
+	DVector3 HitPos;
+	DAngle HitAngle;
+};
+
 struct Origin
 {
 	AActor *Caller;
@@ -4739,6 +4750,9 @@ struct Origin
 	bool UseThruBits;
 	bool Spectral;
 	uint32_t ThruBits;
+	// [HITCALLBACKS] P_LineAttack only: collect HITSCANTHRU actors and trace on through them (CheckForActor).
+	bool CollectThruHits = false;
+	TArray<SHitscanThruHit> ThruHits;
 };
 
 static ETraceStatus CheckForActor(FTraceResults &res, void *userdata)
@@ -4770,7 +4784,231 @@ static ETraceStatus CheckForActor(FTraceResults &res, void *userdata)
 		return TRACE_Skip;
 	}
 
+	// [HITCALLBACKS] A HITSCANTHRU actor takes the hit and the trace carries on through it (GZSelaco c7527eead1). Only
+	// P_LineAttack asks for this; P_LineAttackThruHits damages the actors after the trace, in hit order.
+	if (data->CollectThruHits && (res.Actor->flags9 & MF9_HITSCANTHRU))
+	{
+		SHitscanThruHit newhit;
+		newhit.HitActor = res.Actor;
+		newhit.HitPos = res.HitPos;
+		newhit.HitAngle = res.SrcAngleFromTarget;
+		if (res.Actor->Level->i_compatflags & COMPATF_HITSCAN)
+		{
+			DVector2 ofs = res.Actor->Level->GetPortalOffsetPosition(newhit.HitPos.X, newhit.HitPos.Y, -10 * res.HitVector.X, -10 * res.HitVector.Y);
+			newhit.HitPos.X = ofs.X;
+			newhit.HitPos.Y = ofs.Y;
+			newhit.HitPos.Z -= -10 * res.HitVector.Z;
+		}
+		data->ThruHits.Push(newhit);
+		return TRACE_Continue;
+	}
+
 	return TRACE_Stop;
+}
+
+//==========================================================================
+//
+// [HITCALLBACKS] Bullet hit callbacks (GZSelaco c7527eead1, 90bdbba77c).
+//
+// Hitscans and rails report to their puff through three Actor virtuals:
+// PuffHit (stopped at a wall, floor or ceiling), PuffSplash (crossed water;
+// returns true when it handled the splash) and PuffThrough (went through an
+// actor and hurt it). The engine calls each only on a puff class that
+// overrides it, so a puff that does not is treated exactly as before.
+// Everything here is playsim, on the tic the attack happens.
+//
+//==========================================================================
+
+static bool P_CallPuffSplash(AActor *puff, const DVector3 &pos, const DVector3 &dir, sector_t *sect, F3DFloor *ffloor)
+{
+	int ret = 0;
+	IFOVERRIDENVIRTUALPTRNAME(puff, NAME_Actor, PuffSplash)
+	{
+		VMValue params[] = { puff, pos.X, pos.Y, pos.Z, dir.X, dir.Y, dir.Z, sect, ffloor };
+		VMReturn vret(&ret);
+		VMCall(func, params, countof(params), &vret, 1);
+	}
+	return ret != 0;
+}
+
+// The hit described as a LineTrace result, the way P_LineTrace fills FLineTraceData.
+static void P_CallPuffHit(AActor *puff, const FTraceResults &trace)
+{
+	IFOVERRIDENVIRTUALPTRNAME(puff, NAME_Actor, PuffHit)
+	{
+		FLineTraceData data;
+		data.HitActor = nullptr;
+		data.HitLine = trace.Line;
+		data.HitSector = trace.Sector;
+		data.Hit3DFloor = trace.ffloor;
+		data.HitTexture = trace.HitTexture;
+		data.HitLocation = trace.HitPos;
+		data.HitDir = trace.HitVector;
+		data.Distance = trace.Distance;
+		data.NumPortals = 0;	// GZSelaco: not counted for a puff
+		data.LineSide = trace.Side;
+		data.LinePart = trace.Tier;
+		data.SectorPlane = (trace.HitType == TRACE_HitCeiling) ? 1 : 0;
+		data.HitType = trace.HitType;
+		if (trace.HitType == TRACE_HitWall)
+		{
+			int txpart;
+			switch (trace.Tier)
+			{
+			case TIER_Middle:
+				data.LinePart = 1;
+				data.HitTexture = trace.Line->sidedef[trace.Side]->textures[1].texture;
+				break;
+			case TIER_Upper:
+				data.LinePart = 0;
+				data.HitTexture = trace.Line->sidedef[trace.Side]->textures[0].texture;
+				break;
+			case TIER_Lower:
+				data.LinePart = 2;
+				data.HitTexture = trace.Line->sidedef[trace.Side]->textures[2].texture;
+				break;
+			case TIER_FFloor:
+				data.LinePart = 1;	// act as if middle was hit
+				txpart = (trace.ffloor->flags & FF_UPPERTEXTURE) ? 0 : (trace.ffloor->flags & FF_LOWERTEXTURE) ? 2 : 1;
+				data.HitTexture = trace.ffloor->master->sidedef[0]->textures[txpart].texture;
+				break;
+			}
+		}
+		VMValue params[] = { puff, &data };
+		VMCall(func, params, countof(params), nullptr, 0);
+	}
+}
+
+// A puff class opts in to GZSelaco's hitscan splash handling by overriding PuffSplash. A Splash state alone does not:
+// existing mods use that label for their own states (RS_Main has three), and they must splash exactly as before.
+static bool P_PuffHandlesSplash(AActor *puffDefaults)
+{
+	if (puffDefaults == nullptr) return false;
+	IFOVERRIDENVIRTUALPTRNAME(puffDefaults, NAME_Actor, PuffSplash)
+	{
+		return true;
+	}
+	return false;
+}
+
+// The HITSCANTHRU actors a P_LineAttack trace went through: each is hurt like a regular hit and reported to a puff
+// of the attack's type in its HitThrough state. GZSelaco's version read the final hit's actor where it meant this
+// one (a crash when the shot ended on a wall) and dropped P_DamageMobj's result; both are fixed here.
+static void P_LineAttackThruHits(AActor *t1, const TArray<SHitscanThruHit> &hits, PClassActor *pufftype, AActor *puffDefaults,
+	int puffFlags, int damage, FName damageType, int pflag, int laflags, AActor *weapon, const DVector3 &direction, DAngle pitch)
+{
+	AActor *src = t1;
+	if ((laflags & LAF_TARGETISSOURCE) && t1 && t1->target) src = t1->target;
+
+	for (const SHitscanThruHit &hit : hits)
+	{
+		AActor *hitActor = hit.HitActor;
+		// An earlier victim's death or script can destroy a later one.
+		if (hitActor == nullptr || (hitActor->ObjectFlags & OF_EuthanizeMe)) continue;
+
+		DVector3 bleedpos = hit.HitPos;
+		AActor *tPuff = nullptr;
+		bool killTPuff = false;
+
+		// GZSelaco spawns the visible puff for a victim that bleeds, so its HitThrough state can show the shot passing.
+		if (!(hitActor->flags & MF_NOBLOOD))
+		{
+			// We must pass the unreplaced puff type here
+			tPuff = P_SpawnPuff(t1, pufftype, bleedpos, hit.HitAngle, hit.HitAngle - DAngle::fromDeg(90), 2, puffFlags | PF_HITTHINGBLEED | PF_HITTHING | PF_HITTHRU, hitActor);
+		}
+
+		// Allow puffs to inflict poison damage, so that hitscans can poison, too.
+		if (puffDefaults != nullptr && puffDefaults->PoisonDamage > 0 && puffDefaults->PoisonDuration != INT_MIN)
+		{
+			P_PoisonMobj(hitActor, tPuff ? tPuff : t1, t1, puffDefaults->PoisonDamage, puffDefaults->PoisonDuration, puffDefaults->PoisonPeriod, puffDefaults->PoisonDamageType);
+		}
+
+		// [GZ] If MF6_FORCEPAIN is set, we need to call P_DamageMobj even if damage is 0!
+		int newdam = damage;
+		if (damage || (puffDefaults != nullptr && ((puffDefaults->flags6 & MF6_FORCEPAIN) || (puffDefaults->flags7 & MF7_CAUSEPAIN))))
+		{
+			int dmgflags = DMG_INFLICTOR_IS_PUFF | pflag;
+			// Allow MF5_PIERCEARMOR on a weapon as well.
+			if (t1->player != nullptr && (dmgflags & DMG_PLAYERATTACK) && weapon != nullptr && (weapon->flags5 & MF5_PIERCEARMOR))
+			{
+				dmgflags |= DMG_NO_ARMOR;
+			}
+			if (tPuff == nullptr)
+			{
+				// Since the puff is the damage inflictor we need it here regardless of whether it is displayed or not.
+				tPuff = P_SpawnPuff(t1, pufftype, bleedpos, nullAngle, nullAngle, 2, puffFlags | PF_HITTHING | PF_HITTHRU | PF_TEMPORARY);
+				killTPuff = true;
+			}
+			newdam = P_DamageMobj(hitActor, tPuff ? tPuff : t1, src, damage, damageType, dmgflags | DMG_USEANGLE, hit.HitAngle);
+		}
+
+		if (tPuff != nullptr && !(tPuff->ObjectFlags & OF_EuthanizeMe))
+		{
+			IFOVERRIDENVIRTUALPTRNAME(tPuff, NAME_Actor, PuffThrough)
+			{
+				VMValue params[] = { tPuff, hitActor, bleedpos.X, bleedpos.Y, bleedpos.Z, direction.X, direction.Y, direction.Z };
+				VMCall(func, params, countof(params), nullptr, 0);
+			}
+		}
+
+		if (!(puffDefaults != nullptr && (puffDefaults->flags3 & MF3_BLOODLESSIMPACT)))
+		{
+			{
+				IFVIRTUALPTR(hitActor, AActor, SpawnLineAttackBlood)
+				{
+					VMValue params[] = { hitActor, t1, bleedpos.X, bleedpos.Y, bleedpos.Z, hit.HitAngle.Degrees(), damage, newdam };
+					VMCall(func, params, countof(params), nullptr, 0);
+				}
+			}
+			if (damage)
+			{
+				// [RH] Stick blood to walls
+				P_TraceBleed(newdam > 0 ? newdam : damage, hit.HitPos, hitActor, hit.HitAngle, pitch);
+			}
+		}
+
+		if (killTPuff && tPuff != nullptr)
+		{
+			tPuff->Destroy();
+		}
+	}
+}
+
+// GZSelaco's hitscan splash (c7527eead1), for a puff class that overrides PuffSplash: it is called on a puff of the
+// attack's type at the crossing (in its Splash state if it has one), and the engine splashes only if it is not handled.
+static void P_LineAttackSplash(AActor *t1, const FTraceResults &trace, PClassActor *pufftype, int puffFlags, const DVector3 &direction,
+	AActor *&puff, bool &killPuff)
+{
+	bool handled = false;
+	AActor *tPuff = P_SpawnPuff(t1, pufftype, trace.Crossed3DWater ? trace.Crossed3DWaterPos : trace.CrossedWaterPos, nullAngle, nullAngle, 2,
+		puffFlags | PF_NORANDOMZ | PF_TEMPORARY | PF_SPLASHING);
+	if (tPuff != nullptr)
+	{
+		bool killTPuff = false;
+		if (trace.Crossed3DWater)
+		{
+			handled = P_CallPuffSplash(tPuff, trace.Crossed3DWaterPos, direction, nullptr, trace.Crossed3DWater);
+			// A 3D water puff that nobody handled is not kept (GZSelaco).
+			if (!handled) killTPuff = true;
+		}
+		if (trace.CrossedWater)
+		{
+			handled = P_CallPuffSplash(tPuff, trace.CrossedWaterPos, direction, trace.CrossedWater, nullptr) || handled;
+		}
+		if (killTPuff && !(tPuff->ObjectFlags & OF_EuthanizeMe))
+		{
+			tPuff->Destroy();
+		}
+	}
+	if (!handled)
+	{
+		if (puff == nullptr)
+		{ // Spawn puff just to get a mass for the splash
+			puff = P_SpawnPuff(t1, pufftype, trace.HitPos, nullAngle, nullAngle, 2, puffFlags | PF_HITTHING | PF_TEMPORARY);
+			killPuff = true;
+		}
+		SpawnDeepSplash(t1, trace, puff);
+	}
 }
 
 // [RAILAIM] Declared in p_local.h: shared with p_mobj.cpp and the ZScript
@@ -4862,6 +5100,7 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 	FTraceResults trace;
 	Origin TData;
 	TData.Caller = t1;
+	TData.CollectThruHits = true;	// [HITCALLBACKS]
 	bool killPuff = false;
 	AActor *puff = NULL;
 	int pflag = 0;
@@ -4970,6 +5209,8 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 
 	// We need to check the defaults of the replacement here
 	AActor *puffDefaults = GetDefaultByType(pufftype->GetReplacement(t1->Level));
+	// [HITCALLBACKS] Does this puff class take over its water splashes (P_LineAttackSplash)?
+	const bool puffSplashCallbacks = P_PuffHandlesSplash(puffDefaults);
 	AActor *weapon = nullptr;
 	if (t1->player != nullptr)
 	{
@@ -5082,8 +5323,17 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 	}
 
 	// Perform the trace.
-	if (!Trace(tempos, t1->Sector, direction, distance, MF_SHOOTABLE,
-		ML_BLOCKEVERYTHING | ML_BLOCKHITSCAN, t1, trace, tflags, CheckForActor, &TData))
+	const bool hitSomething = Trace(tempos, t1->Sector, direction, distance, MF_SHOOTABLE,
+		ML_BLOCKEVERYTHING | ML_BLOCKHITSCAN, t1, trace, tflags, CheckForActor, &TData);
+
+	// [HITCALLBACKS] Hurt the HITSCANTHRU actors the trace went through, in order, before the hit it stopped at
+	// (GZSelaco c7527eead1). The list is empty unless the trace crossed an actor with that flag.
+	if (!nointeract && TData.ThruHits.Size() > 0)
+	{
+		P_LineAttackThruHits(t1, TData.ThruHits, pufftype, puffDefaults, puffFlags, damage, damageType, pflag, flags, weapon, direction, pitch);
+	}
+
+	if (!hitSomething)
 	{ // hit nothing
 		if (!nointeract && puffDefaults && puffDefaults->ActiveSound.isvalid())
 		{ // Play miss sound
@@ -5169,6 +5419,13 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 				trace.HitType == TRACE_HitFloor)
 			{
 				P_HitWater(puff, trace.Sector, trace.HitPos);
+			}
+
+			// [HITCALLBACKS] Tell the puff what it hit, as a LineTrace result (GZSelaco c7527eead1); only a puff class
+			// that overrides PuffHit is called.
+			if (puff != nullptr && trace.HitType != TRACE_HasHitSky && trace.HitType != TRACE_HitNone)
+			{
+				P_CallPuffHit(puff, trace);
 			}
 		}
 		else
@@ -5258,7 +5515,8 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 			}
 
 		}
-		if (trace.Crossed3DWater || trace.CrossedWater)
+		// [HITCALLBACKS] A puff that takes over its splashes (puffSplashCallbacks) gets them after the hit or miss, below.
+		if ((trace.Crossed3DWater || trace.CrossedWater) && !puffSplashCallbacks)
 		{
 			if (puff == NULL)
 			{ // Spawn puff just to get a mass for the splash
@@ -5267,10 +5525,18 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 			}
 			SpawnDeepSplash(t1, trace, puff);
 		}
-		else if (trace.HitType == TRACE_HitWall || trace.HitType == TRACE_HitFloor || trace.HitType == TRACE_HitCeiling)
+		else if (!(trace.Crossed3DWater || trace.CrossedWater) &&
+			(trace.HitType == TRACE_HitWall || trace.HitType == TRACE_HitFloor || trace.HitType == TRACE_HitCeiling))
 		{
 			P_QueueHitscanRicochet(t1, tempos, trace.HitPos, flags);
 		}
+	}
+
+	// [HITCALLBACKS] GZSelaco's splash handling for a puff class that overrides PuffSplash (c7527eead1; P_LineAttackSplash). It
+	// replaces the stock splash above, and also runs for a miss that still spawned a puff (MF3_ALWAYSPUFF).
+	if (puffSplashCallbacks && (trace.Crossed3DWater || trace.CrossedWater))
+	{
+		P_LineAttackSplash(t1, trace, pufftype, puffFlags, direction, puff, killPuff);
 	}
 
 	t1->Level->localEventManager->WorldHitscanFired(t1, tempos, puffpos, puff, flags);
@@ -6012,6 +6278,17 @@ void P_RailAttack(FRailParams *p)
 			P_SpawnBlood(hitpos, hitangle, newdam > 0 ? newdam : p->damage, hitactor);
 			P_TraceBleed(newdam > 0 ? newdam : p->damage, hitpos, hitactor, hitangle, pitch);
 		}
+
+		// [HITCALLBACKS] The rail's puff hears of every actor it goes through (GZSelaco 90bdbba77c); only a puff class
+		// that overrides PuffThrough is called.
+		if (thepuff != nullptr)
+		{
+			IFOVERRIDENVIRTUALPTRNAME(thepuff, NAME_Actor, PuffThrough)
+			{
+				VMValue params[] = { thepuff, hitactor, hitpos.X, hitpos.Y, hitpos.Z, direction.X, direction.Y, direction.Z };
+				VMCall(func, params, countof(params), nullptr, 0);
+			}
+		}
 	}
 
 	P_GeometryLineAttack(trace, p->source, p->damage, damagetype);
@@ -6057,13 +6334,31 @@ void P_RailAttack(FRailParams *p)
 
 	if (thepuff != NULL)
 	{
-		if (trace.Crossed3DWater || trace.CrossedWater)
+		// [HITCALLBACKS] A puff that overrides PuffSplash is asked first and can replace the engine's splash, then PuffHit
+		// hears what the rail stopped at (GZSelaco 90bdbba77c). A puff with neither override splashes as before.
+		bool splashHandled = false;
+		if (trace.Crossed3DWater)
 		{
-			SpawnDeepSplash(source, trace, thepuff);
+			splashHandled = P_CallPuffSplash(thepuff, trace.Crossed3DWaterPos, direction, nullptr, trace.Crossed3DWater);
 		}
-		else if (trace.HitType == TRACE_HitFloor && trace.Sector->heightsec == NULL)
+		if (trace.CrossedWater)
 		{
-			P_HitWater(thepuff, trace.Sector, trace.HitPos);
+			splashHandled = P_CallPuffSplash(thepuff, trace.CrossedWaterPos, direction, trace.CrossedWater, nullptr) || splashHandled;
+		}
+		if (!splashHandled)
+		{
+			if (trace.Crossed3DWater || trace.CrossedWater)
+			{
+				SpawnDeepSplash(source, trace, thepuff);
+			}
+			else if (trace.HitType == TRACE_HitFloor && trace.Sector->heightsec == NULL)
+			{
+				P_HitWater(thepuff, trace.Sector, trace.HitPos);
+			}
+		}
+		if (trace.HitType == TRACE_HitWall || trace.HitType == TRACE_HitFloor || trace.HitType == TRACE_HitCeiling)
+		{
+			P_CallPuffHit(thepuff, trace);
 		}
 		thepuff->Destroy();
 	}

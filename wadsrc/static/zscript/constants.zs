@@ -616,6 +616,18 @@ enum ELOFFlags
 	CLOFF_SETMASTER =			0x1000000,
 	CLOFF_SETTRACER =			0x2000000,
 
+	// [LOFBLOCKERS] GZSelaco's CheckLOF flags (7c117a8013, fe147f7d3c, fe21bdb831), same names and bits. Cover
+	// actors set bBLOCKLOF / bBLOCKLOS. CLOFF_SKIPLOF shares its bit with CLOFF_BEYONDTARGET: GZSelaco took the slot,
+	// here the bit keeps both meanings (skipping cover only affects BLOCKLOF actors). What CheckLOF returns is the
+	// server switch sv_checklofreachable: see CheckLOF in p_actionfunctions.cpp.
+	CLOFF_SKIPLOF =				0x20000,		// Skip actors with BLOCKLOF
+	CLOFF_BLOCKLOF_ALWAYS =		0x4000000,		// Always stop at a BLOCKLOF actor, whatever the other flags say
+	CLOFF_BLOCKLOS_ALWAYS =		0x8000000,		// Always stop at a BLOCKLOS actor, whatever the other flags say
+	CLOFF_JUMPMONSTER =			0x10000000,		// Jump when any monster is in the way
+	CLOFF_SKIPMONSTER =			0x20000000,		// Skip any monster
+	CLOFF_SKIPWORLD =			0x40000000,		// Skip walls, floors and ceilings
+	CLOFF_SKIPLOS =				0x80000000,		// Skip actors with BLOCKLOS
+
 	CLOFF_SKIPOBSTACLES = CLOFF_SKIPENEMY|CLOFF_SKIPFRIEND|CLOFF_SKIPOBJECT|CLOFF_SKIPNONHOSTILE,
 	CLOFF_NOAIM = CLOFF_NOAIM_VERT|CLOFF_NOAIM_HORZ
 };
@@ -1120,6 +1132,7 @@ enum EFindFloorCeiling
 	FFCF_NOCEILING = 64,
 	FFCF_RESTRICTEDPORTAL = 128,	// current values in the iterator's return are through a restricted portal type (i.e. some features are blocked.)
 	FFCF_NODROPOFF = 256,			// Caller does not need a dropoff (saves some time when checking portals)
+	FFCF_ALLOWWATER = 512,			// [WATERFLOORS] Next(HighestCeiling|LowestFloor)At also stop at swimmable 3D floors (GZSelaco 819c46537f)
 };
 
 enum ERaise

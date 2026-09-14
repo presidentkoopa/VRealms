@@ -262,6 +262,10 @@ inline bool P_IsBlockedByLine(AActor* actor, line_t* line)
 	// Blocking floaters.
 	if ((actor->flags & MF_FLOAT) && (line->flags & ML_BLOCK_FLOATERS)) return true;
 
+	// [BLOCKBITS] Line block bits (GZSelaco 14d9255578): a line blocks any actor sharing one of its bits. Both masks
+	// default to 0, so no line blocks anything it did not block before.
+	if (actor->lineBlockBits & line->blockBits) return true;
+
 	return false;
 }
 
