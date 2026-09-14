@@ -38,6 +38,7 @@
 #include "hw_drawnlinebuffer.h"
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
+EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -194,6 +195,12 @@ namespace
 				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill; fx.heatsources: "
 				"the heat source fill), avg/p95/max per frame with same-name samples summed. pp.heatoffset and pp.heatwarp "
 				"are the heat shimmer passes (r_heatrefraction).\n\n";
+			// [COMPUTE] The compute names, on a legend line of their own.
+			out << "Legend (compute): fx.compute is the frame's compute hook -- on cpu_fx_ms every frame while this log "
+				"is on (its cost when nothing has compute work), on gpu_ms only when compute work was recorded. fx.smokesim "
+				"is ONE smoke volume step, counted per step, not per frame (avg/p95/max per step; its GPU group nests inside "
+				"fx.compute). fx.sectorplanes is the renderer's sector plane poll; fx.solidity the level solidity mask "
+				"(r_smoke_computetest).\n\n";
 			HeaderWritten = true;
 		}
 
@@ -219,9 +226,15 @@ namespace
 		out.AppendFormat(" r_gpuparticles_legacy=%d", (int)*r_gpuparticles_legacy);
 		// [2d] And the view light count, so a fx.viewlights before/after labels itself.
 		out.AppendFormat(" r_gpuparticles_lights=%d", (int)*r_gpuparticles_lights);
+		// [LOOKS] And the generated particle looks quality, so a fx.gpuparticles before/after labels itself.
+		out.AppendFormat(" r_gpuparticles_looks=%d", (int)*r_gpuparticles_looks);
 		// [HEATREFRACTION] And the heat shimmer switch, so a pp.heatoffset / pp.heatwarp
 		// before/after labels itself.
 		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);
+		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.solidity
+		// before/after labels itself.
+		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d",
+			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest);
 		out.AppendFormat(" t=%.1fs window=%.1fs frames=%u fps=%.1f frame_ms avg=%.2f p95=%.2f max=%.2f\n",
 			I_msTime() / 1000.0, windowS, frames, fps, W.Frame.Avg(), W.Frame.P95(), W.Frame.Max);
 
@@ -270,8 +283,57 @@ namespace
 	}
 }
 
+// [COMPUTE] CountEachRun's names, kept for the process: a perf log restart clears the
+// stats, not these.
+static std::vector<FString> EachRunNames;
+
+void PerfLog::CountEachRun(const char* name)
+{
+	for (auto& known : EachRunNames)
+	{
+		if (known.Compare(name) == 0)
+			return;
+	}
+	EachRunNames.push_back(name);
+}
+
+// A CountEachRun name goes straight into its stat, one sample per run. False (and
+// nothing done) for any other name.
+static bool AddEachRun(std::vector<Stat>& list, const char* name, double ms)
+{
+	bool eachRun = false;
+	for (auto& known : EachRunNames)
+	{
+		if (known.Compare(name) == 0)
+		{
+			eachRun = true;
+			break;
+		}
+	}
+	if (!eachRun)
+		return false;
+
+	for (auto& s : list)
+	{
+		if (s.Name.Compare(name) == 0)
+		{
+			s.Add(ms);
+			return true;
+		}
+	}
+	if (list.size() >= MaxGpuNames)
+		return true;
+	list.emplace_back();
+	list.back().Name = name;
+	list.back().Add(ms);
+	return true;
+}
+
 void PerfLog::AddGpuSample(const char* name, double ms)
 {
+	// [COMPUTE] A CountEachRun name: per run, not per frame.
+	if (AddEachRun(W.Gpu, name, ms))
+		return;
 	for (auto& g : W.Gpu)
 	{
 		if (g.Name.Compare(name) == 0)
@@ -291,6 +353,9 @@ void PerfLog::AddGpuSample(const char* name, double ms)
 
 void PerfLog::AddCpuSample(const char* name, double ms)
 {
+	// [COMPUTE] A CountEachRun name: per run, not per frame.
+	if (AddEachRun(W.CpuFx, name, ms))
+		return;
 	// [2d] AddGpuSample's rule, on its own list.
 	for (auto& c : W.CpuFx)
 	{

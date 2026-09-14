@@ -1444,10 +1444,13 @@ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int s
 {
 	exposure.Render(state, sceneWidth, sceneHeight);
 	customShaders.Run(state, "beforebloom");
+	// [SMOKEVOLUME] 13c's smoke volume composites HERE, before the volumetric beam pass
+	// ("Engine docs/SMOKE_VOLUME_PLAN.md" 13c, owner answers 2026-09-14): a beam's own air
+	// glow is never dimmed by haze behind it, and 13e adds the light beams scatter in the
+	// smoke. It is skipped entirely when there is no smoke. Not built yet.
 	volbeam.Render(state, sceneWidth, sceneHeight);
 	heatmap.Render(state, sceneWidth, sceneHeight);
-	// [HEATREFRACTION] The agreed order (REVIEW_SMOKE_DEBRIS_DAMAGE.md X3) puts the smoke
-	// volume (#13) here, then heat refraction, then bloom: the image bends before it glows.
+	// [HEATREFRACTION] Heat refraction, then bloom: the image bends before it glows.
 	heatrefraction.Render(state, sceneWidth, sceneHeight);
 	bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
 }

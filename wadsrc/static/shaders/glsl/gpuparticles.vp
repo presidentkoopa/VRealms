@@ -39,6 +39,14 @@
 ** (uGpuParticleParams2.y = 1, while such a particle is alive); the light loop runs
 ** only then, and only for particles that are lit and not transparent at that moment.
 **
+** [LOOKS] GENERATED LOOKS ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md", build A). A
+** definition whose look (spare[0].x) is not none, drawn while r_gpuparticles_looks
+** (uGpuParticleParams2.z) is above 0, hands gpuparticles.fp its life fraction, age,
+** seed and drawn size (vParticleLife), from which the fragment shader generates the
+** shape in the particle's own space. A lit dust look also gets the direction its light
+** comes from (vParticleLightDir), summed inside ParticleViewLight's existing loop. With
+** no look both outputs are zero and everything else is computed exactly as before.
+**
 **---------------------------------------------------------------------------
 **
 ** Copyright 2026 UZDXREMA
@@ -64,6 +72,17 @@ layout(location = 3) flat out vec4 vParticleBody;
 // [2d] The definition's own soft distance in map units: -1 = not set (use
 // r_gpuparticles_soft), 0 = hard edges.
 layout(location = 4) flat out float vParticleSoft;
+// [LOOKS] x the life fraction 0..1  y the age in seconds  z the seed 0..1  w the drawn
+// diameter in map units: what gpuparticles.fp needs to generate a look in the particle's own
+// space, world-sized. Written only for a definition with a look while r_gpuparticles_looks
+// (uGpuParticleParams2.z) is above 0; zero otherwise, which is the fragment shader's test
+// (a drawn particle's diameter is never 0).
+layout(location = 5) flat out vec4 vParticleLife;
+// [LOOKS] xyz the direction the view lights come from, in the quad's own axes -- x and y those
+// of vParticleCorner, z out of the quad toward the eye  w how much of the particle's light
+// comes from that direction, 0..1, times its `lit`. Only for a lit dust look drawn under the
+// premultiplied blend at look quality 2 or more, with a light reaching it; zero otherwise.
+layout(location = 6) flat out vec4 vParticleLightDir;
 
 // [2d] THE VIEW LIGHTS (ViewLightBuffer, hw_viewlightbuffer.h): the dynamic lights in
 // view nearest the eye, world space, filled on the CPU every main-view scene. Set 1
@@ -92,6 +111,16 @@ const vec2 kParticleCorners[6] = vec2[6](
 // ParticleDefinitionBuffer::SLOTS: 256 named + 256 inline.
 const int kParticleDefinitionSlots = 512;
 
+// [LOOKS] A definition's generated look lives in the record's spare vec4s (particledefs.h,
+// EParticleLook). The prolog's struct keeps the name `spare`, so these name the fields here:
+//   ParticleLookShape  x kind (0 none 1 dust 2 smoke 3 fire 4 flash 5 spark)  y roughness  z churn  w detail
+//   ParticleLookHeat   x heat start  y heat end  z prongs (min * 32 + max)  w rise
+#define ParticleLookShape(slot) particleDefinitions[slot].spare[0]
+#define ParticleLookHeat(slot) particleDefinitions[slot].spare[1]
+// The EParticleLook values whose shading uses the lights' direction.
+const int kLookDust = 1;
+const int kLookSmoke = 2;
+
 // A particle outside its life puts all six vertices on one point outside the
 // clip volume: zero-area triangles never rasterise, so a dead slot costs six
 // vertex invocations and nothing else.
@@ -103,6 +132,8 @@ void CollapseParticle()
 	vParticleFlipbook = vec4(-1.0, -1.0, 0.0, -1.0);
 	vParticleBody = vec4(0.0);
 	vParticleSoft = -1.0;
+	vParticleLife = vec4(0.0);
+	vParticleLightDir = vec4(0.0);
 }
 
 // Where one corner of the quad goes, in eye space.
@@ -190,6 +221,8 @@ void DrawLegacyParticle(GpuParticle part, int corner, float age, float life)
 	vParticleFlipbook = vec4(-1.0, -1.0, 0.0, -1.0);	// [2c] stage 1 records have no texture
 	vParticleBody = vec4(0.0);	// [2d] nor a body: purely additive
 	vParticleSoft = -1.0;
+	vParticleLife = vec4(0.0);	// [LOOKS] nor a look
+	vParticleLightDir = vec4(0.0);
 }
 
 // [PARTICLEDEFS] Key i's colour, 0..1. Stored as 0xRRGGBB in a float, which holds
@@ -252,7 +285,13 @@ vec4 ParticleFlipbookFrames(int defSlot, float age, float t)
 // spot's cone, smoothstep(cos outer, cos inner, cos angle) as main.fp's
 // spotLightAttenuation -- and clamped as surfaces clamp sector plus dynamic light,
 // 0..1.4. Subtractive lights carry a negative colour. No shadow map test.
-vec3 ParticleViewLight(vec3 pos, float ambient)
+//
+// [LOOKS] With `wantDirection` (a lit dust look), the same loop also sums each light's
+// direction from the particle, weighted by the light it gives here -- its colour's luminance x
+// the attenuation above, so a subtractive light counts against its direction -- into
+// directionSum.xyz, and those weights' magnitudes into directionSum.w. Without it the loop does
+// exactly what it did before.
+vec3 ParticleViewLight(vec3 pos, float ambient, bool wantDirection, inout vec4 directionSum)
 {
 	vec3 light = vec3(ambient);
 	int count = clamp(int(viewLightInfo.x + 0.5), 0, kViewLightCapacity);
@@ -268,8 +307,75 @@ vec3 ParticleViewLight(vec3 pos, float ambient)
 		vec3 lightDirection = toLight / max(dist, 1e-4);
 		attenuation *= smoothstep(viewLights[i].spotCone.x, viewLights[i].spotCone.y, dot(lightDirection, viewLights[i].spotDirection.xyz));
 		light += viewLights[i].color.rgb * attenuation;
+		if (wantDirection)
+		{
+			float lightWeight = dot(viewLights[i].color.rgb, vec3(0.2126, 0.7152, 0.0722)) * attenuation;
+			directionSum += vec4(lightDirection * lightWeight, abs(lightWeight));
+		}
 	}
 	return clamp(light, vec3(0.0), vec3(1.4));
+}
+
+// [LOOKS] The view lights' summed direction (ParticleViewLight's directionSum, world space) in the
+// quad's own axes, for gpuparticles.fp's slope lighting: x and y along the corner coordinates
+// vParticleCorner carries, turned with the quad by its spin, z out of the quad toward the eye. The
+// axes are ParticleEyePosition's for each orient. w: how much of the particle's light comes from that
+// direction -- the summed direction's length over everything lighting it (the sector light at spawn
+// plus each light's weight) -- times `lit`. Per eye, like the quad itself.
+vec4 ParticleLightInQuad(vec4 directionSum, float ambient, float lit, vec3 pos, vec3 vel, vec3 faceDir, float spinAngle, int orient)
+{
+	float directional = length(directionSum.xyz);
+	if (directional <= 1e-5)
+		return vec4(0.0);
+
+	mat3 toEye = mat3(ViewMatrix);
+	vec3 lightEye = toEye * (directionSum.xyz / directional);
+	vec3 axisX = vec3(1.0, 0.0, 0.0);
+	vec3 axisY = vec3(0.0, 1.0, 0.0);
+	vec3 axisZ = vec3(0.0, 0.0, 1.0);
+	if (orient == 2)
+	{
+		// FLAKE: the world-flat quad's axes, its face turned toward the eye.
+		vec3 up = vec3(0.0, 1.0, 0.0);
+		vec3 n = faceDir;
+		float nl = length(n);
+		n = (nl > 1e-5) ? n / nl : up;
+		vec3 seedAxis = (abs(n.y) < 0.9) ? up : vec3(1.0, 0.0, 0.0);
+		vec3 tx = normalize(cross(seedAxis, n));
+		axisX = toEye * tx;
+		axisY = toEye * cross(n, tx);
+		axisZ = toEye * n;
+		if (dot(axisZ, (ViewMatrix * vec4(pos, 1.0)).xyz) > 0.0)
+			axisZ = -axisZ;
+	}
+	else if (orient == 1)
+	{
+		// STREAK: the long axis along the velocity on the view plane.
+		vec3 ve = toEye * vel;
+		float sl = length(ve.xy);
+		if (sl > 1e-3)
+		{
+			axisX = vec3(ve.xy / sl, 0.0);
+			axisY = vec3(-axisX.y, axisX.x, 0.0);
+		}
+	}
+	if (spinAngle != 0.0)
+	{
+		// The corner offsets turn by the spin (DrawDefinedParticle): corner (1, 0) lands on
+		// axisX cos + axisY sin, corner (0, 1) on axisY cos - axisX sin.
+		float ca = cos(spinAngle);
+		float sa = sin(spinAngle);
+		vec3 turnedX = axisX * ca + axisY * sa;
+		axisY = axisY * ca - axisX * sa;
+		axisX = turnedX;
+	}
+
+	vec3 inQuad = vec3(dot(lightEye, axisX), dot(lightEye, axisY), dot(lightEye, axisZ));
+	float inQuadLength = length(inQuad);
+	if (inQuadLength <= 1e-5)
+		return vec4(0.0);
+	float directionalShare = clamp(directional / max(ambient + directionSum.w, 1e-4), 0.0, 1.0) * lit;
+	return vec4(inQuad / inQuadLength, directionalShare);
 }
 
 // [PARTICLEDEFS] A stage 2 record: everything about its look from its definition.
@@ -394,10 +500,28 @@ void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 	float alpha = clamp(key0.z + (key1.z - key0.z) * f, 0.0, 1.0) * fade;
 	float lit = clamp(particleDefinitions[defSlot].look.x, 0.0, 1.0);
 	vec3 bodyLight = vec3(1.0);
+	// [LOOKS] Whether this particle is drawn with its definition's look, and whether the light loop
+	// below also sums the lights' direction for it: only a dust (later smoke) look, at quality 2 or
+	// more -- and the loop itself still runs only for a lit, occluding particle under the
+	// premultiplied blend.
+	int lookKind = int(ParticleLookShape(defSlot).x + 0.5);
+	bool drawLook = lookKind != 0 && uGpuParticleParams2.z > 0.5;
+	bool wantLightDirection = drawLook && (lookKind == kLookDust || lookKind == kLookSmoke) && uGpuParticleParams2.z > 1.5;
+	vec4 lightDirectionSum = vec4(0.0);
 	if (uGpuParticleParams2.y > 0.5 && alpha > 0.0 && lit > 0.0)
-		bodyLight = mix(vec3(1.0), ParticleViewLight(pos, part.d.z), lit);
+		bodyLight = mix(vec3(1.0), ParticleViewLight(pos, part.d.z, wantLightDirection, lightDirectionSum), lit);
 	vParticleBody = vec4(part.c.rgb * rampColor * bodyLight, alpha);
 	vParticleSoft = particleDefinitions[defSlot].look.y;
+
+	// [LOOKS] What gpuparticles.fp generates the look from; zeros for no look.
+	vParticleLife = drawLook ? vec4(t, age, part.d.w, diameter) : vec4(0.0);
+	vParticleLightDir = vec4(0.0);
+	if (wantLightDirection && lightDirectionSum.w > 0.0)
+	{
+		// The spin the corner offsets were turned by above (a streak does not spin).
+		float lookSpinAngle = (orient != 1) ? radians(mix(spinMin, spinMax, part.d.w)) * age : 0.0;
+		vParticleLightDir = ParticleLightInQuad(lightDirectionSum, part.d.z, lit, pos, vel, part.b.xyz, lookSpinAngle, orient);
+	}
 }
 
 void main()

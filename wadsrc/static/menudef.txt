@@ -2168,8 +2168,9 @@ OptionMenu DeveloperOptionsMenu protected
 	// GPU_PARTICLES_STAGE2_PLAN.md" 2a): sparks fade over this many map units
 	// where they meet a wall instead of cutting into it. Beside the perf log
 	// because it costs a render pass switch each way per frame, which
-	// perflog.txt shows as fx.depthread. 0 = off, the default, and exactly the
-	// look before 2a. A slider because a headset has no console; renderer-read,
+	// perflog.txt shows as fx.depthread. Default 8 since 2026-09-14 (owner: effects
+	// our mods use default ON); 0 = off, exactly the look before 2a. An ini that
+	// already stores 0 keeps 0. A slider because a headset has no console; renderer-read,
 	// so it responds while this menu is open. Vulkan only.
 	Slider "Soft particles (map units, 0 = off)", "r_gpuparticles_soft", 0, 32, 1, 0
 	// [2b] r_gpuparticles_legacy -- the stage 2b A/B ("Engine docs/
@@ -2200,13 +2201,19 @@ OptionMenu DeveloperOptionsMenu protected
 	// [F5] r_gpuparticles_maxsize -- the world-unit cap on every GPU particle's drawn
 	// diameter ("Engine docs/FLAME_ENGINE_PLAN.md" F5). A flame body needs 16-40 unit
 	// puffs and smoke up to 64; the cap draws them at this size or less. A particle
-	// definition's own maxsize still caps below it. The cvar's default stays 8, the
-	// look before this row, which existing inis already store: raise it here. The cvar
+	// definition's own maxsize still caps below it. Default 64 since 2026-09-14 (owner:
+	// effects our mods use default ON); it was 8, and an ini that already stores 8 keeps
+	// 8 until it is raised here. The cvar
 	// itself has no clamp. Renderer-read every frame (StartScene ->
 	// mGpuParticleParams.y), so particles already in the air resize with this menu
 	// open; perflog.txt shows the overdraw cost of big puffs as fx.gpuparticles.
 	// Vulkan only.
 	Slider "GPU particle size cap", "r_gpuparticles_maxsize", 2, 64, 1, 0
+	// [LOOKS] r_gpuparticles_looks -- generated particle looks ("Engine docs/
+	// GPU_PARTICLE_LOOKS_PLAN.md" step A): 0 draws every GPU particle as a plain dot,
+	// 1-3 raise the detail of the procedural dust and fire looks a definition asks for
+	// (3 = full). Renderer-read every frame. Vulkan only.
+	Slider "Generated particle looks (0 = plain dots)", "r_gpuparticles_looks", 0, 3, 1, 0
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
@@ -2215,8 +2222,10 @@ OptionMenu DeveloperOptionsMenu protected
 	Option "Drawn lines", "r_drawnlines", "OnOff"
 	// [HEATREFRACTION] r_heatrefraction -- heat shimmer ("Engine docs/FLAME_ENGINE_PLAN.md"
 	// F2): the hot air of a heat source (LevelLocals.SetHeatSource) bends the image behind
-	// it, per eye, and a hand held in front stays sharp. Off by default, and off means the
-	// pass does not run: the frame is exactly as it was before. It bends EVERYTHING behind a
+	// it, per eye, and a hand held in front stays sharp. On by default since 2026-09-14 (owner:
+	// effects our mods use default ON; an ini that already stores Off keeps Off). With no heat
+	// source the pass does not run; Off means it never runs: the frame is exactly as it was
+	// before. It bends EVERYTHING behind a
 	// heat source -- the grab lasers and the Lance included -- so compare them through it On
 	// and Off. Renderer-read every frame. perflog.txt: pp.heatoffset, pp.heatwarp. Vulkan only.
 	Option "Heat shimmer", "r_heatrefraction", "OnOff"
@@ -2227,6 +2236,25 @@ OptionMenu DeveloperOptionsMenu protected
 	// ahead of where you look at the moment it is switched on, left there until it is switched
 	// off. Only draws while "Heat shimmer" is On. Not saved. Vulkan only.
 	Option "Heat shimmer test source (ahead of you)", "r_heatrefraction_test", "OnOff"
+	// [SMOKEVOLUME] r_smoke -- the smoke volume ("Engine docs/SMOKE_VOLUME_PLAN.md" #13): a 3D
+	// grid of gunsmoke around you that walls stop and blasts clear. Step 1 is its compute
+	// foundation only: nothing draws yet. On by default (owner, 2026-09-14) and inert until a
+	// mod emits smoke on a map (or the compute test below asks): nothing is allocated before
+	// that. Off frees the volume. RS_Ballistics' "Ballistics & Effects" page carries this row
+	// and the next one. Renderer-read every frame. Vulkan only.
+	Option "Smoke volume", "r_smoke", "OnOff"
+	// r_smoke_quality -- resolution and area together: 1 = 192 x 192 x 64 cells at 10 units
+	// (59 MB), 2 = 256 x 256 x 96 at 8 (157 MB, the default), 3 = 320 x 320 x 128 at 8 (328 MB),
+	// 4 = 384 x 384 x 128 at 8 (472 MB). A change re-allocates the volume and clears its smoke.
+	// Renderer-read every frame. Vulkan only.
+	Slider "Smoke quality (1 = 59 MB, 2 = 157 MB, 3 = 328 MB, 4 = 472 MB)", "r_smoke_quality", 1, 4, 1, 0
+	// r_smoke_computetest -- step 1's desk check, no mod needed: allocates the volume at the
+	// current quality, runs one test compute step per world tic, and builds the level solidity
+	// mask on the CPU. Draws nothing. With the performance log on, perflog.txt shows fx.compute,
+	// fx.smokesim (per step) and fx.solidity; the console log names the allocation and the
+	// mask's solid share and cost. Switched off, the steps stop at once and the volume is freed
+	// after a minute of game time. Not saved. Vulkan only.
+	Option "Smoke compute test (no mod needed)", "r_smoke_computetest", "OnOff"
 	StaticText " "
 	StaticText "$DEVOPTMNU_OPTIONS_MARKED_WITH_RESTART", "Brown"
 	StaticText " "

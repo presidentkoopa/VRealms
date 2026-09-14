@@ -127,6 +127,10 @@ public:
 	ImageBuilder();
 
 	ImageBuilder& Size(int width, int height, int miplevels = 1, int arrayLayers = 1);
+	// UZDXREMA [COMPUTE] A 3D image (VK_IMAGE_TYPE_3D, one layer) for volume textures that compute
+	// shaders write and passes sample -- the smoke volume first. Additive: Size() still makes the 2D
+	// images it always made. IsFormatSupported() passes the type on, so 3D probes work too.
+	ImageBuilder& Size3D(int width, int height, int depth, int miplevels = 1);
 	ImageBuilder& Samples(VkSampleCountFlagBits samples);
 	ImageBuilder& Format(VkFormat format);
 	ImageBuilder& Usage(VkImageUsageFlags imageUsage, VmaMemoryUsage memoryUsage = VMA_MEMORY_USAGE_GPU_ONLY, VmaAllocationCreateFlags allocFlags = 0);

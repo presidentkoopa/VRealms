@@ -149,3 +149,8 @@ int DrawnLineCapacity();
 EXTERN_CVAR(Bool, r_heatrefraction)
 EXTERN_CVAR(Float, r_heatrefraction_scale)
 EXTERN_CVAR(Bool, r_heatrefraction_test)
+
+// [SMOKEVOLUME] the smoke volume, see hw_cvars.cpp
+EXTERN_CVAR(Bool, r_smoke)
+EXTERN_CVAR(Int, r_smoke_quality)
+EXTERN_CVAR(Bool, r_smoke_computetest)

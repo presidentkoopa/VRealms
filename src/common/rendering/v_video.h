@@ -54,6 +54,8 @@ class GpuParticleBuffer;
 class DrawnLineBuffer;
 class ParticleDefinitionBuffer;
 class ViewLightBuffer;
+class SectorPlaneBuffer;		// [SECTORPLANES] hw_sectorplanebuffer.h
+struct FrameComputeInput;		// [COMPUTE] hw_framecompute.h
 
 enum EHWCaps
 {
@@ -169,6 +171,11 @@ public:
 	// (stage 2d's lit particles first). Vulkan only, created beside mGpuParticles
 	// and null on GL/GLES -- null-check every use. See hw_viewlightbuffer.h.
 	ViewLightBuffer* mViewLights = nullptr;
+	// [SECTORPLANES] Sectors' current floor and ceiling planes for effects that need them on
+	// the GPU (set 1 binding 12). Filled by SectorPlanes (hw_sectorplanes.h) only for the
+	// sectors some active effect polls. Vulkan only, created beside mViewLights and null on
+	// GL/GLES -- null-check every use. See hw_sectorplanebuffer.h.
+	SectorPlaneBuffer* mSectorPlanes = nullptr;
 	IShadowMap mShadowMap;
 
 	int mGameScreenWidth = 0;
@@ -307,6 +314,11 @@ public:
 	virtual FTexture *WipeEndScreen();
 
 	virtual void PostProcessScene(bool swscene, int fixedcm, float flash, const std::function<void()> &afterBloomDrawEndScene2D) { if (afterBloomDrawEndScene2D) afterBloomDrawEndScene2D(); }
+
+	// [COMPUTE] This frame's GPU compute work -- the smoke volume first (hw_framecompute.h).
+	// Called once per frame by RenderViewpoint for the main view, before the eye loop; the
+	// backend records it outside any render pass. Empty here: GL and GLES run no compute.
+	virtual void RunFrameCompute(const FrameComputeInput& input) {}
 
 	void ScaleCoordsFromWindow(int16_t &x, int16_t &y);
 

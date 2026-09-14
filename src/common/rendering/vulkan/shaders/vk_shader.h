@@ -138,4 +138,7 @@ private:
 
 	std::list<VkPPShader*> PPShaders;
 	friend class VkPPShader;
+	// [SMOKEVOLUME] The compute pass runner (vk_compute.cpp) compiles its lumps with the same
+	// #include resolver as every other shader, so compute lumps share the house GLSL includes.
+	friend class VkComputeManager;
 };

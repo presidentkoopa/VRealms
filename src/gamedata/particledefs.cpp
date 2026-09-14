@@ -32,7 +32,28 @@
 **       spin     = -90, 90                       // deg/s, picked per particle by its seed
 **       collide  = plane                         // none | plane: honour SpawnParticles' surface and floor
 **       fade     = none                          // none | smooth: the stage 1 fade over the last 40% of life
+**       look     = none                          // none | dust | fire: a generated shape (below); not with texture
 **   }
+**
+** [LOOKS] GENERATED LOOKS ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md", build A). `look`
+** draws the particle from noise generated on the GPU in place of the round dot or a
+** flipbook, so no two particles are alike. Every other key still applies. The noise
+** lives in the particle's own space and is world-sized, so both eyes see one shape.
+**
+**   look      = dust | fire   // smoke, flash and spark are later builds and refused here
+**   roughness = 0.6           // how torn the edge is, 0..1                   (dust, fire)
+**   churn     = 0.6           // how fast the shape turns over, cells a second, 0..16
+**   detail    = 3             // noise octaves at the default quality, 1..4 (whole)
+**   heat      = 1, 0.3        // fire: heat at birth, at death, 0 soot .. 1 white-hot
+**   rise      = 24            // fire: map units a second the shape streams upward, 0..1000
+**
+** dust draws a lit body only (alpha; it never glows, whatever `emissive` says) and is
+** shaded by the direction of the lights in view. fire glows along a fixed heat ramp
+** (soot, deep red, orange, yellow, white) that the colour ramp multiplies. `look` and
+** `texture` together, a key the look does not use, or a look key with no look refuses
+** the definition. Left off: dust roughness 0.6, churn 0.6, detail 3; fire roughness
+** 0.6, churn 1.5, detail 3, heat 1, 0.3, rise 24. r_gpuparticles_looks sets the
+** quality (0 = every look as the plain round dot).
 **
 ** A ramp given one value with no '@' is constant. With several, every value needs
 ** '@t', 0 <= t <= 1, increasing; it holds its first value before the first key and
@@ -122,6 +143,18 @@ namespace
 	const char *const kCollideNames[] = { "none", "plane" };
 	const char *const kFadeNames[] = { "none", "smooth" };
 	const char *const kModeNames[] = { "loop", "once" };
+	// [LOOKS] In EParticleLook order (particledefs.h).
+	const char *const kLookNames[] = { "none", "dust", "smoke", "fire", "flash", "spark" };
+	static_assert(sizeof(kLookNames) / sizeof(kLookNames[0]) == PDL_COUNT, "kLookNames must name every EParticleLook");
+
+	// [LOOKS] Defaults for a look's keys when a definition leaves them off.
+	const double kLookRoughness = 0.6;
+	const double kDustChurn = 0.6;
+	const double kFireChurn = 1.5;
+	const double kLookDetail = 3.0;
+	const double kFireHeatStart = 1.0;
+	const double kFireHeatEnd = 0.3;
+	const double kFireRise = 24.0;
 
 	struct NamedInfo
 	{
@@ -241,6 +274,31 @@ namespace
 			}
 		}
 		return Fail(error, errorLine, e.Line, "'%s' = %s -- expected one of: %s", e.Key.GetChars(), word.GetChars(), list.GetChars());
+	}
+
+	// [LOOKS] `a, b` -- or one value for both -- each in lo .. hi, and whole numbers
+	// only when `whole`. `usage` finishes the sentence "'<key>' is ...".
+	bool ReadPair(const FDefBlockEntry &e, double lo, double hi, bool whole, const char *usage, double out[2], FString &error, int &errorLine)
+	{
+		const unsigned n = e.Items.Size();
+		if (n < 1 || n > 2)
+			return Fail(error, errorLine, e.Line, "'%s' is %s", e.Key.GetChars(), usage);
+		double v[2] = { 0.0, 0.0 };
+		for (unsigned k = 0; k < n; k++)
+		{
+			const FDefBlockItem &item = e.Items[k];
+			if (item.Atoms.Size() != 1 || item.HasAt || item.Atoms[0].Kind != FDefBlockAtom::Number)
+				return Fail(error, errorLine, item.Line, "'%s' is %s", e.Key.GetChars(), usage);
+			const double x = item.Atoms[0].Value;
+			if (!(x >= lo && x <= hi))
+				return Fail(error, errorLine, item.Line, "'%s' value %g is outside %g .. %g", e.Key.GetChars(), x, lo, hi);
+			if (whole && x != std::floor(x))
+				return Fail(error, errorLine, item.Line, "'%s' value %g must be a whole number", e.Key.GetChars(), x);
+			v[k] = x;
+		}
+		out[0] = v[0];
+		out[1] = n == 2 ? v[1] : v[0];
+		return true;
 	}
 
 	struct RampKey
@@ -619,6 +677,14 @@ namespace
 		int textureLine = 0;	// [2c]
 		double frames = 0.0, fps = 0.0;
 
+		// [LOOKS] Read as written; checked against the look, and defaulted, after the loop.
+		// A key's line stays 0 when the block leaves it off.
+		int look = PDL_NONE;
+		int lookLine = 0;
+		double roughness = 0.0, churn = 0.0, detail = 0.0, rise = 0.0;
+		double heat[2] = { 0.0, 0.0 }, prongs[2] = { 0.0, 0.0 };
+		int roughnessLine = 0, churnLine = 0, detailLine = 0, riseLine = 0, heatLine = 0, prongsLine = 0;
+
 		for (unsigned i = 0; i < b.Entries.Size(); i++)
 		{
 			const FDefBlockEntry &e = b.Entries[i];
@@ -642,6 +708,29 @@ namespace
 			else if (e.Key.CompareNoCase("orient") == 0) ok = ReadChoice(e, kOrientNames, 3, orient, error, errorLine);
 			else if (e.Key.CompareNoCase("collide") == 0) ok = ReadChoice(e, kCollideNames, 2, collide, error, errorLine);
 			else if (e.Key.CompareNoCase("fade") == 0) ok = ReadChoice(e, kFadeNames, 2, fade, error, errorLine);
+			// [LOOKS] The generated look and its keys.
+			else if (e.Key.CompareNoCase("look") == 0) { ok = ReadChoice(e, kLookNames, PDL_COUNT, look, error, errorLine); lookLine = e.Line; }
+			else if (e.Key.CompareNoCase("roughness") == 0) { ok = ReadNumber(e, 0.0, 1.0, roughness, error, errorLine); roughnessLine = e.Line; }
+			else if (e.Key.CompareNoCase("churn") == 0) { ok = ReadNumber(e, 0.0, 16.0, churn, error, errorLine); churnLine = e.Line; }
+			else if (e.Key.CompareNoCase("rise") == 0) { ok = ReadNumber(e, 0.0, 1000.0, rise, error, errorLine); riseLine = e.Line; }
+			else if (e.Key.CompareNoCase("detail") == 0)
+			{
+				ok = ReadNumber(e, 1.0, 4.0, detail, error, errorLine);
+				if (ok && detail != std::floor(detail))
+					return Fail(error, errorLine, e.Line, "'detail' = %g must be a whole number of noise octaves, 1 .. 4", detail);
+				detailLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("heat") == 0)
+			{
+				ok = ReadPair(e, 0.0, 1.0, false, "start, end on the heat ramp, each 0 (soot) .. 1 (white-hot), or one value for both", heat, error, errorLine);
+				heatLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("prongs") == 0)
+			{
+				ok = ReadPair(e, 2.0, 16.0, true, "min, max whole numbers 2 .. 16, or one value for both", prongs, error, errorLine);
+				if (prongs[1] < prongs[0]) std::swap(prongs[0], prongs[1]);
+				prongsLine = e.Line;
+			}
 			else if (e.Key.CompareNoCase("spin") == 0)
 			{
 				// spin = min, max -- or one value for both.
@@ -713,6 +802,35 @@ namespace
 			if (!ok) return false;
 		}
 
+		// [LOOKS] What a look allows, checked before the flipbook's frames are looked up. Each
+		// refusal names the key's line; the rest of the lump still loads.
+		if (look != PDL_NONE && !texture.IsEmpty())
+			return Fail(error, errorLine, lookLine, "'look' and 'texture' cannot both be given (texture at line %d): a look is drawn in place of the flipbook", textureLine);
+		if (look == PDL_SMOKE || look == PDL_FLASH || look == PDL_SPARK)
+			return Fail(error, errorLine, lookLine, "look = %s is not in this engine yet (particle looks build B); this build draws dust and fire", kLookNames[look]);
+		if (look == PDL_NONE)
+		{
+			const struct { const char *Key; int Line; } lookKeys[] = {
+				{ "roughness", roughnessLine }, { "churn", churnLine }, { "detail", detailLine },
+				{ "heat", heatLine }, { "rise", riseLine }, { "prongs", prongsLine } };
+			for (const auto &k : lookKeys)
+			{
+				if (k.Line != 0)
+					return Fail(error, errorLine, k.Line, "'%s' needs a look (look = dust | fire)", k.Key);
+			}
+		}
+		else
+		{
+			const bool hot = look == PDL_FIRE || look == PDL_FLASH || look == PDL_SPARK;
+			const bool rises = look == PDL_SMOKE || look == PDL_FIRE;
+			if (heatLine != 0 && !hot)
+				return Fail(error, errorLine, heatLine, "'heat' has no effect on look = %s -- it is for fire, flash and spark", kLookNames[look]);
+			if (riseLine != 0 && !rises)
+				return Fail(error, errorLine, riseLine, "'rise' has no effect on look = %s -- it is for smoke and fire", kLookNames[look]);
+			if (prongsLine != 0 && look != PDL_FLASH)
+				return Fail(error, errorLine, prongsLine, "'prongs' has no effect on look = %s -- it is for flash", kLookNames[look]);
+		}
+
 		// [2c] The flipbook's frames, found by name now that the count is known. A
 		// frame that is not there refuses this definition alone, naming the frame; the
 		// rest of the lump still loads.
@@ -779,6 +897,21 @@ namespace
 		gpu.flipbook[1] = (float)frames;
 		gpu.flipbook[2] = (float)fps;
 		gpu.flipbook[3] = (float)mode;
+
+		// [LOOKS] spare[0..1] (particledefs.h), with the look's defaults for keys left off.
+		// No look leaves all eight zero -- the definition's bytes are exactly as before looks.
+		if (look != PDL_NONE)
+		{
+			const bool fire = look == PDL_FIRE;
+			gpu.spare[0][0] = (float)look;
+			gpu.spare[0][1] = (float)(roughnessLine != 0 ? roughness : kLookRoughness);
+			gpu.spare[0][2] = (float)(churnLine != 0 ? churn : (fire ? kFireChurn : kDustChurn));
+			gpu.spare[0][3] = (float)(detailLine != 0 ? detail : kLookDetail);
+			gpu.spare[1][0] = (float)(heatLine != 0 ? heat[0] : (fire ? kFireHeatStart : 0.0));
+			gpu.spare[1][1] = (float)(heatLine != 0 ? heat[1] : (fire ? kFireHeatEnd : 0.0));
+			gpu.spare[1][2] = (float)(prongsLine != 0 ? prongs[0] * 32.0 + prongs[1] : 0.0);
+			gpu.spare[1][3] = (float)(riseLine != 0 ? rise : (fire ? kFireRise : 0.0));
+		}
 
 		info.Name = b.Name;
 		info.Lump = b.LumpName;
@@ -1101,6 +1234,21 @@ CCMD(particles)
 		Printf("      %u time keys, maxsize %g, %s, stretch %g, spin %g..%g, gravity %g, drag %g, fade %s, collide %s, lit %g, soft %s, texture %s\n",
 			n.KeyCount, g.motion[2], kOrientNames[orient], g.shape[1], g.shape[2], g.shape[3], g.motion[0], g.motion[1],
 			(flags & PDF_FADE_SMOOTH) ? "smooth" : "none", kCollideNames[collide], g.look[0], soft.GetChars(), texture.GetChars());
+
+		// [LOOKS] The generated look, when it has one.
+		const int look = clamp((int)g.spare[0][0], 0, (int)PDL_COUNT - 1);
+		if (look != PDL_NONE)
+		{
+			FString lookText;
+			lookText.Format("look %s -- roughness %g, churn %g cells/s, detail %d octaves", kLookNames[look], g.spare[0][1], g.spare[0][2], (int)g.spare[0][3]);
+			if (look == PDL_FIRE || look == PDL_FLASH || look == PDL_SPARK)
+				lookText.AppendFormat(", heat %g -> %g", g.spare[1][0], g.spare[1][1]);
+			if (look == PDL_SMOKE || look == PDL_FIRE)
+				lookText.AppendFormat(", rise %g u/s", g.spare[1][3]);
+			if (look == PDL_FLASH)
+				lookText.AppendFormat(", prongs %d..%d", (int)g.spare[1][2] / 32, (int)g.spare[1][2] % 32);
+			Printf("      %s\n", lookText.GetChars());
+		}
 	}
 
 	// [2c] The particle atlas: what the named flipbooks use, and what the renderer built.
@@ -1150,4 +1298,17 @@ CCMD(particles)
 	Printf("r_gpuparticles_legacy %s: SpawnGpuParticles writes %s\n",
 		legacy == nullptr ? "(not in this build)" : (legacyOn ? "1" : "0"),
 		legacyOn ? "stage 1 records (the legacy path)" : "inline-definition records");
+
+	// [LOOKS] The quality every `look` draws at (hw_particledefbuffer.cpp).
+	static const char *const kLooksQuality[] = { "every look as the plain round dot", "2 octaves, no slope lighting", "3 octaves with slope lighting", "4 octaves with slope lighting" };
+	FBaseCVar *looks = FindCVar("r_gpuparticles_looks", nullptr);
+	if (looks == nullptr)
+	{
+		Printf("r_gpuparticles_looks (not in this build)\n");
+	}
+	else
+	{
+		const int looksValue = clamp(looks->GetGenericRep(CVAR_Int).Int, 0, 3);
+		Printf("r_gpuparticles_looks %d: %s\n", looksValue, kLooksQuality[looksValue]);
+	}
 }

@@ -66,7 +66,13 @@ struct ParticleDefinitionGpu
 	float shape[4];			// x orient 0 billboard 1 streak 2 flake  y stretch (s)  z spin min  w spin max (deg/s, picked by seed)
 	float look[4];			// x lit 0..1 (2d)  y soft map units (2d; -1 = not set)  z collide 0 none 1 plane  w flags (PDF_*)
 	float flipbook[4];		// x first atlas layer (-1 = no texture; 2c)  y frames  z fps  w 0 loop, 1 once
-	float spare[2][4];		// zero; room for later steps without a layout change
+	// [LOOKS] The generated look ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md"), in what was spare room, so no
+	// layout change -- the member keeps its name because the prolog's copy of this struct is shared by every
+	// Vulkan shader; gpuparticles.vp/.fp name the fields with local #defines. All zero = no look (every
+	// inline definition, and every named one without a `look`), which draws exactly as before looks.
+	//   [0]  x kind (EParticleLook)  y roughness 0..1  z churn, noise cells a second  w detail, octaves 1..4
+	//   [1]  x heat start 0..1  y heat end 0..1  z prongs, min * 32 + max  w rise, map units a second
+	float spare[2][4];
 };
 
 enum
@@ -74,6 +80,21 @@ enum
 	// The stage 1 fade: emissive (and, from 2d, alpha) times 1 - smoothstep(0.6, 1, t).
 	// `fade = smooth` in a lump; every inline definition has it.
 	PDF_FADE_SMOOTH = 1,
+};
+
+// [LOOKS] What spare[0][0] holds: the shape gpuparticles.fp generates for the particle
+// instead of the round dot or a flipbook frame. The numbers are the plan's order and never
+// change -- a later build adds a look by implementing its number, not by renumbering. Named
+// for what they draw; any definition may use any of them.
+enum EParticleLook
+{
+	PDL_NONE = 0,	// the round dot, or the flipbook (`texture`)
+	PDL_DUST = 1,	// build A: a lit cloud that billows, tears and thins; never glows
+	PDL_SMOKE = 2,	// build B
+	PDL_FIRE = 3,	// build A: tongues on the heat ramp
+	PDL_FLASH = 4,	// build B
+	PDL_SPARK = 5,	// build B
+	PDL_COUNT
 };
 
 // Reads every PARTICLEDEFS lump (d_main.cpp, after the textures). Named slots are

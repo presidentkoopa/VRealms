@@ -66,6 +66,12 @@ namespace PerfLog
 	// "cpu_fx_ms" line. Callers time only while GroupsWanted().
 	void AddCpuSample(const char* name, double ms);
 
+	// [COMPUTE] Log `name`'s samples -- its GPU groups and its CPU samples alike -- one
+	// by one instead of summing them per frame, so its count / avg / p95 / max read per
+	// RUN. For work that runs on some frames only, and sometimes twice in one: a
+	// simulation step (fx.smokesim first). Call once; remembered for the process.
+	void CountEachRun(const char* name);
+
 	// Once per frame, after screen->Update(). Only call while r_perflog > 0.
 	void EndFrame(const SceneLoad& load);
 }

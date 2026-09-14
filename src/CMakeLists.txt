@@ -849,6 +849,8 @@ set (VULKAN_SOURCES
 	common/rendering/vulkan/renderer/vk_pprenderstate.cpp
 	common/rendering/vulkan/renderer/vk_descriptorset.cpp
 	common/rendering/vulkan/renderer/vk_raytrace.cpp
+	common/rendering/vulkan/renderer/vk_compute.cpp
+	common/rendering/vulkan/renderer/vk_smokevolume.cpp
 	common/rendering/vulkan/shaders/vk_shader.cpp
 	common/rendering/vulkan/shaders/vk_ppshader.cpp
 	common/rendering/vulkan/textures/vk_samplers.cpp
@@ -1030,6 +1032,9 @@ set (PCH_SOURCES
 	rendering/gl/stereo3d/gl_openvr.cpp
 	rendering/hwrenderer/hw_entrypoint.cpp
 	rendering/hwrenderer/hw_vertexbuilder.cpp
+	rendering/hwrenderer/hw_levelsolidity.cpp
+	rendering/hwrenderer/hw_sectorplanes.cpp
+	rendering/hwrenderer/hw_smokevolume.cpp
 	rendering/hwrenderer/doom_aabbtree.cpp
 	rendering/hwrenderer/doom_levelmesh.cpp
 	rendering/hwrenderer/hw_models.cpp
@@ -1277,6 +1282,7 @@ set (PCH_SOURCES
 	common/rendering/hwrenderer/data/hw_drawnlinebuffer.cpp
 	common/rendering/hwrenderer/data/hw_particledefbuffer.cpp
 	common/rendering/hwrenderer/data/hw_viewlightbuffer.cpp
+	common/rendering/hwrenderer/data/hw_sectorplanebuffer.cpp
 	common/rendering/hwrenderer/data/hw_aabbtree.cpp
 	common/rendering/hwrenderer/data/hw_shadowmap.cpp
 	common/rendering/hwrenderer/data/hw_shaderpatcher.cpp

@@ -42,6 +42,9 @@
 #include "hwrenderer/scene/hw_portal.h"
 #include "hw_vrmodes.h"
 #include "hwrenderer/postprocessing/hw_postprocess.h"	// [HEATREFRACTION] hw_postprocess.heatrefraction.SetEye
+#include "hw_framecompute.h"	// [COMPUTE] FrameComputeInput
+#include "hw_smokevolume.h"		// [SMOKEVOLUME] SmokeVolume::PrepareFrame
+#include "hw_sectorplanes.h"	// [SECTORPLANES] SectorPlanes::BeginFrame
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -132,6 +135,37 @@ static void R_UpdatePoseAnchoredLights(FLevelLocals *Level)
 
 //-----------------------------------------------------------------------------
 //
+// [COMPUTE] This frame's input for the backend's compute work (hw_framecompute.h),
+// read from the level: the sector plane poll's new frame, then the smoke volume's
+// demand, box and steps. Main view only, after VRMode::SetUp and the pose-anchored
+// lights, before the eye loop. The backend acts on it in RunFrameCompute.
+//
+// THE LEVEL-DATA SERIAL. FLevelLocals::ResetGpuParticles renews GpuParticleSerial in
+// ClearLevelData on EVERY map change and savegame load (p_setup.cpp), so it is the
+// level-data serial in practice, whatever its name. This is the one place that reads
+// it for that; when the batched g_levellocals.h edit (smoke plan SH4) gives
+// FLevelLocals a general serial, switch it here.
+//
+//-----------------------------------------------------------------------------
+
+static uint64_t LevelDataSerial(FLevelLocals* Level)
+{
+	return Level != nullptr ? Level->GpuParticleSerial : 0;
+}
+
+static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp, FrameComputeInput& input)
+{
+	input = FrameComputeInput();
+	if (Level == nullptr)
+		return;
+
+	const uint64_t serial = LevelDataSerial(Level);
+	SectorPlanes::Get().BeginFrame(Level, serial);
+	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.TicFrac, serial, input.Smoke);
+}
+
+//-----------------------------------------------------------------------------
+//
 // Renders one viewpoint in a scene
 //
 //-----------------------------------------------------------------------------
@@ -170,6 +204,15 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	// [round2 B1] Anchored lights read the pose SetUp just wrote. The real frame
 	// only: a camera texture's mono SetUp poses the hand from its own viewpoint.
 	if (mainview && toscreen) R_UpdatePoseAnchoredLights(camera->Level);
+	// [COMPUTE] This frame's GPU compute work (the smoke volume first): once, for the real
+	// frame only, before the eye loop and outside any render pass. A backend records
+	// nothing when no effect has work; a camera texture's view never runs it.
+	if (mainview && toscreen)
+	{
+		FrameComputeInput computeInput;
+		PrepareFrameCompute(camera->Level, mainvp, computeInput);
+		screen->RunFrameCompute(computeInput);
+	}
 	const int eyeCount = vrmode->mEyeCount;
 	const bool useMultiviewScene = mainview && toscreen && vrmode->ShouldUseMultiviewThisFrame() && eyeCount >= 2;
 	int sharedPostprocessColormap = CM_DEFAULT;

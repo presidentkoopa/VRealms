@@ -110,6 +110,12 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 	// (HWDrawInfo::RenderTranslucent).
 	VkHardwareDataBuffer* viewLightSSO = fb->GetBufferManager()->ViewLightSSO ? fb->GetBufferManager()->ViewLightSSO : fb->GetBufferManager()->BoneBufferSSO;
 
+	// [SECTORPLANES] Binding 12, the same arrangement: always written, the bone buffer
+	// standing in if the sector plane buffer is somehow absent. No lump declares binding 12
+	// yet; its first reader (the smoke mask's draw, the level field #8, damage #17) gates
+	// on the real buffer (screen->mSectorPlanes).
+	VkHardwareDataBuffer* sectorPlaneSSO = fb->GetBufferManager()->SectorPlaneSSO ? fb->GetBufferManager()->SectorPlaneSSO : fb->GetBufferManager()->BoneBufferSSO;
+
 	WriteDescriptors()
 		.AddBuffer(HWBufferSet.get(), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->ViewpointUBO->mBuffer.get(), 0, viewpointRange)
 		.AddBuffer(HWBufferSet.get(), 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->MatrixBuffer->UniformBuffer->mBuffer.get(), 0, sizeof(MatricesUBO))
@@ -120,6 +126,7 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 		.AddBuffer(HWBufferSet.get(), 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, drawnLineSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, particleDefinitionSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, viewLightSSO->mBuffer.get())
+		.AddBuffer(HWBufferSet.get(), 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sectorPlaneSSO->mBuffer.get())	// [SECTORPLANES]
 		.Execute(fb->device.get());
 }
 
@@ -349,19 +356,20 @@ std::unique_ptr<VulkanDescriptorSet> VkDescriptorSetManager::AllocatePPDescripto
 
 void VkDescriptorSetManager::CreateHWBufferSetLayout()
 {
-	// [VIEWLIGHTS] This layout puts FIVE storage buffers in the vertex stage -- bones
+	// [VIEWLIGHTS] This layout puts SIX storage buffers in the vertex stage -- bones
 	// (4), particle ring (5), drawn lines (6), particle definitions (7), view lights
-	// (8) -- and every pipeline layout carries it. Vulkan guarantees only 4 per stage
-	// (maxPerStageDescriptorStorageBuffers); desktop GPUs report far more, and this
-	// fork targets desktop Vulkan. A device below 5 fails pipeline layout creation, so
-	// say plainly why before it does.
+	// (8), [SECTORPLANES] sector planes (12) -- and every pipeline layout carries it.
+	// Vulkan guarantees only 4 per stage (maxPerStageDescriptorStorageBuffers); desktop
+	// GPUs report far more, and this fork targets desktop Vulkan. A device below 6 fails
+	// pipeline layout creation, so say plainly why before it does. (The fragment stage
+	// has three: lights 3, particle definitions 7, sector planes 12.)
 	{
-		const uint32_t vertexStageStorageBuffers = 5;
+		const uint32_t vertexStageStorageBuffers = 6;
 		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorStorageBuffers;
 		if (allowed < vertexStageStorageBuffers)
 		{
 			Printf(TEXTCOLOR_RED "Vulkan: this device allows %u storage buffers per shader stage, but the renderer's buffer set needs %u "
-				"in the vertex stage (bones, particle ring, drawn lines, particle definitions, view lights) -- pipeline layout "
+				"in the vertex stage (bones, particle ring, drawn lines, particle definitions, view lights, sector planes) -- pipeline layout "
 				"creation is expected to fail on this device\n", (unsigned)allowed, (unsigned)vertexStageStorageBuffers);
 		}
 	}
@@ -382,8 +390,13 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 		// Vertex only, by design: effects light themselves once per vertex, and mesh
 		// particles index the same list per instance in their vertex shader ("Engine
 		// docs/REVIEW_SMOKE_DEBRIS_DAMAGE.md" D4). Declared in GLSL by gpuparticles.vp
-		// alone. Bindings 9-12 are allocated to later plans (review X1).
+		// alone. Bindings 9-11 are allocated to later plans (review X1).
 		.AddBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)
+		// [SECTORPLANES] SectorPlaneSSO, sectors' current floor and ceiling planes
+		// (hw_sectorplanebuffer.h), polled by the renderer (hw_sectorplanes.h). Vertex and
+		// fragment, per review X1: #8 reads it per vertex, #17 per pixel. No lump declares
+		// it yet, so no scene shader changed when it was added.
+		.AddBinding(12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 		.DebugName("VkDescriptorSetManager.HWBufferSetLayout")
 		.Create(fb->device.get());
 }
@@ -417,7 +430,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 		// [DRAWNLINES] 4: and drawn lines (6). Too few here fails set allocation.
 		// [PARTICLEDEFS] 5: and particle definitions (7).
 		// [VIEWLIGHTS] 6: and the view lights (8).
-		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * maxSets)
+		// [SECTORPLANES] 7: and the sector planes (12).
+		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7 * maxSets)
 		.MaxSets(maxSets)
 		.DebugName("VkDescriptorSetManager.HWBufferDescriptorPool")
 		.Create(fb->device.get());

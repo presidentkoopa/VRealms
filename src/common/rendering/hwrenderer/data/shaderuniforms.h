@@ -40,7 +40,10 @@ enum
 	PARTICLEDEF_BINDINGPOINT = 10,
 	// [VIEWLIGHTS] The dynamic lights in view this scene (hw_viewlightbuffer.h).
 	// Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
-	VIEWLIGHT_BINDINGPOINT = 11
+	VIEWLIGHT_BINDINGPOINT = 11,
+	// [SECTORPLANES] Sectors' current floor and ceiling planes (hw_sectorplanebuffer.h).
+	// Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
+	SECTORPLANE_BINDINGPOINT = 12
 };
 
 enum class UniformType

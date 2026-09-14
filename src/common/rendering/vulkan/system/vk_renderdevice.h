@@ -46,6 +46,8 @@ class VkHardwareDataBuffer;
 class VkHardwareTexture;
 class VkRenderBuffers;
 class VkPostprocess;
+class VkComputeManager;		// [COMPUTE] vk_compute.h
+struct FrameComputeInput;	// [COMPUTE] hw_framecompute.h
 class VkTextureImage;
 class SWSceneDrawer;
 enum class PPTextureType;
@@ -135,6 +137,7 @@ public:
 	VkRaytrace* GetRaytrace() { return mRaytrace.get(); }
 	VkRenderState *GetRenderState() { return mRenderState.get(); }
 	VkPostprocess *GetPostprocess() { return mPostprocess.get(); }
+	VkComputeManager* GetCompute() { return mCompute.get(); }	// [COMPUTE]
 	VkRenderBuffers *GetBuffers() { return mActiveRenderBuffers; }
 	int GetCurrentEyeLayer() const { return std::max(0, mCurrentEyeIndex); }
 	bool ShouldUseCurrentEyeLayer(const PPTextureType& type, const VkTextureImage* image) const;
@@ -171,6 +174,7 @@ public:
 	void InitLightmap(int LMTextureSize, int LMTextureCount, TArray<uint16_t>& LMTextureData) override;
 	void BlurScene(float amount) override;
 	void PostProcessScene(bool swscene, int fixedcm, float flash, const std::function<void()> &afterBloomDrawEndScene2D) override;
+	void RunFrameCompute(const FrameComputeInput& input) override;	// [COMPUTE]
 	void AmbientOccludeScene(float m5) override;
 	void SetSceneRenderTarget(bool useSSAO) override;
 	void SetLevelMesh(hwrenderer::LevelMesh* mesh) override;
@@ -230,6 +234,8 @@ private:
 	std::unique_ptr<VkRenderPassManager> mRenderPassManager;
 	std::unique_ptr<VkRaytrace> mRaytrace;
 	std::unique_ptr<VkRenderState> mRenderState;
+	// [COMPUTE] GPU compute for effects (vk_compute.h). Last, so it is destroyed first.
+	std::unique_ptr<VkComputeManager> mCompute;
 
 	VkRenderBuffers *mActiveRenderBuffers = nullptr;
 

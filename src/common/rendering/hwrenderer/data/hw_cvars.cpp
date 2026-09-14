@@ -229,7 +229,11 @@ CVAR(Bool, gl_strict_gldefs_errors, false, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
 // particle count -- which is why drawn size is capped in world units.
 CVARD(Bool, r_gpuparticles, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "master switch for drawing GPU particles (Vulkan only)")
 CVARD(Float, r_gpuparticles_sizescale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies every GPU particle's size")
-CVARD(Float, r_gpuparticles_maxsize, 8.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "world-unit cap on a GPU particle's drawn size")
+// [F5] Default 64 since 2026-09-14 (owner: effects our mods use default ON at good
+// quality): flame puffs and smoke draw at their definitions' own sizes, which their
+// own maxsize still caps. It was 8, which drew every big puff as a spark. An ini that
+// already stores 8 keeps 8 (RS_Ballistics' "All effects on" row sets it).
+CVARD(Float, r_gpuparticles_maxsize, 64.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "world-unit cap on a GPU particle's drawn size")
 CVARD(Float, r_gpuparticles_stretch, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies GPU particle velocity stretch")
 CVARD(Float, r_gpuparticles_intensity, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies GPU particle brightness")
 // [2a] Soft particles ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2a). A particle
@@ -237,11 +241,13 @@ CVARD(Float, r_gpuparticles_intensity, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "
 // hard into it. It needs the scene depth readable during the particle draw, so a
 // value above 0 makes RenderTranslucent switch the scene pass to a read-only
 // depth pass around that one draw (FRenderState::SetSceneDepthReadable).
-// DEFAULT 0 = OFF: no switch, no new pass or pipeline, the frame exactly as
+// DEFAULT 8 since 2026-09-14 (owner: effects our mods use default ON): that switch
+// runs for every particle draw once the scene-depth variants compile (perf log
+// fx.depthread). 0 = off: no switch, no new pass or pipeline, the frame exactly as
 // before 2a. Renderer-read every frame into HWViewpointUniforms::
 // mGpuParticleParams2.x, so the menu slider responds while the menu is open.
 // Vulkan only; GL and GLES never draw GPU particles.
-CVARD(Float, r_gpuparticles_soft, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "GPU particles fade over this many map units where they meet a surface; 0 = off (Vulkan only)")
+CVARD(Float, r_gpuparticles_soft, 8.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "GPU particles fade over this many map units where they meet a surface; 0 = off (Vulkan only)")
 CUSTOM_CVARD(Int, r_gpuparticles_ringsize, 65536, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "GPU particle ring capacity; takes effect on restart")
 {
 	Printf("You must restart " GAMENAME " for this change to take effect.\n");
@@ -360,12 +366,14 @@ int DrawnLineCapacity()
 // hw_drawinfo.cpp (SetupHeatSources). All three are renderer-read every frame, so
 // they respond with a menu open. Vulkan only: GL and GLES skip the effect.
 //
-// OFF BY DEFAULT, and off means SKIPPED: no source is published, the pass returns
-// before it draws or allocates anything, and the frame is exactly the frame without
-// this feature. It bends everything behind a heat source -- grab lasers and the Lance
-// included -- so it is the owner's switch, not a mod's. Archived, so a choice made in
-// the menu survives a restart.
-CVARD(Bool, r_heatrefraction, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "bend the image behind heat sources (heat shimmer); off = the pass never runs (Vulkan only)")
+// ON BY DEFAULT since 2026-09-14 (owner: effects our mods use default ON). With no heat
+// source published the pass still returns before it draws or allocates anything, so a
+// mod that sets no source costs nothing. Off means SKIPPED: the frame is exactly the
+// frame without this feature. It bends everything behind a heat source -- grab lasers
+// and the Lance included (the owner's A/B is a check, not an off switch). Archived, so
+// a choice made in the menu survives a restart; an ini that already stores 0 keeps 0
+// (RS_Ballistics' "All effects on" row sets it).
+CVARD(Bool, r_heatrefraction, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "bend the image behind heat sources (heat shimmer); off = the pass never runs (Vulkan only)")
 // Multiplies every heat source's strength, so the shimmer can be judged in the
 // headset without a script change. 0 draws nothing but still runs the pass (use
 // r_heatrefraction to skip it); clamped to 0..4 where it is read.
@@ -375,3 +383,29 @@ CVARD(Float, r_heatrefraction_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "he
 // off. Renderer-side only -- it is not a level slot, nothing in the playsim sees it.
 // Not archived: it is for an A/B, and it should not be waiting in the next session.
 CVARD(Bool, r_heatrefraction_test, false, CVAR_GLOBALCONFIG, "a test heat source ahead of where you look when switched on (heat shimmer A/B, Vulkan only)")
+
+// [SMOKEVOLUME] THE SMOKE VOLUME ("Engine docs/SMOKE_VOLUME_PLAN.md" #13): a world-aligned
+// 3D grid around the eye that gunsmoke fills, walls stop and blasts clear. Step 1 (13a) is
+// the compute foundation only -- nothing draws yet. All three are renderer-read every frame
+// (PrepareFrameCompute, hw_entrypoint.cpp), so they respond with a menu open. Vulkan only:
+// GL and GLES run no compute.
+//
+// ON BY DEFAULT (owner, 2026-09-14: effects our mods use default ON). The capability is
+// inert until something asks for smoke -- a mod's first EmitSmoke / CarveSmoke of a map
+// (13b) or r_smoke_computetest -- so a map nobody smokes allocates and dispatches nothing.
+// Off frees the volume at once. Archived.
+CVARD(Bool, r_smoke, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the smoke volume; nothing is allocated until a mod emits smoke (Vulkan only)")
+// Resolution and area together, 25 bytes a cell (SmokeGridForQuality, hw_framecompute.h):
+// 1 = 192 x 192 x 64 cells at 10 units (about 59 MB), 2 = 256 x 256 x 96 at 8 (about
+// 157 MB, the default), 3 = 320 x 320 x 128 at 8 (about 328 MB), 4 = 384 x 384 x 128 at 8
+// (about 472 MB). A change re-allocates the volume, which clears the smoke in it.
+CUSTOM_CVARD(Int, r_smoke_quality, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "smoke volume resolution and area together, 1-4 (2 = about 157 MB; Vulkan only)")
+{
+	if (self < 1) { self = 1; return; }
+	if (self > 4) { self = 4; return; }
+}
+// A desk test that needs no mod: allocates the volume at the current quality and runs one
+// minimal compute step per world tic (at most 2 a frame), plus the level solidity mask on
+// the CPU, so the perf log shows fx.compute, fx.smokesim and fx.solidity. Draws nothing.
+// Not archived: a measurement, not a setting.
+CVARD(Bool, r_smoke_computetest, false, CVAR_GLOBALCONFIG, "run the smoke volume's compute test with no mod: allocates it and steps a test pattern, draws nothing (Vulkan only)")

@@ -38,6 +38,9 @@
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES]
 #include "hw_particledefbuffer.h"	// [PARTICLEDEFS]
 #include "hw_viewlightbuffer.h"	// [VIEWLIGHTS]
+#include "hw_sectorplanebuffer.h"	// [SECTORPLANES]
+#include "hw_framecompute.h"	// [COMPUTE]
+#include "vulkan/renderer/vk_compute.h"	// [COMPUTE]
 #include "hw_clock.h"
 #include "hw_lightbuffer.h"
 #include "hw_skydome.h"
@@ -351,6 +354,9 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	VulkanSetDeviceLostHandler(nullptr);
 	StopBackgroundCache();
 	vkDeviceWaitIdle(device->device); // make sure the GPU is no longer using any objects before RAII tears them down
+	// [COMPUTE] First, while everything it records through still exists. The GPU is idle
+	// now, so its images, descriptor sets, pipelines and pools are destroyed directly.
+	mCompute.reset();
 	PPResource::ResetAll();
 
 	delete mVertexData;
@@ -370,6 +376,9 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	// [VIEWLIGHTS] beside the particles, which read it
 	delete mViewLights;
 	mViewLights = nullptr;
+	// [SECTORPLANES] beside the view lights, which it is created beside
+	delete mSectorPlanes;
+	mSectorPlanes = nullptr;
 	mShadowMap.Reset();
 
 	if (mDescriptorSetManager)
@@ -446,6 +455,10 @@ void VulkanRenderDevice::InitializeState()
 	// vertex shader; set 1 binding 8. Filled every main-view scene by
 	// HWDrawInfo::ProcessScene (SyncViewLights).
 	mViewLights = new ViewLightBuffer();
+	// [SECTORPLANES] Sectors' current floor and ceiling planes for GPU effects; set 1
+	// binding 12. Written by SectorPlanes (hw_sectorplanes.cpp) only for the sectors an
+	// active effect polls.
+	mSectorPlanes = new SectorPlaneBuffer();
 
 	mShaderManager.reset(new VkShaderManager(this));
 	mDescriptorSetManager->Init();
@@ -454,6 +467,16 @@ void VulkanRenderDevice::InitializeState()
 #else
 	mRenderState.reset(new VkRenderState(this));
 #endif
+
+	// [COMPUTE] GPU compute for effects. Creates nothing until an effect asks for it.
+	mCompute.reset(new VkComputeManager(this));
+}
+
+// [COMPUTE] See DFrameBuffer::RunFrameCompute and VkComputeManager::RunFrame.
+void VulkanRenderDevice::RunFrameCompute(const FrameComputeInput& input)
+{
+	if (mCompute)
+		mCompute->RunFrame(input);
 }
 
 void VulkanRenderDevice::Update()

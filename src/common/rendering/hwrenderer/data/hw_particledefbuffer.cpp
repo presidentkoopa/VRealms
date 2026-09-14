@@ -19,6 +19,28 @@
 #include "shaderuniforms.h"
 #include "v_video.h"
 #include "printf.h"
+#include "c_cvars.h"	// [LOOKS] r_gpuparticles_looks
+
+// [LOOKS] r_gpuparticles_looks -- the quality of generated particle looks ("Engine docs/
+// GPU_PARTICLE_LOOKS_PLAN.md"): the `look` a PARTICLEDEFS definition names, drawn by
+// gpuparticles.fp from noise instead of the round dot or a flipbook frame.
+//   0  every look draws as the plain round dot -- an escape hatch, not the default
+//   1  2 noise octaves, no slope lighting
+//   2  3 octaves, with slope lighting (the default: effects our mods use are on by default)
+//   3  4 octaves
+// A definition's `detail` is its octaves at 2; 1 and 3 take one away or add one (1..4).
+// Renderer-read: HWDrawInfo::StartScene copies it into mGpuParticleParams2.z every scene, so a
+// menu slider changes particles already in the air while the menu is open. Only definitions
+// with a look are affected, and GL/GLES never draw GPU particles.
+//
+// It lives here, beside the GPU half of the definitions the looks are stored in, rather than in
+// hw_cvars.cpp: users read it with EXTERN_CVAR (hw_drawinfo.cpp) or FindCVar (the `particles`
+// CCMD). Presentation only -- not SERVERINFO; nothing reads it back into the playsim.
+CUSTOM_CVARD(Int, r_gpuparticles_looks, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "generated GPU particle looks: 0 plain dots, 1 low, 2 default, 3 high (Vulkan only)")
+{
+	if (self < 0) self = 0;
+	else if (self > 3) self = 3;
+}
 
 // [2d] LOOK_* for one definition's 256 bytes (see ParticleDefinitionBuffer::GetSlotLooks).
 // Occludes: any of its keys has alpha above 0 -- the shader holds alpha flat outside the

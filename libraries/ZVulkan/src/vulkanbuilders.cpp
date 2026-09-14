@@ -394,6 +394,18 @@ ImageBuilder& ImageBuilder::Size(int width, int height, int mipLevels, int array
 	return *this;
 }
 
+// UZDXREMA [COMPUTE] See the header. A 3D image has exactly one array layer.
+ImageBuilder& ImageBuilder::Size3D(int width, int height, int depth, int mipLevels)
+{
+	imageInfo.imageType = VK_IMAGE_TYPE_3D;
+	imageInfo.extent.width = width;
+	imageInfo.extent.height = height;
+	imageInfo.extent.depth = depth;
+	imageInfo.mipLevels = mipLevels;
+	imageInfo.arrayLayers = 1;
+	return *this;
+}
+
 ImageBuilder& ImageBuilder::Samples(VkSampleCountFlagBits samples)
 {
 	imageInfo.samples = samples;

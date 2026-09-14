@@ -58,6 +58,7 @@ void DrawHitscanTracers(FRenderState& state);
 EXTERN_CVAR(Float, r_visibility)
 EXTERN_CVAR(Int, gl_max_portals);
 EXTERN_CVAR(Bool, r_visualstate_log)	// RS fork: defined in vmthunks.cpp
+EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] defined in hw_particledefbuffer.cpp
 CVAR(Bool, gl_bandedswlight, false, CVAR_ARCHIVE)
 CVAR(Bool, gl_sort_textures, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, gl_no_skyclear, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -1205,7 +1206,13 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		// first frame additively (nothing, at emissive 0), and switching off is exact.
 		const bool gpuParticlesPremultiplied = screen->mGpuParticles != nullptr &&
 			screen->mGpuParticles->OccludersAliveAt(VPUniforms.mLevelTime.X);
-		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), gpuParticlesPremultiplied ? 1.f : 0.f, 0.f, 0.f };
+		// [LOOKS] z: r_gpuparticles_looks, 0..3 -- the quality gpuparticles.vp/.fp draw a
+		// definition's generated `look` at ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md"); 0 draws
+		// every look as the plain round dot. Renderer-read every scene like the knobs above.
+		// (hw_viewpointuniforms.h still calls z spare; the comment is here so that header is not
+		// touched for a value.) w is still spare.
+		const float gpuParticleLooks = (float)clamp((int)r_gpuparticles_looks, 0, 3);
+		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), gpuParticlesPremultiplied ? 1.f : 0.f, gpuParticleLooks, 0.f };
 
 		// [BB] Sweep fill -- the pattern inside a band. Frame-global style;
 		// only the mode is per band, packed into the draw mode.
