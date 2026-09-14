@@ -23,6 +23,7 @@
 #include "hw_levelfield.h"
 #include "hw_levelsolidity.h"
 #include "hw_sectorplanes.h"
+#include "hw_debrispool.h"	// [DEBRISPOOL] the debris pool asks for the field too
 #include "hw_framecompute.h"
 #include "hw_perflog.h"
 #include "particledefs.h"
@@ -121,8 +122,9 @@ void LevelField::PrepareFrame(FLevelLocals* Level, const DVector3& eye, uint64_t
 			mLastDemandTime = maptime;
 	}
 
-	// Who asks for the field: a particle that collides with the level, written since the last frame.
-	if (ScanRing(Level, on, test))
+	// Who asks for the field: a particle that collides with the level, written since the last frame -- or [DEBRISPOOL] debris
+	// pieces that collide with the level, alive or waiting to go into the pool (DebrisPool::WantsLevelField, as of last frame).
+	if (ScanRing(Level, on, test) || (on && DebrisPool::Get().WantsLevelField()))
 	{
 		mHasDemand = true;
 		mLastDemandTime = maptime;

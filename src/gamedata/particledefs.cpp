@@ -34,6 +34,10 @@
 **       fade     = none                          // none | smooth: the stage 1 fade over the last 40% of life
 **       look     = none                          // none | dust | fire: a generated shape (below); not with texture
 **       mesh     = "models/debris/chip1.md3"     // draw each particle as this small 3D model (below)
+**       restitution = 0.3                        // debris that bounces and stays: the debris pool (below)
+**       friction = 0.5                           // debris: 0 slides on and on .. 1 stops at once
+**       restlife = 60                            // debris: seconds it lies still before fading; 0 = never rests
+**       restfade = 0.5                           // debris: seconds of that fade
 **   }
 **
 ** [LOOKS] GENERATED LOOKS ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md", build A). `look`
@@ -74,7 +78,7 @@
 ** 1 map unit. It is stored as scale x the mesh's diameter, so the billboard it falls back to is as
 ** wide as the chunk. `spin` = min, max is its tumble, degrees a second about a random axis (the
 ** seed picks the axis, the rate and a random starting turn). With `collide = plane` (or `level`,
-** which a mesh treats as `plane` until the debris pool, #9) it rests ON
+** which a ring mesh treats as `plane`; with `restitution` it is a debris piece, below) it rests ON
 ** surfaces, lands on the floor, settles flat and slides to a stop. `lit` and `color` light and
 ** colour it; `emissive` is glow added on top (0 for anything not hot); `alpha` does not apply,
 ** a mesh is opaque. It turns about its origin, so author it centred.
@@ -90,9 +94,32 @@
 **     it never pops out of the far side;
 **   - where the field has no answer (switched off, not built yet, out of its reach) it does what
 **     `plane` does with SpawnParticles' surface and floor.
-** Stateless like every ring particle: it does not bounce. Bouncing and resting are the debris pool's
-** (#9). A mesh with `collide = level` keeps the `plane` landing until then. r_particlecollision_test
-** makes `plane` definitions use the field too, to judge it.
+** Stateless like every ring particle: it does not bounce. Give the definition `restitution` and its
+** particles go to the debris pool instead (below). A ring mesh with `collide = level` keeps the `plane`
+** landing. r_particlecollision_test makes `plane` definitions use the field too, to judge it.
+**
+** [DEBRISPOOL] DEBRIS THAT STAYS ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #9, "Engine docs/
+** DEBRIS_9_IMPL_NOTES.md"). A definition with `restitution` is DEBRIS: SpawnParticles sends its bursts to
+** the debris pool ("Debris that stays", r_debris, on by default), where every piece is simulated each tic --
+** it bounces off the level (the collision field where it answers, SpawnParticles' surface and floor where
+** it does not), slides, rolls, comes to rest, stays, and is thrown again by PushEffectImpulse or by a floor
+** that moves under it. Everything else about it is the definition's usual keys (a `mesh` piece settles
+** flat on a face). Where the pool cannot take a burst (GL, the switch off) the same particles are drawn as
+** ring particles, exactly as without these keys.
+**
+**   restitution = 0.3   // 0..1, the share of its speed into a surface a piece keeps when it bounces
+**   friction    = 0.5   // 0..1, how fast it stops sliding (0.5 when left off)
+**   restlife    = 60    // 0..600 seconds it lies still before fading; 0 or left off = NEVER RESTS: it
+**                       // bounces and slides until its life ends and dies (sparks)
+**   restfade    = 0.5   // 0..10 seconds of fading at the end of the rest (0.5 when left off)
+**
+** Its ramps run over `life` from its spawn and hold their last key after it. A piece that rests starts its
+** rest when it lies still or when its life ends, whichever is first, stays `restlife` seconds and fades
+** over `restfade` (a mesh shrinks away); `fade = smooth` does not apply to it. "Debris time on the ground"
+** (r_debris_life, 60 by default) scales every restlife of 5 seconds or more by r_debris_life / 60; shorter
+** rests (embers cooling on the floor) stay as written. A blast that throws a resting piece does not restart
+** its rest. `friction`, `restlife` and `restfade` need `restitution`; `restfade` needs a `restlife`;
+** `restitution` needs `collide = plane` or `level`.
 **
 ** A ramp given one value with no '@' is constant. With several, every value needs
 ** '@t', 0 <= t <= 1, increasing; it holds its first value before the first key and
@@ -199,6 +226,13 @@ namespace
 	const double kFireHeatEnd = 0.3;
 	const double kFireRise = 24.0;
 
+	// [DEBRISPOOL] Defaults and limits for a debris definition's keys (restitution itself is what makes it debris, so it
+	// has no default).
+	const double kDebrisFriction = 0.5;
+	const double kDebrisRestFade = 0.5;
+	const double kDebrisMaxRestLife = 600.0;
+	const double kDebrisMaxRestFade = 10.0;
+
 	struct NamedInfo
 	{
 		FString Name;
@@ -214,6 +248,8 @@ namespace
 		int MeshLine = 0;			// [MESHPARTICLES] the line of the `mesh` key
 		FString MeshSkinName;		// [MESHPARTICLES] the skin as written ("" = the md3's own)
 		ParticleMeshDefinition Mesh;	// [MESHPARTICLES] checked at load; Slot filled when the list is built
+		bool HasDebris = false;			// [DEBRISPOOL] the definition has `restitution`
+		ParticleDebrisDefinition Debris;	// [DEBRISPOOL] its keys; Slot filled when the list is built
 	};
 
 	struct InlineInfo
@@ -254,6 +290,11 @@ namespace
 		// list's generation, which never goes backwards, so the renderer's copy notices a reload.
 		TArray<ParticleMeshDefinition> Meshes;
 		uint64_t MeshGeneration = 0;
+
+		// [DEBRISPOOL] The definitions with `restitution`, in slot order (AssignDebrisList), and the list's generation,
+		// which never goes backwards.
+		TArray<ParticleDebrisDefinition> Debris;
+		uint64_t DebrisGeneration = 0;
 
 		DefinitionTable()
 		{
@@ -922,6 +963,21 @@ namespace
 		return table.Meshes.Size();
 	}
 
+	// [DEBRISPOOL] The debris list the renderer syncs from, in slot order, once every lump has loaded. Returns its size.
+	unsigned AssignDebrisList(DefinitionTable &table)
+	{
+		table.Debris.Clear();
+		for (unsigned i = 0; i < table.NamedCount; i++)
+		{
+			NamedInfo &n = table.Named[i];
+			if (!n.HasDebris) continue;
+			n.Debris.Slot = (int)i;
+			table.Debris.Push(n.Debris);
+		}
+		table.DebrisGeneration++;
+		return table.Debris.Size();
+	}
+
 	//==========================================================================
 	//
 	// One 'particle' block -> one GPU definition
@@ -958,6 +1014,10 @@ namespace
 		// when the block leaves `size` off, which for a mesh means scale 1.
 		FString meshPath, meshSkin;
 		int meshFrame = 0, meshLine = 0, sizeLine = 0;
+
+		// [DEBRISPOOL] Read as written; checked after the loop. A key's line stays 0 when the block leaves it off.
+		double restitution = 0.0, friction = kDebrisFriction, restLife = 0.0, restFade = kDebrisRestFade;
+		int restitutionLine = 0, frictionLine = 0, restLifeLine = 0, restFadeLine = 0;
 
 		for (unsigned i = 0; i < b.Entries.Size(); i++)
 		{
@@ -1005,6 +1065,11 @@ namespace
 				if (prongs[1] < prongs[0]) std::swap(prongs[0], prongs[1]);
 				prongsLine = e.Line;
 			}
+			// [DEBRISPOOL] Debris that stays: the pool's keys.
+			else if (e.Key.CompareNoCase("restitution") == 0) { ok = ReadNumber(e, 0.0, 1.0, restitution, error, errorLine); restitutionLine = e.Line; }
+			else if (e.Key.CompareNoCase("friction") == 0) { ok = ReadNumber(e, 0.0, 1.0, friction, error, errorLine); frictionLine = e.Line; }
+			else if (e.Key.CompareNoCase("restlife") == 0) { ok = ReadNumber(e, 0.0, kDebrisMaxRestLife, restLife, error, errorLine); restLifeLine = e.Line; }
+			else if (e.Key.CompareNoCase("restfade") == 0) { ok = ReadNumber(e, 0.0, kDebrisMaxRestFade, restFade, error, errorLine); restFadeLine = e.Line; }
 			else if (e.Key.CompareNoCase("mesh") == 0)
 			{
 				// [MESHPARTICLES] mesh = "<md3 path>"[, "<skin>"[, <frame>]]. The file is read and checked
@@ -1158,6 +1223,25 @@ namespace
 				key.V[0] *= mesh.Diameter;
 		}
 
+		// [DEBRISPOOL] What the debris keys allow. Each refusal names the key's line; the rest of the lump still loads.
+		if (restitutionLine == 0)
+		{
+			const struct { const char *Key; int Line; } debrisKeys[] = {
+				{ "friction", frictionLine }, { "restlife", restLifeLine }, { "restfade", restFadeLine } };
+			for (const auto &k : debrisKeys)
+			{
+				if (k.Line != 0)
+					return Fail(error, errorLine, k.Line, "'%s' needs 'restitution' -- restitution = 0..1 makes the definition debris that bounces and stays", k.Key);
+			}
+		}
+		else
+		{
+			if (collide == 0)
+				return Fail(error, errorLine, restitutionLine, "'restitution' needs something to bounce off: collide = plane or collide = level");
+			if (restFadeLine != 0 && !(restLife > 0.0))
+				return Fail(error, errorLine, restFadeLine, "'restfade' needs a restlife above 0 -- a piece that never rests does not fade at rest");
+		}
+
 		// [2c] The flipbook's frames, found by name now that the count is known. A
 		// frame that is not there refuses this definition alone, naming the frame; the
 		// rest of the lump still loads.
@@ -1251,6 +1335,14 @@ namespace
 		info.MeshLine = meshLine;
 		info.MeshSkinName = meshSkin;
 		info.Mesh = mesh;
+		info.HasDebris = restitutionLine != 0;	// [DEBRISPOOL]
+		if (info.HasDebris)
+		{
+			info.Debris.Restitution = (float)restitution;
+			info.Debris.Friction = (float)friction;
+			info.Debris.RestLife = (float)restLife;
+			info.Debris.RestFade = (float)restFade;
+		}
 		return true;
 	}
 }
@@ -1356,6 +1448,8 @@ void LoadParticleDefinitions()
 	const unsigned textured = AssignAtlasLayers(table);
 	// [MESHPARTICLES] And the mesh list, the same way.
 	const unsigned meshed = AssignMeshList(table);
+	// [DEBRISPOOL] And the debris list.
+	const unsigned debris = AssignDebrisList(table);
 
 	Printf("ParticleDefinitions: %u named definition%s from %u PARTICLEDEFS lump%s -- %d refused, %u replaced by a later one\n",
 		table.NamedCount, table.NamedCount == 1 ? "" : "s", table.Lumps, table.Lumps == 1 ? "" : "s",
@@ -1364,6 +1458,8 @@ void LoadParticleDefinitions()
 		textured, textured == 1 ? "" : "s", table.AtlasLayers.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS);
 	Printf("ParticleDefinitions: %u definition%s name%s a mesh (drawn as instanced 3D meshes while r_meshparticles is on; Vulkan only)\n",
 		meshed, meshed == 1 ? "" : "s", meshed == 1 ? "s" : "");
+	Printf("ParticleDefinitions: %u definition%s %s debris (restitution: simulated in the debris pool while r_debris is on; Vulkan only)\n",
+		debris, debris == 1 ? "" : "s", debris == 1 ? "is" : "are");
 }
 
 //==========================================================================
@@ -1524,6 +1620,21 @@ const ParticleMeshDefinition *ParticleMeshDefinitionData() { return Table().Mesh
 unsigned ParticleMeshDefinitionCount() { return Table().Meshes.Size(); }
 uint64_t ParticleMeshGeneration() { return Table().MeshGeneration; }
 
+// [DEBRISPOOL] For the renderer's debris pool (DebrisPool, hw_debrispool.cpp) and SpawnParticles' hook.
+const ParticleDebrisDefinition *ParticleDebrisDefinitionData() { return Table().Debris.Size() > 0 ? &Table().Debris[0] : nullptr; }
+unsigned ParticleDebrisDefinitionCount() { return Table().Debris.Size(); }
+uint64_t ParticleDebrisGeneration() { return Table().DebrisGeneration; }
+
+bool ParticleDefinitionIsDebris(int slot)
+{
+	const DefinitionTable &table = Table();
+	return slot >= 0 && (unsigned)slot < table.NamedCount && table.Named[slot].HasDebris;
+}
+
+// [DEBRISPOOL] The pool's state for `particles` (hw_debrispool.cpp): declared here, as SpawnGpuParticles declares
+// GpuParticlesLegacyPath, so the definitions table does not include the renderer's pool.
+extern FString DebrisPoolReport();
+
 //==========================================================================
 //
 // `particles` -- the definitions and how full the inline cache is, to the
@@ -1609,6 +1720,18 @@ CCMD(particles)
 			else
 				Printf("      drawn as its billboard (mesh particles are drawn on Vulkan only)\n");
 		}
+
+		// [DEBRISPOOL] The debris keys, when it has them.
+		if (n.HasDebris)
+		{
+			const ParticleDebrisDefinition &debris = n.Debris;
+			FString rest;
+			if (debris.RestLife > 0.f)
+				rest.Format("rests %g s%s, then fades over %g s", debris.RestLife, debris.RestLife >= 5.f ? " (times r_debris_life / 60)" : "", debris.RestFade);
+			else
+				rest = "never rests (it bounces until its life ends)";
+			Printf("      debris -- restitution %g, friction %g, %s\n", debris.Restitution, debris.Friction, rest.GetChars());
+		}
 	}
 
 	// [2c] The particle atlas: what the named flipbooks use, and what the renderer built.
@@ -1681,4 +1804,8 @@ CCMD(particles)
 		meshesOn ? "drawn as instanced 3D meshes" : "drawn as their billboards");
 	if (screen != nullptr && screen->mMeshParticles != nullptr)
 		Printf("  mesh instances uploaded: %u of %u\n", screen->mMeshParticles->GetUploadedInstances(), screen->mMeshParticles->GetInstanceCapacity());
+
+	// [DEBRISPOOL] The debris definitions and the pool (hw_debrispool.cpp).
+	Printf("Debris definitions (restitution): %u\n", table.Debris.Size());
+	Printf("%s\n", DebrisPoolReport().GetChars());
 }

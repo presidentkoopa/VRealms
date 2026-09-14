@@ -242,7 +242,9 @@ struct VRMode
 	// because that basis is not visible from script -- so it supplies the heading
 	// instead of trying to match it.
 	virtual bool GetHmdTransform(VSMatrix* out, DVector3 bodyOfs = DVector3(0, 0, 0), float* outBodyYaw = nullptr, double yawOverride = NAN) const { return false; }
-	virtual bool GetWeaponTransform(VSMatrix* out, int hand = 0, bool allowAutoReverse = true) const;
+	// mirroredOut, when given, says whether the frame came back mirrored (the
+	// auto-reverse scale on controller 0) -- see AActor::FollowHandRot.
+	virtual bool GetWeaponTransform(VSMatrix* out, int hand = 0, bool allowAutoReverse = true, bool *mirroredOut = nullptr) const;
 	virtual bool RenderPlayerSpritesInScene() const;
 	virtual bool GetTeleportLocation(DVector3 &out) const { return false; }
 	virtual bool IsInitialized() const { return true; }

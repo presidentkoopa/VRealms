@@ -78,6 +78,8 @@ enum class PPExternalImage
 	SmokeDensityLatest,		// the smoke volume's density (r) and heat (g), latest simulation state (3D)
 	SmokeDensityPrevious,	// the same one simulation step earlier; the march blends the two by TicFrac (3D)
 	SmokeTileActive,		// one texel per SMOKE_TILE_CELLS^3 cells: 1 = the tile may hold smoke (3D, R8)
+	SmokeLight,				// [13d] the smoke's light grid: rgb the light reaching each place, a its luminance weight (3D, RGBA16F)
+	SmokeLightDirection,	// [13d] the same grid: xyz the direction light travels there, times its share (3D, RGBA8 SNORM)
 	Count
 };
 
@@ -438,6 +440,73 @@ struct ExtractUniforms
 		};
 	}
 };
+
+// [PINNEDBLOOM] The bloom extract weighed by the light mask (bloomextract.fp's BLOOM_EXTRACT_SHARE and
+// BLOOM_EXTRACT_DUAL; PPBloomPlan). Structs of their own, so ExtractUniforms -- today's extract program's
+// prolog -- keeps its bytes. SHARE: one look times one share (WeightClass 1 the pinned share, 0 the rest);
+// inputs 0 the image, 1 that look's exposure, 2 the light mask. DUAL: both looks, each with its tint;
+// inputs 0 the image, 1 the rest look's exposure, 2 the pinned look's exposure, 3 the light mask.
+struct ExtractShareUniforms
+{
+	FVector2 Scale;
+	FVector2 Offset;
+	float Threshold;
+	float Knee;
+	int WeightClass;
+	float Padding0;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "Scale", UniformType::Vec2, offsetof(ExtractShareUniforms, Scale) },
+			{ "Offset", UniformType::Vec2, offsetof(ExtractShareUniforms, Offset) },
+			{ "Threshold", UniformType::Float, offsetof(ExtractShareUniforms, Threshold) },
+			{ "Knee", UniformType::Float, offsetof(ExtractShareUniforms, Knee) },
+			{ "WeightClass", UniformType::Int, offsetof(ExtractShareUniforms, WeightClass) },
+			{ "Padding0", UniformType::Float, offsetof(ExtractShareUniforms, Padding0) },
+		};
+	}
+};
+
+static_assert(offsetof(ExtractShareUniforms, Threshold) == 16, "ExtractShareUniforms::Threshold offset");
+static_assert(offsetof(ExtractShareUniforms, WeightClass) == 24, "ExtractShareUniforms::WeightClass offset");
+static_assert(sizeof(ExtractShareUniforms) == 32, "ExtractShareUniforms must be 32 bytes (a push constant block)");
+
+struct ExtractDualUniforms
+{
+	FVector2 Scale;
+	FVector2 Offset;
+	float RestThreshold;
+	float RestKnee;
+	float PinThreshold;
+	float PinKnee;
+	FVector3 RestTint;
+	float Padding0;
+	FVector3 PinTint;
+	float Padding1;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "Scale", UniformType::Vec2, offsetof(ExtractDualUniforms, Scale) },
+			{ "Offset", UniformType::Vec2, offsetof(ExtractDualUniforms, Offset) },
+			{ "RestThreshold", UniformType::Float, offsetof(ExtractDualUniforms, RestThreshold) },
+			{ "RestKnee", UniformType::Float, offsetof(ExtractDualUniforms, RestKnee) },
+			{ "PinThreshold", UniformType::Float, offsetof(ExtractDualUniforms, PinThreshold) },
+			{ "PinKnee", UniformType::Float, offsetof(ExtractDualUniforms, PinKnee) },
+			{ "RestTint", UniformType::Vec3, offsetof(ExtractDualUniforms, RestTint) },
+			{ "Padding0", UniformType::Float, offsetof(ExtractDualUniforms, Padding0) },
+			{ "PinTint", UniformType::Vec3, offsetof(ExtractDualUniforms, PinTint) },
+			{ "Padding1", UniformType::Float, offsetof(ExtractDualUniforms, Padding1) },
+		};
+	}
+};
+
+static_assert(offsetof(ExtractDualUniforms, RestTint) == 32, "ExtractDualUniforms::RestTint must start at 32 (std140 vec3)");
+static_assert(offsetof(ExtractDualUniforms, PinTint) == 48, "ExtractDualUniforms::PinTint must start at 48 (std140 vec3)");
+static_assert(sizeof(ExtractDualUniforms) == 64, "ExtractDualUniforms must be 64 bytes (a push constant block)");
 
 struct BlurUniforms
 {
@@ -998,7 +1067,7 @@ struct SmokeMarchUniforms
 	float TicFrac;            // where the frame sits between the last two simulation steps, 0..1
 	FVector3 TileCount;       // tiles per axis (GridSize / SMOKE_TILE_CELLS), texel axes
 	int StepCount;            // the most samples a ray takes (r_smoke_steps)
-	FVector3 LightColor;      // the light the smoke sends toward the eye per unit of its opacity
+	FVector3 LightColor;      // [13d] the look's tint: the colour the light the smoke scatters takes (x the light grid)
 	float Extinction;         // per map unit at density 1: absorption x SMOKE_EXTINCTION_PER_MAP_UNIT x r_smoke_density_scale
 	float MinStep;            // map units: no two samples closer than this
 	float SliceHeight;        // r_smoke_debugslice's level plane, eye-relative GL y, map units
@@ -1171,6 +1240,47 @@ struct PPBloomOverride
 	}
 };
 
+// [PINNEDBLOOM] ONE BLOOM LOOK: every value one bloom chain uses, as the chain uses it
+// ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2f). PPBloom builds the REST look every frame -- the
+// gl_bloom_* / gl_exposure_* cvars, moved by any SetBloomOverride -- and, while pinned bloom is on,
+// the PINNED look from the gl_bloom_pin_* cvars, which no override reaches. Two looks that send the
+// same bytes draw the same bloom.
+struct PPBloomLook
+{
+	float Threshold = 1.0f;         // the extract's threshold
+	float Knee = 0.5f;              // the extract's knee, already capped at the threshold (E2)
+	float Amount = 1.4f;            // the blur's width (gl_bloom_amount's meaning)
+	bool Anamorphic = false;
+	float AnamorphicRatio = 3.0f;
+	float Step = 1.0f;              // gl_bloom_step's meaning (E3)
+	FVector3 Tint = FVector3(1.0f, 1.0f, 1.0f);   // on the bloom added back; carries an override's intensity and pulse
+	float Chromatic = 0.0f;
+	// The exposure combine's values as the camera exposure sends them (PPCameraExposure::CombineUniforms).
+	float ExposureBase = 0.35f;
+	float ExposureMin = 0.35f;
+	float ExposureScale = 1.3f;
+	float ExposureSpeed = 0.05f;
+};
+
+// [PINNEDBLOOM] The blur a look asks for: today's seven-texel blur or E3's wide one, with its
+// weights. Two looks with the same chain and the same fringing can share one chain (PPBloomPlan).
+struct PPBloomChain
+{
+	bool Stepped = false;
+	BlurUniforms Horizontal, Vertical;                  // !Stepped; SampleWeights[7] is never set, as today
+	BlurSteppedUniforms HorizontalWide, VerticalWide;   // Stepped
+};
+
+// [PINNEDBLOOM] Which passes bloom runs for an eye (PPBloom::ChoosePlan; EMISSIVE_BLOOM_PLAN.md 2f's A, B, C):
+//   Legacy     today's bloom, draw for draw: pinned bloom off, no light mask for this eye's scene, no
+//              pinned light live, or the pinned look sends the same values as the rest look.
+//   OneChain   the looks differ only before the blur (threshold, knee, exposure, tint and intensity):
+//              one extract carrying both looks (bloomextract.fp BLOOM_EXTRACT_DUAL), one chain, a
+//              neutral tint on the final combine.
+//   TwoChains  the blur (spread, streaks, step) or the fringing differs: the pinned share gets a
+//              chain of its own (BLOOM_EXTRACT_SHARE twice), about today's bloom again in cost.
+enum class PPBloomPlan { Legacy, OneChain, TwoChains };
+
 class PPBloom
 {
 public:
@@ -1182,6 +1292,9 @@ public:
 	// nothing; a new look eases in over its fade, a clear eases out over the last one.
 	void SetOverride(const PPBloomOverride &target, uint64_t now);
 	void ClearOverride(uint64_t now);
+
+	// [PINNEDBLOOM] The plan the last RenderBloom ran (a label for the performance log).
+	PPBloomPlan LastPlan() const { return Plan; }
 
 private:
 	void BlurStep(PPRenderState *renderstate, const BlurUniforms &blurUniforms, PPTexture &input, PPTexture &output, PPViewport viewport, bool vertical);
@@ -1205,6 +1318,18 @@ private:
 	static float OverridePulseFactor(const PPBloomOverride &look);
 	static void BlendOverride(const PPBloomOverride &look, float mixAmount, float &threshold, float &knee, float &amount, FVector3 &tint);
 
+	// [PINNEDBLOOM] The looks, the plan and the passes they share (PPBloomLook, PPBloomChain,
+	// PPBloomPlan above; hw_postprocess.cpp). Legacy runs exactly the passes RenderBloom always ran.
+	void RestLook(PPBloomLook &look) const;
+	static void PinnedLook(PPBloomLook &look);
+	static void ComputeChain(const PPBloomLook &look, PPBloomChain &chain);
+	static bool SameChain(const PPBloomChain &a, const PPBloomChain &b);
+	PPBloomPlan ChoosePlan(const PPBloomLook &rest, const PPBloomChain &restChain, PPBloomLook &pinned, PPBloomChain &pinnedChain, bool &pinnedExposure) const;
+	void RenderExtractShare(PPRenderState *renderstate, PPBlurLevel &level0, const PPBloomLook &look, int weightClass, PPTexture *exposureTexture);
+	void RenderChain(PPRenderState *renderstate, PPBlurLevel *chainLevels, const PPBloomChain &chain);
+	void RenderFinalCombine(PPRenderState *renderstate, PPBlurLevel &level0, const FVector3 &tint, float chromatic);
+	void UpdatePinnedTextures();
+
 	PPBlurLevel levels[NumBloomLevels];
 	int lastWidth = 0;
 	int lastHeight = 0;
@@ -1218,6 +1343,13 @@ private:
 	uint64_t OverrideStartMs = 0;
 	float OverrideFadeSeconds = 0.0f;
 
+	// [PINNEDBLOOM] The pinned share's own chain (TwoChains), sized like `levels` the first time it runs;
+	// its textures cost nothing until then.
+	PPBlurLevel pinLevels[NumBloomLevels];
+	int pinLastWidth = 0;
+	int pinLastHeight = 0;
+	PPBloomPlan Plan = PPBloomPlan::Legacy;
+
 	PPShader BloomCombine = { "shaders/pp/bloomcombine.fp", "", BloomCombineUniforms::Desc() };
 	PPShader BloomExtract = { "shaders/pp/bloomextract.fp", "", ExtractUniforms::Desc() };
 	PPShader BlurVertical = { "shaders/pp/blur.fp", "#define BLUR_VERTICAL\n", BlurUniforms::Desc() };
@@ -1225,6 +1357,10 @@ private:
 	// [BLOOMSTEP] Compiled on first use, so they cost nothing until gl_bloom_step leaves 1.
 	PPShader BlurVerticalStepped = { "shaders/pp/blur.fp", "#define BLUR_VERTICAL\n#define BLUR_STEPPED\n", BlurSteppedUniforms::Desc() };
 	PPShader BlurHorizontalStepped = { "shaders/pp/blur.fp", "#define BLUR_HORIZONTAL\n#define BLUR_STEPPED\n", BlurSteppedUniforms::Desc() };
+	// [PINNEDBLOOM] The extract weighed by the light mask. Compiled on first use, so they cost nothing
+	// until pinned bloom first runs a OneChain or TwoChains plan.
+	PPShader BloomExtractShare = { "shaders/pp/bloomextract.fp", "#define BLOOM_EXTRACT_SHARE\n", ExtractShareUniforms::Desc() };
+	PPShader BloomExtractDual = { "shaders/pp/bloomextract.fp", "#define BLOOM_EXTRACT_DUAL\n", ExtractDualUniforms::Desc() };
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1343,11 +1479,26 @@ public:
 
 	PPTexture CameraTexture = { 1, 1, PixelFormat::R32f };
 
+	// [BLOOMSAFETY] [PINNEDBLOOM] The exposure combine's uniforms from four exposure settings, through E2's
+	// guards (Min floored at 0.01, Speed 0..1, a non-finite value to its default). The live exposure and
+	// the pinned bloom look both take theirs from here, so a captured look sends the very same bits.
+	static ExposureCombineUniforms CombineUniforms(float base, float minimum, float scale, float speed);
+
+	// [PINNEDBLOOM] The pinned bloom look's own exposure, while it differs from the live one: the same
+	// combine over this eye's measured average, into PinnedCameraTexture, adapting at the pinned speed.
+	// Its first frame after a frame without it (or after the levels were rebuilt) draws with no blend.
+	void RenderPinned(PPRenderState *renderstate, const ExposureCombineUniforms &combineUniforms);
+	PPTexture PinnedCameraTexture = { 1, 1, PixelFormat::R32f };
+
 private:
 	void UpdateTextures(int width, int height);
 
 	std::vector<PPExposureLevel> ExposureLevels;
 	bool FirstExposureFrame = true;
+	// [PINNEDBLOOM] PinnedCameraTexture holds a running value, and the displayed frame
+	// (DFrameBuffer::FrameCount) that last drew it.
+	bool PinnedHistory = false;
+	uint64_t PinnedLastFrame = 0;
 
 	PPShader ExposureExtract = { "shaders/pp/exposureextract.fp", "", ExposureExtractUniforms::Desc() };
 	PPShader ExposureAverage = { "shaders/pp/exposureaverage.fp", "", {}, 400 };
@@ -1739,9 +1890,11 @@ private:
 // target, the program choice, SyncDrawnLines and Pass1. So both eyes, the layered post path
 // and the post-only eye agree. GL and GLES never call BeginFrame: never active there.
 //
-// NOTHING READS IT YET but the debug view (r_lightmask_debug), drawn in bloom's place. The heat
-// shimmer moves it with the image (PPHeatRefraction::Render) so it stays under the pixels it
-// describes. E6b's pinned bloom and E4's emissive-only bloom read LightMaskCurrent.
+// WHO READS IT. The debug view (r_lightmask_debug), drawn in bloom's place, and [PINNEDBLOOM] E6b's
+// pinned bloom (PPBloom::RenderBloom, PPBloomPlan), which weighs the bloom extract by each pixel's
+// pinned share. The heat shimmer moves it with the image (PPHeatRefraction::Render) and the smoke
+// dims it by its own transmittance (PPSmokeVolume::Render), so at bloom LightMaskCurrent still
+// describes the pixels bloom reads. E4's emissive-only bloom will read it too.
 //
 struct LightMaskDebugUniforms
 {
@@ -1783,6 +1936,18 @@ public:
 	void SetPostInput(bool valid) { PostInput = FrameActive && valid; }
 	bool PostInputValid() const { return PostInput; }
 
+	// [PINNEDBLOOM] Pinned bloom this frame ("Keep legacy lasers"): gl_bloom_pin_beams, with gl_bloom,
+	// as BeginFrame saw it, while the scene draws the mask. PPBloom reads this and never the cvar, so
+	// every eye of the frame weighs its bloom alike.
+	bool PinnedBloomOn() const { return PinnedBloom; }
+
+	// [PINNEDBLOOM] Whether pinned light can be on screen this frame -- today, whether any beam slot is
+	// live with a non-zero intensity (the beam upload's own test). The game side reports it once per
+	// displayed frame, before the eye loop (hw_entrypoint.cpp); BeginFrame clears the report. A frame
+	// with no report counts as live: a missing report can cost PPBloom's second chain, never the look.
+	void SetPinnedLightLive(bool live) { PinnedLightReported = true; PinnedLight = live; }
+	bool PinnedLightMayBeLive() const { return !PinnedLightReported || PinnedLight; }
+
 	// The debug view, in bloom's place (Pass1). True when it drew, and then bloom does not run.
 	bool RenderDebug(PPRenderState *renderstate);
 
@@ -1790,6 +1955,9 @@ private:
 	bool FrameActive = false;
 	bool PostInput = false;
 	int DebugMode = 0;
+	bool PinnedBloom = false;	// [PINNEDBLOOM]
+	bool PinnedLightReported = false;
+	bool PinnedLight = false;
 
 	PPShader DebugShader = { "shaders/pp/lightmaskdebug.fp", "", LightMaskDebugUniforms::Desc() };
 };

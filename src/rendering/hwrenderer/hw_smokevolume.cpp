@@ -26,10 +26,18 @@
 #include "hw_cvars.h"
 #include "hw_perflog.h"
 #include "g_levellocals.h"
+#include "a_dynlight.h"		// [13d] FDynamicLight, r_dynlights: the lights in the smoke
 #include "doomdef.h"
 #include "v_video.h"
 #include "i_time.h"
 #include "printf.h"
+
+// [SMOKEVOLUME] 13d: r_smoke_light_quality -- how finely the light inside the smoke is worked out, as light cells
+// per smoke tile: 1 = 4 (half the smoke grid's resolution), 2 = 6 (three quarters, the default), 3 = 8 (the smoke
+// grid's own); about 10 / 32 / 76 MB at the default smoke quality (hw_framecompute.h, SmokeLightGridFor).
+// Renderer-read every frame in PrepareLight, so it responds with a menu open; a change re-makes only the light
+// grid. Defined beside its one reader.
+CVAR(Int, r_smoke_light_quality, SMOKE_LIGHT_QUALITY_DEFAULT, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
 namespace
 {
@@ -349,6 +357,11 @@ void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double 
 	for (int axis = 0; axis < 3; axis++)
 		mDraw.OriginCell[axis] = out.OriginCell[axis];
 	mDraw.TicFrac = out.TicFrac;
+
+	// [13d] The light grid: its quality and ambient columns while the volume is active, its lights when there is
+	// smoke to draw.
+	PrepareLight(Level, eye, out);
+	mDraw.LightQuality = out.Light.Quality;
 
 	out.Kernels = mKernels.empty() ? nullptr : mKernels.data();
 	out.KernelCount = (int)mKernels.size();
@@ -1039,4 +1052,379 @@ void SmokeVolume::RunMaskWork(FLevelLocals* Level, const SmokeVolumeFrame& frame
 			mBuildCells > 0 ? 100.0 * (double)mBuildSolidCells / (double)mBuildCells : 0.0,
 			totalMs, mBuildFrames, mBuildFrames > 0 ? totalMs / mBuildFrames : 0.0, MASK_BUDGET_MS);
 	}
+}
+
+//-----------------------------------------------------------------------------
+//
+// [13d] The light grid ("Engine docs/SMOKE_VOLUME_PLAN.md" 13d): its quality, each
+// column's sector light, and the dynamic lights that reach the box
+//
+//-----------------------------------------------------------------------------
+
+namespace
+{
+	// A light whose sphere reaches the box, before the nearest SMOKE_LIGHTS_MAX are kept.
+	struct LightCandidate
+	{
+		double Distance = 0;
+		FDynamicLight* Light = nullptr;
+		float Color[3] = { 0, 0, 0 };
+	};
+	std::vector<LightCandidate> LightCandidates;
+
+	// A sector's light as the ambient columns hold it: 13c's lightlevel / 255 x the sector's light colour, RGBA8
+	// packed r | g << 8 | b << 16, alpha 255 (so 0 means "not listed yet").
+	uint32_t PackSectorLight(const sector_t* sec)
+	{
+		if (sec == nullptr)
+			return 0xff000000u;
+		const int level = std::clamp((int)sec->lightlevel, 0, 255);
+		const PalEntry color = sec->Colormap.LightColor;
+		const uint32_t r = (uint32_t)((level * (int)color.r + 127) / 255);
+		const uint32_t g = (uint32_t)((level * (int)color.g + 127) / 255);
+		const uint32_t b = (uint32_t)((level * (int)color.b + 127) / 255);
+		return r | (g << 8) | (b << 16) | 0xff000000u;
+	}
+}
+
+void SmokeVolume::PrepareLight(FLevelLocals* Level, const DVector3& eye, SmokeVolumeFrame& out)
+{
+	const bool timed = PerfLog::GroupsWanted();
+	const uint64_t startNs = timed ? I_nsTime() : 0;
+
+	SmokeLightFrame& light = out.Light;
+	light.Quality = std::clamp((int)r_smoke_light_quality, SMOKE_LIGHT_QUALITY_MIN, SMOKE_LIGHT_QUALITY_MAX);
+	light.Grid = SmokeLightGridFor(out.Grid, light.Quality);
+	double ambient = Level->SmokeLook.Ambient;
+	if (!(ambient >= 0.0))
+		ambient = 0.0;		// written this way so a NaN lands on 0 too
+	light.AmbientScale = (float)std::min(ambient, 4.0);
+
+	UpdateAmbientColumns(Level, eye, out, light);
+	if (out.HasSmoke)
+		GatherLights(Level, eye, out, light);
+	else
+		mLights.clear();
+
+	// fx.smokelights (cpu_fx_ms): the light list and the ambient columns, every frame the volume is active.
+	if (timed)
+		PerfLog::AddCpuSample("fx.smokelights", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+// Each light-grid column's sector light (see the header). A column is resolved once for as long as it stays in
+// the box; the bytes are rebuilt only when a listed sector's light or colour, a column, or the fallback changed.
+void SmokeVolume::UpdateAmbientColumns(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light)
+{
+	light.AmbientColumns = nullptr;
+	light.AmbientByteCount = 0;
+	light.AmbientSerial = 0;
+
+	const SmokeLightGridSpec& grid = light.Grid;
+	const int sizeX = grid.SizeX;
+	const int sizeY = grid.SizeY;
+	if (sizeX <= 0 || sizeY <= 0 || grid.CellsPerTile <= 0 || !(grid.CellSize > 0.0))
+		return;
+
+	const size_t columns = (size_t)sizeX * (size_t)sizeY;
+	const int B = AMBIENT_BLOCK_COLUMNS;
+	const int blocksX = (sizeX + B - 1) / B;
+	const int blocksY = (sizeY + B - 1) / B;
+	const unsigned sectorCount = Level->sectors.Size();
+	// The box's first column in world light columns: its origin is whole tiles, so this is exact.
+	const int origin[2] =
+	{
+		frame.OriginCell[0] / SMOKE_TILE_CELLS * grid.CellsPerTile,
+		frame.OriginCell[1] / SMOKE_TILE_CELLS * grid.CellsPerTile,
+	};
+
+	const auto recount = [&]()
+	{
+		mBlockUnknown.assign((size_t)blocksX * (size_t)blocksY, 0);
+		mUnknownColumns = 0;
+		mFallbackColumns = 0;
+		for (int y = 0; y < sizeY; y++)
+		{
+			for (int x = 0; x < sizeX; x++)
+			{
+				const int index = mColumnSector[x + (size_t)y * (size_t)sizeX];
+				if (index == -1)
+				{
+					mBlockUnknown[x / B + (size_t)(y / B) * (size_t)blocksX]++;
+					mUnknownColumns++;
+				}
+				if (index < 0)
+					mFallbackColumns++;
+			}
+		}
+	};
+
+	if (mAmbientLevelSerial != mLevelSerial || mAmbientSize[0] != sizeX || mAmbientSize[1] != sizeY ||
+		mAmbientCellSize != grid.CellSize || mSectorPacked.size() != sectorCount || mColumnSector.size() != columns)
+	{
+		// A new map, or another grid: nothing known.
+		mAmbientLevelSerial = mLevelSerial;
+		mAmbientSize[0] = sizeX;
+		mAmbientSize[1] = sizeY;
+		mAmbientCellSize = grid.CellSize;
+		mAmbientOrigin[0] = origin[0];
+		mAmbientOrigin[1] = origin[1];
+		mColumnSector.assign(columns, -1);
+		mAmbientSectors.clear();
+		mSectorPacked.assign(sectorCount, 0);
+		mAmbientBytes.assign(columns * 4, 0);
+		recount();
+		mAmbientDirty = true;
+	}
+	else if (origin[0] != mAmbientOrigin[0] || origin[1] != mAmbientOrigin[1])
+	{
+		// A recentre: every column still inside keeps its sector, world-aligned.
+		const int dx = origin[0] - mAmbientOrigin[0];
+		const int dy = origin[1] - mAmbientOrigin[1];
+		std::vector<int> moved(columns, -1);
+		for (int y = 0; y < sizeY; y++)
+		{
+			const int sy = y + dy;
+			if (sy < 0 || sy >= sizeY)
+				continue;
+			for (int x = 0; x < sizeX; x++)
+			{
+				const int sx = x + dx;
+				if (sx < 0 || sx >= sizeX)
+					continue;
+				moved[x + (size_t)y * (size_t)sizeX] = mColumnSector[sx + (size_t)sy * (size_t)sizeX];
+			}
+		}
+		mColumnSector.swap(moved);
+		mAmbientOrigin[0] = origin[0];
+		mAmbientOrigin[1] = origin[1];
+		recount();
+		mAmbientDirty = true;
+	}
+
+	// New columns, nearest the eye first, within the budget (at least one block a frame).
+	if (mUnknownColumns > 0)
+	{
+		const double cell = grid.CellSize;
+		struct Block
+		{
+			int Index;
+			double Distance2;
+		};
+		std::vector<Block> order;
+		for (int b = 0; b < (int)mBlockUnknown.size(); b++)
+		{
+			if (mBlockUnknown[b] <= 0)
+				continue;
+			const double cx = (origin[0] + (b % blocksX + 0.5) * B) * cell - eye.X;
+			const double cy = (origin[1] + (b / blocksX + 0.5) * B) * cell - eye.Y;
+			order.push_back({ b, cx * cx + cy * cy });
+		}
+		std::sort(order.begin(), order.end(), [](const Block& a, const Block& b) { return a.Distance2 < b.Distance2; });
+
+		const uint64_t resolveStartNs = I_nsTime();
+		bool resolvedAny = false;
+		for (const Block& block : order)
+		{
+			if (resolvedAny && (double)(I_nsTime() - resolveStartNs) / 1e6 >= AMBIENT_BUDGET_MS)
+				break;
+			const int bx = block.Index % blocksX;
+			const int by = block.Index / blocksX;
+			const int x1 = std::min((bx + 1) * B, sizeX);
+			const int y1 = std::min((by + 1) * B, sizeY);
+			for (int y = by * B; y < y1; y++)
+			{
+				for (int x = bx * B; x < x1; x++)
+				{
+					int& sectorIndex = mColumnSector[x + (size_t)y * (size_t)sizeX];
+					if (sectorIndex != -1)
+						continue;
+					const DVector2 at((origin[0] + x + 0.5) * cell, (origin[1] + y + 0.5) * cell);
+					const subsector_t* ss = Level->PointInRenderSubsector(at);
+					const sector_t* sec = ss != nullptr ? ss->sector : nullptr;
+					const int index = sec != nullptr ? sec->Index() : -1;
+					if (index >= 0 && (unsigned)index < sectorCount)
+					{
+						sectorIndex = index;
+						mFallbackColumns--;
+						if ((mSectorPacked[index] >> 24) == 0)
+						{
+							mSectorPacked[index] = PackSectorLight(&Level->sectors[index]);
+							mAmbientSectors.push_back(index);
+						}
+					}
+					else
+					{
+						sectorIndex = -2;	// no sector here: the fallback, and never looked up again
+					}
+				}
+			}
+			mUnknownColumns -= mBlockUnknown[block.Index];
+			mBlockUnknown[block.Index] = 0;
+			resolvedAny = true;
+		}
+		if (resolvedAny)
+			mAmbientDirty = true;
+	}
+
+	// Sector light specials (flicker, strobe, glow) change a sector's light at tic rate.
+	for (int index : mAmbientSectors)
+	{
+		const uint32_t packed = PackSectorLight(&Level->sectors[index]);
+		if (packed != mSectorPacked[index])
+		{
+			mSectorPacked[index] = packed;
+			mAmbientDirty = true;
+		}
+	}
+	const uint32_t fallback = PackSectorLight(Level->PointInSector(eye.X, eye.Y));
+	if (fallback != mFallbackPacked)
+	{
+		mFallbackPacked = fallback;
+		if (mFallbackColumns > 0)
+			mAmbientDirty = true;
+	}
+
+	if (mAmbientDirty)
+	{
+		mAmbientDirty = false;
+		for (size_t i = 0; i < columns; i++)
+		{
+			const int index = mColumnSector[i];
+			const uint32_t packed = index >= 0 ? mSectorPacked[index] : mFallbackPacked;
+			uint8_t* texel = &mAmbientBytes[i * 4];
+			texel[0] = (uint8_t)(packed & 0xff);
+			texel[1] = (uint8_t)((packed >> 8) & 0xff);
+			texel[2] = (uint8_t)((packed >> 16) & 0xff);
+			texel[3] = 255;
+		}
+		if (++mAmbientSerial == 0)
+			mAmbientSerial = 1;
+	}
+
+	light.AmbientColumns = mAmbientBytes.data();
+	light.AmbientByteCount = mAmbientBytes.size();
+	light.AmbientSerial = mAmbientSerial;
+}
+
+// The dynamic lights in the smoke: every light whose sphere reaches the box, the nearest SMOKE_LIGHTS_MAX to the eye
+// (distance to the sphere). No frustum test -- a light behind the viewer still lights the smoke ahead. Colour as stage
+// 2d's view lights (GetDynSpriteLight's), times the look's scatter. DontLightOthers lights light only their own actor
+// and are left out; DontLightActors lights are taken (smoke is air, not an actor).
+void SmokeVolume::GatherLights(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light)
+{
+	mLights.clear();
+	light.Lights = nullptr;
+	light.LightCount = 0;
+
+	double scatter = Level->SmokeLook.Scatter;
+	if (!(scatter > 0.0) || !r_dynlights || Level->lights == nullptr)
+		return;		// no dynamic light shows in this smoke
+	scatter = std::min(scatter, 1.0);
+
+	const double cell = frame.Grid.CellSize;
+	const double boxMin[3] = { frame.OriginCell[0] * cell, frame.OriginCell[1] * cell, frame.OriginCell[2] * cell };
+	const double boxMax[3] = { boxMin[0] + frame.Grid.SizeX * cell, boxMin[1] + frame.Grid.SizeY * cell, boxMin[2] + frame.Grid.SizeZ * cell };
+
+	LightCandidates.clear();
+	for (FDynamicLight* dl = Level->lights; dl != nullptr; dl = dl->next)
+	{
+		if (!dl->IsActive() || !dl->visibletoplayer || dl->DontLightOthers())
+			continue;
+		const double radius = dl->GetRadius();
+		if (!(radius > 0.0))
+			continue;
+
+		const double at[3] = { dl->Pos.X, dl->Pos.Y, dl->Pos.Z };
+		double outsideSquared = 0.0;
+		for (int axis = 0; axis < 3; axis++)
+		{
+			const double d = at[axis] < boxMin[axis] ? boxMin[axis] - at[axis] : (at[axis] > boxMax[axis] ? at[axis] - boxMax[axis] : 0.0);
+			outsideSquared += d * d;
+		}
+		if (!(outsideSquared < radius * radius))
+			continue;		// its sphere misses the box (and a light at no finite position)
+
+		float lr = dl->GetRed() / 255.f;
+		float lg = dl->GetGreen() / 255.f;
+		float lb = dl->GetBlue() / 255.f;
+		if (dl->target && (dl->target->renderflags2 & RF2_LIGHTMULTALPHA))
+		{
+			const float alpha = (float)dl->target->Alpha;
+			lr *= alpha;
+			lg *= alpha;
+			lb *= alpha;
+		}
+		const float intensity = (float)dl->GetLightDefIntensity();
+		lr *= intensity;
+		lg *= intensity;
+		lb *= intensity;
+		if (dl->IsSubtractive())
+		{
+			const float bright = sqrtf(lr * lr + lg * lg + lb * lb);
+			lr = (bright - lr) * -1;
+			lg = (bright - lg) * -1;
+			lb = (bright - lb) * -1;
+		}
+		if (lr == 0.f && lg == 0.f && lb == 0.f)
+			continue;
+
+		LightCandidate candidate;
+		candidate.Distance = std::max((dl->Pos - eye).Length() - radius, 0.0);
+		candidate.Light = dl;
+		candidate.Color[0] = lr;
+		candidate.Color[1] = lg;
+		candidate.Color[2] = lb;
+		LightCandidates.push_back(candidate);
+	}
+
+	size_t count = LightCandidates.size();
+	if (count > (size_t)SMOKE_LIGHTS_MAX)
+	{
+		std::nth_element(LightCandidates.begin(), LightCandidates.begin() + SMOKE_LIGHTS_MAX, LightCandidates.end(),
+			[](const LightCandidate& a, const LightCandidate& b) { return a.Distance < b.Distance; });
+		count = (size_t)SMOKE_LIGHTS_MAX;
+	}
+
+	// The engine's shadow map is live this frame exactly when surfaces use it (hw_dynlightdata.cpp): its rows and
+	// every light's mShadowmapIndex were set at the top of this frame's RenderViewpoint, before the compute hook.
+	const bool shadowed = screen != nullptr && screen->mShadowMap.Enabled();
+
+	mLights.resize(count);
+	for (size_t i = 0; i < count; i++)
+	{
+		const LightCandidate& candidate = LightCandidates[i];
+		const FDynamicLight* dl = candidate.Light;
+		SmokeLightRecord& record = mLights[i];
+
+		record.Position[0] = (float)(dl->Pos.X - boxMin[0]);
+		record.Position[1] = (float)(dl->Pos.Y - boxMin[1]);
+		record.Position[2] = (float)(dl->Pos.Z - boxMin[2]);
+		record.Radius = (float)dl->GetRadius();
+		for (int c = 0; c < 3; c++)
+			record.Color[c] = (float)(candidate.Color[c] * scatter);
+		record.Weight = std::max(0.2126f * record.Color[0] + 0.7152f * record.Color[1] + 0.0722f * record.Color[2], 0.0f);
+
+		if (dl->IsSpot())
+		{
+			// hw_dynlightdata.cpp's GetSpotlightShaderParams, uncached, as stage 2d: shader axes (x, up, y) put back
+			// into Doom's. A cone whose inner and outer angles are equal would make smoothstep's edges equal.
+			float cosInner = (float)dl->pSpotInnerAngle->Cos();
+			float cosOuter = (float)dl->pSpotOuterAngle->Cos();
+			if (!(cosOuter < cosInner))
+				cosOuter = cosInner - 1e-4f;
+			const DAngle negPitch = -dl->Pitch;
+			const DAngle angle = dl->Yaw;
+			const double xzLength = negPitch.Cos();
+			record.SpotDirection[0] = float(-angle.Cos() * xzLength);
+			record.SpotDirection[1] = float(-angle.Sin() * xzLength);
+			record.SpotDirection[2] = float(-negPitch.Sin());
+			record.SpotCosOuter = cosOuter;
+			record.SpotCosInner = cosInner;
+		}
+
+		record.ShadowRow = (shadowed && dl->mShadowmapIndex >= 0 && dl->mShadowmapIndex < 1024) ? dl->mShadowmapIndex : -1;
+	}
+
+	light.Lights = mLights.empty() ? nullptr : mLights.data();
+	light.LightCount = (int)mLights.size();
 }

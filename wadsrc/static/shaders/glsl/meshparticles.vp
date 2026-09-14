@@ -311,12 +311,168 @@ vec3 MeshParticleLight(vec3 pos, float ambient)
 	return clamp(light, vec3(0.0), vec3(1.4));
 }
 
+// [DEBRISPOOL] DEBRIS THAT STAYS ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #9, "Engine docs/DEBRIS_9_IMPL_NOTES.md").
+// A debris pool piece drawn as its mesh, from set 1 binding 10 (the pieces) and 11 (the debris definitions and the pool's
+// instance list), declared only here and in gpuparticles.vp. DebrisPool::DrawMeshes starts a pool draw's instances at
+// kDebrisInstanceBase, far above any ring instance list, so main() tells the two apart by gl_InstanceIndex alone.
+// DrawPooledMesh is main()'s look, token for token, with the placement from the pool:
+//   - WHERE AND THE TURN: its position and turn from the step (shaders/compute/debris_step.comp), blended between the last
+//     two steps; the step bounced it, settled it flat and rested it, so nothing is solved here;
+//   - THE CLOCK: the ramps run over its life and hold their last key after it; a piece that never rests is gone when its
+//     life ends; one that rests SHRINKS away over its restfade at the end of its rest (a mesh has no alpha), in place of
+//     `fade = smooth`.
+//
+// hw_debrisframe.h DebrisPieceGpu and DebrisDefinitionGpu: gpuparticles.vp declares the same blocks, byte for byte.
+struct DebrisPiece { GpuParticle spawn; vec4 position; vec4 previous; vec4 velocity; vec4 turn; vec4 previousTurn; vec4 spin; };
+layout(set = 1, binding = 10, std430) buffer readonly DebrisPoolSSO
+{
+	DebrisPiece debrisPieces[];
+};
+struct DebrisDefinition { vec4 physics; vec4 motion; vec4 body; vec4 boundsMin; vec4 boundsMax; };
+layout(set = 1, binding = 11, std430) buffer readonly DebrisDefinitionSSO
+{
+	vec4 debrisInfo;		// x the rest scale (r_debris_life / 60)  y rests this long or more are scaled  z capacity  w mesh instances
+	DebrisDefinition debrisDefinitions[256];
+	uint debrisMeshInstances[];
+};
+
+// DEBRIS_MESH_INSTANCE_BASE and DEBRIS_STEP_SECONDS (hw_debrisframe.h).
+const int kDebrisInstanceBase = 16777216;
+const float kDebrisStepSeconds = 1.0 / 35.0;
+
+// gpuparticles.vp's DebrisDrawFade, token for token: how much of a pool piece is still drawn.
+float DebrisDrawFade(DebrisPiece piece, int defSlot, float age, float life)
+{
+	float restLife = debrisDefinitions[defSlot].physics.z;
+	if (restLife <= 0.0)
+		return (age <= life) ? 1.0 : 0.0;
+	float restFade = debrisDefinitions[defSlot].physics.w;
+	float scaledRest = (restLife >= debrisInfo.y) ? restLife * debrisInfo.x : restLife;
+	float restStart = piece.velocity.w;
+	if (restStart < 0.0 && age >= life)
+		restStart = piece.spawn.a.w + life;
+	if (restStart < 0.0)
+		return 1.0;
+	float overRest = uLevelTime.x - restStart - scaledRest;
+	if (overRest <= 0.0)
+		return 1.0;
+	if (overRest >= restFade)
+		return 0.0;
+	return 1.0 - smoothstep(0.0, restFade, overRest);
+}
+
+void DrawPooledMesh(int listIndex)
+{
+	uint poolSlot = debrisMeshInstances[listIndex];
+	DebrisPiece piece = debrisPieces[poolSlot];
+	GpuParticle part = piece.spawn;
+
+	float life = part.b.w;
+	float age = uLevelTime.x - part.a.w;
+	int defSlot = int(part.d.x + 0.5);
+	if (piece.position.w < 0.5 || life <= 0.0 || age < 0.0 || defSlot < 0 || defSlot >= kMeshDefinitionSlots)
+	{
+		CollapseMesh();
+		return;
+	}
+	float diameter = meshDefinitions[defSlot].boundsMin.w;
+	if (!(diameter > 0.0))
+	{
+		CollapseMesh();
+		return;
+	}
+	float debrisFade = DebrisDrawFade(piece, defSlot, age, life);
+	if (debrisFade <= 0.0)
+	{
+		CollapseMesh();
+		return;
+	}
+	bool rests = debrisDefinitions[defSlot].physics.z > 0.0;
+	float t = min(age / life, 1.0);
+
+	// THE RAMPS: main()'s.
+	int keyCount = clamp(int(MeshDefinition(defSlot).motion.w + 0.5), 1, 8);
+	int k0 = 0;
+	int k1 = 0;
+	float f = 0.0;
+	if (keyCount > 1 && t > MeshDefinition(defSlot).key[0].x)
+	{
+		k0 = keyCount - 1;
+		k1 = k0;
+		for (int i = 1; i < keyCount; i++)
+		{
+			if (t < MeshDefinition(defSlot).key[i].x)
+			{
+				k0 = i - 1;
+				k1 = i;
+				float t0 = MeshDefinition(defSlot).key[k0].x;
+				f = (t - t0) / (MeshDefinition(defSlot).key[k1].x - t0);
+				break;
+			}
+		}
+	}
+	vec4 key0 = MeshDefinition(defSlot).key[k0];
+	vec4 key1 = MeshDefinition(defSlot).key[k1];
+
+	// SIZE: main()'s, shrinking over the fade at the end of a rest.
+	float sizeFactor = part.d.y * uGpuParticleParams.x / diameter;
+	float scale = mix(key0.y, key1.y, f) * sizeFactor * (rests ? debrisFade : 1.0);
+	if (!(scale > 0.0))
+	{
+		CollapseMesh();
+		return;
+	}
+	float emissive = key0.w + (key1.w - key0.w) * f;
+	vec3 color0 = MeshKeyColor(defSlot, k0);
+	vec3 rampColor = color0 + (MeshKeyColor(defSlot, k1) - color0) * f;
+
+	// WHERE AND THE TURN: the pool's, between its last two steps.
+	float stepBlend = clamp((uLevelTime.x - piece.previous.w) / kDebrisStepSeconds, 0.0, 1.0);
+	vec3 pos = mix(piece.previous.xyz, piece.position.xyz, stepBlend);
+	vec4 turnBefore = (dot(piece.previousTurn, piece.turn) < 0.0) ? -piece.previousTurn : piece.previousTurn;
+	mat3 turnMatrix = MeshQuatMatrix(normalize(mix(turnBefore, piece.turn, stepBlend)));
+
+	// THE LIGHT: main()'s, once for the chunk. A piece that never rests fades its glow by the fade flag; a resting one shrinks.
+	float lit = clamp(MeshDefinition(defSlot).look.x, 0.0, 1.0);
+	float fade = 1.0;
+	if (!rests && (int(MeshDefinition(defSlot).look.w + 0.5) & 1) != 0)
+		fade = 1.0 - smoothstep(0.6, 1.0, t);
+	vec3 bodyLight = vec3(1.0);
+	if (lit > 0.0)
+		bodyLight = mix(vec3(1.0), MeshParticleLight(pos, part.d.z), lit);
+	vMeshBody = vec4(part.c.rgb * rampColor * bodyLight, 1.0);
+	vMeshGlow = vec4(part.c.rgb * rampColor * (part.c.w * emissive * uGpuParticleParams.w * fade), 0.0);
+
+	// THE VERTEX: main()'s.
+	vec3 worldPos = pos + turnMatrix * (aPosition.xyz * scale);
+	vec4 eyePos = ViewMatrix * vec4(worldPos, 1.0);
+	gl_Position = ProjectionMatrix * eyePos;
+
+#ifdef VULKAN_COORDINATE_SYSTEM
+	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+#endif
+
+	vMeshTexCoord = aTexCoord;
+	vec3 worldNormal = turnMatrix * aNormal.xyz;
+	float normalLength = length(worldNormal);
+	worldNormal = (normalLength > 1e-5) ? worldNormal / normalLength : kMeshUp;
+	vMeshEyeNormal = (NormalViewMatrix * vec4(worldNormal, 1.0)).xyz;
+}
+// [DEBRISPOOL] end
+
 void main()
 {
 #ifdef SUPPORTS_MULTIVIEW
 	hwViewIndex = gl_ViewIndex;
 #endif
 
+	// [DEBRISPOOL] An instance of a debris pool mesh draw (DebrisPool::DrawMeshes): the pool piece its list names.
+	if (gl_InstanceIndex >= kDebrisInstanceBase)
+	{
+		DrawPooledMesh(gl_InstanceIndex - kDebrisInstanceBase);
+		return;
+	}
+	// [DEBRISPOOL] end
 	uint ringSlot = meshInstanceSlots[gl_InstanceIndex];
 	GpuParticle part = gpuParticles[ringSlot];
 

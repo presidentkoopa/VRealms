@@ -396,6 +396,34 @@ extern TDeletingArray<FVoxelDef *> VoxelDefs;
 // callers (RenderModel here, AActor::CalcBones in p_mobj.cpp) still compile.
 void RenderFrameModels(FModelRenderer* renderer, FLevelLocals* Level, const FSpriteModelFrame *smf, const FState* curState, int curTics, double ticFrac, FTranslationID translation, AActor* actor, const DPSprite* psp = nullptr);
 
+// RS FORK -- NEAR-EYE FADE (VR_BODY_IK_RETURN_PLAN.md 4b idea 5; FModelRenderer::SetEyeFade).
+//
+// A world model whose placement prefix carries <prefix>_eyefade_far (and, if it wants,
+// _eyefade_near, default 0) dissolves in a dither where it is closer to the eye than far,
+// and is gone by near: an arm reaching past the face, a gun brought up to it, a torso
+// looked down through. The prefix is the one the model is placed by (AActor::
+// PlacementPrefix, else MODELDEF PlacementCVars), so the fade is tuned live on the same
+// page as the model's seat. Read here, beside the placement code and never inside it.
+// Absent, or far <= near: false, and the draw is exactly what it was.
+static bool GetPlacementCVar(const char *name, float &out);
+static bool ModelEyeFadeRange(const FSpriteModelFrame *smf, const AActor *actor, float &nearDist, float &farDist)
+{
+	FName prefix = smf->placementCVars;
+	if (actor->PlacementPrefix != NAME_None && stricmp(actor->PlacementPrefix.GetChars(), "None") != 0)
+		prefix = actor->PlacementPrefix;
+	if (prefix == NAME_None) return false;
+	char nm[192];
+	float f = 0.f, n = 0.f;
+	snprintf(nm, sizeof(nm), "%s_eyefade_far", prefix.GetChars());
+	if (!GetPlacementCVar(nm, f) || !(f > 0.f)) return false;
+	snprintf(nm, sizeof(nm), "%s_eyefade_near", prefix.GetChars());
+	if (!GetPlacementCVar(nm, n) || !(n > 0.f)) n = 0.f;
+	if (!(f > n)) return false;
+	nearDist = n;
+	farDist = f;
+	return true;
+}
+
 void RenderModel(FModelRenderer *renderer, float x, float y, float z, FSpriteModelFrame *smf, AActor *actor, double ticFrac)
 {
 	int smf_flags = smf->getFlags(actor->modelData);
@@ -417,8 +445,14 @@ void RenderModel(FModelRenderer *renderer, float x, float y, float z, FSpriteMod
 	float scaleFactorZ = scale.Y * smf->zscale;
 	float orientation = scaleFactorX * scaleFactorY * scaleFactorZ;
 
+	// RS FORK -- the near-eye fade (ModelEyeFadeRange above). Not set: no call at all.
+	float eyeFadeNear = 0.f, eyeFadeFar = 0.f;
+	const bool eyeFade = ModelEyeFadeRange(smf, actor, eyeFadeNear, eyeFadeFar);
+
 	renderer->BeginDrawModel(actor->RenderStyle, smf_flags, objectToWorldMatrix, orientation < 0);
+	if (eyeFade) renderer->SetEyeFade(eyeFadeNear, eyeFadeFar);
 	RenderFrameModels(renderer, actor->Level, smf, actor->state, actor->tics, ticFrac, translation, actor);
+	if (eyeFade) renderer->SetEyeFade(0.f, 0.f);
 	renderer->EndDrawModel(actor->RenderStyle, smf_flags);
 }
 
@@ -1700,11 +1734,14 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(AActor * actor, float x, float y
 			drawScale = DVector2(sv * actor->ScaleCVarUnit, sv * actor->ScaleCVarUnit);
 	}
 
-	return ObjectToWorldMatrix(actor->Level, DVector3(x, y, z), DRotator(DAngle::fromDeg(pitch), DAngle::fromDeg(angle), DAngle::fromDeg(roll)), drawScale, smf_flags, tic, bodyPivotZ, actor->FollowBodyMode, actor->FollowBodyOfs, actor->FollowBodyYaw, actor->FollowHandMode, actor->FollowHandOfs, actor->PlacementPrefix,
-		following ? &followFrame : nullptr, followFrameOut, actor->ScaleAxes);
+	// AActor::FollowBodyYawInterp -- the body-frame heading as drawn: the value as written
+	// unless the actor opts in to draw-rate interpolation (DrawFollowBodyYaw, actor.h).
+	// AActor::FollowHandRot is always drawn interpolated (DrawFollowHandRot, actor.h).
+	return ObjectToWorldMatrix(actor->Level, DVector3(x, y, z), DRotator(DAngle::fromDeg(pitch), DAngle::fromDeg(angle), DAngle::fromDeg(roll)), drawScale, smf_flags, tic, bodyPivotZ, actor->FollowBodyMode, actor->FollowBodyOfs, actor->DrawFollowBodyYaw(ticFrac), actor->FollowHandMode, actor->FollowHandOfs, actor->PlacementPrefix,
+		following ? &followFrame : nullptr, followFrameOut, actor->ScaleAxes, actor->DrawFollowHandRot(ticFrac));
 }
 
-VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 translation, DRotator rotation, DVector2 scaling, unsigned int flags, double tic, float bodyPivotZ, int followBodyMode, DVector3 followBodyOfs, double followBodyYaw, int followHandMode, DVector3 followHandOfs, FName placementPrefix, const VSMatrix *followFrameIn, VSMatrix *followFrameOut, DVector3 scaleAxes)
+VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 translation, DRotator rotation, DVector2 scaling, unsigned int flags, double tic, float bodyPivotZ, int followBodyMode, DVector3 followBodyOfs, double followBodyYaw, int followHandMode, DVector3 followHandOfs, FName placementPrefix, const VSMatrix *followFrameIn, VSMatrix *followFrameOut, DVector3 scaleAxes, DVector3 followHandRot)
 {
 	double rotateOffset = 0;
 
@@ -1814,8 +1851,9 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 	if (!followedActor && !followedBody && followHand >= 0)
 	{
 		auto vrmode = VRMode::GetVRModeCached(true);
+		bool handMirrored = false;	// AActor::FollowHandRot, below
 		if (vrmode != nullptr && vrmode->IsVR() &&
-			vrmode->GetWeaponTransform(&objectToWorldMatrix, followHand, !(flags & MDL_NOAUTOREVERSE)))
+			vrmode->GetWeaponTransform(&objectToWorldMatrix, followHand, !(flags & MDL_NOAUTOREVERSE), &handMirrored))
 		{
 			// THE MODEL-UNIT CONVERSION, WHICH THIS BRANCH WAS MISSING.
 			//
@@ -1845,6 +1883,37 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 			// change.
 			const float followHandUnitScale = 0.01f;
 			objectToWorldMatrix.scale(followHandUnitScale, followHandUnitScale, followHandUnitScale);
+
+			// AActor::FollowHandRot -- a turn of the hand's own frame, about the hand.
+			//
+			// Written directly after the frame is fetched, so it lands on the vertex
+			// LAST (VSMatrix composes on the right; see step 5): after the model's
+			// whole seat -- MODELDEF Offset, FollowHandOfs, the placement sliders, the
+			// base orientation, the pivot -- and about the controller's origin. A gun
+			// swings about the grip, and followOut (the frame FollowActor riders use)
+			// is copied later from this same matrix, so they turn with it.
+			//
+			// THE AXES ARE THE HAND'S. GetHandTransform's frame is X right, Y up, Z
+			// back (forward is -Z). Yaw is about Y, + turns left like Angle; pitch is
+			// about X, + tips the muzzle down like Pitch; roll is about Z, + tips the
+			// top to the right seen from behind. (The placement sliders, applied in
+			// these same axes in step 5, keep their own labels; this does not copy
+			// them.)
+			//
+			// THE MIRROR. On controller 0 with auto reverse GetWeaponTransform has
+			// scaled X by -1, and a turn written inside that mirror is drawn as its
+			// reflection: the turn about X keeps its sense, the turns about Y and Z
+			// reverse. Negating those two conjugates the turn by the mirror, so it is
+			// drawn as it would be in the unmirrored hand and the same numbers point
+			// the model the same way in either hand. The sliders are left mirrored:
+			// they are a seat the player tunes per hand.
+			if (followHandRot.X != 0.0 || followHandRot.Y != 0.0 || followHandRot.Z != 0.0)
+			{
+				const float mirror = handMirrored ? -1.f : 1.f;
+				objectToWorldMatrix.rotate((float)followHandRot.X * mirror, 0, 1, 0);
+				objectToWorldMatrix.rotate(-(float)followHandRot.Y, 1, 0, 0);
+				objectToWorldMatrix.rotate(-(float)followHandRot.Z * mirror, 0, 0, 1);
+			}
 
 			followedHand = true;
 		}

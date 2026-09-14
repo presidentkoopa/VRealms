@@ -784,8 +784,13 @@ static const char *shaderBindings = R"(
 		vec4  uOutlineParms;
 
 		float uFogDensityScale;
+	#ifdef MODEL_EYE_FADE
+		float uEyeFadeNear;	// [EYEFADE] uFogPad0/1's slots, named only for EFF_EYEFADE (hw_renderstate.h)
+		float uEyeFadeFar;
+	#else
 		int uFogPad0;
 		int uFogPad1;
+	#endif
 		int uFogPad2;
 	};
 
@@ -968,6 +973,10 @@ static const char *shaderBindings = R"(
 	#define uGlobalFadeDensity data[uDataIndex].uGlobalFadeDensity
 	#define uGlobalFadeGradient data[uDataIndex].uGlobalFadeGradient
 	#define uLightRangeLimit data[uDataIndex].uLightRangeLimit
+	#ifdef MODEL_EYE_FADE
+	#define uEyeFadeNear data[uDataIndex].uEyeFadeNear
+	#define uEyeFadeFar data[uDataIndex].uEyeFadeFar
+	#endif
 
 	#define SUPPORTS_SHADOWMAPS
 	#define VULKAN_COORDINATE_SYSTEM

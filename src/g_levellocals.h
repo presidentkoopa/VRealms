@@ -588,6 +588,33 @@ struct FEffectImpulseEvent
 	double   Strength = 0.;
 };
 
+// [DEBRISPOOL] One SpawnParticles burst of a DEBRIS definition (a PARTICLEDEFS `restitution`; "Engine docs/
+// DEBRIS_9_IMPL_NOTES.md"), handed to the renderer's debris pool (hw_debrispool.cpp) instead of written to the
+// particle ring. The call's own arguments, with the definition already resolved on this machine and the seed and
+// the ambient light at the spawn worked out exactly as the ring path works them out, so the pool's pieces start
+// where the ring's records would have.
+struct FDebrisBurstEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	DVector3 Dir{ 0., 0., 1. };
+	DVector3 SurfacePoint{ 0., 0., 0. };
+	DVector3 SurfaceNormal{ 0., 0., 0. };
+	double   Spread = 0.;
+	double   Speed = 0.;
+	double   SpeedJitter = 0.;
+	double   Life = 0.;
+	double   LifeJitter = 0.;
+	double   Intensity = 1.;
+	double   SizeScale = 1.;
+	double   FloorZ = -32768.;
+	int      DefinitionSlot = -1;
+	int      Count = 0;
+	int      Shape = 0;
+	uint32_t Seed = 0;
+	uint32_t Tint = 0xffffffff;
+	float    Ambient = 1.f;
+};
+
 struct FLevelLocals
 {
 	void *level;
@@ -1550,14 +1577,18 @@ public:
 	// header rebuilds nearly the whole engine: debris spawns (#9) and surface damage
 	// paints (#17) add their queue beside these, and a line to BeginEffectTic and
 	// ClearEffectQueues. Written by the natives in vmthunks.cpp; read by the renderer
-	// (hw_smokevolume.cpp) and nothing else.
+	// (hw_smokevolume.cpp; the impulses and debris bursts also hw_debrispool.cpp) and nothing else.
 	static constexpr int MAX_SMOKE_EMITS_PER_TIC = 128;
 	static constexpr int MAX_SMOKE_CARVES_PER_TIC = 128;
 	static constexpr int MAX_EFFECT_IMPULSES_PER_TIC = 128;
+	// [DEBRISPOOL] SpawnParticles calls of debris definitions per tic: a Super Shotgun blast is about 60
+	// (20 pellets, up to three definitions an impact). A burst past this is written to the ring instead.
+	static constexpr int MAX_DEBRIS_BURSTS_PER_TIC = 256;
 
 	FEffectTicQueue<FSmokeEmitEvent, MAX_SMOKE_EMITS_PER_TIC> SmokeEmits;
 	FEffectTicQueue<FSmokeCarveEvent, MAX_SMOKE_CARVES_PER_TIC> SmokeCarves;
 	FEffectTicQueue<FEffectImpulseEvent, MAX_EFFECT_IMPULSES_PER_TIC> EffectImpulses;
+	FEffectTicQueue<FDebrisBurstEvent, MAX_DEBRIS_BURSTS_PER_TIC> DebrisBursts;	// [DEBRISPOOL] written by SpawnParticles
 
 	// P_Ticker, at the top of this level's tic, before any writer runs.
 	void BeginEffectTic()
@@ -1565,6 +1596,7 @@ public:
 		SmokeEmits.BeginTic(maptime);
 		SmokeCarves.BeginTic(maptime);
 		EffectImpulses.BeginTic(maptime);
+		DebrisBursts.BeginTic(maptime);
 	}
 
 	// ClearLevelData. maptime restarts at 0 on the new map.
@@ -1573,7 +1605,12 @@ public:
 		SmokeEmits.Reset(0);
 		SmokeCarves.Reset(0);
 		EffectImpulses.Reset(0);
+		DebrisBursts.Reset(0);
 	}
+
+	// [DEBRISPOOL] Raised by ClearGpuParticles: the renderer's debris pool empties, as the ring does. A new
+	// map or savegame load empties the pool through LevelDataSerial instead.
+	uint64_t DebrisClearSerial = 0;
 
 	// [EFFECTQUEUES] THE LEVEL-DATA SERIAL: renewed by ClearLevelData on every map change
 	// and savegame load, from a process-wide counter (never this object's address -- a
@@ -2203,6 +2240,18 @@ public:
 		const int defSlot = ResolveParticleDefinitionHandle(definition, true);
 		if (defSlot < 0) return;
 
+		// [DEBRISPOOL] DEBRIS THAT STAYS ("Engine docs/DEBRIS_9_IMPL_NOTES.md"). A debris definition's burst (its
+		// PARTICLEDEFS block has `restitution`) goes to the renderer's debris pool, where each piece is simulated --
+		// it bounces, comes to rest and stays -- while the pool can take it (DebrisPoolTakes: Vulkan, r_debris, the
+		// pool ready on this machine). Otherwise, and when this tic's queue is full, it is written to the ring below
+		// like any definition's. Presentation only, like the ring: nothing in the simulation reads either.
+		extern bool DebrisPoolTakes(int definitionSlot);	// hw_debrispool.cpp
+		if (DebrisPoolTakes(defSlot) && QueueDebrisBurst(defSlot, pos, dir, count, spread, speed, speedJitter, life, lifeJitter,
+			tint, intensity, sizeScale, seed, shape, surfacePoint, surfaceNormal, floorZ))
+		{
+			return;
+		}
+
 		EnsureGpuParticleRing();
 		const unsigned size = GpuParticles.Size();
 		if (size == 0) return;
@@ -2273,10 +2322,51 @@ public:
 		}
 	}
 
+	// [DEBRISPOOL] One debris burst into this tic's queue for the renderer's debris pool (SpawnParticles). The
+	// arguments as SpawnParticles took them; the seed (0: derived here, from the ring cursor and the queue's place,
+	// so two seedless bursts in one tic differ) and the ambient light at pos are worked out now, from the same
+	// inputs the ring path uses. False when this tic's queue is full: the caller writes the ring instead (the
+	// debris pool, which sees the full generation, says so once per map).
+	bool QueueDebrisBurst(int defSlot, const DVector3 &pos, const DVector3 &dir, int count,
+		double spread, double speed, double speedJitter, double life, double lifeJitter,
+		PalEntry tint, double intensity, double sizeScale, int seed,
+		int shape, const DVector3 &surfacePoint, const DVector3 &surfaceNormal, double floorZ)
+	{
+		FDebrisBurstEvent *e = DebrisBursts.Push();
+		if (e == nullptr)
+			return false;
+
+		const uint32_t place = GpuParticleHash((uint32_t)DebrisBursts.Serial[DebrisBursts.Current] * 2654435761U + (uint32_t)DebrisBursts.Count[DebrisBursts.Current]);
+		e->Seed = seed != 0 ? (uint32_t)seed
+			: GpuParticleHash((uint32_t)GpuParticleWritten ^ (uint32_t)(GpuParticleWritten >> 32) ^ 0x9e3779b9U ^ place);
+		e->Ambient = 1.f;
+		if (sector_t *sec = PointInSector(pos))
+			e->Ambient = (float)clamp(sec->lightlevel / 255.0, 0.0, 1.0);
+		e->Pos = pos;
+		e->Dir = dir;
+		e->SurfacePoint = surfacePoint;
+		e->SurfaceNormal = surfaceNormal;
+		e->Spread = spread;
+		e->Speed = speed;
+		e->SpeedJitter = speedJitter;
+		e->Life = life;
+		e->LifeJitter = lifeJitter;
+		e->Intensity = intensity;
+		e->SizeScale = sizeScale;
+		e->FloorZ = floorZ;
+		e->DefinitionSlot = defSlot;
+		e->Count = count;
+		e->Shape = shape;
+		e->Tint = (uint32_t)tint;
+		return true;
+	}
+
 	// Zero every life and push the cursor on by a whole ring, which the
 	// renderer's sync rule reads as "upload everything" on the next scene.
+	// [DEBRISPOOL] The debris pool empties too (DebrisClearSerial), even with no ring yet.
 	void ClearGpuParticles()
 	{
+		DebrisClearSerial++;
 		const unsigned size = GpuParticles.Size();
 		if (size == 0) return;
 		for (auto &r : GpuParticles) r.b[3] = 0.f;

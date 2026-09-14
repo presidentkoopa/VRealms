@@ -26,6 +26,8 @@
 #include "vk_compute.h"
 #include "vulkan/system/vk_renderdevice.h"
 #include "vulkan/system/vk_commandbuffer.h"
+#include "vulkan/textures/vk_texture.h"		// [13d] the engine's shadow map image (VkTextureManager::Shadowmap)
+#include "vulkan/textures/vk_samplers.h"	// [13d] and its sampler
 #include "hw_framecompute.h"
 #include "hw_perflog.h"
 #include "i_time.h"
@@ -88,6 +90,18 @@ namespace
 	};
 	static_assert(sizeof(SmokeShiftConstants) == 48, "SmokeShiftConstants must match smoke_shift.comp's push constant block (48 bytes)");
 
+	// [13d] shaders/compute/smoke_light.comp
+	struct SmokeLightConstants
+	{
+		int32_t RegionMin[4];		// xyz first light cell; w the pass: 0 ambient, 1 a light
+		int32_t RegionMax[4];		// xyz one past the last; w light cells per smoke tile
+		float PositionRadius[4];	// xyz the light, map units from the grid's corner (Doom axes); w its radius
+		float Color[4];				// rgb its colour x the look's scatter; w its luminance weight
+		float SpotDirection[4];		// xyz main.fp's spot direction; w its shadow map row, -1 = none
+		float Cone[4];				// x cos outer, y cos inner; z the light cell size, map units; w the look's ambient
+	};
+	static_assert(sizeof(SmokeLightConstants) == 96, "SmokeLightConstants must match smoke_light.comp's push constant block (96 bytes)");
+
 	uint32_t Groups(int count)
 	{
 		return (uint32_t)std::max((count + 7) / 8, 1);
@@ -138,6 +152,7 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 		// The CPU side already waited out its linger (or r_smoke went off): free now.
 		Release("smoke no longer asked for");
 		mRefusedQuality = 0;	// asked again later: try again
+		mRefusedLightQuality = 0;	// [13d] the same for the light grid
 		status = SmokeVolumeBackendStatus();
 		return;
 	}
@@ -152,6 +167,7 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 		status.Quality = 0;
 		status.RefusedQuality = mRefusedQuality;
 		status.MaskEpoch = 0;
+		status.LightQuality = 0;	// [13d] no volume, no light grid
 	};
 
 	bool fresh = false;
@@ -185,6 +201,12 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 	// [13c] The drawing read some volumes last frame: back to GENERAL before any compute command below
 	// touches them. Nothing is recorded when every volume already is.
 	RestoreComputeLayouts();
+
+	// [13d] The light grid at this frame's light quality: made on the volume's first frame, re-made alone when
+	// r_smoke_light_quality changes. The drawing is published only while it is held (SetupSmokeVolume).
+	EnsureLightGrid(frame.Light);
+	status.LightQuality = mLightQuality;
+	status.RefusedLightQuality = mRefusedLightQuality;
 
 	if (frame.NewBox)
 	{
@@ -224,7 +246,11 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 	// read binds (VkTextureManager::GetTexture hands them out only then). With no smoke nothing is
 	// read, nothing moves, and nothing is recorded.
 	if (mHasSmoke)
+	{
+		// [13d] This frame's light for the smoke, over the tile map the steps just left.
+		RunLight(frame);
 		PrepareDrawLayouts();
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -366,6 +392,9 @@ void VkSmokeVolume::Release(const char* why)
 	if (!IsAllocated())
 		return;
 
+	// [13d] The light grid goes with the volume (its set names the tile map).
+	ReleaseLightGrid(why);
+
 	// Commands recorded this frame may still name these, so they go on the frame's
 	// delete list, like every other GPU object the renderer lets go of mid-session.
 	auto deleteList = fb->GetCommands()->DrawDeleteList.get();
@@ -448,7 +477,8 @@ void VkSmokeVolume::RestoreComputeLayouts()
 
 	PipelineBarrier barrier;
 	bool changed = false;
-	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mVelocity[0], &mVelocity[1], &mSolidMask, &mTileContent, &mTileActive })
+	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mVelocity[0], &mVelocity[1], &mSolidMask, &mTileContent, &mTileActive,
+		&mLight, &mLightDirection })	// [13d]
 	{
 		if (volume->Image && volume->Layout != VK_IMAGE_LAYOUT_GENERAL)
 		{
@@ -473,7 +503,7 @@ void VkSmokeVolume::PrepareDrawLayouts()
 
 	PipelineBarrier barrier;
 	bool changed = false;
-	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mTileActive })
+	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mTileActive, &mLight, &mLightDirection })	// [13d] the light grid too
 	{
 		if (volume->Image && volume->Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 		{
@@ -520,8 +550,12 @@ bool VkSmokeVolume::EnsurePrograms()
 	mShiftRG = mCompute->CreateProgram("shaders/compute/smoke_shift.comp", shiftBindings, (uint32_t)sizeof(SmokeShiftConstants), "#define TARGET_RG16F\n");
 	mShiftRGBA = mCompute->CreateProgram("shaders/compute/smoke_shift.comp", shiftBindings, (uint32_t)sizeof(SmokeShiftConstants), "#define TARGET_RGBA16F\n");
 	mShiftR8 = mCompute->CreateProgram("shaders/compute/smoke_shift.comp", shiftBindings, (uint32_t)sizeof(SmokeShiftConstants), "#define TARGET_R8\n");
+	// [13d] The light grid's fill: sampled tile map, ambient columns and shadow map; storage light and direction.
+	mLightProgram = mCompute->CreateProgram("shaders/compute/smoke_light.comp",
+		{ { 0, sampled }, { 1, sampled }, { 2, sampled }, { 3, storage }, { 4, storage } },
+		(uint32_t)sizeof(SmokeLightConstants));
 
-	if (!mInjectProgram || !mAdvectProgram || !mTilesProgram || !mShiftRG || !mShiftRGBA || !mShiftR8)
+	if (!mInjectProgram || !mAdvectProgram || !mTilesProgram || !mShiftRG || !mShiftRGBA || !mShiftR8 || !mLightProgram)
 	{
 		// CreateProgram logged which one and why. Not retried this session.
 		Printf(TEXTCOLOR_RED "SmokeVolume: a simulation program did not build -- smoke stays off this session\n");
@@ -531,6 +565,7 @@ bool VkSmokeVolume::EnsurePrograms()
 		mShiftRG.reset();
 		mShiftRGBA.reset();
 		mShiftR8.reset();
+		mLightProgram.reset();
 		mProgramsFailed = true;
 		return false;
 	}
@@ -864,4 +899,300 @@ void VkSmokeVolume::RunStep(const SmokeVolumeFrame& frame, int stepIndex)
 
 	if (timed)
 		PerfLog::AddCpuSample("fx.smokesim", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//-----------------------------------------------------------------------------
+//
+// [13d] The light grid ("Engine docs/SMOKE_VOLUME_PLAN.md" 13d; hw_framecompute.h,
+// SmokeLightGridSpec; shaders/compute/smoke_light.comp)
+//
+//-----------------------------------------------------------------------------
+
+bool VkSmokeVolume::CreateImage2D(Volume& image, VkFormat format, int width, int height, const char* name)
+{
+	image.Image = ImageBuilder()
+		.Size(width, height)
+		.Format(format)
+		.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		.DebugName(name)
+		.TryCreate(fb->device.get());
+	if (!image.Image)
+		return false;
+
+	image.View = ImageViewBuilder()
+		.Image(image.Image.get(), format)
+		.DebugName(name)
+		.Create(fb->device.get());
+	return image.View != nullptr;
+}
+
+// Only for images no command has used yet (a half-finished EnsureLightGrid).
+void VkSmokeVolume::DestroyLightImagesNow()
+{
+	mAmbientStaging.reset();
+	for (Volume* image : { &mLight, &mLightDirection, &mAmbientColumns })
+	{
+		image->View.reset();
+		image->Image.reset();
+		image->Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+}
+
+bool VkSmokeVolume::EnsureLightGrid(const SmokeLightFrame& light)
+{
+	if (!IsAllocated())
+		return false;
+
+	const int quality = light.Quality;
+	if (quality < SMOKE_LIGHT_QUALITY_MIN || quality > SMOKE_LIGHT_QUALITY_MAX)
+	{
+		ReleaseLightGrid("no smoke light quality asked for");
+		return false;
+	}
+	if (mLight.Image && mLightQuality == quality)
+		return true;
+	if (mLight.Image)
+		ReleaseLightGrid("smoke light quality changed");
+	if (quality == mRefusedLightQuality)
+		return false;
+
+	// The CPU side's arithmetic, from the volume actually held.
+	const SmokeLightGridSpec grid = SmokeLightGridFor(mGrid, quality);
+	const uint64_t ambientBytes = (uint64_t)grid.SizeX * (uint64_t)grid.SizeY * 4;
+	const uint64_t texelBytes = grid.Cells() * (uint64_t)SMOKE_LIGHT_BYTES_PER_CELL + ambientBytes;
+
+	const auto refuse = [&](const char* what)
+	{
+		DestroyLightImagesNow();
+		mRefusedLightQuality = quality;
+		Printf(TEXTCOLOR_RED "SmokeVolume: %s -- smoke light quality %d refused: the smoke is not drawn until that quality changes\n", what, quality);
+		return false;
+	};
+
+	VulkanDevice* device = fb->device.get();
+	const uint32_t maxDimension = device->PhysicalDevice.Properties.Properties.limits.maxImageDimension3D;
+	const int largest = std::max(grid.SizeX, std::max(grid.SizeY, grid.SizeZ));
+	if (grid.Cells() == 0 || (uint32_t)largest > maxDimension)
+		return refuse("the light grid is larger than this device's 3D images");
+	if (!mCompute->IsVolumeFormatSupported(VK_FORMAT_R16G16B16A16_SFLOAT, grid.SizeX, grid.SizeY, grid.SizeZ, VolumeUsage, true) ||
+		!mCompute->IsVolumeFormatSupported(VK_FORMAT_R8G8B8A8_SNORM, grid.SizeX, grid.SizeY, grid.SizeZ, VolumeUsage, true))
+		return refuse("this device cannot make the light grid's RGBA16F and RGBA8 SNORM storage volumes");
+
+	bool created = false;
+	try
+	{
+		created =
+			CreateVolume(mLight, VK_FORMAT_R16G16B16A16_SFLOAT, grid.SizeX, grid.SizeY, grid.SizeZ, "SmokeVolume.Light") &&
+			CreateVolume(mLightDirection, VK_FORMAT_R8G8B8A8_SNORM, grid.SizeX, grid.SizeY, grid.SizeZ, "SmokeVolume.LightDirection") &&
+			CreateImage2D(mAmbientColumns, VK_FORMAT_R8G8B8A8_UNORM, grid.SizeX, grid.SizeY, "SmokeVolume.AmbientColumns");
+		if (created)
+		{
+			mAmbientStaging = BufferBuilder()
+				.Size((size_t)ambientBytes)
+				.Usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU)
+				.DebugName("SmokeVolume.AmbientStaging")
+				.Create(device);
+			created = mAmbientStaging != nullptr;
+		}
+	}
+	catch (const std::exception& e)
+	{
+		Printf(TEXTCOLOR_RED "SmokeVolume: %s\n", e.what());
+		created = false;
+	}
+	if (!created)
+		return refuse("could not allocate the light grid (out of video memory?)");
+
+	// UNDEFINED -> GENERAL, once, for life (the drawing's read moves the first two out for a frame), then empty.
+	mCompute->BeginWork();
+	PipelineBarrier barrier;
+	for (Volume* image : { &mLight, &mLightDirection, &mAmbientColumns })
+	{
+		barrier.AddImage(image->Image.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0,
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+	}
+	barrier.Execute(fb->GetCommands()->GetDrawCommands(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	for (Volume* image : { &mLight, &mLightDirection, &mAmbientColumns })
+	{
+		image->Layout = VK_IMAGE_LAYOUT_GENERAL;
+		ClearImage(*image, 0.0f);
+	}
+
+	mLightGrid = grid;
+	mLightQuality = quality;
+	mLightTexelBytes = texelBytes;
+	mRefusedLightQuality = 0;
+	mAmbientSerialUploaded = 0;
+
+	Printf("SmokeVolume: light grid quality %d -- %d x %d x %d cells at %.2f map units (%d a tile), %llu bytes of texels\n",
+		quality, grid.SizeX, grid.SizeY, grid.SizeZ, grid.CellSize, grid.CellsPerTile, (unsigned long long)texelBytes);
+	return true;
+}
+
+void VkSmokeVolume::ReleaseLightGrid(const char* why)
+{
+	// Commands recorded this frame may still name these: the frame's delete list, as Release does.
+	auto deleteList = fb->GetCommands()->DrawDeleteList.get();
+	deleteList->Add(std::move(mLightSet));
+	if (!mLight.Image && !mLightDirection.Image && !mAmbientColumns.Image)
+		return;
+
+	for (Volume* image : { &mLight, &mLightDirection, &mAmbientColumns })
+	{
+		deleteList->Add(std::move(image->View));
+		deleteList->Add(std::move(image->Image));
+		image->Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+	deleteList->Add(std::move(mAmbientStaging));
+
+	Printf("SmokeVolume: light grid released (%s) -- %llu bytes of texels freed\n", why, (unsigned long long)mLightTexelBytes);
+
+	mLightGrid = SmokeLightGridSpec();
+	mLightQuality = 0;
+	mLightTexelBytes = 0;
+	mAmbientSerialUploaded = 0;
+}
+
+bool VkSmokeVolume::EnsureLightSet()
+{
+	if (mLightSet)
+		return true;
+	if (!mLightProgram || !mLight.Image || !mLightDirection.Image || !mAmbientColumns.Image || !mTileActive.View)
+		return false;
+	mLightSet = mCompute->AllocateSet(mLightProgram.get());
+	return mLightSet != nullptr;
+}
+
+// The columns' sector light, copied in when the CPU side's serial moved on (a sector's light changed, a column
+// was resolved, the box moved). The copy commands of the frame before have finished, as UploadMask relies on.
+void VkSmokeVolume::UploadAmbient(const SmokeLightFrame& light)
+{
+	if (light.AmbientColumns == nullptr || light.AmbientSerial == 0 || light.AmbientSerial == mAmbientSerialUploaded)
+		return;
+	const uint64_t bytes = (uint64_t)mLightGrid.SizeX * (uint64_t)mLightGrid.SizeY * 4;
+	if (light.AmbientByteCount != bytes || !mAmbientStaging || !mAmbientColumns.Image)
+		return;	// sized for another grid: the next frame's will fit
+
+	void* data = mAmbientStaging->Map(0, (size_t)bytes);
+	memcpy(data, light.AmbientColumns, (size_t)bytes);
+	mAmbientStaging->Unmap();
+
+	VkBufferImageCopy region = {};
+	region.bufferOffset = 0;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = (uint32_t)mLightGrid.SizeX;
+	region.imageExtent.height = (uint32_t)mLightGrid.SizeY;
+	region.imageExtent.depth = 1;
+
+	mCompute->BeginWork();
+	fb->GetCommands()->GetDrawCommands()->copyBufferToImage(mAmbientStaging->buffer, mAmbientColumns.Image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+	mAmbientSerialUploaded = light.AmbientSerial;
+}
+
+// This frame's light for the smoke: the ambient pass over the whole grid, then one pass per light over the cells
+// its sphere's box covers. Only on a frame with smoke to draw, after the steps (so over this frame's tile map).
+void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
+{
+	const SmokeLightFrame& light = frame.Light;
+	if (!IsAllocated() || !mSetsReady || !mLightProgram || !mLight.Image || light.Quality != mLightQuality)
+		return;
+
+	VkTextureImage& shadowMap = fb->GetTextureManager()->Shadowmap;
+	if (!EnsureLightSet() || !shadowMap.View || shadowMap.Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+	{
+		if (!mLightWarned)
+		{
+			mLightWarned = true;
+			Printf(TEXTCOLOR_RED "SmokeVolume: the light grid could not be filled (no descriptor set, or the shadow map is not readable) -- the smoke keeps its last light (logged once)\n");
+		}
+		return;
+	}
+
+	const bool timed = PerfLog::GroupsWanted();
+	const uint64_t startNs = timed ? I_nsTime() : 0;
+
+	UploadAmbient(light);
+
+	// Written before this frame's first dispatch with it, every frame: the shadow map image may have been made
+	// again since the last one (VkTextureManager::BeginFrame), and nothing recorded earlier this frame uses the set.
+	VulkanSampler* sampler = mCompute->GetVolumeSampler();
+	const VkImageLayout general = VK_IMAGE_LAYOUT_GENERAL;
+	WriteDescriptors()
+		.AddCombinedImageSampler(mLightSet.get(), 0, mTileActive.View.get(), sampler, general)
+		.AddCombinedImageSampler(mLightSet.get(), 1, mAmbientColumns.View.get(), sampler, general)
+		.AddCombinedImageSampler(mLightSet.get(), 2, shadowMap.View.get(), fb->GetSamplerManager()->ShadowmapSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+		.AddStorageImage(mLightSet.get(), 3, mLight.View.get(), general)
+		.AddStorageImage(mLightSet.get(), 4, mLightDirection.View.get(), general)
+		.Execute(fb->device.get());
+
+	VkCommandBufferManager* commands = fb->GetCommands();
+	mCompute->BeginWork();	// so fx.smokelight nests inside fx.compute
+	commands->PushGroup("fx.smokelight");
+
+	const int size[3] = { mLightGrid.SizeX, mLightGrid.SizeY, mLightGrid.SizeZ };
+	const double cellSize = mLightGrid.CellSize;
+
+	// Pass 0: every active cell's column light, which also replaces last frame's light.
+	SmokeLightConstants ambient = {};
+	for (int axis = 0; axis < 3; axis++)
+		ambient.RegionMax[axis] = size[axis];
+	ambient.RegionMin[3] = 0;
+	ambient.RegionMax[3] = mLightGrid.CellsPerTile;
+	ambient.Cone[2] = (float)cellSize;
+	ambient.Cone[3] = light.AmbientScale;
+	mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &ambient, Groups(size[0]), Groups(size[1]), Groups(size[2]));
+
+	// Pass 1: each light, over the cells whose centre lies inside its sphere's box.
+	const int count = light.Lights != nullptr ? std::clamp(light.LightCount, 0, SMOKE_LIGHTS_MAX) : 0;
+	for (int i = 0; i < count; i++)
+	{
+		const SmokeLightRecord& record = light.Lights[i];
+		if (!(record.Radius > 0.0f))
+			continue;
+
+		SmokeLightConstants constants = {};
+		bool empty = false;
+		for (int axis = 0; axis < 3; axis++)
+		{
+			const double lo = ((double)record.Position[axis] - record.Radius) / cellSize - 0.5;
+			const double hi = ((double)record.Position[axis] + record.Radius) / cellSize - 0.5;
+			if (!std::isfinite(lo) || !std::isfinite(hi))
+			{
+				empty = true;
+				break;
+			}
+			constants.RegionMin[axis] = std::clamp((int)std::ceil(std::clamp(lo, -1.0e6, 1.0e6)), 0, size[axis]);
+			constants.RegionMax[axis] = std::clamp((int)std::floor(std::clamp(hi, -1.0e6, 1.0e6)) + 1, 0, size[axis]);
+			if (constants.RegionMin[axis] >= constants.RegionMax[axis])
+				empty = true;
+			constants.PositionRadius[axis] = record.Position[axis];
+			constants.Color[axis] = record.Color[axis];
+			constants.SpotDirection[axis] = record.SpotDirection[axis];
+		}
+		if (empty)
+			continue;
+
+		constants.RegionMin[3] = 1;
+		constants.RegionMax[3] = mLightGrid.CellsPerTile;
+		constants.PositionRadius[3] = record.Radius;
+		constants.Color[3] = record.Weight;
+		constants.SpotDirection[3] = record.ShadowRow >= 0 ? (float)record.ShadowRow : -1.0f;
+		constants.Cone[0] = record.SpotCosOuter;
+		constants.Cone[1] = record.SpotCosInner;
+		constants.Cone[2] = (float)cellSize;
+		constants.Cone[3] = light.AmbientScale;
+		mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &constants,
+			Groups(constants.RegionMax[0] - constants.RegionMin[0]),
+			Groups(constants.RegionMax[1] - constants.RegionMin[1]),
+			Groups(constants.RegionMax[2] - constants.RegionMin[2]));
+	}
+
+	commands->PopGroup();
+
+	if (timed)
+		PerfLog::AddCpuSample("fx.smokelight", (double)(I_nsTime() - startNs) / 1e6);
 }

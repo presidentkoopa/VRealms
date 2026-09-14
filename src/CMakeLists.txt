@@ -852,6 +852,7 @@ set (VULKAN_SOURCES
 	common/rendering/vulkan/renderer/vk_compute.cpp
 	common/rendering/vulkan/renderer/vk_smokevolume.cpp
 	common/rendering/vulkan/renderer/vk_levelfield.cpp
+	common/rendering/vulkan/renderer/vk_debrispool.cpp
 	common/rendering/vulkan/shaders/vk_shader.cpp
 	common/rendering/vulkan/shaders/vk_ppshader.cpp
 	common/rendering/vulkan/textures/vk_samplers.cpp
@@ -1037,6 +1038,7 @@ set (PCH_SOURCES
 	rendering/hwrenderer/hw_sectorplanes.cpp
 	rendering/hwrenderer/hw_smokevolume.cpp
 	rendering/hwrenderer/hw_levelfield.cpp
+	rendering/hwrenderer/hw_debrispool.cpp
 	rendering/hwrenderer/doom_aabbtree.cpp
 	rendering/hwrenderer/doom_levelmesh.cpp
 	rendering/hwrenderer/hw_models.cpp
@@ -1091,6 +1093,7 @@ set (PCH_SOURCES
 	r_data/r_sections.cpp
 	r_data/models.cpp
 	r_data/model_reach.cpp
+	r_data/level_solid_query.cpp
 	scripting/vmiterators.cpp
 	scripting/vmthunks.cpp
 	scripting/vmthunks_actors.cpp

@@ -43,6 +43,7 @@
 class VulkanRenderDevice;
 class VkSmokeVolume;
 class VkLevelField;	// [LEVELFIELD]
+class VkDebrisPool;	// [DEBRISPOOL]
 struct FrameComputeInput;
 
 // One binding of a compute program's descriptor set (set 0), compute stage.
@@ -113,6 +114,10 @@ public:
 	// (VkDescriptorSetManager::UpdateFixedSet). Null until a colliding particle is first spawned.
 	VkLevelField* GetLevelField() const { return mLevelField.get(); }
 
+	// [DEBRISPOOL] The debris pool (#9), whose pieces and definitions set 1 binds (VkDescriptorSetManager::UpdateHWBufferSet).
+	// Null until a debris burst is first taken.
+	VkDebrisPool* GetDebrisPool() const { return mDebrisPool.get(); }
+
 private:
 	VulkanRenderDevice* fb = nullptr;
 
@@ -123,6 +128,7 @@ private:
 
 	std::unique_ptr<VkSmokeVolume> mSmokeVolume;
 	std::unique_ptr<VkLevelField> mLevelField;	// [LEVELFIELD]
+	std::unique_ptr<VkDebrisPool> mDebrisPool;	// [DEBRISPOOL]
 
 	bool mWorkBegun = false;
 };

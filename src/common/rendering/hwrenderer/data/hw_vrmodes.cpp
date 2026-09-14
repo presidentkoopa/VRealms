@@ -1486,7 +1486,7 @@ int VR_ControllerForHand(int hand)
 	return (hand == VR_OFFHAND) ? 1 - rightHanded : rightHanded;
 }
 
-bool VRMode::GetWeaponTransform(VSMatrix* out, int hand_weapon, bool allowAutoReverse) const
+bool VRMode::GetWeaponTransform(VSMatrix* out, int hand_weapon, bool allowAutoReverse, bool *mirroredOut) const
 {
 	player_t* player = &players[consoleplayer];
 	bool autoReverse = allowAutoReverse;
@@ -1496,10 +1496,17 @@ bool VRMode::GetWeaponTransform(VSMatrix* out, int hand_weapon, bool allowAutoRe
 		autoReverse = weap == nullptr || !(weap->IntVar(NAME_WeaponFlags) & WIF_NO_AUTO_REVERSE);
 	}
 	int hand = VR_ControllerForHand(hand_weapon);
+	if (mirroredOut) *mirroredOut = false;
 	if (GetHandTransform(hand, out))
 	{
 		if (!hand && autoReverse)
+		{
 			out->scale(-1.0f, 1.0f, 1.0f);
+			// Reported rather than left for the caller to re-derive: GetHandTransform's
+			// own -Z world scale makes the determinant negative in BOTH hands, so the
+			// matrix alone cannot say whether this mirror went in.
+			if (mirroredOut) *mirroredOut = true;
+		}
 		return true;
 	}
 	return false;

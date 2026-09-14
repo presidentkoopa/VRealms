@@ -57,7 +57,22 @@ EXTERN_CVAR(Float, gl_bloom_tint_b)
 EXTERN_CVAR(Float, gl_bloom_chromatic)
 EXTERN_CVAR(Float, gl_bloom_step)	// [BLOOMSTEP]
 EXTERN_CVAR(Float, gl_bloom_override_strength)	// [BLOOMOVERRIDE]
-EXTERN_CVAR(Bool, gl_bloom_pin_beams)	// [LIGHTMASK]
+EXTERN_CVAR(Bool, gl_bloom_pin_beams)	// [LIGHTMASK] [PINNEDBLOOM] "Keep legacy lasers"
+EXTERN_CVAR(Bool, gl_bloom_pin_captured)	// [PINNEDBLOOM] the pinned look (hw_postprocess_cvars.cpp)
+EXTERN_CVAR(Float, gl_bloom_pin_amount)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_threshold)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_knee)	// [PINNEDBLOOM]
+EXTERN_CVAR(Bool, gl_bloom_pin_anamorphic)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_anamorphic_ratio)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_tint_r)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_tint_g)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_tint_b)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_chromatic)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_step)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_exposure_scale)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_exposure_min)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_exposure_base)	// [PINNEDBLOOM]
+EXTERN_CVAR(Float, gl_bloom_pin_exposure_speed)	// [PINNEDBLOOM]
 EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK]
 EXTERN_CVAR(Int, r_smoke_steps)	// [SMOKEVOLUME] the smoke volume's drawing
 EXTERN_CVAR(Float, r_smoke_density_scale)	// [SMOKEVOLUME]

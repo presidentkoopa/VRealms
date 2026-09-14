@@ -22,6 +22,8 @@
 
 #include "hw_postprocess_cvars.h"
 #include "v_video.h"
+#include "c_dispatch.h"	// [PINNEDBLOOM] CCMD gl_bloom_pin_capture / gl_bloom_pin_reset
+#include "printf.h"	// [PINNEDBLOOM]
 
 //==========================================================================
 //
@@ -108,19 +110,139 @@ CUSTOM_CVAR(Float, gl_bloom_override_strength, 1.0f, CVAR_ARCHIVE)
 	if (self > 1.0f) self = 1.0f;
 }
 
-// [LIGHTMASK] Beam light keeps its own bloom ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6; the
-// glow lane's "Keep legacy lasers" row). Step E6a builds only the light mask this needs:
-// while this is on (and gl_bloom is), the main scene pass carries one more colour
-// attachment recording, per pixel, how much of the light is beam light, and the scene
-// programs write it (hw_postprocess.h, PPLightMask). Nothing reads the mask yet but
-// r_lightmask_debug, so the picture is exactly the picture with this off; E6b gives the
-// switch its effect (the pinned bloom), the capture of the pinned look and the
-// CVAR_NOINITCALL callback that capture runs in. The first switch-on in a session
-// compiles the mask programs once (a pause) and creates the attachment, which then stays
-// allocated until the render buffers are re-created anyway (a resolution or multisample
-// change), so flipping it back and forth costs no re-create. Renderer-read every frame
-// (VulkanRenderDevice::BeginFrame). OpenGL and GLES ignore it.
-CVAR(Bool, gl_bloom_pin_beams, false, CVAR_ARCHIVE)
+// [LIGHTMASK] [PINNEDBLOOM] PINNED BLOOM FOR BEAM LIGHT -- the player's "Keep legacy lasers"
+// ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6). On: beam light -- every SetBeam line (grab lasers,
+// the Lance, ClaimBeam users), the light it throws on walls and into fog-slab mist, and the beams
+// r_beams_drawn routes to drawn lines -- blooms with the PINNED look (the gl_bloom_pin_* cvars
+// below), while presets, the other gl_bloom_* / gl_exposure_* settings and SetBloomOverride
+// change only the rest of the picture. Off: beam light blooms with everything else, exactly as
+// before this switch existed. Flip it both ways at any time to compare the two.
+//
+// How: while this is on (and gl_bloom is), the scene pass records per pixel how much of its light
+// is beam light (the light mask: hw_postprocess.h, PPLightMask), and PPBloom::RenderBloom weighs the
+// bloom extract by that share (PPBloomPlan). While the pinned look sends the same values as the
+// live one, or no beam is live, bloom runs today's passes untouched.
+//
+// Renderer-read every frame (VulkanRenderDevice::BeginFrame snapshots it); flipping only changes
+// which bloom passes run. The first switch-on in a session compiles the mask programs once (a
+// pause) and creates the attachment, which stays allocated until the render buffers are re-created
+// anyway (a resolution or multisample change), so flipping back and forth costs no re-create.
+// OpenGL and GLES ignore it.
+//
+// THE FIRST-EVER SWITCH-ON CAPTURES the live bloom settings as the pinned look, so "legacy" means
+// the look the player had at that moment; gl_bloom_pin_captured records that it happened, and after
+// that flipping never recaptures. Only a real change of this cvar captures: CVAR_NOINITCALL, and
+// the ini is read while cvar callbacks are off (d_main.cpp), so loading a config never does.
+// gl_bloom_pin_capture recaptures on request; gl_bloom_pin_reset returns the pinned look to the
+// engine defaults.
+static void SetPinnedBloomLook(bool fromDefaults);
+CUSTOM_CVAR(Bool, gl_bloom_pin_beams, false, CVAR_ARCHIVE | CVAR_NOINITCALL)
+{
+	if (self && !gl_bloom_pin_captured)
+		SetPinnedBloomLook(false);
+}
+
+// [PINNEDBLOOM] Whether a pinned look was ever chosen: by the first switch-on of
+// gl_bloom_pin_beams, gl_bloom_pin_capture or gl_bloom_pin_reset. While false, the first
+// switch-on captures; once true it never does again.
+CVAR(Bool, gl_bloom_pin_captured, false, CVAR_ARCHIVE)
+
+// [PINNEDBLOOM] THE PINNED LOOK: the bloom beam light keeps while gl_bloom_pin_beams is on. One
+// cvar per live setting, each with its live cvar's own type, default and clamp -- so a capture
+// copies the very bits, and a freshly captured look sends exactly the values the live look sends
+// (PPBloom then runs today's passes). No preset writes these (RS_Bloom's presets name every cvar
+// they write) and no SetBloomOverride reaches them. Renderer-read every frame (PPBloom::PinnedLook).
+// Normally set by gl_bloom_pin_capture and gl_bloom_pin_reset rather than by hand.
+CUSTOM_CVAR(Float, gl_bloom_pin_amount, 1.4f, CVAR_ARCHIVE)
+{
+	if (self < 0.1f) self = 0.1f;
+}
+CUSTOM_CVAR(Float, gl_bloom_pin_threshold, 1.0f, CVAR_ARCHIVE)
+{
+	if (self < 0.05f) self = 0.05f;
+	if (self > 4.0f) self = 4.0f;
+}
+CUSTOM_CVAR(Float, gl_bloom_pin_knee, 0.5f, CVAR_ARCHIVE)
+{
+	if (self < 0.0f) self = 0.0f;
+	if (self > 8.0f) self = 8.0f;
+}
+CVAR(Bool, gl_bloom_pin_anamorphic, false, CVAR_ARCHIVE)
+CUSTOM_CVAR(Float, gl_bloom_pin_anamorphic_ratio, 3.0f, CVAR_ARCHIVE)
+{
+	if (self < 1.0f) self = 1.0f;
+	if (self > 16.0f) self = 16.0f;
+}
+CVAR(Float, gl_bloom_pin_tint_r, 1.0f, CVAR_ARCHIVE)
+CVAR(Float, gl_bloom_pin_tint_g, 1.0f, CVAR_ARCHIVE)
+CVAR(Float, gl_bloom_pin_tint_b, 1.0f, CVAR_ARCHIVE)
+CUSTOM_CVAR(Float, gl_bloom_pin_chromatic, 0.0f, CVAR_ARCHIVE)
+{
+	if (self < 0.0f) self = 0.0f;
+	if (self > 0.1f) self = 0.1f;
+}
+CUSTOM_CVAR(Float, gl_bloom_pin_step, 1.0f, CVAR_ARCHIVE)
+{
+	if (!(self >= 1.0f)) self = 1.0f;   // written this way so a NaN lands on 1 too
+	if (self > 8.0f) self = 8.0f;
+}
+CVAR(Float, gl_bloom_pin_exposure_scale, 1.3f, CVAR_ARCHIVE)
+CVAR(Float, gl_bloom_pin_exposure_min, 0.35f, CVAR_ARCHIVE)
+CVAR(Float, gl_bloom_pin_exposure_base, 0.35f, CVAR_ARCHIVE)
+CVAR(Float, gl_bloom_pin_exposure_speed, 0.05f, CVAR_ARCHIVE)
+
+// [PINNEDBLOOM] Sets the pinned look from the live bloom settings (fromDefaults false: what the
+// player sees now) or from the live cvars' DEFAULTS (true: the engine's reference bloom), and marks
+// it chosen so a later first switch-on of gl_bloom_pin_beams leaves it alone. Never touches
+// gl_bloom_pin_beams. One line to the console with the values. This machine's display settings
+// only: nothing is sent anywhere, so it is safe in netplay.
+static void SetPinnedBloomLook(bool fromDefaults)
+{
+	struct PinnedFloat { FFloatCVarRef *Live; FFloatCVarRef *Pinned; };
+	static const PinnedFloat floats[] =
+	{
+		{ &gl_bloom_amount, &gl_bloom_pin_amount },
+		{ &gl_bloom_threshold, &gl_bloom_pin_threshold },
+		{ &gl_bloom_knee, &gl_bloom_pin_knee },
+		{ &gl_bloom_anamorphic_ratio, &gl_bloom_pin_anamorphic_ratio },
+		{ &gl_bloom_tint_r, &gl_bloom_pin_tint_r },
+		{ &gl_bloom_tint_g, &gl_bloom_pin_tint_g },
+		{ &gl_bloom_tint_b, &gl_bloom_pin_tint_b },
+		{ &gl_bloom_chromatic, &gl_bloom_pin_chromatic },
+		{ &gl_bloom_step, &gl_bloom_pin_step },
+		{ &gl_exposure_scale, &gl_bloom_pin_exposure_scale },
+		{ &gl_exposure_min, &gl_bloom_pin_exposure_min },
+		{ &gl_exposure_base, &gl_bloom_pin_exposure_base },
+		{ &gl_exposure_speed, &gl_bloom_pin_exposure_speed },
+	};
+	for (const PinnedFloat &value : floats)
+		*value.Pinned = fromDefaults ? value.Live->get()->GetGenericRepDefault(CVAR_Float).Float : (float)*value.Live;
+	gl_bloom_pin_anamorphic = fromDefaults ? gl_bloom_anamorphic->GetGenericRepDefault(CVAR_Bool).Bool : (bool)gl_bloom_anamorphic;
+	gl_bloom_pin_captured = true;
+
+	Printf("Bloom: laser look %s -- spread %g, threshold %g, knee %g, anamorphic %d (ratio %g), step %g, tint %g %g %g, "
+		"fringing %g, exposure scale %g min %g base %g speed %g\n",
+		fromDefaults ? "set to the engine defaults" : "captured from the current bloom settings",
+		(double)(float)gl_bloom_pin_amount, (double)(float)gl_bloom_pin_threshold, (double)(float)gl_bloom_pin_knee,
+		(int)(bool)gl_bloom_pin_anamorphic, (double)(float)gl_bloom_pin_anamorphic_ratio, (double)(float)gl_bloom_pin_step,
+		(double)(float)gl_bloom_pin_tint_r, (double)(float)gl_bloom_pin_tint_g, (double)(float)gl_bloom_pin_tint_b,
+		(double)(float)gl_bloom_pin_chromatic, (double)(float)gl_bloom_pin_exposure_scale, (double)(float)gl_bloom_pin_exposure_min,
+		(double)(float)gl_bloom_pin_exposure_base, (double)(float)gl_bloom_pin_exposure_speed);
+}
+
+// [PINNEDBLOOM] "Capture current bloom as the laser look": the live bloom settings become the pinned
+// look. Does not switch gl_bloom_pin_beams on or off.
+CCMD(gl_bloom_pin_capture)
+{
+	SetPinnedBloomLook(false);
+}
+
+// [PINNEDBLOOM] "Laser look back to the engine defaults": the pinned look becomes the engine's own
+// bloom defaults (the gl_bloom_* / gl_exposure_* defaults). Does not switch gl_bloom_pin_beams.
+CCMD(gl_bloom_pin_reset)
+{
+	SetPinnedBloomLook(true);
+}
 
 // [LIGHTMASK] A test view of the light mask. 1: the scene in grey with each pixel's
 // share of beam light in green and of emissive light in red; 2: the beam light share

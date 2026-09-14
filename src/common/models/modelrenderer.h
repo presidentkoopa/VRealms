@@ -70,4 +70,10 @@ public:
 	// does not implement it, or a model not currently being drawn), and the
 	// caller then leaves the surface where script last put it.
 	virtual bool GetModelToWorldMatrix(VSMatrix* out) const { return false; }
+
+	// RS FORK -- NEAR-EYE FADE for the world model being drawn, between BeginDrawModel and
+	// EndDrawModel: its pixels closer to the eye than farDist dissolve in a dither, all of
+	// them by nearDist (map units). farDist <= nearDist turns it off again. A renderer that
+	// does not implement it draws the model whole, which is what it did before this existed.
+	virtual void SetEyeFade(float nearDist, float farDist) {}
 };

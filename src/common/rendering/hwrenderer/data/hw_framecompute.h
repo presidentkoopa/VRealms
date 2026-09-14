@@ -158,6 +158,82 @@ struct SmokeSimSettings
 	float MaxSpeed = 4;				// the velocity field is clamped to this, cells per step
 };
 
+// [SMOKEVOLUME] 13d: THE LIGHT GRID ("Engine docs/SMOKE_VOLUME_PLAN.md" 13d, owner answer 4).
+//
+// Evaluating every light at every march sample is far too much at VR frame rates, so the light is
+// worked out once a frame on a grid over the smoke box -- the method shipping volumetric fog uses --
+// and the march (shaders/pp/smokemarch.fp) samples it. The grid is world-aligned, so both eyes read
+// the same light. Its resolution is LIGHT CELLS PER SMOKE TILE (r_smoke_light_quality), so a light
+// cell boundary always falls on a world position the box's whole-tile recentres keep:
+//   1: 4 per tile, half the smoke grid's resolution (128 x 128 x 48 at the default smoke quality)
+//   2: 6 per tile, three quarters (192 x 192 x 72), the default
+//   3: 8 per tile, the smoke grid's own (256 x 256 x 96)
+// Two volumes, SMOKE_LIGHT_BYTES_PER_CELL a cell: RGBA16F, the light reaching the cell (rgb) and its
+// luminance weight (a); RGBA8 SNORM, the direction light travels there averaged by weight (xyz, whose
+// length is the share of the light that comes from that direction). Plus a 2D RGBA8 map of each
+// column's ambient (sector) light. Filled by shaders/compute/smoke_light.comp (vk_smokevolume.cpp).
+inline constexpr int SMOKE_LIGHT_QUALITY_MIN = 1;
+inline constexpr int SMOKE_LIGHT_QUALITY_DEFAULT = 2;
+inline constexpr int SMOKE_LIGHT_QUALITY_MAX = 3;
+inline constexpr int SMOKE_LIGHT_BYTES_PER_CELL = 12;
+
+// The most lights one frame puts into the grid: the view light list's capacity (stage 2d).
+inline constexpr int SMOKE_LIGHTS_MAX = 32;
+
+struct SmokeLightGridSpec
+{
+	int SizeX = 0;
+	int SizeY = 0;
+	int SizeZ = 0;
+	int CellsPerTile = 0;	// light cells per SMOKE_TILE_CELLS smoke cells, on each axis
+	double CellSize = 0;	// map units
+
+	uint64_t Cells() const { return (uint64_t)SizeX * (uint64_t)SizeY * (uint64_t)SizeZ; }
+};
+
+inline SmokeLightGridSpec SmokeLightGridFor(const SmokeGridSpec& grid, int lightQuality)
+{
+	static const int cellsPerTile[SMOKE_LIGHT_QUALITY_MAX - SMOKE_LIGHT_QUALITY_MIN + 1] = { 4, 6, 8 };
+	if (lightQuality < SMOKE_LIGHT_QUALITY_MIN) lightQuality = SMOKE_LIGHT_QUALITY_MIN;
+	if (lightQuality > SMOKE_LIGHT_QUALITY_MAX) lightQuality = SMOKE_LIGHT_QUALITY_MAX;
+	SmokeLightGridSpec spec;
+	spec.CellsPerTile = cellsPerTile[lightQuality - SMOKE_LIGHT_QUALITY_MIN];
+	// Every smoke grid size is a whole number of tiles.
+	spec.SizeX = grid.SizeX / SMOKE_TILE_CELLS * spec.CellsPerTile;
+	spec.SizeY = grid.SizeY / SMOKE_TILE_CELLS * spec.CellsPerTile;
+	spec.SizeZ = grid.SizeZ / SMOKE_TILE_CELLS * spec.CellsPerTile;
+	spec.CellSize = (double)grid.CellSize * SMOKE_TILE_CELLS / spec.CellsPerTile;
+	return spec;
+}
+
+// [13d] One light as the grid takes it, from Level->lights (hw_smokevolume.cpp). Doom axes, map units,
+// positions from the smoke box's minimum corner.
+struct SmokeLightRecord
+{
+	float Position[3] = { 0, 0, 0 };
+	float Radius = 0;
+	float Color[3] = { 0, 0, 0 };			// rgb x the look's scatter; negative for a subtractive light
+	float Weight = 0;						// its luminance (0 for a subtractive light): what it counts toward the direction
+	float SpotDirection[3] = { 0, 0, 0 };	// main.fp's spot direction (the cone's axis pointing back at the light)
+	float SpotCosOuter = -2;				// a point light keeps -2 and -1, which the cone test lets everything through
+	float SpotCosInner = -1;
+	int ShadowRow = -1;						// its row in the engine's shadow map this frame; -1 = not occluded
+};
+
+// [13d] This frame's light grid, decided on the CPU (hw_smokevolume.cpp).
+struct SmokeLightFrame
+{
+	int Quality = 0;						// r_smoke_light_quality; 0 = no grid
+	SmokeLightGridSpec Grid;
+	float AmbientScale = 0;					// the look's ambient
+	const SmokeLightRecord* Lights = nullptr;
+	int LightCount = 0;
+	// Grid.SizeX x Grid.SizeY texels, RGBA8, x fastest: each column's sector light times its colour.
+	const uint8_t* AmbientColumns = nullptr;
+	size_t AmbientByteCount = 0;
+	uint64_t AmbientSerial = 0;				// renewed whenever those bytes change: the backend copies them in when it differs
+};
+
 // [SMOKEVOLUME] This frame's smoke volume, decided on the CPU (hw_smokevolume.cpp).
 struct SmokeVolumeFrame
 {
@@ -225,6 +301,10 @@ struct SmokeVolumeFrame
 
 	// [13c] Visible smoke may exist (the CPU's density bound is above empty): draw it.
 	bool HasSmoke = false;
+
+	// [13d] The light grid: its quality whenever the volume is active, its lights and ambient columns on
+	// frames with smoke to draw. The backend fills the grid after the steps, only when HasSmoke.
+	SmokeLightFrame Light;
 };
 
 // [SMOKEVOLUME] What the backend did with the smoke volume, for the CPU side's NEXT
@@ -239,6 +319,8 @@ struct SmokeVolumeBackendStatus
 	int Quality = 0;
 	int RefusedQuality = 0;		// a quality this device refused until smoke stops being asked for; 0 = none
 	uint64_t MaskEpoch = 0;		// the BoxEpoch of the NewBox that initialised the current mask; 0 = none did
+	int LightQuality = 0;			// [13d] the light grid the backend holds (r_smoke_light_quality); 0 = none
+	int RefusedLightQuality = 0;	// [13d] a light quality this device refused until it changes; 0 = none
 };
 
 inline SmokeVolumeBackendStatus& SmokeVolumeStatus()

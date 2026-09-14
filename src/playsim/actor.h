@@ -1501,6 +1501,30 @@ public:
 	double			FollowBodyYaw;
 	DVector3		FollowBodyOfs;
 
+	// RS FORK -- FollowBodyYaw AT DRAW RATE, OPT IN.
+	//
+	// A caller writes FollowBodyYaw once a tic, so a body-frame part -- torso,
+	// holsters, boots, arms -- turns in 35 Hz steps while the hands riding the
+	// controllers move every frame: a tick at the elbow in every turn. With this
+	// set the renderer draws last tic's heading turned toward this tic's by the
+	// shortest way, ticFrac of the way (DrawFollowBodyYaw), as it draws Angles.
+	//
+	// false, the default, is exactly the old behaviour: FollowBodyYaw drawn as
+	// written. NOT SAVED -- it is presentation, and a rig sets it every tic with
+	// the heading. A snap turn stays a snap when the caller calls
+	// ClearInterpolation() after writing the new heading, or clears this for
+	// that tic.
+	bool			FollowBodyYawInterp;
+	// Last tic's FollowBodyYaw, and whether FollowBodyYawInterp was on when it was
+	// taken. Snapshotted in ClearInterpolation (actorinlines.h), which P_Ticker
+	// calls for every actor before any script writes this tic's heading -- the
+	// same instant Prev is taken, so heading and position are one snapshot and
+	// whatever resets one resets the other. The flag's own snapshot is what keeps
+	// the tic an actor spawns, loads or first opts in from swinging in from a
+	// stale heading. Not saved, not readable from script.
+	bool			PrevFollowBodyYawLive;
+	double			PrevFollowBodyYaw;
+
 	// RS FORK -- HELD IN A HAND, PLACED AT DRAW RATE. The hand-frame twin of
 	// FollowBodyMode/FollowBodyOfs above, and deliberately the same shape.
 	//
@@ -1550,6 +1574,39 @@ public:
 	// have to think about it. The second one might.
 	int				FollowHandMode;
 	DVector3		FollowHandOfs;
+
+	// RS FORK -- A TURN OF THE HAND'S FRAME, OWNED BY SCRIPT.
+	//
+	// FollowHandOfs moves a hand-held model within the hand's frame; this turns
+	// that frame, about the hand itself, before the model's seat is applied. So
+	// the whole seat swings with it -- MODELDEF Offset, FollowHandOfs, the live
+	// placement sliders, the base orientation -- the way a wrist turns what it
+	// holds: a gun's recoil climb lifts the muzzle about the grip rather than
+	// spinning the gun about its own origin, and anything riding the model
+	// (FollowActor) turns with it. Built for recoil; the same primitive is a
+	// holster draw flick, a caught gun settling, a pump tossed back to the grip.
+	//
+	// Degrees, about the HAND'S axes, with the engine's own angle signs:
+	//   X  yaw    + turns the model left, as adding to Angle does.
+	//   Y  pitch  + tips the muzzle down, as Pitch does.
+	//   Z  roll   + tips the model's top to the right, seen from behind.
+	// Zero, the default, changes nothing, and it does nothing unless the model is
+	// being drawn in a hand's frame (FollowHandMode or the MODELDEF hand flags, in
+	// VR, not riding the body or another model).
+	//
+	// IT READS THE SAME IN BOTH HANDS -- the one place it differs from
+	// FollowHandOfs. The off-hand frame may be mirrored (the trap above), and a
+	// turn inside a mirror comes out reflected, so the renderer undoes the mirror
+	// for this turn (models.cpp) and the same numbers point the model the same
+	// way in either hand. A turn that has to match where the rounds went needs
+	// exactly that.
+	//
+	// Drawn interpolated from last tic's value (PrevFollowHandRot, captured in
+	// ClearInterpolation), so a kick easing home over a few tics does not step at
+	// 35 Hz on a 90 Hz headset. Script-owned animation: no slider writes it; the
+	// player's seat rotation is the placement prefix below.
+	DVector3		FollowHandRot;
+	DVector3		PrevFollowHandRot;
 
 	// AND WHERE ITS TUNING NUMBERS COME FROM.
 	//
@@ -2150,6 +2207,20 @@ public:
 		result.Pitch = PrevAngles.Pitch + deltaangle(PrevAngles.Pitch, Angles.Pitch) * ticFrac;
 		result.Roll = PrevAngles.Roll + deltaangle(PrevAngles.Roll, Angles.Roll) * ticFrac;
 		return result;
+	}
+	// RS FORK -- FollowBodyYaw as the renderer draws it (see FollowBodyYawInterp):
+	// the value as written unless the flag is on now AND was on at the last snapshot.
+	double DrawFollowBodyYaw(double ticFrac) const
+	{
+		if (!FollowBodyYawInterp || !PrevFollowBodyYawLive) return FollowBodyYaw;
+		return PrevFollowBodyYaw + deltaangle(DAngle::fromDeg(PrevFollowBodyYaw), DAngle::fromDeg(FollowBodyYaw)).Degrees() * ticFrac;
+	}
+	// RS FORK -- FollowHandRot as the renderer draws it: last tic's turn to this
+	// tic's, like the position. A plain lerp, not deltaangle: it is an offset a
+	// script eases, not a heading that wraps.
+	DVector3 DrawFollowHandRot(double ticFrac) const
+	{
+		return PrevFollowHandRot * (1.0 - ticFrac) + FollowHandRot * ticFrac;
 	}
 	DVector2 InterpolatedScale(double ticFrac) const
 	{

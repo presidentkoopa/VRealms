@@ -46,9 +46,14 @@ EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Int, r_smoke_steps)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Float, r_smoke_density_scale)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_debugslice)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Int, r_smoke_light_quality)	// [SMOKEVOLUME] 13d, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_particlecollision)	// [LEVELFIELD] hw_levelfield.cpp
 EXTERN_CVAR(Int, r_particlecollision_quality)	// [LEVELFIELD] hw_levelfield.cpp
 EXTERN_CVAR(Bool, r_particlecollision_test)	// [LEVELFIELD] hw_levelfield.cpp
+EXTERN_CVAR(Bool, r_debris)	// [DEBRISPOOL] hw_debrispool.cpp
+EXTERN_CVAR(Float, r_debris_life)	// [DEBRISPOOL] hw_debrispool.cpp
+EXTERN_CVAR(Int, r_debris_pool)	// [DEBRISPOOL] hw_debrispool.cpp
+EXTERN_CVAR(Bool, r_debris_test)	// [DEBRISPOOL] hw_debrispool.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -205,7 +210,10 @@ namespace
 				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill; fx.heatsources: "
 				"the heat source fill), avg/p95/max per frame with same-name samples summed. pp.heatoffset and pp.heatwarp "
 				"are the heat shimmer passes (r_heatrefraction); pp.lightmaskcarry moves the light mask with them, and "
-				"pp.lightmaskdebug is the light mask's debug view (r_lightmask_debug), drawn in place of bloom.\n\n";
+				"pp.lightmaskdebug is the light mask's debug view (r_lightmask_debug), drawn in place of bloom. "
+				"bloom.pinned is pinned bloom's second chain for beam light and exposure.pinned the pinned look's "
+				"exposure (gl_bloom_pin_beams); bloomplan is the last eye's plan: A today's bloom, B one chain "
+				"carrying both looks, C the second chain.\n\n";
 			// [COMPUTE] The compute names, on a legend line of their own.
 			out << "Legend (compute): fx.compute is the frame's compute hook -- on cpu_fx_ms every frame while this log "
 				"is on (its cost when nothing has compute work), on gpu_ms only when compute work was recorded. fx.smokesim "
@@ -214,9 +222,13 @@ namespace
 				"fx.sectorplanes is the renderer's sector plane poll; fx.smokemask the solid mask's rasterisation on the CPU "
 				"(frames with mask work only). pp.smoke is the smoke volume's drawing per eye (depth, march, blur, composite; "
 				"only while there is smoke); a pp.lightmaskcarry beside it dims the light mask by the same haze; fx.smokedraw "
-				"(cpu_fx_ms) is its per-eye setup. fx.levelfield is the particle collision field: on cpu_fx_ms its demand "
+				"(cpu_fx_ms) is its per-eye setup. fx.smokelight is the smoke's light grid (frames with smoke: its ambient pass "
+				"and one pass per light; on gpu_ms inside fx.compute, on cpu_fx_ms its recording); fx.smokelights (cpu_fx_ms) "
+				"its light list and ambient columns. fx.levelfield is the particle collision field: on cpu_fx_ms its demand "
 				"scan, windows and tile rasterisation (SH1, within 1 ms a frame while it builds or a door moves), on gpu_ms "
-				"its invalidations, uploads and line bakes (frames with field work only).\n\n";
+				"its invalidations, uploads and line bakes (frames with field work only). fx.debrissim is ONE debris pool step, "
+				"counted per step (gpu_ms, inside fx.compute); fx.debrispool (cpu_fx_ms) is the pool's CPU side on each frame it "
+				"is asked for: bursts into pieces, slots, pushes, wake boxes and the mesh instance list.\n\n";
 			HeaderWritten = true;
 		}
 
@@ -252,16 +264,21 @@ namespace
 		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);
 		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.smokemask / pp.smoke
 		// before/after labels itself.
-		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g r_smoke_steps=%d r_smoke_density_scale=%g r_smoke_debugslice=%d",
+		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g r_smoke_steps=%d r_smoke_density_scale=%g r_smoke_debugslice=%d r_smoke_light_quality=%d",
 			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest, (double)(float)*r_smoke_dissipation_scale,
-			(int)*r_smoke_steps, (double)(float)*r_smoke_density_scale, (int)*r_smoke_debugslice);
+			(int)*r_smoke_steps, (double)(float)*r_smoke_density_scale, (int)*r_smoke_debugslice, (int)*r_smoke_light_quality);
 		// [LEVELFIELD] And the particle collision switches, so a fx.levelfield before/after labels itself.
 		out.AppendFormat(" r_particlecollision=%d r_particlecollision_quality=%d r_particlecollision_test=%d",
 			(int)*r_particlecollision, (int)*r_particlecollision_quality, (int)*r_particlecollision_test);
+		// [DEBRISPOOL] And the debris pool's switches, so a fx.debrissim / fx.debrispool before/after labels itself.
+		out.AppendFormat(" r_debris=%d r_debris_life=%g r_debris_pool=%d r_debris_test=%d",
+			(int)*r_debris, (double)(float)*r_debris_life, (int)*r_debris_pool, (int)*r_debris_test);
 		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
 		// (lightmask: 1 while the scene draws the mask this frame).
 		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",
 			(int)*gl_bloom_pin_beams, (int)*r_lightmask_debug, (int)hw_postprocess.lightmask.Active());
+		// [PINNEDBLOOM] And the bloom plan the last eye ran, so a bloom / bloom.pinned before/after labels itself.
+		out.AppendFormat(" bloomplan=%c", "ABC"[(int)hw_postprocess.bloom.LastPlan()]);
 		out.AppendFormat(" t=%.1fs window=%.1fs frames=%u fps=%.1f frame_ms avg=%.2f p95=%.2f max=%.2f\n",
 			I_msTime() / 1000.0, windowS, frames, fps, W.Frame.Avg(), W.Frame.P95(), W.Frame.Max);
 

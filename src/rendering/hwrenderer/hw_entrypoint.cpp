@@ -46,6 +46,7 @@
 #include "hw_smokevolume.h"		// [SMOKEVOLUME] SmokeVolume::PrepareFrame
 #include "hw_sectorplanes.h"	// [SECTORPLANES] SectorPlanes::BeginFrame
 #include "hw_levelfield.h"		// [LEVELFIELD] LevelField::PrepareFrame
+#include "hw_debrispool.h"		// [DEBRISPOOL] DebrisPool::PrepareFrame
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -164,6 +165,29 @@ static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp,
 	SectorPlanes::Get().BeginFrame(Level, serial);
 	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.Angles.Yaw.Radians(), vp.TicFrac, serial, input.Smoke);
 	LevelField::Get().PrepareFrame(Level, vp.Pos, serial, input.LevelField);	// [LEVELFIELD] #8
+	DebrisPool::Get().PrepareFrame(Level, serial);	// [DEBRISPOOL] #9: its frame reaches the backend through DebrisPoolFrameForBackend
+}
+
+//-----------------------------------------------------------------------------
+//
+// [PINNEDBLOOM] Whether beam light can be on screen this frame, for pinned bloom
+// (hw_postprocess.h, PPLightMask::SetPinnedLightLive): any beam slot that draws with a
+// non-zero intensity -- the beam upload's own test (hw_drawinfo.cpp). Read-only and
+// renderer-side: it reads level state the renderer already reads, and writes only
+// post-processing state.
+//
+//-----------------------------------------------------------------------------
+
+static bool PinnedLightLive(FLevelLocals* Level)
+{
+	if (Level == nullptr)
+		return false;
+	for (int i = 0; i < FLevelLocals::MAX_BEAMS; i++)
+	{
+		if (Level->BeamSlotLive(i) && Level->BeamIntensity[i] != 0.0)
+			return true;
+	}
+	return false;
 }
 
 //-----------------------------------------------------------------------------
@@ -214,6 +238,9 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 		FrameComputeInput computeInput;
 		PrepareFrameCompute(camera->Level, mainvp, computeInput);
 		screen->RunFrameCompute(computeInput);
+		// [PINNEDBLOOM] Once per displayed frame, before the eye loop: whether beam light can be on
+		// screen, so pinned bloom runs its extra passes only while it can (PPBloom::ChoosePlan).
+		hw_postprocess.lightmask.SetPinnedLightLive(PinnedLightLive(mainvp.ViewLevel));
 	}
 	const int eyeCount = vrmode->mEyeCount;
 	const bool useMultiviewScene = mainview && toscreen && vrmode->ShouldUseMultiviewThisFrame() && eyeCount >= 2;

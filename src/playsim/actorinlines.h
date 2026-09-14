@@ -49,6 +49,11 @@ inline void AActor::ClearInterpolation()
 	PrevAngles = Angles;
 	PrevScale = Scale;
 	PrevAlpha = Alpha;
+	// RS FORK -- the body-frame heading is snapshotted with the position (AActor::FollowBodyYawInterp).
+	PrevFollowBodyYaw = FollowBodyYaw;
+	PrevFollowBodyYawLive = FollowBodyYawInterp;
+	// RS FORK -- and the hand-frame turn (AActor::FollowHandRot).
+	PrevFollowHandRot = FollowHandRot;
 	if (Sector) PrevPortalGroup = Sector->PortalGroup;
 	else PrevPortalGroup = 0;
 }

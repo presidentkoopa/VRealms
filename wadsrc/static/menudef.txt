@@ -2237,6 +2237,23 @@ OptionMenu DeveloperOptionsMenu protected
 	// plane` (today's sparks and dust) collide with the whole level too, so the field can be judged before any
 	// definition says `level`. Not saved. Vulkan only.
 	Option "Particle collision test (plane particles too)", "r_particlecollision_test", "OnOff"
+	// [DEBRISPOOL] r_debris -- debris that stays ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #9): particles whose definition
+	// has `restitution` are simulated in a pool on the GPU -- they bounce off walls and floors, slide, settle flat, lie where
+	// they land for their rest life, and a blast throws them again. On by default (owner, 2026-09-14); nothing is allocated
+	// until such a particle spawns. Off: the same particles are drawn as ordinary particles. Renderer-read every frame.
+	// RS_Ballistics' "Ballistics & Effects" page mirrors this row under Debris. Vulkan only.
+	Option "Debris that stays", "r_debris", "OnOff"
+	// [DEBRISPOOL] r_debris_life -- how long debris lies on the ground: every debris rest of 5 seconds or more lasts this many
+	// seconds per 60 its definition gives (60 = as the mod wrote it). Shorter rests (embers cooling) are not changed. Pieces
+	// already on the ground follow the slider at once. Vulkan only.
+	Slider "Debris time on the ground (seconds; 60 = the mod's own)", "r_debris_life", 5, 600, 5, 0
+	// [DEBRISPOOL] r_debris_pool -- how many pieces the pool holds. When it is full, the pieces with the least time left go
+	// first. A change applies once no debris is left, or on the next map. Vulkan only.
+	Option "Debris pieces", "r_debris_pool", "DebrisPoolSizes"
+	// [DEBRISPOOL] r_debris_test -- a test, not a setting: particles whose definition says `collide = level` go to the pool too
+	// (bounce 0.3, friction 0.5; 3D chunks lie 10 seconds, billboards never rest), so the pool can be judged before any
+	// definition has `restitution`. Not saved. Vulkan only.
+	Option "Debris test (collide = level particles too)", "r_debris_test", "OnOff"
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
@@ -2286,6 +2303,12 @@ OptionMenu DeveloperOptionsMenu protected
 	// smoother and costs more (perflog.txt: pp.smoke); 48 is the default. Read every frame.
 	// RS_Ballistics' "Ballistics & Effects" page mirrors this row. Vulkan only.
 	Slider "Smoke steps (32 = fastest, 48 = default, 96 = smoothest)", "r_smoke_steps", 32, 96, 16, 0
+	// [13d] r_smoke_light_quality -- how finely the light inside the smoke is worked out (muzzle
+	// flashes, lamps and flashlights glowing in the haze): 1 = half the smoke grid's resolution
+	// (about 10 MB at the default smoke quality), 2 = three quarters (32 MB, the default), 3 = the
+	// smoke grid's own (76 MB). Read every frame; a change re-makes only the light grid.
+	// RS_Ballistics' "Ballistics & Effects" page mirrors this row. Vulkan only.
+	Slider "Smoke light quality (1 = 10 MB, 2 = 32 MB, 3 = 76 MB)", "r_smoke_light_quality", 1, 3, 1, 0
 	// r_smoke_computetest -- a smoke test source, no mod needed: placed ahead of where you look
 	// when switched on -- a puff every tic, a round through it every 10 tics, a blast every 3
 	// seconds -- running the real simulation, drawn as any smoke is (13c). With the performance log
@@ -2483,6 +2506,16 @@ OptionValue "Particles"
 	0, "$OPTVAL_SQUARE"
 	1, "$OPTVAL_ROUND"
 	2, "$OPTVAL_SMOOTH_2"
+}
+
+// [DEBRISPOOL] r_debris_pool's sizes (Developer options, "Debris pieces"), with their memory on the GPU: 176 bytes a piece.
+OptionValue "DebrisPoolSizes"
+{
+	4096, "4,096 (0.7 MB)"
+	8192, "8,192 (1.4 MB)"
+	16384, "16,384 (2.9 MB, default)"
+	32768, "32,768 (5.8 MB)"
+	65536, "65,536 (11.5 MB)"
 }
 
 OptionValue "HqResizeModes"

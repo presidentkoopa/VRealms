@@ -27,6 +27,7 @@
 #include "hwrenderer/postprocessing/hw_postprocessshader.h"
 #include <random>
 #include <cmath>	// [BLOOMSAFETY] std::isfinite
+#include <cstring>	// [PINNEDBLOOM] memcmp
 #include "texturemanager.h"
 #include "hw_renderstate.h"	// [BLOOMOVERRIDE] FRenderState::firstFrame, the scene shaders' timer origin
 
@@ -426,6 +427,9 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
 	renderstate->SetInputExternalImage(2, PPExternalImage::SmokeDensityPrevious, PPFilterMode::Linear);
 	renderstate->SetInputExternalImage(3, PPExternalImage::SmokeTileActive);
+	// [13d] The light grid the compute step filled this frame (VkSmokeVolume), filtered like the density.
+	renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
+	renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
 	renderstate->SetOutputTexture(&MarchTexture);
 	renderstate->SetNoBlend();
 	renderstate->Draw();
@@ -642,63 +646,98 @@ static float BloomOverrideStrength()
 	return strength >= 0.0f ? (strength < 1.0f ? strength : 1.0f) : 0.0f;
 }
 
-void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm)
+//==========================================================================
+//
+// [PINNEDBLOOM] PINNED BLOOM FOR BEAM LIGHT ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6: the
+// player's "Keep legacy lasers", gl_bloom_pin_beams).
+//
+// Bloom has a LOOK (PPBloomLook): threshold, knee, exposure, spread, streaks, step, tint and
+// fringing. The REST look is the one bloom always used -- the gl_bloom_* / gl_exposure_* cvars,
+// moved by any SetBloomOverride (E1), the knee capped (E2), the blur stepped (E3). The PINNED look
+// is the gl_bloom_pin_* cvars alone. While pinned bloom is on and the light mask carries this
+// eye's scene, each pixel's share of pinned light (beam light) blooms with the pinned look and the
+// rest of it with the rest look, so presets and overrides change the room and not the beams
+// (PPBloomPlan). Every input is the frame's -- the mask's snapshot and report, the frame clock, the
+// cvars -- so both eyes, and both layers of a layered post path, run the same passes.
+//
+//==========================================================================
+
+// Two looks are the same look when they send the same bytes.
+static bool SameBits(float a, float b)
 {
-	// Only bloom things if enabled and no special fixed light mode is active
-	if (!gl_bloom || fixedcm != CM_DEFAULT || gl_ssao_debug || sceneWidth <= 0 || sceneHeight <= 0)
-	{
-		return;
-	}
+	return memcmp(&a, &b, sizeof(float)) == 0;
+}
 
-	renderstate->PushGroup("bloom");
-
-	UpdateTextures(sceneWidth, sceneHeight);
-
-	ExtractUniforms extractUniforms;
-	extractUniforms.Scale = screen->SceneScale();
-	extractUniforms.Offset = screen->SceneOffset();
-	extractUniforms.Threshold = gl_bloom_threshold;
-	extractUniforms.Knee = gl_bloom_knee;
-
-	float blurAmount = gl_bloom_amount;
-	FVector3 bloomTint = FVector3(gl_bloom_tint_r, gl_bloom_tint_g, gl_bloom_tint_b);
+// The rest look: today's values, through today's operations in today's order.
+void PPBloom::RestLook(PPBloomLook &look) const
+{
+	look.Threshold = gl_bloom_threshold;
+	look.Knee = gl_bloom_knee;
+	look.Amount = gl_bloom_amount;
+	look.Tint = FVector3(gl_bloom_tint_r, gl_bloom_tint_g, gl_bloom_tint_b);
 
 	// [BLOOMOVERRIDE] E1. A script-set look (SetBloomOverride) moves the values above
 	// toward its own by its eased mix times gl_bloom_override_strength. When that is 0 --
 	// nothing set, a clear that has finished fading, strength 0 -- this is skipped and
 	// every value is today's, read straight from the cvars: a branch, not a blend by zero.
-	// gl_bloom off returned above, so an override never switches bloom on.
+	// gl_bloom off returns in RenderBloom first, so an override never switches bloom on.
+	// [PINNEDBLOOM] It never reaches the pinned look.
 	PPBloomOverride overrideLook;
 	const float overrideMix = EvaluateOverride(screen->FrameTime, overrideLook) * BloomOverrideStrength();
 	if (overrideMix > 0.0f)
-		BlendOverride(overrideLook, overrideMix, extractUniforms.Threshold, extractUniforms.Knee, blurAmount, bloomTint);
+		BlendOverride(overrideLook, overrideMix, look.Threshold, look.Knee, look.Amount, look.Tint);
 
 	// [BLOOMSAFETY] E2. A knee wider than the threshold makes every dark pixel emit a grey
 	// (knee - threshold)^2 / (4 knee) that the blur spreads over the whole screen: a haze,
 	// not a look (owner's call, 2026-09-14). Capped here, after any override, not in
 	// bloomextract.fp: any knee at or under the threshold (the defaults are 0.5 and 1.0)
 	// sends the very same bits, and neither the lump nor the archived cvar changes.
-	extractUniforms.Knee = min(extractUniforms.Knee, extractUniforms.Threshold);
+	look.Knee = min(look.Knee, look.Threshold);
 
-	auto &level0 = levels[0];
+	look.Anamorphic = gl_bloom_anamorphic;
+	look.AnamorphicRatio = gl_bloom_anamorphic_ratio;
+	look.Step = gl_bloom_step;
+	look.Chromatic = gl_bloom_chromatic;
 
-	// Extract blooming pixels from scene texture:
-	renderstate->Clear();
-	renderstate->Shader = &BloomExtract;
-	renderstate->Uniforms.Set(extractUniforms);
-	renderstate->Viewport = level0.Viewport;
-	renderstate->SetInputCurrent(0, PPFilterMode::Linear);
-	renderstate->SetInputTexture(1, &hw_postprocess.exposure.CameraTexture);
-	renderstate->SetOutputTexture(&level0.VTexture);
-	renderstate->SetNoBlend();
-	renderstate->Draw();
+	const ExposureCombineUniforms exposure = PPCameraExposure::CombineUniforms(gl_exposure_base, gl_exposure_min, gl_exposure_scale, gl_exposure_speed);
+	look.ExposureBase = exposure.ExposureBase;
+	look.ExposureMin = exposure.ExposureMin;
+	look.ExposureScale = exposure.ExposureScale;
+	look.ExposureSpeed = exposure.ExposureSpeed;
+}
 
+// The pinned look: the gl_bloom_pin_* cvars through the same knee cap and exposure guards, and no
+// override. The cvars mirror the live ones' clamps, so a captured look is the rest look's bits.
+void PPBloom::PinnedLook(PPBloomLook &look)
+{
+	look.Threshold = gl_bloom_pin_threshold;
+	look.Knee = gl_bloom_pin_knee;
+	look.Amount = gl_bloom_pin_amount;
+	look.Tint = FVector3(gl_bloom_pin_tint_r, gl_bloom_pin_tint_g, gl_bloom_pin_tint_b);
+	look.Knee = min(look.Knee, look.Threshold);
+
+	look.Anamorphic = gl_bloom_pin_anamorphic;
+	look.AnamorphicRatio = gl_bloom_pin_anamorphic_ratio;
+	look.Step = gl_bloom_pin_step;
+	look.Chromatic = gl_bloom_pin_chromatic;
+
+	const ExposureCombineUniforms exposure = PPCameraExposure::CombineUniforms(gl_bloom_pin_exposure_base, gl_bloom_pin_exposure_min,
+		gl_bloom_pin_exposure_scale, gl_bloom_pin_exposure_speed);
+	look.ExposureBase = exposure.ExposureBase;
+	look.ExposureMin = exposure.ExposureMin;
+	look.ExposureScale = exposure.ExposureScale;
+	look.ExposureSpeed = exposure.ExposureSpeed;
+}
+
+// The blur a look asks for, computed as RenderBloom always computed it.
+void PPBloom::ComputeChain(const PPBloomLook &look, PPBloomChain &chain)
+{
 	// [BB] Anamorphic. The blur is already two passes -- one horizontal, one
 	// vertical -- so widening only the horizontal one costs nothing and gives
 	// the sideways streak of an anamorphic lens.
-	float hAmount = blurAmount;
-	float vAmount = blurAmount;
-	if (gl_bloom_anamorphic) hAmount = blurAmount * gl_bloom_anamorphic_ratio;
+	float hAmount = look.Amount;
+	float vAmount = look.Amount;
+	if (look.Anamorphic) hAmount = look.Amount * look.AnamorphicRatio;
 
 	// [BLOOMSTEP] E3. gl_bloom_step 1 (or a NaN) is today's blur: the same programs,
 	// uniforms and Nearest reads. Above 1 the wide programs spread the taps: vertical by
@@ -707,36 +746,241 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	// flat seven-texel box (ComputeBlurSamplesStepped). The ratio's share of the
 	// horizontal step phases in over the first unit of step: taking it all at 1.01 would
 	// make an anamorphic streak jump to about twice its length on a slider.
-	const float stepSize = gl_bloom_step;
-	const bool stepped = stepSize > 1.0f;
-
-	BlurUniforms hBlurUniforms, vBlurUniforms;
-	BlurSteppedUniforms hWideUniforms = {}, vWideUniforms = {};
-	if (!stepped)
+	const float stepSize = look.Step;
+	chain.Stepped = stepSize > 1.0f;
+	chain.HorizontalWide = {};
+	chain.VerticalWide = {};
+	if (!chain.Stepped)
 	{
-		ComputeBlurSamples(7, hAmount, hBlurUniforms.SampleWeights);
-		ComputeBlurSamples(7, vAmount, vBlurUniforms.SampleWeights);
+		ComputeBlurSamples(7, hAmount, chain.Horizontal.SampleWeights);
+		ComputeBlurSamples(7, vAmount, chain.Vertical.SampleWeights);
 	}
 	else
 	{
-		const float ratio = gl_bloom_anamorphic ? (float)gl_bloom_anamorphic_ratio : 1.0f;
+		const float ratio = look.Anamorphic ? look.AnamorphicRatio : 1.0f;
 		const float phaseIn = min(stepSize - 1.0f, 1.0f);
-		ComputeBlurSamplesStepped(hAmount, stepSize * (1.0f + (ratio - 1.0f) * phaseIn), hWideUniforms);
-		ComputeBlurSamplesStepped(vAmount, stepSize, vWideUniforms);
+		ComputeBlurSamplesStepped(hAmount, stepSize * (1.0f + (ratio - 1.0f) * phaseIn), chain.HorizontalWide);
+		ComputeBlurSamplesStepped(vAmount, stepSize, chain.VerticalWide);
+	}
+}
+
+// Whether two chains run the very same blur passes.
+bool PPBloom::SameChain(const PPBloomChain &a, const PPBloomChain &b)
+{
+	if (a.Stepped != b.Stepped)
+		return false;
+	if (!a.Stepped)	// the seven weights today's blur reads; the eighth is never set, as today
+		return memcmp(a.Horizontal.SampleWeights, b.Horizontal.SampleWeights, 7 * sizeof(float)) == 0 &&
+			memcmp(a.Vertical.SampleWeights, b.Vertical.SampleWeights, 7 * sizeof(float)) == 0;
+	return memcmp(&a.HorizontalWide, &b.HorizontalWide, sizeof(BlurSteppedUniforms)) == 0 &&
+		memcmp(&a.VerticalWide, &b.VerticalWide, sizeof(BlurSteppedUniforms)) == 0;
+}
+
+// This eye's plan. Also fills the pinned look and chain (whenever pinned bloom is on for this eye)
+// and says whether the pinned exposure differs from the live one -- which RenderBloom keeps running
+// with a laser on screen or not.
+PPBloomPlan PPBloom::ChoosePlan(const PPBloomLook &rest, const PPBloomChain &restChain, PPBloomLook &pinned, PPBloomChain &pinnedChain, bool &pinnedExposure) const
+{
+	pinnedExposure = false;
+
+	// Pinned bloom off this frame, or this eye's scene drew no mask (a save picture, OpenGL): today's.
+	const PPLightMask &mask = hw_postprocess.lightmask;
+	if (!mask.PinnedBloomOn() || !mask.PostInputValid())
+		return PPBloomPlan::Legacy;
+
+	PinnedLook(pinned);
+	ComputeChain(pinned, pinnedChain);
+	pinnedExposure = !(SameBits(rest.ExposureBase, pinned.ExposureBase) && SameBits(rest.ExposureMin, pinned.ExposureMin) &&
+		SameBits(rest.ExposureScale, pinned.ExposureScale) && SameBits(rest.ExposureSpeed, pinned.ExposureSpeed));
+
+	// No beam can be on screen: every pinned share is 0, and today's bloom is the answer.
+	if (!mask.PinnedLightMayBeLive())
+		return PPBloomPlan::Legacy;
+
+	if (!SameChain(restChain, pinnedChain) || !SameBits(rest.Chromatic, pinned.Chromatic))
+		return PPBloomPlan::TwoChains;
+
+	const bool sameBeforeBlur = !pinnedExposure && SameBits(rest.Threshold, pinned.Threshold) && SameBits(rest.Knee, pinned.Knee) &&
+		SameBits(rest.Tint.X, pinned.Tint.X) && SameBits(rest.Tint.Y, pinned.Tint.Y) && SameBits(rest.Tint.Z, pinned.Tint.Z);
+	return sameBeforeBlur ? PPBloomPlan::Legacy : PPBloomPlan::OneChain;
+}
+
+void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm)
+{
+	// Only bloom things if enabled and no special fixed light mode is active
+	if (!gl_bloom || fixedcm != CM_DEFAULT || gl_ssao_debug || sceneWidth <= 0 || sceneHeight <= 0)
+	{
+		return;
 	}
 
+	// [PINNEDBLOOM] This eye's looks and plan (above). Legacy is the bloom this function always drew.
+	PPBloomLook restLook;
+	RestLook(restLook);
+	PPBloomChain restChain;
+	ComputeChain(restLook, restChain);
+
+	PPBloomLook pinnedLook;
+	PPBloomChain pinnedChain;
+	bool pinnedExposure = false;
+	const PPBloomPlan plan = ChoosePlan(restLook, restChain, pinnedLook, pinnedChain, pinnedExposure);
+	Plan = plan;
+
+	// One line the first time each pinned plan runs in a session, and once if the switch is on with a
+	// look never chosen (an ini saved before the capture existed), so a test log says what ran.
+	if (hw_postprocess.lightmask.PinnedBloomOn() && hw_postprocess.lightmask.PostInputValid())
+	{
+		static bool loggedUncaptured = false, loggedOneChain = false, loggedTwoChains = false;
+		if (!gl_bloom_pin_captured && !loggedUncaptured)
+		{
+			loggedUncaptured = true;
+			Printf("Bloom: gl_bloom_pin_beams is on but no laser look was ever captured -- beam light keeps the gl_bloom_pin_* "
+				"values as they are (the engine defaults unless set); gl_bloom_pin_capture takes the current bloom\n");
+		}
+		if (plan == PPBloomPlan::OneChain && !loggedOneChain)
+		{
+			loggedOneChain = true;
+			Printf("Bloom: pinned laser bloom -- one chain (the laser look differs only in threshold, knee, exposure or tint)\n");
+		}
+		if (plan == PPBloomPlan::TwoChains && !loggedTwoChains)
+		{
+			loggedTwoChains = true;
+			Printf("Bloom: pinned laser bloom -- a second bloom chain for beam light (the laser look differs in spread, streaks, step or fringing)\n");
+		}
+	}
+
+	// [PINNEDBLOOM] The pinned look's exposure, whenever it differs from the live one -- a beam on
+	// screen or not, so a laser that appears under a preset meets an exposure that has adapted.
+	if (pinnedExposure)
+	{
+		ExposureCombineUniforms pinnedCombine;
+		pinnedCombine.ExposureBase = pinnedLook.ExposureBase;
+		pinnedCombine.ExposureMin = pinnedLook.ExposureMin;
+		pinnedCombine.ExposureScale = pinnedLook.ExposureScale;
+		pinnedCombine.ExposureSpeed = pinnedLook.ExposureSpeed;
+		hw_postprocess.exposure.RenderPinned(renderstate, pinnedCombine);
+	}
+	PPTexture *pinnedExposureTexture = pinnedExposure ? &hw_postprocess.exposure.PinnedCameraTexture : &hw_postprocess.exposure.CameraTexture;
+
+	renderstate->PushGroup("bloom");
+
+	UpdateTextures(sceneWidth, sceneHeight);
+
+	auto &level0 = levels[0];
+
+	if (plan == PPBloomPlan::Legacy)
+	{
+		ExtractUniforms extractUniforms;
+		extractUniforms.Scale = screen->SceneScale();
+		extractUniforms.Offset = screen->SceneOffset();
+		extractUniforms.Threshold = restLook.Threshold;
+		extractUniforms.Knee = restLook.Knee;
+
+		// Extract blooming pixels from scene texture:
+		renderstate->Clear();
+		renderstate->Shader = &BloomExtract;
+		renderstate->Uniforms.Set(extractUniforms);
+		renderstate->Viewport = level0.Viewport;
+		renderstate->SetInputCurrent(0, PPFilterMode::Linear);
+		renderstate->SetInputTexture(1, &hw_postprocess.exposure.CameraTexture);
+		renderstate->SetOutputTexture(&level0.VTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+
+		RenderChain(renderstate, levels, restChain);
+		RenderFinalCombine(renderstate, level0, restLook.Tint, restLook.Chromatic);
+	}
+	else if (plan == PPBloomPlan::OneChain)
+	{
+		// [PINNEDBLOOM] Both looks in one extract, each with its own threshold, knee, exposure and tint,
+		// weighed by the pinned share. The looks share this chain (the plan's condition), and the tints
+		// are in the extract, so the final combine adds a neutral tint with the shared fringing.
+		ExtractDualUniforms dual = {};
+		dual.Scale = screen->SceneScale();
+		dual.Offset = screen->SceneOffset();
+		dual.RestThreshold = restLook.Threshold;
+		dual.RestKnee = restLook.Knee;
+		dual.PinThreshold = pinnedLook.Threshold;
+		dual.PinKnee = pinnedLook.Knee;
+		dual.RestTint = restLook.Tint;
+		dual.PinTint = pinnedLook.Tint;
+
+		renderstate->Clear();
+		renderstate->Shader = &BloomExtractDual;
+		renderstate->Uniforms.Set(dual);
+		renderstate->Viewport = level0.Viewport;
+		renderstate->SetInputCurrent(0, PPFilterMode::Linear);
+		renderstate->SetInputTexture(1, &hw_postprocess.exposure.CameraTexture);
+		renderstate->SetInputTexture(2, pinnedExposureTexture);
+		renderstate->SetInputLightMask(3, PPFilterMode::Linear);
+		renderstate->SetOutputTexture(&level0.VTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+
+		RenderChain(renderstate, levels, restChain);
+		RenderFinalCombine(renderstate, level0, FVector3(1.0f, 1.0f, 1.0f), restLook.Chromatic);
+	}
+	else
+	{
+		// [PINNEDBLOOM] Two chains. Both extracts read the image before either combine adds to it:
+		// the rest share's extract and chain, then the pinned share's extract, chain and combine
+		// (group bloom.pinned), then the rest combine. The perf log sums same-name groups.
+		RenderExtractShare(renderstate, level0, restLook, 0, &hw_postprocess.exposure.CameraTexture);
+		RenderChain(renderstate, levels, restChain);
+		renderstate->PopGroup();
+
+		renderstate->PushGroup("bloom.pinned");
+		UpdatePinnedTextures();
+		RenderExtractShare(renderstate, pinLevels[0], pinnedLook, 1, pinnedExposureTexture);
+		RenderChain(renderstate, pinLevels, pinnedChain);
+		RenderFinalCombine(renderstate, pinLevels[0], pinnedLook.Tint, pinnedLook.Chromatic);
+		renderstate->PopGroup();
+
+		renderstate->PushGroup("bloom");
+		RenderFinalCombine(renderstate, level0, restLook.Tint, restLook.Chromatic);
+	}
+
+	renderstate->PopGroup();
+}
+
+// [PINNEDBLOOM] One look's extract times one share of each pixel (bloomextract.fp BLOOM_EXTRACT_SHARE):
+// weightClass 1 the pinned share, 0 the rest.
+void PPBloom::RenderExtractShare(PPRenderState *renderstate, PPBlurLevel &level0, const PPBloomLook &look, int weightClass, PPTexture *exposureTexture)
+{
+	ExtractShareUniforms share = {};
+	share.Scale = screen->SceneScale();
+	share.Offset = screen->SceneOffset();
+	share.Threshold = look.Threshold;
+	share.Knee = look.Knee;
+	share.WeightClass = weightClass;
+
+	renderstate->Clear();
+	renderstate->Shader = &BloomExtractShare;
+	renderstate->Uniforms.Set(share);
+	renderstate->Viewport = level0.Viewport;
+	renderstate->SetInputCurrent(0, PPFilterMode::Linear);
+	renderstate->SetInputTexture(1, exposureTexture);
+	renderstate->SetInputLightMask(2, PPFilterMode::Linear);
+	renderstate->SetOutputTexture(&level0.VTexture);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+}
+
+// The blur chain over one set of levels, after an extract filled level 0: RenderBloom's passes as they
+// always were, over `levels` or, for the pinned share, `pinLevels`.
+void PPBloom::RenderChain(PPRenderState *renderstate, PPBlurLevel *chainLevels, const PPBloomChain &chain)
+{
 	// One level's blur, horizontal (V -> H) then vertical (H -> V), today's or wide.
 	auto blurLevel = [&](PPBlurLevel &blevel)
 	{
-		if (!stepped)
+		if (!chain.Stepped)
 		{
-			BlurStep(renderstate, hBlurUniforms, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
-			BlurStep(renderstate, vBlurUniforms, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
+			BlurStep(renderstate, chain.Horizontal, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
+			BlurStep(renderstate, chain.Vertical, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
 		}
 		else
 		{
-			BlurStepWide(renderstate, hWideUniforms, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
-			BlurStepWide(renderstate, vWideUniforms, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
+			BlurStepWide(renderstate, chain.HorizontalWide, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
+			BlurStepWide(renderstate, chain.VerticalWide, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
 		}
 	};
 
@@ -748,8 +992,8 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	// Blur and downscale:
 	for (int i = 0; i < NumBloomLevels - 1; i++)
 	{
-		auto &blevel = levels[i];
-		auto &next = levels[i + 1];
+		auto &blevel = chainLevels[i];
+		auto &next = chainLevels[i + 1];
 
 		blurLevel(blevel);
 
@@ -767,8 +1011,8 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	// Blur and upscale:
 	for (int i = NumBloomLevels - 1; i > 0; i--)
 	{
-		auto &blevel = levels[i];
-		auto &next = levels[i - 1];
+		auto &blevel = chainLevels[i];
+		auto &next = chainLevels[i - 1];
 
 		blurLevel(blevel);
 
@@ -783,14 +1027,18 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 		renderstate->Draw();
 	}
 
-	blurLevel(level0);
+	blurLevel(chainLevels[0]);
+}
 
-	// Add bloom back to scene texture. This is the ONLY place tint and
-	// fringing apply -- every earlier use of this shader was a downscale.
-	// [BLOOMOVERRIDE] bloomTint is today's cvar tint unless an override applies.
+// Add bloom back to scene texture. This is the ONLY place tint and
+// fringing apply -- every earlier use of this shader was a downscale.
+// [BLOOMOVERRIDE] The rest look's tint carries any override. [PINNEDBLOOM] OneChain passes a
+// neutral tint (its tints are in the extract); TwoChains adds each share's bloom with its own look.
+void PPBloom::RenderFinalCombine(PPRenderState *renderstate, PPBlurLevel &level0, const FVector3 &tint, float chromatic)
+{
 	BloomCombineUniforms finalCombine;
-	finalCombine.Tint = bloomTint;
-	finalCombine.Chromatic = gl_bloom_chromatic;
+	finalCombine.Tint = tint;
+	finalCombine.Chromatic = chromatic;
 
 	renderstate->Clear();
 	renderstate->Shader = &BloomCombine;
@@ -800,8 +1048,24 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	renderstate->SetOutputCurrent();
 	renderstate->SetAdditiveBlend();
 	renderstate->Draw();
+}
 
-	renderstate->PopGroup();
+// [PINNEDBLOOM] The pinned chain's levels: the sizes `levels` has this frame (UpdateTextures ran first).
+void PPBloom::UpdatePinnedTextures()
+{
+	if (pinLastWidth == lastWidth && pinLastHeight == lastHeight)
+		return;
+
+	for (int i = 0; i < NumBloomLevels; i++)
+	{
+		auto &pinned = pinLevels[i];
+		pinned.Viewport = levels[i].Viewport;
+		pinned.VTexture = { pinned.Viewport.width, pinned.Viewport.height, PixelFormat::Rgba16f };
+		pinned.HTexture = { pinned.Viewport.width, pinned.Viewport.height, PixelFormat::Rgba16f };
+	}
+
+	pinLastWidth = lastWidth;
+	pinLastHeight = lastHeight;
 }
 
 void PPBloom::RenderBlur(PPRenderState *renderstate, int sceneWidth, int sceneHeight, float gameinfobluramount)
@@ -1122,6 +1386,22 @@ FString PPFXAA::GetDefines()
 
 /////////////////////////////////////////////////////////////////////////////
 
+// [BLOOMSAFETY] [PINNEDBLOOM] E2's exposure guards (see Render), in one place for the live exposure and
+// the pinned bloom look.
+ExposureCombineUniforms PPCameraExposure::CombineUniforms(float base, float minimum, float scale, float speed)
+{
+	auto finiteOr = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+	const float exposureMin = minimum;
+	const float exposureSpeed = finiteOr(speed, 0.05f);
+
+	ExposureCombineUniforms combineUniforms;
+	combineUniforms.ExposureBase = finiteOr(base, 0.35f);
+	combineUniforms.ExposureMin = (exposureMin >= 0.01f) ? exposureMin : 0.01f;
+	combineUniforms.ExposureScale = finiteOr(scale, 1.3f);
+	combineUniforms.ExposureSpeed = exposureSpeed < 0.0f ? 0.0f : (exposureSpeed > 1.0f ? 1.0f : exposureSpeed);
+	return combineUniforms;
+}
+
 void PPCameraExposure::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight)
 {
 	if (!gl_bloom)
@@ -1150,15 +1430,8 @@ void PPCameraExposure::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	//   A non-finite Base, Scale or Speed typed at the console falls back to its default.
 	// Every finite setting inside those ranges -- the defaults and everything RS_Bloom's
 	// sliders can reach -- passes through bit for bit.
-	auto finiteOr = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
-	const float exposureMin = gl_exposure_min;
-	const float exposureSpeed = finiteOr(gl_exposure_speed, 0.05f);
-
-	ExposureCombineUniforms combineUniforms;
-	combineUniforms.ExposureBase = finiteOr(gl_exposure_base, 0.35f);
-	combineUniforms.ExposureMin = (exposureMin >= 0.01f) ? exposureMin : 0.01f;
-	combineUniforms.ExposureScale = finiteOr(gl_exposure_scale, 1.3f);
-	combineUniforms.ExposureSpeed = exposureSpeed < 0.0f ? 0.0f : (exposureSpeed > 1.0f ? 1.0f : exposureSpeed);
+	// [PINNEDBLOOM] The guards live in CombineUniforms, which the pinned bloom look uses too.
+	const ExposureCombineUniforms combineUniforms = CombineUniforms(gl_exposure_base, gl_exposure_min, gl_exposure_scale, gl_exposure_speed);
 
 	auto &level0 = ExposureLevels[0];
 
@@ -1207,6 +1480,39 @@ void PPCameraExposure::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	FirstExposureFrame = false;
 }
 
+// [PINNEDBLOOM] The pinned bloom look's exposure (hw_postprocess.h). The same combine as Render's last draw,
+// over the average Render measured for this eye, into PinnedCameraTexture. It blends with its last value
+// only when it drew on this displayed frame (the other eye) or the one before, and the levels were not
+// rebuilt since; otherwise that value is stale and this frame's is taken whole, as Render's first frame is.
+void PPCameraExposure::RenderPinned(PPRenderState *renderstate, const ExposureCombineUniforms &combineUniforms)
+{
+	if (ExposureLevels.empty())
+		return;
+
+	const uint64_t frame = screen->FrameCount;
+	const bool blend = PinnedHistory && (frame == PinnedLastFrame || frame == PinnedLastFrame + 1);
+
+	renderstate->PushGroup("exposure.pinned");
+	renderstate->Clear();
+	renderstate->Shader = &ExposureCombine;
+	renderstate->Uniforms.Set(combineUniforms);
+	renderstate->Viewport.left = 0;
+	renderstate->Viewport.top = 0;
+	renderstate->Viewport.width = 1;
+	renderstate->Viewport.height = 1;
+	renderstate->SetInputTexture(0, &ExposureLevels.back().Texture, PPFilterMode::Linear);
+	renderstate->SetOutputTexture(&PinnedCameraTexture);
+	if (blend)
+		renderstate->SetAlphaBlend();
+	else
+		renderstate->SetNoBlend();
+	renderstate->Draw();
+	renderstate->PopGroup();
+
+	PinnedHistory = true;
+	PinnedLastFrame = frame;
+}
+
 void PPCameraExposure::UpdateTextures(int width, int height)
 {
 	int firstwidth = max(width / 2, 1);
@@ -1238,6 +1544,7 @@ void PPCameraExposure::UpdateTextures(int width, int height)
 	} while (width > 1 || height > 1);
 
 	FirstExposureFrame = true;
+	PinnedHistory = false;	// [PINNEDBLOOM] new levels: the pinned exposure starts over too
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1923,6 +2230,11 @@ void PPLightMask::BeginFrame(bool active)
 	PostInput = false;
 	const int mode = r_lightmask_debug;
 	DebugMode = !active ? 0 : (mode < 0 ? 0 : (mode > 2 ? 2 : mode));
+
+	// [PINNEDBLOOM] Pinned bloom for this frame, and no pinned light report yet (SetPinnedLightLive).
+	PinnedBloom = active && gl_bloom && gl_bloom_pin_beams;
+	PinnedLightReported = false;
+	PinnedLight = false;
 }
 
 // Where bloom runs, in its place: the colour read here is the colour bloom would have read,

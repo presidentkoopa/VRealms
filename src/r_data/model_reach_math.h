@@ -39,6 +39,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -760,6 +762,344 @@ inline void ReachWriteSegments(FJointPoseWork &w, const std::vector<FReachSegJoi
 		w.SetGlobal(sj.j, pos, rot.Unit());
 	}
 	w.SetGlobal(end, p.wristSolved, (AxisAngleRad(p.lowerDir, twistRad) * p.swingL * endRot0).Unit());
+}
+
+// ---- joint space <-> model space ----------------------------------------------------------
+//
+// The renderer's model space is the file's (x, z, y); the swap is its own inverse, so this one
+// function turns a vector either way.
+inline FVector3 SwapYZ(const FVector3 &v) { return FVector3(v.X, v.Z, v.Y); }
+inline bool     ReachNonZero(const FVector3 &v) { return v.LengthSquared() > 1.e-12; }
+
+// ---- clearance: the elbow keeps clear of solid things (VR_BODY_IK_RETURN_PLAN.md 4b idea 6) -------
+//
+// Mirrored from ik_mockup.py arm_penetration and wall_swivel. The reference's walls are half-
+// spaces; the level is not, so a solid thing here is a CONVEX REGION -- the points p with
+// n_i . p + c_i <= 0 for every one of its planes, n_i unit. Its outside distance is taken as
+// max_i (n_i . p + c_i), which is exact across a face and continuous everywhere, so a sphere of
+// radius R at p penetrates it by R - max_i(...). A region of one plane IS the reference's wall.
+// Piece B knows nothing of levels: the draw path hands it regions (level_solid_query.h).
+
+inline constexpr int kReachRegionPlanes = 6;
+
+struct FReachSolidRegion
+{
+	int      planes = 0;
+	FVector3 n[kReachRegionPlanes];
+	float    c[kReachRegionPlanes] = {};
+};
+
+struct FReachClearance
+{
+	const FReachSolidRegion *regions = nullptr;
+	int   count = 0;
+	float radius = 0.f;		// ARM_RADIUS, in the chain's joint units. <= 0: off
+	float maxDeg = 100.f;	// WALL_SWIVEL_MAX: the swivel the push may reach, either way
+};
+
+// A world plane -- GL layout (x, up, y): s = nW . x + cW for a world point x -- as a plane of a chain's
+// joint space, where joint point j is drawn at x = objectToWorld * swapYZ(j). Normalised so s is the
+// distance in JOINT units (the arm's own, whatever its fit scale). Exact for any affine matrix: the
+// image of a half-space is a half-space. False when the plane has no extent in joint space.
+inline bool ReachPlaneToJoint(const VSMatrix &objectToWorld, double nx, double ny, double nz, double cW, FVector3 &nJ, float &cJ)
+{
+	const FLOATTYPE *d = objectToWorld.get();
+	// (o2w3x3 * swap)^T n = swap * o2w3x3^T n
+	const double tx = d[0] * nx + d[1] * ny + d[2] * nz;
+	const double ty = d[4] * nx + d[5] * ny + d[6] * nz;
+	const double tz = d[8] * nx + d[9] * ny + d[10] * nz;
+	const double k = sqrt(tx * tx + ty * ty + tz * tz);
+	if (!(k > 1.e-12) || !std::isfinite(k)) return false;
+	const double off = (d[12] * nx + d[13] * ny + d[14] * nz + cW) / k;
+	if (!std::isfinite(off)) return false;
+	nJ = FVector3((float)(tx / k), (float)(tz / k), (float)(ty / k));
+	cJ = (float)off;
+	return true;
+}
+
+// How far a sphere at p pokes into the deepest region; 0 when clear (the reference's worst = 0.0).
+inline float ReachRegionsPenetration(const FVector3 &p, float R, const FReachSolidRegion *regions, int count)
+{
+	float worst = 0.f;
+	for (int r = 0; r < count; r++)
+	{
+		const FReachSolidRegion &g = regions[r];
+		if (g.planes <= 0) continue;
+		float outside = -FLT_MAX;
+		for (int i = 0; i < g.planes && i < kReachRegionPlanes; i++)
+		{
+			const float s = (float)(g.n[i] | p) + g.c[i];
+			if (s > outside) outside = s;
+			if (outside >= R) break;	// this region cannot reach the sphere
+		}
+		const float pen = R - outside;
+		if (pen > worst) worst = pen;
+	}
+	return worst;
+}
+
+// arm_penetration: the upper-arm middle, the elbow and the forearm middle (toward the wrist TARGET).
+inline float ReachArmPenetration(const FVector3 &shoulder, const FVector3 &elbow, const FVector3 &target, const FReachClearance &cl)
+{
+	if (!(cl.radius > 0.f) || cl.count <= 0 || cl.regions == nullptr) return 0.f;
+	const FVector3 upperMid = shoulder + (elbow - shoulder) * 0.5f;
+	const FVector3 lowerMid = elbow + (target - elbow) * 0.5f;
+	return std::max({ ReachRegionsPenetration(upperMid, cl.radius, cl.regions, cl.count),
+		ReachRegionsPenetration(elbow, cl.radius, cl.regions, cl.count),
+		ReachRegionsPenetration(lowerMid, cl.radius, cl.regions, cl.count) });
+}
+
+// wall_swivel: from the aligned swivel, Newton steps on the penetration over the swivel angle until
+// clear, capped at +-maxDeg. Lengths and the wrist are untouched -- the elbow only walks round its
+// exact circle -- and nothing moves until there is contact. A nearly straight arm has no circle and
+// stays (the hand leads). Returns the swivel in degrees; the penetration before and after if asked.
+inline float ReachClearSwivel(const FReachArmIn &in, const FReachCircle &c, float phiDeg, const FReachClearance &cl,
+	float *penBefore = nullptr, float *penAfter = nullptr)
+{
+	auto pen = [&](float ph)
+	{
+		const FVector3 e = c.centre + (c.u0 * cosf(ph) + c.v0 * sinf(ph)) * c.rad;
+		return ReachArmPenetration(in.shoulder, e, in.target, cl);
+	};
+	float phi = phiDeg * kDegToRad;
+	if (penBefore) *penBefore = pen(phi);
+	if (!(cl.radius > 0.f) || cl.count <= 0 || cl.regions == nullptr || !(c.rad > 1.e-3f))
+	{
+		if (penAfter) *penAfter = penBefore ? *penBefore : pen(phi);
+		return phiDeg;
+	}
+	const float h = 2.f * kDegToRad;
+	const float maxr = Clampf(std::isfinite(cl.maxDeg) ? cl.maxDeg : 0.f, 0.f, 180.f) * kDegToRad;
+	for (int it = 0; it < 12; it++)
+	{
+		const float p = pen(phi);
+		if (!(p > 0.f)) break;
+		const float g = (pen(phi + h) - pen(phi - h)) / (2.f * h);
+		if (!(fabsf(g) >= 1.e-6f)) break;
+		phi = Clampf(phi - p / g, -maxr, maxr);
+	}
+	if (penAfter) *penAfter = pen(phi);
+	return phi * kRadToDeg;
+}
+
+// ---- the whole chain solve as one function ----------------------------------------------------------
+//
+// Everything section 3g's solve reads, so the solve is a pure function of it: the pose the chain
+// was drawn in (captured from the model's palette), this frame's target and tuning, the previous
+// frame's smoothed values and the clearance regions. model_reach.cpp calls it from whichever draw
+// needs the frame's solve first -- the chain's own model, or the model it reaches (a hand aiming its
+// wrist along the forearm, idea 1) -- and the chain's own draw writes the result onto its palette.
+// The same inputs give the same bits, so a second call in one frame changes nothing.
+
+// The chain's joints as drawn, joint space, before the solve writes anything.
+struct FReachChainPose
+{
+	FVector3    shoulder, elbow, wrist;		// root, mid, end global positions
+	FQuaternion midRot, endRot;				// mid and end global rotations
+	FQuaternion midRotAnimated;				// the mid joint at the model's own animated pose (before any draw-time edit)
+	bool        hasFollow = false;			// a follow joint (a clavicle) is resolved
+	FVector3    followPos;
+	FQuaternion followRot;
+};
+
+inline bool ReachSamePose(const FReachChainPose &a, const FReachChainPose &b)
+{
+	auto q = [](const FQuaternion &x, const FQuaternion &y) { return x.X == y.X && x.Y == y.Y && x.Z == y.Z && x.W == y.W; };
+	return a.shoulder == b.shoulder && a.elbow == b.elbow && a.wrist == b.wrist && q(a.midRot, b.midRot) && q(a.endRot, b.endRot)
+		&& q(a.midRotAnimated, b.midRotAnimated) && a.hasFollow == b.hasFollow
+		&& (!a.hasFollow || (a.followPos == b.followPos && q(a.followRot, b.followRot)));
+}
+
+// This frame's inputs, all in the chain's joint space.
+struct FReachFrameIn
+{
+	FVector3 target;				// where the end joint must land
+	FVector3 fingerDir;				// unit, or zero: no swivel alignment
+	FVector3 targetTwistRef;		// unit, or zero: no twist
+	FVector3 outward, down, back;	// the rig's own directions, unit (or zero)
+	FVector3 twistRef;				// the end bone's reference roll at the animated pose; zero: no twist
+	float    poleOut = 1.0f, poleDown = 0.6f, poleBack = 0.35f;
+	float    follow = 0.25f, followMax = 25.0f;
+	FReachTuning t;
+	float    swivelRate = 0.f, twistRate = 0.f, clearRate = 0.f;	// per second; 0 = none (the reference)
+	bool     histValid = false;		// the previous frame solved: smooth from it
+	float    histPhi = 0.f, histTwist = 0.f, histClearOfs = 0.f;
+	float    dt = 0.f;				// seconds since that frame
+	FReachClearance clear;
+};
+
+struct FReachSolveOut
+{
+	bool          followApplied = false;
+	FQuaternion   followSwing = FQuaternion(0.f, 0.f, 0.f, 1.f);	// the follow joint turns by this about its own position
+	FReachArmIn   in;
+	FReachCircle  circle;
+	FReachSwivel  swivel;
+	FReachArmPose pose;
+	FReachTwist   twist;
+	FQuaternion   endRot0 = FQuaternion(0.f, 0.f, 0.f, 1.f);		// the end joint's rotation after the follow (ReachWriteSegments)
+	float         phiAligned = 0.f;		// the alignment swivel after its smoothing -- what the next frame smooths from
+	float         clearOfs = 0.f;		// what the clearance added, after its smoothing
+	float         phi = 0.f;			// the swivel the elbow is placed at, degrees
+	float         twistDeg = 0.f;		// after the twist smoothing
+	float         penBefore = 0.f, penAfter = 0.f;
+};
+
+inline bool ReachSolveChain(const FReachChainPose &pose, const FReachFrameIn &f, FReachSolveOut &o)
+{
+	o = FReachSolveOut();
+	FVector3 S0 = pose.shoulder, E0 = pose.elbow, W0 = pose.wrist;
+	FQuaternion midRot = pose.midRot, endRot = pose.endRot;
+
+	// The shelved shoulder follow (review item 14), before the solve: the follow joint turns about its own
+	// position, so everything under it turns rigidly about that point.
+	if (pose.hasFollow && f.follow > 0.f)
+	{
+		FVector3 u0 = S0 - pose.followPos, u1 = f.target - pose.followPos;
+		if (ReachNonZero(u0) && ReachNonZero(u1))
+		{
+			u0.MakeUnit();
+			u1.MakeUnit();
+			o.followSwing = ReachFollowSwing(u0, u1, f.follow, f.followMax);
+			o.followApplied = true;
+			S0 = pose.followPos + o.followSwing * (S0 - pose.followPos);
+			E0 = pose.followPos + o.followSwing * (E0 - pose.followPos);
+			W0 = pose.followPos + o.followSwing * (W0 - pose.followPos);
+			midRot = (o.followSwing * midRot).Unit();
+			endRot = (o.followSwing * endRot).Unit();
+		}
+	}
+	o.endRot0 = endRot;
+
+	FReachArmIn &in = o.in;
+	in.shoulder = S0;
+	in.elbow = E0;
+	in.wrist = W0;
+	in.target = f.target;
+	in.pole = f.outward * f.poleOut + f.down * f.poleDown + f.back * f.poleBack;
+	in.up = -f.down;
+	in.fallback = ReachNonZero(f.outward) ? f.outward : FVector3(1, 0, 0);
+	if (!ReachSolveCircle(in, f.t, o.circle)) return false;
+
+	// Swivel alignment (section 3g step 4), then its time smoothing.
+	o.swivel = ReachSwivelAngle(o.circle, f.fingerDir, f.t);
+	o.phiAligned = f.histValid ? SmoothToward(f.histPhi, o.swivel.phiDeg, f.swivelRate, f.dt) : o.swivel.phiDeg;
+
+	// Clearance (idea 6) from the aligned swivel. Its own smoothing, 0 = the reference's instant push.
+	float phi = o.phiAligned;
+	if (f.clear.radius > 0.f && f.clear.count > 0 && f.clear.regions != nullptr)
+	{
+		const float want = ReachClearSwivel(in, o.circle, o.phiAligned, f.clear, &o.penBefore, &o.penAfter);
+		if (f.histValid && f.clearRate > 0.f)
+		{
+			o.clearOfs = SmoothToward(f.histClearOfs, want - o.phiAligned, f.clearRate, f.dt);
+			phi = o.phiAligned + o.clearOfs;
+		}
+		else
+		{
+			o.clearOfs = want - o.phiAligned;
+			phi = want;
+		}
+	}
+	o.phi = phi;
+	ReachPlaceElbow(in, o.circle, phi, f.t, o.pose);
+
+	// Forearm twist (section 3g step 6). The arm's reference is stated at the model's own animated pose, so it is
+	// carried to the pre-solve pose by whatever turned the mid bone since (the pose layer, the follow).
+	if (ReachNonZero(f.twistRef) && ReachNonZero(f.targetTwistRef))
+	{
+		const FQuaternion toPre = (midRot * pose.midRotAnimated.Inverse()).Unit();
+		o.twist = ReachForearmTwist(o.pose, toPre * f.twistRef, f.targetTwistRef, f.t);
+		o.twistDeg = f.histValid ? SmoothToward(f.histTwist, o.twist.twistDeg, f.twistRate, f.dt) : o.twist.twistDeg;
+	}
+	return true;
+}
+
+// ---- a joint of the model a chain reaches, aimed along the chain (4b idea 1) --------------------------------
+//
+// Mirrored from ik_mockup.py stub_q: the RS hand's wrist stub (skinned to Root_joint) turns about the palm
+// until it lies along the solved forearm, toward the elbow, at most 70 degrees; HANDPALM, its child,
+// keeps its place, so the palm and fingers stay exactly where the controller put them. Generally: a joint of
+// the TARGET model turns about a pivot so one of its axes points back along the chain's end bone.
+
+// The direction from the chain's end joint back toward its mid joint, in the TARGET model's joint space.
+// chainO2W / targetO2W: the two models' drawn matrices; lowerDirJ: the solved end bone (mid -> end), the
+// chain's joint space. A direction through an affine map keeps its line, so only the 3x3s matter. Zero
+// when the target's matrix is singular.
+inline FVector3 ReachAimToward(const VSMatrix &chainO2W, const FVector3 &lowerDirJ, const VSMatrix &targetO2W)
+{
+	const FVector3 world = MatDir(chainO2W, SwapYZ(lowerDirJ));
+	VSMatrix inv;
+	VSMatrix m = targetO2W;
+	if (!m.inverseMatrix(inv)) return FVector3(0, 0, 0);
+	return UnitOr(SwapYZ(MatDir(inv, -world)), FVector3(0, 0, 0));
+}
+
+struct FReachAim
+{
+	bool        valid = false;
+	FQuaternion q = FQuaternion(0.f, 0.f, 0.f, 1.f);	// the turn, the target's joint space
+	FVector3    pivot;								// what it turns about, the target's joint space, as drawn
+	float       wantDeg = 0.f, usedDeg = 0.f;
+};
+
+// The turn taking axisDrawn onto toward (both unit), `weight` of it and at most maxDeg -- stub_q's
+// rotation_difference slerped to STUB_BEND_MAX.
+inline FReachAim ReachAimRotation(const FVector3 &axisDrawn, const FVector3 &toward, float maxDeg, float weight)
+{
+	FReachAim a;
+	if (!Finite3(axisDrawn) || !Finite3(toward) || !ReachNonZero(axisDrawn) || !ReachNonZero(toward)) return a;
+	const FQuaternion q = QuatFromTo(axisDrawn, toward);
+	const float ang = 2.f * acosf(Clampf(fabsf(q.W), 0.f, 1.f)) * kRadToDeg;
+	float k = Clampf(std::isfinite(weight) ? weight : 0.f, 0.f, 1.f);
+	const float maxd = Clampf(std::isfinite(maxDeg) ? maxDeg : 0.f, 0.f, 180.f);
+	if (ang * k > maxd && ang > 1.e-4f) k = maxd / ang;
+	a.q = QuatFraction(q, k);
+	a.wantDeg = ang;
+	a.usedDeg = ang * k;
+	a.valid = true;
+	return a;
+}
+
+// Where the aim turns from, as drawn: axisJ and pivotJ are the joint's axis and pivot in the model's
+// joint space at REST; the joint's drawn skin (global * bind^-1) carries them to where they are drawn.
+// False when the bind is singular.
+inline bool ReachAimFrame(FJointPoseWork &w, const VSMatrix &bind, int joint, const FVector3 &axisJ, const FVector3 &pivotJ,
+	FVector3 &axisDrawn, FVector3 &pivotDrawn)
+{
+	VSMatrix b = bind, binv;
+	if (!b.inverseMatrix(binv)) return false;
+	const VSMatrix skin = MatMul(w.GlobalPosed(joint), binv);
+	axisDrawn = UnitOr(MatDir(skin, axisJ), FVector3(0, 0, 0));
+	pivotDrawn = MatPoint(skin, pivotJ);
+	return ReachNonZero(axisDrawn) && Finite3(pivotDrawn);
+}
+
+// Turn the joint by aim.q about aim.pivot. keepChildren: its direct children keep their drawn place
+// (they counter-rotate), so only what is skinned to the joint itself moves.
+inline void ReachApplyAim(FJointPoseWork &w, int joint, const FReachAim &aim, bool keepChildren)
+{
+	if (!aim.valid || joint < 0 || joint >= w.Count()) return;
+	static thread_local std::vector<int> kids;
+	static thread_local std::vector<FVector3> kidPos;
+	static thread_local std::vector<FQuaternion> kidRot;
+	kids.clear(); kidPos.clear(); kidRot.clear();
+	if (keepChildren)
+	{
+		for (int k = joint + 1; k < w.Count(); k++)
+		{
+			if (w.Parent(k) != joint) continue;
+			const VSMatrix g = w.GlobalPosed(k);
+			kids.push_back(k);
+			kidPos.push_back(MatTranslation(g));
+			kidRot.push_back(MatRotation(g));
+		}
+	}
+	const VSMatrix g = w.GlobalPosed(joint);
+	const FVector3 p = MatTranslation(g);
+	if (!w.SetGlobal(joint, aim.pivot + aim.q * (p - aim.pivot), (aim.q * MatRotation(g)).Unit())) return;
+	for (size_t k = 0; k < kids.size(); k++)
+		w.SetGlobal(kids[k], kidPos[k], kidRot[k]);
 }
 
 } // namespace ModelReach

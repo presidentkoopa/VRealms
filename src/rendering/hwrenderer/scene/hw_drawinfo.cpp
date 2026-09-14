@@ -42,6 +42,7 @@
 #include "particledefs.h"	// [PARTICLEDEFS] the CPU table it syncs from
 #include "hw_viewlightbuffer.h"	// [VIEWLIGHTS] the dynamic lights in view, for lit particles
 #include "hw_meshparticles.h"	// [MESHPARTICLES] mesh particles: their sync, the view light gate, the opaque-pass draw
+#include "hw_debrispool.h"	// [DEBRISPOOL] the debris pool: its gates and its two draws
 #include "a_dynlight.h"	// [VIEWLIGHTS] FDynamicLight, walked to fill it
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
 #include "hw_smokevolume.h"	// [SMOKEVOLUME] SmokeVolume::GetDrawState, for SetupSmokeVolume
@@ -455,8 +456,10 @@ static void SyncViewLights(const HWDrawInfo *di)
 	const bool litParticlesAlive = particles != nullptr && particles->IsDrawable() && particles->LitAliveAt(viewLightTime);
 	const MeshParticleBuffer *meshParticles = screen->mMeshParticles;
 	const bool litMeshParticlesAlive = meshParticles != nullptr && meshParticles->IsDrawable() && meshParticles->LitAliveAt(viewLightTime);
+	// [DEBRISPOOL] And for a lit piece of the debris pool, billboard or mesh.
+	const bool litDebrisAlive = DebrisPool::Get().LitAliveAt(viewLightTime);
 	if (Level == nullptr || Level->lights == nullptr || !r_dynlights || !r_gpuparticles || wanted <= 0 ||
-		!(litParticlesAlive || litMeshParticlesAlive))
+		!(litParticlesAlive || litMeshParticlesAlive || litDebrisAlive))
 	{
 		viewLights->Upload(nullptr, 0);
 		return;
@@ -847,7 +850,8 @@ static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
 //     (SmokeVolume::GetDrawState, decided by PrepareFrameCompute before the eye loop);
 //   - the backend holds the volume at that quality (SmokeVolumeStatus, written by this frame's
 //     RunFrameCompute, which also put the volume's images in the layout the pass reads them in);
-//   - something to show: the look's absorption x r_smoke_density_scale above 0, or the debug slice.
+//   - something to show: the look's absorption x r_smoke_density_scale above 0, or the debug slice;
+//   - [13d] the backend holds the light grid at this frame's light quality (SmokeVolumeStatus::LightQuality).
 // Otherwise the pass returns on its first line and the frame is the frame without it.
 //
 // PER EYE (review S8): a multiview scene publishes a march for each eye, from
@@ -856,22 +860,16 @@ static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
 // the viewer (hw_smokevolume.cpp), so every eye looks out from inside it, and both sets are always
 // published together.
 //
-// THE LIGHT, 13c ONLY: the smoke's tint x its ambient x the light of the sector the view is in,
-// eased over a quarter of a second so that walking through a doorway does not flash every cloud at
-// once. It is one value for the frame; 13d's light grid gives each place its own light.
+// THE LIGHT [13d]: each place's own, from the light grid this frame's compute step filled -- its column's
+// sector light x the look's ambient, and up to SMOKE_LIGHTS_MAX dynamic lights x the look's scatter
+// (hw_smokevolume.cpp, shaders/compute/smoke_light.comp). The march's LightColor is the look's TINT: the
+// colour the light the smoke scatters takes. With no dynamic light and one sector this is exactly 13c's
+// tint x ambient x sector light.
 //
 //==========================================================================
 
 // How far below the eye r_smoke_debugslice's plane lies, map units.
 static constexpr double SMOKE_DEBUG_SLICE_BELOW_EYE = 16.0;
-// The time constant of the smoke's light following the view sector's light, seconds.
-static constexpr double SMOKE_LIGHT_EASE_SECONDS = 0.25;
-
-// The eased light, kept per displayed frame: both eyes of a frame read the same value.
-static bool SmokeLightValid = false;
-static uint64_t SmokeLightFrameTime = 0;
-static uint64_t SmokeLightSerial = 0;
-static double SmokeLightEased[3] = { 0.0, 0.0, 0.0 };
 
 static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 {
@@ -885,6 +883,9 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 	const SmokeVolume::DrawState &draw = SmokeVolume::Get().GetDrawState();
 	const SmokeVolumeBackendStatus &status = SmokeVolumeStatus();
 	if (!draw.HasSmoke || !status.Allocated || status.Quality != draw.Quality || draw.Grid.Cells() == 0 || draw.Grid.CellSize <= 0)
+		return;
+	// [13d] The march reads the light grid: only while the backend holds it at the frame's light quality.
+	if (draw.LightQuality <= 0 || status.LightQuality != draw.LightQuality)
 		return;
 
 	// The look (SetSmokeLook) and the player's "Smoke density".
@@ -900,39 +901,8 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 
 	const uint64_t startNs = I_nsTime();
 
-	// The light of the sector the view is in, eased over the frame clock (screen->FrameTime, set once
-	// per displayed frame, so the second eye changes nothing). A new map or savegame snaps it.
-	double target[3] = { 1.0, 1.0, 1.0 };
-	if (di->Viewpoint.sector != nullptr)
-	{
-		const sector_t *sec = di->Viewpoint.sector;
-		const double bright = clamp(sec->lightlevel / 255.0, 0.0, 1.0);
-		const PalEntry color = sec->Colormap.LightColor;
-		target[0] = bright * color.r / 255.0;
-		target[1] = bright * color.g / 255.0;
-		target[2] = bright * color.b / 255.0;
-	}
-	const uint64_t now = screen->FrameTime;
-	if (!SmokeLightValid || SmokeLightSerial != Level->LevelDataSerial || now < SmokeLightFrameTime)
-	{
-		for (int c = 0; c < 3; c++)
-			SmokeLightEased[c] = target[c];
-	}
-	else if (now != SmokeLightFrameTime)
-	{
-		const double seconds = std::min((double)(now - SmokeLightFrameTime) / 1000.0, 1.0);
-		const double keep = exp(-seconds / SMOKE_LIGHT_EASE_SECONDS);
-		for (int c = 0; c < 3; c++)
-			SmokeLightEased[c] = target[c] + (SmokeLightEased[c] - target[c]) * keep;
-	}
-	SmokeLightValid = true;
-	SmokeLightFrameTime = now;
-	SmokeLightSerial = Level->LevelDataSerial;
-
-	const FVector3 lightColor(
-		(float)(look.Tint.r / 255.0 * look.Ambient * SmokeLightEased[0]),
-		(float)(look.Tint.g / 255.0 * look.Ambient * SmokeLightEased[1]),
-		(float)(look.Tint.b / 255.0 * look.Ambient * SmokeLightEased[2]));
+	// [13d] The look's tint: the colour the light the smoke scatters takes. The light itself is the grid's.
+	const FVector3 lightColor((float)(look.Tint.r / 255.0), (float)(look.Tint.g / 255.0), (float)(look.Tint.b / 255.0));
 
 	const double cell = draw.Grid.CellSize;
 	// The grid's minimum corner in GL world axes (map x, map z, map y), as every beam upload.
@@ -1411,8 +1381,9 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		// time; 0, exactly the additive draw before 2d, otherwise. What is alive comes from
 		// the ring's last Sync, one scene earlier than this frame's: a first puff draws its
 		// first frame additively (nothing, at emissive 0), and switching off is exact.
+		// [DEBRISPOOL] A debris pool piece whose definition occludes counts too: it is drawn inside the ring's draw.
 		const bool gpuParticlesPremultiplied = screen->mGpuParticles != nullptr &&
-			screen->mGpuParticles->OccludersAliveAt(VPUniforms.mLevelTime.X);
+			(screen->mGpuParticles->OccludersAliveAt(VPUniforms.mLevelTime.X) || DebrisPool::Get().OccludersAliveAt(VPUniforms.mLevelTime.X));
 		// [LOOKS] z: r_gpuparticles_looks, 0..3 -- the quality gpuparticles.vp/.fp draw a
 		// definition's generated `look` at ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md"); 0 draws
 		// every look as the plain round dot. Renderer-read every scene like the knobs above.
@@ -2932,7 +2903,8 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 	//   - [VIEWLIGHTS] likewise the view light buffer (set 1 binding 8), which lit
 	//     particles read
 	if (r_gpuparticles && screen->IsVulkan() && mCurrentPortal == nullptr && Level != nullptr &&
-		Level->GpuParticleWritten > 0 && screen->mGpuParticles != nullptr && screen->mGpuParticles->IsDrawable() &&
+		(Level->GpuParticleWritten > 0 || DebrisPool::Get().HasBillboardsAt(VPUniforms.mLevelTime.X)) &&	// [DEBRISPOOL] or pool billboards to draw
+		screen->mGpuParticles != nullptr && screen->mGpuParticles->IsDrawable() &&
 		screen->mParticleDefinitions != nullptr && screen->mViewLights != nullptr)
 	{
 		auto particles = screen->mGpuParticles;
@@ -2967,7 +2939,8 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 		// the fragment takes the definition's distance, falling back to the slider's.
 		// With the slider at 0 and no such particle alive, still no switch at all.
 		bool sceneDepthReadable = false;
-		if (((float)r_gpuparticles_soft > 0.f || particles->SoftAliveAt(levelTime)) && particles->SceneDepthShaderReady)
+		// [DEBRISPOOL] A debris pool piece's own soft distance asks for it too.
+		if (((float)r_gpuparticles_soft > 0.f || particles->SoftAliveAt(levelTime) || DebrisPool::Get().SoftAliveAt(levelTime)) && particles->SceneDepthShaderReady)
 		{
 			if (perfGroups) state.PushGroup("fx.depthread");	// [2a] r_perflog
 			sceneDepthReadable = state.SetSceneDepthReadable(true);
@@ -3009,6 +2982,9 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 			if (oldestVertex > 0)
 				state.Draw(DT_Triangles, 0, oldestVertex);
 		}
+		// [DEBRISPOOL] The debris pool's billboards, with the same effect, blend and depth, after the ring (not sorted
+		// against it). DebrisPool::DrawBillboards binds its own quad buffer; the vertex data is restored below.
+		DebrisPool::Get().DrawBillboards(state, levelTime);
 		particles->CountDraw();
 
 		// Restore what the rest of the translucent pass and the portal code
@@ -3546,6 +3522,20 @@ void HWDrawInfo::DrawScene(int drawmode)
 	{
 		if (perfGroups) RenderState.PushGroup("fx.meshparticles");	// RS FORK -- r_perflog
 		screen->mMeshParticles->Draw(RenderState);
+		// What RenderScene leaves for everything after it (its decals): translucent style, LEqual.
+		RenderState.SetRenderStyle(STYLE_Translucent);
+		RenderState.SetDepthFunc(DF_LEqual);
+		if (perfGroups) RenderState.PopGroup();	// RS FORK -- r_perflog: fx.meshparticles
+	}
+
+	// [DEBRISPOOL] The debris pool's mesh pieces ("Engine docs/DEBRIS_9_IMPL_NOTES.md"), right after the ring's mesh
+	// particles and under the same gates -- the master switch, Vulkan, not inside a portal or mirror; DebrisPool::HasMeshesAt
+	// covers the rest: the mesh effect compiled, the pool bound this frame, a live mesh piece. Timed in the same
+	// fx.meshparticles group (same-name groups in a frame are summed).
+	if (r_gpuparticles && screen->IsVulkan() && mCurrentPortal == nullptr && DebrisPool::Get().HasMeshesAt(VPUniforms.mLevelTime.X))
+	{
+		if (perfGroups) RenderState.PushGroup("fx.meshparticles");	// RS FORK -- r_perflog
+		DebrisPool::Get().DrawMeshes(RenderState, VPUniforms.mLevelTime.X);
 		// What RenderScene leaves for everything after it (its decals): translucent style, LEqual.
 		RenderState.SetRenderStyle(STYLE_Translucent);
 		RenderState.SetDepthFunc(DF_LEqual);

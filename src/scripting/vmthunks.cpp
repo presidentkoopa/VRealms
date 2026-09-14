@@ -5924,6 +5924,8 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ParticleDefinition, ParticleDefiniti
 
 // [PARTICLEDEFS] Script's way in to FLevelLocals::SpawnParticles. Returns nothing;
 // a handle with no definition on this machine only ever costs this machine pixels.
+// [DEBRISPOOL] A debris definition's burst (`restitution`) goes to the renderer's debris pool
+// from there ("Engine docs/DEBRIS_9_IMPL_NOTES.md") -- the hook is the definition, not a native.
 static void SpawnParticles(FLevelLocals *self, int definition, double px, double py, double pz,
 	double dx, double dy, double dz, int count, double spread, double speed, double speedJitter,
 	double life, double lifeJitter, int tint, double intensity, double sizeScale, int seed,

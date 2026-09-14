@@ -63,6 +63,12 @@ public:
 
 	std::unique_ptr<VulkanDescriptorSet> AllocateTextureDescriptorSet(int numLayers);
 
+	// [DEBRISPOOL] The level field's stand-ins and sampler, for a compute set that samples the field while it may not exist
+	// (VkDebrisPool's step). Made by the first UpdateFixedSet, which runs before any frame's compute; null before that.
+	VulkanImageView* GetLevelFieldStandInView() { return LevelFieldStandInView.get(); }
+	VulkanImageView* GetLevelFieldHeaderStandInView() { return LevelFieldHeaderStandInView.get(); }
+	VulkanSampler* GetLevelFieldSampler() { return LevelFieldSampler.get(); }
+
 	VulkanDescriptorSet* GetInput(VkPPRenderPassSetup* passSetup, const TArray<PPTextureInput>& textures, bool bindShadowMapBuffers);
 
 	void AddMaterial(VkMaterial* texture);

@@ -37,7 +37,16 @@
 **
 ** Hooks for the later steps, by name: [13c] GetDensityHeatView(0 / 1) for the march's
 ** ExternalImage resolve, GetTileActiveView to skip empty tiles, GetOriginCell and
-** HasSmoke; [13d] the light grid is a separate allocation beside this one.
+** HasSmoke.
+**
+** [13d] THE LIGHT GRID (hw_framecompute.h, SmokeLightGridSpec): a sibling allocation
+** beside the volume, made at SmokeLightFrame::Quality while the volume exists and re-made
+** alone when that quality changes -- RGBA16F light, RGBA8 SNORM direction (12 bytes a
+** light cell) and a 2D RGBA8 map of each column's ambient light. On every frame with smoke
+** to draw, after the steps, smoke_light.comp fills it: the ambient pass over the whole grid,
+** then one pass per light over the cells its sphere covers (group fx.smokelight). The march
+** reads it through GetLightImage / GetLightDirectionImage, in the same layout dance as the
+** density.
 **
 ** CPU-side decisions -- when the volume exists, where its box is, what goes in, the
 ** mask -- are made in hw_smokevolume.cpp and arrive in SmokeVolumeFrame, so a render
@@ -92,6 +101,13 @@ public:
 	const int* GetOriginCell() const { return mOriginCell; }
 	bool HasSmoke() const { return mHasSmoke; }
 
+	// [13d] The light grid, for the march's external image resolve (PPExternalImage::SmokeLight,
+	// SmokeLightDirection), under the same layout rule as GetDensityHeatImage. Image is null while no
+	// grid is held. GetLightQuality: the r_smoke_light_quality it was made at, 0 = none.
+	VkTextureImage* GetLightImage() { return &mLight; }
+	VkTextureImage* GetLightDirectionImage() { return &mLightDirection; }
+	int GetLightQuality() const { return mLightQuality; }
+
 private:
 	// [13c] A VkTextureImage (Image and View, as before), so a post-process pass can bind one
 	// (VkDescriptorSetManager::GetInput) and its Layout is tracked. Every volume is GENERAL from its
@@ -118,6 +134,16 @@ private:
 	void DispatchTiles(int pass, int latest, const int tileMin[3], const int tileMax[3]);
 	void DispatchGrid(VkComputeProgram* program, VulkanDescriptorSet* set, const void* constants);
 
+	// [13d] The light grid: made or re-made at the frame's light quality (false: none held), freed, its
+	// descriptor set, the ambient columns copied in when their serial changed, and the frame's fill.
+	bool EnsureLightGrid(const SmokeLightFrame& light);
+	bool CreateImage2D(Volume& image, VkFormat format, int width, int height, const char* name);
+	void DestroyLightImagesNow();
+	void ReleaseLightGrid(const char* why);
+	bool EnsureLightSet();
+	void UploadAmbient(const SmokeLightFrame& light);
+	void RunLight(const SmokeVolumeFrame& frame);
+
 	VkComputeManager* mCompute = nullptr;
 	VulkanRenderDevice* fb = nullptr;
 
@@ -129,6 +155,7 @@ private:
 	std::unique_ptr<VkComputeProgram> mShiftRG;		// target rg16f
 	std::unique_ptr<VkComputeProgram> mShiftRGBA;	// target rgba16f
 	std::unique_ptr<VkComputeProgram> mShiftR8;		// target r8
+	std::unique_ptr<VkComputeProgram> mLightProgram;	// [13d] smoke_light.comp
 	bool mProgramsReady = false;
 	bool mProgramsFailed = false;
 
@@ -138,6 +165,13 @@ private:
 	Volume mTileContent;
 	Volume mTileActive;
 	int mLatest = 0;	// which image of both pairs holds the latest state
+
+	// [13d] The light grid (GENERAL, but for the drawing's read of the first two) and its ambient column map
+	// (2D, GENERAL for life).
+	Volume mLight;				// RGBA16F: rgb light, a luminance weight
+	Volume mLightDirection;		// RGBA8 SNORM: xyz the weight-averaged direction light travels
+	Volume mAmbientColumns;		// 2D RGBA8: each column's sector light
+	std::unique_ptr<VulkanBuffer> mAmbientStaging;
 
 	std::unique_ptr<VulkanBuffer> mStaging;	// SMOKE_MASK_UPLOAD_BYTES_PER_FRAME, for the mask tiles
 
@@ -150,6 +184,10 @@ private:
 	std::unique_ptr<VulkanDescriptorSet> mShiftMaskOutSets[2];		// mask -> D[i] (scratch)
 	std::unique_ptr<VulkanDescriptorSet> mShiftMaskInSets[2];		// D[i] -> mask
 	bool mSetsReady = false;
+	// [13d] sampled tile map, ambient columns, shadow map; storage light, direction. Written again on every
+	// frame it is used, before its first dispatch: the engine's shadow map image can be re-made between
+	// frames (gl_shadowmap_quality), and the frame before has finished by then.
+	std::unique_ptr<VulkanDescriptorSet> mLightSet;
 
 	SmokeGridSpec mGrid;
 	int mTiles[3] = { 0, 0, 0 };
@@ -164,4 +202,13 @@ private:
 	// retried until the quality changes or smoke stops being asked for, so a refusal
 	// logs once, not every frame.
 	int mRefusedQuality = 0;
+
+	// [13d] The light grid held (0 = none), its size, the light quality refused the same way, and the
+	// ambient column serial last copied in (0 = none: a new grid always takes the next one).
+	int mLightQuality = 0;
+	SmokeLightGridSpec mLightGrid;
+	uint64_t mLightTexelBytes = 0;
+	int mRefusedLightQuality = 0;
+	uint64_t mAmbientSerialUploaded = 0;
+	bool mLightWarned = false;
 };

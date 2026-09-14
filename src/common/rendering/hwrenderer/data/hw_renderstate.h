@@ -55,6 +55,11 @@ enum ERenderEffect
 	// Vulkan only: the GL and GLES effect loaders skip this index. APPENDED LAST, so
 	// no existing effect keeps anything but the index it had.
 	EFF_MESHPARTICLES,
+	// [EYEFADE] A world model dissolving near the eye (main.fp MODEL_EYE_FADE), chosen per
+	// draw by FHWModelRenderer::SetEyeFade from the model's <prefix>_eyefade_near/_far.
+	// Selected on Vulkan only; GL compiles the entry and never selects it. APPENDED LAST,
+	// like the three above.
+	EFF_EYEFADE,
 	MAX_EFFECTS
 };
 
@@ -331,8 +336,12 @@ struct StreamData
 	// one draw can use the same lane.
 	//
 	float uFogDensityScale;
-	int uFogPad0;
-	int uFogPad1;
+	// [EYEFADE] Where a model drawn with EFF_EYEFADE starts to dissolve (far) and is gone
+	// (near), map units from the eye. These were uFogPad0/uFogPad1: the same std140 slots,
+	// so MAX_STREAM_DATA and every offset are unchanged. The Vulkan prolog names them only
+	// inside #ifdef MODEL_EYE_FADE, so no other program's text or SPIR-V changes.
+	float uEyeFadeNear;
+	float uEyeFadeFar;
 	int uFogPad2;
 };
 
@@ -456,6 +465,7 @@ public:
 		mStreamData.uOutlineColorB = { 0.f, 0.f, 0.f, 0.f };
 		mStreamData.uOutlineParms = { 0.f, 0.f, 0.f, 0.f };
 		mStreamData.uFogDensityScale = 1.f;
+		mStreamData.uEyeFadeNear = mStreamData.uEyeFadeFar = 0.f;
 		mStreamData.uFlatGlowLineCount = 0;
 		mStreamData.uGradientTopPlane = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGradientBottomPlane = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -573,6 +583,12 @@ public:
 	void SetEffect(int eff)
 	{
 		mSpecialEffect = eff;
+	}
+
+	// [EYEFADE] Which effect is set, so a caller that sets one for a moment can leave any other alone.
+	int GetSpecialEffect() const
+	{
+		return mSpecialEffect;
 	}
 
 	void EnableGlow(bool on)
@@ -759,6 +775,13 @@ public:
 	void SetFogDensityScale(float s)
 	{
 		mStreamData.uFogDensityScale = s;
+	}
+
+	// [EYEFADE] See uEyeFadeNear. Read only by EFF_EYEFADE.
+	void SetEyeFade(float nearDist, float farDist)
+	{
+		mStreamData.uEyeFadeNear = nearDist;
+		mStreamData.uEyeFadeFar = farDist;
 	}
 
 	void SetFlatGlowParams(float r, float g, float b, float reach, const FVector4 &farColor, int falloff, int lineCount, const FVector4* lines, int isCeiling = 0)

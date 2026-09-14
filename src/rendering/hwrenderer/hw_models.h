@@ -44,6 +44,9 @@ class FHWModelRenderer : public FModelRenderer
 	// re-deriving a matrix the renderer was simply handed.
 	VSMatrix baseModelMatrix;
 	bool     baseModelMatrixValid = false;
+
+	// RS fork -- SetEyeFade set EFF_EYEFADE for this model's draw and must take it off again.
+	bool     eyeFadeOn = false;
 public:
 	FHWModelRenderer(HWDrawInfo *d, FRenderState &st, int mli) : modellightindex(mli), di(d), state(st)
 	{}
@@ -61,5 +64,6 @@ public:
 	void SetupFrame(FModel *model, unsigned int frame1, unsigned int frame2, unsigned int size, int boneStartIndex) override;
 	void SetSurfaceTransform(const VSMatrix* localTransform) override;
 	bool GetModelToWorldMatrix(VSMatrix* out) const override;
+	void SetEyeFade(float nearDist, float farDist) override;
 
 };

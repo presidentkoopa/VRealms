@@ -21,6 +21,8 @@
 #include "vk_compute.h"
 #include "vk_smokevolume.h"
 #include "vk_levelfield.h"	// [LEVELFIELD]
+#include "vk_debrispool.h"	// [DEBRISPOOL]
+#include "hw_debrisframe.h"	// [DEBRISPOOL] DebrisPoolFrameForBackend
 #include "vk_renderstate.h"
 #include "vulkan/system/vk_renderdevice.h"
 #include "vulkan/system/vk_commandbuffer.h"
@@ -41,8 +43,8 @@ VkComputeManager::VkComputeManager(VulkanRenderDevice* fb) : fb(fb)
 
 VkComputeManager::~VkComputeManager()
 {
-	// Members go in reverse order: the level field and the smoke volume (and their descriptor
-	// sets) first, then the sampler, then the pools. The device is idle by now (the render device's
+	// Members go in reverse order: the debris pool, the level field and the smoke volume (and their
+	// descriptor sets) first, then the sampler, then the pools. The device is idle by now (the render device's
 	// destructor waits for it), so nothing needs a delete list.
 }
 
@@ -69,7 +71,16 @@ void VkComputeManager::RunFrame(const FrameComputeInput& input)
 	if (mLevelField != nullptr)
 		mLevelField->Run(input.LevelField);
 
-	// [DEBRISPOOL] #9, [SURFACEDAMAGE] #17 run here, after the level field.
+	// [DEBRISPOOL] #9, after the level field its step samples: constructed the first time a debris burst is taken; it frees
+	// its buffers itself when the pool is no longer asked for. Its frame comes through DebrisPoolFrameForBackend
+	// ("Engine docs/DEBRIS_9_IMPL_NOTES.md", deviation 1), acted on once per serial.
+	const DebrisPoolFrame& debris = DebrisPoolFrameForBackend();
+	if (mDebrisPool == nullptr && debris.Active)
+		mDebrisPool = std::make_unique<VkDebrisPool>(this);
+	if (mDebrisPool != nullptr)
+		mDebrisPool->Run(debris);
+
+	// [SURFACEDAMAGE] #17 runs here, after the debris pool.
 
 	if (mWorkBegun)
 	{

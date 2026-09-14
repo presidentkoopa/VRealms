@@ -6,6 +6,8 @@ layout(binding=0) uniform sampler2D SmokeDepthTexture;	// smokedepth.fp: the lin
 layout(binding=1) uniform sampler3D DensityLatest;		// the volume: density r, heat g, latest simulation state (linear)
 layout(binding=2) uniform sampler3D DensityPrevious;	// the same one simulation step earlier (linear)
 layout(binding=3) uniform sampler3D TileActive;			// one texel per tile: 1 = the tile may hold smoke
+layout(binding=4) uniform sampler3D SmokeLight;			// [13d] the light grid: rgb the light reaching each place, a its weight (linear)
+layout(binding=5) uniform sampler3D SmokeLightDirection;	// [13d] xyz the direction light travels there, times its share (linear)
 
 // ============================================================================
 // [SMOKEVOLUME] THE SMOKE VOLUME'S DRAWING, PASS 2 OF 4: THE MARCH.
@@ -32,14 +34,48 @@ layout(binding=3) uniform sampler3D TileActive;			// one texel per tile: 1 = the
 // moves at frame rate, not 35 times a second.
 //
 // LIGHT. Beer-Lambert per sample: the sample's share of opacity (1 minus its own transmittance) times
-// LightColor, dimmed by the smoke already in front of it. In 13c LightColor is one value for the frame
-// (the smoke's tint x its ambient x the light of the sector the view is in). 13d's light grid replaces
-// it with light that varies through the volume.
+// the light it scatters toward the eye, dimmed by the smoke already in front of it.
+// [13d] The light scattered is LightColor (the look's tint) x the LIGHT GRID there (vk_smokevolume.h,
+// shaders/compute/smoke_light.comp: sector light x the look's ambient plus the dynamic lights x its
+// scatter, world-aligned, the same for both eyes) x a PHASE: the grid also says which way light travels
+// through each place and how much of it does (the direction's length), and that share scatters by
+// Henyey-Greenstein -- strongest toward an eye looking back along it -- so a muzzle flash or flashlight
+// seen through haze glows toward you. The rest scatters evenly. The phase is scaled so its mean over all
+// directions is 1: with light from every side (or none directional), the smoke is exactly as bright as
+// tint x light.
 // ============================================================================
+
+const float SMOKE_PHASE_G = 0.45;	// the phase's anisotropy: haze scatters forward
+const float SMOKE_LIGHT_MAX = 4.0;	// the most light a sample takes from the grid, per channel
 
 float InterleavedGradientNoise(vec2 pixel)
 {
 	return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// [13d] Henyey-Greenstein, times 4 pi: 1 on average over the sphere. cosAngle is between the way the light
+// travels and the way it leaves toward the eye.
+float PhaseHG(float cosAngle)
+{
+	float g2 = SMOKE_PHASE_G * SMOKE_PHASE_G;
+	float denominator = max(1.0 + g2 - 2.0 * SMOKE_PHASE_G * cosAngle, 1e-4);
+	return (1.0 - g2) / (denominator * sqrt(denominator));
+}
+
+// [13d] The light a sample scatters toward the eye per unit of LightColor: the grid's light there, weighted by
+// the phase. The grid covers the same box as the density, so the same normalised coordinate addresses it;
+// half a light texel inside on every axis, as DensityAt. towardEye: unit, the volume's (Doom) axes.
+vec3 LightAt(vec3 cell, vec3 towardEye, vec3 lightHalfTexel)
+{
+	vec3 uvw = clamp(cell / GridSize, lightHalfTexel, vec3(1.0) - lightHalfTexel);
+	vec3 gridLight = clamp(texture(SmokeLight, uvw).rgb, vec3(0.0), vec3(SMOKE_LIGHT_MAX));
+	vec3 weighted = texture(SmokeLightDirection, uvw).xyz;
+	float share = length(weighted);
+	if (share <= 1e-3)
+		return gridLight;
+	float phase = PhaseHG(dot(weighted, towardEye) / share);
+	share = min(share, 1.0);
+	return gridLight * ((1.0 - share) + share * phase);
 }
 
 // A ray from the eye (the origin) along the unit direction rd, against the box [boxLo, boxHi]: the
@@ -198,16 +234,22 @@ void main()
 	float dt = span / float(count);
 	float jitter = InterleavedGradientNoise(gl_FragCoord.xy);
 
+	// [13d] The way scattered light leaves toward this eye, in the volume's axes (GL x, z, y), and the light grid's
+	// half texel.
+	vec3 towardEye = -rd.xzy;
+	vec3 lightHalfTexel = 0.5 / vec3(max(textureSize(SmokeLight, 0), ivec3(1)));
+
 	float transmittance = 1.0;
 	vec3 light = vec3(0.0);
 	for (int i = 0; i < count; i++)
 	{
 		float t = t0 + (float(i) + jitter) * dt;
-		float density = DensityAt(CellAt(rd * t));
+		vec3 cell = CellAt(rd * t);
+		float density = DensityAt(cell);
 		if (density <= 0.0)
 			continue;
 		float stepTransmittance = exp(-density * Extinction * dt);
-		light += transmittance * (1.0 - stepTransmittance) * LightColor;
+		light += transmittance * (1.0 - stepTransmittance) * LightColor * LightAt(cell, towardEye, lightHalfTexel);
 		transmittance *= stepTransmittance;
 		if (transmittance < 1.0 / 256.0)
 			break;

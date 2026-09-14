@@ -42,6 +42,8 @@
 #include "vk_postprocess.h"
 #include "vk_compute.h"		// [LEVELFIELD] the level field's views for fixed set bindings 5, 6 and 9
 #include "vk_levelfield.h"
+#include "vk_debrispool.h"		// [DEBRISPOOL] the debris pool's buffers for set 1 bindings 10 and 11
+#include "hw_debrisframe.h"
 
 VkDescriptorSetManager::VkDescriptorSetManager(VulkanRenderDevice* fb) : fb(fb)
 {
@@ -123,6 +125,17 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 	// reads it, and the mesh draw is gated on the real buffer (MeshParticleBuffer::IsDrawable).
 	VkHardwareDataBuffer* meshParticleSSO = fb->GetBufferManager()->MeshParticleSSO ? fb->GetBufferManager()->MeshParticleSSO : fb->GetBufferManager()->BoneBufferSSO;
 
+	// [DEBRISPOOL] Bindings 10 and 11 (vk_debrispool.h): the debris pool's pieces, and its definitions with the pool mesh
+	// instance list. Always written, the bone buffer standing in while the pool does not exist -- only gpuparticles.vp's and
+	// meshparticles.vp's pool paths read them, and those draws are gated on DebrisPoolStatus().Bound, set here to what this
+	// set holds. The pool is made and freed inside a frame's compute, after this runs: a pool made this frame is bound from
+	// the next; one freed this frame stays alive on the delete list until this frame's commands are done.
+	VkDebrisPool* debrisPool = fb->GetCompute() != nullptr ? fb->GetCompute()->GetDebrisPool() : nullptr;
+	const bool debrisBound = debrisPool != nullptr && debrisPool->IsAllocated();
+	VulkanBuffer* debrisPieces = debrisBound ? debrisPool->GetPieceBuffer() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
+	VulkanBuffer* debrisDefinitions = debrisBound ? debrisPool->GetDefinitionBuffer() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
+	DebrisPoolStatus().Bound = debrisBound;
+
 	WriteDescriptors()
 		.AddBuffer(HWBufferSet.get(), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->ViewpointUBO->mBuffer.get(), 0, viewpointRange)
 		.AddBuffer(HWBufferSet.get(), 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->MatrixBuffer->UniformBuffer->mBuffer.get(), 0, sizeof(MatricesUBO))
@@ -134,6 +147,8 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 		.AddBuffer(HWBufferSet.get(), 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, particleDefinitionSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, viewLightSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, meshParticleSSO->mBuffer.get())	// [MESHPARTICLES]
+		.AddBuffer(HWBufferSet.get(), 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debrisPieces)	// [DEBRISPOOL]
+		.AddBuffer(HWBufferSet.get(), 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debrisDefinitions)	// [DEBRISPOOL]
 		.AddBuffer(HWBufferSet.get(), 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sectorPlaneSSO->mBuffer.get())	// [SECTORPLANES]
 		.Execute(fb->device.get());
 }
@@ -437,22 +452,22 @@ std::unique_ptr<VulkanDescriptorSet> VkDescriptorSetManager::AllocatePPDescripto
 
 void VkDescriptorSetManager::CreateHWBufferSetLayout()
 {
-	// [VIEWLIGHTS] This layout puts SEVEN storage buffers in the vertex stage -- bones
+	// [VIEWLIGHTS] This layout puts NINE storage buffers in the vertex stage -- bones
 	// (4), particle ring (5), drawn lines (6), particle definitions (7), view lights
-	// (8), [MESHPARTICLES] mesh particles (9), [SECTORPLANES] sector planes (12) -- and
-	// every pipeline layout carries it. Vulkan guarantees only 4 per stage
-	// (maxPerStageDescriptorStorageBuffers); desktop GPUs report far more, and this fork
-	// targets desktop Vulkan. A device below 7 fails pipeline layout creation, so say
-	// plainly why before it does. (The fragment stage has three: lights 3, particle
-	// definitions 7, sector planes 12.)
+	// (8), [MESHPARTICLES] mesh particles (9), [DEBRISPOOL] debris pieces (10) and debris
+	// definitions (11), [SECTORPLANES] sector planes (12) -- and every pipeline layout
+	// carries it. Vulkan guarantees only 4 per stage (maxPerStageDescriptorStorageBuffers);
+	// desktop GPUs report far more, and this fork targets desktop Vulkan. A device below 9
+	// fails pipeline layout creation, so say plainly why before it does. (The fragment stage
+	// has three: lights 3, particle definitions 7, sector planes 12.)
 	{
-		const uint32_t vertexStageStorageBuffers = 7;
+		const uint32_t vertexStageStorageBuffers = 9;
 		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorStorageBuffers;
 		if (allowed < vertexStageStorageBuffers)
 		{
 			Printf(TEXTCOLOR_RED "Vulkan: this device allows %u storage buffers per shader stage, but the renderer's buffer set needs %u "
-				"in the vertex stage (bones, particle ring, drawn lines, particle definitions, view lights, mesh particles, sector planes) -- "
-				"pipeline layout creation is expected to fail on this device\n", (unsigned)allowed, (unsigned)vertexStageStorageBuffers);
+				"in the vertex stage (bones, particle ring, drawn lines, particle definitions, view lights, mesh particles, debris pieces, "
+				"debris definitions, sector planes) -- pipeline layout creation is expected to fail on this device\n", (unsigned)allowed, (unsigned)vertexStageStorageBuffers);
 		}
 	}
 
@@ -479,6 +494,12 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 		// instance by meshparticles.vp as meshInstanceSlots[gl_InstanceIndex] (review D3).
 		// Vertex only. Declared in GLSL by meshparticles.vp alone, so no other shader changed.
 		.AddBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)
+		// [DEBRISPOOL] 10: the debris pool's pieces (review X1's number), written by the step compute; 11: the debris
+		// definitions and the pool mesh instance list (vk_debrispool.h). Vertex only: the pool paths of gpuparticles.vp and
+		// meshparticles.vp read a piece once per vertex. X1 had given 11 to #17's damage hash (fragment); #17 takes the
+		// next free number when it is built ("Engine docs/DEBRIS_9_IMPL_NOTES.md").
+		.AddBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)
+		.AddBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)
 		// [SECTORPLANES] SectorPlaneSSO, sectors' current floor and ceiling planes
 		// (hw_sectorplanebuffer.h), polled by the renderer (hw_sectorplanes.h). Vertex and
 		// fragment, per review X1: #8 reads it per vertex, #17 per pixel. No lump declares
@@ -527,7 +548,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 		// [VIEWLIGHTS] 6: and the view lights (8).
 		// [SECTORPLANES] 7: and the sector planes (12).
 		// [MESHPARTICLES] 8: and the mesh particles (9).
-		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * maxSets)
+		// [DEBRISPOOL] 10: and the debris pieces (10) and debris definitions (11) -- the plan's number.
+		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * maxSets)
 		.MaxSets(maxSets)
 		.DebugName("VkDescriptorSetManager.HWBufferDescriptorPool")
 		.Create(fb->device.get());

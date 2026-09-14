@@ -1504,7 +1504,9 @@ struct LevelLocals native
 	// pulseRate is beats per second, and 0 follows the glow alarm pulse
 	// (SetGlowReact) in rate and phase. Values are clamped; a non-finite value is
 	// ignored. One slot, not a stack. gl_bloom off wins. Clearing when nothing is
-	// set does nothing. Presentation only: safe in netplay.
+	// set does nothing. Presentation only: safe in netplay. With gl_bloom_pin_beams
+	// on (the player's "Keep legacy lasers"), beam light keeps the pinned bloom look
+	// (gl_bloom_pin_*): an override then changes only the rest of the picture.
 	native clearscope void SetBloomOverride(double spread, double threshold, double knee, double tintR, double tintG, double tintB, double mix, double intensity = 1, double fade = 0, double pulse = 0, double pulseRate = 0);
 	native clearscope void ClearBloomOverride();
 
@@ -1614,6 +1616,10 @@ struct LevelLocals native
 	//   surfacePoint,  a plane the particles stay in front of, for `collide = plane` definitions;
 	//   surfaceNormal  a zero normal is no plane
 	//   floorZ         a floor they skid along, for `collide = plane` definitions; -32768 is none
+	// [DEBRISPOOL] A definition with `restitution` is DEBRIS: its pieces go to the debris pool, where they bounce off
+	// the level, come to rest and stay (restlife), and PushEffectImpulse throws them again -- the same call, nothing
+	// else to do. Where this machine's pool cannot take them (GL, "Debris that stays" off) they are drawn as ordinary
+	// particles. Presentation like every particle: nothing about a piece is returned or can be read.
 	native clearscope int ParticleDefinition(Name defName);
 	native clearscope void SpawnParticles(int def, Vector3 pos, Vector3 dir, int count, double spread, double speed, double speedJitter, double life, double lifeJitter, color tint = 0xffffffff, double intensity = 1.0, double sizeScale = 1.0, int seed = 0, int shape = 0, Vector3 surfacePoint = (0,0,0), Vector3 surfaceNormal = (0,0,0), double floorZ = -32768);
 

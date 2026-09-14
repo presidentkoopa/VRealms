@@ -346,6 +346,11 @@ const FEffectShader effectshaders[] =
 	// has); GL and GLES skip this entry. SIMPLE and NO_ALPHATEST as gpuparticles: neither
 	// lump reads them.
 	{ "meshparticles", "shaders/glsl/meshparticles.vp", "shaders/glsl/meshparticles.fp", nullptr, nullptr, "#define SIMPLE\n#define NO_ALPHATEST\n" },
+	// [EYEFADE] Index EFF_EYEFADE: the Default material shader plus MODEL_EYE_FADE -- a world
+	// model dissolving near the eye (hw_renderstate.h). Alpha test kept (no NO_ALPHATEST),
+	// unlike dithertrans. GL and GLES compile it too (main.fp gives GL fallback uniforms;
+	// GLES's own main.fp ignores the define) and never select it.
+	{ "eyefade", "shaders/glsl/main.vp", "shaders/glsl/main.fp", "shaders/glsl/func_normal.fp", "shaders/glsl/material_normal.fp", "#define MODEL_EYE_FADE\n" },
 };
 
 int DFrameBuffer::GetShaderCount()

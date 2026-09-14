@@ -3,7 +3,7 @@
 **
 ** RS FORK -- DRAW-TIME JOINT POSES AND REACH CHAINS. See model_reach.h for what the
 ** two capabilities are and the contract they keep; model_reach_math.h for the math
-** (VR_BODY_IK_RETURN_PLAN.md section 3g, reference solver v3).
+** (VR_BODY_IK_RETURN_PLAN.md section 3g, reference solver v3, and the 4b additions).
 **
 ** This file is the state and the draw path:
 **
@@ -17,9 +17,21 @@
 **   - The apply: RenderModelFrame hands over a finished bone palette. Local edits are
 **     composed on it (FJointPoseWork) and only the joints under an edit are rewritten.
 **
-**   - The reach solve, once per displayed frame per actor and model index
-**     (DFrameBuffer::FrameCount): the second eye, a mirror or a portal redraw of the
-**     same actor that frame re-applies the cached local edits to its own palette.
+**   - The reach solve, once per displayed frame per chain (DFrameBuffer::FrameCount): the
+**     second eye, a mirror or a portal redraw of the same actor that frame re-applies the
+**     cached local edits to its own palette.
+**
+**   - CLEARANCE (4b idea 6): a chain with <tuning>_clear_radius swings its elbow round its exact
+**     circle out of the solid regions a read-only level query finds around it
+**     (level_solid_query.h).
+**
+**   - TARGET JOINT AIM (4b idea 1): a chain may turn a joint of the model it REACHES along its
+**     solved end bone (the RS hand's wrist stub along the forearm). The two models are drawn in
+**     no fixed order, so the solve is a pure function (ReachSolveChain) of the pose the chain's
+**     model was last drawn in, both models' drawn matrices, the tuning, the previous FRAME's
+**     smoothing and the level: whichever draw needs the frame's solve first computes it, and the
+**     chain's own draw computes it again only when its fresh pose or matrices differ. The aim is
+**     frozen for the frame, so both eyes turn the joint identically.
 **
 ** SPACES, because mixing them is what cost the 09-04 attempt its night:
 **   joint space   -- the model's IQM file space: where baseframe and the joints' global
@@ -30,6 +42,7 @@
 **                    What ModelPointToWorld and FollowActorOfsInModel take, and what
 **                    every vector a script hands the natives below is in.
 **   world         -- GL layout (x, up, y), what ObjectToWorldMatrix produces.
+**   map           -- Doom (x, y, z up), what the level query speaks.
 **
 **---------------------------------------------------------------------------
 */
@@ -37,6 +50,7 @@
 #include <cmath>
 #include "model_reach.h"
 #include "model_reach_math.h"
+#include "level_solid_query.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "doomstat.h"
@@ -73,8 +87,8 @@ CVAR(Float, r_jointpose_test_deg, 0.f, 0)
 CVAR(Int, r_jointpose_test_axis, 0, 0)
 
 // r_reachchain_debug: once a second per chain, what the solve was fed and what it
-// drew -- or why it did not solve. The fastest ground truth for step 3, the way
-// vr_place_debug is for the sliders. Not archived.
+// drew -- or why it did not solve -- and, per aimed target joint, what it turned. The
+// fastest ground truth for step 3, the way vr_place_debug is for the sliders. Not archived.
 CVAR(Bool, r_reachchain_debug, false, 0)
 
 namespace
@@ -83,6 +97,14 @@ namespace
 constexpr int REACH_CHAINS = 4;
 constexpr int JOINT_POSES  = 64;
 constexpr int POSE_CACHES  = 4;
+
+// Clearance: how many level regions one solve may use, and how deep a face slab reaches behind
+// its face (map units; level_solid_query.h).
+constexpr unsigned REACH_REGIONS    = 128;
+constexpr double   REACH_SLAB_DEPTH = 16.0;
+
+// A smoothing history older than this is not continued (a chain not drawn for a while).
+constexpr uint64_t REACH_HISTORY_MS = 250;
 
 // Rotation modes (mirror BoneOverride's 1/2), plus hide.
 enum
@@ -133,10 +155,50 @@ struct FReachChain
 	FName    pointCVar = NAME_None;				// <pointCVar>_ofs_x/_y/_z added to point, target MODEL units
 	FName    follow = NAME_None;
 
-	// ---- render-side history (never saved): only the time smoothing uses it ----
+	// ---- the target joint aim (idea 1): a joint of the TARGET's model turned along this chain ----
+	FName    aimJoint = NAME_None;				// on the target's model; None = no aim
+	int      aimModelIndex = 0;					// which of the target's models
+	FVector3 aimPivot = FVector3(0, 0, 0);		// target model space, at rest
+	FVector3 aimAxis = FVector3(0, 0, 0);		// target model space, at rest; zero = minus fingerDir
+	float    aimMaxDeg = 70.f;					// <tuning>_aim_max, when it exists, wins live
+	bool     aimKeepChildren = true;			// the joint's direct children keep their drawn place
+
+	// ---- render-side state (never saved) ----
+	// The pose this chain's model was last drawn in (joint space): what lets the TARGET's draw
+	// solve the chain when it is drawn first.
+	bool            poseValid = false;
+	int             poseGeneration = -1;
+	FReachChainPose pose;
+
+	// This frame's solve, and what it was solved from.
+	bool            solveValid = false;
+	uint64_t        solveFrame = 0;
+	uint64_t        solveMs = 0;
+	int             solveGeneration = -1;
+	FReachChainPose solvePose;
+	VSMatrix        solveO2W, solveTargetO2W;
+	FReachSolveOut  solve;
+	int             solveRegions = 0;
+	bool            solveRegionsCapped = false;
+	float           solveClearRadius = 0.f;
+
+	// The previous frame's smoothed values: the time smoothing only.
 	bool     histValid = false;
-	float    phiSmoothed = 0.f, twistSmoothed = 0.f;
-	uint64_t lastSolveMs = 0;
+	float    histPhi = 0.f, histTwist = 0.f, histClearOfs = 0.f;
+	uint64_t histMs = 0;
+
+	// The aim, frozen for the frame it was first computed in.
+	bool      aimFrameValid = false;
+	uint64_t  aimFrame = 0;
+	FModel   *aimFrozenModel = nullptr;
+	int       aimFrozenJoints = -1;
+	int       aimFrozenGeneration = -1;
+	int       aimFrozenReason = 0;
+	FReachAim aim;
+	FModel   *aimResolvedModel = nullptr;
+	int       aimResolvedJoints = -1;
+	int       aimResolvedGeneration = -1;
+	int       aimJointIndex = -1;
 
 	// ---- joint resolution, per drawn model ----
 	FModel     *resolvedModel = nullptr;
@@ -150,12 +212,15 @@ struct FReachChain
 	// ---- trace throttle ----
 	uint64_t traceMs = 0;
 	int      traceReason = -1;
+	uint64_t aimTraceMs = 0;
+	int      aimTraceReason = -1;
 
 	void ResetHistory()
 	{
 		histValid = false;
-		phiSmoothed = twistSmoothed = 0.f;
-		lastSolveMs = 0;
+		histPhi = histTwist = histClearOfs = 0.f;
+		histMs = 0;
+		solveValid = false;
 	}
 };
 
@@ -281,8 +346,13 @@ float TuningCVar(FName prefix, const char *suffix, float def)
 	return std::isfinite(v) ? v : def;
 }
 
-inline FVector3 ToJoint(const FVector3 &m) { return FVector3(m.X, m.Z, m.Y); }
-inline bool     NonZero(const FVector3 &v) { return v.LengthSquared() > 1.e-12; }
+inline FVector3 ToJoint(const FVector3 &m) { return SwapYZ(m); }
+inline bool     NonZero(const FVector3 &v) { return ReachNonZero(v); }
+
+bool SameMatrix(const VSMatrix &a, const VSMatrix &b)
+{
+	return memcmp(a.get(), b.get(), sizeof(FLOATTYPE) * 16) == 0;
+}
 
 // Joint parents for a model, checked against the IQM loader's rule (a parent always
 // precedes its child), which FJointPoseWork relies on.
@@ -412,6 +482,7 @@ bool ResolveChain(FDrawPoseEntry &e, int ci, FModel *model, const AActor *actor,
 	c.upperSet.Clear();
 	c.lowerSet.Clear();
 	c.ResetHistory();
+	c.poseValid = false;
 
 	const char *file = model->mFileName.GetChars();
 	c.jRoot = model->FindJoint(c.root);
@@ -457,12 +528,13 @@ bool ResolveChain(FDrawPoseEntry &e, int ci, FModel *model, const AActor *actor,
 	return true;
 }
 
+// An actor's model matrix exactly as its own draw builds it. The position the sprite pass hands
+// RenderModel, as ModelFollowFrame builds a followed parent's (models.cpp); a model riding a
+// controller or another model never reads it (ObjectToWorldMatrix skips the world translate).
 bool TargetMatrix(AActor *t, double ticFrac, VSMatrix &out)
 {
 	FSpriteModelFrame *smf = FindModelFrame(t, t->sprite, t->frame, false);
 	if (smf == nullptr) return false;
-	// The position the sprite pass hands RenderModel, exactly as ModelFollowFrame builds a
-	// followed parent's (models.cpp). A target riding a controller never reads it.
 	DVector3 pos = t->InterpolatedPosition(ticFrac)
 		+ DVector3(t->WorldOffset.X, t->WorldOffset.Y, t->WorldOffset.Z);
 	if ((t->renderflags & RF_SPRITETYPEMASK) == RF_FACESPRITE) pos.Z -= t->Floorclip;
@@ -472,16 +544,178 @@ bool TargetMatrix(AActor *t, double ticFrac, VSMatrix &out)
 
 struct FReachTrace
 {
-	FReachCircle  circle;
-	FReachSwivel  swivel;
-	FReachArmPose pose;
-	FReachTwist   twist;
-	float phi = 0.f, twistDeg = 0.f;
+	FReachSolveOut out;
 	FVector3 shoulder, target;
+	int      regions = 0;
+	bool     capped = false;
+	float    clearRadius = 0.f;
+	bool     reused = false;
 };
 
+// A solve from an earlier frame becomes the smoothing history of this one.
+void BeginChainFrame(FReachChain &c, uint64_t frame)
+{
+	if (c.solveValid && c.solveFrame != frame)
+	{
+		c.histValid = true;
+		c.histPhi = c.solve.phiAligned;
+		c.histTwist = c.solve.twistDeg;
+		c.histClearOfs = c.solve.clearOfs;
+		c.histMs = c.solveMs;
+		c.solveValid = false;
+	}
+}
+
+// The clearance regions around a chain, in its joint space (idea 6): a read-only level query in map
+// units around everything the chain can reach this frame, each plane carried through the chain's own
+// drawn matrix. Returns the regions' count; `capped` when the query cut its answer short.
+int GatherClearance(const AActor *actor, const FReachChainPose &pose, const VSMatrix &o2w, float radiusJ, float stretchMax,
+	std::vector<FReachSolidRegion> &regions, bool &capped)
+{
+	regions.clear();
+	capped = false;
+	if (actor == nullptr || actor->Level == nullptr || !(radiusJ > 0.f)) return 0;
+
+	// Everything the chain can reach, joint units: both bones at the stretch cap, the radius, and how far a
+	// follow can carry the shoulder. The world scale is the largest of the matrix's three axes.
+	const float cap = Clampf(std::isfinite(stretchMax) ? stretchMax : 1.f, 1.f, 2.5f);
+	const FVector3 centreJ = pose.hasFollow ? pose.followPos : pose.shoulder;
+	const float reachJ = ((float)(pose.elbow - pose.shoulder).Length() + (float)(pose.wrist - pose.elbow).Length()) * cap
+		+ radiusJ + (pose.hasFollow ? (float)(pose.shoulder - pose.followPos).Length() : 0.f);
+	const FLOATTYPE *d = o2w.get();
+	const double scale = std::max({ sqrt(double(d[0]) * d[0] + double(d[1]) * d[1] + double(d[2]) * d[2]),
+		sqrt(double(d[4]) * d[4] + double(d[5]) * d[5] + double(d[6]) * d[6]),
+		sqrt(double(d[8]) * d[8] + double(d[9]) * d[9] + double(d[10]) * d[10]) });
+	const FVector3 cw = MatPoint(o2w, SwapYZ(centreJ));
+	if (!Finite3(cw) || !(scale > 0.) || !std::isfinite(scale)) return 0;
+
+	static thread_local TArray<FLevelSolidRegion> world;
+	capped = !LevelSolidQuery(actor->Level, DVector3(cw.X, cw.Z, cw.Y), double(reachJ) * scale, REACH_SLAB_DEPTH, world, REACH_REGIONS);
+
+	regions.reserve(world.Size());
+	for (const FLevelSolidRegion &wr : world)
+	{
+		FReachSolidRegion jr;
+		bool ok = wr.planes > 0;
+		for (int i = 0; i < wr.planes && i < kReachRegionPlanes && ok; i++)
+		{
+			// map (x, y, z) -> world (x, z, y): the same swap on the normal keeps n . p.
+			ok = ReachPlaneToJoint(o2w, wr.n[i].X, wr.n[i].Z, wr.n[i].Y, wr.c[i], jr.n[i], jr.c[i]);
+			jr.planes = i + 1;
+		}
+		if (ok) regions.push_back(jr);
+	}
+	return (int)regions.size();
+}
+
+// The chain's solve for `frame`, from `pose` and the two drawn matrices; stored on the chain. The
+// caller owns the history: a failure here leaves it as it was.
+int ComputeChainSolve(FDrawPoseEntry &e, int ci, const AActor *actor, const FReachChainPose &pose, const VSMatrix &o2w,
+	const VSMatrix &handM, uint64_t frame, FReachTrace &tr)
+{
+	FReachChain &c = e.chains[ci];
+
+	// Finv = swapYZ * objectToWorld^-1, the exact inverse of the chain model's drawn matrix (guard 1),
+	// so its own fit scale, placement sliders and pixel stretch are all undone with it. A singular
+	// matrix holds the drawn pose (guard 5).
+	VSMatrix o2wc = o2w, armInv;
+	if (!o2wc.inverseMatrix(armInv)) return REACH_SINGULAR;
+	VSMatrix Finv;
+	Finv.loadMatrix(kSwapYZ);
+	Finv.multMatrix(armInv);
+
+	// ---- tuning, read by the renderer every solve (absent cvar = section 3g / 4b default) ----
+	const FName tn = c.tuning;
+	FReachFrameIn f;
+	f.t.stretchMax    = TuningCVar(tn, "_stretch_max",     f.t.stretchMax);
+	f.t.softStart     = TuningCVar(tn, "_soft_start",      f.t.softStart);
+	f.t.align         = TuningCVar(tn, "_align",           f.t.align);
+	f.t.alignMax      = TuningCVar(tn, "_align_max",       f.t.alignMax);
+	f.t.fadeLo        = TuningCVar(tn, "_align_fade_lo",   f.t.fadeLo);
+	f.t.fadeSpan      = TuningCVar(tn, "_align_fade_span", f.t.fadeSpan);
+	f.t.confLo        = TuningCVar(tn, "_align_conf_lo",   f.t.confLo);
+	f.t.confSpan      = TuningCVar(tn, "_align_conf_span", f.t.confSpan);
+	f.t.twist         = TuningCVar(tn, "_twist",           f.t.twist);
+	f.t.twistTaper    = TuningCVar(tn, "_twist_taper",     f.t.twistTaper);
+	f.t.twistConfLo   = TuningCVar(tn, "_twist_conf_lo",   f.t.twistConfLo);
+	f.t.twistConfSpan = TuningCVar(tn, "_twist_conf_span", f.t.twistConfSpan);
+	f.t.twistOfs      = TuningCVar(tn, "_twist_ofs",       f.t.twistOfs);
+	f.poleOut    = TuningCVar(tn, "_pole_out",    f.poleOut);
+	f.poleDown   = TuningCVar(tn, "_pole_down",   f.poleDown);
+	f.poleBack   = TuningCVar(tn, "_pole_back",   f.poleBack);
+	f.swivelRate = TuningCVar(tn, "_swivel_rate", 0.0f);
+	f.twistRate  = TuningCVar(tn, "_twist_rate",  0.0f);
+	f.follow     = TuningCVar(tn, "_follow",      f.follow);
+	f.followMax  = TuningCVar(tn, "_follow_max",  f.followMax);
+	// Clearance (idea 6). _clear_radius is in this model's own units, so it scales with the arm's fit.
+	const float clearRadius = TuningCVar(tn, "_clear_radius", 0.0f);
+	f.clearRate  = TuningCVar(tn, "_clear_rate",  0.0f);
+
+	// ---- the target, as drawn: the point in the target's model units ----
+	FVector3 pointM = c.point;
+	if (PrefixSet(c.pointCVar))
+	{
+		pointM.X += TuningCVar(c.pointCVar, "_ofs_x", 0.f);
+		pointM.Y += TuningCVar(c.pointCVar, "_ofs_y", 0.f);
+		pointM.Z += TuningCVar(c.pointCVar, "_ofs_z", 0.f);
+	}
+	f.target = MatPoint(Finv, MatPoint(handM, pointM));
+	if (!Finite3(f.target)) return REACH_DEGENERATE;
+	tr.target = f.target;
+	tr.shoulder = pose.shoulder;
+	// Directions go through the same two 3x3s and are then made unit, so neither model's
+	// scale or mirror changes what they mean.
+	f.fingerDir = NonZero(c.fingerDir) ? UnitOr(MatDir(Finv, MatDir(handM, c.fingerDir)), FVector3(0, 0, 0)) : FVector3(0, 0, 0);
+	f.targetTwistRef = NonZero(c.targetTwistRef) ? UnitOr(MatDir(Finv, MatDir(handM, c.targetTwistRef)), FVector3(0, 0, 0)) : FVector3(0, 0, 0);
+	f.outward  = UnitOr(ToJoint(c.outward), FVector3(0, 0, 0));
+	f.down     = UnitOr(ToJoint(c.down),    FVector3(0, 0, 0));
+	f.back     = UnitOr(ToJoint(c.back),    FVector3(0, 0, 0));
+	f.twistRef = ToJoint(c.twistRef);
+
+	// ---- the clock: the previous frame's values, for the time smoothing only ----
+	const uint64_t nowMs = screen != nullptr ? screen->FrameTime : 0;
+	f.histValid = c.histValid && nowMs >= c.histMs && nowMs - c.histMs <= REACH_HISTORY_MS;
+	f.dt = f.histValid ? float(nowMs - c.histMs) / 1000.f : 0.f;
+	f.histPhi = c.histPhi;
+	f.histTwist = c.histTwist;
+	f.histClearOfs = c.histClearOfs;
+
+	// ---- clearance regions ----
+	static thread_local std::vector<FReachSolidRegion> regions;
+	regions.clear();
+	bool capped = false;
+	if (clearRadius > 0.f)
+	{
+		GatherClearance(actor, pose, o2w, clearRadius, f.t.stretchMax, regions, capped);
+		f.clear.regions = regions.data();
+		f.clear.count = (int)regions.size();
+		f.clear.radius = clearRadius;
+		f.clear.maxDeg = TuningCVar(tn, "_clear_max", 100.0f);
+	}
+	tr.regions = (int)regions.size();
+	tr.capped = capped;
+	tr.clearRadius = clearRadius;
+
+	if (!ReachSolveChain(pose, f, tr.out)) return REACH_DEGENERATE;
+
+	c.solveValid = true;
+	c.solveFrame = frame;
+	c.solveMs = nowMs;
+	c.solveGeneration = e.generation;
+	c.solvePose = pose;
+	c.solveO2W = o2w;
+	c.solveTargetO2W = handM;
+	c.solve = tr.out;
+	c.solveRegions = tr.regions;
+	c.solveRegionsCapped = capped;
+	c.solveClearRadius = clearRadius;
+	return REACH_SOLVED;
+}
+
+// The chain model's own draw: the pose as drawn, this frame's solve (reused when it was already
+// solved from exactly this pose and these matrices), then the write onto the palette.
 int SolveChain(FDrawPoseEntry &e, int ci, FJointPoseWork &w, FModel *model, const AActor *actor,
-	const TArray<int> &parents, const FScopeState &sc, FReachTrace &tr)
+	const TArray<int> &parents, const FScopeState &sc, uint64_t frame, FReachTrace &tr)
 {
 	FReachChain &c = e.chains[ci];
 	if (!ResolveChain(e, ci, model, actor, parents)) return REACH_UNRESOLVED;
@@ -492,89 +726,49 @@ int SolveChain(FDrawPoseEntry &e, int ci, FJointPoseWork &w, FModel *model, cons
 	VSMatrix handM;
 	if (!TargetMatrix(tgt, sc.ticFrac, handM)) { c.ResetHistory(); return REACH_TARGETNOMODEL; }
 
-	// Finv = swapYZ * objectToWorld^-1, the exact inverse of THIS draw's matrix (guard 1),
-	// so the model's own fit scale, placement sliders and pixel stretch are all undone
-	// with it. A singular matrix holds the drawn pose (guard 5).
-	VSMatrix o2w = sc.objectToWorld, armInv;
-	if (!o2w.inverseMatrix(armInv)) { c.ResetHistory(); return REACH_SINGULAR; }
-	VSMatrix Finv;
-	Finv.loadMatrix(kSwapYZ);
-	Finv.multMatrix(armInv);
+	BeginChainFrame(c, frame);
 
-	// ---- tuning, read by the renderer every solve (absent cvar = section 3g default) ----
-	const FName tn = c.tuning;
-	FReachTuning t;
-	t.stretchMax    = TuningCVar(tn, "_stretch_max",     t.stretchMax);
-	t.softStart     = TuningCVar(tn, "_soft_start",      t.softStart);
-	t.align         = TuningCVar(tn, "_align",           t.align);
-	t.alignMax      = TuningCVar(tn, "_align_max",       t.alignMax);
-	t.fadeLo        = TuningCVar(tn, "_align_fade_lo",   t.fadeLo);
-	t.fadeSpan      = TuningCVar(tn, "_align_fade_span", t.fadeSpan);
-	t.confLo        = TuningCVar(tn, "_align_conf_lo",   t.confLo);
-	t.confSpan      = TuningCVar(tn, "_align_conf_span", t.confSpan);
-	t.twist         = TuningCVar(tn, "_twist",           t.twist);
-	t.twistTaper    = TuningCVar(tn, "_twist_taper",     t.twistTaper);
-	t.twistConfLo   = TuningCVar(tn, "_twist_conf_lo",   t.twistConfLo);
-	t.twistConfSpan = TuningCVar(tn, "_twist_conf_span", t.twistConfSpan);
-	t.twistOfs      = TuningCVar(tn, "_twist_ofs",       t.twistOfs);
-	const float poleOut    = TuningCVar(tn, "_pole_out",    1.0f);
-	const float poleDown   = TuningCVar(tn, "_pole_down",   0.6f);
-	const float poleBack   = TuningCVar(tn, "_pole_back",   0.35f);
-	const float swivelRate = TuningCVar(tn, "_swivel_rate", 0.0f);
-	const float twistRate  = TuningCVar(tn, "_twist_rate",  0.0f);
-	const float follow     = TuningCVar(tn, "_follow",      0.25f);
-	const float followMax  = TuningCVar(tn, "_follow_max",  25.0f);
-
-	// ---- the target, as drawn: the point in the target's model units ----
-	FVector3 pointM = c.point;
-	if (PrefixSet(c.pointCVar))
-	{
-		pointM.X += TuningCVar(c.pointCVar, "_ofs_x", 0.f);
-		pointM.Y += TuningCVar(c.pointCVar, "_ofs_y", 0.f);
-		pointM.Z += TuningCVar(c.pointCVar, "_ofs_z", 0.f);
-	}
-	const FVector3 T = MatPoint(Finv, MatPoint(handM, pointM));
-	if (!Finite3(T)) { c.ResetHistory(); return REACH_DEGENERATE; }
-	tr.target = T;
-	// Directions go through the same two 3x3s and are then made unit, so neither model's
-	// scale or mirror changes what they mean.
-	const FVector3 fingerJ = NonZero(c.fingerDir) ? UnitOr(MatDir(Finv, MatDir(handM, c.fingerDir)), FVector3(0, 0, 0)) : FVector3(0, 0, 0);
-	const FVector3 tgtTwistJ = NonZero(c.targetTwistRef) ? UnitOr(MatDir(Finv, MatDir(handM, c.targetTwistRef)), FVector3(0, 0, 0)) : FVector3(0, 0, 0);
-	const FVector3 outJ  = UnitOr(ToJoint(c.outward), FVector3(0, 0, 0));
-	const FVector3 downJ = UnitOr(ToJoint(c.down),    FVector3(0, 0, 0));
-	const FVector3 backJ = UnitOr(ToJoint(c.back),    FVector3(0, 0, 0));
-
-	// ---- shoulder follow (review item 14), before the solve ----
-	if (c.jFollow >= 0 && follow > 0.f)
+	// ---- the pose as drawn, before anything is written ----
+	FReachChainPose pose;
+	const VSMatrix gMid = w.GlobalPosed(c.jMid), gEnd = w.GlobalPosed(c.jEnd);
+	pose.shoulder = MatTranslation(w.GlobalPosed(c.jRoot));
+	pose.elbow = MatTranslation(gMid);
+	pose.wrist = MatTranslation(gEnd);
+	pose.midRot = MatRotation(gMid);
+	pose.endRot = MatRotation(gEnd);
+	pose.midRotAnimated = MatRotation(w.GlobalOrig(c.jMid));
+	if (c.jFollow >= 0)
 	{
 		const VSMatrix gF = w.GlobalPosed(c.jFollow);
-		const FVector3 pF = MatTranslation(gF);
-		FVector3 u0 = MatTranslation(w.GlobalPosed(c.jRoot)) - pF;
-		FVector3 u1 = T - pF;
-		if (NonZero(u0) && NonZero(u1))
-		{
-			u0.MakeUnit();
-			u1.MakeUnit();
-			w.SetGlobal(c.jFollow, pF, (ReachFollowSwing(u0, u1, follow, followMax) * MatRotation(gF)).Unit());
-		}
+		pose.hasFollow = true;
+		pose.followPos = MatTranslation(gF);
+		pose.followRot = MatRotation(gF);
 	}
+	c.pose = pose;
+	c.poseValid = true;
+	c.poseGeneration = e.generation;
 
-	// ---- the pre-solve pose, re-read after the follow (the re-derive) ----
-	const VSMatrix gMid = w.GlobalPosed(c.jMid), gEnd = w.GlobalPosed(c.jEnd);
-	const FVector3 S0 = MatTranslation(w.GlobalPosed(c.jRoot)), E0 = MatTranslation(gMid), W0 = MatTranslation(gEnd);
-	const FQuaternion Rend0 = MatRotation(gEnd);
-	tr.shoulder = S0;
+	if (c.solveValid && c.solveFrame == frame && c.solveGeneration == e.generation && ReachSamePose(c.solvePose, pose)
+		&& SameMatrix(c.solveO2W, sc.objectToWorld) && SameMatrix(c.solveTargetO2W, handM))
+	{
+		tr.out = c.solve;
+		tr.shoulder = pose.shoulder;
+		tr.target = c.solve.in.target;
+		tr.regions = c.solveRegions;
+		tr.capped = c.solveRegionsCapped;
+		tr.clearRadius = c.solveClearRadius;
+		tr.reused = true;
+	}
+	else
+	{
+		const int outcome = ComputeChainSolve(e, ci, actor, pose, sc.objectToWorld, handM, frame, tr);
+		if (outcome != REACH_SOLVED) { c.ResetHistory(); return outcome; }
+	}
+	const FReachSolveOut &s = c.solve;
 
-	FReachArmIn in;
-	in.shoulder = S0;
-	in.elbow = E0;
-	in.wrist = W0;
-	in.target = T;
-	in.pole = outJ * poleOut + downJ * poleDown + backJ * poleBack;
-	in.up = -downJ;
-	in.fallback = NonZero(outJ) ? outJ : FVector3(1, 0, 0);
-	FReachCircle &circle = tr.circle;
-	if (!ReachSolveCircle(in, t, circle)) { c.ResetHistory(); return REACH_DEGENERATE; }
+	// ---- write: the follow, then every joint riding either bone, parents first ----
+	if (s.followApplied && c.jFollow >= 0)
+		w.SetGlobal(c.jFollow, pose.followPos, (s.followSwing * pose.followRot).Unit());
 
 	// Every joint the solve will place, with its pre-solve global pose, fetched before
 	// anything is written (ReachCaptureSegments): no half-posed chain.
@@ -584,45 +778,10 @@ int SolveChain(FDrawPoseEntry &e, int ci, FJointPoseWork &w, FModel *model, cons
 		c.ResetHistory();
 		return REACH_NOLOCAL;
 	}
-
-	// ---- the clock, for the time smoothing only ----
-	const uint64_t nowMs = I_msTime();
-	float dt = 0.f;
-	if (c.histValid && c.lastSolveMs != 0 && nowMs >= c.lastSolveMs && nowMs - c.lastSolveMs <= 250)
-		dt = float(nowMs - c.lastSolveMs) / 1000.f;
-	else
-		c.histValid = false;
-
-	// ---- swivel (section 3g step 4), then the elbow on the circle ----
-	tr.swivel = ReachSwivelAngle(circle, fingerJ, t);
-	const float phi = c.histValid ? SmoothToward(c.phiSmoothed, tr.swivel.phiDeg, swivelRate, dt) : tr.swivel.phiDeg;
-	FReachArmPose &pose = tr.pose;
-	ReachPlaceElbow(in, circle, phi, t, pose);
-
-	// ---- forearm twist (section 3g step 6) ----
-	float twist = 0.f;
-	if (NonZero(c.twistRef) && NonZero(tgtTwistJ))
-	{
-		// The arm's reference is stated at the model's own animated pose, so it is carried to
-		// the pre-solve pose by whatever has turned the mid bone since (the pose layer, the
-		// follow); the solve's swing then carries it the rest of the way.
-		const FQuaternion toPre = (MatRotation(gMid) * MatRotation(w.GlobalOrig(c.jMid)).Inverse()).Unit();
-		tr.twist = ReachForearmTwist(pose, toPre * ToJoint(c.twistRef), tgtTwistJ, t);
-		twist = c.histValid ? SmoothToward(c.twistSmoothed, tr.twist.twistDeg, twistRate, dt) : tr.twist.twistDeg;
-	}
-	tr.phi = phi;
-	tr.twistDeg = twist;
-	c.phiSmoothed = phi;
-	c.twistSmoothed = twist;
-	c.histValid = true;
-	c.lastSolveMs = nowMs;
-
-	// ---- write: every joint riding either bone, parents first (section 3g joint_transforms) ----
 	// Minimal swings from the drawn bone directions; stretch slides a joint along its bone
 	// by where it sits (LENGTHEN, never scale); along the mid bone the twist turns a joint
-	// in proportion.
-	// The end joint takes the whole twist; everything under it rides it.
-	ReachWriteSegments(w, seg, c.jEnd, Rend0, in, circle, pose, twist);
+	// in proportion. The end joint takes the whole twist; everything under it rides it.
+	ReachWriteSegments(w, seg, c.jEnd, s.endRot0, s.in, s.circle, s.pose, s.twistDeg);
 	return REACH_SOLVED;
 }
 
@@ -637,15 +796,141 @@ void TraceChain(FReachChain &c, int ci, const AActor *actor, int outcome, const 
 		Printf("[REACH] %s chain %d: not solved -- %s\n", ActorName(actor), ci, ReachOutcomeText[outcome]);
 		return;
 	}
-	const FReachCircle &cc = tr.circle;
-	const FReachArmPose &p = tr.pose;
-	Printf("[REACH] %s chain %d -> %s: raw %.2f soft %.2f stretch %.3f (bones x%.3f)  bend %.2f fade %.2f conf %.2f swivel %.1f (want %.1f)  "
-		"twist %.1f (raw %.1f tconf %.2f)  shoulder (%.2f %.2f %.2f) elbow (%.2f %.2f %.2f) wrist (%.2f %.2f %.2f) target (%.2f %.2f %.2f) gap %.3f side %.2f  [joint space]\n",
+	const FReachCircle &cc = tr.out.circle;
+	const FReachArmPose &p = tr.out.pose;
+	Printf("[REACH] %s chain %d -> %s: raw %.2f soft %.2f stretch %.3f (bones x%.3f)  bend %.2f fade %.2f conf %.2f swivel %.1f (want %.1f, aligned %.1f)  "
+		"twist %.1f (raw %.1f tconf %.2f)  shoulder (%.2f %.2f %.2f) elbow (%.2f %.2f %.2f) wrist (%.2f %.2f %.2f) target (%.2f %.2f %.2f) gap %.3f side %.2f  [joint space]%s\n",
 		ActorName(actor), ci, ActorName(c.target.Get()), cc.raw, cc.soft, cc.stretch, cc.sc,
-		tr.swivel.bend, tr.swivel.fade, tr.swivel.conf, tr.phi, tr.swivel.phiDeg,
-		tr.twistDeg, tr.twist.rawDeg, tr.twist.tconf,
+		tr.out.swivel.bend, tr.out.swivel.fade, tr.out.swivel.conf, tr.out.phi, tr.out.swivel.phiDeg, tr.out.phiAligned,
+		tr.out.twistDeg, tr.out.twist.rawDeg, tr.out.twist.tconf,
 		tr.shoulder.X, tr.shoulder.Y, tr.shoulder.Z, p.elbow.X, p.elbow.Y, p.elbow.Z,
-		p.wristSolved.X, p.wristSolved.Y, p.wristSolved.Z, tr.target.X, tr.target.Y, tr.target.Z, p.gap, p.elbowSide);
+		p.wristSolved.X, p.wristSolved.Y, p.wristSolved.Z, tr.target.X, tr.target.Y, tr.target.Z, p.gap, p.elbowSide,
+		tr.reused ? "  (solved earlier this frame by the target's draw)" : "");
+	if (tr.clearRadius > 0.f)
+		Printf("[REACH] %s chain %d clearance: radius %.2f, %d solid regions%s, penetration %.3f -> %.3f, swivel pushed %.1f\n",
+			ActorName(actor), ci, tr.clearRadius, tr.regions, tr.capped ? " (query capped)" : "", tr.out.penBefore, tr.out.penAfter, tr.out.clearOfs);
+}
+
+// ---- idea 1: target joint aim ------------------------------------------------------------------
+
+enum EAimOutcome
+{
+	AIM_TURNED = 0,
+	AIM_NOJOINT,
+	AIM_NOSOLVE,
+	AIM_NOAXIS,
+	AIM_COUNT
+};
+
+const char *const AimOutcomeText[AIM_COUNT] =
+{
+	"turned",
+	"the joint is not on this model (see the [REACH] aim resolve line)",
+	"the chain has no solve this frame (its model has not been drawn yet, or it did not solve)",
+	"no axis to aim (axis and fingerDir both zero) or a singular bind",
+};
+
+bool AnyAimAt(const AActor *actor, int modelIndex)
+{
+	for (const auto &e : Entries)
+		for (const auto &c : e.chains)
+			if (c.used && c.aimJoint != NAME_None && c.aimModelIndex == modelIndex && c.target.ForceGet() == actor) return true;
+	return false;
+}
+
+int AimOne(FDrawPoseEntry &e, int ci, AActor *chainActor, const AActor *actor, FModel *model, FJointPoseWork &w,
+	const TArray<VSMatrix> &base, const FScopeState &sc, uint64_t frame)
+{
+	FReachChain &c = e.chains[ci];
+	const int n = model->NumJoints();
+
+	if (c.aimResolvedModel != model || c.aimResolvedJoints != n || c.aimResolvedGeneration != e.generation)
+	{
+		c.aimResolvedModel = model;
+		c.aimResolvedJoints = n;
+		c.aimResolvedGeneration = e.generation;
+		const int j = model->FindJoint(c.aimJoint);
+		c.aimJointIndex = (j >= 0 && j < n) ? j : -1;
+		if (c.aimJointIndex < 0)
+			Printf(TEXTCOLOR_YELLOW "[REACH] %s chain %d: aim joint '%s' is not on %s (%s) -- no aim on this model\n",
+				ActorName(chainActor), ci, c.aimJoint.GetChars(), model->mFileName.GetChars(), ActorName(actor));
+	}
+	if (c.aimJointIndex < 0) return AIM_NOJOINT;
+
+	if (!(c.aimFrameValid && c.aimFrame == frame && c.aimFrozenModel == model && c.aimFrozenJoints == n && c.aimFrozenGeneration == e.generation))
+	{
+		c.aimFrameValid = true;
+		c.aimFrame = frame;
+		c.aimFrozenModel = model;
+		c.aimFrozenJoints = n;
+		c.aimFrozenGeneration = e.generation;
+		c.aim = FReachAim();
+		c.aimFrozenReason = AIM_TURNED;
+
+		// This frame's solve: from the chain model's own draw if that came first, else from here, from the
+		// pose it was last drawn in and its matrix as its draw builds it.
+		BeginChainFrame(c, frame);
+		if (!(c.solveValid && c.solveFrame == frame && c.solveGeneration == e.generation))
+		{
+			VSMatrix chainM;
+			FReachTrace tr;
+			if (!c.poseValid || c.poseGeneration != e.generation || !TargetMatrix(chainActor, sc.ticFrac, chainM)
+				|| ComputeChainSolve(e, ci, chainActor, c.pose, chainM, sc.objectToWorld, frame, tr) != REACH_SOLVED)
+			{
+				c.aimFrozenReason = AIM_NOSOLVE;
+				return AIM_NOSOLVE;
+			}
+		}
+
+		const FVector3 toward = ReachAimToward(c.solveO2W, c.solve.pose.lowerDir, sc.objectToWorld);
+		const FVector3 axisM = NonZero(c.aimAxis) ? c.aimAxis : -c.fingerDir;
+		FVector3 axisDrawn, pivotDrawn;
+		if (!NonZero(axisM) || !NonZero(toward)
+			|| !ReachAimFrame(w, base[c.aimJointIndex], c.aimJointIndex, UnitOr(ToJoint(axisM), FVector3(0, 0, 0)), ToJoint(c.aimPivot), axisDrawn, pivotDrawn))
+		{
+			c.aimFrozenReason = AIM_NOAXIS;
+			return AIM_NOAXIS;
+		}
+		c.aim = ReachAimRotation(axisDrawn, toward, TuningCVar(c.tuning, "_aim_max", c.aimMaxDeg), TuningCVar(c.tuning, "_aim", 1.0f));
+		c.aim.pivot = pivotDrawn;
+		if (!c.aim.valid) c.aimFrozenReason = AIM_NOAXIS;
+	}
+	if (!c.aim.valid) return c.aimFrozenReason != AIM_TURNED ? c.aimFrozenReason : AIM_NOAXIS;
+	ReachApplyAim(w, c.aimJointIndex, c.aim, c.aimKeepChildren);
+	return AIM_TURNED;
+}
+
+void TraceAim(FReachChain &c, int ci, const AActor *chainActor, const AActor *actor, int outcome)
+{
+	const uint64_t now = I_msTime();
+	if (outcome == c.aimTraceReason && now - c.aimTraceMs < 1000) return;
+	c.aimTraceReason = outcome;
+	c.aimTraceMs = now;
+	if (outcome != AIM_TURNED)
+		Printf("[REACH] %s chain %d aim on %s '%s': not turned -- %s\n", ActorName(chainActor), ci, ActorName(actor), c.aimJoint.GetChars(), AimOutcomeText[outcome]);
+	else
+		Printf("[REACH] %s chain %d aim on %s '%s': turned %.1f of %.1f degrees (cap %.1f) about (%.2f %.2f %.2f) [its joint space]\n",
+			ActorName(chainActor), ci, ActorName(actor), c.aimJoint.GetChars(), c.aim.usedDeg, c.aim.wantDeg,
+			TuningCVar(c.tuning, "_aim_max", c.aimMaxDeg), c.aim.pivot.X, c.aim.pivot.Y, c.aim.pivot.Z);
+}
+
+// Every chain that aims a joint of THIS actor's model `modelIndex`.
+void ApplyAims(const AActor *actor, FModel *model, int modelIndex, FJointPoseWork &w, const TArray<VSMatrix> &base,
+	const FScopeState &sc, uint64_t frame)
+{
+	for (unsigned ei = 0; ei < Entries.Size(); ei++)
+	{
+		FDrawPoseEntry &e = Entries[ei];
+		for (int ci = 0; ci < REACH_CHAINS; ci++)
+		{
+			FReachChain &c = e.chains[ci];
+			if (!c.used || c.aimJoint == NAME_None || c.aimModelIndex != modelIndex || c.target.ForceGet() != actor) continue;
+			AActor *chainActor = e.actor.Get();
+			if (chainActor == nullptr || chainActor == actor) continue;
+			const int outcome = AimOne(e, ci, chainActor, actor, model, w, base, sc, frame);
+			if (r_reachchain_debug) TraceAim(c, ci, chainActor, actor, outcome);
+		}
+	}
 }
 
 } // namespace
@@ -680,7 +965,8 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 	if (!sc.open || sc.actor != actor || actor == nullptr || model == nullptr) return &bones;
 
 	const int ei = FindEntryIndex(actor);
-	if (ei < 0 && !ModelDrawPose_TestOn) return &bones;
+	const bool aimed = AnyAimAt(actor, modelIndex);
+	if (ei < 0 && !aimed && !ModelDrawPose_TestOn) return &bones;
 
 	// Only a rigged palette that matches its own skeleton: a joint-count mismatch is
 	// ignored, as CalculateBonesIQM ignores mismatched overrides.
@@ -694,10 +980,11 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 	static thread_local FJointPoseWork work;
 	work.Begin(parents.Data(), bones.Data(), base->Data(), n);
 
+	const uint64_t frame = screen != nullptr ? screen->FrameCount : 0;
+
 	if (ei >= 0)
 	{
 		FDrawPoseEntry &e = Entries[ei];
-		const uint64_t frame = screen != nullptr ? screen->FrameCount : 0;
 
 		FPoseCache *cache = nullptr;
 		for (auto &pc : e.caches) if (pc.valid && pc.modelIndex == modelIndex) { cache = &pc; break; }
@@ -706,7 +993,7 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 			&& cache->generation == e.generation)
 		{
 			// ONCE PER FRAME, NOT PER EYE (review item 19): the same local edits on this
-			// draw's own palette.
+			// draw's own palette -- the aims among them.
 			for (const auto &ed : cache->edits)
 				if (ed.joint >= 0 && ed.joint < n) work.SetLocal(ed.joint, ed.local);
 		}
@@ -722,9 +1009,10 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 				FReachChain &c = e.chains[ci];
 				if (!c.used || c.modelIndex != modelIndex) continue;
 				FReachTrace tr;
-				const int outcome = SolveChain(e, ci, work, model, actor, parents, sc, tr);
+				const int outcome = SolveChain(e, ci, work, model, actor, parents, sc, frame, tr);
 				if (r_reachchain_debug) TraceChain(c, ci, actor, outcome, tr);
 			}
+			if (aimed) ApplyAims(actor, model, modelIndex, work, *base, sc, frame);
 			if (cache == nullptr)
 			{
 				cache = &e.caches[0];
@@ -739,6 +1027,11 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 			cache->edits.Clear();
 			for (const auto &ed : work.Edits()) cache->edits.Push(ed);
 		}
+	}
+	else if (aimed)
+	{
+		// Not a registered actor itself, only reached: the aims are frozen per frame on their chains.
+		ApplyAims(actor, model, modelIndex, work, *base, sc, frame);
 	}
 
 	if (ModelDrawPose_TestOn) ApplyTestChannel(work, model);
@@ -966,7 +1259,11 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachTarget)
 	const FVector3 p((float)px, (float)py, (float)pz), f((float)fx, (float)fy, (float)fz), t((float)tx, (float)ty, (float)tz);
 	if (c.target.ForceGet() == reachTarget && c.point == p && c.fingerDir == f && c.targetTwistRef == t && c.pointCVar == pointCVar)
 		ACTION_RETURN_BOOL(true);
-	if (c.target.ForceGet() != reachTarget) c.ResetHistory();
+	if (c.target.ForceGet() != reachTarget)
+	{
+		c.ResetHistory();
+		c.aimFrameValid = false;
+	}
 	if (reachTarget != nullptr) GC::WriteBarrier(reachTarget);
 	c.target = reachTarget;
 	c.point = p;
@@ -993,6 +1290,39 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachFollowJoint)
 		c.follow = j;
 		Changed(*e);
 	}
+	ACTION_RETURN_BOOL(true);
+}
+
+DEFINE_ACTION_FUNCTION(AActor, SetModelReachTargetJoint)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(chain);
+	PARAM_NAME(joint);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(maxDeg);
+	PARAM_FLOAT(ax); PARAM_FLOAT(ay); PARAM_FLOAT(az);
+	PARAM_BOOL(keepChildren);
+	PARAM_INT(targetModelIndex);
+
+	if (!ChainIndexOk(chain) || !FiniteVec(px, py, pz) || !FiniteVec(ax, ay, az) || !std::isfinite(maxDeg) || targetModelIndex < 0)
+		ACTION_RETURN_BOOL(false);
+	FDrawPoseEntry *e = EntryFor(self, false);
+	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
+	FReachChain &c = e->chains[chain];
+	const FName j = PrefixSet(joint) ? joint : FName(NAME_None);
+	const FVector3 pivot((float)px, (float)py, (float)pz), axis((float)ax, (float)ay, (float)az);
+	const float md = (float)clamp(maxDeg, 0., 180.);
+	if (c.aimJoint == j && (j == NAME_None || (c.aimPivot == pivot && c.aimAxis == axis && c.aimMaxDeg == md
+		&& c.aimKeepChildren == keepChildren && c.aimModelIndex == targetModelIndex)))
+		ACTION_RETURN_BOOL(true);
+	c.aimJoint = j;
+	c.aimPivot = pivot;
+	c.aimAxis = axis;
+	c.aimMaxDeg = md;
+	c.aimKeepChildren = keepChildren;
+	c.aimModelIndex = targetModelIndex;
+	c.aimFrameValid = false;
+	Changed(*e);
 	ACTION_RETURN_BOOL(true);
 }
 

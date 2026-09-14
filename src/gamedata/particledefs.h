@@ -146,3 +146,30 @@ struct ParticleMeshDefinition;
 const ParticleMeshDefinition *ParticleMeshDefinitionData();
 unsigned ParticleMeshDefinitionCount();
 uint64_t ParticleMeshGeneration();
+
+// [DEBRISPOOL] DEBRIS THAT STAYS ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #9, "Engine docs/
+// DEBRIS_9_IMPL_NOTES.md"). A named definition with a `restitution` key is a DEBRIS definition:
+// FLevelLocals::SpawnParticles sends its bursts to the renderer's debris pool (hw_debrispool.h),
+// where every piece is simulated -- it bounces, slides, comes to rest and stays -- instead of
+// writing stateless ring records. Its keys live here, not in ParticleDefinitionGpu (whose 256
+// bytes are all used), and reach the renderer as this list, the mesh list's way. Everything else
+// about the piece's look is its ParticleDefinitionGpu slot.
+struct ParticleDebrisDefinition
+{
+	int Slot = -1;				// the named definition slot, 0 .. 255
+	float Restitution = 0.f;	// 0..1: the share of its speed into a surface a piece keeps when it bounces
+	float Friction = 0.5f;		// 0..1: how much of a contact's push is taken off its sliding speed
+	float RestLife = 0.f;		// seconds it stays once at rest; 0 = never rests (bounces until its life ends)
+	float RestFade = 0.5f;		// seconds of fading out at the end of that rest
+};
+
+// One entry per named definition with `restitution`, in slot order, and the list's generation,
+// bumped each time LoadParticleDefinitions rebuilds it.
+const ParticleDebrisDefinition *ParticleDebrisDefinitionData();
+unsigned ParticleDebrisDefinitionCount();
+uint64_t ParticleDebrisGeneration();
+
+// Whether this named slot's definition has `restitution` on this machine. False for -1, for inline
+// slots and for every slot without the key. Render-side only, like ResolveParticleDefinitionHandle:
+// the answer can differ between machines, so nothing that affects the simulation may depend on it.
+bool ParticleDefinitionIsDebris(int slot);

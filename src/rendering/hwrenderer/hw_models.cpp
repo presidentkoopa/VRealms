@@ -68,11 +68,33 @@ void FHWModelRenderer::BeginDrawModel(FRenderStyle style, int smf_flags, const V
 
 void FHWModelRenderer::EndDrawModel(FRenderStyle style, int smf_flags)
 {
+	if (eyeFadeOn) SetEyeFade(0.f, 0.f);	// RS fork -- never leave the fade on past its model
 	state.SetBoneIndexBase(-1);
 	state.EnableModelMatrix(false);
 	state.SetDepthFunc(DF_Less);
 	if ((smf_flags & MDL_FORCECULLBACKFACES) || (!(style == DefaultRenderStyle()) && !(smf_flags & MDL_DONTCULLBACKFACES)))
 		state.SetCulling(Cull_None);
+}
+
+// RS fork -- NEAR-EYE FADE (modelrenderer.h). EFF_EYEFADE reads its two distances from the
+// per-draw stream data, which only the Vulkan prolog maps, so it is selected on Vulkan only;
+// GL and GLES draw the model whole. Never over an effect a caller already set.
+void FHWModelRenderer::SetEyeFade(float nearDist, float farDist)
+{
+	const bool want = farDist > nearDist && nearDist >= 0.f && screen != nullptr && screen->IsVulkan();
+	if (want)
+	{
+		if (!eyeFadeOn && state.GetSpecialEffect() != EFF_NONE) return;
+		state.SetEffect(EFF_EYEFADE);
+		state.SetEyeFade(nearDist, farDist);
+		eyeFadeOn = true;
+	}
+	else if (eyeFadeOn)
+	{
+		state.SetEffect(EFF_NONE);
+		state.SetEyeFade(0.f, 0.f);
+		eyeFadeOn = false;
+	}
 }
 
 void FHWModelRenderer::BeginDrawHUDModel(FRenderStyle style, const VSMatrix &objectToWorldMatrix, bool mirrored, int smf_flags)

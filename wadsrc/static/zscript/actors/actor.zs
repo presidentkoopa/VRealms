@@ -390,6 +390,11 @@ class Actor : Thinker native
 	// is not readable from here and is NOT the same as HmdYaw.
 	native int FollowBodyMode;
 	native double FollowBodyYaw;
+	// Draw FollowBodyYaw at display rate: last tic's heading turned toward this
+	// tic's by the shortest way, as Angles are drawn. false, the default, draws the
+	// value as written. Not saved: set it every tic with the heading. A snap turn
+	// stays a snap if ClearInterpolation() is called after writing it.
+	native bool FollowBodyYawInterp;
 	native Vector3 FollowBodyOfs;
 
 	// RS FORK -- HELD IN A HAND, PLACED AT DRAW RATE. The hand-frame twin of
@@ -411,6 +416,18 @@ class Actor : Thinker native
 	// a slider one unit moves this one unit. Zero changes nothing.
 	native int FollowHandMode;
 	native Vector3 FollowHandOfs;
+
+	// A TURN OF THE HAND'S FRAME, in degrees, about the hand itself:
+	//   X yaw   + turns the model left (like Angle)
+	//   Y pitch + tips the muzzle down (like Pitch)
+	//   Z roll  + tips its top to the right, seen from behind
+	// It turns the model's whole seat -- Offset, FollowHandOfs, the sliders -- so a
+	// gun swings about the grip, and anything riding it turns with it. Unlike
+	// FollowHandOfs it reads the same in either hand: the renderer undoes the
+	// off-hand mirror. Script-owned animation (recoil, a draw flick, a catch
+	// settling); no slider writes it. Drawn interpolated between tics, so set it
+	// once a tic. Zero changes nothing.
+	native Vector3 FollowHandRot;
 
 	// WHOSE PLACEMENT SLIDERS THIS ACTOR USES RIGHT NOW.
 	//
@@ -2263,7 +2280,9 @@ class Actor : Thinker native
 	// _align_max 40, _align_fade_lo 0.10, _align_fade_span 0.25, _align_conf_lo 0.05,
 	// _align_conf_span 0.20, _swivel_rate 0, _twist 1.0, _twist_taper 110,
 	// _twist_conf_lo 0.15, _twist_conf_span 0.30, _twist_ofs 0, _twist_rate 0,
-	// _follow 0.25, _follow_max 25. Call this first; the calls below need it.
+	// _follow 0.25, _follow_max 25, _clear_radius 0 (off), _clear_max 100,
+	// _clear_rate 0, _aim 1.0, _aim_max (SetModelReachTargetJoint's maxDeg). Call this
+	// first; the calls below need it.
 	// Every joint along each bone rides it by where it sits on it: a stretch slides it
 	// along the bone, and along the mid bone the twist turns it in proportion (0 at
 	// mid, 1 at end). Everything under the end joint rides the end joint.
@@ -2284,6 +2303,21 @@ class Actor : Thinker native
 	// An ancestor of the root that leans a little toward the target first (a clavicle):
 	// _follow of the swing, capped at _follow_max degrees. 'None' turns it off.
 	native bool SetModelReachFollowJoint(int chain, Name joint);
+	// CLEARANCE: with <tuning>_clear_radius above 0 -- in this model's own units, so it
+	// grows with the model's fit -- the elbow swings round its circle out of walls, step
+	// faces, ledge edges, solid 3D floors and polyobjects near the chain. _clear_max caps
+	// the swing in degrees (100), _clear_rate eases it per second (0 = instant). Absent or
+	// 0: off. The level is only read.
+	//
+	// After solving, turn a joint of the TARGET's model (its model index
+	// targetModelIndex) about pivot so its axis points back along the solved end bone,
+	// at most maxDeg -- <tuning>_aim_max wins live when it exists, and <tuning>_aim 0..1
+	// weights it. axis (0,0,0) means minus fingerDir. keepChildren: the joint's direct
+	// children keep their drawn place, so only what is skinned to the joint itself turns.
+	// pivot and axis are in the TARGET's model space, at rest. The RS hand:
+	// SetModelReachTargetJoint(0, 'Root_joint', (0,0,0), 70) turns its wrist stub along
+	// the forearm while HANDPALM and the fingers stay on the controller. 'None' turns it off.
+	native bool SetModelReachTargetJoint(int chain, Name joint, Vector3 pivot = (0,0,0), double maxDeg = 70, Vector3 axis = (0,0,0), bool keepChildren = true, int targetModelIndex = 0);
 	// chain -1 clears every chain.
 	native void ClearModelReachChain(int chain = -1);
 

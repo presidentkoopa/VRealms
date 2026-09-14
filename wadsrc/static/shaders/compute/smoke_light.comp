@@ -1,0 +1,155 @@
+// [SMOKEVOLUME] 13d: the smoke's light grid ("Engine docs/SMOKE_VOLUME_PLAN.md" 13d, owner answer 4:
+// a FINE light grid, the method shipping volumetric fog uses).
+//
+// Every light at every march sample would be about a billion light evaluations an eye a frame. Instead
+// the light is worked out once a frame on a world-aligned grid over the smoke box (hw_framecompute.h,
+// SmokeLightGridSpec), and shaders/pp/smokemarch.fp samples it. Both eyes read the same grid.
+//
+// Two volumes, written in place:
+//   LightGrid       rgb the light reaching the cell; a its luminance weight (every contribution's)
+//   LightDirection  xyz the direction light TRAVELS through the cell, averaged by weight -- its length
+//                   is the share of the light that comes from that direction (0 = from all round)
+//
+// One lump, two passes (RegionMin.w):
+//   0 AMBIENT, over EVERY cell of the grid, first: the cell's column's sector light (AmbientColumns, from
+//     the CPU) times the look's ambient; no direction. This replaces last frame's light everywhere, so no
+//     cell ever shows an earlier frame's light -- not even at the faint edge of fading smoke, where the
+//     previous simulation state can still hold a trace of density in a tile that has gone quiet.
+//   1 ONE LIGHT, over only the cells its sphere's box covers, and only in ACTIVE tiles (TileActive 1):
+//     attenuation 1 - d / r as surfaces take it, the spot cone as main.fp's spotLightAttenuation, and --
+//     when the engine's shadow map is live this frame and the light has a row in it -- occlusion by walls,
+//     as surfaces get it. The colour adds to rgb; the direction is averaged again with this light's weight.
+//     Skipping quiet tiles keeps a light's cost to the smoke it touches: every light cell the trilinear
+//     footprint of a sample near smoke reaches lies in an active tile (the tile map is spread by a tile;
+//     "Engine docs/SMOKE_13D_IMPL_NOTES.md", mirror L10), so only a trace of density far below visible can
+//     miss a light, and then it keeps its ambient light, never an old one.
+//
+// Axes: Doom's (x, y horizontal, z up), map units from the grid's minimum corner. Light cell c spans
+// [c, c + 1) x Cone.z map units; its centre is where the light is taken.
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension and "#line 1".
+// Push constants: SmokeLightConstants in vk_smokevolume.cpp (96 bytes).
+// GLSL reserved-word rule (NVIDIA GL): no identifier here is a reserved word.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler3D TileActive;		// one texel per smoke tile, 1 = may hold smoke
+layout(set = 0, binding = 1) uniform sampler2D AmbientColumns;	// one texel per light-grid column, rgb its sector light
+layout(set = 0, binding = 2) uniform sampler2D ShadowMap;		// the engine's shadow map (hw_shadowmap.cpp, shadowmap.fp)
+layout(set = 0, binding = 3, rgba16f) uniform image3D LightGrid;
+layout(set = 0, binding = 4, rgba8_snorm) uniform image3D LightDirection;
+
+layout(push_constant) uniform SmokeLightConstants
+{
+	ivec4 RegionMin;		// xyz the first light cell; w the pass: 0 ambient, 1 a light
+	ivec4 RegionMax;		// xyz one past the last; w light cells per smoke tile
+	vec4 PositionRadius;	// xyz the light, map units from the grid's corner; w its radius
+	vec4 Color;				// rgb its colour (x the look's scatter; negative when subtractive); w its luminance weight
+	vec4 SpotDirection;		// xyz main.fp's spot direction (the cone's axis pointing back at the light); w its shadow map row, -1 none
+	vec4 Cone;				// x cos outer, y cos inner (-2, -1 for a point light); z the light cell size, map units; w the look's ambient
+};
+
+const vec3 LUMINANCE = vec3(0.2126, 0.7152, 0.0722);
+const float SHADOW_ROWS = 1024.0;
+
+// main.fp's shadowDirToU: a direction in the map's plane to the shadow map's u, the four projections of
+// shadowmap.fp laid end to end.
+float ShadowDirToU(vec2 dir)
+{
+	if (abs(dir.y) > abs(dir.x))
+	{
+		float x = dir.x / dir.y * 0.125;
+		if (dir.y >= 0.0)
+			return 0.125 + x;
+		else
+			return (0.50 + 0.125) + x;
+	}
+	else
+	{
+		float y = dir.y / dir.x * 0.125;
+		if (dir.x >= 0.0)
+			return (0.25 + 0.125) - y;
+		else
+			return (0.75 + 0.125) - y;
+	}
+}
+
+// How much of a light at this row reaches a point `fromLight` away from it (Doom axes). Each shadow map
+// texel holds the squared distance, in the map's plane, from the light to the first wall along that
+// texel's direction (or past the radius). Three texels across the point's direction, each a lit / not
+// lit test with half a light cell of bias, so a cell right against the lit face of a wall stays lit.
+float ShadowVisibility(vec3 fromLight, float row)
+{
+	if (row < 0.0)
+		return 1.0;
+
+	vec2 dir = fromLight.xy + 0.01;		// main.fp's nudge: Doom lights often sit exactly on a plane
+	float distSquared = dot(dir, dir);
+	if (distSquared < 1.0)
+		return 1.0;						// main.fp's "light is too close"
+
+	ivec2 size = textureSize(ShadowMap, 0);
+	int width = max(size.x, 1);
+	int y = clamp(int(row), 0, min(size.y, int(SHADOW_ROWS)) - 1);
+	int x = int(floor(ShadowDirToU(dir) * float(width)));
+
+	float reach = max(sqrt(distSquared) - Cone.z * 0.5, 0.0);
+	float reachSquared = reach * reach;
+	float lit = 0.0;
+	for (int i = -1; i <= 1; i++)
+	{
+		int tx = ((x + i) % width + width) % width;
+		lit += step(reachSquared, texelFetch(ShadowMap, ivec2(tx, y), 0).x);
+	}
+	return lit / 3.0;
+}
+
+void main()
+{
+	ivec3 cell = ivec3(gl_GlobalInvocationID) + RegionMin.xyz;
+	if (any(greaterThanEqual(cell, RegionMax.xyz)))
+		return;
+
+	if (RegionMin.w == 0)
+	{
+		vec3 ambient = texelFetch(AmbientColumns, cell.xy, 0).rgb * Cone.w;
+		imageStore(LightGrid, cell, vec4(ambient, dot(ambient, LUMINANCE)));
+		imageStore(LightDirection, cell, vec4(0.0));
+		return;
+	}
+
+	ivec3 tile = cell / max(RegionMax.w, 1);
+	if (texelFetch(TileActive, tile, 0).r < 0.5)
+		return;
+
+	vec3 fromLight = (vec3(cell) + 0.5) * Cone.z - PositionRadius.xyz;
+	float distSquared = dot(fromLight, fromLight);
+	float radius = PositionRadius.w;
+	if (radius <= 0.0 || distSquared >= radius * radius)
+		return;
+
+	float dist = sqrt(distSquared);
+	float attenuation = 1.0 - dist / radius;
+	vec3 travel = dist > 1e-3 ? fromLight / dist : vec3(0.0);	// the way the light goes through this cell
+	attenuation *= smoothstep(Cone.x, Cone.y, dot(-travel, SpotDirection.xyz));
+	if (attenuation <= 0.0)
+		return;
+	attenuation *= ShadowVisibility(fromLight, SpotDirection.w);
+	if (attenuation <= 0.0)
+		return;
+
+	vec4 grid = imageLoad(LightGrid, cell);
+	vec3 weighted = imageLoad(LightDirection, cell).xyz;
+	float weight = max(Color.w, 0.0) * attenuation;
+	float total = grid.a + weight;
+	vec3 direction = weighted;
+	if (total > 1e-6)
+	{
+		direction = (weighted * grid.a + travel * weight) / total;
+		float share = length(direction);
+		if (share > 1.0)
+			direction /= share;
+	}
+	imageStore(LightGrid, cell, vec4(grid.rgb + Color.rgb * attenuation, total));
+	imageStore(LightDirection, cell, vec4(direction, 0.0));
+}

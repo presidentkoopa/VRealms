@@ -45,6 +45,13 @@
 **   - THE TEST SOURCE (r_smoke_computetest): a renderer-side source placed ahead of the
 **     view when switched on -- a puff a tic, a round through it every 10 tics, a blast
 **     every 3 seconds -- through the same path as a mod's events. Local only.
+**   - [13d] THE LIGHT GRID (SmokeLightFrame, hw_framecompute.h): its quality
+**     (r_smoke_light_quality, defined in hw_smokevolume.cpp), each light-grid COLUMN's
+**     sector light -- the sector under the column's centre, cached world-aligned so a
+**     recentre keeps what it can, new columns resolved within AMBIENT_BUDGET_MS a frame
+**     nearest the eye first -- and, on frames with smoke to draw, up to SMOKE_LIGHTS_MAX
+**     dynamic lights whose sphere reaches the box, nearest the eye, coloured as stage 2d's
+**     view lights, with their row in the engine's shadow map when that is live.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim.
 **
@@ -90,6 +97,11 @@ public:
 	static constexpr double TURBULENCE_WAVELENGTH = 96.0;	// map units
 	static constexpr double MAX_CELLS_PER_STEP = 4.0;	// at most half a tile, so one tile of margin always holds a step
 
+	// [13d] The light grid's ambient columns: resolving a column's sector costs a BSP walk, so new columns
+	// are resolved within this much CPU a frame, a block of this many columns a side at a time.
+	static constexpr double AMBIENT_BUDGET_MS = 0.25;
+	static constexpr int AMBIENT_BLOCK_COLUMNS = 16;
+
 	static SmokeVolume& Get();
 
 	// Once per frame for the main view, after SectorPlanes::BeginFrame. eye is the view
@@ -107,6 +119,7 @@ public:
 		SmokeGridSpec Grid;
 		int OriginCell[3] = { 0, 0, 0 };	// the box's first cell in world cells, as SmokeVolumeFrame
 		float TicFrac = 0.f;
+		int LightQuality = 0;				// [13d] the light grid this frame asks for (SmokeLightFrame::Quality)
 	};
 	const DrawState& GetDrawState() const { return mDraw; }
 
@@ -178,6 +191,11 @@ private:
 	void AppendKernels(const PendingEvent& e, const EventShape& shape, int step, const SmokeVolumeFrame& frame);
 	void FillSimSettings(FLevelLocals* Level, SmokeVolumeFrame& out) const;
 
+	// [13d] The light grid's part of the frame (PrepareFrame calls PrepareLight once the box is placed).
+	void PrepareLight(FLevelLocals* Level, const DVector3& eye, SmokeVolumeFrame& out);
+	void UpdateAmbientColumns(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
+	void GatherLights(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
+
 	uint64_t mLevelSerial = 0;
 
 	// [13c] GetDrawState's answer for this frame.
@@ -226,4 +244,24 @@ private:
 	std::vector<SmokeKernel> mKernels;
 	std::vector<SmokeMaskUpload> mMaskUploads;
 	std::vector<uint8_t> mMaskBytes;
+
+	// [13d] The light grid's lights this frame, and its ambient columns. mColumnSector holds each column's
+	// sector index (-1 = not resolved yet), x fastest, for the columns from mAmbientOrigin (world light
+	// columns); mBlockUnknown counts the unresolved columns of each AMBIENT_BLOCK_COLUMNS block. The bytes
+	// (RGBA8 a column) are rebuilt only when something they show changed, and mAmbientSerial moves on then.
+	std::vector<SmokeLightRecord> mLights;
+	uint64_t mAmbientLevelSerial = 0;
+	int mAmbientSize[2] = { 0, 0 };
+	double mAmbientCellSize = 0;
+	int mAmbientOrigin[2] = { 0, 0 };
+	std::vector<int> mColumnSector;
+	std::vector<int> mBlockUnknown;
+	int mUnknownColumns = 0;
+	int mFallbackColumns = 0;					// columns showing the fallback: not resolved yet, or no sector found (-2)
+	std::vector<int> mAmbientSectors;			// every sector a column has resolved to, once
+	std::vector<uint32_t> mSectorPacked;		// by sector index: its last packed light (RGBA8, alpha 255 once listed)
+	uint32_t mFallbackPacked = 0;				// the eye's sector, for columns not resolved yet
+	bool mAmbientDirty = true;
+	std::vector<uint8_t> mAmbientBytes;
+	uint64_t mAmbientSerial = 0;
 };

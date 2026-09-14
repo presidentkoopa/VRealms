@@ -1,0 +1,636 @@
+// [DEBRISPOOL] #9 DEBRIS THAT STAYS: one simulation step of the debris pool, or a clear of it ("Engine docs/
+// COLLISION_DEBRIS_MESH_PLAN.md" 9, "Engine docs/DEBRIS_9_IMPL_NOTES.md").
+//
+// A piece (DebrisPiece, 176 bytes; DebrisPieceGpu in hw_debrisframe.h) is the particle ring's record, written at its spawn,
+// and the state this step writes. Shader axes: y is up. The level collision field (#8) is in Doom axes: a position p is
+// p.xzy there.
+//
+// Mode 1 CLEAR (Range.z == 1): every piece in [Range.x, Range.x + Range.y) is freed.
+// Mode 0 STEP: every live piece in that range moves one world tic, to Clock.x:
+//   - ITS STAY. A piece that never rests (restlife 0) is freed once its life is over. One that rests starts its rest clock
+//     when it comes to rest or when its life ends, whichever is first, and is freed once the rest (scaled as the draw scales
+//     it) and its fade are over.
+//   - WAKE. A resting piece holds still unless a blast push of this step reaches it (not through a wall), a wake box of this
+//     step holds it (a sector under it moved), or Lists.z wakes every resting piece.
+//   - FORCES. Gravity, drag, the pushes (smoke_inject.comp's weight, (1 - d^2/r^2)^2 of the strength, away from the centre).
+//   - THE SWEEP. Along its path in steps no longer than the room the level gives it (the field's distance less its radius),
+//     so it never passes into a surface; touching one, the part of the move into it is taken off and it slides.
+//   - THE CONTACT. Pushed out to its reach from the surface (a mesh: its bounds box in its current turn; a billboard: half its
+//     first size). The speed into the surface is kept times restitution -- none below a bounce speed, so resting contact does
+//     not jitter -- and the sliding speed loses friction x the contact's push (Coulomb). A mesh rolls, and when slow on a
+//     floor settles onto the face that best meets it (meshparticles.vp's MeshRestTurn); a billboard's spin slows.
+//   - REST after kRestTics slow steps on a floor. Freed deep inside solid (a door closed on it) or far below its spawn.
+// The surface is the level field where the definition collides with the level and the field answers, else the spawn's plane
+// and floor (FLAME_ENGINE_PLAN F4's), as for ring particles.
+// Every live piece's previous position and turn become its current ones first, with the step's time, so the draw blends the
+// last two steps.
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension and "#line 1". Push constants:
+// DebrisStepConstants in vk_debrispool.cpp (64 bytes). GLSL reserved-word rule (NVIDIA GL): no identifier here is a
+// reserved word or shadows a built-in.
+
+layout(local_size_x = 256) in;
+
+// hw_debrisframe.h DebrisPieceGpu: the ring record (gpuparticles.vp's GpuParticle) and the state.
+struct DebrisSpawn
+{
+	vec4 a;		// xyz spawn position  w birth, level seconds
+	vec4 b;		// xyz launch velocity  w life, seconds
+	vec4 c;		// rgb tint  w intensity
+	vec4 d;		// x definition slot  y size scale  z ambient  w seed
+	vec4 e;		// xy the spawn's plane (octahedral; x = 2 none)  z its offset  w the floor (-32768 none)
+};
+struct DebrisPiece
+{
+	DebrisSpawn spawn;
+	vec4 position;		// xyz  w state: 0 free, 1 flying, 2 resting
+	vec4 previous;		// xyz one step earlier  w the level time of position
+	vec4 velocity;		// xyz map units a second  w the level time its rest clock started (-1 none)
+	vec4 turn;			// a unit quaternion
+	vec4 previousTurn;
+	vec4 spin;			// xyz angular velocity, radians a second  w slow steps on a floor
+};
+layout(set = 0, binding = 0, std430) buffer DebrisPoolPieces
+{
+	DebrisPiece Pieces[];
+};
+
+// hw_debrisframe.h DebrisDefinitionGpu, and the definitions buffer's layout (set 1 binding 11 for the draw).
+struct DebrisDefinition
+{
+	vec4 physics;		// x restitution  y friction  z rest life (as written; 0 never rests)  w rest fade
+	vec4 motion;		// x gravity (down)  y drag  z collide (1 plane, 2 level)  w 1 = a debris definition
+	vec4 body;			// x the first size key  y 1 = a mesh  z the mesh's diameter  w 0
+	vec4 boundsMin;		// xyz the mesh's bounds (model axes, y up)
+	vec4 boundsMax;
+};
+layout(set = 0, binding = 1, std430) readonly buffer DebrisDefinitionTable
+{
+	vec4 DebrisInfo;							// x rest scale  y rests this long or more are scaled  z capacity  w mesh instances
+	DebrisDefinition Definitions[256];
+	uint MeshInstances[];
+};
+
+// hw_debrisframe.h DebrisImpulseGpu and DebrisWakeGpu.
+struct DebrisImpulse
+{
+	vec4 sphere;		// xyz centre  w radius
+	vec4 push;			// x strength at the centre, map units a second  y its step
+};
+struct DebrisWake
+{
+	vec4 boxMin;		// xyz  w its step
+	vec4 boxMax;
+};
+layout(set = 0, binding = 2, std430) readonly buffer DebrisStepEvents
+{
+	DebrisImpulse Impulses[512];
+	DebrisWake Wakes[128];
+};
+
+// The level collision field (vk_levelfield.h), or the descriptor manager's stand-ins that say "no level".
+layout(set = 0, binding = 3) uniform sampler3D LevelFieldFine;
+layout(set = 0, binding = 4) uniform sampler3D LevelFieldCoarse;
+layout(set = 0, binding = 5) uniform sampler2D LevelFieldHeader;
+
+layout(push_constant) uniform DebrisStepConstants
+{
+	ivec4 Range;	// x the first piece, y how many, z the mode (0 step, 1 clear), w this step's index
+	ivec4 Lists;	// x impulses, y wake boxes (each tagged with its step), z 1 = wake every resting piece this step
+	vec4 Clock;		// x level seconds this step ends at, y seconds a step, z rest scale, w rests this long or more are scaled
+	vec4 Tuning;	// x r_gpuparticles_sizescale
+};
+
+const vec3 kDebrisUp = vec3(0.0, 1.0, 0.0);
+const int kModeClear = 1;
+// The sweep: at most this many samples of the path per step; touching a surface, it slides this far between samples.
+const int kSweepSamples = 16;
+const float kSlideAdvance = 2.0;
+// Within this of its reach (map units) a piece touches a surface: it is put on it, and it can come to rest there.
+const float kContactSlack = 0.05;
+// A surface whose normal's up part is above this is a floor: rested on, settled on.
+const float kFloorUp = 0.7;
+// Slower than this (map units a second) on a floor for kRestTics steps in a row, a piece comes to rest.
+const float kRestSpeed = 12.0;
+const float kRestTics = 4.0;
+// Into a surface slower than this (or 1.5 steps of its gravity), a contact does not bounce.
+const float kBounceSpeed = 24.0;
+const float kMaxSpeed = 4096.0;
+// A slow mesh on a floor turns onto its best face at this rate (1/s), below this speed.
+const float kSettleRate = 8.0;
+const float kSettleSpeed = 48.0;
+// A piece this far below its spawn point has fallen out of the level.
+const float kFallLimit = 4096.0;
+// A blast's wall test samples the field along the line from the piece to the blast, both ends lifted kBlastLift map units
+// (so the floor they lie on does not shorten the steps, and a barrier lower than that does not block), at most
+// kBlastSamples times, stepping the room each sample gives less a unit but never less than kBlastStep -- close enough that
+// some sample lies a unit or more inside any wall 8 units thick (an 8-unit door holds). At worst (a line grazing walls)
+// that tests about 290 units; in open rooms far more.
+const int kBlastSamples = 48;
+const float kBlastStep = 6.0;
+const float kBlastLift = 16.0;
+const float kMinRadius = 0.25;
+
+//-----------------------------------------------------------------------------
+// The level field: gpuparticles.vp's LEVEL_FIELD_COLLISION functions, token for token.
+//-----------------------------------------------------------------------------
+
+// A sample whose |distance| reaches this share of its level's band is clamped: its magnitude is only a bound.
+const float kLevelFieldClampShare = 0.9;
+
+// The header and the volumes' sizes, read once per piece.
+vec4 gLevelFieldWindow[2];
+vec4 gLevelFieldParams;
+vec3 gLevelFieldSize[2];
+bool gFieldUsable;
+
+// One level's signed distance at doomPosition, map units: false when that level has no baked answer there -- no
+// window, the trilinear footprint (grown by `margin` cells) not wholly inside the window (beyond it the torus
+// wraps to a different world cell), or a texel of it not baked yet.
+bool LevelFieldLevelDistance(int level, vec3 doomPosition, float margin, out float fieldDistance)
+{
+	fieldDistance = 0.0;
+	vec4 window = gLevelFieldWindow[level];
+	if (window.w <= 0.0)
+		return false;
+	vec3 cells = doomPosition / window.w;
+	vec3 inWindow = cells - window.xyz;
+	vec3 size = gLevelFieldSize[level];
+	if (any(lessThan(inWindow, vec3(0.5 + margin))) || any(greaterThan(inWindow, size - vec3(0.5 + margin))))
+		return false;
+	vec4 texel = (level == 0) ? textureLod(LevelFieldFine, cells / size, 0.0) : textureLod(LevelFieldCoarse, cells / size, 0.0);
+	if (texel.g < 0.999)
+		return false;
+	fieldDistance = texel.r;
+	return true;
+}
+
+// The field's signed distance at doomPosition, and the level to take its normal on (-1: no answer). The fine level
+// answers where it is not clamped; the coarse one further out, never overruling the fine level's sign.
+float LevelFieldDistance(vec3 doomPosition, out int level)
+{
+	float fineDistance;
+	float coarseDistance;
+	bool fine = LevelFieldLevelDistance(0, doomPosition, 0.5, fineDistance);
+	if (fine && abs(fineDistance) < gLevelFieldParams.z * kLevelFieldClampShare)
+	{
+		level = 0;
+		return fineDistance;
+	}
+	bool coarse = LevelFieldLevelDistance(1, doomPosition, 0.5, coarseDistance);
+	if (fine)
+	{
+		// Clamped on the fine level: a bound. The coarse level may know how far it really is.
+		level = coarse ? 1 : 0;
+		if (coarse && (coarseDistance < 0.0) == (fineDistance < 0.0))
+			return (fineDistance < 0.0) ? min(fineDistance, coarseDistance) : max(fineDistance, coarseDistance);
+		return fineDistance;
+	}
+	level = coarse ? 1 : -1;
+	return coarse ? coarseDistance : 0.0;
+}
+
+// The field's outward normal at doomPosition on one level (Doom axes), from four samples on a tetrahedron half a
+// cell out. False when a sample has no answer or the field is flat there (inside a clamped region).
+bool LevelFieldNormal(int level, vec3 doomPosition, out vec3 normal)
+{
+	normal = vec3(0.0, 0.0, 1.0);
+	if (level < 0)
+		return false;
+	float h = 0.5 * gLevelFieldWindow[level].w;
+	const vec3 k0 = vec3(1.0, -1.0, -1.0);
+	const vec3 k1 = vec3(-1.0, -1.0, 1.0);
+	const vec3 k2 = vec3(-1.0, 1.0, -1.0);
+	const vec3 k3 = vec3(1.0, 1.0, 1.0);
+	float d0;
+	float d1;
+	float d2;
+	float d3;
+	if (!LevelFieldLevelDistance(level, doomPosition + k0 * h, 0.0, d0) ||
+		!LevelFieldLevelDistance(level, doomPosition + k1 * h, 0.0, d1) ||
+		!LevelFieldLevelDistance(level, doomPosition + k2 * h, 0.0, d2) ||
+		!LevelFieldLevelDistance(level, doomPosition + k3 * h, 0.0, d3))
+		return false;
+	vec3 gradient = k0 * d0 + k1 * d1 + k2 * d2 + k3 * d3;
+	float gradientLength = length(gradient);
+	// A distance field's gradient is 1 long, so this sum is about 4h long; a flat one is not a surface.
+	if (gradientLength < h)
+		return false;
+	normal = gradient / gradientLength;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Turns: meshparticles.vp's quaternion maths, under this file's names.
+//-----------------------------------------------------------------------------
+
+// Two turns composed: a * b turns by b first, then by a.
+vec4 DebrisQuatMultiply(vec4 a, vec4 b)
+{
+	return vec4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w * b.w - dot(a.xyz, b.xyz));
+}
+
+mat3 DebrisQuatMatrix(vec4 q)
+{
+	float x2 = q.x + q.x;
+	float y2 = q.y + q.y;
+	float z2 = q.z + q.z;
+	float xx = q.x * x2;
+	float xy = q.x * y2;
+	float xz = q.x * z2;
+	float yy = q.y * y2;
+	float yz = q.y * z2;
+	float zz = q.z * z2;
+	float wx = q.w * x2;
+	float wy = q.w * y2;
+	float wz = q.w * z2;
+	return mat3(
+		1.0 - (yy + zz), xy + wz, xz - wy,
+		xy - wz, 1.0 - (xx + zz), yz + wx,
+		xz + wy, yz - wx, 1.0 - (xx + yy));
+}
+
+// How far the chunk reaches from its origin INTO a surface with normal n: its bounds box, turned and scaled, measured
+// along -n (meshparticles.vp's MeshSupport).
+float DebrisSupport(mat3 turnMatrix, vec3 n, vec3 boxMin, vec3 boxMax, float scale)
+{
+	vec3 c = -(transpose(turnMatrix) * n);
+	return scale * (max(c.x * boxMin.x, c.x * boxMax.x) + max(c.y * boxMin.y, c.y * boxMax.y) + max(c.z * boxMin.z, c.z * boxMax.z));
+}
+
+// The turn that lays a chunk flat, as a rotation applied on top of its turn (meshparticles.vp's MeshRestTurn): of the
+// bounds box's three axes, the one that best meets the surface (how straight it points into it x the area of the face it
+// carries) is turned to point straight into the surface.
+vec4 DebrisRestTurn(mat3 turnMatrix, vec3 n, vec3 boxMin, vec3 boxMax)
+{
+	vec3 extent = boxMax - boxMin;
+	vec3 faceArea = vec3(extent.y * extent.z, extent.x * extent.z, extent.x * extent.y);
+	vec3 along = transpose(turnMatrix) * n;
+	vec3 score = abs(along) * faceArea;
+	int axis = (score.x >= score.y) ? ((score.x >= score.z) ? 0 : 2) : ((score.y >= score.z) ? 1 : 2);
+	float side = (along[axis] > 0.0) ? -1.0 : 1.0;
+	vec3 into = turnMatrix[axis] * side;
+	return normalize(vec4(cross(into, -n), 1.0 + dot(into, -n)));
+}
+
+// A unit normal from its octahedral encoding (gpuparticles.vp's OctahedralDecode).
+vec3 DebrisOctahedralDecode(vec2 e)
+{
+	vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+	float fold = max(-n.z, 0.0);
+	n.x += (n.x >= 0.0) ? -fold : fold;
+	n.y += (n.y >= 0.0) ? -fold : fold;
+	return normalize(n);
+}
+
+//-----------------------------------------------------------------------------
+// The step
+//-----------------------------------------------------------------------------
+
+void FreePiece(uint slot)
+{
+	Pieces[slot].position.w = 0.0;
+	Pieces[slot].velocity.w = -1.0;
+}
+
+// The nearest surface to `centre` (shader axes) for a piece: the level field where its definition collides with the level
+// and the field answers here; otherwise the spawn's plane and floor. False when there is nothing to collide with. The
+// outward normal only when asked (four more samples); up where the field cannot say.
+bool DebrisSurface(DebrisSpawn spawn, bool levelCollide, vec3 centre, bool wantNormal, out float surfaceDistance, out vec3 surfaceNormal, out bool fromField)
+{
+	surfaceDistance = 1.0e9;
+	surfaceNormal = kDebrisUp;
+	fromField = false;
+	if (levelCollide && gFieldUsable)
+	{
+		int level;
+		float fieldDistance = LevelFieldDistance(centre.xzy, level);
+		if (level >= 0)
+		{
+			surfaceDistance = fieldDistance;
+			fromField = true;
+			if (wantNormal)
+			{
+				vec3 doomNormal;
+				if (LevelFieldNormal(level, centre.xzy, doomNormal))
+					surfaceNormal = doomNormal.xzy;
+			}
+			return true;
+		}
+	}
+	bool found = false;
+	if (spawn.e.x < 1.5)
+	{
+		vec3 planeNormal = DebrisOctahedralDecode(spawn.e.xy);
+		surfaceDistance = dot(centre, planeNormal) - spawn.e.z;
+		surfaceNormal = planeNormal;
+		found = true;
+	}
+	if (spawn.e.w > -32767.0)
+	{
+		float floorDistance = centre.y - spawn.e.w;
+		if (!found || floorDistance < surfaceDistance)
+		{
+			surfaceDistance = floorDistance;
+			surfaceNormal = kDebrisUp;
+		}
+		found = true;
+	}
+	return found;
+}
+
+// Whether a wall stands between a blast's centre and a piece: the field sampled along the lifted line from the piece toward
+// the centre (see kBlastSamples). A sample a unit or more inside solid blocks it. Unknown field: not blocked. A blast
+// centred inside a wall is not blocked by that wall within one step of its centre (a caller puts a blast in open air).
+bool DebrisBlastBlocked(vec3 centre, vec3 from)
+{
+	vec3 start = from + kDebrisUp * kBlastLift;
+	vec3 toCentre = centre - from;
+	float total = length(toCentre);
+	if (total < 1.0e-3)
+		return false;
+	vec3 direction = toCentre / total;
+	float travelled = 0.0;
+	for (int i = 0; i < kBlastSamples && travelled < total; i++)
+	{
+		int level;
+		float d = LevelFieldDistance((start + direction * travelled).xzy, level);
+		if (level < 0)
+			return false;
+		if (d < -1.0)
+			return true;
+		travelled += max(d - 1.0, kBlastStep);
+	}
+	return false;
+}
+
+void main()
+{
+	uint index = gl_GlobalInvocationID.x;
+	if (index >= uint(max(Range.y, 0)))
+		return;
+	uint slot = uint(max(Range.x, 0)) + index;
+	if (Range.z == kModeClear)
+	{
+		FreePiece(slot);
+		return;
+	}
+
+	DebrisPiece piece = Pieces[slot];
+	if (piece.position.w < 0.5)
+		return;
+
+	float now = Clock.x;
+	float stepSeconds = Clock.y;
+	int defSlot = clamp(int(piece.spawn.d.x + 0.5), 0, 255);
+	DebrisDefinition definition = Definitions[defSlot];
+	if (definition.motion.w < 0.5)
+	{
+		FreePiece(slot);
+		return;
+	}
+
+	// ITS STAY.
+	float birth = piece.spawn.a.w;
+	float life = piece.spawn.b.w;
+	float restLife = definition.physics.z;
+	float restFade = definition.physics.w;
+	float restStart = piece.velocity.w;
+	if (restLife <= 0.0)
+	{
+		if (now - birth > life)
+		{
+			FreePiece(slot);
+			return;
+		}
+	}
+	else
+	{
+		float scaledRest = (restLife >= Clock.w) ? restLife * Clock.z : restLife;
+		if (restStart < 0.0 && now - birth >= life)
+			restStart = birth + life;
+		if (restStart >= 0.0 && now - restStart > scaledRest + restFade)
+		{
+			FreePiece(slot);
+			return;
+		}
+	}
+
+	vec3 position = piece.position.xyz;
+	vec4 turn = piece.turn;
+	Pieces[slot].previous = vec4(position, now);
+	Pieces[slot].previousTurn = turn;
+	Pieces[slot].velocity.w = restStart;
+
+	bool isMesh = definition.body.y > 0.5;
+	vec3 boxMin = definition.boundsMin.xyz;
+	vec3 boxMax = definition.boundsMax.xyz;
+	vec3 boxExtent = boxMax - boxMin;
+	float sizeScale = max(piece.spawn.d.y, 0.0) * Tuning.x;
+	float scale = isMesh ? definition.body.x / max(definition.body.z, 1.0e-4) * sizeScale : 0.0;
+	float radius = isMesh ? 0.5 * scale * min(boxExtent.x, min(boxExtent.y, boxExtent.z)) : 0.5 * definition.body.x * sizeScale;
+	radius = max(radius, kMinRadius);
+	bool levelCollide = definition.motion.z > 1.5;
+	gFieldUsable = false;
+	if (levelCollide)
+	{
+		gLevelFieldParams = texelFetch(LevelFieldHeader, ivec2(2, 0), 0);
+		gFieldUsable = gLevelFieldParams.x > 0.5;
+		if (gFieldUsable)
+		{
+			gLevelFieldWindow[0] = texelFetch(LevelFieldHeader, ivec2(0, 0), 0);
+			gLevelFieldWindow[1] = texelFetch(LevelFieldHeader, ivec2(1, 0), 0);
+			gLevelFieldSize[0] = vec3(textureSize(LevelFieldFine, 0));
+			gLevelFieldSize[1] = vec3(textureSize(LevelFieldCoarse, 0));
+		}
+	}
+
+	// WAKE, AND THE PUSHES OF THIS STEP.
+	bool resting = piece.position.w > 1.5;
+	bool woken = Lists.z != 0;
+	vec3 push = vec3(0.0);
+	int impulseCount = clamp(Lists.x, 0, 512);
+	for (int i = 0; i < impulseCount; i++)
+	{
+		DebrisImpulse blast = Impulses[i];
+		if (int(blast.push.y + 0.5) != Range.w)
+			continue;
+		vec3 away = position - blast.sphere.xyz;
+		float blastRadius = max(blast.sphere.w, 1.0);
+		float awaySquared = dot(away, away);
+		if (awaySquared >= blastRadius * blastRadius)
+			continue;
+		if (gFieldUsable && DebrisBlastBlocked(blast.sphere.xyz, position))
+			continue;
+		float weight = 1.0 - awaySquared / (blastRadius * blastRadius);
+		float awayLength = sqrt(awaySquared);
+		vec3 awayDirection = (awayLength > 1.0e-3) ? away / awayLength : kDebrisUp;
+		push += awayDirection * (blast.push.x * weight * weight);
+		woken = true;
+	}
+	int wakeCount = clamp(Lists.y, 0, 128);
+	for (int i = 0; i < wakeCount && !woken; i++)
+	{
+		DebrisWake box = Wakes[i];
+		if (int(box.boxMin.w + 0.5) != Range.w)
+			continue;
+		if (all(greaterThanEqual(position, box.boxMin.xyz)) && all(lessThanEqual(position, box.boxMax.xyz)))
+			woken = true;
+	}
+	if (resting && !woken)
+		return;
+
+	vec3 velocity = piece.velocity.xyz;
+	vec3 spinRate = piece.spin.xyz;
+	float stillTics = resting ? 0.0 : piece.spin.w;
+
+	// FORCES.
+	velocity.y -= definition.motion.x * stepSeconds;
+	velocity *= exp(-max(definition.motion.y, 0.0) * stepSeconds);
+	velocity += push;
+	float speed = length(velocity);
+	if (speed > kMaxSpeed)
+		velocity *= kMaxSpeed / speed;
+	if (isMesh && dot(push, push) > 0.0)
+		spinRate += cross(kDebrisUp, push) / max(radius, 0.5);
+
+	// THE SWEEP.
+	float remaining = length(velocity) * stepSeconds;
+	if (remaining > 1.0e-5)
+	{
+		vec3 direction = normalize(velocity);
+		for (int i = 0; i < kSweepSamples && remaining > 1.0e-4; i++)
+		{
+			float surfaceDistance;
+			vec3 surfaceNormal;
+			bool fromField;
+			if (!DebrisSurface(piece.spawn, levelCollide, position, false, surfaceDistance, surfaceNormal, fromField))
+			{
+				position += direction * remaining;
+				remaining = 0.0;
+				break;
+			}
+			float room = surfaceDistance - radius;
+			if (room > kSlideAdvance)
+			{
+				// Open air: nothing is nearer than `room`, so moving that far cannot reach a surface.
+				float advance = min(remaining, room);
+				position += direction * advance;
+				remaining -= advance;
+				continue;
+			}
+			DebrisSurface(piece.spawn, levelCollide, position, true, surfaceDistance, surfaceNormal, fromField);
+			float into = dot(direction, surfaceNormal);
+			if (into < 0.0 && room > kContactSlack)
+			{
+				// Near and closing: onto the surface along the path (exact for a flat one), never more than kSlideAdvance past
+				// the room the field guarantees.
+				float advance = min(remaining, min(room / -into, room + kSlideAdvance));
+				position += direction * advance;
+				remaining -= advance;
+				continue;
+			}
+			// Touching, or moving along or away: the part of the move into the surface is taken off, and it slides.
+			if (into < 0.0)
+			{
+				direction -= surfaceNormal * into;
+				float along = length(direction);
+				if (along < 1.0e-3)
+				{
+					remaining = 0.0;
+					break;
+				}
+				remaining *= along;
+				direction /= along;
+			}
+			float advance = min(remaining, kSlideAdvance);
+			position += direction * advance;
+			remaining -= advance;
+		}
+	}
+
+	// THE CONTACT.
+	float contactDistance;
+	vec3 contactNormal;
+	bool contactFromField;
+	bool touched = false;
+	float reach = radius;
+	if (DebrisSurface(piece.spawn, levelCollide, position, true, contactDistance, contactNormal, contactFromField))
+	{
+		reach = isMesh ? max(DebrisSupport(DebrisQuatMatrix(turn), contactNormal, boxMin, boxMax, scale), kMinRadius) : radius;
+		if (contactFromField && contactDistance < -max(2.0 * reach, 4.0))
+		{
+			// Deep inside solid: a door closed on it, or it got into a wall. Pushed out it could pop through to the far side.
+			FreePiece(slot);
+			return;
+		}
+		if (contactDistance < reach + kContactSlack)
+		{
+			// Out of the surface to its reach -- and, not moving away, onto it from within the slack, so a piece at rest lies
+			// exactly on it.
+			float normalSpeed = dot(velocity, contactNormal);
+			if (contactDistance < reach || normalSpeed <= 0.0)
+				position += contactNormal * (reach - contactDistance);
+			if (normalSpeed < 0.0)
+			{
+				vec3 sliding = velocity - contactNormal * normalSpeed;
+				float intoSpeed = -normalSpeed;
+				float bounceFloor = max(kBounceSpeed, 1.5 * abs(definition.motion.x) * stepSeconds);
+				float bounceSpeed = (intoSpeed > bounceFloor) ? intoSpeed * clamp(definition.physics.x, 0.0, 1.0) : 0.0;
+				float friction = clamp(definition.physics.y, 0.0, 1.0);
+				float slidingSpeed = length(sliding);
+				float kept = (slidingSpeed > 1.0e-4) ? max(slidingSpeed - friction * (intoSpeed + bounceSpeed), 0.0) / slidingSpeed : 0.0;
+				sliding *= kept;
+				velocity = sliding + contactNormal * bounceSpeed;
+				if (isMesh)
+					spinRate = mix(spinRate, cross(contactNormal, sliding) / max(radius, 0.5), friction);
+				else
+					spinRate.y *= 1.0 - friction;
+			}
+			touched = true;
+		}
+	}
+
+	bool onFloor = touched && contactNormal.y > kFloorUp;
+	float speedNow = length(velocity);
+	stillTics = (onFloor && speedNow < kRestSpeed) ? stillTics + 1.0 : 0.0;
+
+	// THE TURN. A billboard turns about the view axis only (shader y here).
+	if (!isMesh)
+		spinRate.xz = vec2(0.0);
+	if (dot(spinRate, spinRate) > 1.0e-10)
+		turn = normalize(turn + DebrisQuatMultiply(vec4(spinRate * (0.5 * stepSeconds), 0.0), turn));
+	if (isMesh && onFloor && speedNow < kSettleSpeed)
+	{
+		// Settling onto its best face, staying on the surface as its reach changes.
+		vec4 settled = DebrisQuatMultiply(DebrisRestTurn(DebrisQuatMatrix(turn), contactNormal, boxMin, boxMax), turn);
+		if (dot(settled, turn) < 0.0)
+			settled = -settled;
+		float amount = (stillTics >= kRestTics) ? 1.0 : clamp(kSettleRate * stepSeconds, 0.0, 1.0);
+		turn = normalize(mix(turn, settled, amount));
+		spinRate *= 1.0 - amount;
+		float settledReach = max(DebrisSupport(DebrisQuatMatrix(turn), contactNormal, boxMin, boxMax, scale), kMinRadius);
+		position += contactNormal * (settledReach - reach);
+	}
+
+	// REST.
+	float state = 1.0;
+	if (stillTics >= kRestTics)
+	{
+		state = 2.0;
+		velocity = vec3(0.0);
+		spinRate = vec3(0.0);
+		if (restLife > 0.0 && restStart < 0.0)
+			restStart = now;
+	}
+	if (position.y < piece.spawn.a.y - kFallLimit)
+	{
+		FreePiece(slot);
+		return;
+	}
+
+	Pieces[slot].position = vec4(position, state);
+	Pieces[slot].velocity = vec4(velocity, restStart);
+	Pieces[slot].turn = turn;
+	Pieces[slot].spin = vec4(spinRate, stillTics);
+}

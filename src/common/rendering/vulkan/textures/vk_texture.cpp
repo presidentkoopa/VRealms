@@ -186,6 +186,8 @@ VkTextureImage* VkTextureManager::GetTexture(const PPTextureType& type, PPTextur
 			case PPExternalImage::SmokeDensityLatest: image = smoke->GetDensityHeatImage(0); break;
 			case PPExternalImage::SmokeDensityPrevious: image = smoke->GetDensityHeatImage(1); break;
 			case PPExternalImage::SmokeTileActive: image = smoke->GetTileActiveImage(); break;
+			case PPExternalImage::SmokeLight: image = smoke->GetLightImage(); break;	// [13d] the light grid
+			case PPExternalImage::SmokeLightDirection: image = smoke->GetLightDirectionImage(); break;
 			default: break;
 			}
 		}
