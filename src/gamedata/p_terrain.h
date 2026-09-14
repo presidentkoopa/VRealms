@@ -111,6 +111,11 @@ struct FTerrainDef
 	FSoundID StepSound;
 	double StepDistance;
 	double StepDistanceMinVel;
+	// [SURFACEMATERIALS] `surface <name>`: what the textures a `floor` line maps to
+	// this terrain are made of, unless a SURFACES rule or a GLDEFS tag already says
+	// (gamedata/surfacedefs.cpp, ApplyTerrainSurfaces). Zeroed with the rest of the
+	// struct, which is NAME_None: no say. Not exported to script.
+	FName SurfaceName;
 };
 
 extern TArray<FSplashDef> Splashes;

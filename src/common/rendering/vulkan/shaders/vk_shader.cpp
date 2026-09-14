@@ -667,11 +667,12 @@ static const char *shaderBindings = R"(
 	    GpuParticle gpuParticles[];
 	};
 
-	// [DRAWNLINES] Drawn glowing lines (hw_drawnlinebuffer.h). Five vec4s, 80
+	// [DRAWNLINES] Drawn glowing lines (hw_drawnlinebuffer.h). Seven vec4s, 112
 	// bytes, std430 with no padding -- must match DrawnLineRecord. Declared for
 	// every shader like the particles; only drawnlines.vp reads it, so the
-	// layout entry is vertex-only.
-	struct DrawnLine { vec4 a; vec4 b; vec4 c; vec4 d; vec4 e; };
+	// layout entry is vertex-only. [F1] f and g, the opt-in gradient and
+	// turbulence looks, are appended, so a..e keep their offsets.
+	struct DrawnLine { vec4 a; vec4 b; vec4 c; vec4 d; vec4 e; vec4 f; vec4 g; };
 	layout(set = 1, binding = 6, std430) buffer readonly DrawnLineSSO
 	{
 	    DrawnLine drawnLines[];

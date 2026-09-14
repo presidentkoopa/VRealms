@@ -972,6 +972,7 @@ set (PCH_SOURCES
 	gamedata/decallib.cpp
 	gamedata/defblocks.cpp
 	gamedata/particledefs.cpp
+	gamedata/surfacedefs.cpp
 	gamedata/g_mapinfo.cpp
 	gamedata/g_skill.cpp
 	gamedata/gi.cpp

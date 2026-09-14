@@ -36,6 +36,7 @@
 #include "actor.h"
 #include "vm.h"
 #include "texturemanager.h"
+#include "surfacedefs.h"	// [SURFACEMATERIALS] ApplyTerrainSurfaces
 
 // MACROS ------------------------------------------------------------------
 
@@ -115,6 +116,7 @@ static void GenericParse (FScanner &sc, FGenericParse *parser, const char **keyw
 	void *fields, const char *type, FName name);
 static void ParseDamage (FScanner &sc, int keyword, void *fields);
 static void ParseFriction (FScanner &sc, int keyword, void *fields);
+static void ParseSurfaceName (FScanner &sc, int keyword, void *fields);	// [SURFACEMATERIALS]
 static void ParseDefault (FScanner &sc);
 
 // EXTERNAL DATA DECLARATIONS ----------------------------------------------
@@ -179,6 +181,7 @@ static const char *TerrainKeywords[] =
 	"stepsounds",
 	"stepdistance",
 	"stepdistanceminvel",
+	"surface",			// [SURFACEMATERIALS] TerrainParser's last entry
 	NULL
 };
 
@@ -218,6 +221,7 @@ static FGenericParse TerrainParser[] =
 	{ GEN_Sound,  {myoffsetof(FTerrainDef, StepSound)} },
 	{ GEN_Double,  {myoffsetof(FTerrainDef, StepDistance)} },
 	{ GEN_Double,  {myoffsetof(FTerrainDef, StepDistanceMinVel)} },
+	{ GEN_Custom,  {(size_t)ParseSurfaceName} },		// [SURFACEMATERIALS] "surface"
 };
 
 
@@ -252,6 +256,10 @@ void P_InitTerrainTypes ()
 	}
 	Splashes.ShrinkToFit ();
 	Terrains.ShrinkToFit ();
+
+	// [SURFACEMATERIALS] Terrain `surface` names reach the textures their `floor`
+	// lines map, where no SURFACES rule or GLDEFS tag has already decided.
+	ApplyTerrainSurfaces ();
 }
 
 //==========================================================================
@@ -504,6 +512,25 @@ static void ParseFriction (FScanner &sc, int keyword, void *fields)
 
 	def->Friction = friction / 65536.;
 	def->MoveFactor = movefactor / 65536.;
+}
+
+//==========================================================================
+//
+// ParseSurfaceName
+//
+// [SURFACEMATERIALS] `surface <name>`: what the textures a `floor` line maps
+// to this terrain are made of, unless a SURFACES rule or a GLDEFS tag already
+// says (gamedata/surfacedefs.cpp, ApplyTerrainSurfaces). `surface none`
+// clears it in a `modify` block.
+//
+//==========================================================================
+
+static void ParseSurfaceName (FScanner &sc, int keyword, void *fields)
+{
+	FTerrainDef *def = (FTerrainDef *)fields;
+
+	sc.MustGetString ();
+	def->SurfaceName = FName(sc.String);
 }
 
 //==========================================================================

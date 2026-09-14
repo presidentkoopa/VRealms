@@ -5824,6 +5824,38 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetDrawnLineLook, SetDrawnLineLook)
 	return 0;
 }
 
+// [F1] The two opt-in looks for a drawn line -- see FLevelLocals::DrawnLine.
+// Setters only: no call hands a line's look back, so nothing in play can branch
+// on it. Presentation only, no RNG; the noise is computed in drawnlines.fp.
+static void SetDrawnLineGradient(FLevelLocals *self, int index, int colorEnd, double swell)
+{
+	self->SetDrawnLineGradient(index, (PalEntry)colorEnd, swell);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetDrawnLineGradient, SetDrawnLineGradient)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(index);
+	PARAM_COLOR(colorEnd);
+	PARAM_FLOAT(swell);
+	SetDrawnLineGradient(self, index, colorEnd, swell);
+	return 0;
+}
+
+static void SetDrawnLineTurbulence(FLevelLocals *self, int index, double strength, double scale, double speed)
+{
+	self->SetDrawnLineTurbulence(index, strength, scale, speed);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetDrawnLineTurbulence, SetDrawnLineTurbulence)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(index);
+	PARAM_FLOAT(strength); PARAM_FLOAT(scale); PARAM_FLOAT(speed);
+	SetDrawnLineTurbulence(self, index, strength, scale, speed);
+	return 0;
+}
+
 static void SetDrawnLineAnchor(FLevelLocals *self, int index, int mode, AActor *owner)
 {
 	const int playerNum = (owner != nullptr && owner->player != nullptr) ? int(owner->player - players) : -1;

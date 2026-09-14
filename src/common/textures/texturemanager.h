@@ -175,6 +175,16 @@ public:
 
 	int NumTextures () const { return (int)Textures.Size(); }
 
+	// [SURFACEMATERIALS] Functions told about every texture AddGameTexture adds, after
+	// its ID is set. A game system that classifies textures by name registers one, so
+	// a texture created after startup (a full-path name a map, GLDEFS or TERRAIN uses,
+	// a graphic a script asks for) is classified the moment it exists, exactly as its
+	// startup pass would have classified it. A list, so a second classifier cannot
+	// replace the first; registering the same function twice is a no-op. Nothing is
+	// registered by default. First user: gamedata/surfacedefs.cpp.
+	using GameTextureAddedHook = void (*)(FGameTexture *texture);
+	void AddGameTextureAddedHook(GameTextureAddedHook hook);
+
 	int GuesstimateNumTextures ();
 
 	TextureManipulation* GetTextureManipulation(FName name)
@@ -254,6 +264,7 @@ private:
 	TArray<int> FirstTextureForFile;
 	TArray<TArray<uint8_t> > BuildTileData;
 	TArray<int> Translation;
+	TArray<GameTextureAddedHook> GameTextureAddedHooks;	// [SURFACEMATERIALS]
 
 	TMap<FName, TextureManipulation> tmanips;
 	TMap<FName, int> aliases;

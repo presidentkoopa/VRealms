@@ -34,6 +34,7 @@
 #include "vectors.h"
 #include "zstring.h"
 #include "m_round.h"
+#include "name.h"	// [SURFACEMATERIALS] FName SurfaceName
 
 // 15 because 0th texture is our texture
 #define MAX_CUSTOM_HW_SHADER_TEXTURES 15
@@ -145,6 +146,14 @@ class FGameTexture
 	int16_t SkyOffset = 0;
 	uint16_t Rotations = 0xffff;
 
+	// [SURFACEMATERIALS] What the texture is made of: metal, wood, glass, liquid...
+	// NAME_None when nothing tags it. Gameplay classification, not a render
+	// property -- no renderer reads it. Set only by gamedata/surfacedefs.cpp, from
+	// SURFACES rules, a GLDEFS `surface` keyword or a TERRAIN `surface` property.
+	// Not named Surface: struct Surface is the level mesh's (doom_levelmesh.h).
+	// 4 bytes where there was tail padding, so sizeof(FGameTexture) is unchanged.
+	FName SurfaceName = NAME_None;
+
 
 public:
 	float alphaThreshold = 0.5f;
@@ -213,6 +222,10 @@ public:
 	void SetRotations(int rot) { Rotations = int16_t(rot); }
 	void SetSkyOffset(int offs) { SkyOffset = offs; }
 	int GetSkyOffset() const { return SkyOffset; }
+	// [SURFACEMATERIALS] See SurfaceName. Script: TexMan.GetSurface. SetSurface is for
+	// gamedata/surfacedefs.cpp only; nothing scripted sets it.
+	FName GetSurface() const { return SurfaceName; }
+	void SetSurface(FName surface) { SurfaceName = surface; }
 	void setSeen() { flags |= GTexf_Seen; }
 	bool isSeen(bool reset)
 	{

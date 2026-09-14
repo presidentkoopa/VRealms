@@ -66,6 +66,33 @@
 **     Camera textures do draw them. GL and GLES never draw them, and there
 **     r_beams_drawn changes nothing.
 **
+** [F1] TWO OPT-IN LOOKS ("Engine docs/FLAME_ENGINE_PLAN.md" F1), both off unless a
+** script asked (SetDrawnLineGradient / SetDrawnLineTurbulence -> the record's look
+** flags g.w, hw_drawinfo.cpp's WriteDrawnLineLooks). They have no per-pixel
+** counterpart, so nothing above about matching BeamAirGlow applies to them. Every
+** step of either sits behind its flag: with flags 0 -- every routed beam, every line
+** that never asked -- this shader runs exactly the code it ran before they existed.
+**
+**   GRADIENT (1). The colour runs from the start colour (c.rgb) to the end colour
+**   (f.rgb) along the line, and the halo's reach (soft) grows toward the far end by
+**   mix(1, swell, tc): a jet that widens as it travels while its core stays thin.
+**   Swell below 1 narrows it. A polyline gives each segment the colours of its own
+**   two ends and the swell ratio between them, so the joins match.
+**
+**   TURBULENCE (2). Two octaves of 3D value noise (valuenoise.glsl, the volumetric
+**   beam's dust noise and octave mix), sampled in WORLD space at the closest
+**   approach on the view ray, g.y cells per map unit, rising at g.z cells per second
+**   of LEVEL time (uLevelTime.x: it stops when the game pauses, as the particles
+**   do). Centred and scaled by strength (g.x), it moves the pixel's distance from the
+**   line by up to strength x that distance, capped at the local reach -- the core
+**   hardly moves, the edges lick -- and its brightness by up to half the strength.
+**   World space, so both eyes see the same licks at the same depth. Cost: sixteen
+**   hashes per pixel that could glow; pixels past the widest lick are discarded
+**   before the noise.
+**
+**   Both looks reach further, so the reject below, the automatic depth bias and
+**   drawnlines.vp's box grow with them.
+**
 **---------------------------------------------------------------------------
 **
 ** Copyright 2026 UZDXREMA
@@ -81,12 +108,19 @@ layout(location = 2) flat in vec4 vLineB;
 layout(location = 3) flat in vec4 vLineCol;
 layout(location = 4) flat in vec4 vLineLook;
 layout(location = 5) flat in vec4 vLineFX;
+// [F1] The gradient look (rgb end colour, swell) and the turbulence look
+// (strength, noise scale, rise speed, look flags) -- the record's f and g.
+layout(location = 6) flat in vec4 vLineGradient;
+layout(location = 7) flat in vec4 vLineTurbulence;
 
 layout(location = 0) out vec4 FragColor;
 #ifdef GBUFFER_PASS
 layout(location = 1) out vec4 FragFog;
 layout(location = 2) out vec4 FragNormal;
 #endif
+
+// [F1] hash13 / valueNoise, for the turbulence look.
+#include "shaders/glsl/valuenoise.glsl"
 
 void main()
 {
@@ -100,6 +134,10 @@ void main()
 	vec3 a = vLineA.xyz;
 	vec3 b = vLineB.xyz;
 
+	// [F1] The looks this line asked for (header): 1 gradient, 2 turbulence. 0 for
+	// every line that asked for none, and then nothing below reads f or g.
+	int lineLook = int(vLineTurbulence.w + 0.5);
+
 	// BeamAirGlow's reject, with the ray unbounded (there is no surface distance
 	// here). Kept so a line with a negative taper -- fatter than its own reach --
 	// is trimmed exactly where the per-pixel beam trims it.
@@ -107,6 +145,19 @@ void main()
 	float soft  = max(vLineB.w, 0.01);
 	vec3 mid = (a + b) * 0.5;
 	float cull = length(b - a) * 0.5 + thick + soft * 6.0 + 1.0;
+
+	// [F1] How much further a look reaches: the halo's swell toward the far end,
+	// and licks out to (1 + strength) x the reach. drawnlines.vp grows the box by
+	// the same two factors. Taper stays out of it, as in the reject above.
+	float swellScale = 1.0;
+	float lickScale = 1.0;
+	if (lineLook != 0)
+	{
+		if ((lineLook & 1) != 0) swellScale = max(vLineGradient.w, 1.0);
+		if ((lineLook & 2) != 0) lickScale = 1.0 + max(vLineTurbulence.x, 0.0);
+		cull = length(b - a) * 0.5 + (thick + soft * swellScale * 6.0 + 1.0) * lickScale;
+	}
+
 	vec3 em = mid - eye;
 	float along = max(dot(em, dir), 0.0);
 	vec3 perp = em - dir * along;
@@ -149,6 +200,10 @@ void main()
 	thick *= bw;
 	soft  *= bw;
 
+	// [F1] GRADIENT: the halo reaches further toward the far end.
+	if ((lineLook & 1) != 0)
+		soft *= mix(1.0, vLineGradient.w, tc);
+
 	float bright = 1.0;
 
 	if (vLineFX.y > 0.0)
@@ -161,10 +216,29 @@ void main()
 	if (vLineLook.w > 0.0)
 		bright += vLineLook.w * pow(clamp(tc, 0.0, 1.0), 8.0);
 
+	// [F1] TURBULENCE: the edges lick (header).
+	if ((lineLook & 2) != 0)
+	{
+		float reachHere = thick + soft * 6.0 + 1.0;
+		// Past the widest a lick can pull in, this pixel cannot glow: no noise.
+		if (reachHere > 0.0 && dist >= reachHere * lickScale) discard;
+		vec3 noisePos = (eye + dir * sc) * vLineTurbulence.y;
+		noisePos.y -= uLevelTime.x * vLineTurbulence.z;
+		float lickNoise = valueNoise(noisePos) * 0.65 + valueNoise(noisePos * 2.7) * 0.35;
+		float lick = (lickNoise * 2.0 - 1.0) * vLineTurbulence.x;
+		dist = max(dist - lick * min(dist, reachHere), 0.0);
+		bright *= max(1.0 + 0.5 * lick, 0.0);
+	}
+
 	float core = 1.0 - smoothstep(thick * 0.5, thick + soft, dist);
 	float halo = 1.0 - smoothstep(thick, thick + soft * 6.0 + 1.0, dist);
 
-	vec3 glow = vLineCol.rgb * (core * 1.6 + halo * vLineLook.y)
+	// [F1] GRADIENT: the colour runs from the start colour to the end colour.
+	vec3 lineColour = vLineCol.rgb;
+	if ((lineLook & 1) != 0)
+		lineColour = mix(vLineCol.rgb, vLineGradient.rgb, tc);
+
+	vec3 glow = lineColour * (core * 1.6 + halo * vLineLook.y)
 		* vLineCol.w * vLineLook.x * bright;
 
 	if (glow == vec3(0.0)) discard;
@@ -174,6 +248,12 @@ void main()
 	// map unit (so w stays positive). Same mapping gl_Position.z gets on Vulkan:
 	// (z + w) / 2 / w.
 	float bias = (vLineFX.w < 0.0) ? reach * max(1.0, abs(1.0 - vLineLook.z)) : vLineFX.w;
+	// [F1] With a look, the automatic bias is the glow's own reach HERE along the
+	// line -- tapered, swollen, licking -- not the whole line's widest: a flame's
+	// wide splash stays in front of the wall it hits, and its thin start by the
+	// hand is not pulled far toward the eye.
+	if (lineLook != 0 && vLineFX.w < 0.0)
+		bias = abs(thick + soft * 6.0 + 1.0) * lickScale;
 	vec4 clip = ProjectionMatrix * (ViewMatrix * vec4(eye + dir * max(sc - bias, 1.0), 1.0));
 	gl_FragDepth = (clip.w > 1e-5) ? clamp((clip.z / clip.w) * 0.5 + 0.5, 0.0, 1.0) : 0.0;
 

@@ -347,7 +347,8 @@ CVARD(Bool, r_beams_debug, false, 0, "print beam slot and drawn-line counts ever
 // A FIXED number, not a cvar. Script reads it (DrawnLineCapacity), and a value
 // each player sets in their own ini is one gameplay code could branch on and
 // desync. The level's array and the GPU buffer both size from it. 8192 lines is
-// 655 KB of GPU records; raise the constant, not a setting, if it is ever short.
+// 917 KB of GPU records (112 B each since [F1]); raise the constant, not a
+// setting, if it is ever short.
 int DrawnLineCapacity()
 {
 	return 8192;

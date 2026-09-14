@@ -2197,6 +2197,22 @@ OptionMenu DeveloperOptionsMenu protected
 	// so smoke already in the air responds with this menu open; perflog.txt times the
 	// list fill as fx.viewlights. Vulkan only.
 	Slider "Particle lights (0 = sector light only)", "r_gpuparticles_lights", 0, 32, 1, 0
+	// [F5] r_gpuparticles_maxsize -- the world-unit cap on every GPU particle's drawn
+	// diameter ("Engine docs/FLAME_ENGINE_PLAN.md" F5). A flame body needs 16-40 unit
+	// puffs and smoke up to 64; the cap draws them at this size or less. A particle
+	// definition's own maxsize still caps below it. The cvar's default stays 8, the
+	// look before this row, which existing inis already store: raise it here. The cvar
+	// itself has no clamp. Renderer-read every frame (StartScene ->
+	// mGpuParticleParams.y), so particles already in the air resize with this menu
+	// open; perflog.txt shows the overdraw cost of big puffs as fx.gpuparticles.
+	// Vulkan only.
+	Slider "GPU particle size cap", "r_gpuparticles_maxsize", 2, 64, 1, 0
+	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
+	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
+	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
+	// lines -- a flame with only its particles -- and also sends r_beams_drawn's beams
+	// back to per pixel. Renderer-read every frame. Vulkan only.
+	Option "Drawn lines", "r_drawnlines", "OnOff"
 	StaticText " "
 	StaticText "$DEVOPTMNU_OPTIONS_MARKED_WITH_RESTART", "Brown"
 	StaticText " "

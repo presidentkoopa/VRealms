@@ -7,12 +7,20 @@
 ** Vulkan only. The records (DrawnLineSSO, set 1 binding 6) are declared in
 ** vk_shader.cpp's prolog; GL and GLES never load this effect.
 **
-** Record, shader space (y is up), 80 bytes:
+** Record, shader space (y is up), 112 bytes:
 **   a  xyz start               w core thickness
 **   b  xyz end                 w softness
 **   c  rgb colour              w intensity
 **   d  x air glow  y halo  z taper  w flare
 **   e  x scroll speed  y scroll depth  z timer seconds  w depth bias
+**   f  rgb end colour          w swell                             [F1]
+**   g  x turbulence strength  y noise scale  z rise speed  w look flags  [F1]
+**
+** [F1] LOOK FLAGS (g.w): 1 gradient, 2 turbulence, 0 neither. With 0 -- every
+** beam r_beams_drawn routes, and every line that never asked for a look -- this
+** shader builds exactly the box it built before the record grew, and hands f and
+** g to drawnlines.fp, which then ignores them too. A look grows the box only by
+** what that look can reach (see R below).
 **
 ** WHY A BOX AND NOT A CAMERA-FACING QUAD. The glow reaches a fixed distance from
 ** the segment in 3D -- a capsule. A flat quad facing the camera covers that
@@ -47,6 +55,10 @@ layout(location = 2) flat out vec4 vLineB;
 layout(location = 3) flat out vec4 vLineCol;
 layout(location = 4) flat out vec4 vLineLook;
 layout(location = 5) flat out vec4 vLineFX;
+// [F1] The record's f and g, as they are: the gradient look (rgb end colour,
+// swell) and the turbulence look (strength, noise scale, rise speed, look flags).
+layout(location = 6) flat out vec4 vLineGradient;
+layout(location = 7) flat out vec4 vLineTurbulence;
 
 // The two triangles of one face, as offsets along that face's two free axes.
 const ivec2 kLineFaceCorners[6] = ivec2[6](
@@ -64,6 +76,8 @@ void CollapseLineVertex()
 	vLineCol = vec4(0.0);
 	vLineLook = vec4(0.0);
 	vLineFX = vec4(0.0);
+	vLineGradient = vec4(0.0);
+	vLineTurbulence = vec4(0.0);
 }
 
 void main()
@@ -94,6 +108,20 @@ void main()
 	// faint pixel and an eye just inside it still has faces beyond the near plane.
 	float taperScale = max(1.0, abs(1.0 - rec.d.z));
 	float R = (thick + soft * 6.0 + 1.0) * taperScale + 4.0;
+
+	// [F1] A look reaches further than that, so the box grows by what the look can
+	// reach -- and only for a line that set one: look flags 0 keep the box above
+	// exactly. Gradient: drawnlines.fp widens the halo toward the far end with
+	// soft *= mix(1, swell, tc), at most max(swell, 1). Turbulence: a lick pulls a
+	// pixel toward the line by up to strength x its distance, capped at the local
+	// reach, so glow can show out to (1 + strength) x the reach.
+	int lineLook = int(rec.g.w + 0.5);
+	if (lineLook != 0)
+	{
+		float swellScale = ((lineLook & 1) != 0) ? max(rec.f.w, 1.0) : 1.0;
+		float lickScale = ((lineLook & 2) != 0) ? 1.0 + max(rec.g.x, 0.0) : 1.0;
+		R = (thick + soft * swellScale * 6.0 + 1.0) * taperScale * lickScale + 4.0;
+	}
 
 	vec3 eye = uCameraPos.xyz;
 	vec3 mid = (a + b) * 0.5;
@@ -156,4 +184,6 @@ void main()
 	vLineCol = rec.c;
 	vLineLook = rec.d;
 	vLineFX = rec.e;
+	vLineGradient = rec.f;
+	vLineTurbulence = rec.g;
 }

@@ -2202,6 +2202,21 @@ public:
 		double   Flare = 1.5;
 		double   ScrollSpeed = 6.0;
 		double   ScrollDepth = 0.0;
+		// [F1] Two OPT-IN looks over the one above ("Engine docs/FLAME_ENGINE_PLAN.md"
+		// F1), off until SetDrawnLineGradient / SetDrawnLineTurbulence. Off, the
+		// renderer sends look flags 0 and drawnlines.vp/.fp run exactly the code they
+		// ran before these existed (hw_drawinfo.cpp, WriteDrawnLineLooks).
+		// GRADIENT: the colour runs from Color at the start to ColorEnd at the end,
+		// and the halo's reach grows toward the end by Swell (1 none, below 1 it
+		// narrows). A gradient to the line's own colour with Swell 1 is no gradient.
+		bool     HasGradient = false;
+		PalEntry ColorEnd = {};
+		double   Swell = 1.0;
+		// TURBULENCE: world-space value noise, rising, pushes the glow's edge in and
+		// out and its brightness up and down, so the edges lick. Strength 0 is off.
+		double   TurbulenceStrength = 0.0;
+		double   TurbulenceScale = 0.05;     // noise cells per map unit
+		double   TurbulenceSpeed = 1.5;      // noise cells per second, rising
 		int      Anchor = 0;             // as BeamAnchor: 0 world, 1 main hand, 2 off hand
 		// Whose hand. -1 is the console player -- BeamAnchor's rule, which in
 		// netplay puts everyone's line at each viewer's own hand. A player number
@@ -2256,6 +2271,31 @@ public:
 		l->Flare = flare;
 		l->ScrollSpeed = scrollSpeed;
 		l->ScrollDepth = scrollDepth;
+	}
+
+	// [F1] The two opt-in looks (see DrawnLine). Setters only: nothing hands a
+	// line's look back to script, so gameplay code cannot branch on it.
+	// Swell 0..16 is the halo reach at the far end over the start's. The line's
+	// own colour with swell 1 is no gradient, and the renderer sends it as off.
+	void SetDrawnLineGradient(int index, PalEntry colorEnd, double swell)
+	{
+		DrawnLine *l = DrawnLineForWrite(index);
+		if (l == nullptr) return;
+		l->HasGradient = true;
+		l->ColorEnd = colorEnd;
+		l->Swell = clamp(swell, 0.0, 16.0);
+	}
+
+	// Strength 0..2 (0 off; 1 moves an edge by up to its own distance from the
+	// line), scale 0..1 noise cells per map unit, speed -100..100 cells per
+	// second of level time (positive rises).
+	void SetDrawnLineTurbulence(int index, double strength, double scale, double speed)
+	{
+		DrawnLine *l = DrawnLineForWrite(index);
+		if (l == nullptr) return;
+		l->TurbulenceStrength = clamp(strength, 0.0, 2.0);
+		l->TurbulenceScale = clamp(scale, 0.0, 1.0);
+		l->TurbulenceSpeed = clamp(speed, -100.0, 100.0);
 	}
 
 	void SetDrawnLineAnchor(int index, int mode, int playerNum = -1)

@@ -388,6 +388,7 @@ void D_DoAdvanceDemo ();
 void D_LoadWadSettings ();
 void ParseGLDefs();
 void LoadParticleDefinitions();	// [PARTICLEDEFS] gamedata/particledefs.cpp
+void LoadSurfaceDefinitions();	// [SURFACEMATERIALS] gamedata/surfacedefs.cpp
 void DrawFullscreenSubtitle(FFont* font, const char *text);
 void D_Cleanup();
 void FreeSBarInfoScript();
@@ -4279,6 +4280,13 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	StartWindow->Progress();
 	if (StartScreen) StartScreen->Progress (1);
+
+	// [SURFACEMATERIALS] What textures are made of, from every SURFACES lump
+	// (gamedata/surfacedefs.cpp). Before GLDEFS, whose `surface` keyword tags one
+	// texture exactly and must beat a wildcard rule; TERRAIN's `surface` applies
+	// later, in P_Init. A bad block is refused with a console line; nothing here
+	// can stop the game from starting.
+	LoadSurfaceDefinitions();
 
 	ParseGLDefs();
 

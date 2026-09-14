@@ -1576,6 +1576,23 @@ struct LevelLocals native
 	// This line's look. Defaults are the beam system's own; scrollDepth 0 is a
 	// smooth line. airGlow <= 0 hides it -- a drawn line is only its glow.
 	native clearscope void SetDrawnLineLook(int index, double airGlow = 1.0, double halo = 0.35, double taper = 0.35, double flare = 1.5, double scrollSpeed = 6.0, double scrollDepth = 0.0);
+	// [F1] Two looks on top of SetDrawnLineLook, both off until set: a line that never
+	// calls these draws exactly as before. Presentation only, like everything here;
+	// nothing returns them.
+	// GRADIENT: the colour runs from col (SetDrawnLine) at the start to colorEnd at the
+	// end, and the halo's reach grows toward the end by swell (1 none, 3 three times as
+	// wide, below 1 narrower; 0..16) while the core stays thin. The line's own colour
+	// with swell 1 is the same as no gradient. For a polyline, give each segment the
+	// colours of its own two ends and the swell ratio between them.
+	native clearscope void SetDrawnLineGradient(int index, color colorEnd, double swell = 1.0);
+	// TURBULENCE: 3D value noise in world space, rising, pushes the glow's edges in and
+	// out and flickers its brightness, so the edges lick while the core holds. strength
+	// 0 is off (0..2; 1 moves an edge by up to its own distance from the line). scale is
+	// noise cells per map unit (0.05: licks about 20 units across; 0..1). speed is how
+	// fast the pattern rises in cells per second of level time, so it stops while the
+	// game is paused (-100..100). The box drawn around the line grows by 1 + strength,
+	// and so does its pixel cost.
+	native clearscope void SetDrawnLineTurbulence(int index, double strength, double scale = 0.05, double speed = 1.5);
 	// 0 the start given to SetDrawnLine, 1 the main hand, 2 the off hand --
 	// resolved every frame, exactly as SetBeamAnchor. owner is whose hand: a
 	// player's pawn. Without one it is the local player's hand, which in netplay

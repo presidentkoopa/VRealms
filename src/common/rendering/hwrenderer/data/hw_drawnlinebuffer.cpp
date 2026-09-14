@@ -22,7 +22,7 @@
 #include "printf.h"
 
 static_assert(sizeof(DrawnLineRecord) == DrawnLineBuffer::RECORD_BYTES,
-	"DrawnLineRecord must be five vec4s with no padding -- see the DrawnLine struct in vk_shader.cpp");
+	"DrawnLineRecord must be seven vec4s (112 bytes) with no padding -- see the DrawnLine struct in vk_shader.cpp");
 
 DrawnLineBuffer::DrawnLineBuffer(unsigned records)
 	: mCapacity(records != 0 ? records : (unsigned)DrawnLineCapacity() + ROUTED_BEAM_RESERVE)

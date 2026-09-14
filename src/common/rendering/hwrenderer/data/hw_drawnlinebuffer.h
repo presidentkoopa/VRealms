@@ -41,7 +41,7 @@
 #include <cstdint>
 #include "hwrenderer/data/buffers.h"
 
-// Five vec4s, 80 bytes, std430 with no padding, SHADER space (y up). Must match
+// Seven vec4s, 112 bytes, std430 with no padding, SHADER space (y up). Must match
 // the DrawnLine struct in vk_shader.cpp's prolog and drawnlines.vp.
 //
 //   a  xyz start                       w core thickness (SetBeam's thick)
@@ -50,6 +50,16 @@
 //   d  x air glow  y halo strength     z taper  w impact flare
 //   e  x scroll speed  y scroll depth  z timer seconds (main.fp's `timer` for
 //      a material at speed 1)          w depth bias in map units (< 0 automatic)
+//   f  rgb end colour 0..1             w swell (halo reach at the end over the
+//                                        start; 1 none)
+//   g  x turbulence strength  y noise scale (cells per map unit)  z rise speed
+//      (cells per second)              w look flags (LOOK_GRADIENT | LOOK_TURBULENCE)
+//
+// [F1] f and g are two OPT-IN looks ("Engine docs/FLAME_ENGINE_PLAN.md" F1): a
+// colour gradient with a widening halo, and licking turbulence. Look flags 0 --
+// every beam r_beams_drawn routes, and every SetDrawnLine line that never asked
+// (SetDrawnLineGradient / SetDrawnLineTurbulence) -- make drawnlines.vp/.fp skip f
+// and g and run exactly the code they ran before the record grew.
 struct DrawnLineRecord
 {
 	float a[4];
@@ -57,12 +67,19 @@ struct DrawnLineRecord
 	float c[4];
 	float d[4];
 	float e[4];
+	float f[4];
+	float g[4];
 };
 
 class DrawnLineBuffer
 {
 public:
-	static const unsigned RECORD_BYTES = 80;
+	static const unsigned RECORD_BYTES = 112;
+
+	// [F1] Bits of a record's look flags (g.w, written as an exact small float).
+	// drawnlines.vp/.fp test the same bits.
+	static const unsigned LOOK_GRADIENT = 1;
+	static const unsigned LOOK_TURBULENCE = 2;
 
 	// A box around the line: six faces, two triangles each. drawnlines.vp keeps
 	// only the faces turned away from the eye, which cover the box's footprint

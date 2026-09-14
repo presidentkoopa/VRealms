@@ -30,6 +30,7 @@
 #include "hwrenderer/postprocessing/hw_postprocessshader.h"
 #include "skyboxtexture.h"
 #include "texturemanager.h"
+#include "surfacedefs.h"	// [SURFACEMATERIALS] TagTextureSurface
 #include "v_video.h"
 #include "hw_cvars.h"
 
@@ -1285,6 +1286,11 @@ class GLDefsParser
 		TArray<int> texNameIndex;
 		float speed = 1.f;
 
+		// [SURFACEMATERIALS] `surface <name>`: what this texture is made of.
+		FName surfaceName = NAME_None;
+		bool surfaceNameSpecified = false;
+		int surfaceNameLine = 0;
+
 		MaterialLayers mlay = { -1000, -1000 };
 
 		#define GLDEFS_MATERIAL_NUM_TEXURE_PROPERTIES 6
@@ -1415,6 +1421,16 @@ class GLDefsParser
 					}
 				}
 			}
+			else if (sc.Compare("surface"))
+			{
+				// [SURFACEMATERIALS] `surface metal`: what this one texture is made of,
+				// beating any SURFACES rule; `surface none` un-tags it. Applied below,
+				// after the thiswad/iwad filter, like every other property.
+				sc.MustGetString();
+				surfaceName = FName(sc.String);
+				surfaceNameLine = sc.Line;
+				surfaceNameSpecified = true;
+			}
 			else if (sc.Compare("define"))
 			{
 				sc.MustGetString();
@@ -1495,6 +1511,13 @@ class GLDefsParser
 		}
 
 		tex->SetNoMipmap(no_mipmap);
+
+		// [SURFACEMATERIALS] After the thiswad/iwad filter, before the shader setup
+		// below (which can return early).
+		if (surfaceNameSpecified)
+		{
+			TagTextureSurface(tex, surfaceName, sc.ScriptName.GetChars(), surfaceNameLine);
+		}
 
 		FGameTexture **bindings[GLDEFS_MATERIAL_NUM_TEXURE_PROPERTIES] =
 		{

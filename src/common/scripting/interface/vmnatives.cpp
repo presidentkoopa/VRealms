@@ -578,6 +578,28 @@ DEFINE_ACTION_FUNCTION_NATIVE(_TexMan, UseGamePalette, UseGamePalette)
 	ACTION_RETURN_INT(UseGamePalette(texid));
 }
 
+//==========================================================================
+//
+// [SURFACEMATERIALS] What a texture is made of -- metal, wood, glass, liquid...
+// -- as SURFACES rules, a GLDEFS `surface` keyword or a TERRAIN `surface`
+// property set it at load (gamedata/surfacedefs.cpp). 'None' when untagged or
+// not a texture. Map data, the same on every machine; nothing sets it at runtime.
+//
+//==========================================================================
+
+static int GetTextureSurface(int texid)
+{
+	auto tex = TexMan.GameByIndex(texid);
+	return tex != nullptr ? tex->GetSurface().GetIndex() : int(NAME_None);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(_TexMan, GetSurface, GetTextureSurface)
+{
+	PARAM_PROLOGUE;
+	PARAM_INT(texid);
+	ACTION_RETURN_INT(GetTextureSurface(texid));
+}
+
 FCanvas *GetTextureCanvas(const FString &texturename, ETextureType type, BITFIELD flags);
 
 DEFINE_ACTION_FUNCTION(_TexMan, GetCanvas)

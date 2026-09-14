@@ -204,7 +204,7 @@ static FVector4 BeamSlotLook(const FLevelLocals *Level, int i)
 //
 // Everything is re-sent every scene: a line is interpolated between tics and
 // may start at a tracked hand, so its endpoints move every frame whether script
-// touched it or not. That is at most capacity x 80 bytes of plain copy. Nothing
+// touched it or not. That is at most capacity x 112 bytes of plain copy. Nothing
 // in a record depends on the eye, so both eyes -- and a camera texture in the
 // same frame -- send identical bytes; each eye's box and glow are worked out in
 // the shaders from that eye's own camera.
@@ -224,6 +224,35 @@ static void WriteDrawnLineRecord(DrawnLineRecord &r, const DVector3 &a, const DV
 	r.c[0] = col.r / 255.f; r.c[1] = col.g / 255.f; r.c[2] = col.b / 255.f; r.c[3] = (float)intensity;
 	r.d[0] = look.X; r.d[1] = look.Y; r.d[2] = look.Z; r.d[3] = look.W;
 	r.e[0] = (float)scrollSpeed; r.e[1] = (float)scrollDepth; r.e[2] = timerSec; r.e[3] = depthBias;
+	// [F1] The gradient and turbulence looks, OFF: their stored defaults and look
+	// flags 0, so drawnlines.vp/.fp never read f or g. Every record gets these --
+	// routed beams always; a SetDrawnLine line that asked for a look has them
+	// overwritten by WriteDrawnLineLooks.
+	r.f[0] = r.c[0]; r.f[1] = r.c[1]; r.f[2] = r.c[2]; r.f[3] = 1.f;
+	r.g[0] = 0.f; r.g[1] = 0.05f; r.g[2] = 1.5f; r.g[3] = 0.f;
+}
+
+// [F1] A SetDrawnLine line's opt-in looks, over the "off" f and g written above.
+// A look that changes nothing -- a gradient to the line's own colour with swell 1,
+// turbulence at strength 0 -- keeps its flag clear, so the line stays on the code
+// path every line took before the looks existed. Values arrive clamped by the
+// setters (FLevelLocals::SetDrawnLineGradient / SetDrawnLineTurbulence).
+static void WriteDrawnLineLooks(DrawnLineRecord &r, const FLevelLocals::DrawnLine &l)
+{
+	unsigned flags = 0;
+	if (l.HasGradient &&
+		(l.ColorEnd.r != l.Color.r || l.ColorEnd.g != l.Color.g || l.ColorEnd.b != l.Color.b || l.Swell != 1.0))
+	{
+		r.f[0] = l.ColorEnd.r / 255.f; r.f[1] = l.ColorEnd.g / 255.f; r.f[2] = l.ColorEnd.b / 255.f;
+		r.f[3] = (float)l.Swell;
+		flags |= DrawnLineBuffer::LOOK_GRADIENT;
+	}
+	if (l.TurbulenceStrength > 0.0)
+	{
+		r.g[0] = (float)l.TurbulenceStrength; r.g[1] = (float)l.TurbulenceScale; r.g[2] = (float)l.TurbulenceSpeed;
+		flags |= DrawnLineBuffer::LOOK_TURBULENCE;
+	}
+	r.g[3] = (float)flags;
 }
 
 static TArray<DrawnLineRecord> DrawnLineScratch;
@@ -280,8 +309,10 @@ static void SyncDrawnLines(FLevelLocals *Level, double viewTicFrac)
 		ResolveLineAnchor(Level, l.Anchor, a, l.AnchorPlayer);
 
 		const FVector4 look = { (float)l.AirGlow, (float)l.Halo, (float)l.Taper, (float)l.Flare };
-		WriteDrawnLineRecord(DrawnLineScratch[n++], a, b, l.Thick, l.Soft, l.Color, l.Intensity,
+		DrawnLineRecord &rec = DrawnLineScratch[n++];
+		WriteDrawnLineRecord(rec, a, b, l.Thick, l.Soft, l.Color, l.Intensity,
 			look, l.ScrollSpeed, l.ScrollDepth, timerSec, depthBias);
+		WriteDrawnLineLooks(rec, l);	// [F1] look flags stay 0 unless this line asked for a look
 	}
 
 	if (dropped > 0)

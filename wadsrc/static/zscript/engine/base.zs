@@ -343,6 +343,9 @@ struct TexMan
 	native static int CheckRealHeight(TextureID tex);
 	native static bool OkForLocalization(TextureID patch, String textSubstitute);
 	native static bool UseGamePalette(TextureID tex);
+	// [SURFACEMATERIALS] What the texture is made of (metal, wood, glass, liquid...), from SURFACES
+	// lumps, a GLDEFS 'surface' keyword or a TERRAIN 'surface' property. 'None' when untagged.
+	native static Name GetSurface(TextureID tex);
 	native static Canvas GetCanvas(String texture, int usetype = Type_Wall, int flags = 0);
 }
 

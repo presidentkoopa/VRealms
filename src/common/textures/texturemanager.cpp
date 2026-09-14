@@ -426,7 +426,28 @@ FTextureID FTextureManager::AddGameTexture (FGameTexture *texture, bool addtohas
 	if (bucket >= 0) HashFirst[bucket] = trans;
 	auto id = FTextureID(trans);
 	texture->SetID(id);
+
+	// [SURFACEMATERIALS] See GameTextureAddedHook (texturemanager.h). By index: a hook
+	// may not add hooks, but nothing here should depend on that.
+	for (unsigned h = 0; h < GameTextureAddedHooks.Size(); h++)
+	{
+		GameTextureAddedHooks[h](texture);
+	}
 	return id;
+}
+
+//==========================================================================
+//
+// FTextureManager :: AddGameTextureAddedHook
+//
+//==========================================================================
+
+void FTextureManager::AddGameTextureAddedHook(GameTextureAddedHook hook)
+{
+	if (hook != nullptr && GameTextureAddedHooks.Find(hook) == GameTextureAddedHooks.Size())
+	{
+		GameTextureAddedHooks.Push(hook);
+	}
 }
 
 //==========================================================================
@@ -505,6 +526,9 @@ void FTextureManager::ReplaceTexture (FTextureID texid, FGameTexture *newtexture
 
 	newtexture->SetName(oldtexture->GetName().GetChars());
 	newtexture->SetUseType(oldtexture->GetUseType());
+	// [SURFACEMATERIALS] What a texture is made of goes with its name. The old texture
+	// is re-added nameless below, and the added-texture hook finds nothing for it.
+	newtexture->SetSurface(oldtexture->GetSurface());
 	Textures[index].Texture = newtexture;
 	newtexture->SetID(oldtexture->GetID());
 	oldtexture->SetName("");
