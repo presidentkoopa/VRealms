@@ -41,6 +41,7 @@
 #include "hwrenderer/scene/hw_clipper.h"
 #include "hwrenderer/scene/hw_portal.h"
 #include "hw_vrmodes.h"
+#include "hwrenderer/postprocessing/hw_postprocess.h"	// [HEATREFRACTION] hw_postprocess.heatrefraction.SetEye
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -203,6 +204,9 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 			eye->AdjustHud();
 
 			PostProcess.Clock();
+			// [HEATREFRACTION] This eye has no scene of its own: the heat pass takes the
+			// source set the multiview scene published for it (review S8).
+			hw_postprocess.heatrefraction.SetEye(eye_ix);
 			screen->PostProcessScene(false, sharedPostprocessColormap, sharedPostprocessFlash, []() {});
 			eye->AdjustBlend(nullptr);
 			V_DrawBlend(mainvp.sector);
@@ -297,6 +301,8 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 				RenderState.EnableDrawBuffers(1);
 			}
 
+			// [HEATREFRACTION] Which eye's heat sources the pass takes (review S8).
+			hw_postprocess.heatrefraction.SetEye(eye_ix);
 			screen->PostProcessScene(false, cm, flash, [&]() {
 				di->DrawEndScene2D(mainvp.sector, RenderState);
 			});

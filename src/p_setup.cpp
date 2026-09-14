@@ -341,6 +341,10 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 	// [DRAWNLINES] No drawn line survives a map change or a savegame load either.
 	ClearDrawnLines();
 
+	// [HEATREFRACTION] Nor does a heat source: its position is the old map's, and its
+	// fade counts from the old map's clock.
+	ClearHeatSources();
+
 	// [RS fork] NOR DOES THE REST OF THE LEVEL'S VISUAL STATE.
 	//
 	// FLevelLocals is one static object, so everything a mod pushed -- a sweep,

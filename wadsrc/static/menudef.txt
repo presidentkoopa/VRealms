@@ -2213,6 +2213,20 @@ OptionMenu DeveloperOptionsMenu protected
 	// lines -- a flame with only its particles -- and also sends r_beams_drawn's beams
 	// back to per pixel. Renderer-read every frame. Vulkan only.
 	Option "Drawn lines", "r_drawnlines", "OnOff"
+	// [HEATREFRACTION] r_heatrefraction -- heat shimmer ("Engine docs/FLAME_ENGINE_PLAN.md"
+	// F2): the hot air of a heat source (LevelLocals.SetHeatSource) bends the image behind
+	// it, per eye, and a hand held in front stays sharp. Off by default, and off means the
+	// pass does not run: the frame is exactly as it was before. It bends EVERYTHING behind a
+	// heat source -- the grab lasers and the Lance included -- so compare them through it On
+	// and Off. Renderer-read every frame. perflog.txt: pp.heatoffset, pp.heatwarp. Vulkan only.
+	Option "Heat shimmer", "r_heatrefraction", "OnOff"
+	// r_heatrefraction_scale -- multiplies every heat source's strength, test source included.
+	// Renderer-read: the shimmer changes with this menu open. Vulkan only.
+	Slider "Heat shimmer strength", "r_heatrefraction_scale", 0, 4, 0.25, 2
+	// r_heatrefraction_test -- a heat source that needs no mod: a rising column 96 map units
+	// ahead of where you look at the moment it is switched on, left there until it is switched
+	// off. Only draws while "Heat shimmer" is On. Not saved. Vulkan only.
+	Option "Heat shimmer test source (ahead of you)", "r_heatrefraction_test", "OnOff"
 	StaticText " "
 	StaticText "$DEVOPTMNU_OPTIONS_MARKED_WITH_RESTART", "Brown"
 	StaticText " "

@@ -3807,6 +3807,154 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetVolumetricBeamAnchor, SetVolumetr
 	return 0;
 }
 
+//==========================================================================
+//
+// [HEATREFRACTION] HEAT SOURCES -- see FLevelLocals::HeatSource (g_levellocals.h)
+// and "Engine docs/FLAME_ENGINE_PLAN.md" F2 (heat shimmer).
+//
+// Render-only slots, drawn only while r_heatrefraction is on. Every native here
+// is a setter; none returns render state, so nothing in gameplay can branch on
+// how the air looks. No RNG: the shimmer is noise over world position and level
+// time, computed on the GPU.
+//
+//==========================================================================
+
+// Where an anchored hand is right now, for the anchor's recorded base. The same
+// player rule as the renderer's (hw_drawinfo.cpp, ResolveLineAnchor): that player
+// number when they are in the game, else the console player. Read-only.
+static bool HeatSourceHandPos(FLevelLocals *self, int mode, int playerNum, DVector3 &pos)
+{
+	if (mode != 1 && mode != 2) return false;
+	const player_t *p = (playerNum >= 0 && playerNum < MAXPLAYERS && self->PlayerInGame(playerNum))
+		? &players[playerNum] : self->GetConsolePlayer();
+	if (p == nullptr || p->mo == nullptr) return false;
+	pos = (mode == 2) ? p->mo->OffhandPos : p->mo->AttackPos;
+	return true;
+}
+
+// Logged once per distinct bad value, so a caller doing this every tic does not flood.
+static void LogHeatSourceBadSlot(const char *who, int slot)
+{
+	static bool logged = false;
+	static int lastSlot = 0;
+	if (!logged || slot != lastSlot)
+	{
+		logged = true;
+		lastSlot = slot;
+		Printf("%s: slot %d is outside 0..%d; ignored\n", who, slot, FLevelLocals::MAX_HEAT_SOURCES - 1);
+	}
+}
+
+// Re-bases a live anchor every time the source is set, so the hand's movement is
+// measured from the pose the script placed the source by.
+static void RebaseHeatSourceAnchor(FLevelLocals *self, int slot)
+{
+	const FLevelLocals::HeatSource &h = self->HeatSources[slot];
+	if (h.Anchor == 0) return;
+	DVector3 hand(0., 0., 0.);
+	const bool read = HeatSourceHandPos(self, h.Anchor, h.AnchorPlayer, hand);
+	// Unreadable (no pawn yet): recorded as invalid, and the source stays put.
+	self->SetHeatSourceAnchorBase(slot, hand, read);
+}
+
+// 14 VM arguments (self, slot, two Vector3s, six numbers, life): under the JIT's
+// direct-call cap of 16, so the plain _NATIVE macro is safe (see SetVolumetricBeam).
+static void SetHeatSource(FLevelLocals *self, int slot, double sx, double sy, double sz,
+	double ex, double ey, double ez, double radiusStart, double radiusEnd,
+	double strength, double noiseScale, double rise, int life)
+{
+	if (slot < 0 || slot >= FLevelLocals::MAX_HEAT_SOURCES)
+	{
+		LogHeatSourceBadSlot("SetHeatSource", slot);
+		return;
+	}
+	self->SetHeatSource(slot, DVector3(sx, sy, sz), DVector3(ex, ey, ez), radiusStart, radiusEnd,
+		strength, noiseScale, rise, life);
+	RebaseHeatSourceAnchor(self, slot);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetHeatSource, SetHeatSource)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(slot);
+	PARAM_FLOAT(sx); PARAM_FLOAT(sy); PARAM_FLOAT(sz);
+	PARAM_FLOAT(ex); PARAM_FLOAT(ey); PARAM_FLOAT(ez);
+	PARAM_FLOAT(radiusStart);
+	PARAM_FLOAT(radiusEnd);
+	PARAM_FLOAT(strength);
+	PARAM_FLOAT(noiseScale);
+	PARAM_FLOAT(rise);
+	PARAM_INT(life);
+	SetHeatSource(self, slot, sx, sy, sz, ex, ey, ez, radiusStart, radiusEnd, strength, noiseScale, rise, life);
+	return 0;
+}
+
+// mode 0 world, 1 main hand, 2 off hand (out of range reads as 0). owner is whose
+// hand: a player's pawn; without one, the console player's. Call AFTER
+// SetHeatSource when claiming a slot: a slot that was not live forgets its anchor
+// when SetHeatSource takes it.
+static void SetHeatSourceAnchor(FLevelLocals *self, int slot, int mode, AActor *owner)
+{
+	if (slot < 0 || slot >= FLevelLocals::MAX_HEAT_SOURCES)
+	{
+		LogHeatSourceBadSlot("SetHeatSourceAnchor", slot);
+		return;
+	}
+	static bool warnedNotLive[FLevelLocals::MAX_HEAT_SOURCES] = {};
+	if (!self->HeatSourceLive(slot) && mode != 0)
+	{
+		if (!warnedNotLive[slot])
+		{
+			warnedNotLive[slot] = true;
+			Printf("SetHeatSourceAnchor: slot %d is not live; SetHeatSource resets the anchor when it claims the slot -- call the anchor after it\n", slot);
+		}
+	}
+	else
+	{
+		warnedNotLive[slot] = false;
+	}
+	const int playerNum = (owner != nullptr && owner->player != nullptr) ? int(owner->player - players) : -1;
+	self->SetHeatSourceAnchor(slot, mode, playerNum);
+	RebaseHeatSourceAnchor(self, slot);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetHeatSourceAnchor, SetHeatSourceAnchor)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(slot);
+	PARAM_INT(mode);
+	PARAM_OBJECT(owner, AActor);
+	SetHeatSourceAnchor(self, slot, mode, owner);
+	return 0;
+}
+
+// One slot, or every slot with -1. Forgets the slot, anchor included.
+static void ClearHeatSource(FLevelLocals *self, int slot)
+{
+	self->ClearHeatSource(slot);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearHeatSource, ClearHeatSource)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(slot);
+	ClearHeatSource(self, slot);
+	return 0;
+}
+
+// A fixed engine number, the same on every machine, so gameplay code may size a
+// ring of slots by it.
+static int HeatSourceCapacity(FLevelLocals *self)
+{
+	return FLevelLocals::MAX_HEAT_SOURCES;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HeatSourceCapacity, HeatSourceCapacity)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ACTION_RETURN_INT(HeatSourceCapacity(self));
+}
+
 // [RS fork] DIAGNOSTICS FOR THE LEVEL VISUAL STATE -- the sweep, glow, fog and
 // darkness setters and the render gates that read them. Off by default and not
 // archived. When on, each setter prints when a value CHANGES (never per tic)

@@ -677,6 +677,173 @@ private:
 	PPShader HeatMS = { "shaders/pp/heatmap.fp", "#define MULTISAMPLE\n", HeatmapUniforms::Desc() };
 };
 
+/////////////////////////////////////////////////////////////////////////////
+
+// [HEATREFRACTION] HEAT SHIMMER ("Engine docs/FLAME_ENGINE_PLAN.md" F2): hot air bends
+// the image behind it. Two passes, see shaders/pp/heatoffset.fp and heatwarp.fp.
+//
+// One heat source for one eye. Positions are RELATIVE TO THAT EYE, in world axes
+// (GL: y up) and map units -- not view space, whose pixel stretch would squash the
+// source -- and ViewToWorld is that eye's, so the uniforms are per eye. Filled by
+// SetupHeatSources (hw_drawinfo.cpp); SceneScale/SceneOffset are set in Render.
+struct HeatOffsetUniforms
+{
+	FVector3 SourceStart;
+	float RadiusStart;
+	FVector3 SourceEnd;
+	float RadiusEnd;
+	FVector2 TanHalfFov;      // 1 / projection m[0], m[5], as the beam pass
+	FVector2 ProjOffset;      // projection m[8], m[9]: an asymmetric (headset) eye
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+	float Bend;               // radians per map unit of hot air: strength x fade x scale x BEND_PER_UNIT
+	float NoiseScale;         // noise cells per map unit
+	float NoiseRise;          // map units per second
+	float NoiseTime;          // level seconds: pauses with the game
+	float LinearizeDepthA;
+	float LinearizeDepthB;
+	float HeatPad0;
+	float HeatPad1;
+	float ViewToWorld[16];    // plain floats: VSMatrix is not visible in this header
+
+	//   SourceStart 0   RadiusStart 12   SourceEnd 16   RadiusEnd 28
+	//   TanHalfFov 32   ProjOffset 40    SceneScale 48  SceneOffset 56
+	//   Bend 64  NoiseScale 68  NoiseRise 72  NoiseTime 76
+	//   LinearizeDepthA 80  LinearizeDepthB 84  HeatPad0 88  HeatPad1 92
+	//   ViewToWorld 96 -> block ends 160 (the beam's block is 192)
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SourceStart", UniformType::Vec3, offsetof(HeatOffsetUniforms, SourceStart) },
+			{ "RadiusStart", UniformType::Float, offsetof(HeatOffsetUniforms, RadiusStart) },
+			{ "SourceEnd", UniformType::Vec3, offsetof(HeatOffsetUniforms, SourceEnd) },
+			{ "RadiusEnd", UniformType::Float, offsetof(HeatOffsetUniforms, RadiusEnd) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(HeatOffsetUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(HeatOffsetUniforms, ProjOffset) },
+			{ "SceneScale", UniformType::Vec2, offsetof(HeatOffsetUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(HeatOffsetUniforms, SceneOffset) },
+			{ "Bend", UniformType::Float, offsetof(HeatOffsetUniforms, Bend) },
+			{ "NoiseScale", UniformType::Float, offsetof(HeatOffsetUniforms, NoiseScale) },
+			{ "NoiseRise", UniformType::Float, offsetof(HeatOffsetUniforms, NoiseRise) },
+			{ "NoiseTime", UniformType::Float, offsetof(HeatOffsetUniforms, NoiseTime) },
+			{ "LinearizeDepthA", UniformType::Float, offsetof(HeatOffsetUniforms, LinearizeDepthA) },
+			{ "LinearizeDepthB", UniformType::Float, offsetof(HeatOffsetUniforms, LinearizeDepthB) },
+			{ "HeatPad0", UniformType::Float, offsetof(HeatOffsetUniforms, HeatPad0) },
+			{ "HeatPad1", UniformType::Float, offsetof(HeatOffsetUniforms, HeatPad1) },
+			{ "ViewToWorld", UniformType::Mat4, offsetof(HeatOffsetUniforms, ViewToWorld) },
+		};
+	}
+};
+
+// std140 guard rails: UniformBlockDecl::Create emits the fields in declaration order
+// with no explicit offsets, so the C++ layout IS the GLSL layout.
+static_assert(offsetof(HeatOffsetUniforms, SourceEnd) == 16, "HeatOffsetUniforms::SourceEnd must start at 16 for std140");
+static_assert(offsetof(HeatOffsetUniforms, TanHalfFov) == 32, "HeatOffsetUniforms::TanHalfFov must start at 32 for std140");
+static_assert(offsetof(HeatOffsetUniforms, Bend) == 64, "HeatOffsetUniforms::Bend must start at 64 for std140");
+static_assert(offsetof(HeatOffsetUniforms, LinearizeDepthA) == 80, "HeatOffsetUniforms::LinearizeDepthA must start at 80 for std140");
+static_assert(offsetof(HeatOffsetUniforms, ViewToWorld) == 96, "HeatOffsetUniforms::ViewToWorld must start at 96 for std140");
+static_assert(sizeof(HeatOffsetUniforms) == 160, "HeatOffsetUniforms must be 160 bytes; pad to a 16-byte row");
+
+// The bend pass: nothing per eye (the offsets already are, and depth is read from
+// the eye's own layer), so one set.
+struct HeatWarpUniforms
+{
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+	float LinearizeDepthA;
+	float LinearizeDepthB;
+	float MaxShift;           // scene UV units
+	float DepthMargin;        // map units
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SceneScale", UniformType::Vec2, offsetof(HeatWarpUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(HeatWarpUniforms, SceneOffset) },
+			{ "LinearizeDepthA", UniformType::Float, offsetof(HeatWarpUniforms, LinearizeDepthA) },
+			{ "LinearizeDepthB", UniformType::Float, offsetof(HeatWarpUniforms, LinearizeDepthB) },
+			{ "MaxShift", UniformType::Float, offsetof(HeatWarpUniforms, MaxShift) },
+			{ "DepthMargin", UniformType::Float, offsetof(HeatWarpUniforms, DepthMargin) },
+		};
+	}
+};
+
+static_assert(offsetof(HeatWarpUniforms, LinearizeDepthA) == 16, "HeatWarpUniforms::LinearizeDepthA must start at 16 for std140");
+static_assert(sizeof(HeatWarpUniforms) == 32, "HeatWarpUniforms must be 32 bytes");
+
+// Pass1 runs it after the volumetric beam and the heatmap, where the smoke volume
+// (#13) will also go, and before bloom: the HDR image bends before it glows, so the
+// glows bend with it.
+//
+// SKIPPED, NOT ZERO STRENGTH. With r_heatrefraction off (the default) or no source
+// published for the eye, Render returns before it pushes a group, allocates the
+// offset texture or draws, so the frame is exactly the frame without this pass.
+//
+// PER EYE (review S8). Under a multiview scene the second eye post-processes
+// without a scene of its own, and anything filled from HWDrawInfo::VPUniforms would
+// carry the first eye's view into it. So the renderer publishes one set of sources
+// per eye of a multiview scene -- set 0 for eye 0, set 1 for eye 1 -- or one set
+// when each eye draws its own scene, and hw_entrypoint.cpp says which eye is being
+// post-processed (SetEye) before each PostProcessScene. The layered post path draws
+// per eye too (every PP pass is keyed Layers 1, ViewMask 0 and writes the current
+// eye's layer), so the eye index covers it.
+//
+// BOTH EYES OF A MULTIVIEW SCENE GET THE SAME SOURCES. Layered post-processing shares
+// one pair of pipeline images between the eyes, so both must run exactly the same
+// passes: a source visible to either eye is published to both sets
+// (SetupHeatSources), and the two sets always have equal counts.
+class PPHeatRefraction
+{
+public:
+	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
+
+	void ClearSources() { counts[0] = counts[1] = 0; eyeSets = 0; }
+	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
+	bool AddSource(int eyeSet, const HeatOffsetUniforms &u)
+	{
+		if (eyeSet < 0 || eyeSet > 1 || counts[eyeSet] >= MAX_SOURCES) return false;
+		sources[eyeSet][counts[eyeSet]++] = u;
+		return true;
+	}
+	void SetEye(int eye) { currentEye = eye; }
+
+	// FLevelLocals::MAX_HEAT_SOURCES level slots plus the r_heatrefraction_test source.
+	// hw_drawinfo.cpp static_asserts that relation, so a mismatch is a compile error
+	// rather than a source that silently never draws.
+	static const int MAX_SOURCES = 65;
+
+	// Radians of bend per map unit of hot air at strength 1, per unit of noise
+	// gradient: strength 1 through 64 units of air shifts the image behind by about
+	// three pixels at a headset's field of view and resolution.
+	static constexpr float BEND_PER_UNIT = 1.0e-4f;
+	// The bend pass caps a pixel's summed shift here (scene UV units, ~3% of the view)
+	// and ignores depth differences smaller than DEPTH_MARGIN map units.
+	static constexpr float MAX_SHIFT = 0.03f;
+	static constexpr float DEPTH_MARGIN = 2.0f;
+
+private:
+	void UpdateTexture(int sceneWidth, int sceneHeight);
+
+	HeatOffsetUniforms sources[2][MAX_SOURCES] = {};
+	int counts[2] = {};
+	int eyeSets = 0;
+	int currentEye = 0;
+
+	// Half the scene's size, like bloom's first level: the bend is smooth, and the
+	// bend pass's full-resolution depth tests keep the edges.
+	PPTexture OffsetTexture;
+	PPViewport OffsetViewport;
+	int lastWidth = 0;
+	int lastHeight = 0;
+
+	PPShader OffsetShader = { "shaders/pp/heatoffset.fp", "", HeatOffsetUniforms::Desc() };
+	PPShader OffsetShaderMS = { "shaders/pp/heatoffset.fp", "#define MULTISAMPLE\n", HeatOffsetUniforms::Desc() };
+	PPShader WarpShader = { "shaders/pp/heatwarp.fp", "", HeatWarpUniforms::Desc() };
+	PPShader WarpShaderMS = { "shaders/pp/heatwarp.fp", "#define MULTISAMPLE\n", HeatWarpUniforms::Desc() };
+};
+
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -1228,6 +1395,7 @@ public:
 	PPBloom bloom;
 	PPVolumetricBeam volbeam;
 	PPHeatmap heatmap;
+	PPHeatRefraction heatrefraction;	// [HEATREFRACTION] heat shimmer
 	PPLensDistort lens;
 	PPFXAA fxaa;
 	PPCameraExposure exposure;

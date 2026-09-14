@@ -191,8 +191,9 @@ namespace
 			out << "Legend: cpu_ms and gpu_ms are avg/p95/max per frame over the window. Same-name GPU groups in one frame "
 				"(both stereo eyes) are summed; fx.* groups are nested inside scene.translucent. load: particles_spawned is "
 				"the window total, dlights (walls+flats) is avg/max, sprites/walls/flats are avg, the rest are max. "
-				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill), avg/p95/max per "
-				"frame with same-name samples summed.\n\n";
+				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill; fx.heatsources: "
+				"the heat source fill), avg/p95/max per frame with same-name samples summed. pp.heatoffset and pp.heatwarp "
+				"are the heat shimmer passes (r_heatrefraction).\n\n";
 			HeaderWritten = true;
 		}
 
@@ -218,6 +219,9 @@ namespace
 		out.AppendFormat(" r_gpuparticles_legacy=%d", (int)*r_gpuparticles_legacy);
 		// [2d] And the view light count, so a fx.viewlights before/after labels itself.
 		out.AppendFormat(" r_gpuparticles_lights=%d", (int)*r_gpuparticles_lights);
+		// [HEATREFRACTION] And the heat shimmer switch, so a pp.heatoffset / pp.heatwarp
+		// before/after labels itself.
+		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);
 		out.AppendFormat(" t=%.1fs window=%.1fs frames=%u fps=%.1f frame_ms avg=%.2f p95=%.2f max=%.2f\n",
 			I_msTime() / 1000.0, windowS, frames, fps, W.Frame.Avg(), W.Frame.P95(), W.Frame.Max);
 

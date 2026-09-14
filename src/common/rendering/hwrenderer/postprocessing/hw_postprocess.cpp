@@ -188,6 +188,108 @@ void PPHeatmap::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeig
 	renderstate->PopGroup();
 }
 
+/////////////////////////////////////////////////////////////////////////////
+
+// [HEATREFRACTION] Heat shimmer -- see PPHeatRefraction (hw_postprocess.h) and
+// shaders/pp/heatoffset.fp, heatwarp.fp.
+
+void PPHeatRefraction::UpdateTexture(int sceneWidth, int sceneHeight)
+{
+	if (sceneWidth == lastWidth && sceneHeight == lastHeight)
+		return;
+
+	OffsetViewport.left = 0;
+	OffsetViewport.top = 0;
+	OffsetViewport.width = (sceneWidth + 1) / 2;
+	OffsetViewport.height = (sceneHeight + 1) / 2;
+	// RGBA16F: rg the signed shift, b entry depth x weight, a weight (heatoffset.fp).
+	OffsetTexture = { OffsetViewport.width, OffsetViewport.height, PixelFormat::Rgba16f };
+
+	lastWidth = sceneWidth;
+	lastHeight = sceneHeight;
+}
+
+void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight)
+{
+	// SKIPPED, NOT ZERO STRENGTH: nothing published for this eye means no group, no
+	// texture and no draw, so the frame is the frame without this pass. Set 1 only
+	// exists for the second eye of a multiview scene.
+	const int set = (eyeSets >= 2 && currentEye == 1) ? 1 : 0;
+	if (eyeSets <= 0 || counts[set] <= 0 || !r_heatrefraction || sceneWidth <= 0 || sceneHeight <= 0)
+		return;
+
+	const bool multisampled = gl_multisample > 1;
+	const FVector2 sceneScale = screen->SceneScale();
+	const FVector2 sceneOffset = screen->SceneOffset();
+
+	UpdateTexture(sceneWidth, sceneHeight);
+
+	// One line whenever the variant, the eye arrangement or the texture changes, so a
+	// test log shows which ran. Never per frame.
+	{
+		static int loggedMultisample = -1, loggedSets = -1, loggedWidth = -1, loggedHeight = -1;
+		if (loggedMultisample != (int)multisampled || loggedSets != eyeSets ||
+			loggedWidth != OffsetViewport.width || loggedHeight != OffsetViewport.height)
+		{
+			loggedMultisample = (int)multisampled;
+			loggedSets = eyeSets;
+			loggedWidth = OffsetViewport.width;
+			loggedHeight = OffsetViewport.height;
+			Printf("heat_refraction: %s depth read, %s, offset texture %dx%d\n",
+				multisampled ? "MULTISAMPLE" : "single-sample",
+				eyeSets >= 2 ? "a source set per eye (multiview scene)" : "one source set (each eye draws its own scene)",
+				OffsetViewport.width, OffsetViewport.height);
+		}
+	}
+
+	// Pass 1: each source adds its shift. The first draws with no blend: every texel of
+	// the viewport is written (0 off the source), which clears what the last eye or
+	// frame left -- post-process attachments are loaded, never cleared.
+	renderstate->PushGroup("pp.heatoffset");
+	for (int i = 0; i < counts[set]; i++)
+	{
+		HeatOffsetUniforms u = sources[set][i];
+		u.SceneScale = sceneScale;
+		u.SceneOffset = sceneOffset;
+
+		renderstate->Clear();
+		renderstate->Shader = multisampled ? &OffsetShaderMS : &OffsetShader;
+		renderstate->Uniforms.Set(u);
+		renderstate->Viewport = OffsetViewport;
+		renderstate->SetInputSceneDepth(0);
+		renderstate->SetOutputTexture(&OffsetTexture);
+		if (i == 0)
+			renderstate->SetNoBlend();
+		else
+			renderstate->SetAdditiveBlend();
+		renderstate->Draw();
+	}
+	renderstate->PopGroup();
+
+	// Pass 2: bend the image. Over the whole screen viewport, as the lens pass, because
+	// the next pipeline image starts undefined.
+	HeatWarpUniforms w = {};
+	w.SceneScale = sceneScale;
+	w.SceneOffset = sceneOffset;
+	w.LinearizeDepthA = 1.0f / screen->GetZFar() - 1.0f / screen->GetZNear();
+	w.LinearizeDepthB = max(1.0f / screen->GetZNear(), 1.e-8f);
+	w.MaxShift = MAX_SHIFT;
+	w.DepthMargin = DEPTH_MARGIN;
+
+	renderstate->PushGroup("pp.heatwarp");
+	renderstate->Clear();
+	renderstate->Shader = multisampled ? &WarpShaderMS : &WarpShader;
+	renderstate->Uniforms.Set(w);
+	renderstate->Viewport = screen->mScreenViewport;
+	renderstate->SetInputCurrent(0, PPFilterMode::Linear);
+	renderstate->SetInputTexture(1, &OffsetTexture, PPFilterMode::Linear);
+	renderstate->SetInputSceneDepth(2);
+	renderstate->SetOutputNext();
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+	renderstate->PopGroup();
+}
+
 void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm)
 {
 	// Only bloom things if enabled and no special fixed light mode is active
@@ -1344,6 +1446,9 @@ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int s
 	customShaders.Run(state, "beforebloom");
 	volbeam.Render(state, sceneWidth, sceneHeight);
 	heatmap.Render(state, sceneWidth, sceneHeight);
+	// [HEATREFRACTION] The agreed order (REVIEW_SMOKE_DEBRIS_DAMAGE.md X3) puts the smoke
+	// volume (#13) here, then heat refraction, then bloom: the image bends before it glows.
+	heatrefraction.Render(state, sceneWidth, sceneHeight);
 	bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
 }
 

@@ -1316,6 +1316,128 @@ public:
 		return -1;
 	}
 
+	// [HEATREFRACTION] HEAT SOURCES -- volumes of hot air that bend the image behind
+	// them ("Engine docs/FLAME_ENGINE_PLAN.md" F2, heat shimmer). Beside the beam cones
+	// because they are the same kind of thing: render-only level slots that script
+	// publishes and the renderer resolves per eye.
+	//
+	// A source is the convex hull of two spheres -- (Start, RadiusStart) and (End,
+	// RadiusEnd) -- so one shape covers a ball (Start == End), a capsule and a cone
+	// that widens as it travels: a flame plume, barrel haze, a muzzle blast, a
+	// bullet's wake, an explosion. Strength scales how far the image behind bends;
+	// the shimmer itself is world-space noise NoiseScale cells per map unit, rising
+	// Rise map units a second, so both eyes see the same moving air at the same depth.
+	//
+	// Life > 0 fades the strength to nothing over that many tics from the last
+	// SetHeatSource, after which the slot reads as free (HeatSourceLive). Life 0 lasts
+	// until ClearHeatSource.
+	//
+	// The anchor MOVES the source with a hand: AnchorBase is where that hand was when
+	// the source was last set or anchored (vmthunks.cpp records it), and the renderer
+	// adds how far the hand has moved since. So the script's shape -- a nozzle ahead
+	// of the hand, a haze along the barrel -- is exact at tic time and follows the hand
+	// at frame rate. Player by number, as DrawnLine::AnchorPlayer, so nothing dangles.
+	//
+	// The pass is PPHeatRefraction (hw_postprocess.h), filled by SetupHeatSources
+	// (hw_drawinfo.cpp); r_heatrefraction switches it, default off. These slots and
+	// the natives are what a renderer rebuild keeps. Not serialized: cleared on map
+	// change and savegame load (p_setup.cpp), like every render slot. Setters only:
+	// nothing hands a source back to script, so gameplay cannot branch on one.
+	static const int MAX_HEAT_SOURCES = 64;
+
+	struct HeatSource
+	{
+		DVector3 Start{ 0., 0., 0. };
+		DVector3 End{ 0., 0., 0. };
+		double   RadiusStart = 0.;
+		double   RadiusEnd = 0.;
+		double   Strength = 0.;
+		double   NoiseScale = 0.08;       // noise cells per map unit
+		double   Rise = 20.;              // map units per second the shimmer rises
+		int      Life = 0;                // tics to fade out over; 0 = until cleared
+		int      Birth = 0;               // maptime of the last SetHeatSource
+		int      Anchor = 0;              // 0 world, 1 main hand, 2 off hand
+		int      AnchorPlayer = -1;       // whose hand; -1 the console player
+		DVector3 AnchorBase{ 0., 0., 0. };// that hand's position when last set / anchored
+		bool     AnchorBaseValid = false; // the hand could be read then; if not, the source does not move
+		bool     Live = false;
+	};
+
+	HeatSource HeatSources[MAX_HEAT_SOURCES];
+
+	// Written since the last clear, and not faded out.
+	bool HeatSourceLive(int slot) const
+	{
+		if (slot < 0 || slot >= MAX_HEAT_SOURCES) return false;
+		const HeatSource &h = HeatSources[slot];
+		return h.Live && (h.Life <= 0 || maptime - h.Birth < h.Life);
+	}
+
+	// Values are clamped here: radii 0..4096, strength 0..16, noise scale
+	// 0.0005..1, rise -1000..1000, life 0..126000 (an hour). !(x >= lo) also
+	// catches NaN. A slot being CLAIMED (not live) forgets any anchor it had, as
+	// SetVolumetricBeam does: slots are reused, and the next writer must not inherit
+	// a hand it never asked for -- so an anchor is set after this.
+	void SetHeatSource(int slot, const DVector3 &start, const DVector3 &end, double radiusStart, double radiusEnd,
+		double strength, double noiseScale, double rise, int life)
+	{
+		if (slot < 0 || slot >= MAX_HEAT_SOURCES) return;
+		HeatSource &h = HeatSources[slot];
+		if (!HeatSourceLive(slot))
+		{
+			h.Anchor = 0;
+			h.AnchorPlayer = -1;
+			h.AnchorBase = DVector3(0., 0., 0.);
+			h.AnchorBaseValid = false;
+		}
+		h.Start = start;
+		h.End = end;
+		h.RadiusStart = !(radiusStart >= 0.) ? 0. : clamp(radiusStart, 0., 4096.);
+		h.RadiusEnd = !(radiusEnd >= 0.) ? 0. : clamp(radiusEnd, 0., 4096.);
+		h.Strength = !(strength >= 0.) ? 0. : clamp(strength, 0., 16.);
+		h.NoiseScale = !(noiseScale >= 0.0005) ? 0.0005 : clamp(noiseScale, 0.0005, 1.);
+		h.Rise = !(rise >= -1000.) ? -1000. : clamp(rise, -1000., 1000.);
+		h.Life = clamp(life, 0, 126000);
+		h.Birth = maptime;
+		h.Live = true;
+	}
+
+	void SetHeatSourceAnchor(int slot, int mode, int playerNum)
+	{
+		if (slot < 0 || slot >= MAX_HEAT_SOURCES) return;
+		HeatSource &h = HeatSources[slot];
+		h.Anchor = (mode < 0 || mode > 2) ? 0 : mode;
+		h.AnchorPlayer = (playerNum >= 0 && playerNum < MAXPLAYERS) ? playerNum : -1;
+	}
+
+	// valid false: the hand could not be read when the source was set (no pawn yet), so
+	// the renderer leaves the source where script put it rather than moving it by the
+	// hand's whole world position.
+	void SetHeatSourceAnchorBase(int slot, const DVector3 &handPos, bool valid)
+	{
+		if (slot < 0 || slot >= MAX_HEAT_SOURCES) return;
+		HeatSources[slot].AnchorBase = handPos;
+		HeatSources[slot].AnchorBaseValid = valid;
+	}
+
+	// One slot, or every slot with -1 (as ClearVolumetricBeam). Clearing forgets the
+	// slot completely, anchor included.
+	void ClearHeatSource(int slot)
+	{
+		if (slot < 0)
+		{
+			ClearHeatSources();
+			return;
+		}
+		if (slot < MAX_HEAT_SOURCES) HeatSources[slot] = HeatSource();
+	}
+
+	// Also the map-change and savegame-load reset (ClearLevelData).
+	void ClearHeatSources()
+	{
+		for (int i = 0; i < MAX_HEAT_SOURCES; i++) HeatSources[i] = HeatSource();
+	}
+
 	// [BB] Sweep: a thin band of light at a fixed distance from an origin,
 	// measured in WORLD space and tested on every surface. Because the test
 	// is world-space rather than per-surface, the band wraps continuously

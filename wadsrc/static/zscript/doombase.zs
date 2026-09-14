@@ -1148,6 +1148,33 @@ struct LevelLocals native
 	// was not live forgets its anchor when SetVolumetricBeam takes it.
 	native clearscope void SetVolumetricBeamAnchor(int slot, int mode, Vector3 offset = (0, 0, 0));
 
+	// [HEATREFRACTION] HEAT SOURCES -- hot air that bends the image behind it (heat
+	// shimmer), per eye and depth-aware: a hand held in front stays sharp. Drawn only
+	// while the player's "Heat shimmer" switch (r_heatrefraction, Developer options)
+	// is on; it is off by default. 64 slots, caller-managed like the beam slots.
+	//
+	// A source is the hull of two spheres, (start, radiusStart) and (end, radiusEnd):
+	// start == end is a ball, equal radii a capsule, a wider end a plume that spreads.
+	// strength 1 is a light shimmer through 64 map units of hot air; 0..16. The noise
+	// is noiseScale cells per map unit, rising `rise` map units a second.
+	// life > 0 fades it out over that many tics from this call (a blast), after which
+	// the slot is free; life 0 lasts until ClearHeatSource (a plume set every tic).
+	// Clamps: radii 0..4096, noiseScale 0.0005..1, rise -1000..1000.
+	// CLEARSCOPE because this is look-only render state (see SetVolumetricBeam).
+	// Setters only: nothing reads a source back. Cleared on map change and load.
+	native clearscope void SetHeatSource(int slot, Vector3 start, Vector3 end, double radiusStart, double radiusEnd, double strength, double noiseScale = 0.08, double rise = 20.0, int life = 0);
+	// Held in a hand: 0 world (default), 1 main hand, 2 off hand, resolved every
+	// frame. The WHOLE source moves by how far that hand has moved since the last
+	// SetHeatSource, so a nozzle ahead of the hand stays ahead of it. owner is whose
+	// hand (a player's pawn); without one, the local player's -- wrong in netplay for
+	// a source that belongs to someone else. Call AFTER SetHeatSource when claiming a
+	// slot: a slot that was not live forgets its anchor when SetHeatSource takes it.
+	native clearscope void SetHeatSourceAnchor(int slot, int mode, Actor owner = null);
+	// One slot, or every slot with -1. Forgets the slot, anchor included.
+	native clearscope void ClearHeatSource(int slot);
+	// A fixed engine number (64), the same on every machine.
+	native clearscope int HeatSourceCapacity();
+
 	// [BB] Sweep -- up to eight thin bands of light travelling through the
 	// world, each tested per pixel against world position on every surface,
 	// so they wrap across floor, wall and ceiling as continuous unbroken

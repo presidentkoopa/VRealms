@@ -144,3 +144,8 @@ EXTERN_CVAR(Bool, r_drawnlines)
 EXTERN_CVAR(Float, r_drawnlines_depthbias)
 EXTERN_CVAR(Bool, r_beams_debug)
 int DrawnLineCapacity();
+
+// [HEATREFRACTION] heat shimmer, see hw_cvars.cpp
+EXTERN_CVAR(Bool, r_heatrefraction)
+EXTERN_CVAR(Float, r_heatrefraction_scale)
+EXTERN_CVAR(Bool, r_heatrefraction_test)

@@ -568,6 +568,253 @@ static void SyncViewLights(const HWDrawInfo *di)
 		PerfLog::AddCpuSample("fx.viewlights", (double)(I_nsTime() - startNs) / 1e6);
 }
 
+//==========================================================================
+//
+// [HEATREFRACTION] This scene's heat sources, resolved for each eye and handed
+// to the heat shimmer pass (PPHeatRefraction, hw_postprocess.h;
+// "Engine docs/FLAME_ENGINE_PLAN.md" F2).
+//
+// MAIN VIEW ONLY (ProcessScene with toscreen). A camera texture has no post pass,
+// and a save picture's post pass must not bend with the main view's sources, so
+// both clear the list. Called before DrawScene: portals run RenderScene again with
+// their own views, so filling from there (as SetupVolumetricBeam does) would leave
+// the last portal's view in the uniforms.
+//
+// PER EYE (review S8). ApplyMultiviewViewpoints leaves VPUniforms at the first eye,
+// and the second eye of a multiview scene post-processes with no draw info of its
+// own. So a multiview scene publishes a set for each eye, from
+// MultiviewVPUniforms[0] and [1]; any other scene publishes one set from
+// VPUniforms, and the next eye's own ProcessScene replaces it before its post.
+//
+// Nothing is published unless r_heatrefraction is on and the backend is Vulkan,
+// so with the switch off the pass returns on its first line.
+//
+// WORLD AXES, RELATIVE TO THE EYE. Positions go to the shader as GL world axes
+// (map x, map z, map y) minus this eye's position, in map units: view space carries
+// the pixel stretch, which would squash every source, and eye-relative keeps the
+// ray solve's numbers small.
+//
+//==========================================================================
+
+static_assert(PPHeatRefraction::MAX_SOURCES >= FLevelLocals::MAX_HEAT_SOURCES + 1,
+	"PPHeatRefraction::MAX_SOURCES must hold every heat source slot plus the r_heatrefraction_test source");
+
+// One source as it stands this frame: game axes, faded and anchored.
+struct HeatSourceFrame
+{
+	DVector3 start;
+	DVector3 end;
+	double radiusStart;
+	double radiusEnd;
+	double strength;
+	double noiseScale;
+	double rise;
+};
+
+// r_heatrefraction_test's column, fixed where it was put when the switch went on.
+// Placed again after a map change or an earlier savegame (maptime went backwards).
+static bool HeatTestPlaced = false;
+static int HeatTestLastMaptime = 0;
+static DVector3 HeatTestBase;
+
+static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
+{
+	PPHeatRefraction &pass = hw_postprocess.heatrefraction;
+	pass.ClearSources();
+
+	FLevelLocals *Level = di->Level;
+	if (!r_heatrefraction_test)
+		HeatTestPlaced = false;
+	if (!toscreen || !r_heatrefraction || Level == nullptr || !screen->IsVulkan())
+		return;
+
+	const uint64_t startNs = I_nsTime();
+
+	// This frame's clock in tics, as StartScene builds mLevelTime: it pauses with the
+	// game, so a fade and the rising noise stop in a menu.
+	const double nowTics = Level->maptime + di->Viewpoint.TicFrac;
+	const double scale = clamp<double>(r_heatrefraction_scale, 0.0, 4.0);
+
+	HeatSourceFrame frames[PPHeatRefraction::MAX_SOURCES];
+	int count = 0;
+
+	for (int i = 0; i < FLevelLocals::MAX_HEAT_SOURCES; i++)
+	{
+		const FLevelLocals::HeatSource &h = Level->HeatSources[i];
+		if (!h.Live || h.Strength <= 0.0 || std::max(h.RadiusStart, h.RadiusEnd) < 0.5)
+			continue;
+
+		double fade = 1.0;
+		if (h.Life > 0)
+		{
+			fade = 1.0 - (nowTics - h.Birth) / (double)h.Life;
+			if (fade <= 0.0)
+				continue;
+			fade = std::min(fade, 1.0);
+		}
+
+		HeatSourceFrame &f = frames[count++];
+		f.start = h.Start;
+		f.end = h.End;
+		// Only with a hand recorded when the source was set, and only while the owning
+		// player is still in the game: ResolveLineAnchor falls back to the console player,
+		// whose hand was never the base.
+		if (h.Anchor != 0 && h.AnchorBaseValid && (h.AnchorPlayer < 0 || Level->PlayerInGame(h.AnchorPlayer)))
+		{
+			// The whole source follows the hand: by how far the hand has moved since
+			// the source was set (FLevelLocals::HeatSource). No player to read: it stays.
+			DVector3 handNow = h.AnchorBase;
+			ResolveLineAnchor(Level, h.Anchor, handNow, h.AnchorPlayer);
+			const DVector3 moved = handNow - h.AnchorBase;
+			f.start += moved;
+			f.end += moved;
+		}
+		f.radiusStart = h.RadiusStart;
+		f.radiusEnd = h.RadiusEnd;
+		f.strength = h.Strength * fade * scale;
+		f.noiseScale = h.NoiseScale;
+		f.rise = h.Rise;
+	}
+
+	if (r_heatrefraction_test)
+	{
+		if (!HeatTestPlaced || Level->maptime < HeatTestLastMaptime)
+		{
+			const DAngle yaw = di->Viewpoint.Angles.Yaw;
+			HeatTestBase = di->Viewpoint.Pos + DVector3(yaw.Cos(), yaw.Sin(), 0.0) * 96.0;
+			HeatTestPlaced = true;
+			Printf("heat_refraction: test source placed at (%.0f, %.0f, %.0f)\n", HeatTestBase.X, HeatTestBase.Y, HeatTestBase.Z);
+		}
+		HeatTestLastMaptime = Level->maptime;
+
+		HeatSourceFrame &f = frames[count++];
+		f.start = HeatTestBase - DVector3(0.0, 0.0, 32.0);
+		f.end = HeatTestBase + DVector3(0.0, 0.0, 64.0);
+		f.radiusStart = 12.0;
+		f.radiusEnd = 28.0;
+		f.strength = 2.0 * scale;
+		f.noiseScale = 0.08;
+		f.rise = 20.0;
+	}
+
+	if (count == 0)
+		return;
+
+	const float levelSeconds = (float)(nowTics / (double)TICRATE);
+	const float linearizeA = 1.0f / screen->GetZFar() - 1.0f / screen->GetZNear();
+	const float linearizeB = max(1.0f / screen->GetZNear(), 1.e-8f);
+
+	// Each eye's matrices, ray terms and cull planes.
+	struct HeatEyeView
+	{
+		VSMatrix view;
+		VSMatrix viewToWorld;
+		double eyeX, eyeY, eyeZ;
+		float tanX, tanY, offX, offY;
+		double slopeX, slopeY, normX, normY, axisScale;
+	};
+
+	const int eyeSets = di->HasMultiviewViewpoints ? 2 : 1;
+	HeatEyeView eyes[2];
+	for (int eye = 0; eye < eyeSets; eye++)
+	{
+		const HWViewpointUniforms &vpu = di->HasMultiviewViewpoints ? di->MultiviewVPUniforms[eye] : di->VPUniforms;
+		HeatEyeView &ev = eyes[eye];
+
+		// Copies, so nothing here depends on which VSMatrix members are const.
+		ev.view = vpu.mViewMatrix;
+		VSMatrix projection = vpu.mProjectionMatrix;
+		if (!ev.view.inverseMatrix(ev.viewToWorld))
+			ev.viewToWorld.loadIdentity();
+		const float *vm = ev.view.get();
+		const float *inv = ev.viewToWorld.get();
+		const float *proj = projection.get();
+
+		// This eye in GL world axes: ViewToWorld's translation.
+		ev.eyeX = inv[12];
+		ev.eyeY = inv[13];
+		ev.eyeZ = inv[14];
+
+		ev.tanX = (proj[0] != 0.0f) ? 1.0f / proj[0] : 1.0f;
+		ev.tanY = (proj[5] != 0.0f) ? 1.0f / proj[5] : 1.0f;
+		ev.offX = proj[8];
+		ev.offY = proj[9];
+
+		// A conservative cull against this eye's frustum: the source's bounding ball, in
+		// view space, against the four side planes through the eye and the eye plane.
+		// The slopes are the shader's ray, (ndc + offset) x tan, at ndc -1 and 1; each
+		// axis takes the larger magnitude on both sides, so no sign convention can cull
+		// a visible source. The ball's radius grows by the view matrix's largest axis
+		// scale (the pixel stretch).
+		ev.slopeX = std::max(fabs((-1.0 + ev.offX) * ev.tanX), fabs((1.0 + ev.offX) * ev.tanX));
+		ev.slopeY = std::max(fabs((-1.0 + ev.offY) * ev.tanY), fabs((1.0 + ev.offY) * ev.tanY));
+		ev.normX = sqrt(1.0 + ev.slopeX * ev.slopeX);
+		ev.normY = sqrt(1.0 + ev.slopeY * ev.slopeY);
+		ev.axisScale = std::max({
+			sqrt((double)vm[0] * vm[0] + (double)vm[1] * vm[1] + (double)vm[2] * vm[2]),
+			sqrt((double)vm[4] * vm[4] + (double)vm[5] * vm[5] + (double)vm[6] * vm[6]),
+			sqrt((double)vm[8] * vm[8] + (double)vm[9] * vm[9] + (double)vm[10] * vm[10]) });
+	}
+
+	for (int i = 0; i < count; i++)
+	{
+		const HeatSourceFrame &f = frames[i];
+		// Game (x, y, z) -> GL world (x, z, y), as every beam and stamp upload.
+		const DVector3 startGL(f.start.X, f.start.Z, f.start.Y);
+		const DVector3 endGL(f.end.X, f.end.Z, f.end.Y);
+		const DVector3 centre = (startGL + endGL) * 0.5;
+		const double ballRadius = (endGL - startGL).Length() * 0.5 + std::max(f.radiusStart, f.radiusEnd);
+
+		// VISIBLE TO ANY EYE GOES TO EVERY EYE. Under layered multiview post-processing
+		// both eyes share one pair of pipeline images, and each eye's final image is taken
+		// to be where the last eye ended (VulkanRenderDevice::PostProcessScene), so both
+		// eyes must run exactly the same passes. A source one eye culled but the other did
+		// not would give one eye a bend pass the other lacks. A source outside an eye's
+		// view costs that eye only its early per-pixel exit.
+		bool visible = false;
+		for (int eye = 0; eye < eyeSets && !visible; eye++)
+		{
+			const HeatEyeView &ev = eyes[eye];
+			const float *vm = ev.view.get();
+			const double reach = ballRadius * ev.axisScale;
+			const double cx = vm[0] * centre.X + vm[4] * centre.Y + vm[8] * centre.Z + vm[12];
+			const double cy = vm[1] * centre.X + vm[5] * centre.Y + vm[9] * centre.Z + vm[13];
+			const double cz = vm[2] * centre.X + vm[6] * centre.Y + vm[10] * centre.Z + vm[14];
+			if (cz - reach >= 0.0) continue;                                         // wholly behind the eye
+			if ((cx + ev.slopeX * cz) / ev.normX > reach) continue;                  // right of the view
+			if ((-cx + ev.slopeX * cz) / ev.normX > reach) continue;                 // left of it
+			if ((cy + ev.slopeY * cz) / ev.normY > reach) continue;                  // above
+			if ((-cy + ev.slopeY * cz) / ev.normY > reach) continue;                 // below
+			visible = true;
+		}
+		if (!visible)
+			continue;
+
+		for (int eye = 0; eye < eyeSets; eye++)
+		{
+			const HeatEyeView &ev = eyes[eye];
+			HeatOffsetUniforms u = {};
+			u.SourceStart = FVector3((float)(startGL.X - ev.eyeX), (float)(startGL.Y - ev.eyeY), (float)(startGL.Z - ev.eyeZ));
+			u.RadiusStart = (float)f.radiusStart;
+			u.SourceEnd = FVector3((float)(endGL.X - ev.eyeX), (float)(endGL.Y - ev.eyeY), (float)(endGL.Z - ev.eyeZ));
+			u.RadiusEnd = (float)f.radiusEnd;
+			u.TanHalfFov = FVector2(ev.tanX, ev.tanY);
+			u.ProjOffset = FVector2(ev.offX, ev.offY);
+			u.Bend = (float)(f.strength * PPHeatRefraction::BEND_PER_UNIT);
+			u.NoiseScale = (float)f.noiseScale;
+			u.NoiseRise = (float)f.rise;
+			u.NoiseTime = levelSeconds;
+			u.LinearizeDepthA = linearizeA;
+			u.LinearizeDepthB = linearizeB;
+			memcpy(u.ViewToWorld, ev.viewToWorld.get(), sizeof(float) * 16);
+			pass.AddSource(eye, u);
+		}
+	}
+	pass.SetEyeSets(eyeSets);
+
+	PerfLog::AddCpuSample("fx.heatsources", (double)(I_nsTime() - startNs) / 1e6);
+}
+
 // r_beams_debug: one line every two seconds. Runs on every backend -- the
 // claim and style counts mean something on GL too.
 static void ReportBeamLines(FLevelLocals *Level)
@@ -3180,6 +3427,10 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// draws with the main view's list, which is the same world.
 	if (toscreen)
 		SyncViewLights(this);
+
+	// [HEATREFRACTION] This view's heat sources, per eye, for the heat shimmer pass --
+	// before DrawScene, so no portal view reaches them. Cleared when not toscreen.
+	SetupHeatSources(this, toscreen);
 
 	DrawScene(toscreen ? DM_MAINVIEW : DM_OFFSCREEN);
 	screen->mBones->Unmap();

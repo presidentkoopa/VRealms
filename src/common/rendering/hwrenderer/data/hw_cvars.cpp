@@ -353,3 +353,25 @@ int DrawnLineCapacity()
 {
 	return 8192;
 }
+
+// [HEATREFRACTION] HEAT SHIMMER ("Engine docs/FLAME_ENGINE_PLAN.md" F2): the image
+// behind a heat source (LevelLocals.SetHeatSource) bends, per eye, depth-aware.
+// The pass is PPHeatRefraction (hw_postprocess.h); the sources are resolved in
+// hw_drawinfo.cpp (SetupHeatSources). All three are renderer-read every frame, so
+// they respond with a menu open. Vulkan only: GL and GLES skip the effect.
+//
+// OFF BY DEFAULT, and off means SKIPPED: no source is published, the pass returns
+// before it draws or allocates anything, and the frame is exactly the frame without
+// this feature. It bends everything behind a heat source -- grab lasers and the Lance
+// included -- so it is the owner's switch, not a mod's. Archived, so a choice made in
+// the menu survives a restart.
+CVARD(Bool, r_heatrefraction, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "bend the image behind heat sources (heat shimmer); off = the pass never runs (Vulkan only)")
+// Multiplies every heat source's strength, so the shimmer can be judged in the
+// headset without a script change. 0 draws nothing but still runs the pass (use
+// r_heatrefraction to skip it); clamped to 0..4 where it is read.
+CVARD(Float, r_heatrefraction_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "heat shimmer strength multiplier for every heat source, 0-4 (Vulkan only)")
+// A test heat source that needs no mod: a rising column 96 map units ahead of where
+// you look at the moment this is switched on, fixed in the world until it is switched
+// off. Renderer-side only -- it is not a level slot, nothing in the playsim sees it.
+// Not archived: it is for an A/B, and it should not be waiting in the next session.
+CVARD(Bool, r_heatrefraction_test, false, CVAR_GLOBALCONFIG, "a test heat source ahead of where you look when switched on (heat shimmer A/B, Vulkan only)")
