@@ -35,6 +35,8 @@
 #include "vulkan/renderer/vk_renderstate.h"
 #include "vulkan/renderer/vk_descriptorset.h"
 #include "flatvertices.h"
+#include "printf.h"		// [SMOKEVOLUME] the external image guard's one line
+#include "v_text.h"
 
 VkPPRenderState::VkPPRenderState(VulkanRenderDevice* fb) : fb(fb)
 {
@@ -57,6 +59,24 @@ void VkPPRenderState::Draw()
 	if ((Output.Type == PPTextureType::LightMaskCurrent || Output.Type == PPTextureType::LightMaskNext) &&
 		!fb->GetTextureManager()->GetTexture(Output.Type, nullptr)->Image)
 		return;
+
+	// [SMOKEVOLUME] A pass reading an image the backend owns (PPTextureType::ExternalImage) that is not
+	// ready to read draws nothing: not allocated, or not in the layout a post-process read binds
+	// (VkTextureManager::GetTexture). The renderer publishes such a pass only when its images are
+	// ready this frame (SetupSmokeVolume), so this is a guard, and it says so once if it ever fires.
+	for (unsigned i = 0; i < Textures.Size(); i++)
+	{
+		if (Textures[i].Type == PPTextureType::ExternalImage && !fb->GetTextureManager()->GetTexture(Textures[i].Type, Textures[i].Texture)->Image)
+		{
+			static bool warned = false;
+			if (!warned)
+			{
+				warned = true;
+				Printf(TEXTCOLOR_RED "Postprocess: a pass named a backend image that is not ready to read -- that draw is skipped (logged once)\n");
+			}
+			return;
+		}
+	}
 
 	fb->GetRenderState()->EndRenderPass();
 

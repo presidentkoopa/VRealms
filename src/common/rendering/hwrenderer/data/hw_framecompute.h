@@ -247,10 +247,179 @@ inline SmokeVolumeBackendStatus& SmokeVolumeStatus()
 	return status;
 }
 
+//-----------------------------------------------------------------------------
+//
+// [LEVELFIELD] #8 PARTICLE COLLISION WITH THE WHOLE LEVEL ("Engine docs/
+// COLLISION_DEBRIS_MESH_PLAN.md" 8, "Engine docs/COLLISION_8_IMPL_NOTES.md").
+//
+// A signed distance field around the eye that particles sample: negative inside
+// solid, in map units, clamped to a band. Two levels -- a fine one close by, a
+// coarse one further out. The CPU side (hw_levelfield.cpp) decides where each
+// level's window is, which tiles need (re)baking, and writes each tile's column
+// part from SH1's solidity (sign) and the CURRENT floor and ceiling heights; the
+// backend (vk_levelfield.cpp, shaders/compute/field_bake.comp) copies that in and
+// takes the minimum with every nearby line's wall pieces, also from the current
+// planes. Nothing that can move comes from the load-time level mesh (review D1).
+//
+// TOROIDAL ADDRESSING. A texel holds the world cell congruent to it modulo the
+// volume's size (every size is whole tiles). A window move shifts nothing: the
+// tiles whose world meaning changed are invalidated (g = 0) and baked again. A
+// sample is trusted only inside its level's window and where g says baked.
+//
+// THE HEADER. Each frame's windows travel with the field as a tiny image written
+// by a GPU command in the same command stream as the invalidations and bakes, so
+// every draw -- whenever it was recorded -- reads a header and texels that agree.
+// gpuparticles.vp reads all three through the fixed set (vk_descriptorset.cpp,
+// bindings 5, 6 and 9).
+//
+// Presentation only: nothing here is read back into the playsim.
+//
+//-----------------------------------------------------------------------------
+
+inline constexpr int LEVEL_FIELD_LEVELS = 2;			// 0 fine, 1 coarse
+inline constexpr int LEVEL_FIELD_TILE_CELLS = 16;		// a tile is this many cells a side; every size is whole tiles
+inline constexpr int LEVEL_FIELD_TILE_TEXELS = LEVEL_FIELD_TILE_CELLS * LEVEL_FIELD_TILE_CELLS * LEVEL_FIELD_TILE_CELLS;
+inline constexpr int LEVEL_FIELD_BYTES_PER_CELL = 4;	// RG16F: r signed distance, g 1 = baked
+inline constexpr int LEVEL_FIELD_HEADER_TEXELS = 3;		// the header image is 3 x 1, RGBA32F
+
+inline constexpr int LEVEL_FIELD_QUALITY_MIN = 1;
+inline constexpr int LEVEL_FIELD_QUALITY_DEFAULT = 2;
+inline constexpr int LEVEL_FIELD_QUALITY_MAX = 3;
+
+// One level of the field at one quality (r_particlecollision_quality). Doom axes: x, y
+// horizontal, z up.
+struct LevelFieldSpec
+{
+	int SizeX = 0;
+	int SizeY = 0;
+	int SizeZ = 0;
+	int CellSize = 0;		// map units
+	int BandCells = 0;		// distances are exact up to this many cells; further is clamped to it
+
+	uint64_t Cells() const { return (uint64_t)SizeX * (uint64_t)SizeY * (uint64_t)SizeZ; }
+	double Band() const { return (double)BandCells * (double)CellSize; }
+};
+
+// The cell sizes and bands are the same at every quality (a spark rests as precisely
+// at 1 as at 3); the quality buys area. RG16F, 4 bytes a cell:
+//   1: fine 192 x 192 x  64 at 4 (768 x 768 x 256),    coarse 128 x 128 x 48 at 16 (2048 x 2048 x 768)    12.6 MB
+//   2: fine 256 x 256 x  96 at 4 (1024 x 1024 x 384),  coarse 192 x 192 x 64 at 16 (3072 x 3072 x 1024)   34.6 MB (default)
+//   3: fine 384 x 384 x 128 at 4 (1536 x 1536 x 512),  coarse 256 x 256 x 96 at 16 (4096 x 4096 x 1536)  100.7 MB
+inline LevelFieldSpec LevelFieldSpecFor(int quality, int level)
+{
+	static const LevelFieldSpec specs[LEVEL_FIELD_QUALITY_MAX - LEVEL_FIELD_QUALITY_MIN + 1][LEVEL_FIELD_LEVELS] =
+	{
+		{ { 192, 192,  64,  4, 8 }, { 128, 128, 48, 16, 6 } },
+		{ { 256, 256,  96,  4, 8 }, { 192, 192, 64, 16, 6 } },
+		{ { 384, 384, 128,  4, 8 }, { 256, 256, 96, 16, 6 } },
+	};
+	if (quality < LEVEL_FIELD_QUALITY_MIN) quality = LEVEL_FIELD_QUALITY_MIN;
+	if (quality > LEVEL_FIELD_QUALITY_MAX) quality = LEVEL_FIELD_QUALITY_MAX;
+	if (level < 0) level = 0;
+	if (level >= LEVEL_FIELD_LEVELS) level = LEVEL_FIELD_LEVELS - 1;
+	return specs[quality - LEVEL_FIELD_QUALITY_MIN][level];
+}
+
+// What one frame may hand over: tiles baked (their column parts are staged as texels,
+// 1 MiB at 64 tiles), line records (48 bytes each), invalidation boxes.
+inline constexpr int LEVEL_FIELD_TILES_PER_FRAME = 64;
+inline constexpr int LEVEL_FIELD_LINES_PER_FRAME = 16384;
+inline constexpr int LEVEL_FIELD_BOXES_PER_FRAME = 512;
+
+// One line near a tile being baked, std430 with no padding -- must match FieldLine in
+// shaders/compute/field_bake.comp. Its WALL PIECES are where exactly one side of it is
+// open: a one-sided line's wall from its sector's floor to its ceiling; a two-sided
+// line's lower part between the two floors and upper part between the two ceilings.
+// Heights at both ends from the planes as they are this frame, linear along the line.
+// A part whose top is not above its bottom is no part.
+struct LevelFieldLine
+{
+	float Segment[4];		// x1, y1, x2, y2: map units, Doom axes
+	float PartsStart[4];	// at (x1, y1): lower bottom, lower top, upper bottom, upper top
+	float PartsEnd[4];		// the same at (x2, y2)
+};
+
+// One tile to bake this frame.
+struct LevelFieldTile
+{
+	int32_t Level = 0;
+	int32_t TexelTile[3] = { 0, 0, 0 };	// which tile of the volume
+	int32_t WorldCell[3] = { 0, 0, 0 };	// the world cell its first texel holds
+	int32_t LineFirst = 0;				// its lines: Lines[LineFirst .. LineFirst + LineCount)
+	int32_t LineCount = 0;
+	// LEVEL_FIELD_TILE_TEXELS floats at Distances + DistanceOffset, x fastest, then y, then
+	// z (a 3D image's texel order): the column part, signed -- negative where the cell's
+	// centre is solid -- and its magnitude the vertical distance to the column's nearest
+	// floor or ceiling, clamped to the band.
+	size_t DistanceOffset = 0;
+};
+
+// Texel tiles [TexelTileMin, TexelTileMax) of one level, not wrapping, to mark unbaked.
+struct LevelFieldBox
+{
+	int32_t Level = 0;
+	int32_t TexelTileMin[3] = { 0, 0, 0 };
+	int32_t TexelTileMax[3] = { 0, 0, 0 };
+};
+
+// [LEVELFIELD] This frame's level field, decided on the CPU (hw_levelfield.cpp). The
+// backend does it in this order: allocate or free, ClearLevel, Invalidate, the header,
+// then the tiles (their column parts copied in, then the line pass).
+struct LevelFieldFrame
+{
+	// The field should exist: r_particlecollision on, Vulkan, and a particle that collides
+	// with the level was spawned on this map within the linger. False frees it.
+	bool Active = false;
+	int Quality = LEVEL_FIELD_QUALITY_DEFAULT;
+	LevelFieldSpec Levels[LEVEL_FIELD_LEVELS];
+
+	// Every texel of the level unbaked (a new window, a jump, a new map).
+	bool ClearLevel[LEVEL_FIELD_LEVELS] = { false, false };
+
+	const LevelFieldBox* Invalidate = nullptr;
+	int InvalidateCount = 0;
+
+	const LevelFieldTile* Tiles = nullptr;
+	int TileCount = 0;
+	const float* Distances = nullptr;
+	size_t DistanceCount = 0;
+	const LevelFieldLine* Lines = nullptr;
+	int LineCount = 0;
+
+	// The header image's texels (gpuparticles.vp):
+	//   [0] the fine window: xyz its first world cell (Doom axes), w its cell size in map
+	//       units (0 = no level)
+	//   [1] the coarse window, the same
+	//   [2] x 1 = the field may be used; y 1 = `collide = plane` definitions use it too
+	//       (r_particlecollision_test); z the fine band, w the coarse band (map units)
+	float Header[LEVEL_FIELD_HEADER_TEXELS][4] = {};
+};
+
+// [LEVELFIELD] What the backend did, for the CPU side's NEXT frame. Renderer-internal
+// (written by vk_levelfield.cpp, read by hw_levelfield.cpp); never the playsim. Epoch
+// rises with every allocation and every failure that emptied the volumes, so the CPU
+// side knows its record of what is baked no longer holds.
+struct LevelFieldBackendStatus
+{
+	bool Allocated = false;
+	int Quality = 0;
+	int RefusedQuality = 0;		// a quality this device refused until collision stops being asked for; 0 = none
+	uint64_t Epoch = 0;
+};
+
+inline LevelFieldBackendStatus& LevelFieldStatus()
+{
+	static LevelFieldBackendStatus status;
+	return status;
+}
+
 struct FrameComputeInput
 {
 	SmokeVolumeFrame Smoke;
 
 	// [13d] the smoke light grid's per-frame data (r_smoke_light_quality) joins Smoke.
-	// [LEVELFIELD] #8, [DEBRISPOOL] #9, [SURFACEDAMAGE] #17: their frame data goes here.
+	// [DEBRISPOOL] #9, [SURFACEDAMAGE] #17: their frame data goes here.
+
+	// [LEVELFIELD] #8, filled by LevelField::PrepareFrame (hw_levelfield.cpp).
+	LevelFieldFrame LevelField;
 };

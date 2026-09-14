@@ -42,6 +42,7 @@
 
 class VulkanRenderDevice;
 class VkSmokeVolume;
+class VkLevelField;	// [LEVELFIELD]
 struct FrameComputeInput;
 
 // One binding of a compute program's descriptor set (set 0), compute stage.
@@ -108,6 +109,10 @@ public:
 	// Null until smoke is first asked for.
 	VkSmokeVolume* GetSmokeVolume() const { return mSmokeVolume.get(); }
 
+	// [LEVELFIELD] The level collision field (#8), whose volumes and header the fixed set binds
+	// (VkDescriptorSetManager::UpdateFixedSet). Null until a colliding particle is first spawned.
+	VkLevelField* GetLevelField() const { return mLevelField.get(); }
+
 private:
 	VulkanRenderDevice* fb = nullptr;
 
@@ -117,6 +122,7 @@ private:
 	std::unique_ptr<VulkanSampler> mVolumeSampler;
 
 	std::unique_ptr<VkSmokeVolume> mSmokeVolume;
+	std::unique_ptr<VkLevelField> mLevelField;	// [LEVELFIELD]
 
 	bool mWorkBegun = false;
 };

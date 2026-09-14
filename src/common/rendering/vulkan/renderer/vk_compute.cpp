@@ -20,6 +20,7 @@
 
 #include "vk_compute.h"
 #include "vk_smokevolume.h"
+#include "vk_levelfield.h"	// [LEVELFIELD]
 #include "vk_renderstate.h"
 #include "vulkan/system/vk_renderdevice.h"
 #include "vulkan/system/vk_commandbuffer.h"
@@ -40,8 +41,8 @@ VkComputeManager::VkComputeManager(VulkanRenderDevice* fb) : fb(fb)
 
 VkComputeManager::~VkComputeManager()
 {
-	// Members go in reverse order: the smoke volume (and its descriptor sets) first,
-	// then the sampler, then the pools. The device is idle by now (the render device's
+	// Members go in reverse order: the level field and the smoke volume (and their descriptor
+	// sets) first, then the sampler, then the pools. The device is idle by now (the render device's
 	// destructor waits for it), so nothing needs a delete list.
 }
 
@@ -61,7 +62,14 @@ void VkComputeManager::RunFrame(const FrameComputeInput& input)
 	if (mSmokeVolume != nullptr)
 		mSmokeVolume->Run(input.Smoke);
 
-	// [LEVELFIELD] #8, [DEBRISPOOL] #9, [SURFACEDAMAGE] #17 run here, after the smoke.
+	// [LEVELFIELD] #8: constructed the first time a colliding particle is spawned; it frees its
+	// volumes itself when collision is no longer asked for.
+	if (mLevelField == nullptr && input.LevelField.Active)
+		mLevelField = std::make_unique<VkLevelField>(this);
+	if (mLevelField != nullptr)
+		mLevelField->Run(input.LevelField);
+
+	// [DEBRISPOOL] #9, [SURFACEDAMAGE] #17 run here, after the level field.
 
 	if (mWorkBegun)
 	{

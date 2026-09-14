@@ -348,6 +348,13 @@ public:
 	// The original size of the framebuffer as selected in the video menu.
 	uint64_t FrameTime = 0;
 
+	// RS FORK -- WHICH DISPLAYED FRAME THIS IS, counted, not timed. FrameTime is in
+	// milliseconds, so two frames inside one millisecond share it and a cache keyed on
+	// it can run twice or skip. Bumped beside FrameTime in D_Display, once per displayed
+	// frame and so once for both eyes. Read by the draw-time reach solve
+	// (r_data/model_reach.cpp) to solve once per frame rather than once per eye.
+	uint64_t FrameCount = 0;
+
 private:
 	uint64_t fpsLimitTime = 0;
 

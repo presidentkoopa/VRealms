@@ -97,6 +97,19 @@ public:
 	// uses it), levelSerial FLevelLocals::LevelDataSerial.
 	void PrepareFrame(FLevelLocals* Level, const DVector3& eye, double viewYaw, double ticFrac, uint64_t levelSerial, SmokeVolumeFrame& out);
 
+	// [13c] What this frame's PrepareFrame decided, for the drawing: SetupSmokeVolume
+	// (hw_drawinfo.cpp) reads it later in the same frame. HasSmoke is false whenever nothing may
+	// be drawn: no level, smoke off or not asked for, a refused quality, or the volume quiet.
+	struct DrawState
+	{
+		bool HasSmoke = false;
+		int Quality = 0;
+		SmokeGridSpec Grid;
+		int OriginCell[3] = { 0, 0, 0 };	// the box's first cell in world cells, as SmokeVolumeFrame
+		float TicFrac = 0.f;
+	};
+	const DrawState& GetDrawState() const { return mDraw; }
+
 private:
 	struct QueueCursor
 	{
@@ -166,6 +179,9 @@ private:
 	void FillSimSettings(FLevelLocals* Level, SmokeVolumeFrame& out) const;
 
 	uint64_t mLevelSerial = 0;
+
+	// [13c] GetDrawState's answer for this frame.
+	DrawState mDraw;
 
 	// Demand and linger.
 	bool mHasDemand = false;

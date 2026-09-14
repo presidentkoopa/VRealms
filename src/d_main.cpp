@@ -1599,6 +1599,7 @@ void D_Display ()
 	}
 
 	screen->FrameTime = I_msTimeFS();
+	screen->FrameCount++;	// RS fork -- DFrameBuffer::FrameCount (v_video.h)
 	TexAnim.UpdateAnimations(screen->FrameTime);
 	R_UpdateSky(I_GetTimeFrac());
 	screen->BeginFrame();

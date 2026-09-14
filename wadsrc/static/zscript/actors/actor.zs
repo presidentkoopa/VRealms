@@ -2204,6 +2204,89 @@ class Actor : Thinker native
 	// the origin -- so none of them can answer "is it there".
 	native int FindBoneIndex(Name bone);
 
+	// RS fork -- DRAW-TIME JOINT POSES (render only; src/r_data/model_reach.h).
+	//
+	// Bend a joint of this actor's rigged model where it is DRAWN, on top of its
+	// animation and the stock bone overrides above, every frame -- so it answers at
+	// the display rate and with a menu open. Works on decoupled and non-decoupled
+	// models alike, needs no model data, and is never saved.
+	//
+	// RENDER ONLY, ON PURPOSE: nothing here changes what GetBoneMatrix,
+	// TransformByNamedBone or GetBonePosition return, and there is no getter. A pose
+	// built from this machine's controllers can change only this machine's pixels, so
+	// it can never decide anything in a netgame. Never use it for something the game
+	// must agree on -- use SetBoneRotation for that.
+	//
+	// Modes: MJP_Multiply turns the joint by rotation in its own local frame (the
+	// drawn local rotation times rotation), MJP_Replace sets its local rotation,
+	// MJP_Hide collapses the joint and everything under it, MJP_Clear removes the
+	// pose. Joints are named; a name not on the drawn model is ignored (logged once).
+	// Calling again with the same arguments changes nothing, so re-asserting every
+	// tic is fine -- and is how a pose survives a savegame load.
+	//
+	// SetModelJointDrawOffset is the translation half of the same per-joint entry, in the
+	// joint's PARENT's local units like a bone translation: MJO_Add adds to the drawn local
+	// translation, MJO_Replace sets it, MJO_Clear removes it. Rotation and translation
+	// together turn a joint about a point that is not its own origin.
+	enum EModelJointDrawPose
+	{
+		MJP_Clear    = 0,
+		MJP_Multiply = 1,
+		MJP_Replace  = 2,
+		MJP_Hide     = 3,
+
+		MJO_Clear    = 0,
+		MJO_Add      = 1,
+		MJO_Replace  = 2,
+	};
+	native bool SetModelJointDrawPose(Name joint, Quat rotation, int mode = MJP_Multiply, int modelIndex = 0);
+	native bool SetModelJointDrawOffset(Name joint, Vector3 offset, int mode = MJO_Add, int modelIndex = 0);
+	// 'None' clears every joint; modelIndex -1 clears every model index. Both halves.
+	native void ClearModelJointDrawPose(Name joint = 'None', int modelIndex = -1);
+
+	// RS fork -- REACH CHAINS (render only; src/r_data/model_reach.h).
+	//
+	// Three joints of this actor's model -- root -> mid -> end, e.g. upper arm,
+	// forearm, wrist -- bent every drawn frame so the end joint lands on a point of
+	// ANOTHER actor's model as that model is drawn this frame: its controller, its
+	// MODELDEF offsets and its live placement sliders all included. The target leads;
+	// it is never moved. Up to 4 chains per actor (0..3). Render only, never saved,
+	// no getter -- the same contract as the joint poses above.
+	//
+	// ALL VECTORS ARE IN MODEL SPACE the way ModelPointToWorld takes them: the
+	// renderer's, y up, so a point or direction read from the model FILE as (x, y, z)
+	// goes in as (x, z, y).
+	//
+	// SetModelReachChain: the joints, and the TUNING cvar prefix the renderer reads
+	// every frame (an absent cvar keeps its default): <tuning>_stretch_max 1.25,
+	// _soft_start 0.90, _pole_out 1.0, _pole_down 0.6, _pole_back 0.35, _align 1.0,
+	// _align_max 40, _align_fade_lo 0.10, _align_fade_span 0.25, _align_conf_lo 0.05,
+	// _align_conf_span 0.20, _swivel_rate 0, _twist 1.0, _twist_taper 110,
+	// _twist_conf_lo 0.15, _twist_conf_span 0.30, _twist_ofs 0, _twist_rate 0,
+	// _follow 0.25, _follow_max 25. Call this first; the calls below need it.
+	// Every joint along each bone rides it by where it sits on it: a stretch slides it
+	// along the bone, and along the mid bone the twist turns it in proportion (0 at
+	// mid, 1 at end). Everything under the end joint rides the end joint.
+	native bool SetModelReachChain(int chain, Name rootJoint, Name midJoint, Name endJoint, Name tuning = 'None', int modelIndex = 0);
+	// The rig's own directions in this model's space. The elbow bends toward
+	// outward * _pole_out + down * _pole_down + back * _pole_back, so the arm's SIDE is
+	// the sign of outward (a negative _pole_out slider flips it live). twistRef: the
+	// direction on the end bone that must roll onto the target's twistRef (for an arm,
+	// its own index-finger side at its animated pose); zero turns twist off.
+	native bool SetModelReachFrame(int chain, Vector3 outward, Vector3 down, Vector3 back, Vector3 twistRef = (0,0,0));
+	// What to reach. point is on reachTarget's model, in ITS model space and model
+	// units (so a hand Scale change does not move it); <pointCVar>_ofs_x/_y/_z are added
+	// live. fingerDir (reachTarget's model space, from point toward the fingers) turns
+	// the elbow so the forearm follows the hand; zero turns that off. twistRef
+	// (reachTarget's model space) is the target's index-finger side. A null reachTarget
+	// stands the chain down: the model is drawn as animated.
+	native bool SetModelReachTarget(int chain, Actor reachTarget, Vector3 point, Vector3 fingerDir = (0,0,0), Vector3 twistRef = (0,0,0), Name pointCVar = 'None');
+	// An ancestor of the root that leans a little toward the target first (a clavicle):
+	// _follow of the swing, capped at _follow_max degrees. 'None' turns it off.
+	native bool SetModelReachFollowJoint(int chain, Name joint);
+	// chain -1 clears every chain.
+	native void ClearModelReachChain(int chain = -1);
+
 	native version("4.15.1") Vector3, Vector3, Vector3 TransformByNamedBone(Name boneName, Vector3 position, Vector3 forward = (1,0,0), Vector3 up = (0,0,1), bool include_offsets = true);
 
 	version("4.15.1") Vector3, Vector3, Vector3 GetBonePosition(int boneIndex, bool include_offsets = true)

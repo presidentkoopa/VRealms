@@ -43,6 +43,12 @@ EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
 EXTERN_CVAR(Bool, r_meshparticles)	// [MESHPARTICLES] hw_meshparticles.cpp
 EXTERN_CVAR(Bool, gl_bloom_pin_beams)	// [LIGHTMASK] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Int, r_smoke_steps)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Float, r_smoke_density_scale)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_smoke_debugslice)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_particlecollision)	// [LEVELFIELD] hw_levelfield.cpp
+EXTERN_CVAR(Int, r_particlecollision_quality)	// [LEVELFIELD] hw_levelfield.cpp
+EXTERN_CVAR(Bool, r_particlecollision_test)	// [LEVELFIELD] hw_levelfield.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -206,7 +212,11 @@ namespace
 				"is ONE smoke volume step, counted per step, not per frame (avg/p95/max per step; its GPU group nests inside "
 				"fx.compute: its kernels, advection and tile maps). fx.smokeshift is one recentre of the volume, per run. "
 				"fx.sectorplanes is the renderer's sector plane poll; fx.smokemask the solid mask's rasterisation on the CPU "
-				"(frames with mask work only).\n\n";
+				"(frames with mask work only). pp.smoke is the smoke volume's drawing per eye (depth, march, blur, composite; "
+				"only while there is smoke); a pp.lightmaskcarry beside it dims the light mask by the same haze; fx.smokedraw "
+				"(cpu_fx_ms) is its per-eye setup. fx.levelfield is the particle collision field: on cpu_fx_ms its demand "
+				"scan, windows and tile rasterisation (SH1, within 1 ms a frame while it builds or a door moves), on gpu_ms "
+				"its invalidations, uploads and line bakes (frames with field work only).\n\n";
 			HeaderWritten = true;
 		}
 
@@ -240,10 +250,14 @@ namespace
 		// [HEATREFRACTION] And the heat shimmer switch, so a pp.heatoffset / pp.heatwarp
 		// before/after labels itself.
 		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);
-		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.smokemask
+		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.smokemask / pp.smoke
 		// before/after labels itself.
-		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g",
-			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest, (double)(float)*r_smoke_dissipation_scale);
+		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g r_smoke_steps=%d r_smoke_density_scale=%g r_smoke_debugslice=%d",
+			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest, (double)(float)*r_smoke_dissipation_scale,
+			(int)*r_smoke_steps, (double)(float)*r_smoke_density_scale, (int)*r_smoke_debugslice);
+		// [LEVELFIELD] And the particle collision switches, so a fx.levelfield before/after labels itself.
+		out.AppendFormat(" r_particlecollision=%d r_particlecollision_quality=%d r_particlecollision_test=%d",
+			(int)*r_particlecollision, (int)*r_particlecollision_quality, (int)*r_particlecollision_test);
 		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
 		// (lightmask: 1 while the scene draws the mask this frame).
 		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",

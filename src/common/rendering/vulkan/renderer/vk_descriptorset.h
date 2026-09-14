@@ -73,6 +73,7 @@ private:
 	void CreateFixedSetLayout();
 	void CreateHWBufferPool();
 	void CreateFixedSetPool();
+	void EnsureLevelFieldStandIns();	// [LEVELFIELD]
 
 	std::unique_ptr<VulkanDescriptorSet> AllocatePPDescriptorSet(VulkanDescriptorSetLayout* layout);
 
@@ -90,6 +91,15 @@ private:
 	int TextureDescriptorSetsLeft = 0;
 	int TextureDescriptorsLeft = 0;
 	std::vector<std::unique_ptr<VulkanDescriptorPool>> TextureDescriptorPools;
+
+	// [LEVELFIELD] Fixed set bindings 5, 6 and 9 while the level field does not exist: a 1-texel volume
+	// whose g (baked) is 0 and a zero header, so gpuparticles.vp finds "no level"; and the field's sampler
+	// (linear, repeating on u, v and w). Declared before the sets, so the sets go first on destruction.
+	std::unique_ptr<VulkanImage> LevelFieldStandIn;
+	std::unique_ptr<VulkanImageView> LevelFieldStandInView;
+	std::unique_ptr<VulkanImage> LevelFieldHeaderStandIn;
+	std::unique_ptr<VulkanImageView> LevelFieldHeaderStandInView;
+	std::unique_ptr<VulkanSampler> LevelFieldSampler;
 
 	std::unique_ptr<VulkanDescriptorSet> HWBufferSet;
 	std::unique_ptr<VulkanDescriptorSet> FixedSet;

@@ -133,6 +133,32 @@ CUSTOM_CVAR(Int, r_lightmask_debug, 0, 0)
 	if (self > 2) self = 2;
 }
 
+// [SMOKEVOLUME] THE SMOKE VOLUME'S DRAWING ("Engine docs/SMOKE_VOLUME_PLAN.md" 13c; PPSmokeVolume in
+// hw_postprocess.h). The volume's own switches -- r_smoke, r_smoke_quality, r_smoke_dissipation_scale
+// and the test source -- live with the simulation in hw_cvars.cpp; these three belong to the
+// post-process pass. All are read by the renderer every frame (SetupSmokeVolume, hw_drawinfo.cpp), so
+// they respond with a menu open. OpenGL and GLES draw no smoke.
+//
+// r_smoke_steps: the most samples one view ray takes through the smoke, 16..128. They are spread over
+// only the stretch of the ray that crosses tiles holding smoke, so a small cloud in a big room gets
+// every one. More is smoother and makes pp.smoke cost more.
+CUSTOM_CVARD(Int, r_smoke_steps, 48, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the most samples a view ray takes through the smoke volume, 16-128 (Vulkan only)")
+{
+	if (self < 16) self = 16;
+	if (self > 128) self = 128;
+}
+
+// r_smoke_density_scale: the player's "Smoke density". It multiplies how strongly smoke hides what is
+// behind it and how much it glows, on top of the mod's own look (SetSmokeLook's absorption). 1 = as the
+// mod made it; 0 = invisible, and then the pass does not run at all. Clamped 0..16 where it is read.
+CVARD(Float, r_smoke_density_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "multiplies how thick the smoke volume looks, 0-16 (Vulkan only)")
+
+// r_smoke_debugslice: a test view. It shows the smoke's density on a level plane a little below your
+// eyes, over the scene, inside the smoke box: blue where the smoke is thin, white where it is thick, and
+// green where the simulation's tiles are awake but nearly empty. It draws only while there is smoke.
+// Not saved.
+CVARD(Bool, r_smoke_debugslice, false, 0, "show the smoke volume's density on a level plane below the eye (debug; Vulkan only)")
+
 CVAR(Float, gl_exposure_scale, 1.3f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_min, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_base, 0.35f, CVAR_ARCHIVE)

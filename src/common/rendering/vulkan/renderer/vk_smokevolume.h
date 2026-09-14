@@ -52,6 +52,7 @@
 
 #include <zvulkan/vulkanobjects.h>
 #include "hw_framecompute.h"
+#include "vulkan/textures/vk_imagetransition.h"	// [13c] VkTextureImage: a post-process pass binds the volumes
 
 class VulkanRenderDevice;
 class VkComputeManager;
@@ -80,17 +81,22 @@ public:
 	VulkanImageView* GetSolidMaskView() const { return mSolidMask.View.get(); }
 	// [13c] One texel per SMOKE_TILE_CELLS^3 cells: 1 = the tile may hold smoke.
 	VulkanImageView* GetTileActiveView() const { return mTileActive.View.get(); }
+	// [13c] The images themselves, for the drawing's external image resolve (VkTextureManager::
+	// GetTexture, PPTextureType::ExternalImage). A post-process pass may bind one only while its
+	// Layout is SHADER_READ_ONLY_OPTIMAL. Run puts density, heat and the tile map there at its end on
+	// a frame with smoke to draw, and takes every volume back to GENERAL before its next compute work.
+	VkTextureImage* GetDensityHeatImage(int stepsAgo) { return &mDensityHeat[stepsAgo == 0 ? mLatest : 1 - mLatest]; }
+	VkTextureImage* GetTileActiveImage() { return &mTileActive; }
 	// [13c] The box's first cell in world cells (x CellSize = map units), and whether the
 	// CPU's bounds say visible smoke may exist -- both as of the last Run.
 	const int* GetOriginCell() const { return mOriginCell; }
 	bool HasSmoke() const { return mHasSmoke; }
 
 private:
-	struct Volume
-	{
-		std::unique_ptr<VulkanImage> Image;
-		std::unique_ptr<VulkanImageView> View;
-	};
+	// [13c] A VkTextureImage (Image and View, as before), so a post-process pass can bind one
+	// (VkDescriptorSetManager::GetInput) and its Layout is tracked. Every volume is GENERAL from its
+	// allocation on, except while the drawing reads it (RestoreComputeLayouts, PrepareDrawLayouts).
+	using Volume = VkTextureImage;
 
 	bool Allocate(int quality, const SmokeGridSpec& grid);
 	bool CreateVolume(Volume& volume, VkFormat format, int width, int height, int depth, const char* name);
@@ -99,6 +105,11 @@ private:
 	void ClearImage(Volume& volume, float value);
 	void ClearContents();
 	void ClearEverything();
+	// [13c] Every volume back to GENERAL (start of Run), and density, heat and the tile map to
+	// SHADER_READ_ONLY_OPTIMAL for the drawing (end of Run, only with smoke to draw). Each records
+	// one barrier, and only when a layout actually changes.
+	void RestoreComputeLayouts();
+	void PrepareDrawLayouts();
 	bool EnsurePrograms();
 	bool EnsureSets();
 	void UploadMask(const SmokeVolumeFrame& frame);

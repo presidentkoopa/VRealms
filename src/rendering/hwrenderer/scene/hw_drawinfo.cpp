@@ -44,6 +44,8 @@
 #include "hw_meshparticles.h"	// [MESHPARTICLES] mesh particles: their sync, the view light gate, the opaque-pass draw
 #include "a_dynlight.h"	// [VIEWLIGHTS] FDynamicLight, walked to fill it
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
+#include "hw_smokevolume.h"	// [SMOKEVOLUME] SmokeVolume::GetDrawState, for SetupSmokeVolume
+#include "hwrenderer/postprocessing/hw_postprocess_cvars.h"	// [SMOKEVOLUME] r_smoke_steps, r_smoke_density_scale, r_smoke_debugslice
 #include "hw_vrmodes.h"
 #include "hw_vrwheel.h"
 #include "hw_clipper.h"
@@ -828,6 +830,150 @@ static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
 	pass.SetEyeSets(eyeSets);
 
 	PerfLog::AddCpuSample("fx.heatsources", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//==========================================================================
+//
+// [SMOKEVOLUME] This scene's smoke volume march, per eye, for the smoke pass (PPSmokeVolume,
+// hw_postprocess.h; "Engine docs/SMOKE_VOLUME_PLAN.md" 13c).
+//
+// MAIN VIEW ONLY and before DrawScene, like SetupHeatSources: a camera texture has no post pass, a
+// save picture's post pass must not draw the main view's march, and portals run RenderScene again
+// with their own views.
+//
+// PUBLISHED ONLY WHEN THERE IS SMOKE TO DRAW. All of these must hold:
+//   - Vulkan and r_smoke;
+//   - the CPU side's bound says visible smoke may exist in its box this frame
+//     (SmokeVolume::GetDrawState, decided by PrepareFrameCompute before the eye loop);
+//   - the backend holds the volume at that quality (SmokeVolumeStatus, written by this frame's
+//     RunFrameCompute, which also put the volume's images in the layout the pass reads them in);
+//   - something to show: the look's absorption x r_smoke_density_scale above 0, or the debug slice.
+// Otherwise the pass returns on its first line and the frame is the frame without it.
+//
+// PER EYE (review S8): a multiview scene publishes a march for each eye, from
+// MultiviewVPUniforms[0] and [1]; any other scene publishes one from VPUniforms, which the next
+// eye's own ProcessScene replaces before that eye's post. There is no cull: the box is placed around
+// the viewer (hw_smokevolume.cpp), so every eye looks out from inside it, and both sets are always
+// published together.
+//
+// THE LIGHT, 13c ONLY: the smoke's tint x its ambient x the light of the sector the view is in,
+// eased over a quarter of a second so that walking through a doorway does not flash every cloud at
+// once. It is one value for the frame; 13d's light grid gives each place its own light.
+//
+//==========================================================================
+
+// How far below the eye r_smoke_debugslice's plane lies, map units.
+static constexpr double SMOKE_DEBUG_SLICE_BELOW_EYE = 16.0;
+// The time constant of the smoke's light following the view sector's light, seconds.
+static constexpr double SMOKE_LIGHT_EASE_SECONDS = 0.25;
+
+// The eased light, kept per displayed frame: both eyes of a frame read the same value.
+static bool SmokeLightValid = false;
+static uint64_t SmokeLightFrameTime = 0;
+static uint64_t SmokeLightSerial = 0;
+static double SmokeLightEased[3] = { 0.0, 0.0, 0.0 };
+
+static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
+{
+	PPSmokeVolume &pass = hw_postprocess.smokevolume;
+	pass.ClearEyes();
+
+	FLevelLocals *Level = di->Level;
+	if (!toscreen || !r_smoke || Level == nullptr || !screen->IsVulkan())
+		return;
+
+	const SmokeVolume::DrawState &draw = SmokeVolume::Get().GetDrawState();
+	const SmokeVolumeBackendStatus &status = SmokeVolumeStatus();
+	if (!draw.HasSmoke || !status.Allocated || status.Quality != draw.Quality || draw.Grid.Cells() == 0 || draw.Grid.CellSize <= 0)
+		return;
+
+	// The look (SetSmokeLook) and the player's "Smoke density".
+	const FLevelLocals::SmokeLookSettings &look = Level->SmokeLook;
+	const bool debugSlice = r_smoke_debugslice;
+	double densityScale = r_smoke_density_scale;
+	if (!(densityScale >= 0.0))
+		densityScale = 0.0;		// written this way so a NaN lands on 0 too
+	densityScale = std::min(densityScale, 16.0);
+	const double extinction = look.Absorption * SMOKE_EXTINCTION_PER_MAP_UNIT * densityScale;
+	if (!(extinction > 0.0) && !debugSlice)
+		return;		// nothing would hide anything or glow: skipped, not drawn at zero
+
+	const uint64_t startNs = I_nsTime();
+
+	// The light of the sector the view is in, eased over the frame clock (screen->FrameTime, set once
+	// per displayed frame, so the second eye changes nothing). A new map or savegame snaps it.
+	double target[3] = { 1.0, 1.0, 1.0 };
+	if (di->Viewpoint.sector != nullptr)
+	{
+		const sector_t *sec = di->Viewpoint.sector;
+		const double bright = clamp(sec->lightlevel / 255.0, 0.0, 1.0);
+		const PalEntry color = sec->Colormap.LightColor;
+		target[0] = bright * color.r / 255.0;
+		target[1] = bright * color.g / 255.0;
+		target[2] = bright * color.b / 255.0;
+	}
+	const uint64_t now = screen->FrameTime;
+	if (!SmokeLightValid || SmokeLightSerial != Level->LevelDataSerial || now < SmokeLightFrameTime)
+	{
+		for (int c = 0; c < 3; c++)
+			SmokeLightEased[c] = target[c];
+	}
+	else if (now != SmokeLightFrameTime)
+	{
+		const double seconds = std::min((double)(now - SmokeLightFrameTime) / 1000.0, 1.0);
+		const double keep = exp(-seconds / SMOKE_LIGHT_EASE_SECONDS);
+		for (int c = 0; c < 3; c++)
+			SmokeLightEased[c] = target[c] + (SmokeLightEased[c] - target[c]) * keep;
+	}
+	SmokeLightValid = true;
+	SmokeLightFrameTime = now;
+	SmokeLightSerial = Level->LevelDataSerial;
+
+	const FVector3 lightColor(
+		(float)(look.Tint.r / 255.0 * look.Ambient * SmokeLightEased[0]),
+		(float)(look.Tint.g / 255.0 * look.Ambient * SmokeLightEased[1]),
+		(float)(look.Tint.b / 255.0 * look.Ambient * SmokeLightEased[2]));
+
+	const double cell = draw.Grid.CellSize;
+	// The grid's minimum corner in GL world axes (map x, map z, map y), as every beam upload.
+	const double cornerGL[3] = { draw.OriginCell[0] * cell, draw.OriginCell[2] * cell, draw.OriginCell[1] * cell };
+	const int steps = clamp((int)r_smoke_steps, 16, 128);
+
+	const int eyeSets = di->HasMultiviewViewpoints ? 2 : 1;
+	for (int eye = 0; eye < eyeSets; eye++)
+	{
+		const HWViewpointUniforms &vpu = di->HasMultiviewViewpoints ? di->MultiviewVPUniforms[eye] : di->VPUniforms;
+
+		// Copies, so nothing here depends on which VSMatrix members are const (as SetupHeatSources).
+		VSMatrix view = vpu.mViewMatrix;
+		VSMatrix projection = vpu.mProjectionMatrix;
+		VSMatrix viewToWorld;
+		if (!view.inverseMatrix(viewToWorld))
+			viewToWorld.loadIdentity();
+		const float *inv = viewToWorld.get();
+		const float *proj = projection.get();
+
+		SmokeMarchUniforms u = {};
+		memcpy(u.ViewToWorld, inv, sizeof(float) * 16);
+		u.TanHalfFov = FVector2(proj[0] != 0.0f ? 1.0f / proj[0] : 1.0f, proj[5] != 0.0f ? 1.0f / proj[5] : 1.0f);
+		u.ProjOffset = FVector2(proj[8], proj[9]);
+		// Relative to this eye: ViewToWorld's translation is the eye in GL world axes.
+		u.BoxMin = FVector3((float)(cornerGL[0] - inv[12]), (float)(cornerGL[1] - inv[13]), (float)(cornerGL[2] - inv[14]));
+		u.CellSize = (float)cell;
+		u.GridSize = FVector3((float)draw.Grid.SizeX, (float)draw.Grid.SizeY, (float)draw.Grid.SizeZ);
+		u.TicFrac = clamp<float>(draw.TicFrac, 0.0f, 1.0f);
+		u.TileCount = FVector3((float)(draw.Grid.SizeX / SMOKE_TILE_CELLS), (float)(draw.Grid.SizeY / SMOKE_TILE_CELLS), (float)(draw.Grid.SizeZ / SMOKE_TILE_CELLS));
+		u.StepCount = steps;
+		u.LightColor = lightColor;
+		u.Extinction = (float)std::max(extinction, 0.0);
+		u.MinStep = (float)(cell * 0.5);
+		u.SliceHeight = (float)-SMOKE_DEBUG_SLICE_BELOW_EYE;
+		u.DebugSlice = debugSlice ? 1 : 0;
+		pass.SetEyeMarch(eye, u);
+	}
+	pass.SetEyeSets(eyeSets);
+
+	PerfLog::AddCpuSample("fx.smokedraw", (double)(I_nsTime() - startNs) / 1e6);
 }
 
 //==========================================================================
@@ -3539,6 +3685,10 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// [HEATREFRACTION] This view's heat sources, per eye, for the heat shimmer pass --
 	// before DrawScene, so no portal view reaches them. Cleared when not toscreen.
 	SetupHeatSources(this, toscreen);
+
+	// [SMOKEVOLUME] This view's smoke volume march, per eye, for the smoke pass -- before
+	// DrawScene, as the heat sources. Cleared when not toscreen.
+	SetupSmokeVolume(this, toscreen);
 
 	// [BLOOMOVERRIDE] The level's bloom override to the bloom pass, main view only
 	// (SyncBloomOverride above). With none ever set this is a flag test.

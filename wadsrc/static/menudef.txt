@@ -2222,6 +2222,21 @@ OptionMenu DeveloperOptionsMenu protected
 	// menu open; perflog.txt shows the draw as fx.meshparticles. RS_Ballistics' "Ballistics &
 	// Effects" page mirrors this row under Debris. Vulkan only.
 	Option "Mesh particles (3D chunks)", "r_meshparticles", "OnOff"
+	// [LEVELFIELD] r_particlecollision -- particles whose definition says `collide = level` collide with the
+	// whole level through a distance field around you ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #8): they
+	// slide along walls, skid on floors, pass open doors, stop at closed ones, and fade inside a wall instead
+	// of popping out of the far side. Off: they keep the spawn's plane, as before. Nothing is allocated until
+	// such a particle spawns. Renderer-read every frame. RS_Ballistics' "Ballistics & Effects" page mirrors
+	// this row under Debris. Vulkan only.
+	Option "Particle collision (whole level)", "r_particlecollision", "OnOff"
+	// [LEVELFIELD] r_particlecollision_quality -- how far the field reaches around you, at the same precision:
+	// 1 = 768 fine / 2048 coarse map units across (13 MB), 2 = 1024 / 3072 (35 MB, the default), 3 = 1536 /
+	// 4096 (101 MB). A change rebuilds the field (about a second). Vulkan only.
+	Slider "Particle collision reach (1 = 13 MB, 2 = 35 MB, 3 = 101 MB)", "r_particlecollision_quality", 1, 3, 1, 0
+	// [LEVELFIELD] r_particlecollision_test -- a test, not a setting: particles whose definition says `collide =
+	// plane` (today's sparks and dust) collide with the whole level too, so the field can be judged before any
+	// definition says `level`. Not saved. Vulkan only.
+	Option "Particle collision test (plane particles too)", "r_particlecollision_test", "OnOff"
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
@@ -2246,7 +2261,7 @@ OptionMenu DeveloperOptionsMenu protected
 	Option "Heat shimmer test source (ahead of you)", "r_heatrefraction_test", "OnOff"
 	// [SMOKEVOLUME] r_smoke -- the smoke volume ("Engine docs/SMOKE_VOLUME_PLAN.md" #13): a 3D
 	// grid of gunsmoke around you that walls stop and blasts clear. 13a and 13b are its
-	// compute foundation and simulation: nothing draws until 13c. On by default (owner,
+	// compute foundation and simulation, and 13c draws it. On by default (owner,
 	// 2026-09-14) and inert until a mod emits smoke on a map (or the test source below asks):
 	// nothing is allocated before that. Off frees the volume. RS_Ballistics' "Ballistics &
 	// Effects" page carries this row, quality and fade speed. Renderer-read every frame.
@@ -2262,14 +2277,28 @@ OptionMenu DeveloperOptionsMenu protected
 	// step, so the change shows as soon as the game runs again. RS_Ballistics' "Ballistics &
 	// Effects" page mirrors this row. Vulkan only.
 	Slider "Smoke fade speed (1 = the mod's own, 0 = hangs)", "r_smoke_dissipation_scale", 0, 4, 0.25, 2
+	// [13c] r_smoke_density_scale -- how thick smoke looks, times the mod's own look: 1 = as the
+	// mod made it, 2 = twice as thick, 0 = invisible (the drawing then does not run at all). Read
+	// every frame, so it changes live with this menu open. RS_Ballistics' "Ballistics & Effects"
+	// page mirrors this row. Vulkan only.
+	Slider "Smoke density (1 = the mod's own)", "r_smoke_density_scale", 0, 4, 0.25, 2
+	// [13c] r_smoke_steps -- the most samples each view ray takes through the smoke. More is
+	// smoother and costs more (perflog.txt: pp.smoke); 48 is the default. Read every frame.
+	// RS_Ballistics' "Ballistics & Effects" page mirrors this row. Vulkan only.
+	Slider "Smoke steps (32 = fastest, 48 = default, 96 = smoothest)", "r_smoke_steps", 32, 96, 16, 0
 	// r_smoke_computetest -- a smoke test source, no mod needed: placed ahead of where you look
 	// when switched on -- a puff every tic, a round through it every 10 tics, a blast every 3
-	// seconds -- running the real simulation. Draws nothing until 13c. With the performance log
+	// seconds -- running the real simulation, drawn as any smoke is (13c). With the performance log
 	// on, perflog.txt shows fx.compute, fx.smokesim (per step) and fx.smokemask; the console log
 	// names the allocation, the source and the solid mask's build. Switched off, the steps
 	// stop once the smoke has thinned away and the volume is freed a minute of game time after.
 	// Not saved. Vulkan only.
 	Option "Smoke test source (ahead of you)", "r_smoke_computetest", "OnOff"
+	// [13c] r_smoke_debugslice -- a test view of the smoke volume: its density on a level plane a
+	// little below your eyes, inside the smoke box, in false colour (blue thin, white thick, green
+	// where the simulation's tiles are awake but nearly empty). Draws only while there is smoke.
+	// Not saved. Vulkan only.
+	Option "Show smoke grid slice (debug)", "r_smoke_debugslice", "OnOff"
 	// [LIGHTMASK] r_lightmask_debug -- the light mask ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6a): shows,
 	// per pixel, how much of the light is beam light (green) and emissive light (red), measured against
 	// the image bloom reads. 1 = over a grey scene, 2 = beam light alone. It switches the mask on by itself

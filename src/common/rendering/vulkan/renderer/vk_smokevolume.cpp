@@ -182,6 +182,10 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 	status.Quality = mAllocatedQuality;
 	status.RefusedQuality = 0;
 
+	// [13c] The drawing read some volumes last frame: back to GENERAL before any compute command below
+	// touches them. Nothing is recorded when every volume already is.
+	RestoreComputeLayouts();
+
 	if (frame.NewBox)
 	{
 		if (!fresh)
@@ -215,6 +219,12 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 		for (int i = 0; i < frame.Steps && i < SmokeVolumeFrame::MAX_STEPS_PER_FRAME; i++)
 			RunStep(frame, i);
 	}
+
+	// [13c] Smoke to draw this frame: the images the drawing reads go into the layout a post-process
+	// read binds (VkTextureManager::GetTexture hands them out only then). With no smoke nothing is
+	// read, nothing moves, and nothing is recorded.
+	if (mHasSmoke)
+		PrepareDrawLayouts();
 }
 
 //-----------------------------------------------------------------------------
@@ -249,6 +259,7 @@ void VkSmokeVolume::DestroyVolumesNow()
 	{
 		volume->View.reset();
 		volume->Image.reset();
+		volume->Layout = VK_IMAGE_LAYOUT_UNDEFINED;	// [13c]
 	}
 }
 
@@ -338,6 +349,9 @@ bool VkSmokeVolume::Allocate(int quality, const SmokeGridSpec& grid)
 	}
 	barrier.Execute(fb->GetCommands()->GetDrawCommands(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	// [13c] Tracked from here on: the drawing's read moves some volumes out of GENERAL for a frame.
+	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mVelocity[0], &mVelocity[1], &mSolidMask, &mTileContent, &mTileActive })
+		volume->Layout = VK_IMAGE_LAYOUT_GENERAL;
 	ClearEverything();
 
 	Printf("SmokeVolume: allocated quality %d -- %d x %d x %d cells at %d map units (%d x %d x %d), 7 volumes, %llu bytes of texels\n",
@@ -370,6 +384,7 @@ void VkSmokeVolume::Release(const char* why)
 	{
 		deleteList->Add(std::move(volume->View));
 		deleteList->Add(std::move(volume->Image));
+		volume->Layout = VK_IMAGE_LAYOUT_UNDEFINED;	// [13c]
 	}
 	deleteList->Add(std::move(mStaging));
 
@@ -418,6 +433,62 @@ void VkSmokeVolume::ClearEverything()
 		return;
 	ClearContents();
 	ClearImage(mSolidMask, 1.0f);
+}
+
+// [13c] THE DRAWING'S READ. Compute binds the volumes in layout GENERAL (storage images and the
+// simulation's own samplers); a post-process pass binds its inputs SHADER_READ_ONLY_OPTIMAL
+// (VkDescriptorSetManager::GetInput). So on a frame with smoke to draw, the three images the march reads
+// go to SHADER_READ_ONLY_OPTIMAL at the end of Run, and at the start of the next Run every volume that
+// is not in GENERAL goes back before any compute command. A frame with no smoke moves nothing and
+// records nothing.
+void VkSmokeVolume::RestoreComputeLayouts()
+{
+	if (!IsAllocated())
+		return;
+
+	PipelineBarrier barrier;
+	bool changed = false;
+	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mVelocity[0], &mVelocity[1], &mSolidMask, &mTileContent, &mTileActive })
+	{
+		if (volume->Image && volume->Layout != VK_IMAGE_LAYOUT_GENERAL)
+		{
+			barrier.AddImage(volume->Image.get(), volume->Layout, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
+				VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+			volume->Layout = VK_IMAGE_LAYOUT_GENERAL;
+			changed = true;
+		}
+	}
+	if (!changed)
+		return;
+
+	mCompute->BeginWork();	// outside any render pass, inside fx.compute
+	barrier.Execute(fb->GetCommands()->GetDrawCommands(), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+}
+
+void VkSmokeVolume::PrepareDrawLayouts()
+{
+	if (!IsAllocated())
+		return;
+
+	PipelineBarrier barrier;
+	bool changed = false;
+	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mTileActive })
+	{
+		if (volume->Image && volume->Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+		{
+			barrier.AddImage(volume->Image.get(), volume->Layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+			volume->Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			changed = true;
+		}
+	}
+	if (!changed)
+		return;
+
+	mCompute->BeginWork();	// outside any render pass, inside fx.compute
+	barrier.Execute(fb->GetCommands()->GetDrawCommands(), VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
 
 //-----------------------------------------------------------------------------

@@ -153,9 +153,16 @@ bool VkShaderManager::CompileNextShader()
 			// as its billboard.
 			const bool particles = (i == EFF_GPUPARTICLES);
 			const bool meshParticles = (i == EFF_MESHPARTICLES);
+			// [LEVELFIELD] gpuparticles' vertex programs keep `collide = level` particles out of the
+			// whole level through the level collision field, fixed set bindings 5, 6 and 9
+			// (vk_descriptorset.cpp; "Engine docs/COLLISION_8_IMPL_NOTES.md"). Vertex only: the
+			// fragment programs and every other program are compiled exactly as before.
+			FString vertDefines = effectshaders[i].defines;
+			if (particles)
+				vertDefines << "#define LEVEL_FIELD_COLLISION\n";
 			try
 			{
-				prog.vert = LoadVertShader(effectshaders[i].ShaderName, effectshaders[i].vp, effectshaders[i].defines);
+				prog.vert = LoadVertShader(effectshaders[i].ShaderName, effectshaders[i].vp, vertDefines.GetChars());
 				prog.frag = LoadFragShader(effectshaders[i].ShaderName, effectshaders[i].fp1, effectshaders[i].fp2, effectshaders[i].fp3, effectshaders[i].defines, true, compilePass == GBUFFER_PASS);
 			}
 			catch (const std::exception &err)

@@ -59,6 +59,9 @@ EXTERN_CVAR(Float, gl_bloom_step)	// [BLOOMSTEP]
 EXTERN_CVAR(Float, gl_bloom_override_strength)	// [BLOOMOVERRIDE]
 EXTERN_CVAR(Bool, gl_bloom_pin_beams)	// [LIGHTMASK]
 EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK]
+EXTERN_CVAR(Int, r_smoke_steps)	// [SMOKEVOLUME] the smoke volume's drawing
+EXTERN_CVAR(Float, r_smoke_density_scale)	// [SMOKEVOLUME]
+EXTERN_CVAR(Bool, r_smoke_debugslice)	// [SMOKEVOLUME]
 EXTERN_CVAR(Float, gl_exposure_scale)
 EXTERN_CVAR(Float, gl_exposure_min)
 EXTERN_CVAR(Float, gl_exposure_base)

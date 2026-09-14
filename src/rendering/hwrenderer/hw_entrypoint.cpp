@@ -45,6 +45,7 @@
 #include "hw_framecompute.h"	// [COMPUTE] FrameComputeInput
 #include "hw_smokevolume.h"		// [SMOKEVOLUME] SmokeVolume::PrepareFrame
 #include "hw_sectorplanes.h"	// [SECTORPLANES] SectorPlanes::BeginFrame
+#include "hw_levelfield.h"		// [LEVELFIELD] LevelField::PrepareFrame
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -162,6 +163,7 @@ static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp,
 	const uint64_t serial = LevelDataSerial(Level);
 	SectorPlanes::Get().BeginFrame(Level, serial);
 	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.Angles.Yaw.Radians(), vp.TicFrac, serial, input.Smoke);
+	LevelField::Get().PrepareFrame(Level, vp.Pos, serial, input.LevelField);	// [LEVELFIELD] #8
 }
 
 //-----------------------------------------------------------------------------
@@ -250,6 +252,7 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 			// [HEATREFRACTION] This eye has no scene of its own: the heat pass takes the
 			// source set the multiview scene published for it (review S8).
 			hw_postprocess.heatrefraction.SetEye(eye_ix);
+			hw_postprocess.smokevolume.SetEye(eye_ix);	// [SMOKEVOLUME] and the smoke march set
 			screen->PostProcessScene(false, sharedPostprocessColormap, sharedPostprocessFlash, []() {});
 			eye->AdjustBlend(nullptr);
 			V_DrawBlend(mainvp.sector);
@@ -346,6 +349,7 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 
 			// [HEATREFRACTION] Which eye's heat sources the pass takes (review S8).
 			hw_postprocess.heatrefraction.SetEye(eye_ix);
+			hw_postprocess.smokevolume.SetEye(eye_ix);	// [SMOKEVOLUME] and which eye's smoke march
 			screen->PostProcessScene(false, cm, flash, [&]() {
 				di->DrawEndScene2D(mainvp.sector, RenderState);
 			});

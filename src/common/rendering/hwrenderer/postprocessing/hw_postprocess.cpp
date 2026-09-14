@@ -313,6 +313,172 @@ void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	}
 }
 
+/////////////////////////////////////////////////////////////////////////////
+
+// [SMOKEVOLUME] The backend-owned images a pass may read (hw_postprocess.h, PPExternalImage): one
+// fixed token per name, plus one past the last for a name that is out of range. That last token
+// resolves to no image, so a draw naming it draws nothing.
+
+static PPTexture *ExternalImageTokens()
+{
+	static PPTexture tokens[(int)PPExternalImage::Count + 1];
+	return tokens;
+}
+
+PPTexture *PPExternalImageToken(PPExternalImage image)
+{
+	int index = (int)image;
+	if (index < 0 || index > (int)PPExternalImage::Count)
+		index = (int)PPExternalImage::Count;
+	return &ExternalImageTokens()[index];
+}
+
+PPExternalImage PPExternalImageFromToken(const PPTexture *token)
+{
+	const PPTexture *tokens = ExternalImageTokens();
+	for (int i = 0; i < (int)PPExternalImage::Count; i++)
+	{
+		if (token == &tokens[i])
+			return (PPExternalImage)i;
+	}
+	return PPExternalImage::Count;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+// [SMOKEVOLUME] The smoke volume's drawing: see PPSmokeVolume (hw_postprocess.h) and
+// shaders/pp/smokedepth.fp, smokemarch.fp, smokeblur.fp, smokecomposite.fp.
+
+void PPSmokeVolume::UpdateTextures(int sceneWidth, int sceneHeight)
+{
+	if (sceneWidth == lastWidth && sceneHeight == lastHeight)
+		return;
+
+	HalfViewport.left = 0;
+	HalfViewport.top = 0;
+	HalfViewport.width = (sceneWidth + 1) / 2;
+	HalfViewport.height = (sceneHeight + 1) / 2;
+	// R32F: the linear depth each texel marches to. RGBA16F: rgb light, a transmittance.
+	DepthTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::R32f };
+	MarchTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
+	BlurTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
+
+	lastWidth = sceneWidth;
+	lastHeight = sceneHeight;
+}
+
+void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight)
+{
+	// SKIPPED, NOT ZERO: nothing published for this eye means no group, no texture and no draw, so
+	// the frame is the frame without this pass. Set 1 only exists for the second eye of a multiview
+	// scene.
+	const int set = (eyeSets >= 2 && currentEye == 1) ? 1 : 0;
+	if (eyeSets <= 0 || !r_smoke || sceneWidth <= 0 || sceneHeight <= 0)
+		return;
+
+	const bool multisampled = gl_multisample > 1;
+	UpdateTextures(sceneWidth, sceneHeight);
+
+	// One line whenever the variant, the eye arrangement or the textures change, so a test log shows
+	// which ran. Never one per frame.
+	{
+		static int loggedMultisample = -1, loggedSets = -1, loggedWidth = -1, loggedHeight = -1;
+		if (loggedMultisample != (int)multisampled || loggedSets != eyeSets ||
+			loggedWidth != HalfViewport.width || loggedHeight != HalfViewport.height)
+		{
+			loggedMultisample = (int)multisampled;
+			loggedSets = eyeSets;
+			loggedWidth = HalfViewport.width;
+			loggedHeight = HalfViewport.height;
+			Printf("smoke: drawing -- %s depth read, %s, half-resolution textures %dx%d\n",
+				multisampled ? "MULTISAMPLE" : "single-sample",
+				eyeSets >= 2 ? "a march set per eye (multiview scene)" : "one march set (each eye draws its own scene)",
+				HalfViewport.width, HalfViewport.height);
+		}
+	}
+
+	SmokeDepthUniforms depth = {};
+	depth.SceneScale = screen->SceneScale();
+	depth.SceneOffset = screen->SceneOffset();
+	depth.LinearizeDepthA = 1.0f / screen->GetZFar() - 1.0f / screen->GetZNear();
+	depth.LinearizeDepthB = max(1.0f / screen->GetZNear(), 1.e-8f);
+
+	renderstate->PushGroup("pp.smoke");
+
+	// 1. The depth to march to, at half resolution. Every pass below draws the whole viewport of its
+	//    target with no blend, which clears what the last eye or frame left there (post-process
+	//    attachments are loaded, never cleared).
+	renderstate->Clear();
+	renderstate->Shader = multisampled ? &DepthShaderMS : &DepthShader;
+	renderstate->Uniforms.Set(depth);
+	renderstate->Viewport = HalfViewport;
+	renderstate->SetInputSceneDepth(0);
+	renderstate->SetOutputTexture(&DepthTexture);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+
+	// 2. The march, reading the volume the compute step keeps (PPExternalImage).
+	renderstate->Clear();
+	renderstate->Shader = &MarchShader;
+	renderstate->Uniforms.Set(marches[set]);
+	renderstate->Viewport = HalfViewport;
+	renderstate->SetInputTexture(0, &DepthTexture);
+	renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
+	renderstate->SetInputExternalImage(2, PPExternalImage::SmokeDensityPrevious, PPFilterMode::Linear);
+	renderstate->SetInputExternalImage(3, PPExternalImage::SmokeTileActive);
+	renderstate->SetOutputTexture(&MarchTexture);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+
+	// 3. The blur that keeps to its depth: across into BlurTexture, then down back into MarchTexture.
+	for (int pass = 0; pass < 2; pass++)
+	{
+		renderstate->Clear();
+		renderstate->Shader = pass == 0 ? &BlurHorizontal : &BlurVertical;
+		renderstate->Viewport = HalfViewport;
+		renderstate->SetInputTexture(0, pass == 0 ? &MarchTexture : &BlurTexture);
+		renderstate->SetInputTexture(1, &DepthTexture);
+		renderstate->SetOutputTexture(pass == 0 ? &BlurTexture : &MarchTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+	}
+
+	// 4. Up to full resolution and onto the image: scene x T + light, premultiplied. It writes the
+	//    current pipeline image in place and reads it nowhere, so no pipeline image advances.
+	renderstate->Clear();
+	renderstate->Shader = multisampled ? &CompositeShaderMS : &CompositeShader;
+	renderstate->Uniforms.Set(depth);
+	renderstate->Viewport = screen->mSceneViewport;
+	renderstate->SetInputTexture(0, &MarchTexture);
+	renderstate->SetInputTexture(1, &DepthTexture);
+	renderstate->SetInputSceneDepth(2);
+	renderstate->SetOutputCurrent();
+	renderstate->SetPremultipliedAlphaBlend();
+	renderstate->Draw();
+
+	renderstate->PopGroup();
+
+	// [LIGHTMASK] The light mask is dimmed by the same smoke ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2e,
+	// contract 4): the same composite with LIGHT_MASK_CARRY, the same inputs, uniforms and blend, onto
+	// the mask in place. It adds no light of either class, so every amount becomes amount x T with the
+	// colour's own T. Both eyes of a layered post path take this branch alike (the frame's state).
+	if (hw_postprocess.lightmask.PostInputValid())
+	{
+		renderstate->PushGroup("pp.lightmaskcarry");
+		renderstate->Clear();
+		renderstate->Shader = multisampled ? &MaskCarryShaderMS : &MaskCarryShader;
+		renderstate->Uniforms.Set(depth);
+		renderstate->Viewport = screen->mSceneViewport;
+		renderstate->SetInputTexture(0, &MarchTexture);
+		renderstate->SetInputTexture(1, &DepthTexture);
+		renderstate->SetInputSceneDepth(2);
+		renderstate->SetOutputLightMaskCurrent();
+		renderstate->SetPremultipliedAlphaBlend();
+		renderstate->Draw();
+		renderstate->PopGroup();
+	}
+}
+
 //==========================================================================
 //
 // [BLOOMOVERRIDE] The script-set bloom override, renderer side (E1 in
@@ -1790,10 +1956,11 @@ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int s
 {
 	exposure.Render(state, sceneWidth, sceneHeight);
 	customShaders.Run(state, "beforebloom");
-	// [SMOKEVOLUME] 13c's smoke volume composites HERE, before the volumetric beam pass
+	// [SMOKEVOLUME] The smoke volume composites HERE, before the volumetric beam pass
 	// ("Engine docs/SMOKE_VOLUME_PLAN.md" 13c, owner answers 2026-09-14): a beam's own air
 	// glow is never dimmed by haze behind it, and 13e adds the light beams scatter in the
-	// smoke. It is skipped entirely when there is no smoke. Not built yet.
+	// smoke. It is skipped entirely when there is no smoke (PPSmokeVolume).
+	smokevolume.Render(state, sceneWidth, sceneHeight);
 	volbeam.Render(state, sceneWidth, sceneHeight);
 	heatmap.Render(state, sceneWidth, sceneHeight);
 	// [HEATREFRACTION] Heat refraction, then bloom: the image bends before it glows.

@@ -64,7 +64,7 @@ struct ParticleDefinitionGpu
 	float keyColor[2][4];	// per key, 0xRRGGBB as an exact float (keys 0-3, then 4-7); multiplies the record's tint
 	float motion[4];		// x gravity u/s^2 (down)  y drag 1/s  z maxsize (0 = r_gpuparticles_maxsize alone)  w key count 1..8
 	float shape[4];			// x orient 0 billboard 1 streak 2 flake  y stretch (s)  z spin min  w spin max (deg/s, picked by seed)
-	float look[4];			// x lit 0..1 (2d)  y soft map units (2d; -1 = not set)  z collide 0 none 1 plane  w flags (PDF_*)
+	float look[4];			// x lit 0..1 (2d)  y soft map units (2d; -1 = not set)  z collide 0 none 1 plane 2 level (#8)  w flags (PDF_*)
 	float flipbook[4];		// x first atlas layer (-1 = no texture; 2c)  y frames  z fps  w 0 loop, 1 once
 	// [LOOKS] The generated look ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md"), in what was spare room, so no
 	// layout change -- the member keeps its name because the prolog's copy of this struct is shared by every

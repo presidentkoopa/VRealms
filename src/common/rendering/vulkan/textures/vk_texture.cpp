@@ -25,6 +25,9 @@
 #include "vk_pptexture.h"
 #include "vk_renderbuffers.h"
 #include "vulkan/renderer/vk_postprocess.h"
+#include "vulkan/renderer/vk_compute.h"		// [SMOKEVOLUME] the external images: the smoke volume's
+#include "vulkan/renderer/vk_smokevolume.h"
+#include "hwrenderer/postprocessing/hw_postprocess.h"	// [SMOKEVOLUME] PPExternalImageFromToken
 #include "hw_cvars.h"
 #include "hw_particledefbuffer.h"	// [2c] the particle atlas layer list
 #include "texturemanager.h"	// [2c] the atlas's pixels come from TexMan's textures
@@ -165,6 +168,30 @@ VkTextureImage* VkTextureManager::GetTexture(const PPTextureType& type, PPTextur
 			fb->GetBuffers()->CreateLightMaskCarry();
 		}
 		return &fb->GetBuffers()->LightMaskImage[idx];
+	}
+	else if (type == PPTextureType::ExternalImage)
+	{
+		// [SMOKEVOLUME] An image the backend owns (hw_postprocess.h, PPExternalImage), named by the token
+		// the pass set. A post-process read binds it SHADER_READ_ONLY_OPTIMAL (VkDescriptorSetManager::
+		// GetInput), so it is handed out only while its owner has it in that layout: the smoke volume puts
+		// its images there at the end of a frame's compute when it has smoke to draw (VkSmokeVolume::Run).
+		// Anything else resolves to an image with no Image, and VkPPRenderState::Draw skips that draw.
+		static VkTextureImage notReady;
+		VkSmokeVolume* smoke = fb->GetCompute() != nullptr ? fb->GetCompute()->GetSmokeVolume() : nullptr;
+		VkTextureImage* image = nullptr;
+		if (smoke != nullptr && smoke->IsAllocated())
+		{
+			switch (PPExternalImageFromToken(pptexture))
+			{
+			case PPExternalImage::SmokeDensityLatest: image = smoke->GetDensityHeatImage(0); break;
+			case PPExternalImage::SmokeDensityPrevious: image = smoke->GetDensityHeatImage(1); break;
+			case PPExternalImage::SmokeTileActive: image = smoke->GetTileActiveImage(); break;
+			default: break;
+			}
+		}
+		if (image == nullptr || !image->Image || image->Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+			return &notReady;
+		return image;
 	}
 	else
 	{

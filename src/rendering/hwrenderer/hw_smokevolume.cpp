@@ -88,6 +88,7 @@ SmokeVolume& SmokeVolume::Get()
 void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double viewYaw, double ticFrac, uint64_t levelSerial, SmokeVolumeFrame& out)
 {
 	out = SmokeVolumeFrame();
+	mDraw = DrawState();	// [13c] nothing to draw, unless the end of this function says otherwise
 	mKernels.clear();
 	mMaskUploads.clear();
 	mMaskBytes.clear();
@@ -339,6 +340,15 @@ void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double 
 		mResidue = false;
 	}
 	out.HasSmoke = mBound.Density > SMOKE_EMPTY_DENSITY;
+
+	// [13c] For the drawing, later this frame (GetDrawState). Every earlier return leaves the reset
+	// state of the top of this function: nothing to draw.
+	mDraw.HasSmoke = out.HasSmoke;
+	mDraw.Quality = out.Quality;
+	mDraw.Grid = out.Grid;
+	for (int axis = 0; axis < 3; axis++)
+		mDraw.OriginCell[axis] = out.OriginCell[axis];
+	mDraw.TicFrac = out.TicFrac;
 
 	out.Kernels = mKernels.empty() ? nullptr : mKernels.data();
 	out.KernelCount = (int)mKernels.size();

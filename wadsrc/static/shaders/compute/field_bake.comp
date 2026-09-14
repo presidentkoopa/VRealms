@@ -1,0 +1,113 @@
+// [LEVELFIELD] #8: bakes one tile of the level collision field, or marks a box of it unbaked
+// ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" 8, "Engine docs/COLLISION_8_IMPL_NOTES.md").
+//
+// The field: rg16f, r the signed distance to the level's surface in map units (negative inside
+// solid, clamped to +-band), g 1 where baked. Texel = world cell modulo the volume's size.
+//
+// Mode 0 BAKE (TexelMin.w == 0): the CPU side has just copied each cell's COLUMN PART in (its sign
+// from SH1's solidity at the cell centre; its magnitude the vertical distance to the column's
+// nearest floor or ceiling). This pass takes the minimum with every line's WALL PIECES near the tile
+// -- one-sided: the wall; two-sided: the lower part between the floors and the upper part between
+// the ceilings, where exactly one side is open -- and writes sign x min(..., band) with g = 1.
+// Mode 1 INVALIDATE (TexelMin.w == 1): writes (band, 0), unbaked.
+//
+// VkComputeManager::CreateProgram prepends "#version 450", the include extension and "#line 1".
+// Push constants: FieldBakeConstants in vk_levelfield.cpp (64 bytes). Line records: LevelFieldLine
+// in hw_framecompute.h (48 bytes). GLSL reserved-word rule (NVIDIA GL): no identifier here is a
+// reserved word or shadows a built-in.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0, rg16f) uniform image3D Field;
+
+struct FieldLine
+{
+	vec4 Segment;		// x1, y1, x2, y2: map units, Doom axes
+	vec4 PartsStart;	// at (x1, y1): lower bottom, lower top, upper bottom, upper top
+	vec4 PartsEnd;		// the same at (x2, y2)
+};
+layout(set = 0, binding = 1, std430) readonly buffer FieldLines
+{
+	FieldLine Lines[];
+};
+
+layout(push_constant) uniform FieldBakeConstants
+{
+	ivec4 TexelMin;		// xyz first texel; w the mode, 0 bake, 1 invalidate
+	ivec4 TexelCount;	// xyz texels; w the first line record
+	ivec4 WorldCell;	// xyz the world cell TexelMin holds; w how many line records
+	vec4 Cell;			// x cell size, y band (map units)
+};
+
+const float kNoPart = 1.0e30;
+// The smallest magnitude written, so a sign always survives the half float.
+const float kMinMagnitude = 1.0 / 64.0;
+
+// The distance from p to the 3D segment from (a, heightStart) to (a + ab, heightEnd): a wall part's top or bottom edge,
+// which slopes when the planes do.
+float EdgeDistance(vec3 p, vec2 a, vec2 ab, float heightStart, float heightEnd)
+{
+	vec3 start = vec3(a, heightStart);
+	vec3 edge = vec3(ab, heightEnd - heightStart);
+	float lengthSquared = dot(edge, edge);
+	float along = (lengthSquared > 1.0e-8) ? clamp(dot(p - start, edge) / lengthSquared, 0.0, 1.0) : 0.0;
+	return length(p - (start + edge * along));
+}
+
+// How far p is from one part of a line's wall -- the vertical strip over the segment between its bottom and top edges:
+// within its height where p lies along the line, the horizontal distance `across`; above it or below it, the distance
+// to its top or bottom edge (exact on slopes). kNoPart where there is no part.
+float PartDistance(vec3 p, vec2 a, vec2 ab, float along, float across, float bottomStart, float topStart, float bottomEnd, float topEnd)
+{
+	float bottom = mix(bottomStart, bottomEnd, along);
+	float top = mix(topStart, topEnd, along);
+	if (!(top > bottom))
+		return kNoPart;
+	if (p.z > top)
+		return EdgeDistance(p, a, ab, topStart, topEnd);
+	if (p.z < bottom)
+		return EdgeDistance(p, a, ab, bottomStart, bottomEnd);
+	return across;
+}
+
+void main()
+{
+	ivec3 local = ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(local, TexelCount.xyz)))
+		return;
+	ivec3 texel = TexelMin.xyz + local;
+	float band = Cell.y;
+
+	if (TexelMin.w == 1)
+	{
+		imageStore(Field, texel, vec4(band, 0.0, 0.0, 0.0));
+		return;
+	}
+
+	vec4 columnPart = imageLoad(Field, texel);
+	float side = (columnPart.r < 0.0) ? -1.0 : 1.0;
+	float nearest = min(abs(columnPart.r), band);
+
+	// The cell's centre in the world, map units, Doom axes.
+	vec3 centre = (vec3(WorldCell.xyz + local) + 0.5) * Cell.x;
+
+	int first = TexelCount.w;
+	int last = TexelCount.w + WorldCell.w;
+	for (int i = first; i < last; i++)
+	{
+		vec2 a = Lines[i].Segment.xy;
+		vec2 ab = Lines[i].Segment.zw - a;
+		float lengthSquared = dot(ab, ab);
+		float along = (lengthSquared > 1.0e-8) ? clamp(dot(centre.xy - a, ab) / lengthSquared, 0.0, 1.0) : 0.0;
+		float across = length(centre.xy - (a + ab * along));
+		if (across >= nearest)
+			continue;
+		vec4 partsStart = Lines[i].PartsStart;
+		vec4 partsEnd = Lines[i].PartsEnd;
+		float lowerPart = PartDistance(centre, a, ab, along, across, partsStart.x, partsStart.y, partsEnd.x, partsEnd.y);
+		float upperPart = PartDistance(centre, a, ab, along, across, partsStart.z, partsStart.w, partsEnd.z, partsEnd.w);
+		nearest = min(nearest, min(lowerPart, upperPart));
+	}
+
+	imageStore(Field, texel, vec4(side * max(nearest, kMinMagnitude), 1.0, 0.0, 0.0));
+}

@@ -378,6 +378,314 @@ vec4 ParticleLightInQuad(vec4 directionSum, float ambient, float lit, vec3 pos, 
 	return vec4(inQuad / inQuadLength, directionalShare);
 }
 
+#ifdef LEVEL_FIELD_COLLISION
+// [LEVELFIELD] #8 PARTICLES THAT COLLIDE WITH THE WHOLE LEVEL ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" 8,
+// "Engine docs/COLLISION_8_IMPL_NOTES.md"). Compiled only with LEVEL_FIELD_COLLISION, which vk_shader.cpp defines
+// for this effect's vertex programs; without it this lump is exactly what it was before #8.
+//
+// A `collide = level` definition -- or a `collide = plane` one while r_particlecollision_test is on -- is kept out
+// of the level by a signed distance field around the eye, built from the level's CURRENT floors, ceilings and
+// walls (hw_levelfield.cpp) and baked on the GPU (vk_levelfield.cpp, shaders/compute/field_bake.comp). In the
+// fixed set (vk_descriptorset.cpp), declared only here:
+//   binding 5  the fine level, 6 the coarse one: rg16f volumes, r the signed distance in map units (negative in
+//              solid, clamped to the level's band), g 1 where baked. A texel holds the world cell congruent to it
+//              modulo the volume's size, so a sample is trusted only inside its level's window.
+//   binding 9  the header, 3 x 1: [0] the fine window (xyz its first world cell, w the cell size in map units,
+//              0 = no level), [1] the coarse window, [2] x 1 = usable, y 1 = plane definitions collide too, z the
+//              fine band, w the coarse band.
+// Header and texels are written by commands in one stream, so they always agree. While the field does not exist
+// the bindings hold stand-ins that say "no level", and every particle keeps F4's plane.
+//
+// Positions in the field are Doom axes (x, y horizontal, z up): a shader position p is p.xzy there.
+//
+// WHAT HAPPENS -- stateless, a pure function of the record, the age and the field:
+//   - THE PATH SO FAR (LevelFieldMarch): the first lattice sample moving into a floor LANDS the particle, and it
+//     skids at that height from then on; the first moving into a wall deeper than its kill depth KILLS it, and
+//     it stays gone however far its path goes (review D7: pushing it out would pop it through to the far side).
+//   - NOW (LevelFieldContact): closer to a surface than its radius it is pushed out along the field's normal and
+//     loses the velocity into the surface, so a streak slides along it; deeper than the kill depth into a wall it
+//     fades out over the next kill depth. A floor always holds it up.
+//   - Where the field has no answer (outside both windows, not baked yet) the particle takes F4's plane.
+layout(set = 0, binding = 5) uniform sampler3D LevelFieldFine;
+layout(set = 0, binding = 6) uniform sampler3D LevelFieldCoarse;
+layout(set = 0, binding = 9) uniform sampler2D LevelFieldHeader;
+
+// At most this many samples of the path so far, per vertex; and of a landed particle's skid after it.
+const int kLevelFieldMarchSteps = 24;
+const int kLevelFieldSkidSteps = 24;
+// A skid is checked this far (map units) above the height it slides at: the floor right under it would hold every step
+// to the lattice spacing, while a wall it slides into stands above it too. A step lower than this is not a wall.
+const float kLevelFieldSkidRaise = 12.0;
+// A surface whose normal's up part is above this is a floor: landed on and skidded along, never faded into.
+const float kLevelFieldFloorUp = 0.7;
+// A sample whose |distance| reaches this share of its level's band is clamped: its magnitude is only a bound.
+const float kLevelFieldClampShare = 0.9;
+// What LevelFieldMarch found on the path so far.
+const int kLevelFieldPathClear = 0;
+const int kLevelFieldPathLanded = 1;
+const int kLevelFieldPathKilled = 2;
+
+// The header and the volumes' sizes, read once per vertex by LevelFieldCollide.
+vec4 gLevelFieldWindow[2];
+vec4 gLevelFieldParams;
+vec3 gLevelFieldSize[2];
+
+// One level's signed distance at doomPosition, map units: false when that level has no baked answer there -- no
+// window, the trilinear footprint (grown by `margin` cells) not wholly inside the window (beyond it the torus
+// wraps to a different world cell), or a texel of it not baked yet.
+bool LevelFieldLevelDistance(int level, vec3 doomPosition, float margin, out float fieldDistance)
+{
+	fieldDistance = 0.0;
+	vec4 window = gLevelFieldWindow[level];
+	if (window.w <= 0.0)
+		return false;
+	vec3 cells = doomPosition / window.w;
+	vec3 inWindow = cells - window.xyz;
+	vec3 size = gLevelFieldSize[level];
+	if (any(lessThan(inWindow, vec3(0.5 + margin))) || any(greaterThan(inWindow, size - vec3(0.5 + margin))))
+		return false;
+	vec4 texel = (level == 0) ? textureLod(LevelFieldFine, cells / size, 0.0) : textureLod(LevelFieldCoarse, cells / size, 0.0);
+	if (texel.g < 0.999)
+		return false;
+	fieldDistance = texel.r;
+	return true;
+}
+
+// The field's signed distance at doomPosition, and the level to take its normal on (-1: no answer). The fine level
+// answers where it is not clamped; the coarse one further out, never overruling the fine level's sign.
+float LevelFieldDistance(vec3 doomPosition, out int level)
+{
+	float fineDistance;
+	float coarseDistance;
+	bool fine = LevelFieldLevelDistance(0, doomPosition, 0.5, fineDistance);
+	if (fine && abs(fineDistance) < gLevelFieldParams.z * kLevelFieldClampShare)
+	{
+		level = 0;
+		return fineDistance;
+	}
+	bool coarse = LevelFieldLevelDistance(1, doomPosition, 0.5, coarseDistance);
+	if (fine)
+	{
+		// Clamped on the fine level: a bound. The coarse level may know how far it really is.
+		level = coarse ? 1 : 0;
+		if (coarse && (coarseDistance < 0.0) == (fineDistance < 0.0))
+			return (fineDistance < 0.0) ? min(fineDistance, coarseDistance) : max(fineDistance, coarseDistance);
+		return fineDistance;
+	}
+	level = coarse ? 1 : -1;
+	return coarse ? coarseDistance : 0.0;
+}
+
+// The field's outward normal at doomPosition on one level (Doom axes), from four samples on a tetrahedron half a
+// cell out. False when a sample has no answer or the field is flat there (inside a clamped region).
+bool LevelFieldNormal(int level, vec3 doomPosition, out vec3 normal)
+{
+	normal = vec3(0.0, 0.0, 1.0);
+	if (level < 0)
+		return false;
+	float h = 0.5 * gLevelFieldWindow[level].w;
+	const vec3 k0 = vec3(1.0, -1.0, -1.0);
+	const vec3 k1 = vec3(-1.0, -1.0, 1.0);
+	const vec3 k2 = vec3(-1.0, 1.0, -1.0);
+	const vec3 k3 = vec3(1.0, 1.0, 1.0);
+	float d0;
+	float d1;
+	float d2;
+	float d3;
+	if (!LevelFieldLevelDistance(level, doomPosition + k0 * h, 0.0, d0) ||
+		!LevelFieldLevelDistance(level, doomPosition + k1 * h, 0.0, d1) ||
+		!LevelFieldLevelDistance(level, doomPosition + k2 * h, 0.0, d2) ||
+		!LevelFieldLevelDistance(level, doomPosition + k3 * h, 0.0, d3))
+		return false;
+	vec3 gradient = k0 * d0 + k1 * d1 + k2 * d2 + k3 * d3;
+	float gradientLength = length(gradient);
+	// A distance field's gradient is 1 long, so this sum is about 4h long; a flat one is not a surface.
+	if (gradientLength < h)
+		return false;
+	normal = gradient / gradientLength;
+	return true;
+}
+
+// The closed-form path (DrawDefinedParticle's formulas) at `age`, shader space.
+vec3 LevelFieldPathAt(GpuParticle part, float age, float gravity, float k)
+{
+	return part.a.xyz + part.b.xyz * ((1.0 - exp(-k * age)) / k) - vec3(0.0, gravity * 0.5 * age * age, 0.0);
+}
+
+vec3 LevelFieldVelocityAt(GpuParticle part, float age, float gravity, float k)
+{
+	return part.b.xyz * exp(-k * age) - vec3(0.0, gravity * age, 0.0);
+}
+
+// How far the closed-form path can have gone by `age`, at most: no point of it moves faster than speed + fall x age
+// (|initial velocity| plus |gravity| x time; drag only slows it). And its inverse, the age at which that bound reaches
+// `reach` (the stable root, right for no gravity too).
+float LevelFieldReach(float speed, float fall, float age)
+{
+	return speed * age + 0.5 * fall * age * age;
+}
+
+float LevelFieldAgeAt(float speed, float fall, float reach)
+{
+	return 2.0 * reach / (speed + sqrt(speed * speed + 2.0 * fall * reach));
+}
+
+// THE SKID SO FAR. After landing at landedAge the particle slides at landedHeight along a straight line (gravity is
+// vertical and drag is linear, so its horizontal path never turns), horizontal distance
+// s(t) = |b.xz| (1 - e^-kt) / k from its spawn. That line is sampled from the landing on, at kLevelFieldSkidRaise
+// above the skid, at points spaced evenly in s -- a function of the record and the landing alone, so a later frame
+// never changes its mind -- sphere-traced (a raised point with distance d cannot be deeper than killDepth in a wall
+// until d + killDepth further on). True when the skid has gone into a wall deeper than killDepth by `age`: it is
+// gone, and never slides out on the far side.
+bool LevelFieldSkidKilled(GpuParticle part, float age, float k, float spacing, float killDepth, float landedAge, float landedHeight)
+{
+	float horizontalSpeed = length(part.b.xz);
+	if (horizontalSpeed < 1.0e-3)
+		return false;
+	vec2 direction = part.b.xz / horizontalSpeed;
+	float skidNow = horizontalSpeed * (1.0 - exp(-k * age)) / k;
+	float skid = horizontalSpeed * (1.0 - exp(-k * landedAge)) / k + spacing;
+	float raised = landedHeight + kLevelFieldSkidRaise;
+	for (int i = 0; i < kLevelFieldSkidSteps; i++)
+	{
+		if (skid > skidNow)
+			return false;
+		vec2 place = part.a.xz + direction * skid;
+		int level;
+		float d = LevelFieldDistance(vec3(place.x, place.y, raised), level);
+		if (level < 0)
+			return false;
+		if (d < -killDepth)
+			return true;
+		skid += spacing * max(1.0, ceil((d + killDepth) / spacing));
+	}
+	return false;
+}
+
+// THE PATH SO FAR. The path is sampled at lattice points spaced evenly in REACH -- the bound above, so neighbouring
+// samples are never further apart on the path than the spacing, and the lattice is a function of the record alone:
+// a later frame looks at the same points and never changes its mind -- sphere-traced through open air (the reach
+// skipped is exactly the room the field says there is), at most kLevelFieldMarchSteps samples, up to `age`. The first
+// sample closer than the radius that moves INTO a floor lands the particle (landedAge; landedHeight, its radius above
+// that floor); one that moves into a wall deeper than killDepth kills it (review D7). A sample with no answer from
+// the field ends the look.
+int LevelFieldMarch(GpuParticle part, float age, float life, float gravity, float k, float radius, float killDepth, out float landedAge, out float landedHeight)
+{
+	landedAge = 0.0;
+	landedHeight = 0.0;
+	float speed = length(part.b.xyz);
+	float fall = abs(gravity);
+	if (speed + fall * life < 1.0e-3)
+		return kLevelFieldPathClear;	// it never moves: the current sample says everything
+	float spacing = max(min(radius, killDepth), 1.0);
+	float reachNow = LevelFieldReach(speed, fall, age);
+	float lattice = 0.0;
+	for (int i = 0; i < kLevelFieldMarchSteps; i++)
+	{
+		float reach = lattice * spacing;
+		if (reach > reachNow)
+			break;
+		float pathAge = LevelFieldAgeAt(speed, fall, reach);
+		vec3 position = LevelFieldPathAt(part, pathAge, gravity, k);
+		int level;
+		float d = LevelFieldDistance(position.xzy, level);
+		if (level < 0)
+			break;
+		if (d >= radius)
+		{
+			// Nothing is within d of here: the path cannot come within its radius of a surface before it has
+			// gone d - radius further.
+			lattice = max(lattice + 1.0, ceil((reach + d - radius) / spacing));
+			continue;
+		}
+		vec3 normal;
+		bool known = LevelFieldNormal(level, position.xzy, normal);
+		bool into = dot(LevelFieldVelocityAt(part, pathAge, gravity, k).xzy, normal) < 0.0;
+		if (known && normal.z > kLevelFieldFloorUp)
+		{
+			if (into)
+			{
+				landedAge = pathAge;
+				landedHeight = position.y + (radius - d) / normal.z;
+				return LevelFieldSkidKilled(part, age, k, spacing, killDepth, landedAge, landedHeight) ? kLevelFieldPathKilled : kLevelFieldPathLanded;
+			}
+		}
+		else if (d < -killDepth && (into || !known))
+		{
+			return kLevelFieldPathKilled;
+		}
+		lattice += 1.0;
+	}
+	return kLevelFieldPathClear;
+}
+
+// NOW, at the drawn position: closer to a surface than the radius, pushed out along the field's normal to the
+// radius, and the velocity into the surface taken off (a streak turns along it). Into a wall deeper than killDepth
+// it fades out over the next killDepth; a floor always holds it up. Returns the fade (1 = untouched), or -1 when the
+// field has no answer here.
+float LevelFieldContact(inout vec3 position, inout vec3 velocity, float radius, float killDepth)
+{
+	int level;
+	float d = LevelFieldDistance(position.xzy, level);
+	if (level < 0)
+		return -1.0;
+	if (d >= radius)
+		return 1.0;
+	vec3 normal;
+	if (!LevelFieldNormal(level, position.xzy, normal))
+		return (d >= -killDepth) ? 1.0 : 0.0;
+	vec3 outward = normal.xzy;
+	position += outward * (radius - d);
+	velocity -= outward * min(dot(velocity, outward), 0.0);
+	if (normal.z > kLevelFieldFloorUp || d >= -killDepth)
+		return 1.0;
+	return 1.0 - smoothstep(killDepth, 2.0 * killDepth, -d);
+}
+
+// The whole of #8 for one vertex of a stage 2 record. False when this particle does not collide with the level
+// here -- its definition does not ask, the field is not usable, or the field has no answer at the drawn position
+// and the path never landed -- and the caller's F4 plane runs exactly as before. True: pos and vel are this
+// frame's, and fieldFade multiplies the particle (0 = gone). The radius is F4's, half the drawn size; the kill
+// depth that radius, but at least 1 map unit (the field's own precision) and at most 2 (so an 8-unit door still
+// holds a large particle).
+bool LevelFieldCollide(GpuParticle part, int defSlot, float age, float life, float gravity, float k, float halfSize, inout vec3 pos, inout vec3 vel, out float fieldFade)
+{
+	fieldFade = 1.0;
+	float collide = particleDefinitions[defSlot].look.z;
+	if (collide < 0.5)
+		return false;
+	gLevelFieldParams = texelFetch(LevelFieldHeader, ivec2(2, 0), 0);
+	if (gLevelFieldParams.x < 0.5 || (collide < 1.5 && gLevelFieldParams.y < 0.5))
+		return false;
+	gLevelFieldWindow[0] = texelFetch(LevelFieldHeader, ivec2(0, 0), 0);
+	gLevelFieldWindow[1] = texelFetch(LevelFieldHeader, ivec2(1, 0), 0);
+	gLevelFieldSize[0] = vec3(textureSize(LevelFieldFine, 0));
+	gLevelFieldSize[1] = vec3(textureSize(LevelFieldCoarse, 0));
+
+	float radius = halfSize;
+	float killDepth = clamp(radius, 1.0, 2.0);
+	float landedAge;
+	float landedHeight;
+	int path = LevelFieldMarch(part, age, life, gravity, k, radius, killDepth, landedAge, landedHeight);
+	if (path == kLevelFieldPathKilled)
+	{
+		fieldFade = 0.0;
+		return true;
+	}
+	bool landed = (path == kLevelFieldPathLanded);
+	if (landed && pos.y < landedHeight)
+	{
+		// Skidding: the closed-form path goes on below the floor; the particle stays on top of it.
+		pos.y = landedHeight;
+		vel.y = 0.0;
+	}
+	float contact = LevelFieldContact(pos, vel, radius, killDepth);
+	if (contact < 0.0)
+		return landed;	// no answer here: a landed particle keeps skidding at its height, any other takes the plane
+	fieldFade = contact;
+	return true;
+}
+#endif
 // [PARTICLEDEFS] A stage 2 record: everything about its look from its definition.
 void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 {
@@ -444,7 +752,20 @@ void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 	// The emission's plane: closer than the particle's radius, it is pushed out
 	// along the normal and slides, its velocity (which orients a streak) losing the
 	// normal part. The floor: below floor + radius it is clamped and skids.
+#ifdef LEVEL_FIELD_COLLISION
+	// [LEVELFIELD] A `collide = level` particle is kept out of the whole level by the field first; where the field
+	// has no answer it falls back to the plane below, as every `collide = plane` particle does.
+	float levelFieldFade = 1.0;
+	bool levelFieldHandled = LevelFieldCollide(part, defSlot, age, life, gravity, k, halfSize, pos, vel, levelFieldFade);
+	if (levelFieldFade <= 0.0)
+	{
+		CollapseParticle();
+		return;
+	}
+	if (!levelFieldHandled && particleDefinitions[defSlot].look.z > 0.5)
+#else
 	if (particleDefinitions[defSlot].look.z > 0.5)
+#endif
 	{
 		if (part.e.x < 1.5)
 		{
@@ -485,6 +806,9 @@ void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 	float fade = 1.0;
 	if ((int(particleDefinitions[defSlot].look.w + 0.5) & 1) != 0)
 		fade = 1.0 - smoothstep(0.6, 1.0, t);
+#ifdef LEVEL_FIELD_COLLISION
+	fade *= levelFieldFade;	// [LEVELFIELD] fading out inside a wall
+#endif
 
 	EmitParticle(eyePos, c, part.c.rgb * rampColor * (part.c.w * emissive * uGpuParticleParams.w * fade));
 	vParticleFlipbook = ParticleFlipbookFrames(defSlot, age, t);	// [2c]

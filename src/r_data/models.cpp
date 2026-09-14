@@ -39,6 +39,7 @@
 #include "v_video.h"
 #include "hw_bonebuffer.h"
 #include "hw_vrmodes.h"
+#include "model_reach.h"  // RS fork -- draw-time joint poses and reach chains (RenderModel, RenderModelFrame)
 #include "c_dispatch.h"   // RS fork -- the modelsurfaces CCMD at the end of this file
 #include "v_text.h"       // RS fork -- TEXTCOLOR_* for the same
 
@@ -403,6 +404,12 @@ void RenderModel(FModelRenderer *renderer, float x, float y, float z, FSpriteMod
 		translation = actor->Translation;
 
 	VSMatrix objectToWorldMatrix = smf->ObjectToWorldMatrix(actor, x, y, z, ticFrac);
+
+	// RS FORK -- DRAW-TIME JOINT POSES AND REACH CHAINS (model_reach.h). Opens the
+	// render-only window in which RenderModelFrame may pose THIS actor's bones, and hands
+	// it the exact matrix this draw uses. Inert -- one int and one bool test -- unless a
+	// pose or a chain is registered or r_jointpose_test is set. Closes on return.
+	FModelDrawPoseScope drawPoseScope(actor, objectToWorldMatrix, ticFrac);
 
 	const DVector2 scale = actor->InterpolatedScale(ticFrac);
 	float scaleFactorX = scale.X * smf->xscale;
@@ -3234,6 +3241,10 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 
 	bool nextFrame = frameinfo.smfNext && drawinfo.modelframe != drawinfo.modelframenext;
 
+	// RS FORK -- a posed palette's own upload, for a model that otherwise uploads its
+	// bones inside RenderFrame (neither decoupled nor attachments). -1 keeps that path.
+	int posedBoneStart = -1;
+
 	// [Jay] while per-model animations aren't done, DECOUPLEDANIMATIONS does the same as MODELSAREATTACHMENTS
 	if(!evaluatedSingle)
 	{  // [Jay] TODO per-model decoupled animations
@@ -3245,6 +3256,13 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			{
 				boneData = mdl->CalculateBonesOnlyOffsets((modelData && modelData->modelBoneOverrides.SSize() > i)? &modelData->modelBoneOverrides[i] : nullptr, nullptr, tic);
 			}
+
+			// RS FORK -- DRAW-TIME JOINT POSES AND REACH CHAINS (model_reach.h), on the
+			// finished palette: every decoupled branch of ProcessModelFrame and the
+			// OnlyOffsets fallback above arrive here, stock overrides already in. Never
+			// on the base-pose fallback below, which is not a palette. Hands boneData
+			// back untouched unless RenderModel opened a pose window for this actor.
+			if (boneData) boneData = ModelDrawPose_Apply(frameinfo.actor, mdl, i, *boneData);
 
 			// [RS FORK] Upstream's new CalculateBonesOnlyOffsets path only covers
 			// the decoupled case. Keep the fork's base-pose fallback so a
@@ -3258,6 +3276,14 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			boneStartingPosition = boneData ? screen->mBones->UploadBones(*boneData) : -1;
 			evaluatedSingle = true;
 
+		}
+		else if (boneData)
+		{
+			// RS FORK -- the same, for a model that uploads its own bones inside RenderFrame.
+			// A posed palette gets its own upload for THIS draw only: boneStartingPosition is
+			// shared with the next model index and stays as it was.
+			const TArray<VSMatrix> *posed = ModelDrawPose_Apply(frameinfo.actor, mdl, i, *boneData);
+			if (posed != boneData) posedBoneStart = screen->mBones->UploadBones(*posed);
 		}
 
 		// Publish this model's bones for anything anchored to this layer.
@@ -3697,7 +3723,7 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 		}
 	}
 
-	mdl->RenderFrame(renderer, tex, drawinfo.modelframe, nextFrame ? drawinfo.modelframenext : drawinfo.modelframe, nextFrame ? frameinfo.inter : -1.f, translation, ssidp, boneStartingPosition, surfList.items ? &surfList : nullptr);
+	mdl->RenderFrame(renderer, tex, drawinfo.modelframe, nextFrame ? drawinfo.modelframenext : drawinfo.modelframe, nextFrame ? frameinfo.inter : -1.f, translation, ssidp, posedBoneStart >= 0 ? posedBoneStart : boneStartingPosition, surfList.items ? &surfList : nullptr);
 }
 
 void RenderFrameModels(FModelRenderer *renderer, FLevelLocals *Level, const FSpriteModelFrame *smf, const FState *curState, int curTics, double ticFrac, FTranslationID translation, AActor* actor, const DPSprite* psp)

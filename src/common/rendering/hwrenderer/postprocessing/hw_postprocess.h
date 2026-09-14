@@ -59,7 +59,30 @@ enum class PPWrapMode { Clamp, Repeat };
 // [LIGHTMASK] LightMaskCurrent / LightMaskNext: the pair of images the scene's light mask is
 // carried through post-processing in (PPLightMask below), used the way the pipeline images
 // are. Appended, so no existing value moves; a later addition appends after them.
-enum class PPTextureType { CurrentPipelineTexture, NextPipelineTexture, PPTexture, SceneColor, SceneFog, SceneNormal, SceneDepth, SwapChain, ShadowMap, LightMaskCurrent, LightMaskNext };
+// [SMOKEVOLUME] ExternalImage: an image a backend owns for work of its own (the smoke volume's 3D
+// density, say), read by a pass as an input. PPExternalImage below says which. Appended after the
+// light mask's pair ("Engine docs/SMOKE_VOLUME_PLAN.md" 13c, review S4).
+enum class PPTextureType { CurrentPipelineTexture, NextPipelineTexture, PPTexture, SceneColor, SceneFog, SceneNormal, SceneDepth, SwapChain, ShadowMap, LightMaskCurrent, LightMaskNext, ExternalImage };
+
+// [SMOKEVOLUME] THE BACKEND-OWNED IMAGES A PASS MAY READ (PPTextureType::ExternalImage).
+//
+// Common code cannot name a backend object, so a pass names one of these and the backend resolves
+// the name to its own image (Vulkan: VkTextureManager::GetTexture). A client that wants a pass to read
+// another of its images appends the image here and resolves it there. Each is named for what it holds.
+//
+// The name travels as a TOKEN: the input's Texture pointer is the one fixed PPTexture kept for that
+// name (PPExternalImageToken). Every backend path that passes a PPTextureInput's Type and Texture on,
+// the descriptor writes among them, therefore carries it unchanged. A token never gets a backend.
+enum class PPExternalImage
+{
+	SmokeDensityLatest,		// the smoke volume's density (r) and heat (g), latest simulation state (3D)
+	SmokeDensityPrevious,	// the same one simulation step earlier; the march blends the two by TicFrac (3D)
+	SmokeTileActive,		// one texel per SMOKE_TILE_CELLS^3 cells: 1 = the tile may hold smoke (3D, R8)
+	Count
+};
+
+PPTexture *PPExternalImageToken(PPExternalImage image);
+PPExternalImage PPExternalImageFromToken(const PPTexture *token);	// Count when it is not a token
 
 class PPTextureInput
 {
@@ -182,6 +205,14 @@ public:
 		SetInputSpecialType(index, PPTextureType::LightMaskCurrent, filter, wrap);
 	}
 
+	// [SMOKEVOLUME] An image the backend owns (PPExternalImage), such as a 3D volume. The backend
+	// resolves the token; a draw that names an image it does not have ready draws nothing.
+	void SetInputExternalImage(int index, PPExternalImage image, PPFilterMode filter = PPFilterMode::Nearest, PPWrapMode wrap = PPWrapMode::Clamp)
+	{
+		SetInputSpecialType(index, PPTextureType::ExternalImage, filter, wrap);
+		Textures[index].Texture = PPExternalImageToken(image);
+	}
+
 	void SetInputSpecialType(int index, PPTextureType type, PPFilterMode filter = PPFilterMode::Nearest, PPWrapMode wrap = PPWrapMode::Clamp)
 	{
 		if ((int)Textures.Size() < index + 1)
@@ -268,6 +299,17 @@ public:
 	{
 		BlendMode.BlendOp = STYLEOP_Add;
 		BlendMode.SrcAlpha = STYLEALPHA_Src;
+		BlendMode.DestAlpha = STYLEALPHA_InvSrc;
+		BlendMode.Flags = 0;
+	}
+
+	// [SMOKEVOLUME] Premultiplied: dst = src + dst x (1 - src.a). For a pass whose rgb is light it adds
+	// and whose alpha is how much of what lies behind it hides. The smoke composite outputs
+	// (light, 1 - T), which this blend turns into scene x T + light, linear in both.
+	void SetPremultipliedAlphaBlend()
+	{
+		BlendMode.BlendOp = STYLEOP_Add;
+		BlendMode.SrcAlpha = STYLEALPHA_One;
 		BlendMode.DestAlpha = STYLEALPHA_InvSrc;
 		BlendMode.Flags = 0;
 	}
@@ -904,6 +946,164 @@ private:
 	PPShader OffsetShaderMS = { "shaders/pp/heatoffset.fp", "#define MULTISAMPLE\n", HeatOffsetUniforms::Desc() };
 	PPShader WarpShader = { "shaders/pp/heatwarp.fp", "", HeatWarpUniforms::Desc() };
 	PPShader WarpShaderMS = { "shaders/pp/heatwarp.fp", "#define MULTISAMPLE\n", HeatWarpUniforms::Desc() };
+};
+
+/////////////////////////////////////////////////////////////////////////////
+
+// [SMOKEVOLUME] THE SMOKE VOLUME'S DRAWING ("Engine docs/SMOKE_VOLUME_PLAN.md" 13c): a raymarch per eye
+// through the volume the compute step simulates (vk_smokevolume.h). Its shaders are shaders/pp/
+// smokedepth.fp, smokemarch.fp, smokeblur.fp and smokecomposite.fp.
+//
+// The scene depth inside the scene viewport, read the way the heat and beam passes read it: by the depth
+// downsample (smokedepth.fp) and by the composite's depth-aware upsample (smokecomposite.fp).
+struct SmokeDepthUniforms
+{
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+	float LinearizeDepthA;
+	float LinearizeDepthB;
+	float DepthPad0;
+	float DepthPad1;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SceneScale", UniformType::Vec2, offsetof(SmokeDepthUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(SmokeDepthUniforms, SceneOffset) },
+			{ "LinearizeDepthA", UniformType::Float, offsetof(SmokeDepthUniforms, LinearizeDepthA) },
+			{ "LinearizeDepthB", UniformType::Float, offsetof(SmokeDepthUniforms, LinearizeDepthB) },
+			{ "DepthPad0", UniformType::Float, offsetof(SmokeDepthUniforms, DepthPad0) },
+			{ "DepthPad1", UniformType::Float, offsetof(SmokeDepthUniforms, DepthPad1) },
+		};
+	}
+};
+
+// std140 guard rails: UniformBlockDecl::Create emits the fields in declaration order with no explicit
+// offsets, so the C++ layout IS the GLSL layout.
+static_assert(offsetof(SmokeDepthUniforms, LinearizeDepthA) == 16, "SmokeDepthUniforms::LinearizeDepthA must start at 16 for std140");
+static_assert(sizeof(SmokeDepthUniforms) == 32, "SmokeDepthUniforms must be 32 bytes");
+
+// One eye's march (smokemarch.fp). Positions are RELATIVE TO THAT EYE in GL world axes (map x, map z,
+// map y) and map units, as the heat pass's are. GridSize and TileCount are in the volume's texel axes,
+// Doom's x, y, z. Filled by SetupSmokeVolume (hw_drawinfo.cpp).
+struct SmokeMarchUniforms
+{
+	float ViewToWorld[16];    // plain floats: VSMatrix is not visible in this header
+	FVector2 TanHalfFov;      // 1 / projection m[0], m[5], as the beam pass
+	FVector2 ProjOffset;      // projection m[8], m[9]: an asymmetric (headset) eye
+	FVector3 BoxMin;          // the grid's minimum corner, eye-relative GL axes, map units
+	float CellSize;           // map units
+	FVector3 GridSize;        // cells per axis, texel axes
+	float TicFrac;            // where the frame sits between the last two simulation steps, 0..1
+	FVector3 TileCount;       // tiles per axis (GridSize / SMOKE_TILE_CELLS), texel axes
+	int StepCount;            // the most samples a ray takes (r_smoke_steps)
+	FVector3 LightColor;      // the light the smoke sends toward the eye per unit of its opacity
+	float Extinction;         // per map unit at density 1: absorption x SMOKE_EXTINCTION_PER_MAP_UNIT x r_smoke_density_scale
+	float MinStep;            // map units: no two samples closer than this
+	float SliceHeight;        // r_smoke_debugslice's level plane, eye-relative GL y, map units
+	int DebugSlice;           // r_smoke_debugslice
+	float MarchPad0;
+
+	//   ViewToWorld 0   TanHalfFov 64   ProjOffset 72
+	//   BoxMin 80   CellSize 92   GridSize 96   TicFrac 108   TileCount 112   StepCount 124
+	//   LightColor 128   Extinction 140   MinStep 144   SliceHeight 148   DebugSlice 152   MarchPad0 156
+	//   -> block ends 160 (the beam's is 192)
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "ViewToWorld", UniformType::Mat4, offsetof(SmokeMarchUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeMarchUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeMarchUniforms, ProjOffset) },
+			{ "BoxMin", UniformType::Vec3, offsetof(SmokeMarchUniforms, BoxMin) },
+			{ "CellSize", UniformType::Float, offsetof(SmokeMarchUniforms, CellSize) },
+			{ "GridSize", UniformType::Vec3, offsetof(SmokeMarchUniforms, GridSize) },
+			{ "TicFrac", UniformType::Float, offsetof(SmokeMarchUniforms, TicFrac) },
+			{ "TileCount", UniformType::Vec3, offsetof(SmokeMarchUniforms, TileCount) },
+			{ "StepCount", UniformType::Int, offsetof(SmokeMarchUniforms, StepCount) },
+			{ "LightColor", UniformType::Vec3, offsetof(SmokeMarchUniforms, LightColor) },
+			{ "Extinction", UniformType::Float, offsetof(SmokeMarchUniforms, Extinction) },
+			{ "MinStep", UniformType::Float, offsetof(SmokeMarchUniforms, MinStep) },
+			{ "SliceHeight", UniformType::Float, offsetof(SmokeMarchUniforms, SliceHeight) },
+			{ "DebugSlice", UniformType::Int, offsetof(SmokeMarchUniforms, DebugSlice) },
+			{ "MarchPad0", UniformType::Float, offsetof(SmokeMarchUniforms, MarchPad0) },
+		};
+	}
+};
+
+static_assert(offsetof(SmokeMarchUniforms, TanHalfFov) == 64, "SmokeMarchUniforms::TanHalfFov must start at 64 for std140");
+static_assert(offsetof(SmokeMarchUniforms, BoxMin) == 80, "SmokeMarchUniforms::BoxMin must start at 80 for std140");
+static_assert(offsetof(SmokeMarchUniforms, GridSize) == 96, "SmokeMarchUniforms::GridSize must start at 96 for std140");
+static_assert(offsetof(SmokeMarchUniforms, TileCount) == 112, "SmokeMarchUniforms::TileCount must start at 112 for std140");
+static_assert(offsetof(SmokeMarchUniforms, LightColor) == 128, "SmokeMarchUniforms::LightColor must start at 128 for std140");
+static_assert(offsetof(SmokeMarchUniforms, MinStep) == 144, "SmokeMarchUniforms::MinStep must start at 144 for std140");
+static_assert(sizeof(SmokeMarchUniforms) == 160, "SmokeMarchUniforms must be 160 bytes; pad to a 16-byte row");
+
+// SKIPPED, NOT ZERO. Render returns on its first line unless the renderer published a march for this
+// eye (SetupSmokeVolume, hw_drawinfo.cpp: Vulkan, r_smoke, the volume allocated, and the CPU side's bound
+// saying visible smoke may exist). With no smoke, or smoke off, the frame is exactly the frame without
+// this pass: no group, no texture, no draw. Even with smoke present, a pixel with no smoke near it is
+// discarded by the composite, never blended at zero, so everything outside the smoke (the lasers among
+// it) keeps its look bit for bit.
+//
+// WHERE (Pass1): after beforebloom and before the volumetric beam, the heatmap, heat refraction and
+// bloom. A flashlight cone's air glow goes on after the haze, so haze behind the cone never dims it;
+// the image bends and blooms with its smoke.
+//
+// THE COMPOSITE ("Engine docs/EMISSIVE_BLOOM_PLAN.md", the contract for 13c/13e) is scene x T +
+// inscatter, premultiplied, with the per-pixel transmittance T kept to the end. The light mask
+// (PPLightMask) gets the same composite with LIGHT_MASK_CARRY, so its amounts dim by the same T. 13e's
+// beam scatter must stay separable: its own term, not folded into this rgb.
+//
+// PER EYE (review S8), as heat refraction: one march set per eye of a multiview scene, one otherwise,
+// and hw_entrypoint.cpp says which eye is being post-processed (SetEye). The grid box is placed around
+// the viewer, so both sets are always published together and both eyes of a layered post path run the
+// same passes. The composite writes the current pipeline image in place (no advance) either way.
+//
+// FOUR PASSES, all but the last at half the scene's resolution:
+//   1. smokedepth.fp      linear depth, the nearest or farthest of each 2x2 in a checkerboard (R32F)
+//   2. smokemarch.fp      the march: rgb light scattered toward the eye, a transmittance (RGBA16F)
+//   3. smokeblur.fp       a separable 5-tap blur that keeps to its depth (two draws, ping-pong)
+//   4. smokecomposite.fp  the depth-aware upsample and the premultiplied composite
+class PPSmokeVolume
+{
+public:
+	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
+
+	void ClearEyes() { eyeSets = 0; }
+	void SetEyeMarch(int eyeSet, const SmokeMarchUniforms &u)
+	{
+		if (eyeSet >= 0 && eyeSet < 2) marches[eyeSet] = u;
+	}
+	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
+	void SetEye(int eye) { currentEye = eye; }
+
+private:
+	void UpdateTextures(int sceneWidth, int sceneHeight);
+
+	SmokeMarchUniforms marches[2] = {};
+	int eyeSets = 0;
+	int currentEye = 0;
+
+	// Half the scene's size, like bloom's first level and the heat offsets. Rewritten whole by every eye
+	// before it is read, so the eyes can share them.
+	PPTexture DepthTexture;
+	PPTexture MarchTexture;
+	PPTexture BlurTexture;
+	PPViewport HalfViewport;
+	int lastWidth = 0;
+	int lastHeight = 0;
+
+	PPShader DepthShader = { "shaders/pp/smokedepth.fp", "", SmokeDepthUniforms::Desc() };
+	PPShader DepthShaderMS = { "shaders/pp/smokedepth.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
+	PPShader MarchShader = { "shaders/pp/smokemarch.fp", "", SmokeMarchUniforms::Desc() };
+	PPShader BlurHorizontal = { "shaders/pp/smokeblur.fp", "#define BLUR_HORIZONTAL\n", {} };
+	PPShader BlurVertical = { "shaders/pp/smokeblur.fp", "#define BLUR_VERTICAL\n", {} };
+	PPShader CompositeShader = { "shaders/pp/smokecomposite.fp", "", SmokeDepthUniforms::Desc() };
+	PPShader CompositeShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
+	PPShader MaskCarryShader = { "shaders/pp/smokecomposite.fp", "#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
+	PPShader MaskCarryShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
 };
 
 
@@ -1603,6 +1803,7 @@ public:
 	PPVolumetricBeam volbeam;
 	PPHeatmap heatmap;
 	PPHeatRefraction heatrefraction;	// [HEATREFRACTION] heat shimmer
+	PPSmokeVolume smokevolume;	// [SMOKEVOLUME] the smoke volume's drawing (13c)
 	PPLightMask lightmask;	// [LIGHTMASK] the frame's light mask decision and its debug view
 	PPLensDistort lens;
 	PPFXAA fxaa;

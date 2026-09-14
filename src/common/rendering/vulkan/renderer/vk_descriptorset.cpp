@@ -40,6 +40,8 @@
 #include "printf.h"	// [VIEWLIGHTS] the per-stage storage buffer warning
 
 #include "vk_postprocess.h"
+#include "vk_compute.h"		// [LEVELFIELD] the level field's views for fixed set bindings 5, 6 and 9
+#include "vk_levelfield.h"
 
 VkDescriptorSetManager::VkDescriptorSetManager(VulkanRenderDevice* fb) : fb(fb)
 {
@@ -192,7 +194,80 @@ void VkDescriptorSetManager::UpdateFixedSet()
 		}
 	}
 
+	// [LEVELFIELD] Bindings 5 and 6: the level collision field's fine and coarse volumes; binding 9: its
+	// header, the windows (vk_levelfield.h, "Engine docs/COLLISION_8_IMPL_NOTES.md"). Declared in GLSL
+	// only by gpuparticles.vp's LEVEL_FIELD_COLLISION programs. Always written: while the field does not
+	// exist, 1-texel stand-ins that say "no level" (a zero header, g = 0), so every particle keeps its
+	// plane. Layout GENERAL -- the field is a storage image the compute bake writes, sampled in the layout
+	// it lives in (review D6). The field is made and freed inside a frame's compute, after this runs: a
+	// field made this frame is bound from the next; one freed this frame stays alive on the delete list
+	// until this frame's commands are done.
+	EnsureLevelFieldStandIns();
+	VkLevelField* levelField = fb->GetCompute() != nullptr ? fb->GetCompute()->GetLevelField() : nullptr;
+	const bool levelFieldBound = levelField != nullptr && levelField->IsAllocated();
+	VulkanSampler* headerSampler = fb->GetSamplerManager()->Get(PPFilterMode::Nearest, PPWrapMode::Clamp);	// texelFetch only
+	update.AddCombinedImageSampler(FixedSet.get(), 5, levelFieldBound ? levelField->GetFieldView(0) : LevelFieldStandInView.get(), LevelFieldSampler.get(), VK_IMAGE_LAYOUT_GENERAL);
+	update.AddCombinedImageSampler(FixedSet.get(), 6, levelFieldBound ? levelField->GetFieldView(1) : LevelFieldStandInView.get(), LevelFieldSampler.get(), VK_IMAGE_LAYOUT_GENERAL);
+	update.AddCombinedImageSampler(FixedSet.get(), 9, levelFieldBound ? levelField->GetHeaderView() : LevelFieldHeaderStandInView.get(), headerSampler, VK_IMAGE_LAYOUT_GENERAL);
+
 	update.Execute(fb->device.get());
+}
+
+// [LEVELFIELD] The stand-ins for fixed set bindings 5, 6 and 9, and the field's sampler, made the first
+// time the fixed set is written (Init, before VkComputeManager exists). A volume of one RG16F texel and a
+// 3 x 1 RGBA32F header, both cleared to zero -- g 0 is "not baked", a zero window is "no level" -- and in
+// GENERAL, the layout the bindings are written with. The sampler: linear, repeating on all three axes
+// (the field is toroidal: a texel is a world cell modulo the volume's size), no mips.
+void VkDescriptorSetManager::EnsureLevelFieldStandIns()
+{
+	if (LevelFieldStandInView && LevelFieldHeaderStandInView && LevelFieldSampler)
+		return;
+
+	VulkanDevice* device = fb->device.get();
+	LevelFieldStandIn = ImageBuilder()
+		.Size3D(1, 1, 1)
+		.Format(VK_FORMAT_R16G16_SFLOAT)
+		.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		.DebugName("VkDescriptorSetManager.LevelFieldStandIn")
+		.Create(device);
+	LevelFieldStandInView = ImageViewBuilder()
+		.Type(VK_IMAGE_VIEW_TYPE_3D)
+		.Image(LevelFieldStandIn.get(), VK_FORMAT_R16G16_SFLOAT)
+		.DebugName("VkDescriptorSetManager.LevelFieldStandInView")
+		.Create(device);
+	LevelFieldHeaderStandIn = ImageBuilder()
+		.Size(LEVEL_FIELD_HEADER_TEXELS, 1)
+		.Format(VK_FORMAT_R32G32B32A32_SFLOAT)
+		.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		.DebugName("VkDescriptorSetManager.LevelFieldHeaderStandIn")
+		.Create(device);
+	LevelFieldHeaderStandInView = ImageViewBuilder()
+		.Image(LevelFieldHeaderStandIn.get(), VK_FORMAT_R32G32B32A32_SFLOAT)
+		.DebugName("VkDescriptorSetManager.LevelFieldHeaderStandInView")
+		.Create(device);
+	LevelFieldSampler = SamplerBuilder()
+		.MagFilter(VK_FILTER_LINEAR)
+		.MinFilter(VK_FILTER_LINEAR)
+		.MipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+		.AddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT)
+		.MaxLod(0.25f)
+		.DebugName("VkDescriptorSetManager.LevelFieldSampler")
+		.Create(device);
+
+	VulkanCommandBuffer* cmd = fb->GetCommands()->GetTransferCommands();
+	PipelineBarrier()
+		.AddImage(LevelFieldStandIn.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT)
+		.AddImage(LevelFieldHeaderStandIn.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT)
+		.Execute(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+	VkClearColorValue zero = {};
+	VkImageSubresourceRange range = {};
+	range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	range.baseMipLevel = 0;
+	range.levelCount = 1;
+	range.baseArrayLayer = 0;
+	range.layerCount = 1;
+	cmd->clearColorImage(LevelFieldStandIn->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+	cmd->clearColorImage(LevelFieldHeaderStandIn->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
 }
 
 bool VkDescriptorSetManager::IsSceneDepthReadTarget(VulkanImageView* depthStencilView, int layers, uint32_t viewMask) const
@@ -430,6 +505,14 @@ void VkDescriptorSetManager::CreateFixedSetLayout()
 	// it in its layout. Binding 5 onward is reserved for later plans (see "Engine
 	// docs/REVIEW_SMOKE_DEBRIS_DAMAGE.md", X1).
 	builder.AddBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	// [LEVELFIELD] The level collision field (UpdateFixedSet): 5 fine, 6 coarse (review X1's numbers), and
+	// 9 its header -- a binding the X1 table did not have: the windows travel with the field instead of in
+	// the viewpoint block ("Engine docs/COLLISION_8_IMPL_NOTES.md", deviation 1). Vertex stage: declared in
+	// GLSL only by gpuparticles.vp's LEVEL_FIELD_COLLISION programs. Always written with a valid image, so
+	// every pipeline can carry them in its layout. 7 and 8 stay reserved for #17's damage pages.
+	builder.AddBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT);
+	builder.AddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT);
+	builder.AddBinding(9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT);
 	builder.DebugName("VkDescriptorSetManager.FixedSetLayout");
 	FixedSetLayout = builder.Create(fb->device.get());
 }
@@ -455,7 +538,8 @@ void VkDescriptorSetManager::CreateFixedSetPool()
 	DescriptorPoolBuilder poolbuilder;
 	// [2a] 3, not 2: shadowmap (binding 0), lightmap (1), scene depth (3).
 	// [2c] 4: and the particle atlas (4). Too few here fails set allocation.
-	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * maxSets);
+	// [LEVELFIELD] 7: and the level field's fine (5), coarse (6) and header (9).
+	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * maxSets);
 	if (fb->RaytracingEnabled())
 		poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * maxSets);
 	poolbuilder.MaxSets(maxSets);

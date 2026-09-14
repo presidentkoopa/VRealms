@@ -30,7 +30,7 @@
 **       orient   = billboard                     // billboard | streak | flake
 **       stretch  = 0                             // streak: seconds of travel drawn
 **       spin     = -90, 90                       // deg/s, picked per particle by its seed
-**       collide  = plane                         // none | plane: honour SpawnParticles' surface and floor
+**       collide  = plane                         // none | plane | level: SpawnParticles' surface and floor, or the whole level (below)
 **       fade     = none                          // none | smooth: the stage 1 fade over the last 40% of life
 **       look     = none                          // none | dust | fire: a generated shape (below); not with texture
 **       mesh     = "models/debris/chip1.md3"     // draw each particle as this small 3D model (below)
@@ -73,10 +73,26 @@
 ** With a mesh, `size` is the model's SCALE: 1 (the default) draws it as modelled, 1 md3 unit to
 ** 1 map unit. It is stored as scale x the mesh's diameter, so the billboard it falls back to is as
 ** wide as the chunk. `spin` = min, max is its tumble, degrees a second about a random axis (the
-** seed picks the axis, the rate and a random starting turn). With `collide = plane` it rests ON
+** seed picks the axis, the rate and a random starting turn). With `collide = plane` (or `level`,
+** which a mesh treats as `plane` until the debris pool, #9) it rests ON
 ** surfaces, lands on the floor, settles flat and slides to a stop. `lit` and `color` light and
 ** colour it; `emissive` is glow added on top (0 for anything not hot); `alpha` does not apply,
 ** a mesh is opaque. It turns about its origin, so author it centred.
+**
+** [LEVELFIELD] COLLISION WITH THE WHOLE LEVEL ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #8).
+** `collide = level` keeps a particle out of every floor, ceiling and wall near the player as they are
+** NOW -- an open door is open, a lift carries what lies on it -- through the level collision field
+** ("Particle collision", r_particlecollision, on by default):
+**   - closer to a surface than its radius (half its drawn size) it is pushed out and slides along it;
+**     a streak turns along the surface;
+**   - falling onto a floor it lands and skids at that height;
+**   - into a wall deeper than its radius (at least 1, at most 2 map units) it fades out and stays gone:
+**     it never pops out of the far side;
+**   - where the field has no answer (switched off, not built yet, out of its reach) it does what
+**     `plane` does with SpawnParticles' surface and floor.
+** Stateless like every ring particle: it does not bounce. Bouncing and resting are the debris pool's
+** (#9). A mesh with `collide = level` keeps the `plane` landing until then. r_particlecollision_test
+** makes `plane` definitions use the field too, to judge it.
 **
 ** A ramp given one value with no '@' is constant. With several, every value needs
 ** '@t', 0 <= t <= 1, increasing; it holds its first value before the first key and
@@ -166,7 +182,8 @@ namespace
 	const double kInlineReuseMargin = 0.5;
 
 	const char *const kOrientNames[] = { "billboard", "streak", "flake" };
-	const char *const kCollideNames[] = { "none", "plane" };
+	// [LEVELFIELD] "level" (look.z 2, #8) appended; a value's number never changes.
+	const char *const kCollideNames[] = { "none", "plane", "level" };
 	const char *const kFadeNames[] = { "none", "smooth" };
 	const char *const kModeNames[] = { "loop", "once" };
 	// [LOOKS] In EParticleLook order (particledefs.h).
@@ -963,7 +980,7 @@ namespace
 			else if (e.Key.CompareNoCase("soft") == 0) ok = ReadNumber(e, 0.0, kNoUpperLimit, soft, error, errorLine);
 			else if (e.Key.CompareNoCase("stretch") == 0) ok = ReadNumber(e, 0.0, kNoUpperLimit, stretch, error, errorLine);
 			else if (e.Key.CompareNoCase("orient") == 0) ok = ReadChoice(e, kOrientNames, 3, orient, error, errorLine);
-			else if (e.Key.CompareNoCase("collide") == 0) ok = ReadChoice(e, kCollideNames, 2, collide, error, errorLine);
+			else if (e.Key.CompareNoCase("collide") == 0) ok = ReadChoice(e, kCollideNames, 3, collide, error, errorLine);
 			else if (e.Key.CompareNoCase("fade") == 0) ok = ReadChoice(e, kFadeNames, 2, fade, error, errorLine);
 			// [LOOKS] The generated look and its keys.
 			else if (e.Key.CompareNoCase("look") == 0) { ok = ReadChoice(e, kLookNames, PDL_COUNT, look, error, errorLine); lookLine = e.Line; }
@@ -1538,7 +1555,7 @@ CCMD(particles)
 		const NamedInfo &n = table.Named[i];
 		const ParticleDefinitionGpu &g = table.Gpu[i];
 		const int orient = clamp((int)g.shape[0], 0, 2);
-		const int collide = clamp((int)g.look[2], 0, 1);
+		const int collide = clamp((int)g.look[2], 0, 2);
 		const int flags = (int)g.look[3];
 
 		FString soft;
