@@ -395,6 +395,7 @@ EXTERN_CVAR(Int, vr_move_speed);
 EXTERN_CVAR(Float, vr_run_multiplier);
 EXTERN_CVAR(Float, vr_walk_multiplier);
 EXTERN_CVAR(Bool, vr_laser_sight);
+EXTERN_CVAR(Bool, vr_handaim);	// [RAILAIM] userinfo, d_netinfo.cpp
 
 FARG(nodraw, "Debug", "Stops the game from drawing anything.", "",
 	"Causes ZDoom not to draw anything at all. Only useful with -timedemo.");
@@ -1438,6 +1439,19 @@ void G_BuildTiccmd (usercmd_t *cmd)
 			const DAngle absolutePitch = localPlayer->mo->Angles.Pitch - pitchDelta;
 			cmd->weaponyaw = (short)std::lround((absoluteYaw - DAngle::fromDeg(90.0)).Degrees() * cmdAngleScale);
 			cmd->weaponpitch = (short)std::lround((-absolutePitch).Degrees() * cmdAngleScale);
+		}
+	}
+	// [RAILAIM] Tell every peer whether the weaponpitch/weaponyaw built here
+	// come from a tracked hand (the block below) or from the view (above).
+	// vr_handaim is userinfo: a change goes out as a net command and lands on
+	// every machine's copy of this player's userinfo at the same tic, this
+	// machine's included, so the playsim never sees it early. Only a mismatch
+	// sends anything.
+	{
+		const bool handAim = vrmode->IsVR();
+		if (*vr_handaim != handAim)
+		{
+			vr_handaim = handAim;
 		}
 	}
 	if (vrmode->IsVR())

@@ -63,6 +63,19 @@ CVAR (Float,	wbobfire,				0.f,		CVAR_USERINFO | CVAR_ARCHIVE);
 CVAR (String,	playerclass,			"Fighter",	CVAR_USERINFO | CVAR_ARCHIVE);
 CVAR (Bool,		classicflight,			false,		CVAR_USERINFO | CVAR_ARCHIVE);
 CVAR (Bool,		vertspread,				false,		CVAR_USERINFO | CVAR_ARCHIVE);
+// [RAILAIM] This player's weapon aim is a tracked VR hand. A netgame rebuilds
+// every player's weapon aim from the usercmd's weaponpitch/weaponyaw
+// (UpdateCanonicalMainHandPose, p_user.cpp), which carry the controller for a
+// VR player and the view for everyone else. The playsim must know which --
+// identically on every machine -- to fire like single player: a hand-aimed
+// player gets no vertical autoaim and has offsets composed in the hand's
+// frame; a flat player keeps normal autoaim. Userinfo is networked (the change
+// is a DEM_UINFCHANGED net command, applied at the same tic everywhere, the
+// sender included); G_BuildTiccmd keeps it equal to the local VR mode.
+// Deliberately NOT CVAR_ARCHIVE: it describes this session, not a setting, so
+// it never reaches the ini. Read it through userinfo_t::GetVRHandAim or
+// P_HandAimedPlayer, never through this global.
+CVAR (Bool,		vr_handaim,				false,		CVAR_USERINFO);
 CVAR (Int,		cl_otherplayernames,	2,			CVAR_ARCHIVE);
 CVAR (Int,		cl_otherplayerhealth,	2,			CVAR_ARCHIVE);
 

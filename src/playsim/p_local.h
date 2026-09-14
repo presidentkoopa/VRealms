@@ -376,6 +376,26 @@ struct FRailParams
 
 void P_RailAttack(FRailParams *params);
 
+// [RAILAIM] Netgame weapon aim; definitions in p_map.cpp. In a netgame every
+// player's weapon aim is the canonical pose rebuilt from the usercmd
+// (UpdateCanonicalMainHandPose, p_user.cpp): yaw AttackAngle + 90, pitch
+// -AttackPitch, no roll.
+//
+// P_HandAimedPlayer: that pose is a tracked VR hand (the player's vr_handaim
+// userinfo -- networked, so every peer answers alike). Such a player fires
+// like single-player VR: the angle/pitch an attack is given are offsets from
+// the view, composed on the hand frame, and there is no vertical autoaim.
+// Anyone else fires like a flat player: along angle/pitch as given, with
+// normal autoaim.
+//
+// CanonicalAimDir: the flat direction for a yaw and a Doom pitch.
+// CanonicalAimDirOffset: CanonicalAimDir with a local yaw/pitch offset applied
+// in that frame the way single player's MapWeaponDir applies it to the
+// controller. See the definition for the sign and what it cannot reproduce.
+bool P_HandAimedPlayer(const player_t *player);
+DVector3 CanonicalAimDir(DAngle yaw, DAngle pitch);
+DVector3 CanonicalAimDirOffset(DAngle yaw, DAngle pitch, DAngle yawOffset, DAngle pitchOffset);
+
 enum	// P_RailAttack / A_RailAttack / A_CustomRailgun / P_DrawRailTrail flags
 {
 	RAF_SILENT = 1,

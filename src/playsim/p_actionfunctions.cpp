@@ -8623,6 +8623,38 @@ DEFINE_ACTION_FUNCTION(AActor, GetRenderStyle)
 	ACTION_RETURN_INT(-1);	// no symbolic constant exists to handle this style.
 }
 
+// [RAILAIM] AttackDir/OffhandDir for a player in a netgame, as (angle, pitch,
+// 0) in degrees. Both hands use the canonical main-hand pose there: the
+// off-hand pose is not networked, and UpdateCanonicalMainHandPose copies the
+// main hand into the Offhand fields. These natives used to return that pose
+// and ignore their yaw/pitch arguments, so every offset a script asked for --
+// A_SpawnItemEx's side and up axes, A_FireProjectile's angle, grenade scatter
+// -- came back as straight ahead. Now:
+// - hand-aimed (P_HandAimedPlayer): the arguments' difference from `source`'s
+//   view is composed on the canonical hand frame, exactly as single player's
+//   MapWeaponDir composes it on the controller. No difference returns the
+//   canonical angles unchanged, bit for bit as before.
+// - flat: the arguments as a flat direction, which is what MapWeaponDir itself
+//   gives in a netgame or without a controller.
+static DVector3 NetgameWeaponDirAngles(AActor *self, AActor *source, DAngle yaw, DAngle pitch)
+{
+	if (P_HandAimedPlayer(self->player))
+	{
+		const DAngle attackYaw = self->AttackAngle + DAngle::fromDeg(90.);
+		const DAngle attackPitch = -self->AttackPitch;
+		const DAngle yawOffset = yaw - source->Angles.Yaw;
+		const DAngle pitchOffset = pitch - source->Angles.Pitch;
+		if (yawOffset == nullAngle && pitchOffset == nullAngle)
+		{
+			return DVector3(attackYaw.Degrees(), attackPitch.Degrees(), 0.);
+		}
+		const DVector3 dir = CanonicalAimDirOffset(attackYaw, attackPitch, yawOffset, pitchOffset);
+		return DVector3(dir.Angle().Degrees(), dir.Pitch().Degrees(), 0.);
+	}
+	const DVector3 dir = CanonicalAimDir(yaw, pitch);
+	return DVector3(dir.Angle().Degrees(), dir.Pitch().Degrees(), 0.);
+}
+
 DEFINE_ACTION_FUNCTION(AActor, AttackDir)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -8631,7 +8663,7 @@ DEFINE_ACTION_FUNCTION(AActor, AttackDir)
 	PARAM_ANGLE(pitch);
 	if (self->player != nullptr && multiplayer && self->OverrideAttackPosDir)
 	{
-		ACTION_RETURN_VEC3(DVector3((self->AttackAngle + DAngle::fromDeg(90.)).Degrees(), (-self->AttackPitch).Degrees(), 0.));
+		ACTION_RETURN_VEC3(NetgameWeaponDirAngles(self, source, yaw, pitch));
 	}
 	DVector3 dir = self->AttackDir(source, yaw, pitch);
 	ACTION_RETURN_VEC3(DVector3(dir.Angle().Degrees(), dir.Pitch().Degrees(), 0.));
@@ -8645,7 +8677,7 @@ DEFINE_ACTION_FUNCTION(AActor, OffhandDir)
 	PARAM_ANGLE(pitch);
 	if (self->player != nullptr && multiplayer && self->OverrideAttackPosDir)
 	{
-		ACTION_RETURN_VEC3(DVector3((self->AttackAngle + DAngle::fromDeg(90.)).Degrees(), (-self->AttackPitch).Degrees(), 0.));
+		ACTION_RETURN_VEC3(NetgameWeaponDirAngles(self, source, yaw, pitch));
 	}
 	DVector3 dir = self->OffhandDir(source, yaw, pitch);
 	ACTION_RETURN_VEC3(DVector3(dir.Angle().Degrees(), dir.Pitch().Degrees(), 0.));

@@ -103,11 +103,9 @@ extern bool sendturn180;
 extern float mousex;
 extern float mousey;
 
-static DVector3 CanonicalAimDir(DAngle yaw, DAngle pitch)
-{
-	double pc = pitch.Cos();
-	return { pc * yaw.Cos(), pc * yaw.Sin(), -pitch.Sin() };
-}
+// [RAILAIM] CanonicalAimDir, CanonicalAimDirOffset and P_HandAimedPlayer live
+// in p_map.cpp, declared in p_local.h. This file used to keep its own static
+// copy of CanonicalAimDir.
 
 
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
@@ -8186,8 +8184,24 @@ AActor *P_SpawnSubMissile(AActor *source, PClassActor *type, AActor *target, DAn
 			pos = source->player->mo->AttackPos;
 			if (multiplayer)
 			{
-				an = source->player->mo->AttackAngle + DAngle::fromDeg(90.);
-				pitch = -source->player->mo->AttackPitch;
+				// [RAILAIM] Hand-aimed: `angle` is an offset from the view, composed on
+				// the canonical hand frame as the AttackDir call below composes it on
+				// the controller (no pitch offset: that call passes the view pitch).
+				// This used to take the canonical aim alone and drop `angle`. A flat
+				// player keeps `angle` and the autoaimed pitch below, as without a
+				// hand.
+				if (P_HandAimedPlayer(source->player))
+				{
+					an = source->player->mo->AttackAngle + DAngle::fromDeg(90.);
+					pitch = -source->player->mo->AttackPitch;
+					const DAngle yawOffset = angle - source->Angles.Yaw;
+					if (yawOffset != nullAngle)
+					{
+						DVector3 dir = CanonicalAimDirOffset(an, pitch, yawOffset, nullAngle);
+						an = dir.Angle();
+						pitch = dir.Pitch();
+					}
+				}
 			}
 			else
 			{
@@ -8223,7 +8237,12 @@ AActor *P_SpawnSubMissile(AActor *source, PClassActor *type, AActor *target, DAn
 
 	if (P_CheckMissileSpawn(other, source->radius))
 	{
-		if (source->player == NULL || multiplayer || !source->player->mo->OverrideAttackPosDir)
+		// [RAILAIM] The same test as P_AimLineAttack's autoaim: a hand-aimed player
+		// keeps the hand's pitch, in single player and now in a netgame too (this
+		// used to give every netgame player the view or autoaim pitch instead); a
+		// flat netgame player still autoaims. In single player the multiplayer
+		// term is false, so this reads exactly as before.
+		if (source->player == NULL || !source->player->mo->OverrideAttackPosDir || (multiplayer && !P_HandAimedPlayer(source->player)))
 		{
 			pitch = P_AimLineAttack(source, angle, 1024., NULL, nullAngle, aimflags);
 		}
@@ -8349,12 +8368,47 @@ AActor *P_SpawnPlayerMissile (AActor *source, double x, double y, double z,
 			pos = source->player->mo->AttackPos;
 			if (multiplayer)
 			{
-				an = source->player->mo->AttackAngle + DAngle::fromDeg(90.);
-				pitch = -source->player->mo->AttackPitch;
-				dir = CanonicalAimDir(an, pitch);
-				xoffsetDir = dir;
-				yoffsetDir = CanonicalAimDir(an - DAngle::fromDeg(90.), pitch);
-				zoffsetDir = CanonicalAimDir(an, pitch + DAngle::fromDeg(90.));
+				if (P_HandAimedPlayer(source->player))
+				{
+					// [RAILAIM] Hand-aimed: fire like the single-player AttackDir calls
+					// below, on the canonical hand frame. `angle`/`pitch` (the view plus
+					// the caller's offset; P_AimLineAttack gives this player no
+					// autoaim) become an offset. The spawn axes carry none and are the
+					// hand's own forward, right and up, so a positive z raises the start
+					// as it does there (the old pitch + 90 axis lowered it). Zero offsets
+					// keep the exact canonical angles, so a caller that asks for no
+					// offset (A_FireProjectile at 0/0 with FPF_NOAUTOAIM) gets the same
+					// missile and, with zero spawn offsets, the same spawn point as
+					// before. The canonical aim alone dropped the caller's angle/pitch.
+					const DAngle attackYaw = source->player->mo->AttackAngle + DAngle::fromDeg(90.);
+					const DAngle attackPitch = -source->player->mo->AttackPitch;
+					const DAngle yawOffset = angle - source->Angles.Yaw;
+					const DAngle pitchOffset = pitch - source->Angles.Pitch;
+					dir = CanonicalAimDirOffset(attackYaw, attackPitch, yawOffset, pitchOffset);
+					xoffsetDir = CanonicalAimDir(attackYaw, attackPitch);
+					yoffsetDir = CanonicalAimDirOffset(attackYaw, attackPitch, DAngle::fromDeg(-90.), nullAngle);
+					zoffsetDir = CanonicalAimDirOffset(attackYaw, attackPitch, nullAngle, DAngle::fromDeg(90.));
+					if (yawOffset == nullAngle && pitchOffset == nullAngle)
+					{
+						an = attackYaw;
+						pitch = attackPitch;
+					}
+					else
+					{
+						an = dir.Angle();
+						pitch = dir.Pitch();
+					}
+				}
+				else
+				{
+					// [RAILAIM] Flat: `an`/`pitch` keep what the aiming above chose (the
+					// autoaim fan and pitch, or the caller's angle and pitch), as without
+					// a hand. The spawn axes are the view's forward, right and up, up
+					// being pitch - 90 so a positive z raises the start.
+					xoffsetDir = CanonicalAimDir(source->Angles.Yaw, source->Angles.Pitch);
+					yoffsetDir = CanonicalAimDir(source->Angles.Yaw - DAngle::fromDeg(90.), source->Angles.Pitch);
+					zoffsetDir = CanonicalAimDir(source->Angles.Yaw, source->Angles.Pitch - DAngle::fromDeg(90.));
+				}
 			}
 			else
 			{

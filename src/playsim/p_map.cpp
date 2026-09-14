@@ -4645,8 +4645,27 @@ DAngle P_AimLineAttack(AActor *t1, DAngle angle, double distance, FTranslatedLin
 			startPos = t1->player->mo->AttackPos;
 			if (multiplayer)
 			{
-				aimPitch = -t1->player->mo->AttackPitch;
-				aimAngle = t1->player->mo->AttackAngle + DAngle::fromDeg(90.);
+				// [RAILAIM] A hand-aimed netgame player aims like single-player VR:
+				// `angle` is an offset from the view, composed on the canonical hand
+				// frame as the AttackDir call below composes it on the controller
+				// (no pitch offset: that call passes the view pitch). This used to
+				// take the canonical aim alone for every netgame player, so
+				// BulletSlope's and SpawnPlayerMissile's +/-5.625 fans, melee spread
+				// and A_BFGSpray's 40 rays all collapsed onto one line. A flat
+				// netgame player keeps the defaults set above -- `angle` and their
+				// own pitch -- exactly as without a hand.
+				if (P_HandAimedPlayer(t1->player))
+				{
+					aimPitch = -t1->player->mo->AttackPitch;
+					aimAngle = t1->player->mo->AttackAngle + DAngle::fromDeg(90.);
+					const DAngle yawOffset = angle - t1->Angles.Yaw;
+					if (yawOffset != nullAngle)
+					{
+						DVector3 direction = CanonicalAimDirOffset(aimAngle, aimPitch, yawOffset, nullAngle);
+						aimPitch = direction.Pitch();
+						aimAngle = direction.Angle();
+					}
+				}
 			}
 			else
 			{
@@ -4689,7 +4708,14 @@ DAngle P_AimLineAttack(AActor *t1, DAngle angle, double distance, FTranslatedLin
 		result->pitch = newPitch;
 
 	aimPitch = t1->Angles.Pitch;
-	if (result->linetarget && (t1->player == NULL || multiplayer || !t1->player->mo->OverrideAttackPosDir))
+	// [RAILAIM] Vertical autoaim. A hand-aimed player never gets it: in single
+	// player because the hand is the aim, and now in a netgame too. This used to
+	// read `multiplayer ||`, which autoaimed every netgame player and sent the
+	// result into P_LineAttack/P_SpawnPlayerMissile, where it could not be told
+	// apart from spread. A flat netgame player (P_HandAimedPlayer false) keeps
+	// normal autoaim and their own autoaim setting. In single player the
+	// multiplayer term is false, so this reads exactly as before.
+	if (result->linetarget && (t1->player == NULL || !t1->player->mo->OverrideAttackPosDir || (multiplayer && !P_HandAimedPlayer(t1->player))))
 	{
 		aimPitch = result->pitch;
 	}
@@ -4747,10 +4773,66 @@ static ETraceStatus CheckForActor(FTraceResults &res, void *userdata)
 	return TRACE_Stop;
 }
 
-static DVector3 CanonicalAimDir(DAngle yaw, DAngle pitch)
+// [RAILAIM] Declared in p_local.h: shared with p_mobj.cpp and the ZScript
+// AttackDir/OffhandDir natives (p_actionfunctions.cpp).
+DVector3 CanonicalAimDir(DAngle yaw, DAngle pitch)
 {
 	double pc = pitch.Cos();
 	return { pc * yaw.Cos(), pc * yaw.Sin(), -pitch.Sin() };
+}
+
+// [RAILAIM] The canonical aim with a caller's yaw/pitch OFFSET applied the way
+// single player applies it. There, AttackDir/OffhandDir (MapWeaponDir in
+// hw_vrmodes.cpp) subtract the actor's view angles back out of the angles they
+// are given and compose what is left as a local direction in the controller's
+// own frame -- yaw first, then pitch. This does the same in the canonical hand
+// frame, which has no roll because the usercmd carries none
+// (UpdateCanonicalMainHandPose zeroes AttackRoll).
+//
+// The basis matches the controller matrix's, SIGN INCLUDED: a positive yaw
+// offset turns toward the hand's left (Doom's sign) and a positive pitch offset
+// tilts toward the hand's UP -- the reverse of Doom's pitch sign, because the
+// VR hand matrix is built with scale(u, u, -u). That is what single player
+// does today; parity between the modes is the point, so if MapWeaponDir's sign
+// is ever changed, change this with it.
+//
+// Pure math on net-synced values (AttackAngle/AttackPitch from the usercmd,
+// offsets from the playsim): identical on every peer. Zero offsets return
+// CanonicalAimDir untouched, so an attack without spread is bit-identical to
+// before.
+//
+// NOT REPRODUCED: single player MIRRORS yaw offsets for the hand on the LEFT
+// controller -- GetWeaponTransform (hw_vrmodes.cpp) applies scale(-1, 1, 1)
+// to controller 0 when the weapon allows auto-reverse, i.e. the off hand of a
+// right-handed player and the main hand of a left-handed one. Handedness is
+// vr_control_scheme, a local cvar no peer receives, so a netgame cannot know
+// which hand holds the left controller and always uses the unmirrored sign.
+// Random spread is symmetric and looks the same; an explicit yaw offset on
+// that hand turns the other way in a netgame. It needs a networked handedness
+// (NETWORK_HAND_INPUT_PLAN) -- never guess it from local state here.
+DVector3 CanonicalAimDirOffset(DAngle yaw, DAngle pitch, DAngle yawOffset, DAngle pitchOffset)
+{
+	if (yawOffset == nullAngle && pitchOffset == nullAngle)
+	{
+		return CanonicalAimDir(yaw, pitch);
+	}
+	const double cp = pitch.Cos();
+	const double sp = pitch.Sin();
+	const double cy = yaw.Cos();
+	const double sy = yaw.Sin();
+	const DVector3 forward = { cp * cy, cp * sy, -sp };
+	const DVector3 left = { -sy, cy, 0. };
+	const DVector3 up = { sp * cy, sp * sy, cp };
+	const double cpo = pitchOffset.Cos();
+	return (cpo * yawOffset.Cos()) * forward + (cpo * yawOffset.Sin()) * left + pitchOffset.Sin() * up;
+}
+
+// [RAILAIM] See p_local.h. vr_handaim (d_netinfo.cpp) is userinfo, so every
+// peer holds the same value for every player at every tic -- which a local
+// flag such as PlayInVR or the VR mode can never give.
+bool P_HandAimedPlayer(const player_t *player)
+{
+	return player != nullptr && player->userinfo.GetVRHandAim();
 }
 
 //==========================================================================
@@ -4845,11 +4927,33 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 			fromPos = t1->player->mo->AttackPos;
 			if (multiplayer)
 			{
-				DAngle attackYaw = t1->player->mo->AttackAngle + DAngle::fromDeg(90.);
-				DAngle attackPitch = -t1->player->mo->AttackPitch;
-				direction = CanonicalAimDir(attackYaw, attackPitch);
-				yoffsetDir = CanonicalAimDir(attackYaw - DAngle::fromDeg(90.), attackPitch);
-				zoffsetDir = CanonicalAimDir(attackYaw, attackPitch + DAngle::fromDeg(90.));
+				if (P_HandAimedPlayer(t1->player))
+				{
+					// [RAILAIM] Hand-aimed: `angle`/`pitch` are the view plus spread.
+					// Their difference from the view is composed on the canonical hand
+					// frame exactly as the single-player AttackDir calls below compose
+					// it on the controller -- the side and up axes included, so a
+					// positive sz goes UP as it does there. The canonical aim alone
+					// dropped every hitscan weapon's spread. The pitch needs no autoaim
+					// unpicking: P_AimLineAttack no longer autoaims this player, so
+					// BulletSlope hands back the view pitch.
+					const DAngle attackYaw = t1->player->mo->AttackAngle + DAngle::fromDeg(90.);
+					const DAngle attackPitch = -t1->player->mo->AttackPitch;
+					const DAngle yawOffset = angle - t1->Angles.Yaw;
+					const DAngle pitchOffset = pitch - t1->Angles.Pitch;
+					direction = CanonicalAimDirOffset(attackYaw, attackPitch, yawOffset, pitchOffset);
+					yoffsetDir = CanonicalAimDirOffset(attackYaw, attackPitch, yawOffset - DAngle::fromDeg(90.), pitchOffset);
+					zoffsetDir = CanonicalAimDirOffset(attackYaw, attackPitch, yawOffset, pitchOffset + DAngle::fromDeg(90.));
+				}
+				else
+				{
+					// [RAILAIM] Flat: fire along `angle`/`pitch` as given, spread and
+					// autoaim included -- `direction` already holds exactly that from
+					// the top of this function. The up axis is pitch - 90 so a positive
+					// sz raises the start as in single player (pitch + 90 lowered it).
+					yoffsetDir = CanonicalAimDir(angle - DAngle::fromDeg(90.), pitch);
+					zoffsetDir = CanonicalAimDir(angle, pitch - DAngle::fromDeg(90.));
+				}
 			}
 			else
 			{
@@ -5719,6 +5823,13 @@ void P_RailAttack(FRailParams *p)
 	{
 		DVector3 offsetxyDir;
 		DVector3 offsetzDir;
+		// [RAILAIM] An off-hand rail fires from the off hand in single player
+		// only, deliberately. The VR off-hand pose is not networked: usercmd_t
+		// carries buttons, view angles and weaponpitch/weaponyaw (main hand)
+		// and nothing else, and OffhandPos/OffhandDir are written only on the
+		// console player's own pawn. Reading them here in a netgame would give
+		// every peer a different rail, so there it fires along the canonical
+		// main-hand aim below.
 		if ((p->flags & RAF_ISOFFHAND) && !multiplayer)
 		{
 			start = source->player->mo->OffhandPos;
@@ -5731,11 +5842,32 @@ void P_RailAttack(FRailParams *p)
 			start = source->player->mo->AttackPos;
 			if (multiplayer)
 			{
-				DAngle attackYaw = source->player->mo->AttackAngle + DAngle::fromDeg(90.);
-				DAngle attackPitch = -source->player->mo->AttackPitch;
-				direction = CanonicalAimDir(attackYaw, attackPitch);
-				offsetxyDir = CanonicalAimDir(attackYaw - DAngle::fromDeg(90.), attackPitch);
-				offsetzDir = CanonicalAimDir(attackYaw, attackPitch + DAngle::fromDeg(90.));
+				if (P_HandAimedPlayer(source->player))
+				{
+					// [RAILAIM] Apply the rail's own angle/pitch offsets (A_RailAttack
+					// spread, explicit angles) on top of the canonical aim, the way the
+					// single-player AttackDir call below does. Using CanonicalAimDir
+					// alone dropped them: a spread rail fired dead on in a netgame and
+					// scattered in single player. The spawn-offset axes carry no
+					// offset, as in single player, and are the hand's own right and
+					// up, so a positive offset_z raises the start as it does there
+					// (the old pitch + 90 axis lowered it).
+					const DAngle attackYaw = source->player->mo->AttackAngle + DAngle::fromDeg(90.);
+					const DAngle attackPitch = -source->player->mo->AttackPitch;
+					direction = CanonicalAimDirOffset(attackYaw, attackPitch, p->angleoffset, p->pitchoffset);
+					offsetxyDir = CanonicalAimDirOffset(attackYaw, attackPitch, DAngle::fromDeg(-90.), nullAngle);
+					offsetzDir = CanonicalAimDirOffset(attackYaw, attackPitch, nullAngle, DAngle::fromDeg(90.));
+				}
+				else
+				{
+					// [RAILAIM] Flat: the rail flies along angle/pitch (view plus the
+					// offsets) -- `vec`, the same vector the no-hand path below uses --
+					// with the view's right and up as spawn axes. Up is pitch - 90 so
+					// a positive offset_z raises the start (pitch + 90 lowered it).
+					direction = vec;
+					offsetxyDir = CanonicalAimDir(source->Angles.Yaw - DAngle::fromDeg(90.), source->Angles.Pitch);
+					offsetzDir = CanonicalAimDir(source->Angles.Yaw, source->Angles.Pitch - DAngle::fromDeg(90.));
+				}
 			}
 			else
 			{

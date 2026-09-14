@@ -223,6 +223,17 @@ struct userinfo_t : TMap<FName,FBaseCVar *>
 	{
 		return *static_cast<FFloatCVar *>(*CheckKey(NAME_Autoaim));
 	}
+	// [RAILAIM] This player's weapon aim is a tracked VR hand (vr_handaim,
+	// d_netinfo.cpp). Userinfo is networked, so every peer reads the same
+	// answer for every player: use this for netgame aim decisions, never local
+	// VR state (PlayInVR, the VR mode). Looked up by name so no namedef entry
+	// is needed; false if the key is somehow absent.
+	bool GetVRHandAim() const
+	{
+		static const FName key("vr_handaim");
+		auto cvar = CheckKey(key);
+		return cvar != nullptr && *static_cast<FBoolCVar *>(*cvar);
+	}
 	const char *GetName(unsigned int charLimit = 0u) const
 	{
 		const char* name = *static_cast<FStringCVar*>(*CheckKey(NAME_Name));
