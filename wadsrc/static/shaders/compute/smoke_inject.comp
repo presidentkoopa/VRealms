@@ -7,7 +7,8 @@
 // Cells: cell (i, j, k) spans [i, i + 1) on each axis, its centre at i + 0.5. The
 // shape is the capsule from ShapeStart to ShapeEnd (equal: a ball) of radius
 // ShapeStart.w; the weight falls smoothly from 1 on its axis to 0 at the radius.
-//   emit    adds density and heat (only in open air) and a push
+//   emit    adds density and heat (only in open air) and a push, and [13e] soot density into the
+//           velocity image's w (smoke_advect.comp carries it as the density)
 //   carve   removes a share of the density
 //   impulse pushes away from the centre (toward it when the strength is negative)
 //
@@ -36,7 +37,7 @@ layout(push_constant) uniform SmokeInjectConstants
 	ivec4 RegionMax;	// xyz one past the last cell; w unused
 	vec4 ShapeStart;	// xyz capsule start, grid cells; w radius, cells
 	vec4 ShapeEnd;		// xyz capsule end, grid cells; w amount (emit: density; carve: share removed)
-	vec4 HeatStrength;	// x heat (emit); y strength, cells per step (impulse)
+	vec4 HeatStrength;	// x heat (emit); y strength, cells per step (impulse); z [13e] soot density (emit)
 	vec4 PushVelocity;	// xyz cells per step added at the centre (emit)
 };
 
@@ -162,10 +163,12 @@ void main()
 		dh.r += ShapeEnd.w * weight;
 		dh.g += HeatStrength.x * weight;
 		imageStore(DensityHeat, cell, dh);
-		if (dot(PushVelocity.xyz, PushVelocity.xyz) > 0.0)
+		if (dot(PushVelocity.xyz, PushVelocity.xyz) > 0.0 || HeatStrength.z > 0.0)
 		{
 			vec4 vel = imageLoad(Velocity, cell);
 			vel.xyz += PushVelocity.xyz * weight;
+			if (HeatStrength.z > 0.0)
+				vel.w += HeatStrength.z * weight;	// [13e] soot, with the density it belongs to
 			imageStore(Velocity, cell, vel);
 		}
 	}

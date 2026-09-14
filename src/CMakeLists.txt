@@ -1039,6 +1039,7 @@ set (PCH_SOURCES
 	rendering/hwrenderer/hw_smokevolume.cpp
 	rendering/hwrenderer/hw_levelfield.cpp
 	rendering/hwrenderer/hw_debrispool.cpp
+	rendering/hwrenderer/hw_debrislanding.cpp
 	rendering/hwrenderer/doom_aabbtree.cpp
 	rendering/hwrenderer/doom_levelmesh.cpp
 	rendering/hwrenderer/hw_models.cpp

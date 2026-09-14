@@ -188,6 +188,7 @@ VkTextureImage* VkTextureManager::GetTexture(const PPTextureType& type, PPTextur
 			case PPExternalImage::SmokeTileActive: image = smoke->GetTileActiveImage(); break;
 			case PPExternalImage::SmokeLight: image = smoke->GetLightImage(); break;	// [13d] the light grid
 			case PPExternalImage::SmokeLightDirection: image = smoke->GetLightDirectionImage(); break;
+			case PPExternalImage::SmokeBeams: image = smoke->GetBeamListImage(); break;	// [13e] the beam list
 			default: break;
 			}
 		}

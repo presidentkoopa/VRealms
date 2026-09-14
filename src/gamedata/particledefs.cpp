@@ -121,6 +121,23 @@
 ** its rest. `friction`, `restlife` and `restfade` need `restitution`; `restfade` needs a `restlife`;
 ** `restitution` needs `collide = plane` or `level`.
 **
+** [DEBRISSOUNDS] LANDING SOUNDS ("Engine docs/DEBRIS_SOUNDS_11_IMPL_NOTES.md"). A debris definition may name
+** the sound a GROUP of its pieces makes landing: one SpawnParticles burst the pool takes is one group (groups
+** of the same sounds landing within 3 tics and 64 map units of each other are one), heard once, where and when
+** its first piece is seen to land -- predicted as the burst goes into the pool, never read back.
+**
+**   landsound  = "rsb/debris/chips"                            // the sound, a SNDINFO name ($random is best)
+**   landsound  = "rsb/debris/chips", "rsb/debris/rubble"       // ...and the one a group of MORE than 12 makes
+**   landsound  = "rsb/debris/chips", "rsb/debris/rubble", 20   // ...more than 20 (a whole number, 1 .. 4096)
+**   landvolume = 1           // 0..1, a group's volume at that count; fewer pieces get sqrt(pieces / count) of
+**                            // it, never under a fifth (1 when left off)
+**   landpitch  = 0.94, 1.06  // the pitch range each landing picks from, 0.25 .. 4 or one value (0.94, 1.06)
+**
+** They need `restitution`; `landvolume` and `landpitch` need `landsound`. A name SNDINFO does not have is not
+** refused: the renderer says so once and those pieces land silently. SNDINFO $pitchshift and $pitchset do not
+** apply (landpitch does); give each landing sound a `$limit` -- the engine caps how many start too
+** (hw_debrislanding.h). "Debris landing sounds" (r_debris_sounds) and its volume are the player's.
+**
 ** A ramp given one value with no '@' is constant. With several, every value needs
 ** '@t', 0 <= t <= 1, increasing; it holds its first value before the first key and
 ** its last after the last. Size, color, alpha and emissive SHARE up to 8 time keys
@@ -232,6 +249,16 @@ namespace
 	const double kDebrisRestFade = 0.5;
 	const double kDebrisMaxRestLife = 600.0;
 	const double kDebrisMaxRestFade = 10.0;
+
+	// [DEBRISSOUNDS] Defaults and limits for a debris definition's landing sound keys (hw_debrislanding.h; the big count's
+	// default is DebrisLanding::kDefaultBigCount).
+	const int kLandBigCount = 12;
+	const double kLandMaxBigCount = 4096.0;
+	const double kLandVolume = 1.0;
+	const double kLandPitchMin = 0.94;
+	const double kLandPitchMax = 1.06;
+	const double kLandLowestPitch = 0.25;
+	const double kLandHighestPitch = 4.0;
 
 	struct NamedInfo
 	{
@@ -1018,6 +1045,12 @@ namespace
 		// [DEBRISPOOL] Read as written; checked after the loop. A key's line stays 0 when the block leaves it off.
 		double restitution = 0.0, friction = kDebrisFriction, restLife = 0.0, restFade = kDebrisRestFade;
 		int restitutionLine = 0, frictionLine = 0, restLifeLine = 0, restFadeLine = 0;
+		// [DEBRISSOUNDS] Read as written; checked after the loop.
+		FString landSound, landSoundBig;
+		int landBigCount = kLandBigCount;
+		double landVolume = kLandVolume;
+		double landPitch[2] = { kLandPitchMin, kLandPitchMax };
+		int landSoundLine = 0, landVolumeLine = 0, landPitchLine = 0;
 
 		for (unsigned i = 0; i < b.Entries.Size(); i++)
 		{
@@ -1070,6 +1103,44 @@ namespace
 			else if (e.Key.CompareNoCase("friction") == 0) { ok = ReadNumber(e, 0.0, 1.0, friction, error, errorLine); frictionLine = e.Line; }
 			else if (e.Key.CompareNoCase("restlife") == 0) { ok = ReadNumber(e, 0.0, kDebrisMaxRestLife, restLife, error, errorLine); restLifeLine = e.Line; }
 			else if (e.Key.CompareNoCase("restfade") == 0) { ok = ReadNumber(e, 0.0, kDebrisMaxRestFade, restFade, error, errorLine); restFadeLine = e.Line; }
+			// [DEBRISSOUNDS] The sound a group of these pieces makes landing.
+			else if (e.Key.CompareNoCase("landsound") == 0)
+			{
+				// landsound = "<sound>"[, "<sound for a bigger group>"[, <pieces a group has more than to be bigger>]]
+				const unsigned n = e.Items.Size();
+				const char *usage = "'landsound' is \"<sound>\"[, \"<sound for a bigger group>\"[, <more pieces than this make a group bigger, 1 .. 4096>]]";
+				if (n < 1 || n > 3)
+					return Fail(error, errorLine, e.Line, "%s", usage);
+				for (unsigned k = 0; k < n; k++)
+				{
+					if (e.Items[k].Atoms.Size() != 1 || e.Items[k].HasAt)
+						return Fail(error, errorLine, e.Items[k].Line, "%s", usage);
+				}
+				for (unsigned k = 0; k < n && k < 2; k++)
+				{
+					const FDefBlockAtom &nameAtom = e.Items[k].Atoms[0];
+					if (nameAtom.Kind != FDefBlockAtom::String || nameAtom.Text.IsEmpty())
+						return Fail(error, errorLine, e.Items[k].Line, "%s -- sound names go in quotes, as SNDINFO names them", usage);
+				}
+				landSound = e.Items[0].Atoms[0].Text;
+				landSoundBig = n >= 2 ? e.Items[1].Atoms[0].Text : FString();
+				landBigCount = kLandBigCount;
+				if (n >= 3)
+				{
+					const FDefBlockAtom &countAtom = e.Items[2].Atoms[0];
+					if (countAtom.Kind != FDefBlockAtom::Number || !(countAtom.Value >= 1.0 && countAtom.Value <= kLandMaxBigCount) || countAtom.Value != std::floor(countAtom.Value))
+						return Fail(error, errorLine, e.Items[2].Line, "'landsound' group size must be a whole number, 1 .. %g", kLandMaxBigCount);
+					landBigCount = (int)countAtom.Value;
+				}
+				landSoundLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("landvolume") == 0) { ok = ReadNumber(e, 0.0, 1.0, landVolume, error, errorLine); landVolumeLine = e.Line; }
+			else if (e.Key.CompareNoCase("landpitch") == 0)
+			{
+				ok = ReadPair(e, kLandLowestPitch, kLandHighestPitch, false, "min, max pitch, 0.25 .. 4 (1 = as recorded), or one value for both", landPitch, error, errorLine);
+				if (landPitch[1] < landPitch[0]) std::swap(landPitch[0], landPitch[1]);
+				landPitchLine = e.Line;
+			}
 			else if (e.Key.CompareNoCase("mesh") == 0)
 			{
 				// [MESHPARTICLES] mesh = "<md3 path>"[, "<skin>"[, <frame>]]. The file is read and checked
@@ -1233,6 +1304,14 @@ namespace
 				if (k.Line != 0)
 					return Fail(error, errorLine, k.Line, "'%s' needs 'restitution' -- restitution = 0..1 makes the definition debris that bounces and stays", k.Key);
 			}
+			// [DEBRISSOUNDS] The landing sound keys likewise.
+			const struct { const char *Key; int Line; } landKeys[] = {
+				{ "landsound", landSoundLine }, { "landvolume", landVolumeLine }, { "landpitch", landPitchLine } };
+			for (const auto &k : landKeys)
+			{
+				if (k.Line != 0)
+					return Fail(error, errorLine, k.Line, "'%s' needs 'restitution' -- a landing sound is made by debris the debris pool simulates (restitution = 0..1)", k.Key);
+			}
 		}
 		else
 		{
@@ -1240,6 +1319,10 @@ namespace
 				return Fail(error, errorLine, restitutionLine, "'restitution' needs something to bounce off: collide = plane or collide = level");
 			if (restFadeLine != 0 && !(restLife > 0.0))
 				return Fail(error, errorLine, restFadeLine, "'restfade' needs a restlife above 0 -- a piece that never rests does not fade at rest");
+			// [DEBRISSOUNDS]
+			if (landSoundLine == 0 && (landVolumeLine != 0 || landPitchLine != 0))
+				return Fail(error, errorLine, landVolumeLine != 0 ? landVolumeLine : landPitchLine,
+					"'%s' needs 'landsound' -- the sound a group of these pieces makes landing", landVolumeLine != 0 ? "landvolume" : "landpitch");
 		}
 
 		// [2c] The flipbook's frames, found by name now that the count is known. A
@@ -1342,6 +1425,13 @@ namespace
 			info.Debris.Friction = (float)friction;
 			info.Debris.RestLife = (float)restLife;
 			info.Debris.RestFade = (float)restFade;
+			// [DEBRISSOUNDS]
+			info.Debris.LandSound = landSound;
+			info.Debris.LandSoundBig = landSoundBig;
+			info.Debris.LandBigCount = landBigCount;
+			info.Debris.LandVolume = (float)landVolume;
+			info.Debris.LandPitchMin = (float)landPitch[0];
+			info.Debris.LandPitchMax = (float)landPitch[1];
 		}
 		return true;
 	}
@@ -1460,6 +1550,14 @@ void LoadParticleDefinitions()
 		meshed, meshed == 1 ? "" : "s", meshed == 1 ? "s" : "");
 	Printf("ParticleDefinitions: %u definition%s %s debris (restitution: simulated in the debris pool while r_debris is on; Vulkan only)\n",
 		debris, debris == 1 ? "" : "s", debris == 1 ? "is" : "are");
+	// [DEBRISSOUNDS] And how many of those make a landing sound.
+	unsigned landing = 0;
+	for (const ParticleDebrisDefinition &d : table.Debris)
+	{
+		if (!d.LandSound.IsEmpty()) landing++;
+	}
+	Printf("ParticleDefinitions: %u debris definition%s name%s a landing sound (landsound: one sound per group where it lands, while r_debris_sounds is on; Vulkan only)\n",
+		landing, landing == 1 ? "" : "s", landing == 1 ? "s" : "");
 }
 
 //==========================================================================
@@ -1731,6 +1829,15 @@ CCMD(particles)
 			else
 				rest = "never rests (it bounces until its life ends)";
 			Printf("      debris -- restitution %g, friction %g, %s\n", debris.Restitution, debris.Friction, rest.GetChars());
+			// [DEBRISSOUNDS] Its landing sound, when it has one.
+			if (!debris.LandSound.IsEmpty())
+			{
+				FString big;
+				if (!debris.LandSoundBig.IsEmpty())
+					big.Format("; a group of more than %d: \"%s\"", debris.LandBigCount, debris.LandSoundBig.GetChars());
+				Printf("      lands with \"%s\"%s -- volume %g, pitch %g .. %g\n", debris.LandSound.GetChars(), big.GetChars(),
+					debris.LandVolume, debris.LandPitchMin, debris.LandPitchMax);
+			}
 		}
 	}
 

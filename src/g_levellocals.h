@@ -566,6 +566,7 @@ struct FSmokeEmitEvent
 	double   Amount = 0.;
 	double   Heat = 0.;
 	bool     Capsule = false;
+	double   Soot = 0.;   // [13e] 0..1: the share of this puff that is soot (0 = the look's grey, 1 = black)
 };
 
 // [SMOKEVOLUME] One CarveSmoke: smoke removed along the capsule from Start to End.

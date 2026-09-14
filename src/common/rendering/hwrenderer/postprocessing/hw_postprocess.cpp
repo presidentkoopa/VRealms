@@ -116,6 +116,11 @@ void PPVolumetricBeam::Render(PPRenderState *renderstate, int sceneWidth, int sc
 			sceneScale.X, sceneScale.Y, sceneOffset.X, sceneOffset.Y);
 	}
 
+	// [13e] In smoke, each step of a cone is dimmed by the haze in front of it (r_smoke_cones_depth): this eye's smoke pass
+	// drew its transmittance curve just before (Pass1 order). Otherwise the programs and inputs are exactly as before.
+	PPSmokeVolume &smoke = hw_postprocess.smokevolume;
+	const bool inSmoke = smoke.ConesDimmedByHaze();
+
 	for (int i = 0; i < count; i++)
 	{
 		if (uniforms[i].Density <= 0.0f || uniforms[i].BeamLength <= 0.0f)
@@ -126,10 +131,19 @@ void PPVolumetricBeam::Render(PPRenderState *renderstate, int sceneWidth, int sc
 		u.SceneOffset = sceneOffset;
 
 		renderstate->Clear();
-		renderstate->Shader = multisampled ? &BeamMS : &Beam;
+		if (inSmoke)
+			renderstate->Shader = multisampled ? &BeamSmokeMS : &BeamSmoke;
+		else
+			renderstate->Shader = multisampled ? &BeamMS : &Beam;
 		renderstate->Uniforms.Set(u);
 		renderstate->Viewport = screen->mSceneViewport;
 		renderstate->SetInputSceneDepth(0);
+		if (inSmoke)
+		{
+			renderstate->SetInputTexture(1, smoke.GetMarchTexture());
+			renderstate->SetInputTexture(2, smoke.GetDepthTexture());
+			renderstate->SetInputTexture(3, smoke.GetCurveTexture());
+		}
 		renderstate->SetOutputCurrent();
 		// Additive: the pass outputs only this beam's own contribution and
 		// never reads the scene colour back -- which is exactly why running it
@@ -363,6 +377,10 @@ void PPSmokeVolume::UpdateTextures(int sceneWidth, int sceneHeight)
 	DepthTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::R32f };
 	MarchTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
 	BlurTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
+	// [13e] The transmittance curve and the beam scatter. A PPTexture takes no memory until a draw first uses it, so
+	// with no beams or cones in the smoke these stay unmade.
+	CurveTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
+	BeamTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
 
 	lastWidth = sceneWidth;
 	lastHeight = sceneHeight;
@@ -374,11 +392,18 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	// the frame is the frame without this pass. Set 1 only exists for the second eye of a multiview
 	// scene.
 	const int set = (eyeSets >= 2 && currentEye == 1) ? 1 : 0;
+	transmittanceReady = false;	// [13e] this eye's own answer, set below once its curve is drawn
 	if (eyeSets <= 0 || !r_smoke || sceneWidth <= 0 || sceneHeight <= 0)
 		return;
 
 	const bool multisampled = gl_multisample > 1;
 	UpdateTextures(sceneWidth, sceneHeight);
+
+	// [13e] Beams in the smoke with either beam switch on; a cone to dim with r_smoke_cones_depth on. Neither: every draw
+	// below is 13d's.
+	const bool beamsHere = beams.BeamCount > 0 && (beams.Scatter || beams.Depth);
+	const bool conesHere = beams.Cones && hw_postprocess.volbeam.HasCones();
+	const bool curveHere = beamsHere || conesHere;
 
 	// One line whenever the variant, the eye arrangement or the textures change, so a test log shows
 	// which ran. Never one per frame.
@@ -447,15 +472,108 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 		renderstate->Draw();
 	}
 
+	// [13e] 3a and 3b, in their own group (the perf log sums the two pp.smoke groups of one eye).
+	SmokeBeamCompositeUniforms beamComposite = {};
+	if (curveHere)
+	{
+		renderstate->PopGroup();
+		renderstate->PushGroup("pp.smokebeams");
+
+		// 3a. The transmittance curve: the march's own stretch of each ray, marched again without light, reading the
+		//     volume as the march does (inputs 0-5) and the blurred march (6) so a clear texel costs one fetch. With no
+		//     cone to read it, only texels a listed beam's glow can reach (7, the beam list): its cost follows the beams.
+		SmokeBeamScatterUniforms curve = {};
+		memcpy(&curve, &marches[set], sizeof(SmokeMarchUniforms));
+		curve.BeamCount = beams.BeamCount;
+		curve.NearBeamsOnly = conesHere ? 0.0f : 1.0f;
+
+		renderstate->Clear();
+		renderstate->Shader = &CurveShader;
+		renderstate->Uniforms.Set(curve);
+		renderstate->Viewport = HalfViewport;
+		renderstate->SetInputTexture(0, &DepthTexture);
+		renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
+		renderstate->SetInputExternalImage(2, PPExternalImage::SmokeDensityPrevious, PPFilterMode::Linear);
+		renderstate->SetInputExternalImage(3, PPExternalImage::SmokeTileActive);
+		renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
+		renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
+		renderstate->SetInputTexture(6, &MarchTexture);
+		renderstate->SetInputExternalImage(7, PPExternalImage::SmokeBeams);
+		renderstate->SetOutputTexture(&CurveTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+		transmittanceReady = true;
+
+		// 3b. The light the beams scatter in the smoke (written clear when r_smoke_beams is off, so the composite's
+		//     input is always this frame's). Inputs as the curve, then 7 the curve and 8 the beam list.
+		if (beamsHere)
+		{
+			SmokeBeamScatterUniforms scatter = {};
+			memcpy(&scatter, &marches[set], sizeof(SmokeMarchUniforms));
+			scatter.BeamCount = beams.BeamCount;
+			scatter.BeamScatter = beams.Scatter ? clamp(beams.LookScatter, 0.0f, 1.0f) : 0.0f;
+
+			renderstate->Clear();
+			renderstate->Shader = &BeamScatterShader;
+			renderstate->Uniforms.Set(scatter);
+			renderstate->Viewport = HalfViewport;
+			renderstate->SetInputTexture(0, &DepthTexture);
+			renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
+			renderstate->SetInputExternalImage(2, PPExternalImage::SmokeDensityPrevious, PPFilterMode::Linear);
+			renderstate->SetInputExternalImage(3, PPExternalImage::SmokeTileActive);
+			renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
+			renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
+			renderstate->SetInputTexture(6, &MarchTexture);
+			renderstate->SetInputTexture(7, &CurveTexture);
+			renderstate->SetInputExternalImage(8, PPExternalImage::SmokeBeams);
+			renderstate->SetOutputTexture(&BeamTexture);
+			renderstate->SetNoBlend();
+			renderstate->Draw();
+
+			beamComposite.SceneScale = depth.SceneScale;
+			beamComposite.SceneOffset = depth.SceneOffset;
+			beamComposite.LinearizeDepthA = depth.LinearizeDepthA;
+			beamComposite.LinearizeDepthB = depth.LinearizeDepthB;
+			memcpy(beamComposite.ViewToWorld, marches[set].ViewToWorld, sizeof(beamComposite.ViewToWorld));
+			beamComposite.TanHalfFov = marches[set].TanHalfFov;
+			beamComposite.ProjOffset = marches[set].ProjOffset;
+			beamComposite.BoxMin = marches[set].BoxMin;
+			beamComposite.BeamCount = beams.BeamCount;
+			beamComposite.BeamScrollSpeed = beams.ScrollSpeed;
+			beamComposite.BeamScrollDepth = beams.ScrollDepth;
+			beamComposite.BeamTimer = beams.Timer;
+			beamComposite.BeamDepth = beams.Depth ? 1 : 0;
+		}
+
+		renderstate->PopGroup();
+		renderstate->PushGroup("pp.smoke");
+	}
+
 	// 4. Up to full resolution and onto the image: scene x T + light, premultiplied. It writes the
 	//    current pipeline image in place and reads it nowhere, so no pipeline image advances.
+	//    [13e] With beams: + the beam scatter and the beams' own glow restored where the haze was behind them
+	//    (inputs 3-5: the beam scatter, the curve, the beam list). Still (light, 1 - T), premultiplied.
 	renderstate->Clear();
-	renderstate->Shader = multisampled ? &CompositeShaderMS : &CompositeShader;
-	renderstate->Uniforms.Set(depth);
+	if (beamsHere)
+	{
+		renderstate->Shader = multisampled ? &CompositeBeamsShaderMS : &CompositeBeamsShader;
+		renderstate->Uniforms.Set(beamComposite);
+	}
+	else
+	{
+		renderstate->Shader = multisampled ? &CompositeShaderMS : &CompositeShader;
+		renderstate->Uniforms.Set(depth);
+	}
 	renderstate->Viewport = screen->mSceneViewport;
 	renderstate->SetInputTexture(0, &MarchTexture);
 	renderstate->SetInputTexture(1, &DepthTexture);
 	renderstate->SetInputSceneDepth(2);
+	if (beamsHere)
+	{
+		renderstate->SetInputTexture(3, &BeamTexture);
+		renderstate->SetInputTexture(4, &CurveTexture);
+		renderstate->SetInputExternalImage(5, PPExternalImage::SmokeBeams);
+	}
 	renderstate->SetOutputCurrent();
 	renderstate->SetPremultipliedAlphaBlend();
 	renderstate->Draw();
@@ -466,16 +584,32 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	// contract 4): the same composite with LIGHT_MASK_CARRY, the same inputs, uniforms and blend, onto
 	// the mask in place. It adds no light of either class, so every amount becomes amount x T with the
 	// colour's own T. Both eyes of a layered post path take this branch alike (the frame's state).
+	// [13e] With beams, the carry adds the pinned light the composite added -- the beam scatter and the restored glow --
+	// to G ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2e: the smoke row's pinned beam scatter).
 	if (hw_postprocess.lightmask.PostInputValid())
 	{
 		renderstate->PushGroup("pp.lightmaskcarry");
 		renderstate->Clear();
-		renderstate->Shader = multisampled ? &MaskCarryShaderMS : &MaskCarryShader;
-		renderstate->Uniforms.Set(depth);
+		if (beamsHere)
+		{
+			renderstate->Shader = multisampled ? &MaskCarryBeamsShaderMS : &MaskCarryBeamsShader;
+			renderstate->Uniforms.Set(beamComposite);
+		}
+		else
+		{
+			renderstate->Shader = multisampled ? &MaskCarryShaderMS : &MaskCarryShader;
+			renderstate->Uniforms.Set(depth);
+		}
 		renderstate->Viewport = screen->mSceneViewport;
 		renderstate->SetInputTexture(0, &MarchTexture);
 		renderstate->SetInputTexture(1, &DepthTexture);
 		renderstate->SetInputSceneDepth(2);
+		if (beamsHere)
+		{
+			renderstate->SetInputTexture(3, &BeamTexture);
+			renderstate->SetInputTexture(4, &CurveTexture);
+			renderstate->SetInputExternalImage(5, PPExternalImage::SmokeBeams);
+		}
 		renderstate->SetOutputLightMaskCurrent();
 		renderstate->SetPremultipliedAlphaBlend();
 		renderstate->Draw();

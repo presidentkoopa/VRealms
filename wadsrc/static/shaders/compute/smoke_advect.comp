@@ -19,6 +19,10 @@
 //     kept off wall faces and under the speed limit
 //   - density, heat and velocity scaled by their keep factors; what is too small to see
 //     snaps to zero
+//   - [13e] soot (the velocity image's w: darkness-weighted density, smoke_inject.comp)
+//     carried with EXACTLY the density's operator -- the same three open-cell samples,
+//     diffusion, keep and snap -- and never above the density, so a cloud's soot share
+//     survives the step. Only while SootLive (Swirl.w); otherwise w is written 0.
 //
 // Outside the box is open, empty air: smoke that drifts out is gone.
 //
@@ -42,7 +46,7 @@ layout(push_constant) uniform SmokeAdvectConstants
 	vec4 Wind;			// xyz cells per step; w the furthest a step carries anything, cells
 	vec4 Keep;			// x density, y heat, z velocity multipliers per step; w diffusion share
 	vec4 Lift;			// x per unit heat, y per unit density: cells per step added upward per step; z speed limit; w swirl, cells per step
-	vec4 Swirl;			// x noise cells per world cell; y noise cells the swirl drifts per tic; z the blur diagonal (0..3); w unused
+	vec4 Swirl;			// x noise cells per world cell; y noise cells the swirl drifts per tic; z the blur diagonal (0..3); w [13e] soot live (1 / 0)
 };
 
 const float MIN_OPEN_SHARE = 0.25;	// a sample this far into a wall is averaged over no less than this
@@ -194,6 +198,18 @@ vec3 OpenVelocity(vec3 p)
 	return textureLod(VelocitySource, uvw, 0.0).xyz / max(openShare, MIN_OPEN_SHARE);
 }
 
+// [13e] The soot there, averaged over open cells exactly as OpenDensityHeat averages the density.
+float OpenSoot(vec3 p)
+{
+	if (OutsideBox(p))
+		return 0.0;
+	vec3 uvw = GridUVW(p);
+	float openShare = 1.0 - textureLod(SolidMask, uvw, 0.0).r;
+	if (openShare <= 0.0)
+		return 0.0;
+	return textureLod(VelocitySource, uvw, 0.0).w / max(openShare, MIN_OPEN_SHARE);
+}
+
 void main()
 {
 	ivec3 cell = ivec3(gl_GlobalInvocationID);
@@ -242,6 +258,15 @@ void main()
 	if (dh.g < SNAP) dh.g = 0.0;
 	if (speed < SNAP) v = vec3(0.0);
 
+	// [13e] Soot, from the same point by the same operator as the density, never above it (and so 0 where it snapped).
+	float soot = 0.0;
+	if (Swirl.w > 0.5)
+	{
+		float sootHere = OpenSoot(from);
+		float sootAround = 0.5 * (OpenSoot(from + h) + OpenSoot(from - h));
+		soot = clamp(mix(sootHere, sootAround, Keep.w) * Keep.x, 0.0, dh.r);
+	}
+
 	imageStore(DensityHeatTarget, cell, vec4(dh, 0.0, 0.0));
-	imageStore(VelocityTarget, cell, vec4(v, 0.0));
+	imageStore(VelocityTarget, cell, vec4(v, soot));
 }

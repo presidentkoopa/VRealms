@@ -588,6 +588,23 @@ void S_Sound(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags f
 
 //==========================================================================
 //
+// [DEBRISSOUNDS] S_SoundPitchAt - A point is source, with a pitch
+//
+// S_Sound's point form plus a pitch (0 = the sound's own SNDINFO pitch rules) and
+// a start time, as S_SoundPitchActor is for an actor. Nothing is spawned.
+//
+//==========================================================================
+
+void S_SoundPitchAt(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
+{
+	if (Level != primaryLevel) return;
+	// The sound system switches Y and Z around.
+	FVector3 p((float)pos.X, (float)pos.Z, (float)pos.Y);
+	soundEngine->StartSound (SOURCE_Unattached, nullptr, &p, channel, flags, sound_id, volume, attenuation, nullptr, pitch, startTime);
+}
+
+//==========================================================================
+//
 // S_Sound - An entire sector is source
 //
 //==========================================================================

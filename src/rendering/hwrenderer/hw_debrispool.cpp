@@ -22,6 +22,7 @@
 
 #include "hw_debrispool.h"
 #include "hw_debrisframe.h"
+#include "hw_debrislanding.h"	// [DEBRISSOUNDS] the groups' landing sounds
 #include "hw_sectorplanes.h"
 #include "hw_gpuparticlebuffer.h"
 #include "hw_particledefbuffer.h"
@@ -41,6 +42,7 @@
 #include "v_video.h"
 #include "i_time.h"
 #include "printf.h"
+#include "r_utility.h"	// [DEBRISSOUNDS] r_viewpoint.TicFrac: the landing sounds' clock is the draw's
 
 // [DEBRISPOOL] r_debris -- "Debris that stays" ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #9). ON BY DEFAULT (owner,
 // 2026-09-14: effects our mods use default ON); inert until a definition with `restitution` is spawned, so a map without
@@ -233,6 +235,7 @@ void DebrisPool::PrepareFrame(FLevelLocals* Level, uint64_t levelSerial)
 		mDropLogged = false;
 		mRecycleLogged = false;
 		Reset();
+		mLanding.Clear();	// [DEBRISSOUNDS] the old map's landing sounds go with its pieces
 		// A pool in use keeps lingering into the new map, so it is not freed now and made again at the new map's first burst.
 		if (mHasDemand)
 			mLastDemandTime = maptime;
@@ -243,12 +246,18 @@ void DebrisPool::PrepareFrame(FLevelLocals* Level, uint64_t levelSerial)
 		mClearSerial = Level->DebrisClearSerial;
 		mPending.clear();
 		Reset();
+		mLanding.Clear();	// [DEBRISSOUNDS]
 	}
 
 	SyncDefinitions(test);
+	mLanding.SyncDefinitions(levelSerial);	// [DEBRISSOUNDS] the definitions' landing sounds, resolved
 
 	// The level's new bursts and pushes. Always read, so the cursors keep up; kept only while this machine simulates them.
 	ReadQueues(Level, on && !refused);
+
+	// [DEBRISSOUNDS] The landing sounds now due, on the draw's level clock ("Engine docs/DEBRIS_SOUNDS_11_IMPL_NOTES.md"). Only
+	// while this machine simulates debris: pieces that are not drawn make no sound.
+	mLanding.Update(Level, maptime, r_viewpoint.TicFrac, on && !refused);
 
 	// Who asks for the pool: a burst waiting to go in, or pieces still alive.
 	if (!mPending.empty() || mAliveUntil > now)
@@ -476,7 +485,7 @@ void DebrisPool::ReadQueues(FLevelLocals* Level, bool keep)
 	ReadQueue(Level->DebrisBursts, mBurstCursor.Serial, mBurstCursor.Count, [&](const FDebrisBurstEvent& burst, int tic)
 	{
 		if (keep)
-			ExpandBurst(burst, tic);
+			ExpandBurst(Level, burst, tic);
 	});
 	ReadQueue(Level->EffectImpulses, mImpulseCursor.Serial, mImpulseCursor.Count, [&](const FEffectImpulseEvent& q, int tic)
 	{
@@ -512,7 +521,7 @@ void DebrisPool::ReadQueues(FLevelLocals* Level, bool keep)
 // One burst into pieces, with SpawnParticles' own maths (g_levellocals.h): the same cone or disc, jitters, plane and
 // floor, so a piece starts exactly where that burst's ring record would. Its turn and spin start as meshparticles.vp's
 // tumble (a mesh) or as gpuparticles.vp's spin (a billboard).
-void DebrisPool::ExpandBurst(const FDebrisBurstEvent& burst, int tic)
+void DebrisPool::ExpandBurst(FLevelLocals* Level, const FDebrisBurstEvent& burst, int tic)
 {
 	const int defSlot = burst.DefinitionSlot;
 	if (defSlot < 0 || defSlot >= DEBRIS_DEFINITION_SLOTS || mDefinitions[defSlot].Motion[3] < 0.5f)
@@ -573,6 +582,9 @@ void DebrisPool::ExpandBurst(const FDebrisBurstEvent& burst, int tic)
 	const float floorHeight = burst.FloorZ > -32768.0 ? (float)burst.FloorZ : FLevelLocals::GPUPARTICLE_NO_FLOOR;
 	const PalEntry tint = (PalEntry)burst.Tint;
 
+	// [DEBRISSOUNDS] A definition with a landing sound: each piece's flight goes to the group's landing prediction.
+	const bool landing = mLanding.BeginBurst(Level, burst, tic, mDefinitions[defSlot], (float)r_gpuparticles_sizescale);
+
 	mPending.reserve(mPending.size() + (size_t)count);
 	for (int i = 0; i < count; i++)
 	{
@@ -600,6 +612,10 @@ void DebrisPool::ExpandBurst(const FDebrisBurstEvent& burst, int tic)
 		c[0] = tint.r / 255.f;        c[1] = tint.g / 255.f;        c[2] = tint.b / 255.f;        c[3] = (float)burst.Intensity;
 		d[0] = (float)defSlot;        d[1] = (float)burst.SizeScale; d[2] = burst.Ambient;         d[3] = (float)u5;
 		e[0] = planeX;                e[1] = planeY;                e[2] = planeOffset;           e[3] = floorHeight;
+
+		// [DEBRISSOUNDS] Its flight, for the group's landing sound.
+		if (landing)
+			mLanding.AddPiece(a, b);
 
 		// The state before its first step: at its spawn point, flying at its launch velocity, its rest clock not started.
 		for (int k = 0; k < 3; k++)
@@ -647,6 +663,10 @@ void DebrisPool::ExpandBurst(const FDebrisBurstEvent& burst, int tic)
 		p.Definition = defSlot;
 		mPending.push_back(p);
 	}
+
+	// [DEBRISSOUNDS] The group's first landing, predicted from the pieces that went in, and its sound queued.
+	if (landing)
+		mLanding.EndBurst(count);
 }
 
 //-----------------------------------------------------------------------------
@@ -1094,5 +1114,7 @@ FString DebrisPool::Report() const
 		status.Allocated ? "allocated" : "not allocated (nothing asked for it yet)",
 		status.Allocated ? status.Capacity : mCapacity, (status.Allocated ? status.Capacity : 0) * (double)DEBRIS_PIECE_BYTES / (1024.0 * 1024.0),
 		used, (unsigned long long)mPiecesSpawned, (unsigned long long)mPiecesRecycled, (unsigned long long)mPiecesDropped, (int)mMeshInstances.size());
+	// [DEBRISSOUNDS] And the landing sounds.
+	text.AppendFormat("\n%s", mLanding.Report().GetChars());
 	return text;
 }

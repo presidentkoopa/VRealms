@@ -314,7 +314,7 @@ void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double 
 
 	FillSimSettings(Level, out);
 
-	double sums[SmokeVolumeFrame::MAX_STEPS_PER_FRAME][3] = {};
+	double sums[SmokeVolumeFrame::MAX_STEPS_PER_FRAME][4] = {};	// density, heat, speed, [13e] soot
 	if (out.Steps > 0)
 		BuildKernels(out, sums);
 
@@ -339,6 +339,8 @@ void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double 
 			mBound.Speed = mBound.Speed * sim.VelocityKeep + sums[i][2] +
 				std::fabs(sim.HeatLift) * mBound.Heat + std::fabs(sim.DensityLift) * std::min(mBound.Density, 1.0);
 			mBound.Speed = std::min(mBound.Speed, (double)sim.MaxSpeed);
+			// [13e] Soot is carried with the density's own keep, diffusion and snap, and never above it.
+			mBound.Soot = std::min(mBound.Soot * sim.DensityKeep + sums[i][3], mBound.Density);
 		}
 	}
 	else if (quietBefore && mResidue)
@@ -348,6 +350,8 @@ void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double 
 		mResidue = false;
 	}
 	out.HasSmoke = mBound.Density > SMOKE_EMPTY_DENSITY;
+	// [13e] While no soot can be in the volume the step neither reads nor carries it, and the light grid is not darkened.
+	out.Sim.SootLive = mBound.Soot > SMOKE_EMPTY_DENSITY ? 1.0f : 0.0f;
 
 	// [13c] For the drawing, later this frame (GetDrawState). Every earlier return leaves the reset
 	// state of the top of this function: nothing to draw.
@@ -362,6 +366,12 @@ void SmokeVolume::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double 
 	// smoke to draw.
 	PrepareLight(Level, eye, out);
 	mDraw.LightQuality = out.Light.Quality;
+
+	// [13e] The beams that may meet the smoke, when there is smoke to draw.
+	if (out.HasSmoke)
+		GatherBeams(Level, eye, ticFrac, out);
+	else
+		mBeams.clear();
 
 	out.Kernels = mKernels.empty() ? nullptr : mKernels.data();
 	out.KernelCount = (int)mKernels.size();
@@ -403,6 +413,7 @@ void SmokeVolume::ReadQueues(FLevelLocals* Level, bool keep)
 		e.Radius = q.Radius;
 		e.Amount = q.Amount;
 		e.Heat = q.Heat;
+		e.Soot = q.Soot;	// [13e]
 		AddPending(e);
 	});
 	ReadQueue(Level->SmokeCarves, mCarveCursor.Serial, mCarveCursor.Count, [&](const FSmokeCarveEvent& q, int tic)
@@ -543,7 +554,7 @@ bool SmokeVolume::MakeShape(const PendingEvent& e, const SmokeVolumeFrame& frame
 	return true;
 }
 
-void SmokeVolume::BuildKernels(const SmokeVolumeFrame& frame, double sums[][3])
+void SmokeVolume::BuildKernels(const SmokeVolumeFrame& frame, double sums[][4])
 {
 	const double toCellsPerStep = 1.0 / (TICRATE * (double)frame.Grid.CellSize);
 	const int firstStepTime = frame.MapTime - frame.Steps + 1;
@@ -582,6 +593,7 @@ void SmokeVolume::BuildKernels(const SmokeVolumeFrame& frame, double sums[][3])
 			sums[step][0] += e.Amount * shape.Scale;
 			sums[step][1] += e.Heat * shape.Scale;
 			sums[step][2] += e.Vel.Length() * toCellsPerStep * shape.Scale;
+			sums[step][3] += e.Amount * e.Soot * shape.Scale;	// [13e]
 			break;
 		case SmokeKernel::IMPULSE:
 			sums[step][2] += std::fabs(e.Strength) * toCellsPerStep * shape.Scale;
@@ -619,6 +631,7 @@ void SmokeVolume::AppendKernels(const PendingEvent& e, const EventShape& shape, 
 		base.Velocity[0] = (float)(e.Vel.X * toCellsPerStep * shape.Scale);
 		base.Velocity[1] = (float)(e.Vel.Y * toCellsPerStep * shape.Scale);
 		base.Velocity[2] = (float)(e.Vel.Z * toCellsPerStep * shape.Scale);
+		base.Soot = (float)(e.Amount * e.Soot * shape.Scale);	// [13e] soot density: the amount's soot share
 		break;
 	case SmokeKernel::CARVE:
 		base.Amount = (float)std::clamp(e.Amount * shape.Scale, 0.0, 1.0);
@@ -1427,4 +1440,111 @@ void SmokeVolume::GatherLights(FLevelLocals* Level, const DVector3& eye, const S
 
 	light.Lights = mLights.empty() ? nullptr : mLights.data();
 	light.LightCount = (int)mLights.size();
+}
+
+//-----------------------------------------------------------------------------
+//
+// [13e] Beams in the smoke ("Engine docs/SMOKE_VOLUME_PLAN.md" 13e; hw_framecompute.h, SmokeBeamFrame)
+//
+//-----------------------------------------------------------------------------
+
+namespace
+{
+	struct BeamCandidate
+	{
+		double Distance2 = 0;	// the eye's squared distance to the segment
+		int Slot = 0;
+		SmokeBeamRecord Record;
+	};
+	std::vector<BeamCandidate> BeamCandidates;
+}
+
+// Every beam slot that draws with an air glow -- a beam its author made invisible in the air is invisible in smoke too --
+// resolved exactly as the scene resolves it (ResolveBeamLine, hw_drawinfo.cpp), whose segment comes within its glow's
+// reach of the box; the nearest SMOKE_BEAMS_MAX to the eye, in slot order (the order the scene adds them in). Routed
+// drawn beams (r_beams_drawn) are the same slots. Read-only: nothing is written to the level.
+void SmokeVolume::GatherBeams(FLevelLocals* Level, const DVector3& eye, double ticFrac, SmokeVolumeFrame& out)
+{
+	mBeams.clear();
+	out.Beams = SmokeBeamFrame();
+
+	const double cell = out.Grid.CellSize;
+	const double boxMin[3] = { out.OriginCell[0] * cell, out.OriginCell[1] * cell, out.OriginCell[2] * cell };
+	const double boxMax[3] = { boxMin[0] + out.Grid.SizeX * cell, boxMin[1] + out.Grid.SizeY * cell, boxMin[2] + out.Grid.SizeZ * cell };
+	const double eyeAt[3] = { eye.X, eye.Y, eye.Z };
+
+	BeamCandidates.clear();
+	for (int slot = 0; slot < FLevelLocals::MAX_BEAMS; slot++)
+	{
+		DVector3 a, b;
+		FVector4 look;
+		if (!ResolveBeamLine(Level, slot, ticFrac, a, b, look) || !(look.X > 0.f))
+			continue;
+
+		// The furthest its glow reaches (main.fp's BeamAirGlow halo), widened by a taper past 1 as drawnlines.fp's bias is.
+		const double thick = std::max(Level->BeamThick[slot], 0.01);
+		const double soft = std::max(Level->BeamSoft[slot], 0.01);
+		const double reach = (thick + soft * 6.0 + 1.0) * std::max(1.0, std::fabs(1.0 - (double)look.Z));
+		const double pa[3] = { a.X, a.Y, a.Z };
+		const double pb[3] = { b.X, b.Y, b.Z };
+		bool reaches = std::isfinite(reach);
+		for (int axis = 0; axis < 3 && reaches; axis++)
+		{
+			if (!std::isfinite(pa[axis]) || !std::isfinite(pb[axis]))
+				reaches = false;
+			else if (std::max(pa[axis], pb[axis]) < boxMin[axis] - reach || std::min(pa[axis], pb[axis]) > boxMax[axis] + reach)
+				reaches = false;
+		}
+		if (!reaches)
+			continue;
+
+		const double ab[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] };
+		const double length2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+		double along = 0.0;
+		if (length2 > 1e-12)
+			along = std::clamp(((eyeAt[0] - pa[0]) * ab[0] + (eyeAt[1] - pa[1]) * ab[1] + (eyeAt[2] - pa[2]) * ab[2]) / length2, 0.0, 1.0);
+
+		BeamCandidate candidate;
+		candidate.Slot = slot;
+		for (int axis = 0; axis < 3; axis++)
+		{
+			const double d = pa[axis] + ab[axis] * along - eyeAt[axis];
+			candidate.Distance2 += d * d;
+		}
+		SmokeBeamRecord& record = candidate.Record;
+		// GL axes (map x, map z, map y), from the box's corner, as every beam upload swizzles.
+		record.A[0] = (float)(pa[0] - boxMin[0]);
+		record.A[1] = (float)(pa[2] - boxMin[2]);
+		record.A[2] = (float)(pa[1] - boxMin[1]);
+		record.Thick = (float)Level->BeamThick[slot];
+		record.B[0] = (float)(pb[0] - boxMin[0]);
+		record.B[1] = (float)(pb[2] - boxMin[2]);
+		record.B[2] = (float)(pb[1] - boxMin[1]);
+		record.Soft = (float)Level->BeamSoft[slot];
+		record.Color[0] = Level->BeamColor[slot].r / 255.f;
+		record.Color[1] = Level->BeamColor[slot].g / 255.f;
+		record.Color[2] = Level->BeamColor[slot].b / 255.f;
+		record.Intensity = (float)Level->BeamIntensity[slot];
+		record.Look[0] = look.X;
+		record.Look[1] = look.Y;
+		record.Look[2] = look.Z;
+		record.Look[3] = look.W;
+		BeamCandidates.push_back(candidate);
+	}
+
+	size_t count = BeamCandidates.size();
+	if (count > (size_t)SMOKE_BEAMS_MAX)
+	{
+		std::nth_element(BeamCandidates.begin(), BeamCandidates.begin() + SMOKE_BEAMS_MAX, BeamCandidates.end(),
+			[](const BeamCandidate& x, const BeamCandidate& y) { return x.Distance2 < y.Distance2; });
+		count = (size_t)SMOKE_BEAMS_MAX;
+	}
+	std::sort(BeamCandidates.begin(), BeamCandidates.begin() + count,
+		[](const BeamCandidate& x, const BeamCandidate& y) { return x.Slot < y.Slot; });
+
+	mBeams.resize(count);
+	for (size_t i = 0; i < count; i++)
+		mBeams[i] = BeamCandidates[i].Record;
+	out.Beams.Beams = mBeams.empty() ? nullptr : mBeams.data();
+	out.Beams.Count = (int)mBeams.size();
 }

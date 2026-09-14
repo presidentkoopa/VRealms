@@ -53,7 +53,7 @@ namespace
 		int32_t RegionMax[4];		// xyz one past the last cell
 		float ShapeStart[4];		// xyz grid cells; w radius, cells
 		float ShapeEnd[4];			// xyz grid cells; w amount
-		float HeatStrength[4];		// x heat; y strength, cells per step
+		float HeatStrength[4];		// x heat; y strength, cells per step; z [13e] soot density
 		float PushVelocity[4];		// xyz cells per step
 	};
 	static_assert(sizeof(SmokeInjectConstants) == 96, "SmokeInjectConstants must match smoke_inject.comp's push constant block (96 bytes)");
@@ -66,7 +66,7 @@ namespace
 		float Wind[4];				// xyz cells per step; w the furthest a step carries anything
 		float Keep[4];				// density, heat, velocity keep; w diffusion
 		float Lift[4];				// heat lift, density lift, speed limit, swirl strength
-		float Swirl[4];				// noise cells per world cell, drift per tic, blur diagonal, unused
+		float Swirl[4];				// noise cells per world cell, drift per tic, blur diagonal, [13e] soot live (1 / 0)
 	};
 	static_assert(sizeof(SmokeAdvectConstants) == 96, "SmokeAdvectConstants must match smoke_advect.comp's push constant block (96 bytes)");
 
@@ -96,7 +96,7 @@ namespace
 		int32_t RegionMin[4];		// xyz first light cell; w the pass: 0 ambient, 1 a light
 		int32_t RegionMax[4];		// xyz one past the last; w light cells per smoke tile
 		float PositionRadius[4];	// xyz the light, map units from the grid's corner (Doom axes); w its radius
-		float Color[4];				// rgb its colour x the look's scatter; w its luminance weight
+		float Color[4];				// rgb its colour x the look's scatter; w its luminance weight ([13e] pass 0: soot live, 1 / 0)
 		float SpotDirection[4];		// xyz main.fp's spot direction; w its shadow map row, -1 = none
 		float Cone[4];				// x cos outer, y cos inner; z the light cell size, map units; w the look's ambient
 	};
@@ -168,6 +168,7 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 		status.RefusedQuality = mRefusedQuality;
 		status.MaskEpoch = 0;
 		status.LightQuality = 0;	// [13d] no volume, no light grid
+		status.BeamCount = 0;		// [13e] nor a beam list
 	};
 
 	bool fresh = false;
@@ -251,6 +252,9 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 		RunLight(frame);
 		PrepareDrawLayouts();
 	}
+
+	// [13e] The beam list the drawing reads this frame, only with smoke to draw; the drawing uses the count it holds.
+	status.BeamCount = mHasSmoke ? UploadBeams(frame.Beams) : 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -394,6 +398,7 @@ void VkSmokeVolume::Release(const char* why)
 
 	// [13d] The light grid goes with the volume (its set names the tile map).
 	ReleaseLightGrid(why);
+	ReleaseBeamList();	// [13e] and the beam list
 
 	// Commands recorded this frame may still name these, so they go on the frame's
 	// delete list, like every other GPU object the renderer lets go of mid-session.
@@ -551,8 +556,9 @@ bool VkSmokeVolume::EnsurePrograms()
 	mShiftRGBA = mCompute->CreateProgram("shaders/compute/smoke_shift.comp", shiftBindings, (uint32_t)sizeof(SmokeShiftConstants), "#define TARGET_RGBA16F\n");
 	mShiftR8 = mCompute->CreateProgram("shaders/compute/smoke_shift.comp", shiftBindings, (uint32_t)sizeof(SmokeShiftConstants), "#define TARGET_R8\n");
 	// [13d] The light grid's fill: sampled tile map, ambient columns and shadow map; storage light and direction.
+	// [13e] + sampled latest density and velocity, for the soot darkness.
 	mLightProgram = mCompute->CreateProgram("shaders/compute/smoke_light.comp",
-		{ { 0, sampled }, { 1, sampled }, { 2, sampled }, { 3, storage }, { 4, storage } },
+		{ { 0, sampled }, { 1, sampled }, { 2, sampled }, { 3, storage }, { 4, storage }, { 5, sampled }, { 6, sampled } },
 		(uint32_t)sizeof(SmokeLightConstants));
 
 	if (!mInjectProgram || !mAdvectProgram || !mTilesProgram || !mShiftRG || !mShiftRGBA || !mShiftR8 || !mLightProgram)
@@ -849,6 +855,7 @@ void VkSmokeVolume::RunStep(const SmokeVolumeFrame& frame, int stepIndex)
 			constants.ShapeEnd[3] = kernel.Amount;
 			constants.HeatStrength[0] = kernel.Heat;
 			constants.HeatStrength[1] = kernel.Strength;
+			constants.HeatStrength[2] = kernel.Soot;	// [13e] soot density, 0 for every emit without soot
 			mCompute->Dispatch(mInjectProgram.get(), mInjectSets[latest].get(), &constants,
 				Groups(regionMax[0] - regionMin[0]), Groups(regionMax[1] - regionMin[1]), Groups(regionMax[2] - regionMin[2]));
 
@@ -886,6 +893,7 @@ void VkSmokeVolume::RunStep(const SmokeVolumeFrame& frame, int stepIndex)
 	advect.Swirl[0] = sim.TurbulenceFrequency;
 	advect.Swirl[1] = SWIRL_DRIFT_PER_TIC;
 	advect.Swirl[2] = (float)(stepTime & 3);
+	advect.Swirl[3] = sim.SootLive;	// [13e] carry the soot in w (1), or leave w 0 (0)
 	DispatchGrid(mAdvectProgram.get(), mAdvectSets[latest].get(), &advect);
 
 	// 3. The tile maps from the new state, then 4. the flip.
@@ -1127,6 +1135,8 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 		.AddCombinedImageSampler(mLightSet.get(), 2, shadowMap.View.get(), fb->GetSamplerManager()->ShadowmapSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 		.AddStorageImage(mLightSet.get(), 3, mLight.View.get(), general)
 		.AddStorageImage(mLightSet.get(), 4, mLightDirection.View.get(), general)
+		.AddCombinedImageSampler(mLightSet.get(), 5, mDensityHeat[mLatest].View.get(), sampler, general)	// [13e] the latest state
+		.AddCombinedImageSampler(mLightSet.get(), 6, mVelocity[mLatest].View.get(), sampler, general)
 		.Execute(fb->device.get());
 
 	VkCommandBufferManager* commands = fb->GetCommands();
@@ -1144,6 +1154,7 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 	ambient.RegionMax[3] = mLightGrid.CellsPerTile;
 	ambient.Cone[2] = (float)cellSize;
 	ambient.Cone[3] = light.AmbientScale;
+	ambient.Color[3] = frame.Sim.SootLive;	// [13e] pass 0 works out the soot darkness only while soot may be in the volume
 	mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &ambient, Groups(size[0]), Groups(size[1]), Groups(size[2]));
 
 	// Pass 1: each light, over the cells whose centre lies inside its sphere's box.
@@ -1195,4 +1206,123 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 
 	if (timed)
 		PerfLog::AddCpuSample("fx.smokelight", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//-----------------------------------------------------------------------------
+//
+// [13e] The beam list ("Engine docs/SMOKE_VOLUME_PLAN.md" 13e; hw_framecompute.h, SmokeBeamRecord)
+//
+//-----------------------------------------------------------------------------
+
+bool VkSmokeVolume::EnsureBeamList()
+{
+	if (mBeamList.Image)
+		return true;
+	if (mBeamListRefused)
+		return false;
+
+	const size_t bytes = (size_t)SMOKE_BEAMS_MAX * SMOKE_BEAM_TEXELS * 4 * sizeof(float);
+	bool created = false;
+	try
+	{
+		created = CreateImage2D(mBeamList, VK_FORMAT_R32G32B32A32_SFLOAT, SMOKE_BEAMS_MAX, SMOKE_BEAM_TEXELS, "SmokeVolume.BeamList");
+		if (created)
+		{
+			mBeamStaging = BufferBuilder()
+				.Size(bytes)
+				.Usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU)
+				.DebugName("SmokeVolume.BeamStaging")
+				.Create(fb->device.get());
+			created = mBeamStaging != nullptr;
+		}
+	}
+	catch (const std::exception& e)
+	{
+		Printf(TEXTCOLOR_RED "SmokeVolume: %s\n", e.what());
+		created = false;
+	}
+	if (!created)
+	{
+		// Nothing has used them: gone now.
+		mBeamStaging.reset();
+		mBeamList.View.reset();
+		mBeamList.Image.reset();
+		mBeamList.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		mBeamListRefused = true;
+		Printf(TEXTCOLOR_RED "SmokeVolume: could not make the beam list image -- beams show nothing in the smoke this session\n");
+		return false;
+	}
+	mBeamList.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	mBeamTexels.clear();
+	return true;
+}
+
+// The frame's list, one beam a column (hw_framecompute.h, SmokeBeamRecord), copied in only when it differs from what the
+// image holds. The copy commands of the frame before have finished, as UploadAmbient relies on.
+int VkSmokeVolume::UploadBeams(const SmokeBeamFrame& beams)
+{
+	const int count = beams.Beams != nullptr ? std::clamp(beams.Count, 0, SMOKE_BEAMS_MAX) : 0;
+	if (count == 0 || !EnsureBeamList())
+		return 0;
+
+	std::vector<float> texels((size_t)SMOKE_BEAMS_MAX * SMOKE_BEAM_TEXELS * 4, 0.0f);
+	for (int i = 0; i < count; i++)
+	{
+		const SmokeBeamRecord& r = beams.Beams[i];
+		const float rows[SMOKE_BEAM_TEXELS][4] =
+		{
+			{ r.A[0], r.A[1], r.A[2], r.Thick },
+			{ r.B[0], r.B[1], r.B[2], r.Soft },
+			{ r.Color[0], r.Color[1], r.Color[2], r.Intensity },
+			{ r.Look[0], r.Look[1], r.Look[2], r.Look[3] },
+		};
+		for (int row = 0; row < SMOKE_BEAM_TEXELS; row++)
+			memcpy(&texels[((size_t)row * SMOKE_BEAMS_MAX + (size_t)i) * 4], rows[row], sizeof(float) * 4);
+	}
+	if (texels == mBeamTexels && mBeamList.Layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+		return count;	// the image holds exactly this already
+
+	const size_t bytes = texels.size() * sizeof(float);
+	void* data = mBeamStaging->Map(0, bytes);
+	memcpy(data, texels.data(), bytes);
+	mBeamStaging->Unmap();
+
+	VkBufferImageCopy region = {};
+	region.bufferOffset = 0;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = (uint32_t)SMOKE_BEAMS_MAX;
+	region.imageExtent.height = (uint32_t)SMOKE_BEAM_TEXELS;
+	region.imageExtent.depth = 1;
+
+	mCompute->BeginWork();	// outside any render pass, before the eye loop
+	const bool fresh = mBeamList.Layout == VK_IMAGE_LAYOUT_UNDEFINED;
+	PipelineBarrier toTransfer;
+	toTransfer.AddImage(mBeamList.Image.get(), mBeamList.Layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		fresh ? 0 : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+	toTransfer.Execute(fb->GetCommands()->GetDrawCommands(), fresh ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT);
+	fb->GetCommands()->GetDrawCommands()->copyBufferToImage(mBeamStaging->buffer, mBeamList.Image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+	PipelineBarrier toRead;
+	toRead.AddImage(mBeamList.Image.get(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+	toRead.Execute(fb->GetCommands()->GetDrawCommands(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+	mBeamList.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	mBeamTexels.swap(texels);
+	return count;
+}
+
+void VkSmokeVolume::ReleaseBeamList()
+{
+	if (!mBeamList.Image && !mBeamStaging)
+		return;
+	// Commands recorded this frame may still name these: the frame's delete list, as Release does.
+	auto deleteList = fb->GetCommands()->DrawDeleteList.get();
+	deleteList->Add(std::move(mBeamList.View));
+	deleteList->Add(std::move(mBeamList.Image));
+	deleteList->Add(std::move(mBeamStaging));
+	mBeamList.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	mBeamTexels.clear();
 }

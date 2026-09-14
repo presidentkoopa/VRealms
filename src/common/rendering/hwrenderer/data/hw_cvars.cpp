@@ -185,6 +185,15 @@ CUSTOM_CVARD(Int, gl_texture_filter, 0, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOIN
 
 CVAR(Bool, gl_precache, true, CVAR_ARCHIVE)
 
+// [SELACO PRECACHE] Selaco's precache switches, under Selaco's names (read by PrecacheLevel in
+// p_setup.cpp and hw_PrecacheTexture in hw_precache.cpp). Client-side: they choose what this
+// machine loads at level start and never reach the playsim.
+//   gl_precache_actors   -- the GAMEINFO and MAPINFO PrecacheClasses lists. On = as before.
+//   debug_precache_actor -- every actor class, all its states, Precache: labels ignored: the worst
+//                           case, for measuring level-start time and video memory. Not saved.
+CVARD(Bool, gl_precache_actors, true, CVAR_ARCHIVE, "precache the actor classes GAMEINFO and MAPINFO list, at level start")
+CVARD(Bool, debug_precache_actor, false, CVAR_NOSAVE, "precache every actor class at level start, to measure the worst case")
+
 
 CUSTOM_CVAR(Int, gl_shadowmap_filter, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {

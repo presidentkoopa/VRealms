@@ -59,6 +59,10 @@ void S_SoundMinMaxDist (AActor *ent, int channel, EChanFlags flags, FSoundID sfx
 void S_Sound (const FPolyObj *poly, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation);
 void S_Sound (const sector_t *sec, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation);
 void S_Sound(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation);
+// [DEBRISSOUNDS] A point is the source, with a pitch (0 = the sound's own SNDINFO pitch) and a start time: S_Sound's point
+// form plus what S_SoundPitchActor adds to the actor form. No actor and no thinker, so presentation code can play a sound
+// at a place without touching the playsim (debris landing sounds, hw_debrislanding.cpp).
+void S_SoundPitchAt(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
 
 void S_SoundPitchActor (AActor *ent, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
 

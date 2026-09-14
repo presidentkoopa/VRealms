@@ -281,6 +281,25 @@ CVARD(Float, r_smoke_density_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "mul
 // Not saved.
 CVARD(Bool, r_smoke_debugslice, false, 0, "show the smoke volume's density on a level plane below the eye (debug; Vulkan only)")
 
+// [SMOKEVOLUME] 13e: BEAMS AND CONES IN THE SMOKE ("Engine docs/SMOKE_VOLUME_PLAN.md" 13e, "Engine docs/
+// SMOKE_13E_IMPL_NOTES.md"). Three A/B checks, all on by default and all renderer-read every frame
+// (SetupSmokeVolume, hw_drawinfo.cpp), so they respond with a menu open. Each changes only pixels with smoke on
+// them: with no smoke the smoke pass does not run and the flashlight cone uses its own programs, so the lasers and
+// the cones look exactly as they did. OpenGL and GLES draw no smoke.
+//
+// r_smoke_beams: a beam line (a grab laser, the Lance) shows its path in the smoke -- the light it scatters, brightest
+// where the smoke is thick, carrying the smoke's swirls. Off: beams scatter nothing (13d's look).
+CVARD(Bool, r_smoke_beams, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "beam lines scatter light in the smoke volume (A/B check; Vulkan only)")
+
+// r_smoke_beams_depth: haze BEHIND a beam line does not dim it; haze in front still does. A beam writes no depth, so
+// without this the smoke composite dims its glow by all the haze on its pixel's ray, including haze behind it.
+// Off: 13d's composite.
+CVARD(Bool, r_smoke_beams_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "haze behind a beam line does not dim it (A/B check; Vulkan only)")
+
+// r_smoke_cones_depth: a volumetric beam cone (the flashlight's air glow) is dimmed by the haze in front of each part of
+// it. The cone draws after the smoke, so without this haze never dims it. Off: the cone's own programs, as before.
+CVARD(Bool, r_smoke_cones_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the haze in front of a volumetric beam cone dims it (A/B check; Vulkan only)")
+
 CVAR(Float, gl_exposure_scale, 1.3f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_min, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_base, 0.35f, CVAR_ARCHIVE)

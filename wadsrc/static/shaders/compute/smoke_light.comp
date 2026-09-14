@@ -24,6 +24,15 @@
 //     "Engine docs/SMOKE_13D_IMPL_NOTES.md", mirror L10), so only a trace of density far below visible can
 //     miss a light, and then it keeps its ambient light, never an old one.
 //
+// [13e] SOOT DARKNESS. Soot is darkness-weighted density in the velocity image's w (smoke_inject.comp,
+// smoke_advect.comp). While soot may be in the volume (pass 0's Color.w), pass 0 works out each cell's
+// darkness -- soot / density at the cell's centre, 0..1 -- darkens the ambient light by it and keeps it in
+// LightDirection.w; pass 1 darkens each light by the w kept there and keeps w. So sooty smoke sends back
+// less of every light while it hides what is behind it exactly as before (extinction is not touched), and
+// smokemarch.fp needs nothing new. The luminance weights are not darkened: a cell's darkness is the same
+// for all its light, so the direction shares stay as they were. Without soot every value here is 13d's
+// exactly: darkness 0, and w stays 0.
+//
 // Axes: Doom's (x, y horizontal, z up), map units from the grid's minimum corner. Light cell c spans
 // [c, c + 1) x Cone.z map units; its centre is where the light is taken.
 //
@@ -38,19 +47,32 @@ layout(set = 0, binding = 1) uniform sampler2D AmbientColumns;	// one texel per 
 layout(set = 0, binding = 2) uniform sampler2D ShadowMap;		// the engine's shadow map (hw_shadowmap.cpp, shadowmap.fp)
 layout(set = 0, binding = 3, rgba16f) uniform image3D LightGrid;
 layout(set = 0, binding = 4, rgba8_snorm) uniform image3D LightDirection;
+layout(set = 0, binding = 5) uniform sampler3D DensityLatest;	// [13e] the smoke's latest density (r) and heat (g)
+layout(set = 0, binding = 6) uniform sampler3D VelocityLatest;	// [13e] the latest velocity; w the soot density
 
 layout(push_constant) uniform SmokeLightConstants
 {
 	ivec4 RegionMin;		// xyz the first light cell; w the pass: 0 ambient, 1 a light
 	ivec4 RegionMax;		// xyz one past the last; w light cells per smoke tile
 	vec4 PositionRadius;	// xyz the light, map units from the grid's corner; w its radius
-	vec4 Color;				// rgb its colour (x the look's scatter; negative when subtractive); w its luminance weight
+	vec4 Color;				// rgb its colour (x the look's scatter; negative when subtractive); w its luminance weight ([13e] pass 0: 1 while soot may be in the volume)
 	vec4 SpotDirection;		// xyz main.fp's spot direction (the cone's axis pointing back at the light); w its shadow map row, -1 none
 	vec4 Cone;				// x cos outer, y cos inner (-2, -1 for a point light); z the light cell size, map units; w the look's ambient
 };
 
 const vec3 LUMINANCE = vec3(0.2126, 0.7152, 0.0722);
 const float SHADOW_ROWS = 1024.0;
+const float SOOT_MIN_DENSITY = 1.0 / 1024.0;	// SMOKE_EMPTY_DENSITY: thinner than this has no soot share to speak of
+
+// [13e] How dark the smoke at this light cell's centre is: its soot share, 0 (grey) .. 1 (black).
+float SootDarkness(ivec3 cell)
+{
+	vec3 uvw = (vec3(cell) + 0.5) / vec3(imageSize(LightGrid));
+	float density = textureLod(DensityLatest, uvw, 0.0).r;
+	if (!(density > SOOT_MIN_DENSITY))
+		return 0.0;
+	return clamp(textureLod(VelocityLatest, uvw, 0.0).w / density, 0.0, 1.0);
+}
 
 // main.fp's shadowDirToU: a direction in the map's plane to the shadow map's u, the four projections of
 // shadowmap.fp laid end to end.
@@ -113,8 +135,16 @@ void main()
 	if (RegionMin.w == 0)
 	{
 		vec3 ambient = texelFetch(AmbientColumns, cell.xy, 0).rgb * Cone.w;
-		imageStore(LightGrid, cell, vec4(ambient, dot(ambient, LUMINANCE)));
-		imageStore(LightDirection, cell, vec4(0.0));
+		float weight = dot(ambient, LUMINANCE);
+		// [13e] The soot darkness, kept in the direction grid's w for pass 1 and the beam scatter.
+		float darkness = 0.0;
+		if (Color.w > 0.5)
+		{
+			darkness = SootDarkness(cell);
+			ambient *= 1.0 - darkness;
+		}
+		imageStore(LightGrid, cell, vec4(ambient, weight));
+		imageStore(LightDirection, cell, vec4(0.0, 0.0, 0.0, darkness));
 		return;
 	}
 
@@ -139,7 +169,8 @@ void main()
 		return;
 
 	vec4 grid = imageLoad(LightGrid, cell);
-	vec3 weighted = imageLoad(LightDirection, cell).xyz;
+	vec4 stored = imageLoad(LightDirection, cell);	// [13e] w: the soot darkness pass 0 kept
+	vec3 weighted = stored.xyz;
 	float weight = max(Color.w, 0.0) * attenuation;
 	float total = grid.a + weight;
 	vec3 direction = weighted;
@@ -150,6 +181,9 @@ void main()
 		if (share > 1.0)
 			direction /= share;
 	}
-	imageStore(LightGrid, cell, vec4(grid.rgb + Color.rgb * attenuation, total));
-	imageStore(LightDirection, cell, vec4(direction, 0.0));
+	vec3 added = Color.rgb * attenuation;
+	if (stored.w > 0.0)
+		added *= 1.0 - stored.w;	// [13e] sooty smoke sends back less of this light
+	imageStore(LightGrid, cell, vec4(grid.rgb + added, total));
+	imageStore(LightDirection, cell, vec4(direction, stored.w));
 }

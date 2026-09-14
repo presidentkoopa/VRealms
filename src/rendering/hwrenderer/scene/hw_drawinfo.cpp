@@ -203,6 +203,20 @@ static FVector4 BeamSlotLook(const FLevelLocals *Level, int i)
 		(float)Level->BeamTaper, (float)Level->BeamFlare };
 }
 
+// [13e] The smoke volume's beam list (hw_smokevolume.h, hw_smokevolume.cpp GatherBeams) resolves a slot through the two
+// functions above, so the light a beam scatters in the smoke, and the glow the smoke drawing restores, sit exactly where
+// the per-pixel upload (StartScene) and the drawn-line path (SyncDrawnLines) put the beam. Read-only.
+bool ResolveBeamLine(FLevelLocals *Level, int slot, double viewTicFrac, DVector3 &a, DVector3 &b, FVector4 &look)
+{
+	if (Level == nullptr || slot < 0 || slot >= FLevelLocals::MAX_BEAMS)
+		return false;
+	if (!Level->BeamSlotLive(slot) || Level->BeamIntensity[slot] == 0.0)
+		return false;
+	ResolveBeamSlot(Level, slot, r_beam_interpolate ? viewTicFrac : 1.0, a, b);
+	look = BeamSlotLook(Level, slot);
+	return true;
+}
+
 //==========================================================================
 //
 // [DRAWNLINES] This frame's drawn-line records, handed to the GPU.
@@ -942,6 +956,26 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 		pass.SetEyeMarch(eye, u);
 	}
 	pass.SetEyeSets(eyeSets);
+
+	// [13e] Beams and cones in the smoke: how many beams the backend's beam list holds for this frame (it copied this
+	// frame's list in RunFrameCompute, before the eye loop), the three renderer-read switches, and what main.fp's beam
+	// glow reads besides the list -- the look's scatter, the scene's scroll, and the scroll's clock as the drawn-line path
+	// takes it (SyncDrawnLines). The same for both eyes.
+	{
+		PPSmokeBeamSettings beams;
+		beams.BeamCount = std::clamp(status.BeamCount, 0, SMOKE_BEAMS_MAX);
+		beams.Scatter = r_smoke_beams;
+		beams.Depth = r_smoke_beams_depth;
+		beams.Cones = r_smoke_cones_depth;
+		double lookScatter = look.Scatter;
+		if (!(lookScatter >= 0.0))
+			lookScatter = 0.0;		// written this way so a NaN lands on 0 too
+		beams.LookScatter = (float)std::min(lookScatter, 1.0);
+		beams.ScrollSpeed = (float)Level->BeamScrollSpeed;
+		beams.ScrollDepth = (float)Level->BeamScrollDepth;
+		beams.Timer = static_cast<float>((double)(screen->FrameTime - screen->RenderState()->firstFrame) / 1000.);
+		pass.SetBeams(beams);
+	}
 
 	PerfLog::AddCpuSample("fx.smokedraw", (double)(I_nsTime() - startNs) / 1e6);
 }

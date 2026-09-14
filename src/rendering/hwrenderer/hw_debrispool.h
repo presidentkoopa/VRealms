@@ -33,6 +33,8 @@
 **   - DRAWS: the billboards inside the particle ring's draw (same effect, blend and depth), from a quad buffer whose
 **     vertices say "pool" (aParticle.w = 1); the meshes after the ring's mesh draw, one instanced draw per mesh
 **     definition drawn as a mesh this frame (MeshParticleBuffer::GetBillboardHidden).
+**   - LANDING SOUNDS ([DEBRISSOUNDS], hw_debrislanding.h): a burst of a definition with `landsound` is also flown on
+**     the CPU as it goes in, and its group makes one sound where and when its first piece is drawn landing.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim, nothing is read back from the GPU, and no
 ** RNG is used (a piece's jitter is SpawnParticles' GpuParticleHash of its burst's seed).
@@ -45,6 +47,7 @@
 #include <vector>
 
 #include "hw_debrisframe.h"
+#include "hw_debrislanding.h"	// [DEBRISSOUNDS] DebrisLandingSounds
 #include "zstring.h"
 
 struct FLevelLocals;
@@ -135,7 +138,7 @@ private:
 
 	void Reset();
 	void ReadQueues(FLevelLocals* Level, bool keep);
-	void ExpandBurst(const FDebrisBurstEvent& burst, int tic);
+	void ExpandBurst(FLevelLocals* Level, const FDebrisBurstEvent& burst, int tic);
 	void SyncDefinitions(bool test);
 	double StayEnd(const SlotState& slot) const;
 	void RebuildHeap();
@@ -213,6 +216,9 @@ private:
 	float mLitUntil = NEVER_ALIVE;
 	float mSoftUntil = NEVER_ALIVE;
 	float mLevelUntil = NEVER_ALIVE;
+
+	// [DEBRISSOUNDS] The groups' landing sounds: fed by ExpandBurst, played from PrepareFrame.
+	DebrisLandingSounds mLanding;
 
 	IVertexBuffer* mQuads = nullptr;
 	int mQuadCapacity = 0;

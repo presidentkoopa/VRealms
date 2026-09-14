@@ -80,6 +80,7 @@ enum class PPExternalImage
 	SmokeTileActive,		// one texel per SMOKE_TILE_CELLS^3 cells: 1 = the tile may hold smoke (3D, R8)
 	SmokeLight,				// [13d] the smoke's light grid: rgb the light reaching each place, a its luminance weight (3D, RGBA16F)
 	SmokeLightDirection,	// [13d] the same grid: xyz the direction light travels there, times its share (3D, RGBA8 SNORM)
+	SmokeBeams,				// [13e] the beam lines that may meet the smoke this frame: SMOKE_BEAMS_MAX x 4 texels (2D, RGBA32F)
 	Count
 };
 
@@ -723,6 +724,18 @@ public:
 		if (count < MAX_BEAMS) uniforms[count++] = u;
 	}
 
+	// [13e] Whether Render will draw any cone this eye (its own skip test), so the smoke pass knows to draw the
+	// transmittance curve the cones read in smoke (PPSmokeVolume::ConesDimmedByHaze).
+	bool HasCones() const
+	{
+		for (int i = 0; i < count; i++)
+		{
+			if (uniforms[i].Density > 0.0f && uniforms[i].BeamLength > 0.0f)
+				return true;
+		}
+		return false;
+	}
+
 private:
 	// 32, AND IT MUST MATCH FLevelLocals::MAX_VOL_BEAMS EXACTLY.
 	//
@@ -739,6 +752,10 @@ private:
 	// must be read with texelFetch on a sampler2DMS, as lineardepth.fp does.
 	// Render() picks between the two. Without it the beam did not draw with MSAA.
 	PPShader BeamMS = { "shaders/pp/volumetricbeam.fp", "#define MULTISAMPLE\n", VolumetricBeamUniforms::Desc() };
+	// [13e] In smoke (PPSmokeVolume::ConesDimmedByHaze): each step of the cone dimmed by the haze in front of it, read from
+	// the smoke's transmittance curve. The same uniforms; inputs 1-3 the smoke's march, depth and curve.
+	PPShader BeamSmoke = { "shaders/pp/volumetricbeam.fp", "#define SMOKE_TRANSMITTANCE\n", VolumetricBeamUniforms::Desc() };
+	PPShader BeamSmokeMS = { "shaders/pp/volumetricbeam.fp", "#define MULTISAMPLE\n#define SMOKE_TRANSMITTANCE\n", VolumetricBeamUniforms::Desc() };
 };
 
 struct HeatmapUniforms
@@ -1109,6 +1126,138 @@ static_assert(offsetof(SmokeMarchUniforms, LightColor) == 128, "SmokeMarchUnifor
 static_assert(offsetof(SmokeMarchUniforms, MinStep) == 144, "SmokeMarchUniforms::MinStep must start at 144 for std140");
 static_assert(sizeof(SmokeMarchUniforms) == 160, "SmokeMarchUniforms must be 160 bytes; pad to a 16-byte row");
 
+// [13e] The transmittance curve and the beam scatter passes (smokemarch.fp with SMOKE_TRANSMITTANCE_CURVE or
+// SMOKE_BEAM_SCATTER): the march's own uniforms, member for member at the same offsets (both walk the same ray through
+// the same volume), then the beams'. Filled from the eye's march set by PPSmokeVolume::Render.
+struct SmokeBeamScatterUniforms
+{
+	float ViewToWorld[16];
+	FVector2 TanHalfFov;
+	FVector2 ProjOffset;
+	FVector3 BoxMin;
+	float CellSize;
+	FVector3 GridSize;
+	float TicFrac;
+	FVector3 TileCount;
+	int StepCount;
+	FVector3 LightColor;
+	float Extinction;
+	float MinStep;
+	float SliceHeight;
+	int DebugSlice;
+	float MarchPad0;
+	int BeamCount;            // beams in the beam list image (PPExternalImage::SmokeBeams)
+	float BeamScatter;        // scatter: the look's scatter (SetSmokeLook), 0..1; 0 when r_smoke_beams is off (the pass writes nothing)
+	float NearBeamsOnly;      // curve: 1 = only texels a listed beam's glow can reach (no cone reads the curve this eye); 0 = all
+	float BeamPad1;
+
+	//   the march's 0..160, then BeamCount 160   BeamScatter 164   NearBeamsOnly 168   BeamPad1 172   -> block ends 176
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "ViewToWorld", UniformType::Mat4, offsetof(SmokeBeamScatterUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeBeamScatterUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeBeamScatterUniforms, ProjOffset) },
+			{ "BoxMin", UniformType::Vec3, offsetof(SmokeBeamScatterUniforms, BoxMin) },
+			{ "CellSize", UniformType::Float, offsetof(SmokeBeamScatterUniforms, CellSize) },
+			{ "GridSize", UniformType::Vec3, offsetof(SmokeBeamScatterUniforms, GridSize) },
+			{ "TicFrac", UniformType::Float, offsetof(SmokeBeamScatterUniforms, TicFrac) },
+			{ "TileCount", UniformType::Vec3, offsetof(SmokeBeamScatterUniforms, TileCount) },
+			{ "StepCount", UniformType::Int, offsetof(SmokeBeamScatterUniforms, StepCount) },
+			{ "LightColor", UniformType::Vec3, offsetof(SmokeBeamScatterUniforms, LightColor) },
+			{ "Extinction", UniformType::Float, offsetof(SmokeBeamScatterUniforms, Extinction) },
+			{ "MinStep", UniformType::Float, offsetof(SmokeBeamScatterUniforms, MinStep) },
+			{ "SliceHeight", UniformType::Float, offsetof(SmokeBeamScatterUniforms, SliceHeight) },
+			{ "DebugSlice", UniformType::Int, offsetof(SmokeBeamScatterUniforms, DebugSlice) },
+			{ "MarchPad0", UniformType::Float, offsetof(SmokeBeamScatterUniforms, MarchPad0) },
+			{ "BeamCount", UniformType::Int, offsetof(SmokeBeamScatterUniforms, BeamCount) },
+			{ "BeamScatter", UniformType::Float, offsetof(SmokeBeamScatterUniforms, BeamScatter) },
+			{ "NearBeamsOnly", UniformType::Float, offsetof(SmokeBeamScatterUniforms, NearBeamsOnly) },
+			{ "BeamPad1", UniformType::Float, offsetof(SmokeBeamScatterUniforms, BeamPad1) },
+		};
+	}
+};
+
+// The march's part must be SmokeMarchUniforms byte for byte: Render copies it in whole.
+static_assert(offsetof(SmokeBeamScatterUniforms, TanHalfFov) == offsetof(SmokeMarchUniforms, TanHalfFov) &&
+	offsetof(SmokeBeamScatterUniforms, BoxMin) == offsetof(SmokeMarchUniforms, BoxMin) &&
+	offsetof(SmokeBeamScatterUniforms, GridSize) == offsetof(SmokeMarchUniforms, GridSize) &&
+	offsetof(SmokeBeamScatterUniforms, TileCount) == offsetof(SmokeMarchUniforms, TileCount) &&
+	offsetof(SmokeBeamScatterUniforms, LightColor) == offsetof(SmokeMarchUniforms, LightColor) &&
+	offsetof(SmokeBeamScatterUniforms, MinStep) == offsetof(SmokeMarchUniforms, MinStep) &&
+	offsetof(SmokeBeamScatterUniforms, MarchPad0) == offsetof(SmokeMarchUniforms, MarchPad0),
+	"SmokeBeamScatterUniforms must start with SmokeMarchUniforms' layout");
+static_assert(offsetof(SmokeBeamScatterUniforms, BeamCount) == 160, "SmokeBeamScatterUniforms::BeamCount must start at 160");
+static_assert(sizeof(SmokeBeamScatterUniforms) == 176, "SmokeBeamScatterUniforms must be 176 bytes; pad to a 16-byte row");
+
+// [13e] The composite with beams (smokecomposite.fp with SMOKE_BEAMS): the depth uniforms the composite has always had,
+// the eye's ray (to find where each beam passes this pixel), and the beams' scroll, as main.fp's BeamAirGlow reads it.
+struct SmokeBeamCompositeUniforms
+{
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+	float LinearizeDepthA;
+	float LinearizeDepthB;
+	float DepthPad0;
+	float DepthPad1;
+	float ViewToWorld[16];    // the eye's march set's
+	FVector2 TanHalfFov;
+	FVector2 ProjOffset;
+	FVector3 BoxMin;          // the grid's minimum corner, eye-relative GL axes: the beam list's positions are from it
+	int BeamCount;
+	float BeamScrollSpeed;    // FLevelLocals::BeamScrollSpeed (main.fp's uBeamFX.x)
+	float BeamScrollDepth;    // FLevelLocals::BeamScrollDepth (uBeamFX.y)
+	float BeamTimer;          // the scroll's clock, seconds (main.fp's timer)
+	int BeamDepth;            // 1: a beam's glow keeps the haze behind it from dimming it (r_smoke_beams_depth)
+
+	//   SceneScale 0  SceneOffset 8  LinearizeDepthA 16  B 20  DepthPad0 24  DepthPad1 28  ViewToWorld 32
+	//   TanHalfFov 96  ProjOffset 104  BoxMin 112  BeamCount 124  BeamScrollSpeed 128  BeamScrollDepth 132
+	//   BeamTimer 136  BeamDepth 140  -> block ends 144
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SceneScale", UniformType::Vec2, offsetof(SmokeBeamCompositeUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(SmokeBeamCompositeUniforms, SceneOffset) },
+			{ "LinearizeDepthA", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, LinearizeDepthA) },
+			{ "LinearizeDepthB", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, LinearizeDepthB) },
+			{ "DepthPad0", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, DepthPad0) },
+			{ "DepthPad1", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, DepthPad1) },
+			{ "ViewToWorld", UniformType::Mat4, offsetof(SmokeBeamCompositeUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeBeamCompositeUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeBeamCompositeUniforms, ProjOffset) },
+			{ "BoxMin", UniformType::Vec3, offsetof(SmokeBeamCompositeUniforms, BoxMin) },
+			{ "BeamCount", UniformType::Int, offsetof(SmokeBeamCompositeUniforms, BeamCount) },
+			{ "BeamScrollSpeed", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, BeamScrollSpeed) },
+			{ "BeamScrollDepth", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, BeamScrollDepth) },
+			{ "BeamTimer", UniformType::Float, offsetof(SmokeBeamCompositeUniforms, BeamTimer) },
+			{ "BeamDepth", UniformType::Int, offsetof(SmokeBeamCompositeUniforms, BeamDepth) },
+		};
+	}
+};
+
+static_assert(offsetof(SmokeBeamCompositeUniforms, LinearizeDepthA) == offsetof(SmokeDepthUniforms, LinearizeDepthA), "SmokeBeamCompositeUniforms must start with SmokeDepthUniforms' layout");
+static_assert(offsetof(SmokeBeamCompositeUniforms, ViewToWorld) == 32, "SmokeBeamCompositeUniforms::ViewToWorld must start at 32 for std140");
+static_assert(offsetof(SmokeBeamCompositeUniforms, TanHalfFov) == 96, "SmokeBeamCompositeUniforms::TanHalfFov must start at 96 for std140");
+static_assert(offsetof(SmokeBeamCompositeUniforms, BoxMin) == 112, "SmokeBeamCompositeUniforms::BoxMin must start at 112 for std140");
+static_assert(offsetof(SmokeBeamCompositeUniforms, BeamScrollSpeed) == 128, "SmokeBeamCompositeUniforms::BeamScrollSpeed must start at 128 for std140");
+static_assert(sizeof(SmokeBeamCompositeUniforms) == 144, "SmokeBeamCompositeUniforms must be 144 bytes; pad to a 16-byte row");
+
+// [13e] What the renderer publishes each frame for beams and cones in the smoke (SetupSmokeVolume, hw_drawinfo.cpp).
+// The same for both eyes. The default -- no beams, every switch off -- draws exactly 13d's smoke.
+struct PPSmokeBeamSettings
+{
+	int BeamCount = 0;          // beams in the backend's beam list image (SmokeVolumeBackendStatus::BeamCount), 0..16
+	bool Scatter = false;       // r_smoke_beams: beams scatter light in the smoke
+	bool Depth = false;         // r_smoke_beams_depth: the haze behind a beam does not dim it
+	bool Cones = false;         // r_smoke_cones_depth: the haze in front of a volumetric beam cone dims it
+	float LookScatter = 0.f;    // SetSmokeLook's scatter, 0..1
+	float ScrollSpeed = 0.f;    // FLevelLocals::BeamScrollSpeed
+	float ScrollDepth = 0.f;    // FLevelLocals::BeamScrollDepth
+	float Timer = 0.f;          // the beams' scroll clock, seconds (SyncDrawnLines hands the drawn-line path the same)
+};
+
 // SKIPPED, NOT ZERO. Render returns on its first line unless the renderer published a march for this
 // eye (SetupSmokeVolume, hw_drawinfo.cpp: Vulkan, r_smoke, the volume allocated, and the CPU side's bound
 // saying visible smoke may exist). With no smoke, or smoke off, the frame is exactly the frame without
@@ -1135,18 +1284,43 @@ static_assert(sizeof(SmokeMarchUniforms) == 160, "SmokeMarchUniforms must be 160
 //   2. smokemarch.fp      the march: rgb light scattered toward the eye, a transmittance (RGBA16F)
 //   3. smokeblur.fp       a separable 5-tap blur that keeps to its depth (two draws, ping-pong)
 //   4. smokecomposite.fp  the depth-aware upsample and the premultiplied composite
+//
+// [13e] BEAMS AND CONES ("Engine docs/SMOKE_13E_IMPL_NOTES.md"). Only while this frame has beams in the smoke with
+// r_smoke_beams or r_smoke_beams_depth on, or a volumetric beam cone with r_smoke_cones_depth on; otherwise every draw
+// above is 13d's, program for program. Between 3 and 4, in group pp.smokebeams:
+//   3a. smokemarch.fp SMOKE_TRANSMITTANCE_CURVE  the TRANSMITTANCE CURVE: where each ray's optical depth reaches 0, 1/3,
+//       2/3 and all of it, so a pass can ask how much haze lies in front of any depth (RGBA16F, half resolution) -- over
+//       every smoke texel when a cone reads it, otherwise only where a listed beam's glow can reach
+//   3b. smokemarch.fp SMOKE_BEAM_SCATTER  (beams only) the light each beam scatters in the smoke, dimmed by the haze in
+//       front of it (RGBA16F rgb, half resolution) -- its own texture, so it stays separable (EMISSIVE contract 3)
+// and the composite and its light mask carry take their SMOKE_BEAMS variants: + the beam scatter, + each beam's own air
+// glow times (the transmittance to the beam - the pixel's), which undoes the dimming by haze BEHIND the beam. Still
+// (light, 1 - T) with the premultiplied blend: scene x T + inscatter. The volumetric beam pass reads the curve after
+// this (TransmittanceReady).
 class PPSmokeVolume
 {
 public:
 	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
 
-	void ClearEyes() { eyeSets = 0; }
+	void ClearEyes() { eyeSets = 0; beams = PPSmokeBeamSettings(); }
 	void SetEyeMarch(int eyeSet, const SmokeMarchUniforms &u)
 	{
 		if (eyeSet >= 0 && eyeSet < 2) marches[eyeSet] = u;
 	}
 	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
 	void SetEye(int eye) { currentEye = eye; }
+	// [13e] The frame's beams and switches (after SetEyeSets), and the beam count last published (the perf log's label).
+	void SetBeams(const PPSmokeBeamSettings &settings) { beams = settings; }
+	int PublishedBeamCount() const { return beams.BeamCount; }
+
+	// [13e] For the volumetric beam pass, later in the same eye's Pass1: true once this eye's smoke drew its transmittance
+	// curve AND r_smoke_cones_depth is on. Reset at the top of every Render, so an eye with no smoke says false. The
+	// textures the cone pass reads it through: the blurred march (a = the whole ray's T), the depth each texel marched
+	// to, and the curve -- all half resolution, sampled with the composite's own upsample.
+	bool ConesDimmedByHaze() const { return transmittanceReady && beams.Cones; }
+	PPTexture *GetMarchTexture() { return &MarchTexture; }
+	PPTexture *GetDepthTexture() { return &DepthTexture; }
+	PPTexture *GetCurveTexture() { return &CurveTexture; }
 
 private:
 	void UpdateTextures(int sceneWidth, int sceneHeight);
@@ -1154,12 +1328,16 @@ private:
 	SmokeMarchUniforms marches[2] = {};
 	int eyeSets = 0;
 	int currentEye = 0;
+	PPSmokeBeamSettings beams;			// [13e]
+	bool transmittanceReady = false;	// [13e] this eye drew its transmittance curve
 
 	// Half the scene's size, like bloom's first level and the heat offsets. Rewritten whole by every eye
 	// before it is read, so the eyes can share them.
 	PPTexture DepthTexture;
 	PPTexture MarchTexture;
 	PPTexture BlurTexture;
+	PPTexture CurveTexture;		// [13e] RGBA16F: the distances where the ray's optical depth reaches 0, 1/3, 2/3, all (0 = no smoke)
+	PPTexture BeamTexture;		// [13e] RGBA16F: rgb the light the beams scatter, a 1
 	PPViewport HalfViewport;
 	int lastWidth = 0;
 	int lastHeight = 0;
@@ -1173,6 +1351,13 @@ private:
 	PPShader CompositeShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
 	PPShader MaskCarryShader = { "shaders/pp/smokecomposite.fp", "#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
 	PPShader MaskCarryShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
+	// [13e] Beams and cones.
+	PPShader CurveShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_TRANSMITTANCE_CURVE\n", SmokeBeamScatterUniforms::Desc() };
+	PPShader BeamScatterShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_BEAM_SCATTER\n", SmokeBeamScatterUniforms::Desc() };
+	PPShader CompositeBeamsShader = { "shaders/pp/smokecomposite.fp", "#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
+	PPShader CompositeBeamsShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
+	PPShader MaskCarryBeamsShader = { "shaders/pp/smokecomposite.fp", "#define LIGHT_MASK_CARRY\n#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
+	PPShader MaskCarryBeamsShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define LIGHT_MASK_CARRY\n#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
 };
 
 

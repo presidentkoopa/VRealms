@@ -12,6 +12,13 @@ layout(binding=0) uniform sampler2DMS DepthTexture;
 #else
 layout(binding=0) uniform sampler2D DepthTexture;
 #endif
+// [13e] SMOKE_TRANSMITTANCE: this eye drew smoke with its transmittance curve and r_smoke_cones_depth is on
+// (PPSmokeVolume::ConesDimmedByHaze). All three at half resolution, read with the smoke composite's upsample.
+#if defined(SMOKE_TRANSMITTANCE)
+layout(binding=1) uniform sampler2D SmokeMarchTexture;	// the smoke's blurred march: a = the whole ray's transmittance
+layout(binding=2) uniform sampler2D SmokeDepthTexture;	// the depth each of its texels marched to
+layout(binding=3) uniform sampler2D TransmittanceCurve;	// where each ray's optical depth reaches 0, 1/3, 2/3, all
+#endif
 
 // ============================================================================
 // [BB] Volumetric flashlight beam.
@@ -62,6 +69,101 @@ float dustNoise(vec3 p)
 {
 	return valueNoise(p) * 0.65 + valueNoise(p * 2.7) * 0.35;
 }
+
+#if defined(SMOKE_TRANSMITTANCE)
+// ---------------------------------------------------------------------------
+// [13e] THE CONE IN SMOKE ("Engine docs/SMOKE_13E_IMPL_NOTES.md", G2).
+//
+// This pass runs after the smoke composite, so haze in front of the cone never dimmed it. Each step's glow is
+// now dimmed by the transmittance from the eye to that step, read from the smoke's transmittance curve. The
+// cone's glow is the air's dust and the smoke's own glow from the same light is 13d's light grid: two things
+// scattering the same light add, and dimmed like this the dust's glow from deep inside thick haze fades away
+// (it can be no more than glow / extinction), so the two never double up where the haze is thick.
+// ---------------------------------------------------------------------------
+
+// THE TRANSMITTANCE CURVE, READ -- the same two functions in smokemarch.fp, smokecomposite.fp and
+// volumetricbeam.fp; keep the three identical. knots: the distances where a ray's optical depth reaches 0, 1/3,
+// 2/3 and all of it (knots.w 0 = no smoke seen).
+//
+// The share of the ray's optical depth lying before distance t: 0 before the smoke, 1 after it, linear between
+// the knots (even haze between them).
+float SmokeDepthShare(vec4 knots, float t)
+{
+	if (t <= knots.x)
+		return 0.0;
+	if (t >= knots.w)
+		return 1.0;
+	if (t < knots.y)
+		return (t - knots.x) / max(knots.y - knots.x, 1e-4) / 3.0;
+	if (t < knots.z)
+		return (1.0 + (t - knots.y) / max(knots.z - knots.y, 1e-4)) / 3.0;
+	return (2.0 + (t - knots.z) / max(knots.w - knots.z, 1e-4)) / 3.0;
+}
+
+// The transmittance from the eye to distance t, from the pixel's whole transmittance wholeT and the share of the
+// optical depth before its scene distance: exactly wholeT at the scene, 1 where all the smoke lies further away.
+// A curve that saw no smoke in front of the scene says nothing, and the whole T stands (the dimming 13c did).
+float SmokeTransmittanceTo(vec4 knots, float t, float shareAtScene, float wholeT)
+{
+	if (wholeT >= 1.0)
+		return 1.0;
+	if (knots.w <= 0.0 || shareAtScene <= 1e-4)
+		return wholeT;
+	float share = clamp(SmokeDepthShare(knots, t) / shareAtScene, 0.0, 1.0);
+	if (share >= 1.0)
+		return wholeT;		// all of it in front: the whole T exactly, not exp(log(T))
+	return exp(share * log(max(wholeT, 1e-6)));
+}
+
+// This pixel's whole smoke transmittance and its curve, from the four half-resolution texels around it with the
+// smoke composite's weights (smokecomposite.fp): bilinear share x closeness of the depth each texel marched to
+// against this pixel's own depth z. Texels whose curve saw no smoke are left out of the curve's blend. 1 (and no
+// curve) where all four are exactly clear.
+float SmokeWholeTransmittance(float z, out vec4 knots)
+{
+	const vec4 clearTexel = vec4(0.0, 0.0, 0.0, 1.0);
+	knots = vec4(0.0);
+
+	ivec2 smokeSize = textureSize(SmokeMarchTexture, 0);
+	vec2 at = TexCoord * vec2(smokeSize) - vec2(0.5);
+	vec2 corner = floor(at);
+	vec2 frac2 = at - corner;
+	ivec2 cornerTexel = ivec2(corner);
+
+	float sum = 0.0;
+	float weightSum = 0.0;
+	vec4 knotSum = vec4(0.0);
+	float knotWeight = 0.0;
+	bool anySmoke = false;
+	for (int j = 0; j < 2; j++)
+	{
+		for (int i = 0; i < 2; i++)
+		{
+			ivec2 texel = clamp(cornerTexel + ivec2(i, j), ivec2(0), smokeSize - ivec2(1));
+			vec4 smoke = texelFetch(SmokeMarchTexture, texel, 0);
+			if (smoke != clearTexel)
+				anySmoke = true;
+			float marched = texelFetch(SmokeDepthTexture, texel, 0).r;
+			float bilinear = (i == 0 ? 1.0 - frac2.x : frac2.x) * (j == 0 ? 1.0 - frac2.y : frac2.y) + 0.001;
+			float relative = abs(marched - z) / max(min(marched, z), 1.0);
+			float w = bilinear / (0.0004 + relative * relative);
+			sum += smoke.a * w;
+			weightSum += w;
+			vec4 texelKnots = texelFetch(TransmittanceCurve, texel, 0);
+			if (texelKnots.w > 0.0)
+			{
+				knotSum += texelKnots * w;
+				knotWeight += w;
+			}
+		}
+	}
+	if (!anySmoke)
+		return 1.0;
+	if (knotWeight > 0.0)
+		knots = knotSum / knotWeight;
+	return clamp(sum / weightSum, 0.0, 1.0);
+}
+#endif
 
 void main()
 {
@@ -264,6 +366,16 @@ void main()
 	// noise: one cheap expression, no texture lookup.
 	float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
 
+#if defined(SMOKE_TRANSMITTANCE)
+	// [13e] The smoke on this pixel's ray. The smoke measures distance along the ray in map units and this pass in
+	// view units; the view matrix carries the pixel stretch, so the two differ by this ray's own scale.
+	vec4 smokeKnots;
+	float smokeWholeT = SmokeWholeTransmittance(linearZ, smokeKnots);
+	bool smokeDims = smokeWholeT < 1.0;
+	float smokeScale = length(mat3(ViewToWorld) * rayDir);
+	float smokeShareAtScene = SmokeDepthShare(smokeKnots, sceneDepth * smokeScale);
+#endif
+
 	int steps = StepCount;
 	float dt = (tMax - tMin) / float(steps);
 	float t = tMin + dt * jitter;
@@ -330,6 +442,11 @@ void main()
 					contrib *= mix(1.0, d, clamp(DustAmount, 0.0, 1.0));
 				}
 
+#if defined(SMOKE_TRANSMITTANCE)
+				// [13e] Dimmed by the haze between the eye and this step.
+				if (smokeDims)
+					contrib *= SmokeTransmittanceTo(smokeKnots, t * smokeScale, smokeShareAtScene, smokeWholeT);
+#endif
 				accum += contrib;
 			}
 		}

@@ -122,6 +122,7 @@ struct SmokeKernel
 	float Heat = 0;					// EMIT: heat added at the centre
 	float Strength = 0;				// IMPULSE: cells per step outward at the centre (negative: inward)
 	float Velocity[3] = { 0, 0, 0 };	// EMIT: cells per step added at the centre
+	float Soot = 0;					// [13e] EMIT: soot density added at the centre (Amount x the emit's soot share), 0 = none
 
 	// A kernel thinner than this would fall between cell centres. It is widened to it,
 	// and an emit's amount (a carve's) is scaled by the volume (cross-section) it lost,
@@ -156,6 +157,10 @@ struct SmokeSimSettings
 	float TurbulenceFrequency = 0;	// swirl noise cells per grid cell
 	float MaxDisplacement = 4;		// a step never moves anything further than this, cells
 	float MaxSpeed = 4;				// the velocity field is clamped to this, cells per step
+	// [13e] 1 while soot may be in the volume (the CPU's soot bound is above empty), else 0. Soot is darkness-weighted
+	// density carried in the velocity image's w (smoke_inject.comp, smoke_advect.comp); at 0 nothing reads or carries
+	// it, and w stays exactly 0 -- the volume is exactly 13d's.
+	float SootLive = 0;
 };
 
 // [SMOKEVOLUME] 13d: THE LIGHT GRID ("Engine docs/SMOKE_VOLUME_PLAN.md" 13d, owner answer 4).
@@ -234,6 +239,37 @@ struct SmokeLightFrame
 	uint64_t AmbientSerial = 0;				// renewed whenever those bytes change: the backend copies them in when it differs
 };
 
+// [SMOKEVOLUME] 13e: BEAMS IN THE SMOKE ("Engine docs/SMOKE_VOLUME_PLAN.md" 13e, "Engine docs/SMOKE_13E_IMPL_NOTES.md").
+//
+// The beam lines (FLevelLocals' beam slots: the grab lasers, the Lance, and the same slots when r_beams_drawn routes
+// them to the drawn-line path) whose light may meet the smoke this frame, resolved exactly as the per-pixel upload
+// resolves them (hw_drawinfo.cpp, ResolveBeamLine), the nearest SMOKE_BEAMS_MAX to the eye. World-aligned, so one list
+// serves both eyes: the backend copies it into a small image (VkSmokeVolume, PPExternalImage::SmokeBeams) that the smoke
+// drawing reads -- the light a beam scatters in the smoke, and a beam's own glow kept from being dimmed by haze behind it.
+inline constexpr int SMOKE_BEAMS_MAX = 16;
+inline constexpr int SMOKE_BEAM_TEXELS = 4;			// texels a beam takes in the image: one row each (below)
+
+// One beam as the drawing takes it. Positions in GL axes (map x, map z, map y), map units from the smoke grid's minimum
+// corner, so the numbers stay small. The image holds, per beam column i, row 0 A + Thick, row 1 B + Soft, row 2 Color +
+// Intensity, row 3 Look.
+struct SmokeBeamRecord
+{
+	float A[3] = { 0, 0, 0 };		// the start (the muzzle)
+	float Thick = 0;				// the hot core, map units
+	float B[3] = { 0, 0, 0 };		// the end (the impact)
+	float Soft = 0;					// how far the halo reaches past the core, map units
+	float Color[3] = { 0, 0, 0 };	// 0..1
+	float Intensity = 0;
+	float Look[4] = { 0, 0, 0, 0 };	// x air glow, y halo, z taper, w flare: the slot's own style, or the scene look
+};
+
+// [13e] This frame's beam list, decided on the CPU (hw_smokevolume.cpp, only on frames with smoke to draw).
+struct SmokeBeamFrame
+{
+	const SmokeBeamRecord* Beams = nullptr;
+	int Count = 0;					// 0..SMOKE_BEAMS_MAX
+};
+
 // [SMOKEVOLUME] This frame's smoke volume, decided on the CPU (hw_smokevolume.cpp).
 struct SmokeVolumeFrame
 {
@@ -305,6 +341,10 @@ struct SmokeVolumeFrame
 	// [13d] The light grid: its quality whenever the volume is active, its lights and ambient columns on
 	// frames with smoke to draw. The backend fills the grid after the steps, only when HasSmoke.
 	SmokeLightFrame Light;
+
+	// [13e] The beams that may meet the smoke, on frames with smoke to draw (Count 0 otherwise). The backend copies them
+	// into its beam list image when HasSmoke.
+	SmokeBeamFrame Beams;
 };
 
 // [SMOKEVOLUME] What the backend did with the smoke volume, for the CPU side's NEXT
@@ -321,6 +361,7 @@ struct SmokeVolumeBackendStatus
 	uint64_t MaskEpoch = 0;		// the BoxEpoch of the NewBox that initialised the current mask; 0 = none did
 	int LightQuality = 0;			// [13d] the light grid the backend holds (r_smoke_light_quality); 0 = none
 	int RefusedLightQuality = 0;	// [13d] a light quality this device refused until it changes; 0 = none
+	int BeamCount = 0;				// [13e] beams the backend's beam list image holds for this frame's drawing; 0 = none (or no image)
 };
 
 inline SmokeVolumeBackendStatus& SmokeVolumeStatus()

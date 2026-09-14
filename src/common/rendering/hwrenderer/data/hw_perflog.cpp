@@ -47,6 +47,9 @@ EXTERN_CVAR(Int, r_smoke_steps)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Float, r_smoke_density_scale)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_debugslice)	// [SMOKEVOLUME] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Int, r_smoke_light_quality)	// [SMOKEVOLUME] 13d, hw_smokevolume.cpp
+EXTERN_CVAR(Bool, r_smoke_beams)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_smoke_beams_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_smoke_cones_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_particlecollision)	// [LEVELFIELD] hw_levelfield.cpp
 EXTERN_CVAR(Int, r_particlecollision_quality)	// [LEVELFIELD] hw_levelfield.cpp
 EXTERN_CVAR(Bool, r_particlecollision_test)	// [LEVELFIELD] hw_levelfield.cpp
@@ -54,6 +57,8 @@ EXTERN_CVAR(Bool, r_debris)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Float, r_debris_life)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Int, r_debris_pool)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Bool, r_debris_test)	// [DEBRISPOOL] hw_debrispool.cpp
+EXTERN_CVAR(Bool, r_debris_sounds)	// [DEBRISSOUNDS] hw_debrislanding.cpp
+EXTERN_CVAR(Float, r_debris_sounds_volume)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -224,11 +229,16 @@ namespace
 				"only while there is smoke); a pp.lightmaskcarry beside it dims the light mask by the same haze; fx.smokedraw "
 				"(cpu_fx_ms) is its per-eye setup. fx.smokelight is the smoke's light grid (frames with smoke: its ambient pass "
 				"and one pass per light; on gpu_ms inside fx.compute, on cpu_fx_ms its recording); fx.smokelights (cpu_fx_ms) "
-				"its light list and ambient columns. fx.levelfield is the particle collision field: on cpu_fx_ms its demand "
+				"its light list and ambient columns. pp.smokebeams is the smoke's beam and cone work per eye (the transmittance "
+				"curve, and the light the beams scatter; only while beams or a flashlight cone meet the smoke) -- the beams' "
+				"depth work is inside pp.smoke's composite and the cones' inside volumetricbeam; smokebeams is how many beams "
+				"the last frame's smoke list held. fx.levelfield is the particle collision field: on cpu_fx_ms its demand "
 				"scan, windows and tile rasterisation (SH1, within 1 ms a frame while it builds or a door moves), on gpu_ms "
 				"its invalidations, uploads and line bakes (frames with field work only). fx.debrissim is ONE debris pool step, "
 				"counted per step (gpu_ms, inside fx.compute); fx.debrispool (cpu_fx_ms) is the pool's CPU side on each frame it "
-				"is asked for: bursts into pieces, slots, pushes, wake boxes and the mesh instance list.\n\n";
+				"is asked for: bursts into pieces, slots, pushes, wake boxes and the mesh instance list. fx.debrisland (cpu_fx_ms) "
+				"is the debris landing sounds on frames with work: flying each new burst's pieces to their first landing, the "
+				"level check of the earliest, and starting the sounds that are due.\n\n";
 			HeaderWritten = true;
 		}
 
@@ -267,12 +277,18 @@ namespace
 		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g r_smoke_steps=%d r_smoke_density_scale=%g r_smoke_debugslice=%d r_smoke_light_quality=%d",
 			(int)*r_smoke, (int)*r_smoke_quality, (int)*r_smoke_computetest, (double)(float)*r_smoke_dissipation_scale,
 			(int)*r_smoke_steps, (double)(float)*r_smoke_density_scale, (int)*r_smoke_debugslice, (int)*r_smoke_light_quality);
+		// [SMOKEVOLUME] 13e: and the beam and cone switches, with the beams the smoke drawing last published, so a
+		// pp.smoke / pp.smokebeams / volumetricbeam before/after labels itself.
+		out.AppendFormat(" r_smoke_beams=%d r_smoke_beams_depth=%d r_smoke_cones_depth=%d smokebeams=%d",
+			(int)*r_smoke_beams, (int)*r_smoke_beams_depth, (int)*r_smoke_cones_depth, hw_postprocess.smokevolume.PublishedBeamCount());
 		// [LEVELFIELD] And the particle collision switches, so a fx.levelfield before/after labels itself.
 		out.AppendFormat(" r_particlecollision=%d r_particlecollision_quality=%d r_particlecollision_test=%d",
 			(int)*r_particlecollision, (int)*r_particlecollision_quality, (int)*r_particlecollision_test);
 		// [DEBRISPOOL] And the debris pool's switches, so a fx.debrissim / fx.debrispool before/after labels itself.
 		out.AppendFormat(" r_debris=%d r_debris_life=%g r_debris_pool=%d r_debris_test=%d",
 			(int)*r_debris, (double)(float)*r_debris_life, (int)*r_debris_pool, (int)*r_debris_test);
+		// [DEBRISSOUNDS] And the landing sounds' switches, so a fx.debrisland before/after labels itself.
+		out.AppendFormat(" r_debris_sounds=%d r_debris_sounds_volume=%g", (int)*r_debris_sounds, (double)(float)*r_debris_sounds_volume);
 		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
 		// (lightmask: 1 while the scene draws the mask this frame).
 		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",

@@ -52,6 +52,10 @@
 **     nearest the eye first -- and, on frames with smoke to draw, up to SMOKE_LIGHTS_MAX
 **     dynamic lights whose sphere reaches the box, nearest the eye, coloured as stage 2d's
 **     view lights, with their row in the engine's shadow map when that is live.
+**   - [13e] SOOT: an EmitSmoke's soot share becomes a kernel's soot density, bounded like the
+**     density; SmokeSimSettings::SootLive says whether any may be in the volume. BEAMS: on
+**     frames with smoke to draw, the beam lines whose glow may reach the box, nearest the eye
+**     (SmokeBeamFrame, hw_framecompute.h), for the smoke drawing's beam scatter and depth.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim.
 **
@@ -67,6 +71,12 @@
 
 struct FLevelLocals;
 class SectorPlanes;
+
+// [13e] A beam slot as the per-pixel beam upload and the drawn-line path resolve it (hw_drawinfo.cpp, beside them, so
+// the smoke and the scene can never disagree about where a beam is or how it looks): false when the slot does not draw
+// (not live, or intensity 0). a and b in game space; look x air glow, y halo, z taper, w flare. viewTicFrac is the
+// frame's; r_beam_interpolate applies exactly as it does there. Read-only.
+bool ResolveBeamLine(FLevelLocals *Level, int slot, double viewTicFrac, DVector3 &a, DVector3 &b, FVector4 &look);
 
 class SmokeVolume
 {
@@ -142,6 +152,7 @@ private:
 		double Amount = 0;
 		double Heat = 0;
 		double Strength = 0;		// map units per second
+		double Soot = 0;			// [13e] EMIT: the share of the amount that is soot, 0..1
 	};
 
 	// An event in this frame's box, in grid cells.
@@ -171,6 +182,7 @@ private:
 		double Density = 0;
 		double Heat = 0;
 		double Speed = 0;			// cells per step
+		double Soot = 0;			// [13e] soot density: carried exactly as the density, so bounded the same way
 	};
 
 	void ForgetEvents();
@@ -187,7 +199,7 @@ private:
 	bool TouchesUnbuilt(const EventShape& shape, const SmokeVolumeFrame& frame) const;
 
 	bool MakeShape(const PendingEvent& e, const SmokeVolumeFrame& frame, EventShape& shape) const;
-	void BuildKernels(const SmokeVolumeFrame& frame, double sums[][3]);
+	void BuildKernels(const SmokeVolumeFrame& frame, double sums[][4]);	// [13e] per step: density, heat, speed, soot
 	void AppendKernels(const PendingEvent& e, const EventShape& shape, int step, const SmokeVolumeFrame& frame);
 	void FillSimSettings(FLevelLocals* Level, SmokeVolumeFrame& out) const;
 
@@ -195,6 +207,8 @@ private:
 	void PrepareLight(FLevelLocals* Level, const DVector3& eye, SmokeVolumeFrame& out);
 	void UpdateAmbientColumns(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
 	void GatherLights(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
+	// [13e] The beam lines that may meet the smoke (only on frames with smoke to draw).
+	void GatherBeams(FLevelLocals* Level, const DVector3& eye, double ticFrac, SmokeVolumeFrame& out);
 
 	uint64_t mLevelSerial = 0;
 
@@ -264,4 +278,7 @@ private:
 	bool mAmbientDirty = true;
 	std::vector<uint8_t> mAmbientBytes;
 	uint64_t mAmbientSerial = 0;
+
+	// [13e] This frame's beam list; the frame points into it.
+	std::vector<SmokeBeamRecord> mBeams;
 };

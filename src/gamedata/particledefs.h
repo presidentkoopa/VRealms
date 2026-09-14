@@ -50,6 +50,8 @@
 
 #include <cstdint>
 
+#include "zstring.h"	// [DEBRISSOUNDS] ParticleDebrisDefinition's sound names
+
 // One definition as the GPU reads it: sixteen vec4s, 256 bytes, std430 with no
 // padding. Must match ParticleDefinitionData in vk_shader.cpp's prolog and
 // ParticleDefinitionBuffer::RECORD_BYTES (particledefs.cpp asserts both size and
@@ -161,6 +163,16 @@ struct ParticleDebrisDefinition
 	float Friction = 0.5f;		// 0..1: how much of a contact's push is taken off its sliding speed
 	float RestLife = 0.f;		// seconds it stays once at rest; 0 = never rests (bounces until its life ends)
 	float RestFade = 0.5f;		// seconds of fading out at the end of that rest
+
+	// [DEBRISSOUNDS] Its landing sound ("Engine docs/DEBRIS_SOUNDS_11_IMPL_NOTES.md", hw_debrislanding.h): a group of these
+	// pieces makes LandSound once, where and when its first piece lands; a group of more than LandBigCount makes
+	// LandSoundBig instead when there is one. SNDINFO names, resolved by the renderer. Empty = silent (no `landsound`).
+	FString LandSound;
+	FString LandSoundBig;
+	int LandBigCount = 12;
+	float LandVolume = 1.f;			// 0..1: a group's volume at LandBigCount pieces or more
+	float LandPitchMin = 0.94f;		// the range each landing's pitch is picked from (a client RNG)
+	float LandPitchMax = 1.06f;
 };
 
 // One entry per named definition with `restitution`, in slot order, and the list's generation,

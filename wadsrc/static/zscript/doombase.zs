@@ -1199,8 +1199,13 @@ struct LevelLocals native
 	// lifts it at up to about 80 map units a second while it cools over a second or so.
 	// vel (map units per second, each axis -4096..4096) pushes the air there -- a muzzle
 	// blast forward. posEnd, when not (0,0,0), makes it a capsule from pos to posEnd (at
-	// most 4096 long): a flame's length, a trail.
-	native clearscope void EmitSmoke(Vector3 pos, double radius, double amount, double heat = 0.0, Vector3 vel = (0,0,0), Vector3 posEnd = (0,0,0));
+	// most 4096 long): a flame's length, a trail. soot (0..1) is the share of this puff
+	// that is soot: 0 is ordinary smoke that glows in the look's tint under light; 1 is
+	// black smoke that sends back no light at all, yet hides what is behind it exactly as
+	// much as grey smoke of the same amount. Where puffs mix, the cloud is as dark as its
+	// share of soot, and the soot drifts, spreads and fades with the smoke. Rockets and
+	// flames: 0.6..1; muzzle haze: 0.
+	native clearscope void EmitSmoke(Vector3 pos, double radius, double amount, double heat = 0.0, Vector3 vel = (0,0,0), Vector3 posEnd = (0,0,0), double soot = 0.0);
 	// Removes smoke along the capsule from start to end: radius 1..256 map units; amount
 	// (0..1) is the share removed on the centre line (1 = a clean tunnel). The tunnel
 	// closes again as the smoke drifts and spreads. At most 8192 long.

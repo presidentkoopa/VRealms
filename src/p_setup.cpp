@@ -144,6 +144,11 @@ static void AddToList(uint8_t *hitlist, FTextureID texid, int bitmask)
 	}
 }
 
+// [SELACO PRECACHE] Defined in hw_cvars.cpp beside gl_precache. This machine's choice of what to
+// load; nothing in the playsim reads them.
+EXTERN_CVAR(Bool, gl_precache_actors)
+EXTERN_CVAR(Bool, debug_precache_actor)
+
 static void PrecacheLevel(FLevelLocals *Level)
 {
 	if (demoplayback)
@@ -164,16 +169,53 @@ static void PrecacheLevel(FLevelLocals *Level)
 		actorhitlist[actor->GetClass()] = true;
 	}
 
-	for (auto n : gameinfo.PrecachedClasses)
+	// [SELACO PRECACHE] gl_precache_actors (GZSelaco 863a34c9b2) switches the GAMEINFO and MAPINFO
+	// class lists. It defaults on, which is exactly what ran here before it existed.
+	if (gl_precache_actors)
 	{
-		PClassActor *cls = PClass::FindActor(n);
-		if (cls != nullptr) actorhitlist[cls] = true;
+		for (auto n : gameinfo.PrecachedClasses)
+		{
+			PClassActor *cls = PClass::FindActor(n);
+			if (cls != nullptr) actorhitlist[cls] = true;
+		}
+		for (unsigned i = 0; i < Level->info->PrecacheClasses.Size(); i++)
+		{
+			// Level->info can only store names, no class pointers.
+			PClassActor *cls = PClass::FindActor(Level->info->PrecacheClasses[i]);
+			if (cls != nullptr) actorhitlist[cls] = true;
+		}
 	}
-	for (unsigned i = 0; i < Level->info->PrecacheClasses.Size(); i++)
+
+	// [SELACO PRECACHE] PRECACHEALWAYS (GZSelaco ff23e058c0): a class that loads on every map whether
+	// or not one is placed in it -- the projectiles, flashes and casings a gun spawns mid-fight, whose
+	// first appearance would otherwise load its textures and model on that frame. The flag is in the
+	// class defaults, so a subclass inherits it. hw_PrecacheTexture also walks these classes'
+	// inherited states. Not on a title map, which Selaco keeps quick; a game started straight into a
+	// map is still GS_STARTUP here and does precache (GZSelaco 7d9a031ffc).
+	// debug_precache_actor (not saved) adds every actor class, to measure the worst case.
+	// Netplay: this picks textures and models to load on this machine. It spawns, changes and
+	// orders nothing in the playsim, and reads only class defaults.
+	if (gamestate != GS_TITLELEVEL)
 	{
-		// Level->info can only store names, no class pointers.
-		PClassActor *cls = PClass::FindActor(Level->info->PrecacheClasses[i]);
-		if (cls != nullptr) actorhitlist[cls] = true;
+		unsigned always = 0;
+		for (PClassActor *cls : PClassActor::AllActorClasses)
+		{
+			AActor *def = GetDefaultByType(cls);
+			if (def != nullptr && (def->flags9 & MF9_PRECACHEALWAYS))
+			{
+				actorhitlist[cls] = true;
+				always++;
+			}
+		}
+		if (debug_precache_actor)
+		{
+			for (PClassActor *cls : PClassActor::AllActorClasses) actorhitlist[cls] = true;
+		}
+		if (always > 0 || debug_precache_actor)
+		{
+			DPrintf(DMSG_NOTIFY, "Precache: %u PRECACHEALWAYS actor classes%s\n", always,
+				debug_precache_actor ? ", and every other class (debug_precache_actor)" : "");
+		}
 	}
 
 	for (i = Level->sectors.Size() - 1; i >= 0; i--)

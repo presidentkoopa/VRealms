@@ -77,6 +77,9 @@ EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK]
 EXTERN_CVAR(Int, r_smoke_steps)	// [SMOKEVOLUME] the smoke volume's drawing
 EXTERN_CVAR(Float, r_smoke_density_scale)	// [SMOKEVOLUME]
 EXTERN_CVAR(Bool, r_smoke_debugslice)	// [SMOKEVOLUME]
+EXTERN_CVAR(Bool, r_smoke_beams)	// [SMOKEVOLUME] 13e: beams scatter light in the smoke
+EXTERN_CVAR(Bool, r_smoke_beams_depth)	// [SMOKEVOLUME] 13e: haze behind a beam does not dim it
+EXTERN_CVAR(Bool, r_smoke_cones_depth)	// [SMOKEVOLUME] 13e: a flashlight cone is dimmed by the haze in front of it
 EXTERN_CVAR(Float, gl_exposure_scale)
 EXTERN_CVAR(Float, gl_exposure_min)
 EXTERN_CVAR(Float, gl_exposure_base)

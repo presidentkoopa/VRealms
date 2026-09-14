@@ -4014,12 +4014,12 @@ static DVector3 LimitEffectSegmentEnd(const DVector3 &start, const DVector3 &end
 	return length > maxLength ? start + d * (maxLength / length) : end;
 }
 
-// 13 VM arguments: under the JIT's direct-call cap of 16 (see SetHeatSource).
+// 14 VM arguments: under the JIT's direct-call cap of 16 (see SetHeatSource).
 static void EmitSmoke(FLevelLocals *self, double px, double py, double pz, double radius, double amount, double heat,
-	double vx, double vy, double vz, double ex, double ey, double ez)
+	double vx, double vy, double vz, double ex, double ey, double ez, double soot)
 {
 	static bool badLogged = false;
-	if (!EffectArgsFinite("EmitSmoke", badLogged, { px, py, pz, radius, amount, heat, vx, vy, vz, ex, ey, ez }))
+	if (!EffectArgsFinite("EmitSmoke", badLogged, { px, py, pz, radius, amount, heat, vx, vy, vz, ex, ey, ez, soot }))
 		return;
 
 	const double amountC = clamp(amount, 0., 16.);
@@ -4046,6 +4046,8 @@ static void EmitSmoke(FLevelLocals *self, double px, double py, double pz, doubl
 	e->Radius = clamp(radius, 1., 256.);
 	e->Amount = amountC;
 	e->Heat = heatC;
+	// [13e] The share of the puff that is soot, 0..1 (0, the default, is every caller before 13e).
+	e->Soot = clamp(soot, 0., 1.);
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, EmitSmoke, EmitSmoke)
@@ -4057,7 +4059,8 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, EmitSmoke, EmitSmoke)
 	PARAM_FLOAT(heat);
 	PARAM_FLOAT(vx); PARAM_FLOAT(vy); PARAM_FLOAT(vz);
 	PARAM_FLOAT(ex); PARAM_FLOAT(ey); PARAM_FLOAT(ez);
-	EmitSmoke(self, px, py, pz, radius, amount, heat, vx, vy, vz, ex, ey, ez);
+	PARAM_FLOAT(soot);
+	EmitSmoke(self, px, py, pz, radius, amount, heat, vx, vy, vz, ex, ey, ez, soot);
 	return 0;
 }
 

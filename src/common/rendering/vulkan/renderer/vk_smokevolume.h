@@ -48,6 +48,13 @@
 ** reads it through GetLightImage / GetLightDirectionImage, in the same layout dance as the
 ** density.
 **
+** [13e] SOOT rides the velocity image's w (smoke_inject.comp adds it, smoke_advect.comp carries it
+** as the density, only while SmokeSimSettings::SootLive); smoke_light.comp reads the latest density
+** and velocity (bindings 5 and 6) to darken the light where the smoke is sooty, and stores the
+** darkness in the direction grid's w. THE BEAM LIST: a SMOKE_BEAMS_MAX x SMOKE_BEAM_TEXELS RGBA32F
+** image (PPExternalImage::SmokeBeams), made on the first frame with beams in smoke, copied into when
+** the frame's list changed, and kept in SHADER_READ_ONLY_OPTIMAL between copies.
+**
 ** CPU-side decisions -- when the volume exists, where its box is, what goes in, the
 ** mask -- are made in hw_smokevolume.cpp and arrive in SmokeVolumeFrame, so a render
 ** rebuild replaces only this file and the shaders.
@@ -58,6 +65,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <zvulkan/vulkanobjects.h>
 #include "hw_framecompute.h"
@@ -108,6 +116,10 @@ public:
 	VkTextureImage* GetLightDirectionImage() { return &mLightDirection; }
 	int GetLightQuality() const { return mLightQuality; }
 
+	// [13e] The beam list (PPExternalImage::SmokeBeams), for the drawing's external image resolve under the same layout
+	// rule. Image is null until the first frame with beams in smoke.
+	VkTextureImage* GetBeamListImage() { return &mBeamList; }
+
 private:
 	// [13c] A VkTextureImage (Image and View, as before), so a post-process pass can bind one
 	// (VkDescriptorSetManager::GetInput) and its Layout is tracked. Every volume is GENERAL from its
@@ -144,6 +156,12 @@ private:
 	void UploadAmbient(const SmokeLightFrame& light);
 	void RunLight(const SmokeVolumeFrame& frame);
 
+	// [13e] The beam list image: made once (false: refused this session), the frame's list copied in (returns the beams
+	// the image holds for this frame, 0 = none), freed with the volume.
+	bool EnsureBeamList();
+	int UploadBeams(const SmokeBeamFrame& beams);
+	void ReleaseBeamList();
+
 	VkComputeManager* mCompute = nullptr;
 	VulkanRenderDevice* fb = nullptr;
 
@@ -172,6 +190,13 @@ private:
 	Volume mLightDirection;		// RGBA8 SNORM: xyz the weight-averaged direction light travels
 	Volume mAmbientColumns;		// 2D RGBA8: each column's sector light
 	std::unique_ptr<VulkanBuffer> mAmbientStaging;
+
+	// [13e] The beam list (2D RGBA32F, SHADER_READ_ONLY_OPTIMAL between copies), its staging buffer, the texels it holds
+	// (empty: nothing copied in yet), and a refusal logged once.
+	Volume mBeamList;
+	std::unique_ptr<VulkanBuffer> mBeamStaging;
+	std::vector<float> mBeamTexels;
+	bool mBeamListRefused = false;
 
 	std::unique_ptr<VulkanBuffer> mStaging;	// SMOKE_MASK_UPLOAD_BYTES_PER_FRAME, for the mask tiles
 
