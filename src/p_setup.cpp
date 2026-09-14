@@ -367,6 +367,7 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 		if (DarkMode != 0) live += " darkness";
 		if (FogSlabActive) live += " fogslab";
 		if (FogSlabOverrideActive) live += " fogslaboverride";
+		if (BloomOverrideActive) live += " bloomoverride";   // [BLOOMOVERRIDE]
 		if (FogColor2OverrideActive) live += " foggradientoverride";   // [round2 B3]
 		if (TornadoDensity != 0) live += " tornado";
 		if (FogBowStrength != 0) live += " fogbow";
@@ -417,6 +418,7 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 		FogSlabOverrideActive = false;   // a transient mist never outlives its map
 		FogSlabOverrideDensity = 0;
 		FogColor2OverrideActive = false; // [round2 B3] nor does a transient gradient
+		BloomOverrideActive = false;     // [BLOOMOVERRIDE] nor does a transient bloom look
 		TornadoDensity = 0;
 		FogBowStrength = 0;
 

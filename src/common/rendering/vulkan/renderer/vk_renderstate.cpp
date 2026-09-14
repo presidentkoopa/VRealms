@@ -72,6 +72,33 @@ void VkRenderState::DrawIndexed(int dt, int index, int count, bool apply)
 	mCommandBuffer->drawIndexed(count, 1, index, 0, 0);
 }
 
+// [MESHPARTICLES] Instanced draws (FRenderState::DrawInstanced / DrawIndexedInstanced).
+// The same Apply as Draw and DrawIndexed; the instance count and the first instance go
+// to the command, so gl_InstanceIndex in the vertex shader runs from firstInstance to
+// firstInstance + instances - 1 (Vulkan's gl_InstanceIndex includes firstInstance).
+// Nothing to draw is not drawn at all.
+void VkRenderState::DrawInstanced(int dt, int index, int count, int instances, int firstInstance, bool apply)
+{
+	if (count <= 0 || instances <= 0)
+		return;
+
+	if (apply || mNeedApply)
+		Apply(dt);
+
+	mCommandBuffer->draw(count, instances, index, firstInstance);
+}
+
+void VkRenderState::DrawIndexedInstanced(int dt, int index, int count, int instances, int firstInstance, bool apply)
+{
+	if (count <= 0 || instances <= 0)
+		return;
+
+	if (apply || mNeedApply)
+		Apply(dt);
+
+	mCommandBuffer->drawIndexed(count, instances, index, 0, firstInstance);
+}
+
 bool VkRenderState::SetDepthClamp(bool on)
 {
 	bool lastValue = mDepthClamp;

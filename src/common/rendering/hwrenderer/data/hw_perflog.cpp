@@ -39,6 +39,7 @@
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
+EXTERN_CVAR(Bool, r_meshparticles)	// [MESHPARTICLES] hw_meshparticles.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -228,6 +229,9 @@ namespace
 		out.AppendFormat(" r_gpuparticles_lights=%d", (int)*r_gpuparticles_lights);
 		// [LOOKS] And the generated particle looks quality, so a fx.gpuparticles before/after labels itself.
 		out.AppendFormat(" r_gpuparticles_looks=%d", (int)*r_gpuparticles_looks);
+		// [MESHPARTICLES] And the mesh particle switch, so a fx.meshparticles before/after
+		// (chunks as meshes vs as cards) labels itself.
+		out.AppendFormat(" r_meshparticles=%d", (int)*r_meshparticles);
 		// [HEATREFRACTION] And the heat shimmer switch, so a pp.heatoffset / pp.heatwarp
 		// before/after labels itself.
 		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);

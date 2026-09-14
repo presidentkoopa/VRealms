@@ -71,6 +71,7 @@
 #include "rapidjson/stringbuffer.h"
 #include <fstream>
 #include <sstream>
+#include <cmath>	// [BLOOMOVERRIDE] std::isfinite in SetBloomOverride
 #include "d_net.h"
 
 extern int paused;
@@ -6129,6 +6130,101 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearFogSlabOverride, ClearFogSlabOv
 {
 	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
 	ClearFogSlabOverride(self);
+	return 0;
+}
+
+// [BLOOMOVERRIDE] A TRANSIENT BLOOM LOOK OVER THE gl_bloom_* SETTINGS
+// (FLevelLocals::BloomOverride*, g_levellocals.h; E1 in
+// "Engine docs/REVIEW_BLOOM_PLAN.md").
+//
+// Setters only. Nothing hands the values, the renderer's eased state or its clock
+// back to script, so nothing in play can act on them. The renderer copies the slot
+// every frame (HWDrawInfo::ProcessScene) and does the blending, the fade and the
+// pulse itself (PPBloom, hw_postprocess.cpp).
+//
+// SAFETY. The gl_bloom_* CUSTOM_CVAR clamps never see these values, and the bloom
+// maths does not survive a bad one: spread 0 makes every blur weight 0/0, and a NaN
+// or inf anywhere reaches the additive combine and writes NaN over the scene. So a
+// call with any non-finite argument is ignored (the slot keeps what it had), and
+// every value is clamped to the matching cvar's range, with an upper bound on
+// spread as well (a float inf there empties the weights just the same).
+//
+// QUIET. No per-call logging: a caller may push every tic. With r_visualstate_log on
+// it logs when the override starts, when it is cleared, and the first ignored call.
+// Clearing when nothing is set is a no-op.
+//
+// 12 VM arguments (self and eleven numbers): under the JIT's direct-call cap of 16,
+// so the plain _NATIVE macro is safe (see SetHeatSource).
+static void ClearBloomOverride(FLevelLocals *self)
+{
+	if (!self->BloomOverrideActive)
+		return;
+	if (r_visualstate_log)
+		Printf("ClearBloomOverride: bloom follows the gl_bloom_* settings again (the renderer eases back over %.2f s)\n",
+			self->BloomOverrideFade);
+	self->BloomOverrideActive = false;
+}
+
+static void SetBloomOverride(FLevelLocals *self, double spread, double threshold, double knee,
+	double tintR, double tintG, double tintB, double mix, double intensity, double fade,
+	double pulse, double pulseRate)
+{
+	const double args[] = { spread, threshold, knee, tintR, tintG, tintB, mix, intensity, fade, pulse, pulseRate };
+	for (double v : args)
+	{
+		if (!std::isfinite(v))
+		{
+			static bool warned = false;
+			if (r_visualstate_log && !warned)
+			{
+				Printf("SetBloomOverride: ignored a call with a non-finite argument (spread %g threshold %g knee %g tint %g %g %g mix %g intensity %g fade %g pulse %g rate %g); the override keeps its last values. Logged once.\n",
+					spread, threshold, knee, tintR, tintG, tintB, mix, intensity, fade, pulse, pulseRate);
+				warned = true;
+			}
+			return;
+		}
+	}
+
+	const bool wasActive = self->BloomOverrideActive;
+	self->BloomOverrideActive = true;
+	self->BloomOverrideSpread = clamp(spread, 0.1, 100.0);
+	self->BloomOverrideThreshold = clamp(threshold, 0.05, 4.0);
+	self->BloomOverrideKnee = clamp(knee, 0.0, 8.0);
+	self->BloomOverrideTintR = clamp(tintR, 0.0, 16.0);
+	self->BloomOverrideTintG = clamp(tintG, 0.0, 16.0);
+	self->BloomOverrideTintB = clamp(tintB, 0.0, 16.0);
+	self->BloomOverrideMix = clamp(mix, 0.0, 1.0);
+	self->BloomOverrideIntensity = clamp(intensity, 0.0, 16.0);
+	self->BloomOverrideFade = clamp(fade, 0.0, 10.0);
+	self->BloomOverridePulse = clamp(pulse, 0.0, 1.0);
+	self->BloomOverridePulseRate = clamp(pulseRate, 0.0, 20.0);
+
+	if (r_visualstate_log && !wasActive)
+		Printf("SetBloomOverride: the bloom override is active (spread %.2f threshold %.2f knee %.2f tint %.2f %.2f %.2f mix %.2f intensity %.2f fade %.2f pulse %.2f rate %.2f)\n",
+			self->BloomOverrideSpread, self->BloomOverrideThreshold, self->BloomOverrideKnee,
+			self->BloomOverrideTintR, self->BloomOverrideTintG, self->BloomOverrideTintB,
+			self->BloomOverrideMix, self->BloomOverrideIntensity, self->BloomOverrideFade,
+			self->BloomOverridePulse, self->BloomOverridePulseRate);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetBloomOverride, SetBloomOverride)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(spread); PARAM_FLOAT(threshold); PARAM_FLOAT(knee);
+	PARAM_FLOAT(tintR); PARAM_FLOAT(tintG); PARAM_FLOAT(tintB);
+	PARAM_FLOAT(mix);
+	PARAM_FLOAT(intensity);
+	PARAM_FLOAT(fade);
+	PARAM_FLOAT(pulse);
+	PARAM_FLOAT(pulseRate);
+	SetBloomOverride(self, spread, threshold, knee, tintR, tintG, tintB, mix, intensity, fade, pulse, pulseRate);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ClearBloomOverride, ClearBloomOverride)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ClearBloomOverride(self);
 	return 0;
 }
 

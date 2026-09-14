@@ -1283,6 +1283,7 @@ set (PCH_SOURCES
 	common/rendering/hwrenderer/data/hw_particledefbuffer.cpp
 	common/rendering/hwrenderer/data/hw_viewlightbuffer.cpp
 	common/rendering/hwrenderer/data/hw_sectorplanebuffer.cpp
+	common/rendering/hwrenderer/data/hw_meshparticles.cpp
 	common/rendering/hwrenderer/data/hw_aabbtree.cpp
 	common/rendering/hwrenderer/data/hw_shadowmap.cpp
 	common/rendering/hwrenderer/data/hw_shaderpatcher.cpp

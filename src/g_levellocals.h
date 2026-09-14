@@ -2790,6 +2790,38 @@ public:
 	PalEntry FogSlabOverrideColor = 0xFF3018;
 	double   FogSlabOverrideBottom = -32768;
 
+	// [BLOOMOVERRIDE] A TRANSIENT BLOOM LOOK OVER THE PLAYER'S gl_bloom_* SETTINGS
+	// (SetBloomOverride / ClearBloomOverride, vmthunks.cpp; E1 in
+	// "Engine docs/REVIEW_BLOOM_PLAN.md").
+	//
+	// Bloom that reacts to the game -- a flash, a breath in time with the glows, a
+	// colour lean -- cannot be done by writing the gl_bloom_* cvars: the engine
+	// refuses engine-cvar writes from play code, and a reaction must never rewrite
+	// the player's saved settings anyway. While Active, the renderer
+	// (PPBloom::RenderBloom) blends these values over the cvars by Mix times
+	// gl_bloom_override_strength, easing changes over Fade seconds and throbbing the
+	// intensity by Pulse on the glow shader's own clock. The cvars are never
+	// touched, so clearing hands bloom straight back to them.
+	//
+	// Presentation only: nothing in the playsim reads these, they are never
+	// serialized, and ClearLevelData drops them on a map change or savegame load.
+	// One slot, not a stack: a second caller shares it, so a mod that has several
+	// reasons to change bloom folds them into one call. The native clamps every
+	// value and rejects non-finite ones. gl_bloom off still wins: an override
+	// never switches bloom on.
+	bool     BloomOverrideActive = false;
+	double   BloomOverrideSpread = 1.4;     // blur spread, gl_bloom_amount's meaning (0.1..100)
+	double   BloomOverrideThreshold = 1.0;  // 0.05..4
+	double   BloomOverrideKnee = 0.5;       // 0..8; the renderer still caps it at the threshold
+	double   BloomOverrideTintR = 1.0;      // 0..16 each; above 1 is allowed (HDR)
+	double   BloomOverrideTintG = 1.0;
+	double   BloomOverrideTintB = 1.0;
+	double   BloomOverrideMix = 0;          // 0..1: how far from the cvars toward these values
+	double   BloomOverrideIntensity = 1.0;  // 0..16: multiplies the bloom added back to the scene
+	double   BloomOverrideFade = 0;         // seconds the renderer eases a change over; 0 snaps (0..10)
+	double   BloomOverridePulse = 0;        // 0..1: depth of a renderer-side throb on the intensity
+	double   BloomOverridePulseRate = 0;    // beats per second (0..20); 0 = the glow alarm pulse's rate and phase
+
 	// links to global game objects
 	TArray<DBehavior*> ActorBehaviors, ClientSideActorBehaviors;
 	TArray<TObjPtr<AActor *>> CorpseQueue;

@@ -1442,6 +1442,21 @@ struct LevelLocals native
 	native clearscope void SetFogSlabOverride(double topZ, double density, double softness, double scatter, color col, double bottomZ = -32768);
 	native clearscope void ClearFogSlabOverride();
 
+	// [BLOOMOVERRIDE] A TRANSIENT bloom look over the player's gl_bloom_* settings,
+	// which it never touches: for bloom that reacts to play. The renderer blends
+	// toward these values by mix (times the player's gl_bloom_override_strength).
+	// spread is the blur spread (gl_bloom_amount's meaning: it widens, it does not
+	// brighten); intensity multiplies the bloom added back, which is how a flash
+	// surges. fade > 0 eases every change -- and the clear that follows -- over that
+	// many seconds, so per-tic values stay smooth at the headset's frame rate.
+	// pulse (0..1) throbs the intensity in the renderer, still beating under a menu;
+	// pulseRate is beats per second, and 0 follows the glow alarm pulse
+	// (SetGlowReact) in rate and phase. Values are clamped; a non-finite value is
+	// ignored. One slot, not a stack. gl_bloom off wins. Clearing when nothing is
+	// set does nothing. Presentation only: safe in netplay.
+	native clearscope void SetBloomOverride(double spread, double threshold, double knee, double tintR, double tintG, double tintB, double mix, double intensity = 1, double fade = 0, double pulse = 0, double pulseRate = 0);
+	native clearscope void ClearBloomOverride();
+
 	// [BB] The pattern drawn INSIDE a sweep band. Spacing 0 in an axis means
 	// no lines in that axis, so grid / slats / a single tripwire are one mode.
 	// The band's own colour is the field; this colour is the lines. Gap 0 =

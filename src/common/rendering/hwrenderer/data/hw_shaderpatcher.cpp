@@ -340,6 +340,12 @@ const FEffectShader effectshaders[] =
 	// vertex shader, the main pipeline, Vulkan only (it reads DrawnLineSSO,
 	// which only the Vulkan prolog declares); GL and GLES skip this entry.
 	{ "drawnlines", "shaders/glsl/drawnlines.vp", "shaders/glsl/drawnlines.fp", nullptr, nullptr, "#define SIMPLE\n#define NO_ALPHATEST\n" },
+	// [MESHPARTICLES] Index EFF_MESHPARTICLES. Same shape again: its own vertex shader
+	// and the main pipeline, drawn instanced from a model's vertex buffer in the opaque
+	// pass. Vulkan only (it reads GpuParticleSSO and MeshParticleSSO, which only Vulkan
+	// has); GL and GLES skip this entry. SIMPLE and NO_ALPHATEST as gpuparticles: neither
+	// lump reads them.
+	{ "meshparticles", "shaders/glsl/meshparticles.vp", "shaders/glsl/meshparticles.fp", nullptr, nullptr, "#define SIMPLE\n#define NO_ALPHATEST\n" },
 };
 
 int DFrameBuffer::GetShaderCount()

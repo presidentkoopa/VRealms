@@ -1214,7 +1214,8 @@ bool FShaderCollection::CompileNextShader()
 		// its active shader. Skipping keeps mEffectShaders[i] null and that path
 		// unreachable; nothing on GL ever selects EFF_GPUPARTICLES.
 		// [DRAWNLINES] drawnlines likewise: it reads DrawnLineSSO, Vulkan's alone.
-		FShader *eff = (i == EFF_GPUPARTICLES || i == EFF_DRAWNLINES) ? nullptr : new FShader(effectshaders[i].ShaderName);
+		// [MESHPARTICLES] meshparticles likewise: it reads MeshParticleSSO, Vulkan's alone.
+		FShader *eff = (i == EFF_GPUPARTICLES || i == EFF_DRAWNLINES || i == EFF_MESHPARTICLES) ? nullptr : new FShader(effectshaders[i].ShaderName);
 		if (eff == nullptr)
 		{
 		}

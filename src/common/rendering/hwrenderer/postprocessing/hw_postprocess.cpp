@@ -26,7 +26,9 @@
 #include "hwrenderer/postprocessing/hw_postprocess_cvars.h"
 #include "hwrenderer/postprocessing/hw_postprocessshader.h"
 #include <random>
+#include <cmath>	// [BLOOMSAFETY] std::isfinite
 #include "texturemanager.h"
+#include "hw_renderstate.h"	// [BLOOMOVERRIDE] FRenderState::firstFrame, the scene shaders' timer origin
 
 #include "stats.h"
 #include "printf.h"   // vol_beam diagnostics in PPVolumetricBeam::Render
@@ -290,6 +292,169 @@ void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	renderstate->PopGroup();
 }
 
+//==========================================================================
+//
+// [BLOOMOVERRIDE] The script-set bloom override, renderer side (E1 in
+// "Engine docs/REVIEW_BLOOM_PLAN.md"; the level slot and natives are
+// FLevelLocals::BloomOverride* and LevelLocals.SetBloomOverride).
+//
+// The level copy (SyncBloomOverride, hw_drawinfo.cpp) hands the slot over once per
+// scene eye with the frame clock. Everything below is a pure function of that state
+// and screen->FrameTime, which is set once per displayed frame before the eye loop,
+// so both eyes of a frame get the same values and nothing advances per eye (layered
+// post shares pipeline images, so both eyes must run identical passes).
+//
+// FADE. Script sets a look at 35 Hz and the headset draws at 90 or more. A new look
+// eases from whatever is on screen now to its values over its fade; a clear eases
+// the mix back to 0 over the last look's fade. Fade 0 snaps. A repeat of the current
+// look changes nothing, so a caller may push every tic.
+//
+//==========================================================================
+
+void PPBloom::SetOverride(const PPBloomOverride &target, uint64_t now)
+{
+	if (OverrideLive && OverrideTargetActive && target.SameLook(OverrideTo))
+	{
+		// The same look again. The glow pulse's inputs are live values, not a look:
+		// they follow the level every frame and never restart the fade.
+		OverrideTo.GlowPulseLevel = target.GlowPulseLevel;
+		OverrideTo.GlowPulseRate = target.GlowPulseRate;
+		return;
+	}
+
+	PPBloomOverride current;
+	if (OverrideLive)
+	{
+		EvaluateOverride(now, current);
+	}
+	else
+	{
+		// From nothing: every value starts where it is going, at zero weight, so only
+		// the mix eases in.
+		current = target;
+		current.Mix = 0.0f;
+	}
+
+	OverrideFrom = current;
+	OverrideTo = target;
+	OverrideStartMs = now;
+	OverrideFadeSeconds = target.Fade;
+	OverrideTargetActive = true;
+	OverrideLive = true;
+}
+
+void PPBloom::ClearOverride(uint64_t now)
+{
+	if (!OverrideTargetActive)
+		return;   // nothing set, or a clear already easing out
+
+	PPBloomOverride current;
+	EvaluateOverride(now, current);
+	OverrideFrom = current;
+	OverrideTo = current;
+	OverrideTo.Mix = 0.0f;
+	OverrideStartMs = now;
+	OverrideFadeSeconds = current.Fade;
+	OverrideTargetActive = false;
+	OverrideLive = OverrideFadeSeconds > 0.0f;
+}
+
+float PPBloom::EvaluateOverride(uint64_t now, PPBloomOverride &out) const
+{
+	if (!OverrideLive)
+	{
+		out = PPBloomOverride();
+		return 0.0f;
+	}
+
+	// The clock never runs backwards within a session; if it ever did, the ease counts as done.
+	float t = 1.0f;
+	if (OverrideFadeSeconds > 0.0f && now >= OverrideStartMs)
+	{
+		const double elapsed = (double)(now - OverrideStartMs) / 1000.0;
+		t = (float)min(elapsed / (double)OverrideFadeSeconds, 1.0);
+	}
+
+	out = OverrideTo;
+	if (t < 1.0f)
+	{
+		auto ease = [t](float from, float to) { return from + (to - from) * t; };
+		out.Spread = ease(OverrideFrom.Spread, OverrideTo.Spread);
+		out.Threshold = ease(OverrideFrom.Threshold, OverrideTo.Threshold);
+		out.Knee = ease(OverrideFrom.Knee, OverrideTo.Knee);
+		out.TintR = ease(OverrideFrom.TintR, OverrideTo.TintR);
+		out.TintG = ease(OverrideFrom.TintG, OverrideTo.TintG);
+		out.TintB = ease(OverrideFrom.TintB, OverrideTo.TintB);
+		out.Mix = ease(OverrideFrom.Mix, OverrideTo.Mix);
+		out.Intensity = ease(OverrideFrom.Intensity, OverrideTo.Intensity);
+		out.Pulse = ease(OverrideFrom.Pulse, OverrideTo.Pulse);
+		// PulseRate is not eased: a rate change moves the phase (timer x rate) at once,
+		// in the glow shader too, so easing it would only drift away from the glows.
+	}
+	return out.Mix;
+}
+
+// [BLOOMOVERRIDE] The pulse: a multiplier on the override's intensity,
+// 1 + pulse * (beat - 0.5) * 2.
+//
+// pulseRate 0 beats with the glow alarm pulse (main.fp section 5, "THE ROOM KNOWS
+// SOMETHING IS WRONG"), in the same float32 operations and operand order, from the
+// same inputs and the same clock:
+//   timer = (float)((double)(FrameTime - firstFrame) / 1000.) -- the scene shaders'
+//     `timer` for a speed-1 material (VkRenderState::ApplyStreamData; `x * 1.0` is
+//     exact), as SyncDrawnLines already copies it for the drawn beams.
+//   lvl = clamp(GlowPulseLevel, 0, 1); rate = (1 + 6 * lvl) * max(GlowPulseRate, 0);
+//   beat = 0.5 + 0.5 * sin(timer * rate * 6.2831853 * 0.35)
+// This file is not built with fast math (FASTMATH_SOURCES, src/CMakeLists.txt), so
+// the argument is the shader's to the bit unless the GPU driver reassociates it; the
+// two sin() implementations differ by about 1e-7. pulseRate > 0 is in beats per second.
+// The caller folds the alarm level into `pulse` itself; it is not applied again here.
+float PPBloom::OverridePulseFactor(const PPBloomOverride &look)
+{
+	if (look.Pulse <= 0.0f)
+		return 1.0f;
+
+	FRenderState *sceneState = screen->RenderState();
+	const uint64_t firstFrame = sceneState != nullptr ? sceneState->firstFrame : 0;
+	const float timer = static_cast<float>((double)(screen->FrameTime - firstFrame) / 1000.);
+
+	float beat;
+	if (look.PulseRate > 0.0f)
+	{
+		beat = 0.5f + 0.5f * std::sin(timer * look.PulseRate * 6.2831853f);
+	}
+	else
+	{
+		const float lvl = look.GlowPulseLevel < 0.0f ? 0.0f : (look.GlowPulseLevel > 1.0f ? 1.0f : look.GlowPulseLevel);
+		const float rate = (1.0f + 6.0f * lvl) * (look.GlowPulseRate > 0.0f ? look.GlowPulseRate : 0.0f);
+		beat = 0.5f + 0.5f * std::sin(timer * rate * 6.2831853f * 0.35f);
+	}
+	return 1.0f + look.Pulse * (beat - 0.5f) * 2.0f;
+}
+
+// [BLOOMOVERRIDE] Moves this frame's cvar values toward the override by mixAmount.
+// Intensity (with its pulse) multiplies the tint of the final combine, which is the
+// only place bloom's brightness can be raised: spread only widens.
+void PPBloom::BlendOverride(const PPBloomOverride &look, float mixAmount, float &threshold, float &knee, float &amount, FVector3 &tint)
+{
+	auto toward = [mixAmount](float from, float to) { return from + (to - from) * mixAmount; };
+	threshold = toward(threshold, look.Threshold);
+	knee = toward(knee, look.Knee);
+	const float spread = toward(amount, look.Spread);
+	amount = spread > 0.1f ? spread : 0.1f;   // gl_bloom_amount's floor: the blur's theta must stay > 0
+	const float intensity = toward(1.0f, look.Intensity * OverridePulseFactor(look));
+	tint = FVector3(toward(tint.X, look.TintR) * intensity,
+		toward(tint.Y, look.TintG) * intensity,
+		toward(tint.Z, look.TintB) * intensity);
+}
+
+// [BLOOMOVERRIDE] gl_bloom_override_strength as a 0..1 weight (a NaN from the console reads 0).
+static float BloomOverrideStrength()
+{
+	const float strength = gl_bloom_override_strength;
+	return strength >= 0.0f ? (strength < 1.0f ? strength : 1.0f) : 0.0f;
+}
+
 void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm)
 {
 	// Only bloom things if enabled and no special fixed light mode is active
@@ -308,6 +473,26 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	extractUniforms.Threshold = gl_bloom_threshold;
 	extractUniforms.Knee = gl_bloom_knee;
 
+	float blurAmount = gl_bloom_amount;
+	FVector3 bloomTint = FVector3(gl_bloom_tint_r, gl_bloom_tint_g, gl_bloom_tint_b);
+
+	// [BLOOMOVERRIDE] E1. A script-set look (SetBloomOverride) moves the values above
+	// toward its own by its eased mix times gl_bloom_override_strength. When that is 0 --
+	// nothing set, a clear that has finished fading, strength 0 -- this is skipped and
+	// every value is today's, read straight from the cvars: a branch, not a blend by zero.
+	// gl_bloom off returned above, so an override never switches bloom on.
+	PPBloomOverride overrideLook;
+	const float overrideMix = EvaluateOverride(screen->FrameTime, overrideLook) * BloomOverrideStrength();
+	if (overrideMix > 0.0f)
+		BlendOverride(overrideLook, overrideMix, extractUniforms.Threshold, extractUniforms.Knee, blurAmount, bloomTint);
+
+	// [BLOOMSAFETY] E2. A knee wider than the threshold makes every dark pixel emit a grey
+	// (knee - threshold)^2 / (4 knee) that the blur spreads over the whole screen: a haze,
+	// not a look (owner's call, 2026-09-14). Capped here, after any override, not in
+	// bloomextract.fp: any knee at or under the threshold (the defaults are 0.5 and 1.0)
+	// sends the very same bits, and neither the lump nor the archived cvar changes.
+	extractUniforms.Knee = min(extractUniforms.Knee, extractUniforms.Threshold);
+
 	auto &level0 = levels[0];
 
 	// Extract blooming pixels from scene texture:
@@ -321,8 +506,6 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	renderstate->SetNoBlend();
 	renderstate->Draw();
 
-	const float blurAmount = gl_bloom_amount;
-
 	// [BB] Anamorphic. The blur is already two passes -- one horizontal, one
 	// vertical -- so widening only the horizontal one costs nothing and gives
 	// the sideways streak of an anamorphic lens.
@@ -330,9 +513,45 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	float vAmount = blurAmount;
 	if (gl_bloom_anamorphic) hAmount = blurAmount * gl_bloom_anamorphic_ratio;
 
+	// [BLOOMSTEP] E3. gl_bloom_step 1 (or a NaN) is today's blur: the same programs,
+	// uniforms and Nearest reads. Above 1 the wide programs spread the taps: vertical by
+	// the step, horizontal by the step times the anamorphic ratio. The amounts stay the
+	// Gaussian's width in texels, so a large amount becomes a real Gaussian instead of a
+	// flat seven-texel box (ComputeBlurSamplesStepped). The ratio's share of the
+	// horizontal step phases in over the first unit of step: taking it all at 1.01 would
+	// make an anamorphic streak jump to about twice its length on a slider.
+	const float stepSize = gl_bloom_step;
+	const bool stepped = stepSize > 1.0f;
+
 	BlurUniforms hBlurUniforms, vBlurUniforms;
-	ComputeBlurSamples(7, hAmount, hBlurUniforms.SampleWeights);
-	ComputeBlurSamples(7, vAmount, vBlurUniforms.SampleWeights);
+	BlurSteppedUniforms hWideUniforms = {}, vWideUniforms = {};
+	if (!stepped)
+	{
+		ComputeBlurSamples(7, hAmount, hBlurUniforms.SampleWeights);
+		ComputeBlurSamples(7, vAmount, vBlurUniforms.SampleWeights);
+	}
+	else
+	{
+		const float ratio = gl_bloom_anamorphic ? (float)gl_bloom_anamorphic_ratio : 1.0f;
+		const float phaseIn = min(stepSize - 1.0f, 1.0f);
+		ComputeBlurSamplesStepped(hAmount, stepSize * (1.0f + (ratio - 1.0f) * phaseIn), hWideUniforms);
+		ComputeBlurSamplesStepped(vAmount, stepSize, vWideUniforms);
+	}
+
+	// One level's blur, horizontal (V -> H) then vertical (H -> V), today's or wide.
+	auto blurLevel = [&](PPBlurLevel &blevel)
+	{
+		if (!stepped)
+		{
+			BlurStep(renderstate, hBlurUniforms, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
+			BlurStep(renderstate, vBlurUniforms, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
+		}
+		else
+		{
+			BlurStepWide(renderstate, hWideUniforms, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
+			BlurStepWide(renderstate, vWideUniforms, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
+		}
+	};
 
 	// Neutral for the downscale steps, which share this shader.
 	BloomCombineUniforms plainCombine;
@@ -345,8 +564,7 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 		auto &blevel = levels[i];
 		auto &next = levels[i + 1];
 
-		BlurStep(renderstate, hBlurUniforms, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
-		BlurStep(renderstate, vBlurUniforms, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
+		blurLevel(blevel);
 
 		// Linear downscale:
 		renderstate->Clear();
@@ -365,8 +583,7 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 		auto &blevel = levels[i];
 		auto &next = levels[i - 1];
 
-		BlurStep(renderstate, hBlurUniforms, blevel.VTexture, blevel.HTexture, blevel.Viewport, false);
-		BlurStep(renderstate, vBlurUniforms, blevel.HTexture, blevel.VTexture, blevel.Viewport, true);
+		blurLevel(blevel);
 
 		// Linear upscale:
 		renderstate->Clear();
@@ -379,13 +596,13 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 		renderstate->Draw();
 	}
 
-	BlurStep(renderstate, hBlurUniforms, level0.VTexture, level0.HTexture, level0.Viewport, false);
-	BlurStep(renderstate, vBlurUniforms, level0.HTexture, level0.VTexture, level0.Viewport, true);
+	blurLevel(level0);
 
 	// Add bloom back to scene texture. This is the ONLY place tint and
 	// fringing apply -- every earlier use of this shader was a downscale.
+	// [BLOOMOVERRIDE] bloomTint is today's cvar tint unless an override applies.
 	BloomCombineUniforms finalCombine;
-	finalCombine.Tint = FVector3(gl_bloom_tint_r, gl_bloom_tint_g, gl_bloom_tint_b);
+	finalCombine.Tint = bloomTint;
 	finalCombine.Chromatic = gl_bloom_chromatic;
 
 	renderstate->Clear();
@@ -542,6 +759,51 @@ void PPBloom::ComputeBlurSamples(int sampleCount, float blurAmount, float *sampl
 	}
 }
 
+// [BLOOMSTEP] One wide blur pass (gl_bloom_step > 1). Linear, because the reads fall
+// between texels; today's BlurStep above stays Nearest and untouched.
+void PPBloom::BlurStepWide(PPRenderState *renderstate, const BlurSteppedUniforms &blurUniforms, PPTexture &input, PPTexture &output, PPViewport viewport, bool vertical)
+{
+	renderstate->Clear();
+	renderstate->Shader = vertical ? &BlurVerticalStepped : &BlurHorizontalStepped;
+	renderstate->Uniforms.Set(blurUniforms);
+	renderstate->Viewport = viewport;
+	renderstate->SetInputTexture(0, &input, PPFilterMode::Linear);
+	renderstate->SetOutputTexture(&output);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+}
+
+// [BLOOMSTEP] The wide blur's weights and read layout (E3 in REVIEW_BLOOM_PLAN.md).
+// theta stays the Gaussian's width in texels, as for today's blur; the taps sit
+// texelStep texels apart, so each weight is the Gaussian at the tap's true distance,
+// n = (i + 1) * texelStep, and a wide kernel keeps its shape instead of flattening into
+// a box. Each tap averages ReadsPerTap linear reads over its own stretch, at most two
+// texels apart, which the chain simulation needs to leave no ghost copies
+// (BLOOM_STEP1_IMPL_NOTES.md); the step is capped so that stays bounded.
+void PPBloom::ComputeBlurSamplesStepped(float theta, float texelStep, BlurSteppedUniforms &uniforms)
+{
+	if (texelStep > MAX_BLUR_TEXEL_STEP)
+		texelStep = MAX_BLUR_TEXEL_STEP;
+	uniforms.TexelStep = texelStep;
+	uniforms.ReadsPerTap = clamp((int)std::ceil(texelStep * 0.5f), 2, MAX_BLUR_READS_PER_TAP);
+
+	float *sampleWeights = uniforms.SampleWeights;
+	sampleWeights[0] = ComputeBlurGaussian(0, theta);
+	float totalWeights = sampleWeights[0];
+	for (int i = 0; i < 3; i++)
+	{
+		float weight = ComputeBlurGaussian((i + 1.0f) * texelStep, theta);
+		sampleWeights[i * 2 + 1] = weight;
+		sampleWeights[i * 2 + 2] = weight;
+		totalWeights += weight * 2;
+	}
+	for (int i = 0; i < 7; i++)
+	{
+		sampleWeights[i] /= totalWeights;
+	}
+	sampleWeights[7] = 0.0f;
+}
+
 /////////////////////////////////////////////////////////////////////////////
 
 void PPLensDistort::Render(PPRenderState *renderstate)
@@ -688,11 +950,28 @@ void PPCameraExposure::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	extractUniforms.Scale = screen->SceneScale();
 	extractUniforms.Offset = screen->SceneOffset();
 
+	// [BLOOMSAFETY] E2 in "Engine docs/REVIEW_BLOOM_PLAN.md". The gl_exposure_* cvars are
+	// plain and unclamped, and exposurecombine.fp divides by max(Base + light * Scale, Min):
+	// with Min 0 a black frame (a wipe, a fade, a dark sector, the first frame) divides by
+	// zero, the inf sticks in the blended camera texture for the rest of the session, and
+	// the bloom extract turns it into NaN over the whole scene. So, in the uniforms only
+	// (the lump and the archived cvars are untouched):
+	//   Min is floored at 0.01, so exposure is finite (at most 100x) whatever Base and
+	//     Scale are; a NaN Min lands on the floor too.
+	//   Speed is the blend weight of a running average: outside 0..1 the average
+	//     overshoots and, at 2 or more or below 0, grows without bound. Clamped to 0..1.
+	//   A non-finite Base, Scale or Speed typed at the console falls back to its default.
+	// Every finite setting inside those ranges -- the defaults and everything RS_Bloom's
+	// sliders can reach -- passes through bit for bit.
+	auto finiteOr = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+	const float exposureMin = gl_exposure_min;
+	const float exposureSpeed = finiteOr(gl_exposure_speed, 0.05f);
+
 	ExposureCombineUniforms combineUniforms;
-	combineUniforms.ExposureBase = gl_exposure_base;
-	combineUniforms.ExposureMin = gl_exposure_min;
-	combineUniforms.ExposureScale = gl_exposure_scale;
-	combineUniforms.ExposureSpeed = gl_exposure_speed;
+	combineUniforms.ExposureBase = finiteOr(gl_exposure_base, 0.35f);
+	combineUniforms.ExposureMin = (exposureMin >= 0.01f) ? exposureMin : 0.01f;
+	combineUniforms.ExposureScale = finiteOr(gl_exposure_scale, 1.3f);
+	combineUniforms.ExposureSpeed = exposureSpeed < 0.0f ? 0.0f : (exposureSpeed > 1.0f ? 1.0f : exposureSpeed);
 
 	auto &level0 = ExposureLevels[0];
 

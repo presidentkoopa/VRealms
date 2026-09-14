@@ -33,6 +33,7 @@
 **       collide  = plane                         // none | plane: honour SpawnParticles' surface and floor
 **       fade     = none                          // none | smooth: the stage 1 fade over the last 40% of life
 **       look     = none                          // none | dust | fire: a generated shape (below); not with texture
+**       mesh     = "models/debris/chip1.md3"     // draw each particle as this small 3D model (below)
 **   }
 **
 ** [LOOKS] GENERATED LOOKS ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md", build A). `look`
@@ -54,6 +55,28 @@
 ** the definition. Left off: dust roughness 0.6, churn 0.6, detail 3; fire roughness
 ** 0.6, churn 1.5, detail 3, heat 1, 0.3, rise 24. r_gpuparticles_looks sets the
 ** quality (0 = every look as the plain round dot).
+**
+** [MESHPARTICLES] MESH PARTICLES ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #10). `mesh`
+** draws each particle as a small 3D model -- a chip, a shard, a casing -- instanced, lit once
+** for the whole chunk, in the opaque pass. Every other key still applies, and describes the
+** billboard it draws as while "Mesh particles" (r_meshparticles) is off.
+**
+**   mesh = "<md3 path>"[, "<skin>"[, <frame>]]
+**     path   the md3's full path inside its package, in quotes
+**     skin   a file beside the md3, a full path or a texture name ("" or left off: the md3's own)
+**     frame  a whole number, 0 when left off; the mesh is static at that frame
+**
+** Refused (the usual line, the rest of the lump still loads): not an MD3; not exactly ONE
+** surface; no triangles or more than 64; more than 3 vertices a triangle; a triangle naming a
+** vertex that is not there; a frame the file does not have; a skin that is not found; a frame
+** whose vertices all sit at the origin.
+** With a mesh, `size` is the model's SCALE: 1 (the default) draws it as modelled, 1 md3 unit to
+** 1 map unit. It is stored as scale x the mesh's diameter, so the billboard it falls back to is as
+** wide as the chunk. `spin` = min, max is its tumble, degrees a second about a random axis (the
+** seed picks the axis, the rate and a random starting turn). With `collide = plane` it rests ON
+** surfaces, lands on the floor, settles flat and slides to a stop. `lit` and `color` light and
+** colour it; `emissive` is glow added on top (0 for anything not hot); `alpha` does not apply,
+** a mesh is opaque. It turns about its origin, so author it centred.
 **
 ** A ramp given one value with no '@' is constant. With several, every value needs
 ** '@t', 0 <= t <= 1, increasing; it holds its first value before the first key and
@@ -108,6 +131,9 @@
 #include "v_video.h"
 #include "g_levellocals.h"
 #include "texturemanager.h"	// [2c] flipbook frames are found by name
+#include "hw_meshparticles.h"	// [MESHPARTICLES] ParticleMeshDefinition, MAX_TRIANGLES, the render state in `particles`
+#include "model.h"	// [MESHPARTICLES] LoadSkin, the skin lookup the model loader uses
+#include "m_swap.h"	// [MESHPARTICLES] LittleLong / LittleShort for the md3 check
 
 static_assert(sizeof(ParticleDefinitionGpu) == ParticleDefinitionBuffer::RECORD_BYTES,
 	"ParticleDefinitionGpu must be sixteen vec4s -- see ParticleDefinitionData in vk_shader.cpp");
@@ -167,6 +193,10 @@ namespace
 		TArray<FTextureID> Frames;	// [2c] the flipbook's frames, found by name at load (empty = no texture)
 		int FirstLayer = -1;		// [2c] its first atlas layer once AssignAtlasLayers has run, -1 = none
 		int Handle = 0;		// ParticleDefinitionHandle(Name)
+		bool HasMesh = false;		// [MESHPARTICLES] the definition names a `mesh`
+		int MeshLine = 0;			// [MESHPARTICLES] the line of the `mesh` key
+		FString MeshSkinName;		// [MESHPARTICLES] the skin as written ("" = the md3's own)
+		ParticleMeshDefinition Mesh;	// [MESHPARTICLES] checked at load; Slot filled when the list is built
 	};
 
 	struct InlineInfo
@@ -202,6 +232,11 @@ namespace
 		// which never goes backwards, so a renderer's copy always notices a reload.
 		TArray<ParticleAtlasLayer> AtlasLayers;
 		uint64_t AtlasGeneration = 0;
+
+		// [MESHPARTICLES] The definitions that name a mesh, in slot order (AssignMeshList), and the
+		// list's generation, which never goes backwards, so the renderer's copy notices a reload.
+		TArray<ParticleMeshDefinition> Meshes;
+		uint64_t MeshGeneration = 0;
 
 		DefinitionTable()
 		{
@@ -655,6 +690,223 @@ namespace
 
 	//==========================================================================
 	//
+	// [MESHPARTICLES] The `mesh` key: the md3 is read and checked here, at load,
+	// so a mesh the renderer cannot draw well is refused with the lump's usual
+	// line instead of drawing wrong. The renderer loads the same path through the
+	// model loader later (MeshParticleBuffer): Models is emptied by InitModels
+	// after this runs, so no model index is kept here.
+	//
+	//==========================================================================
+
+	// The most triangles a mesh particle may have (the cost target depends on it), and the most
+	// vertices such a surface can sensibly use: three a triangle.
+	const unsigned kMeshMaxTriangles = MeshParticleBuffer::MAX_TRIANGLES;
+	const unsigned kMeshMaxVertices = 3 * MeshParticleBuffer::MAX_TRIANGLES;
+
+	// The MD3 structures FMD3Model reads (models_md3.cpp), 4-byte packed, little-endian.
+	const uint64_t kMd3HeaderBytes = 108;		// ... Num_Frames 76, Num_Surfaces 84, Ofs_Surfaces 100
+	const uint64_t kMd3SurfaceBytes = 108;		// ... Num_Shaders 76, Num_Verts 80, Num_Triangles 84, Ofs_Triangles 88,
+												//     Ofs_Shaders 92, Ofs_Texcoord 96, Ofs_XYZNormal 100 (offsets from the surface)
+	const uint64_t kMd3ShaderBytes = 68;		// char Name[64], index
+	const uint64_t kMd3TriangleBytes = 12;		// three vertex indices
+	const uint64_t kMd3TexcoordBytes = 8;		// s, t
+	const uint64_t kMd3VertexBytes = 8;			// short x, y, z (1/64 units), packed normal
+
+	bool Md3Read32(const uint8_t *bytes, size_t length, uint64_t offset, uint32_t &out)
+	{
+		if (offset + 4 > length) return false;
+		uint32_t value;
+		memcpy(&value, bytes + offset, sizeof(value));
+		out = LittleLong(value);
+		return true;
+	}
+
+	// `mesh = "<path>"[, "<skin>"[, <frame>]]`, checked: an MD3 of exactly one surface, 1 .. 64
+	// triangles, vertex indices in range, the frame there, the skin found, a frame with some size.
+	// Fills `mesh` (all but Slot) with the drawn frame's bounds in the model vertex buffer's axes.
+	bool ReadParticleMesh(const FString &path, const FString &skinName, int frame, ParticleMeshDefinition &mesh, FString &error)
+	{
+		mesh = ParticleMeshDefinition();
+
+		const int lump = fileSystem.CheckNumForFullName(path.GetChars());
+		if (lump < 0)
+		{
+			error.Format("mesh \"%s\" was not found -- give the md3's full path inside its package, such as \"models/debris/concrete/chip1.md3\"", path.GetChars());
+			return false;
+		}
+		const auto data = fileSystem.ReadFile(lump);
+		const uint8_t *bytes = (const uint8_t *)data.data();
+		const size_t length = data.size();
+		if (bytes == nullptr || length < kMd3HeaderBytes || memcmp(bytes, "IDP3", 4) != 0)
+		{
+			error.Format("mesh \"%s\" is not an MD3 model -- mesh particles draw md3s", path.GetChars());
+			return false;
+		}
+
+		uint32_t numFrames = 0, numSurfaces = 0, surfaceOffset = 0;
+		Md3Read32(bytes, length, 76, numFrames);
+		Md3Read32(bytes, length, 84, numSurfaces);
+		Md3Read32(bytes, length, 100, surfaceOffset);
+		if (numSurfaces != 1)
+		{
+			error.Format("mesh \"%s\" has %u surfaces -- a mesh particle is ONE surface with one skin (merge its parts)", path.GetChars(), numSurfaces);
+			return false;
+		}
+		if (numFrames < 1)
+		{
+			error.Format("mesh \"%s\" has no frames", path.GetChars());
+			return false;
+		}
+		if ((uint32_t)frame >= numFrames)
+		{
+			error.Format("mesh \"%s\" has no frame %d -- it has %u (0 .. %u)", path.GetChars(), frame, numFrames, numFrames - 1);
+			return false;
+		}
+
+		const uint64_t surface = surfaceOffset;
+		uint32_t numShaders = 0, numVertices = 0, numTriangles = 0, triangleOffset = 0, shaderOffset = 0, texcoordOffset = 0, vertexOffset = 0;
+		if (surface + kMd3SurfaceBytes > length ||
+			!Md3Read32(bytes, length, surface + 76, numShaders) || !Md3Read32(bytes, length, surface + 80, numVertices) ||
+			!Md3Read32(bytes, length, surface + 84, numTriangles) || !Md3Read32(bytes, length, surface + 88, triangleOffset) ||
+			!Md3Read32(bytes, length, surface + 92, shaderOffset) || !Md3Read32(bytes, length, surface + 96, texcoordOffset) ||
+			!Md3Read32(bytes, length, surface + 100, vertexOffset))
+		{
+			error.Format("mesh \"%s\" is cut short: its surface lies past the end of the file", path.GetChars());
+			return false;
+		}
+		if (numTriangles < 1 || numTriangles > kMeshMaxTriangles)
+		{
+			error.Format("mesh \"%s\" has %u triangles -- a mesh particle has 1 .. %u (thousands are drawn at once)", path.GetChars(), numTriangles, kMeshMaxTriangles);
+			return false;
+		}
+		if (numVertices < 3 || numVertices > kMeshMaxVertices)
+		{
+			error.Format("mesh \"%s\" has %u vertices -- its %u triangles can use 3 .. %u", path.GetChars(), numVertices, numTriangles, kMeshMaxVertices);
+			return false;
+		}
+		if (surface + triangleOffset + (uint64_t)numTriangles * kMd3TriangleBytes > length ||
+			surface + texcoordOffset + (uint64_t)numVertices * kMd3TexcoordBytes > length ||
+			surface + vertexOffset + (uint64_t)numVertices * numFrames * kMd3VertexBytes > length)
+		{
+			error.Format("mesh \"%s\" is cut short: its triangles, texture coordinates or vertices run past the end of the file", path.GetChars());
+			return false;
+		}
+		for (uint32_t tri = 0; tri < numTriangles; tri++)
+		{
+			for (uint32_t corner = 0; corner < 3; corner++)
+			{
+				uint32_t index = 0;
+				Md3Read32(bytes, length, surface + triangleOffset + (uint64_t)tri * kMd3TriangleBytes + corner * 4, index);
+				if (index >= numVertices)
+				{
+					error.Format("mesh \"%s\": triangle %u uses vertex %u, and the surface has %u", path.GetChars(), tri, index, numVertices);
+					return false;
+				}
+			}
+		}
+
+		// The drawn frame's bounds and reach, in the axes FMD3Model::BuildVertexBuffer gives the vertex
+		// buffer: md3 (x, y, z) as (x, z, y), so y is up, in md3 units -- map units at scale 1.
+		float boundsMin[3] = { 1.0e30f, 1.0e30f, 1.0e30f };
+		float boundsMax[3] = { -1.0e30f, -1.0e30f, -1.0e30f };
+		double farthest = 0.0;
+		const uint64_t frameVertices = surface + vertexOffset + (uint64_t)frame * numVertices * kMd3VertexBytes;
+		for (uint32_t v = 0; v < numVertices; v++)
+		{
+			int16_t raw[3];
+			memcpy(raw, bytes + frameVertices + (uint64_t)v * kMd3VertexBytes, sizeof(raw));
+			const float x = LittleShort(raw[0]) / 64.f;
+			const float y = LittleShort(raw[1]) / 64.f;
+			const float z = LittleShort(raw[2]) / 64.f;
+			const float axes[3] = { x, z, y };
+			for (int a = 0; a < 3; a++)
+			{
+				boundsMin[a] = std::min(boundsMin[a], axes[a]);
+				boundsMax[a] = std::max(boundsMax[a], axes[a]);
+			}
+			farthest = std::max(farthest, std::sqrt((double)x * x + (double)y * y + (double)z * z));
+		}
+		if (!(farthest > 0.0))
+		{
+			error.Format("mesh \"%s\": every vertex of frame %d is at the origin, so there is nothing to draw", path.GetChars(), frame);
+			return false;
+		}
+
+		// The skin: as written -- a file beside the md3, a full path, or a texture name -- else the md3's
+		// own (its surface's first shader name), looked up the way FMD3Model::Load looks it up.
+		FString modelDirectory;
+		const auto slash = path.LastIndexOf('/');
+		if (slash >= 0) modelDirectory = path.Left((size_t)slash + 1);
+		FTextureID skin;
+		skin.SetInvalid();
+		if (!skinName.IsEmpty())
+		{
+			skin = LoadSkin(modelDirectory.GetChars(), skinName.GetChars());
+			if (!skin.isValid()) skin = LoadSkin("", skinName.GetChars());
+			if (!skin.isValid())
+			{
+				error.Format("mesh \"%s\": its skin \"%s\" was not found (beside the md3, as a full path, or as a texture name)", path.GetChars(), skinName.GetChars());
+				return false;
+			}
+		}
+		else
+		{
+			FString own;
+			if (numShaders >= 1 && surface + shaderOffset + kMd3ShaderBytes <= length)
+			{
+				char shaderName[65];
+				memcpy(shaderName, bytes + surface + shaderOffset, 64);
+				shaderName[64] = 0;
+				own = shaderName;
+				own.ReplaceChars('\\', '/');
+			}
+			if (own.IsEmpty())
+			{
+				error.Format("mesh \"%s\" names no skin of its own -- give one: mesh = \"%s\", \"<skin>\"", path.GetChars(), path.GetChars());
+				return false;
+			}
+			skin = LoadSkin("", own.GetChars());
+			if (!skin.isValid()) skin = LoadSkin(modelDirectory.GetChars(), own.GetChars());
+			if (!skin.isValid())
+			{
+				error.Format("mesh \"%s\": its own skin \"%s\" was not found -- give one: mesh = \"%s\", \"<skin>\"", path.GetChars(), own.GetChars(), path.GetChars());
+				return false;
+			}
+		}
+
+		mesh.Path = path;
+		mesh.Skin = skin;
+		mesh.Frame = frame;
+		mesh.Frames = numFrames;
+		mesh.Vertices = numVertices;
+		mesh.Triangles = numTriangles;
+		for (int a = 0; a < 3; a++)
+		{
+			mesh.BoundsMin[a] = boundsMin[a];
+			mesh.BoundsMax[a] = boundsMax[a];
+		}
+		mesh.Diameter = (float)(2.0 * farthest);
+		return true;
+	}
+
+	// The mesh list the renderer syncs from, in slot order, once every lump has loaded (so a
+	// definition replaced by a later lump hands over only its replacement). Returns its size.
+	unsigned AssignMeshList(DefinitionTable &table)
+	{
+		table.Meshes.Clear();
+		for (unsigned i = 0; i < table.NamedCount; i++)
+		{
+			NamedInfo &n = table.Named[i];
+			if (!n.HasMesh) continue;
+			n.Mesh.Slot = (int)i;
+			table.Meshes.Push(n.Mesh);
+		}
+		table.MeshGeneration++;
+		return table.Meshes.Size();
+	}
+
+	//==========================================================================
+	//
 	// One 'particle' block -> one GPU definition
 	//
 	//==========================================================================
@@ -685,6 +937,11 @@ namespace
 		double heat[2] = { 0.0, 0.0 }, prongs[2] = { 0.0, 0.0 };
 		int roughnessLine = 0, churnLine = 0, detailLine = 0, riseLine = 0, heatLine = 0, prongsLine = 0;
 
+		// [MESHPARTICLES] Read as written; the md3 is read and checked after the loop. sizeLine stays 0
+		// when the block leaves `size` off, which for a mesh means scale 1.
+		FString meshPath, meshSkin;
+		int meshFrame = 0, meshLine = 0, sizeLine = 0;
+
 		for (unsigned i = 0; i < b.Entries.Size(); i++)
 		{
 			const FDefBlockEntry &e = b.Entries[i];
@@ -695,7 +952,7 @@ namespace
 			}
 
 			bool ok = true;
-			if (e.Key.CompareNoCase("size") == 0) ok = ReadRamp(e, 1, 0.0, kNoUpperLimit, size, error, errorLine);
+			if (e.Key.CompareNoCase("size") == 0) { ok = ReadRamp(e, 1, 0.0, kNoUpperLimit, size, error, errorLine); sizeLine = e.Line; }
 			else if (e.Key.CompareNoCase("color") == 0) ok = ReadRamp(e, 3, 0.0, 255.0, color, error, errorLine);
 			else if (e.Key.CompareNoCase("alpha") == 0) ok = ReadRamp(e, 1, 0.0, 1.0, alpha, error, errorLine);
 			else if (e.Key.CompareNoCase("emissive") == 0) ok = ReadRamp(e, 1, 0.0, kNoUpperLimit, emissive, error, errorLine);
@@ -730,6 +987,41 @@ namespace
 				ok = ReadPair(e, 2.0, 16.0, true, "min, max whole numbers 2 .. 16, or one value for both", prongs, error, errorLine);
 				if (prongs[1] < prongs[0]) std::swap(prongs[0], prongs[1]);
 				prongsLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("mesh") == 0)
+			{
+				// [MESHPARTICLES] mesh = "<md3 path>"[, "<skin>"[, <frame>]]. The file is read and checked
+				// once every key is read (ReadParticleMesh, below the loop).
+				const unsigned n = e.Items.Size();
+				const char *usage = "'mesh' is \"<md3 path>\"[, \"<skin>\"[, <frame>]]";
+				if (n < 1 || n > 3)
+					return Fail(error, errorLine, e.Line, "%s", usage);
+				for (unsigned k = 0; k < n; k++)
+				{
+					if (e.Items[k].Atoms.Size() != 1 || e.Items[k].HasAt)
+						return Fail(error, errorLine, e.Items[k].Line, "%s", usage);
+				}
+				const FDefBlockAtom &pathAtom = e.Items[0].Atoms[0];
+				if (pathAtom.Kind != FDefBlockAtom::String || pathAtom.Text.IsEmpty())
+					return Fail(error, errorLine, e.Line, "'mesh' needs the md3's path first, in quotes, such as mesh = \"models/debris/concrete/chip1.md3\"");
+				meshPath = pathAtom.Text;
+				meshSkin = "";
+				meshFrame = 0;
+				if (n >= 2)
+				{
+					const FDefBlockAtom &skinAtom = e.Items[1].Atoms[0];
+					if (skinAtom.Kind == FDefBlockAtom::Number)
+						return Fail(error, errorLine, e.Items[1].Line, "'mesh' takes the skin second (in quotes; \"\" for the md3's own), then the frame");
+					meshSkin = skinAtom.Text;
+				}
+				if (n >= 3)
+				{
+					const FDefBlockAtom &frameAtom = e.Items[2].Atoms[0];
+					if (frameAtom.Kind != FDefBlockAtom::Number || !(frameAtom.Value >= 0.0 && frameAtom.Value <= 65535.0) || frameAtom.Value != std::floor(frameAtom.Value))
+						return Fail(error, errorLine, e.Items[2].Line, "'mesh' frame must be a whole number, 0 or more");
+					meshFrame = (int)frameAtom.Value;
+				}
+				meshLine = e.Line;
 			}
 			else if (e.Key.CompareNoCase("spin") == 0)
 			{
@@ -831,6 +1123,24 @@ namespace
 				return Fail(error, errorLine, prongsLine, "'prongs' has no effect on look = %s -- it is for flash", kLookNames[look]);
 		}
 
+		// [MESHPARTICLES] The mesh, read and checked now that every key is known. Any failed check refuses
+		// this definition alone, at the `mesh` line. `size` becomes the model's scale: 1 when left off, and
+		// stored as scale x diameter, so the billboard fallback covers the chunk and the mesh shader can
+		// divide it back out.
+		ParticleMeshDefinition mesh;
+		if (meshLine != 0)
+		{
+			if (!ReadParticleMesh(meshPath, meshSkin, meshFrame, mesh, error))
+			{
+				errorLine = meshLine;
+				return false;
+			}
+			if (sizeLine == 0)
+				size.SetConstant(1.0);
+			for (RampKey &key : size.Keys)
+				key.V[0] *= mesh.Diameter;
+		}
+
 		// [2c] The flipbook's frames, found by name now that the count is known. A
 		// frame that is not there refuses this definition alone, naming the frame; the
 		// rest of the lump still loads.
@@ -920,6 +1230,10 @@ namespace
 		info.Texture = texture;
 		info.TextureLine = textureLine;
 		info.Frames = frameIds;
+		info.HasMesh = meshLine != 0;	// [MESHPARTICLES]
+		info.MeshLine = meshLine;
+		info.MeshSkinName = meshSkin;
+		info.Mesh = mesh;
 		return true;
 	}
 }
@@ -1023,12 +1337,16 @@ void LoadParticleDefinitions()
 
 	// [2c] Atlas layers for the definitions that survived every lump.
 	const unsigned textured = AssignAtlasLayers(table);
+	// [MESHPARTICLES] And the mesh list, the same way.
+	const unsigned meshed = AssignMeshList(table);
 
 	Printf("ParticleDefinitions: %u named definition%s from %u PARTICLEDEFS lump%s -- %d refused, %u replaced by a later one\n",
 		table.NamedCount, table.NamedCount == 1 ? "" : "s", table.Lumps, table.Lumps == 1 ? "" : "s",
 		table.Stats.Refused, table.Replaced);
 	Printf("ParticleDefinitions: %u textured definition%s using %u of %u particle atlas layers (the renderer builds the atlas on its next frame; Vulkan only)\n",
 		textured, textured == 1 ? "" : "s", table.AtlasLayers.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS);
+	Printf("ParticleDefinitions: %u definition%s name%s a mesh (drawn as instanced 3D meshes while r_meshparticles is on; Vulkan only)\n",
+		meshed, meshed == 1 ? "" : "s", meshed == 1 ? "s" : "");
 }
 
 //==========================================================================
@@ -1184,6 +1502,11 @@ const ParticleAtlasLayer *ParticleAtlasLayerData() { return Table().AtlasLayers.
 unsigned ParticleAtlasLayerCount() { return Table().AtlasLayers.Size(); }
 uint64_t ParticleAtlasGeneration() { return Table().AtlasGeneration; }
 
+// [MESHPARTICLES] For the renderer's mesh particles (MeshParticleBuffer::SyncDefinitions).
+const ParticleMeshDefinition *ParticleMeshDefinitionData() { return Table().Meshes.Size() > 0 ? &Table().Meshes[0] : nullptr; }
+unsigned ParticleMeshDefinitionCount() { return Table().Meshes.Size(); }
+uint64_t ParticleMeshGeneration() { return Table().MeshGeneration; }
+
 //==========================================================================
 //
 // `particles` -- the definitions and how full the inline cache is, to the
@@ -1249,6 +1572,26 @@ CCMD(particles)
 				lookText.AppendFormat(", prongs %d..%d", (int)g.spare[1][2] / 32, (int)g.spare[1][2] % 32);
 			Printf("      %s\n", lookText.GetChars());
 		}
+
+		// [MESHPARTICLES] The mesh, when it has one, and how this machine draws it.
+		if (n.HasMesh)
+		{
+			const ParticleMeshDefinition &mesh = n.Mesh;
+			FGameTexture *skinTexture = TexMan.GetGameTexture(mesh.Skin);
+			const double centreX = 0.5 * ((double)mesh.BoundsMin[0] + mesh.BoundsMax[0]);
+			const double centreY = 0.5 * ((double)mesh.BoundsMin[1] + mesh.BoundsMax[1]);
+			const double centreZ = 0.5 * ((double)mesh.BoundsMin[2] + mesh.BoundsMax[2]);
+			const double offCentre = std::sqrt(centreX * centreX + centreY * centreY + centreZ * centreZ);
+			Printf("      mesh \"%s\" -- frame %d of %u, %u triangles, %u vertices, skin %s%s; diameter %g map units at size 1, bounds (%g %g %g) .. (%g %g %g)%s\n",
+				mesh.Path.GetChars(), mesh.Frame, mesh.Frames, mesh.Triangles, mesh.Vertices,
+				skinTexture != nullptr ? skinTexture->GetName().GetChars() : "?", n.MeshSkinName.IsEmpty() ? " (the md3's own)" : "",
+				mesh.Diameter, mesh.BoundsMin[0], mesh.BoundsMin[1], mesh.BoundsMin[2], mesh.BoundsMax[0], mesh.BoundsMax[1], mesh.BoundsMax[2],
+				offCentre > 0.1 * mesh.Diameter ? " -- it turns about its origin, which is off its centre" : "");
+			if (screen != nullptr && screen->mMeshParticles != nullptr)
+				Printf("      %s\n", screen->mMeshParticles->DescribeSlot((int)i).GetChars());
+			else
+				Printf("      drawn as its billboard (mesh particles are drawn on Vulkan only)\n");
+		}
 	}
 
 	// [2c] The particle atlas: what the named flipbooks use, and what the renderer built.
@@ -1311,4 +1654,14 @@ CCMD(particles)
 		const int looksValue = clamp(looks->GetGenericRep(CVAR_Int).Int, 0, 3);
 		Printf("r_gpuparticles_looks %d: %s\n", looksValue, kLooksQuality[looksValue]);
 	}
+
+	// [MESHPARTICLES] The mesh switch (hw_meshparticles.cpp) and the mesh list.
+	FBaseCVar *meshSwitch = FindCVar("r_meshparticles", nullptr);
+	const bool meshesOn = meshSwitch != nullptr && meshSwitch->GetGenericRep(CVAR_Int).Int != 0;
+	Printf("r_meshparticles %s: %u definition%s name%s a mesh -- %s\n",
+		meshSwitch == nullptr ? "(not in this build)" : (meshesOn ? "1" : "0"),
+		table.Meshes.Size(), table.Meshes.Size() == 1 ? "" : "s", table.Meshes.Size() == 1 ? "s" : "",
+		meshesOn ? "drawn as instanced 3D meshes" : "drawn as their billboards");
+	if (screen != nullptr && screen->mMeshParticles != nullptr)
+		Printf("  mesh instances uploaded: %u of %u\n", screen->mMeshParticles->GetUploadedInstances(), screen->mMeshParticles->GetInstanceCapacity());
 }

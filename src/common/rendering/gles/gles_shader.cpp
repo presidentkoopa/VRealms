@@ -853,7 +853,8 @@ void FShaderCollection::CompileShaders(EPassType passType)
 		// only the Vulkan prolog declares. Leaving mEffectShaders[i] null keeps
 		// the failed-effect-becomes-null-active-shader path unreachable.
 		// [DRAWNLINES] Nor drawnlines, for the same reason (DrawnLineSSO).
-		if (i == EFF_GPUPARTICLES || i == EFF_DRAWNLINES) continue;
+		// [MESHPARTICLES] Nor meshparticles (MeshParticleSSO).
+		if (i == EFF_GPUPARTICLES || i == EFF_DRAWNLINES || i == EFF_MESHPARTICLES) continue;
 
 		FShader *eff = new FShader(effectshaders[i].ShaderName);
 		if (!eff->Configure(effectshaders[i].ShaderName, effectshaders[i].vp, effectshaders[i].fp1,

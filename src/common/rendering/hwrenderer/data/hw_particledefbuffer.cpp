@@ -102,10 +102,10 @@ ParticleDefinitionBuffer::~ParticleDefinitionBuffer()
 	delete mBuffer;
 }
 
-void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slotGenerations, unsigned slotCount, uint64_t generation)
+void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slotGenerations, unsigned slotCount, uint64_t generation,
+	const uint8_t *billboardHidden, unsigned hiddenCount)
 {
 	if (mBuffer == nullptr || definitions == nullptr || slotGenerations == nullptr) return;
-	if (generation == mSyncedGeneration) return;
 
 	if (slotCount > SLOTS)
 	{
@@ -119,6 +119,20 @@ void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slo
 		slotCount = SLOTS;
 	}
 
+	// [MESHPARTICLES] Which slots draw as meshes this frame. With no list every mark is 0 and so is
+	// every mark already uploaded, so nothing below differs from the sync before mesh particles.
+	uint8_t hidden[SLOTS];
+	memset(hidden, 0, sizeof(hidden));
+	if (billboardHidden != nullptr)
+	{
+		const unsigned markCount = hiddenCount < slotCount ? hiddenCount : slotCount;
+		for (unsigned s = 0; s < markCount; s++)
+			hidden[s] = billboardHidden[s] != 0 ? 1 : 0;
+	}
+	const bool hiddenChanged = memcmp(hidden, mBillboardHidden, sizeof(hidden)) != 0;
+
+	if (generation == mSyncedGeneration && !hiddenChanged) return;
+
 	mBuffer->Map();
 	if (mBuffer->Memory() == nullptr)
 	{
@@ -131,20 +145,32 @@ void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slo
 	unsigned i = 0;
 	while (i < slotCount)
 	{
-		if (slotGenerations[i] <= mSyncedGeneration)
+		if (slotGenerations[i] <= mSyncedGeneration && hidden[i] == mBillboardHidden[i])
 		{
 			i++;
 			continue;
 		}
 		const unsigned first = i;
-		while (i < slotCount && slotGenerations[i] > mSyncedGeneration) i++;
+		while (i < slotCount && (slotGenerations[i] > mSyncedGeneration || hidden[i] != mBillboardHidden[i])) i++;
 		memcpy(dst + (size_t)first * RECORD_BYTES, src + (size_t)first * RECORD_BYTES, (size_t)(i - first) * RECORD_BYTES);
 		mUploadedSlots += i - first;
 		for (unsigned s = first; s < i; s++)
-			mSlotLooks[s] = DefinitionLook(src + (size_t)s * RECORD_BYTES);	// [2d]
+		{
+			if (hidden[s])
+			{
+				// [MESHPARTICLES] Drawn as a mesh: an empty billboard (see the header).
+				memset(dst + (size_t)s * RECORD_BYTES, 0, RECORD_BYTES);
+				mSlotLooks[s] = 0;
+			}
+			else
+			{
+				mSlotLooks[s] = DefinitionLook(src + (size_t)s * RECORD_BYTES);	// [2d]
+			}
+		}
 	}
 	mBuffer->Unmap();
 
+	memcpy(mBillboardHidden, hidden, sizeof(hidden));
 	mSyncedGeneration = generation;
 }
 

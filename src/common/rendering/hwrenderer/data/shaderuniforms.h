@@ -43,7 +43,10 @@ enum
 	VIEWLIGHT_BINDINGPOINT = 11,
 	// [SECTORPLANES] Sectors' current floor and ceiling planes (hw_sectorplanebuffer.h).
 	// Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
-	SECTORPLANE_BINDINGPOINT = 12
+	SECTORPLANE_BINDINGPOINT = 12,
+	// [MESHPARTICLES] Mesh particle definitions and instance slot lists (hw_meshparticles.h),
+	// set 1 binding 9. Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
+	MESHPARTICLE_BINDINGPOINT = 13
 };
 
 enum class UniformType

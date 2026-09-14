@@ -83,6 +83,31 @@ CUSTOM_CVAR(Float, gl_bloom_chromatic, 0.0f, CVAR_ARCHIVE)
 	if (self > 0.1f) self = 0.1f;
 }
 
+// [BLOOMSTEP] Wider blur (Engine docs/REVIEW_BLOOM_PLAN.md E3). The bloom blur is
+// seven taps one texel apart, and gl_bloom_amount only reshapes their weights: past
+// an amount of about 4 the kernel is already a flat box, so neither the amount nor
+// the anamorphic ratio can widen it any further. The step spreads the taps this
+// many texels apart (the anamorphic ratio spreads the horizontal ones further), so
+// the amount keeps meaning a real width. 1 is today's blur exactly -- the very same
+// shaders and uniforms (PPBloom::RenderBloom). Renderer-read every frame.
+CUSTOM_CVAR(Float, gl_bloom_step, 1.0f, CVAR_ARCHIVE)
+{
+	if (!(self >= 1.0f)) self = 1.0f;   // written this way so a NaN lands on 1 too
+	if (self > 8.0f) self = 8.0f;
+}
+
+// [BLOOMOVERRIDE] How much of any scripted bloom change applies
+// (LevelLocals.SetBloomOverride; E1 in REVIEW_BLOOM_PLAN.md). It multiplies the
+// override's mix: 1 = as the script asked, 0 = the gl_bloom_* settings alone, as
+// if no override were set. One live depth control for every reactive bloom a mod
+// drives -- script-read sliders cannot move while a menu pauses the game, and this
+// is read by the renderer every frame -- and a comfort control for flashes in VR.
+CUSTOM_CVAR(Float, gl_bloom_override_strength, 1.0f, CVAR_ARCHIVE)
+{
+	if (!(self >= 0.0f)) self = 0.0f;   // NaN lands on 0
+	if (self > 1.0f) self = 1.0f;
+}
+
 CVAR(Float, gl_exposure_scale, 1.3f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_min, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_base, 0.35f, CVAR_ARCHIVE)

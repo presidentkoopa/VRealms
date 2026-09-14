@@ -137,3 +137,12 @@ struct ParticleAtlasLayer;
 const ParticleAtlasLayer *ParticleAtlasLayerData();
 unsigned ParticleAtlasLayerCount();
 uint64_t ParticleAtlasGeneration();
+
+// [MESHPARTICLES] For the renderer's mesh particles (MeshParticleBuffer::SyncDefinitions,
+// hw_meshparticles.h): one entry per named definition that names a `mesh`, in slot order, each
+// checked when its lump loaded (an md3 of one surface and at most 64 triangles, the frame, the
+// skin), and the list's generation, bumped each time LoadParticleDefinitions rebuilds it.
+struct ParticleMeshDefinition;
+const ParticleMeshDefinition *ParticleMeshDefinitionData();
+unsigned ParticleMeshDefinitionCount();
+uint64_t ParticleMeshGeneration();

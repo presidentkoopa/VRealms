@@ -85,7 +85,18 @@ public:
 	// Frames in flight: one persistently mapped buffer, like the particle ring. The
 	// inline cache only rewrites a slot once every particle that used it is dead,
 	// plus a margin for frames already recorded.
-	void Sync(const void *definitions, const uint64_t *slotGenerations, unsigned slotCount, uint64_t generation);
+	//
+	// [MESHPARTICLES] `billboardHidden` (MeshParticleBuffer::GetBillboardHidden, one byte per slot for
+	// the first `hiddenCount` slots): a slot marked 1 draws as a mesh this frame, so its billboard
+	// must not draw. It is uploaded as 256 zero bytes -- key count 0 and size 0, which gpuparticles.vp
+	// collapses before anything else, and LOOK_* 0, so an invisible billboard never switches a blend,
+	// the view lights or a depth pass on -- and copied again, real or zero, whenever its mark flips,
+	// generation or not. Null (the default) marks nothing: every slot is copied exactly as before.
+	void Sync(const void *definitions, const uint64_t *slotGenerations, unsigned slotCount, uint64_t generation,
+		const uint8_t *billboardHidden = nullptr, unsigned hiddenCount = 0);
+
+	// [MESHPARTICLES] Whether the last Sync uploaded this slot as zeros because it draws as a mesh.
+	bool IsBillboardHidden(unsigned slot) const { return slot < SLOTS && mBillboardHidden[slot] != 0; }
 
 	IDataBuffer *GetBuffer() const { return mBuffer; }
 	uint64_t GetSyncedGeneration() const { return mSyncedGeneration; }
@@ -148,6 +159,9 @@ private:
 
 	// [2d] LOOK_* per slot, see GetSlotLooks.
 	uint8_t mSlotLooks[SLOTS] = {};
+
+	// [MESHPARTICLES] 1 per slot last uploaded as zeros because it draws as a mesh, see Sync.
+	uint8_t mBillboardHidden[SLOTS] = {};
 
 	// [2c] The atlas layer list, see SyncAtlasLayers.
 	TArray<ParticleAtlasLayer> mAtlasLayers;

@@ -1,0 +1,494 @@
+/*
+** meshparticles.vp
+**
+** [MESHPARTICLES] A GPU particle drawn as a small mesh -- a chunk, a shard, a splinter, a
+** casing ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #10). Drawn instanced, one draw per
+** mesh definition, from the model's own vertex buffer; this shader places each copy where
+** its particle record says the particle is NOW, turned the way its seed says, and lights it.
+** Nothing is simulated per frame. See hw_meshparticles.h.
+**
+** Vulkan only. The particle ring (GpuParticleSSO, set 1 binding 5) is declared in
+** vk_shader.cpp's prolog; the view lights (binding 8) and the mesh particle buffer (binding
+** 9) only here, so no other shader changed when this effect was added.
+**
+** WHICH PARTICLE (review D3): meshInstanceSlots[gl_InstanceIndex] is its ring slot. Vulkan's
+** gl_InstanceIndex already includes the draw's firstInstance, which is where this mesh
+** definition's slots start in the list. The record's d.x is the definition slot, and
+** meshDefinitions[d.x] holds the definition (the CPU table's bytes -- its twin in binding 7
+** is zeros while this draws, so the billboard steps aside) and the mesh's bounds.
+**
+** WHERE: the particle's closed-form flight, exactly gpuparticles.vp's (gravity and drag).
+** SIZE: the definition's size ramp holds scale x the mesh's diameter (particledefs.cpp), so
+** the drawn scale is ramp / diameter x the spawn's size scale x r_gpuparticles_sizescale.
+** TURN: a random rotation from the record's seed, turning about a random axis at spin min..max
+** degrees a second (picked by the seed). Pure functions of the record: no RNG, both eyes alike.
+** CONTACT, only for `collide = plane`: pushed out of the emission's plane and of the floor by
+** how far the turned chunk reaches along the normal (its bounds box), so it rests ON a surface,
+** not a radius above it. A chunk falling onto the floor (or onto a floor-like plane) LANDS: the
+** time its flight comes down is solved from the record alone -- the same number every frame, so
+** a resting chunk never creeps -- the tumble stops there, it settles over a quarter second onto
+** the face that best meets the surface, and its slide dies away.
+** LIGHT (owner, 2026-09-14; review D4): ONE value for the whole chunk, at its centre -- the
+** sector light it was spawned in plus the view lights, as a lit GPU particle (gpuparticles.vp,
+** ParticleViewLight) -- times `lit`; glow (emissive) added on top, faded like a particle's.
+**
+**---------------------------------------------------------------------------
+**
+** Copyright 2026 UZDXREMA
+**
+** SPDX-License-Identifier: GPL-3.0-or-later
+**
+**---------------------------------------------------------------------------
+*/
+
+// The model vertex buffer (FModelVertexBuffer): position, texture coordinate, packed normal.
+layout(location = 0) in vec4 aPosition;
+layout(location = 1) in vec2 aTexCoord;
+layout(location = 4) in vec4 aNormal;
+
+layout(location = 0) out vec2 vMeshTexCoord;
+// rgb the lit body colour (tint x colour ramp x light)  a 1
+layout(location = 1) flat out vec4 vMeshBody;
+// rgb the glow added (tint x colour ramp x emissive x intensity x fade)  a 0
+layout(location = 2) flat out vec4 vMeshGlow;
+// The normal in eye space, for the G-buffer (ambient occlusion); never used for light.
+layout(location = 3) out vec3 vMeshEyeNormal;
+
+// THE VIEW LIGHTS (ViewLightBuffer, hw_viewlightbuffer.h), set 1 binding 8, vertex stage. The
+// same block as gpuparticles.vp declares, byte for byte -- four vec4s per light, std430:
+//   origin         xyz position  w radius
+//   color          rgb colour x intensity (negative: subtractive)
+//   spotDirection  xyz, dotted with the direction TO the light (0 for a point light)
+//   spotCone       x cos outer  y cos inner (a point light: -2, -1)
+struct ViewLight { vec4 origin; vec4 color; vec4 spotDirection; vec4 spotCone; };
+layout(set = 1, binding = 8, std430) buffer readonly ViewLightSSO
+{
+	vec4 viewLightInfo;		// x how many lights are live
+	ViewLight viewLights[];
+};
+
+// ViewLightBuffer::CAPACITY.
+const int kViewLightCapacity = 32;
+
+// THE MESH PARTICLE BUFFER (MeshParticleBuffer, hw_meshparticles.h), set 1 binding 9, vertex
+// stage. std430; every member is vec4-aligned, so: header at 0, the definition records at 16
+// (288 bytes each), the instance slots at 73,744 (4 bytes each) -- the C++ asserts the same.
+struct MeshParticleDefinition
+{
+	ParticleDefinitionData definition;	// the prolog's struct: the CPU table's 256 bytes
+	vec4 boundsMin;						// xyz the drawn frame's bounds min (model axes, y up)  w diameter (0 = not a mesh)
+	vec4 boundsMax;						// xyz bounds max  w 0
+};
+layout(set = 1, binding = 9, std430) buffer readonly MeshParticleSSO
+{
+	vec4 meshParticleInfo;				// x instances uploaded  y capacity
+	MeshParticleDefinition meshDefinitions[256];
+	uint meshInstanceSlots[];
+};
+
+// MeshParticleBuffer::DEFINITION_SLOTS, the named definition slots.
+const int kMeshDefinitionSlots = 256;
+
+#define MeshDefinition(slot) meshDefinitions[slot].definition
+
+const vec3 kMeshUp = vec3(0.0, 1.0, 0.0);
+const float kMeshTwoPi = 6.28318530718;
+// How long a landed chunk takes to settle flat, seconds.
+const float kMeshSettleSeconds = 0.25;
+// How fast a landed chunk's slide dies away, 1/s: a chunk landing at 60 map units a second
+// slides about 10 units.
+const float kMeshFriction = 6.0;
+// A plane whose normal points this far up is a floor a chunk can land on.
+const float kMeshFloorLike = 0.7;
+
+// A dead or foreign instance puts every vertex on one point outside the clip volume: nothing
+// rasterises.
+void CollapseMesh()
+{
+	gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+	vMeshTexCoord = vec2(0.0);
+	vMeshBody = vec4(0.0);
+	vMeshGlow = vec4(0.0);
+	vMeshEyeNormal = vec3(0.0, 0.0, 1.0);
+}
+
+// Key i's colour, 0..1 (gpuparticles.vp's ParticleKeyColor, from this buffer).
+vec3 MeshKeyColor(int defSlot, int keyIndex)
+{
+	uint rgbBits = uint(MeshDefinition(defSlot).keyColor[keyIndex / 4][keyIndex % 4]);
+	return vec3(float((rgbBits >> 16u) & 255u), float((rgbBits >> 8u) & 255u), float(rgbBits & 255u)) / 255.0;
+}
+
+// A unit normal from its octahedral encoding (gpuparticles.vp's OctahedralDecode).
+vec3 MeshOctahedralDecode(vec2 e)
+{
+	vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+	float fold = max(-n.z, 0.0);
+	n.x += (n.x >= 0.0) ? -fold : fold;
+	n.y += (n.y >= 0.0) ? -fold : fold;
+	return normalize(n);
+}
+
+// FLevelLocals::GpuParticleHash's integer hash, and a 24-bit value 0..1 from it per stream.
+uint MeshHash(uint x)
+{
+	x ^= x >> 16u;
+	x *= 0x7feb352du;
+	x ^= x >> 15u;
+	x *= 0x846ca68bu;
+	x ^= x >> 16u;
+	return x;
+}
+
+float MeshRandom(uint seedBits, uint stream)
+{
+	return float(MeshHash(seedBits ^ MeshHash(stream * 0x9e3779b9u + 0x68bc21ebu)) >> 8u) / 16777216.0;
+}
+
+vec4 MeshQuatAxisAngle(vec3 axis, float angle)
+{
+	float halfAngle = 0.5 * angle;
+	return vec4(axis * sin(halfAngle), cos(halfAngle));
+}
+
+// Two turns composed: a * b turns by b first, then by a.
+vec4 MeshQuatMultiply(vec4 a, vec4 b)
+{
+	return vec4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w * b.w - dot(a.xyz, b.xyz));
+}
+
+mat3 MeshQuatMatrix(vec4 q)
+{
+	float x2 = q.x + q.x;
+	float y2 = q.y + q.y;
+	float z2 = q.z + q.z;
+	float xx = q.x * x2;
+	float xy = q.x * y2;
+	float xz = q.x * z2;
+	float yy = q.y * y2;
+	float yz = q.y * z2;
+	float zz = q.z * z2;
+	float wx = q.w * x2;
+	float wy = q.w * y2;
+	float wz = q.w * z2;
+	return mat3(
+		1.0 - (yy + zz), xy + wz, xz - wy,
+		xy - wz, 1.0 - (xx + zz), yz + wx,
+		xz + wy, yz - wx, 1.0 - (xx + yy));
+}
+
+// The chunk's turn `t` seconds after its birth.
+vec4 MeshTurnAt(vec4 startTurn, vec3 tumbleAxis, float tumbleRate, float t)
+{
+	return MeshQuatMultiply(MeshQuatAxisAngle(tumbleAxis, tumbleRate * t), startTurn);
+}
+
+// The closed-form flight, gpuparticles.vp's exactly: linear drag on the launch velocity, gravity down.
+vec3 MeshFlightPosition(vec3 start, vec3 velocity, float gravity, float k, float t)
+{
+	float decay = exp(-k * t);
+	return start + velocity * ((1.0 - decay) / k) - kMeshUp * (gravity * 0.5 * t * t);
+}
+
+vec3 MeshFlightVelocity(vec3 velocity, float gravity, float k, float t)
+{
+	return velocity * exp(-k * t) - kMeshUp * (gravity * t);
+}
+
+// How far the chunk reaches from its origin INTO a surface with normal n: its bounds box, turned
+// and scaled, measured along -n.
+float MeshSupport(mat3 turn, vec3 n, vec3 boxMin, vec3 boxMax, float scale)
+{
+	vec3 c = -(transpose(turn) * n);
+	return scale * (max(c.x * boxMin.x, c.x * boxMax.x) + max(c.y * boxMin.y, c.y * boxMax.y) + max(c.z * boxMin.z, c.z * boxMax.z));
+}
+
+// The flight's height above a surface, less `rest`, along its normal: gap + along (1 - e^-kt) / k -
+// fall t^2 / 2, with along the launch speed along the normal and fall gravity's share along it.
+float MeshContactGap(float gap, float along, float fall, float k, float t)
+{
+	return gap + along * (1.0 - exp(-k * t)) / k - 0.5 * fall * t * t;
+}
+
+// When the flight comes down onto a surface (normal n, offset): the time its centre falls through
+// `rest` above the surface -- 0 when it never rises clear of it, -1 when it is still clear at the end
+// of its life (or gravity does not pull toward the surface). A pure function of the particle, never of
+// its age: the same number every frame, so a resting chunk cannot creep. The height rises to one peak
+// and then only falls, so the peak is bracketed by bisection, the fall's crossing likewise, and two
+// Newton steps from below finish it (from below they cannot pass the crossing while the curve bends down).
+float MeshLandingTime(vec3 start, vec3 velocity, float gravity, float k, vec3 n, float offset, float rest, float life)
+{
+	float gap = dot(start, n) - offset - rest;
+	float along = dot(velocity, n);
+	float fall = gravity * n.y;
+	if (fall <= 0.0)
+		return -1.0;
+
+	// The peak, where along e^-kt = fall t: before along / fall. Launched toward the surface: at birth.
+	float peak = 0.0;
+	if (along > 0.0)
+	{
+		float lower = 0.0;
+		float upper = min(along / fall, life);
+		for (int i = 0; i < 12; i++)
+		{
+			float middle = 0.5 * (lower + upper);
+			if (along * exp(-k * middle) > fall * middle)
+				lower = middle;
+			else
+				upper = middle;
+		}
+		peak = 0.5 * (lower + upper);
+	}
+	if (MeshContactGap(gap, along, fall, k, peak) <= 0.0)
+		return 0.0;
+	if (MeshContactGap(gap, along, fall, k, life) >= 0.0)
+		return -1.0;
+
+	float lower = peak;
+	float upper = life;
+	for (int i = 0; i < 12; i++)
+	{
+		float middle = 0.5 * (lower + upper);
+		if (MeshContactGap(gap, along, fall, k, middle) > 0.0)
+			lower = middle;
+		else
+			upper = middle;
+	}
+	float t = upper;
+	// The curve bends down over the whole bracket when its bend is already downward at the bracket's start
+	// (the bend only grows more downward later): always when launched away from the surface.
+	if (along > 0.0 || -k * along * exp(-k * lower) < fall)
+	{
+		for (int i = 0; i < 2; i++)
+		{
+			float slope = along * exp(-k * t) - fall * t;
+			if (slope >= -1e-6)
+				break;
+			t = max(t - MeshContactGap(gap, along, fall, k, t) / slope, lower);
+		}
+	}
+	return t;
+}
+
+// The turn that lays a landed chunk flat, as a rotation applied on top of its turn at landing: of the
+// bounds box's three axes, the one that best meets the surface (how straight it points into it x the
+// area of the face it carries) is turned to point straight into the surface.
+vec4 MeshRestTurn(mat3 landedTurn, vec3 n, vec3 boxMin, vec3 boxMax)
+{
+	vec3 extent = boxMax - boxMin;
+	vec3 faceArea = vec3(extent.y * extent.z, extent.x * extent.z, extent.x * extent.y);
+	vec3 along = transpose(landedTurn) * n;
+	vec3 score = abs(along) * faceArea;
+	int axis = (score.x >= score.y) ? ((score.x >= score.z) ? 0 : 2) : ((score.y >= score.z) ? 1 : 2);
+	// The side of that axis facing the surface, pointed straight into it.
+	float side = (along[axis] > 0.0) ? -1.0 : 1.0;
+	vec3 into = landedTurn[axis] * side;
+	// The shortest turn from `into` to -n. dot(into, -n) = |along[axis]| >= 0, so w >= 1: never degenerate.
+	return normalize(vec4(cross(into, -n), 1.0 + dot(into, -n)));
+}
+
+// ONE light value for the whole chunk: gpuparticles.vp's ParticleViewLight without the look's
+// direction sum -- the sector light at spawn plus every view light whose radius reaches the centre,
+// attenuated as surfaces and sprites attenuate a dynamic light, clamped 0..1.4 as surfaces are.
+vec3 MeshParticleLight(vec3 pos, float ambient)
+{
+	vec3 light = vec3(ambient);
+	int count = clamp(int(viewLightInfo.x + 0.5), 0, kViewLightCapacity);
+	for (int i = 0; i < count; i++)
+	{
+		vec3 toLight = viewLights[i].origin.xyz - pos;
+		float radius = viewLights[i].origin.w;
+		float distSquared = dot(toLight, toLight);
+		if (radius <= 0.0 || distSquared >= radius * radius)
+			continue;
+		float dist = sqrt(distSquared);
+		float attenuation = 1.0 - dist / radius;
+		vec3 lightDirection = toLight / max(dist, 1e-4);
+		attenuation *= smoothstep(viewLights[i].spotCone.x, viewLights[i].spotCone.y, dot(lightDirection, viewLights[i].spotDirection.xyz));
+		light += viewLights[i].color.rgb * attenuation;
+	}
+	return clamp(light, vec3(0.0), vec3(1.4));
+}
+
+void main()
+{
+#ifdef SUPPORTS_MULTIVIEW
+	hwViewIndex = gl_ViewIndex;
+#endif
+
+	uint ringSlot = meshInstanceSlots[gl_InstanceIndex];
+	GpuParticle part = gpuParticles[ringSlot];
+
+	// Alive, a stage 2 record (not legacy), and of a definition that is a mesh -- else nothing. The
+	// list only holds such records; this covers frames in flight and a list one frame stale.
+	float life = part.b.w;
+	float age = uLevelTime.x - part.a.w;
+	int defSlot = int(part.d.x + 0.5);
+	if (life <= 0.0 || age < 0.0 || age > life || part.e.x < -8.0 || defSlot < 0 || defSlot >= kMeshDefinitionSlots)
+	{
+		CollapseMesh();
+		return;
+	}
+	float diameter = meshDefinitions[defSlot].boundsMin.w;
+	if (!(diameter > 0.0))
+	{
+		CollapseMesh();
+		return;
+	}
+	float t = age / life;
+
+	// THE RAMPS, gpuparticles.vp's key search over the shared time keys.
+	int keyCount = clamp(int(MeshDefinition(defSlot).motion.w + 0.5), 1, 8);
+	int k0 = 0;
+	int k1 = 0;
+	float f = 0.0;
+	if (keyCount > 1 && t > MeshDefinition(defSlot).key[0].x)
+	{
+		k0 = keyCount - 1;
+		k1 = k0;
+		for (int i = 1; i < keyCount; i++)
+		{
+			if (t < MeshDefinition(defSlot).key[i].x)
+			{
+				k0 = i - 1;
+				k1 = i;
+				float t0 = MeshDefinition(defSlot).key[k0].x;
+				f = (t - t0) / (MeshDefinition(defSlot).key[k1].x - t0);
+				break;
+			}
+		}
+	}
+	vec4 key0 = MeshDefinition(defSlot).key[k0];
+	vec4 key1 = MeshDefinition(defSlot).key[k1];
+
+	// SIZE: the ramp holds scale x diameter. No size cap: that bounds a billboard's overdraw.
+	float sizeFactor = part.d.y * uGpuParticleParams.x / diameter;
+	float scale = mix(key0.y, key1.y, f) * sizeFactor;
+	if (!(scale > 0.0))
+	{
+		CollapseMesh();
+		return;
+	}
+	float emissive = key0.w + (key1.w - key0.w) * f;
+	vec3 color0 = MeshKeyColor(defSlot, k0);
+	vec3 rampColor = color0 + (MeshKeyColor(defSlot, k1) - color0) * f;
+
+	vec3 boxMin = meshDefinitions[defSlot].boundsMin.xyz;
+	vec3 boxMax = meshDefinitions[defSlot].boundsMax.xyz;
+
+	// THE FLIGHT.
+	float gravity = MeshDefinition(defSlot).motion.x;
+	float k = max(MeshDefinition(defSlot).motion.y, 1e-4);
+	vec3 start = part.a.xyz;
+	vec3 velocity = part.b.xyz;
+	vec3 pos = MeshFlightPosition(start, velocity, gravity, k, age);
+
+	// THE TURN: a uniformly random starting rotation (Shoemake) and a uniformly random tumble axis,
+	// from the seed's 24 bits; the rate between the definition's spin min and max.
+	uint seedBits = uint(clamp(part.d.w, 0.0, 1.0) * 16777215.0);
+	float u1 = MeshRandom(seedBits, 0u);
+	float u2 = MeshRandom(seedBits, 1u);
+	float u3 = MeshRandom(seedBits, 2u);
+	vec4 startTurn = vec4(sqrt(1.0 - u1) * sin(kMeshTwoPi * u2), sqrt(1.0 - u1) * cos(kMeshTwoPi * u2),
+		sqrt(u1) * sin(kMeshTwoPi * u3), sqrt(u1) * cos(kMeshTwoPi * u3));
+	float axisZ = MeshRandom(seedBits, 3u) * 2.0 - 1.0;
+	float axisAngle = kMeshTwoPi * MeshRandom(seedBits, 4u);
+	float axisRadius = sqrt(max(1.0 - axisZ * axisZ, 0.0));
+	vec3 tumbleAxis = vec3(axisRadius * cos(axisAngle), axisRadius * sin(axisAngle), axisZ);
+	float tumbleRate = radians(mix(MeshDefinition(defSlot).shape.z, MeshDefinition(defSlot).shape.w, MeshRandom(seedBits, 5u)));
+	vec4 turn = MeshTurnAt(startTurn, tumbleAxis, tumbleRate, age);
+
+	// CONTACT (FLAME_ENGINE_PLAN F4's plane and floor), only for `collide = plane` definitions.
+	bool collides = MeshDefinition(defSlot).look.z > 0.5;
+	bool hasPlane = collides && part.e.x < 1.5;
+	bool hasFloor = collides && part.e.w > -32767.0;
+	vec3 planeNormal = hasPlane ? MeshOctahedralDecode(part.e.xy) : kMeshUp;
+	int landedOn = 0;	// 0 in the air, 1 the plane, 2 the floor
+	if (collides)
+	{
+		// Landing is timed against the chunk lying on its thinnest side at its first size key -- values
+		// that never change over its life, so neither does the landing time.
+		vec3 extent = boxMax - boxMin;
+		float restHeight = 0.5 * MeshDefinition(defSlot).key[0].y * sizeFactor * min(extent.x, min(extent.y, extent.z));
+		float landedTime = -1.0;
+		vec3 landedNormal = kMeshUp;
+		if (hasPlane && planeNormal.y > kMeshFloorLike)
+		{
+			float planeTime = MeshLandingTime(start, velocity, gravity, k, planeNormal, part.e.z, restHeight, life);
+			if (planeTime >= 0.0 && age >= planeTime)
+			{
+				landedTime = planeTime;
+				landedNormal = planeNormal;
+				landedOn = 1;
+			}
+		}
+		if (hasFloor)
+		{
+			float floorTime = MeshLandingTime(start, velocity, gravity, k, kMeshUp, part.e.w, restHeight, life);
+			if (floorTime >= 0.0 && age >= floorTime && (landedOn == 0 || floorTime < landedTime))
+			{
+				landedTime = floorTime;
+				landedNormal = kMeshUp;
+				landedOn = 2;
+			}
+		}
+		if (landedOn != 0)
+		{
+			// The tumble stops at landing; the chunk settles flat, and slides to a stop along the surface.
+			vec4 landedTurn = MeshTurnAt(startTurn, tumbleAxis, tumbleRate, landedTime);
+			vec4 settleTurn = MeshRestTurn(MeshQuatMatrix(landedTurn), landedNormal, boxMin, boxMax);
+			float settled = smoothstep(0.0, kMeshSettleSeconds, age - landedTime);
+			turn = MeshQuatMultiply(normalize(mix(vec4(0.0, 0.0, 0.0, 1.0), settleTurn, settled)), landedTurn);
+			vec3 landedVelocity = MeshFlightVelocity(velocity, gravity, k, landedTime);
+			vec3 slide = landedVelocity - landedNormal * dot(landedVelocity, landedNormal);
+			pos = MeshFlightPosition(start, velocity, gravity, k, landedTime) + slide * ((1.0 - exp(-kMeshFriction * (age - landedTime))) / kMeshFriction);
+		}
+	}
+	mat3 turnMatrix = MeshQuatMatrix(turn);
+	if (collides)
+	{
+		// Out of the plane, and out of the floor, by how far the turned chunk reaches; a chunk that
+		// landed on one rests exactly on it.
+		if (hasPlane)
+		{
+			float reach = MeshSupport(turnMatrix, planeNormal, boxMin, boxMax, scale);
+			float planeGap = dot(pos, planeNormal) - part.e.z;
+			if (planeGap < reach || landedOn == 1)
+				pos += planeNormal * (reach - planeGap);
+		}
+		if (hasFloor)
+		{
+			float reach = MeshSupport(turnMatrix, kMeshUp, boxMin, boxMax, scale);
+			float floorGap = pos.y - part.e.w;
+			if (floorGap < reach || landedOn == 2)
+				pos.y += reach - floorGap;
+		}
+	}
+
+	// THE LIGHT, once for the chunk. The fade flag fades the glow, as it fades a particle's.
+	float lit = clamp(MeshDefinition(defSlot).look.x, 0.0, 1.0);
+	float fade = 1.0;
+	if ((int(MeshDefinition(defSlot).look.w + 0.5) & 1) != 0)
+		fade = 1.0 - smoothstep(0.6, 1.0, t);
+	vec3 bodyLight = vec3(1.0);
+	if (lit > 0.0)
+		bodyLight = mix(vec3(1.0), MeshParticleLight(pos, part.d.z), lit);
+	vMeshBody = vec4(part.c.rgb * rampColor * bodyLight, 1.0);
+	vMeshGlow = vec4(part.c.rgb * rampColor * (part.c.w * emissive * uGpuParticleParams.w * fade), 0.0);
+
+	// THE VERTEX: the model turned about its origin, scaled, at the particle.
+	vec3 worldPos = pos + turnMatrix * (aPosition.xyz * scale);
+	vec4 eyePos = ViewMatrix * vec4(worldPos, 1.0);
+	gl_Position = ProjectionMatrix * eyePos;
+
+#ifdef VULKAN_COORDINATE_SYSTEM
+	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+#endif
+
+	vMeshTexCoord = aTexCoord;
+	vec3 worldNormal = turnMatrix * aNormal.xyz;
+	float normalLength = length(worldNormal);
+	worldNormal = (normalLength > 1e-5) ? worldNormal / normalLength : kMeshUp;
+	vMeshEyeNormal = (NormalViewMatrix * vec4(worldNormal, 1.0)).xyz;
+}

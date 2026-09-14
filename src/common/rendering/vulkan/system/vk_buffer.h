@@ -65,6 +65,8 @@ public:
 	VkHardwareDataBuffer* ViewLightSSO = nullptr;
 	// [SECTORPLANES] set 1 binding 12 -- see hw_sectorplanebuffer.h
 	VkHardwareDataBuffer* SectorPlaneSSO = nullptr;
+	// [MESHPARTICLES] set 1 binding 9 -- see hw_meshparticles.h
+	VkHardwareDataBuffer* MeshParticleSSO = nullptr;
 
 	std::unique_ptr<VkStreamBuffer> MatrixBuffer;
 	std::unique_ptr<VkStreamBuffer> StreamBuffer;

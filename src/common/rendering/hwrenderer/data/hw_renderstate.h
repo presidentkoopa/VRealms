@@ -50,6 +50,11 @@ enum ERenderEffect
 	// [DRAWNLINES] Glowing lines drawn as boxes (drawnlines.vp/.fp). Vulkan only:
 	// the GL and GLES effect loaders skip this index.
 	EFF_DRAWNLINES,
+	// [MESHPARTICLES] Particles drawn as small instanced meshes -- chunks, shards,
+	// casings -- in the opaque pass (meshparticles.vp/.fp, hw_meshparticles.h).
+	// Vulkan only: the GL and GLES effect loaders skip this index. APPENDED LAST, so
+	// no existing effect keeps anything but the index it had.
+	EFF_MESHPARTICLES,
 	MAX_EFFECTS
 };
 
@@ -1069,6 +1074,17 @@ public:
 	virtual void ClearScreen() = 0;
 	virtual void Draw(int dt, int index, int count, bool apply = true) = 0;
 	virtual void DrawIndexed(int dt, int index, int count, bool apply = true) = 0;
+
+	// [MESHPARTICLES] Instanced draws ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #10):
+	// the same primitives `instances` times over, the vertex shader telling the copies
+	// apart by gl_InstanceIndex, which runs from firstInstance to firstInstance +
+	// instances - 1. For any effect that draws many copies of one mesh -- mesh particles
+	// are the first. NOT pure, and empty here, so GL and GLES compile unchanged and draw
+	// nothing through them; only Vulkan overrides them. Callers gate on a Vulkan-only
+	// effect anyway. Triangle fans are not supported (VkRenderStateMolten converts fans
+	// only for Draw).
+	virtual void DrawInstanced(int dt, int index, int count, int instances, int firstInstance = 0, bool apply = true) {}
+	virtual void DrawIndexedInstanced(int dt, int index, int count, int instances, int firstInstance = 0, bool apply = true) {}
 
 	// Immediate render state change commands. These only change infrequently and should not clutter the render state.
 	virtual bool SetDepthClamp(bool on) = 0;					// Deactivated only by skyboxes.

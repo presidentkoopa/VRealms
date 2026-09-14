@@ -41,6 +41,7 @@
 #include "hw_particledefbuffer.h"	// [PARTICLEDEFS] the GPU copy of the definitions
 #include "particledefs.h"	// [PARTICLEDEFS] the CPU table it syncs from
 #include "hw_viewlightbuffer.h"	// [VIEWLIGHTS] the dynamic lights in view, for lit particles
+#include "hw_meshparticles.h"	// [MESHPARTICLES] mesh particles: their sync, the view light gate, the opaque-pass draw
 #include "a_dynlight.h"	// [VIEWLIGHTS] FDynamicLight, walked to fill it
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
 #include "hw_vrmodes.h"
@@ -439,8 +440,14 @@ static void SyncViewLights(const HWDrawInfo *di)
 	FLevelLocals *Level = di->Level;
 	const GpuParticleBuffer *particles = screen->mGpuParticles;
 	const int wanted = clamp((int)r_gpuparticles_lights, 0, (int)ViewLightBuffer::CAPACITY);
+	// [MESHPARTICLES] Filled for a lit mesh particle as well: a chunk takes its one light value from
+	// this list (meshparticles.vp). With no mesh definition this is the test it always was.
+	const float viewLightTime = di->VPUniforms.mLevelTime.X;
+	const bool litParticlesAlive = particles != nullptr && particles->IsDrawable() && particles->LitAliveAt(viewLightTime);
+	const MeshParticleBuffer *meshParticles = screen->mMeshParticles;
+	const bool litMeshParticlesAlive = meshParticles != nullptr && meshParticles->IsDrawable() && meshParticles->LitAliveAt(viewLightTime);
 	if (Level == nullptr || Level->lights == nullptr || !r_dynlights || !r_gpuparticles || wanted <= 0 ||
-		particles == nullptr || !particles->IsDrawable() || !particles->LitAliveAt(di->VPUniforms.mLevelTime.X))
+		!(litParticlesAlive || litMeshParticlesAlive))
 	{
 		viewLights->Upload(nullptr, 0);
 		return;
@@ -814,6 +821,53 @@ static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
 	pass.SetEyeSets(eyeSets);
 
 	PerfLog::AddCpuSample("fx.heatsources", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//==========================================================================
+//
+// [BLOOMOVERRIDE] The level's bloom override (SetBloomOverride, g_levellocals.h),
+// handed to the bloom pass (PPBloom::SetOverride, hw_postprocess.h). E1 in
+// "Engine docs/REVIEW_BLOOM_PLAN.md".
+//
+// hw_postprocess is common code and cannot see FLevelLocals, so the level-side
+// copy lives here, like SetupHeatSources. MAIN VIEW ONLY: called from ProcessScene
+// when toscreen. A camera texture has no post pass, and a save picture's post pass
+// should show the frame as it is -- neither may restart the renderer's fade.
+//
+// Called once per eye that draws a scene. Script does not run inside the eye loop,
+// so the second eye hands over the same values, and SetOverride ignores a repeat:
+// nothing advances per eye. The copy is plain double-to-float; the fade and the
+// pulse are worked out in hw_postprocess.cpp from the frame clock, which is the
+// same for both eyes.
+//
+//==========================================================================
+
+static void SyncBloomOverride(const FLevelLocals *Level)
+{
+	PPBloom &bloom = hw_postprocess.bloom;
+	if (Level == nullptr || !Level->BloomOverrideActive)
+	{
+		bloom.ClearOverride(screen->FrameTime);   // a no-op unless one was set
+		return;
+	}
+
+	PPBloomOverride target;
+	target.Spread = (float)Level->BloomOverrideSpread;
+	target.Threshold = (float)Level->BloomOverrideThreshold;
+	target.Knee = (float)Level->BloomOverrideKnee;
+	target.TintR = (float)Level->BloomOverrideTintR;
+	target.TintG = (float)Level->BloomOverrideTintG;
+	target.TintB = (float)Level->BloomOverrideTintB;
+	target.Mix = (float)Level->BloomOverrideMix;
+	target.Intensity = (float)Level->BloomOverrideIntensity;
+	target.Fade = (float)Level->BloomOverrideFade;
+	target.Pulse = (float)Level->BloomOverridePulse;
+	target.PulseRate = (float)Level->BloomOverridePulseRate;
+	// The glow alarm pulse's rate inputs, as StartScene uploads them in mGlowTex4.z/.w:
+	// pulseRate 0 beats at the glows' rate, from the same float values.
+	target.GlowPulseLevel = (float)Level->GlowPulseLevel;
+	target.GlowPulseRate = (float)Level->GlowPulseRate;
+	bloom.SetOverride(target, screen->FrameTime);
 }
 
 // r_beams_debug: one line every two seconds. Runs on every backend -- the
@@ -3327,6 +3381,24 @@ void HWDrawInfo::DrawScene(int drawmode)
 	RenderScene(RenderState);
 	if (perfGroups) RenderState.PopGroup();	// RS FORK -- r_perflog: scene.opaque
 
+	// [MESHPARTICLES] Mesh particles -- chunks, shards, casings -- in the opaque pass ("Engine docs/
+	// COLLISION_DEBRIS_MESH_PLAN.md" #10): after the solid scene, before ambient occlusion reads the
+	// G-buffer and before portals and the translucent pass, which sort against their depth. The particle
+	// ring's gates: the master switch, Vulkan, not inside a portal or mirror (the main view and camera
+	// textures). MeshParticleBuffer::IsDrawable covers the rest: r_meshparticles, the compiled effect,
+	// something live. With no definition naming a mesh nothing here runs. fx.meshparticles times it,
+	// main view only.
+	if (r_gpuparticles && screen->IsVulkan() && mCurrentPortal == nullptr &&
+		screen->mMeshParticles != nullptr && screen->mMeshParticles->IsDrawable())
+	{
+		if (perfGroups) RenderState.PushGroup("fx.meshparticles");	// RS FORK -- r_perflog
+		screen->mMeshParticles->Draw(RenderState);
+		// What RenderScene leaves for everything after it (its decals): translucent style, LEqual.
+		RenderState.SetRenderStyle(STYLE_Translucent);
+		RenderState.SetDepthFunc(DF_LEqual);
+		if (perfGroups) RenderState.PopGroup();	// RS FORK -- r_perflog: fx.meshparticles
+	}
+
 	auto vrmode = VRMode::GetVRModeCached(true);
 	if (drawmode == DM_MAINVIEW && vrmode->RenderPlayerSpritesInScene())
 	{
@@ -3402,8 +3474,21 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// on GL/GLES.
 	if (screen->mParticleDefinitions != nullptr)
 	{
+		// [MESHPARTICLES] Which definitions draw as meshes this frame is settled first: their billboards
+		// go up empty in the Sync below (MeshParticleBuffer::GetBillboardHidden). The mesh particle buffer
+		// also takes the mesh list, resolves the models and copies the mesh definitions here. Null on
+		// GL/GLES, and then nothing is hidden.
+		const uint8_t *billboardHidden = nullptr;
+		if (screen->mMeshParticles != nullptr)
+		{
+			screen->mMeshParticles->SyncDefinitions(ParticleMeshDefinitionData(), ParticleMeshDefinitionCount(), ParticleMeshGeneration(),
+				ParticleDefinitionTableData(), ParticleDefinitionSlotCount(), ParticleDefinitionGeneration());
+			billboardHidden = screen->mMeshParticles->GetBillboardHidden();
+		}
+
 		screen->mParticleDefinitions->Sync(ParticleDefinitionTableData(), ParticleDefinitionSlotGenerations(),
-			ParticleDefinitionSlotCount(), ParticleDefinitionGeneration());
+			ParticleDefinitionSlotCount(), ParticleDefinitionGeneration(),
+			billboardHidden, MeshParticleBuffer::DEFINITION_SLOTS);
 
 		// [2c] The particle atlas layer list -- which texture fills each layer, and
 		// where -- goes with them. It changes only when PARTICLEDEFS lumps load, so
@@ -3422,6 +3507,15 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 		screen->mGpuParticles->DebugReport(Level->GpuParticleWritten);
 	}
 
+	// [MESHPARTICLES] The live slot lists of mesh particles, from the same ring: after its Sync (the
+	// mesh draw reads the ring on the GPU) and before SyncViewLights (a lit chunk asks for the lights).
+	// Null on GL/GLES.
+	if (screen->mMeshParticles != nullptr && Level != nullptr)
+	{
+		screen->mMeshParticles->Sync(Level->GpuParticles.Data(), Level->GpuParticles.Size(),
+			Level->GpuParticleSerial, Level->GpuParticleWritten, VPUniforms.mLevelTime.X);
+	}
+
 	// [DRAWNLINES] This scene's drawn lines -- SetDrawnLine lines and any beam
 	// slots r_beams_drawn routes -- to the GPU before anything draws. Rebuilt
 	// every scene, see SyncDrawnLines. Does nothing on GL/GLES (no buffer);
@@ -3438,6 +3532,11 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// [HEATREFRACTION] This view's heat sources, per eye, for the heat shimmer pass --
 	// before DrawScene, so no portal view reaches them. Cleared when not toscreen.
 	SetupHeatSources(this, toscreen);
+
+	// [BLOOMOVERRIDE] The level's bloom override to the bloom pass, main view only
+	// (SyncBloomOverride above). With none ever set this is a flag test.
+	if (toscreen)
+		SyncBloomOverride(Level);
 
 	DrawScene(toscreen ? DM_MAINVIEW : DM_OFFSCREEN);
 	screen->mBones->Unmap();

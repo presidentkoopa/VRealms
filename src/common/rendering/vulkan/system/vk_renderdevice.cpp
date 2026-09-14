@@ -39,6 +39,7 @@
 #include "hw_particledefbuffer.h"	// [PARTICLEDEFS]
 #include "hw_viewlightbuffer.h"	// [VIEWLIGHTS]
 #include "hw_sectorplanebuffer.h"	// [SECTORPLANES]
+#include "hw_meshparticles.h"	// [MESHPARTICLES]
 #include "hw_framecompute.h"	// [COMPUTE]
 #include "vulkan/renderer/vk_compute.h"	// [COMPUTE]
 #include "hw_clock.h"
@@ -379,6 +380,9 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	// [SECTORPLANES] beside the view lights, which it is created beside
 	delete mSectorPlanes;
 	mSectorPlanes = nullptr;
+	// [MESHPARTICLES] beside the view lights, which it is created beside
+	delete mMeshParticles;
+	mMeshParticles = nullptr;
 	mShadowMap.Reset();
 
 	if (mDescriptorSetManager)
@@ -459,6 +463,11 @@ void VulkanRenderDevice::InitializeState()
 	// binding 12. Written by SectorPlanes (hw_sectorplanes.cpp) only for the sectors an
 	// active effect polls.
 	mSectorPlanes = new SectorPlaneBuffer();
+	// [MESHPARTICLES] Mesh particle definitions and live slot lists; set 1 binding 9.
+	// Filled by HWDrawInfo::ProcessScene (after the ring's Sync) and drawn in the opaque
+	// pass by DrawScene. Creates nothing but its storage buffer until a definition names
+	// a mesh.
+	mMeshParticles = new MeshParticleBuffer();
 
 	mShaderManager.reset(new VkShaderManager(this));
 	mDescriptorSetManager->Init();

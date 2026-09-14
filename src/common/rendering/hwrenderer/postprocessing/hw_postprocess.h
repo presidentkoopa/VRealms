@@ -394,6 +394,45 @@ struct BlurUniforms
 	}
 };
 
+// [BLOOMSTEP] The wide bloom blur's uniforms (blur.fp's BLUR_STEPPED variants; E3 in
+// "Engine docs/REVIEW_BLOOM_PLAN.md"). A struct of its own on purpose: BlurUniforms is
+// the prolog of today's two blur programs, which the menu blur (PPBloom::RenderBlur)
+// shares, and adding a field to it would change their SPIR-V. TexelStep is how many
+// texels apart the seven taps sit; ReadsPerTap is how many linear reads each tap
+// averages over its own stretch (PPBloom::ComputeBlurSamplesStepped). Never name a
+// GLSL uniform `step`: it hides the builtin step().
+struct BlurSteppedUniforms
+{
+	float SampleWeights[8];
+	float TexelStep;
+	int ReadsPerTap;
+	float Padding0, Padding1;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SampleWeights0", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[0]) },
+			{ "SampleWeights1", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[1]) },
+			{ "SampleWeights2", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[2]) },
+			{ "SampleWeights3", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[3]) },
+			{ "SampleWeights4", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[4]) },
+			{ "SampleWeights5", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[5]) },
+			{ "SampleWeights6", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[6]) },
+			{ "SampleWeights7", UniformType::Float, offsetof(BlurSteppedUniforms, SampleWeights[7]) },
+			{ "TexelStep", UniformType::Float, offsetof(BlurSteppedUniforms, TexelStep) },
+			{ "ReadsPerTap", UniformType::Int, offsetof(BlurSteppedUniforms, ReadsPerTap) },
+			{ "Padding0", UniformType::Float, offsetof(BlurSteppedUniforms, Padding0) },
+			{ "Padding1", UniformType::Float, offsetof(BlurSteppedUniforms, Padding1) },
+		};
+	}
+};
+
+static_assert(offsetof(BlurSteppedUniforms, TexelStep) == 32, "BlurSteppedUniforms: TexelStep must follow the eight weights");
+static_assert(offsetof(BlurSteppedUniforms, ReadsPerTap) == 36, "BlurSteppedUniforms: ReadsPerTap offset");
+static_assert(offsetof(BlurSteppedUniforms, Padding1) == 44, "BlurSteppedUniforms: padding offset");
+static_assert(sizeof(BlurSteppedUniforms) == 48, "BlurSteppedUniforms must be 48 bytes (a push constant block)");
+
 /////////////////////////////////////////////////////////////////////////////
 
 // [BB] Volumetric beam -- see shaders/pp/volumetricbeam.fp. Lights the air
@@ -876,11 +915,50 @@ public:
 	PPTexture HTexture;
 };
 
+// [BLOOMOVERRIDE] One frame's copy of the level's bloom override
+// (FLevelLocals::BloomOverride*, set by LevelLocals.SetBloomOverride; E1 in
+// "Engine docs/REVIEW_BLOOM_PLAN.md"). hw_postprocess is common code and cannot see
+// the level, so the game side copies it in (SyncBloomOverride, hw_drawinfo.cpp) and
+// PPBloom eases, pulses and blends it. The natives have already clamped every value.
+struct PPBloomOverride
+{
+	float Spread = 1.4f;      // blur theta, gl_bloom_amount's meaning
+	float Threshold = 1.0f;
+	float Knee = 0.5f;
+	float TintR = 1.0f;
+	float TintG = 1.0f;
+	float TintB = 1.0f;
+	float Mix = 0.0f;         // 0 = the cvars, 1 = these values
+	float Intensity = 1.0f;   // on the bloom added back to the scene
+	float Fade = 0.0f;        // seconds a change eases over; 0 snaps
+	float Pulse = 0.0f;       // throb depth on the intensity, 0..1
+	float PulseRate = 0.0f;   // Hz; 0 = the glow alarm pulse's rate and phase
+
+	// Not part of the look: the glow alarm pulse's inputs as StartScene uploads them
+	// (mGlowTex4.z / .w). Taken live every frame, never eased, never restart a fade.
+	float GlowPulseLevel = 0.0f;
+	float GlowPulseRate = 1.0f;
+
+	bool SameLook(const PPBloomOverride &other) const
+	{
+		return Spread == other.Spread && Threshold == other.Threshold && Knee == other.Knee
+			&& TintR == other.TintR && TintG == other.TintG && TintB == other.TintB
+			&& Mix == other.Mix && Intensity == other.Intensity && Fade == other.Fade
+			&& Pulse == other.Pulse && PulseRate == other.PulseRate;
+	}
+};
+
 class PPBloom
 {
 public:
 	void RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm);
 	void RenderBlur(PPRenderState *renderstate, int sceneWidth, int sceneHeight, float gameinfobluramount);
+
+	// [BLOOMOVERRIDE] The level's override, handed over once per scene eye with the frame
+	// clock (screen->FrameTime, milliseconds). A repeat of the current look changes
+	// nothing; a new look eases in over its fade, a clear eases out over the last one.
+	void SetOverride(const PPBloomOverride &target, uint64_t now);
+	void ClearOverride(uint64_t now);
 
 private:
 	void BlurStep(PPRenderState *renderstate, const BlurUniforms &blurUniforms, PPTexture &input, PPTexture &output, PPViewport viewport, bool vertical);
@@ -889,14 +967,41 @@ private:
 	static float ComputeBlurGaussian(float n, float theta);
 	static void ComputeBlurSamples(int sampleCount, float blurAmount, float *sampleWeights);
 
+	// [BLOOMSTEP] The wide blur (gl_bloom_step > 1): the BLUR_STEPPED programs, Linear.
+	void BlurStepWide(PPRenderState *renderstate, const BlurSteppedUniforms &blurUniforms, PPTexture &input, PPTexture &output, PPViewport viewport, bool vertical);
+	static void ComputeBlurSamplesStepped(float theta, float texelStep, BlurSteppedUniforms &uniforms);
+	// A tap no further than this many level texels from the last: at the smallest level
+	// (1/32 of the scene) 32 texels already puts the outer taps past the whole image,
+	// and it bounds the reads when the step meets a high anamorphic ratio.
+	static constexpr float MAX_BLUR_TEXEL_STEP = 32.0f;
+	// Linear reads per tap: at most two texels apart, so none is skipped (16 at the cap).
+	static constexpr int MAX_BLUR_READS_PER_TAP = 16;
+
+	// [BLOOMOVERRIDE] The look at `now` and its eased mix (0 when nothing applies).
+	float EvaluateOverride(uint64_t now, PPBloomOverride &out) const;
+	static float OverridePulseFactor(const PPBloomOverride &look);
+	static void BlendOverride(const PPBloomOverride &look, float mixAmount, float &threshold, float &knee, float &amount, FVector3 &tint);
+
 	PPBlurLevel levels[NumBloomLevels];
 	int lastWidth = 0;
 	int lastHeight = 0;
+
+	// [BLOOMOVERRIDE] Ease state. Live: an override may still be on screen (set, or a
+	// clear still fading). TargetActive: the level's override is set.
+	bool OverrideLive = false;
+	bool OverrideTargetActive = false;
+	PPBloomOverride OverrideFrom;
+	PPBloomOverride OverrideTo;
+	uint64_t OverrideStartMs = 0;
+	float OverrideFadeSeconds = 0.0f;
 
 	PPShader BloomCombine = { "shaders/pp/bloomcombine.fp", "", BloomCombineUniforms::Desc() };
 	PPShader BloomExtract = { "shaders/pp/bloomextract.fp", "", ExtractUniforms::Desc() };
 	PPShader BlurVertical = { "shaders/pp/blur.fp", "#define BLUR_VERTICAL\n", BlurUniforms::Desc() };
 	PPShader BlurHorizontal = { "shaders/pp/blur.fp", "#define BLUR_HORIZONTAL\n", BlurUniforms::Desc() };
+	// [BLOOMSTEP] Compiled on first use, so they cost nothing until gl_bloom_step leaves 1.
+	PPShader BlurVerticalStepped = { "shaders/pp/blur.fp", "#define BLUR_VERTICAL\n#define BLUR_STEPPED\n", BlurSteppedUniforms::Desc() };
+	PPShader BlurHorizontalStepped = { "shaders/pp/blur.fp", "#define BLUR_HORIZONTAL\n#define BLUR_STEPPED\n", BlurSteppedUniforms::Desc() };
 };
 
 /////////////////////////////////////////////////////////////////////////////

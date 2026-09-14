@@ -2214,6 +2214,14 @@ OptionMenu DeveloperOptionsMenu protected
 	// 1-3 raise the detail of the procedural dust and fire looks a definition asks for
 	// (3 = full). Renderer-read every frame. Vulkan only.
 	Slider "Generated particle looks (0 = plain dots)", "r_gpuparticles_looks", 0, 3, 1, 0
+	// [MESHPARTICLES] r_meshparticles -- real 3D chunks ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md"
+	// #10): a PARTICLEDEFS definition that names a `mesh` draws each particle as that small model,
+	// tumbling, lit by the lights around it and landing flat on the floor. On by default (owner,
+	// 2026-09-14). Off, the same definitions draw as their billboards (cards). Definitions without a
+	// mesh never change. Renderer-read every frame, so chunks already in the air switch with this
+	// menu open; perflog.txt shows the draw as fx.meshparticles. RS_Ballistics' "Ballistics &
+	// Effects" page mirrors this row under Debris. Vulkan only.
+	Option "Mesh particles (3D chunks)", "r_meshparticles", "OnOff"
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn

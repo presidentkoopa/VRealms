@@ -46,6 +46,9 @@ public:
 	void ClearScreen() override;
 	void Draw(int dt, int index, int count, bool apply = true) override;
 	void DrawIndexed(int dt, int index, int count, bool apply = true) override;
+	// [MESHPARTICLES] Instanced draws; see FRenderState::DrawInstanced.
+	void DrawInstanced(int dt, int index, int count, int instances, int firstInstance = 0, bool apply = true) override;
+	void DrawIndexedInstanced(int dt, int index, int count, int instances, int firstInstance = 0, bool apply = true) override;
 
 	// Immediate render state change commands. These only change infrequently and should not clutter the render state.
 	bool SetDepthClamp(bool on) override;

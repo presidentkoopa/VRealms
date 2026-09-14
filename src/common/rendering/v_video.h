@@ -55,6 +55,7 @@ class DrawnLineBuffer;
 class ParticleDefinitionBuffer;
 class ViewLightBuffer;
 class SectorPlaneBuffer;		// [SECTORPLANES] hw_sectorplanebuffer.h
+class MeshParticleBuffer;		// [MESHPARTICLES] hw_meshparticles.h
 struct FrameComputeInput;		// [COMPUTE] hw_framecompute.h
 
 enum EHWCaps
@@ -176,6 +177,11 @@ public:
 	// sectors some active effect polls. Vulkan only, created beside mViewLights and null on
 	// GL/GLES -- null-check every use. See hw_sectorplanebuffer.h.
 	SectorPlaneBuffer* mSectorPlanes = nullptr;
+	// [MESHPARTICLES] Particles drawn as small instanced meshes (chunks, shards, casings): the
+	// mesh definitions and per-definition live slot lists (set 1 binding 9), the models they
+	// draw, and the opaque-pass draw. Vulkan only, created beside mViewLights and null on
+	// GL/GLES -- null-check every use. See hw_meshparticles.h.
+	MeshParticleBuffer* mMeshParticles = nullptr;
 	IShadowMap mShadowMap;
 
 	int mGameScreenWidth = 0;

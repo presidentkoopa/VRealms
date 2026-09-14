@@ -33,6 +33,7 @@
 #include "hw_drawnlinebuffer.h"	// [DRAWNLINES] ShaderReady / ShaderFailed
 #include "hw_cvars.h"	// [DRAWNLINES] r_beams_drawn, for the compile line
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES] ShaderReady / ShaderFailed
+#include "hw_meshparticles.h"	// [MESHPARTICLES] ShaderReady / ShaderFailed
 
 // [2a] Effects that read the scene depth inside a read-only depth pass, and so get
 // four extra fragment variants each (single-sample / multisample x flat / layered,
@@ -133,7 +134,7 @@ bool VkShaderManager::CompileNextShader()
 		// Effect shaders
 
 		VkShaderProgram prog;
-		if (i == EFF_GPUPARTICLES || i == EFF_DRAWNLINES)
+		if (i == EFF_GPUPARTICLES || i == EFF_DRAWNLINES || i == EFF_MESHPARTICLES)
 		{
 			// [GPUPARTICLES] The one effect whose compile failure must not take
 			// Vulkan startup down with it: it is new, optional, and nothing else
@@ -145,7 +146,12 @@ bool VkShaderManager::CompileNextShader()
 			// [DRAWNLINES] Two such effects now, guarded identically for the same
 			// reasons. DrawnLineBuffer::ShaderFailed is the drawn lines' gate, and
 			// it also sends r_beams_drawn back to per-pixel beams.
+			//
+			// [MESHPARTICLES] Three, guarded the same way. MeshParticleBuffer::ShaderFailed
+			// is the mesh draw's gate, and without it every mesh definition keeps drawing
+			// as its billboard.
 			const bool particles = (i == EFF_GPUPARTICLES);
+			const bool meshParticles = (i == EFF_MESHPARTICLES);
 			try
 			{
 				prog.vert = LoadVertShader(effectshaders[i].ShaderName, effectshaders[i].vp, effectshaders[i].defines);
@@ -154,9 +160,9 @@ bool VkShaderManager::CompileNextShader()
 			catch (const std::exception &err)
 			{
 				Printf(TEXTCOLOR_RED "%s: effect shader failed to compile (%s pass) -- %s disabled:\n%s\n",
-					particles ? "GpuParticles" : "DrawnLines",
+					particles ? "GpuParticles" : (meshParticles ? "MeshParticles" : "DrawnLines"),
 					compilePass == GBUFFER_PASS ? "gbuffer" : "normal",
-					particles ? "particles" : "drawn lines", err.what());
+					particles ? "particles" : (meshParticles ? "mesh particles (mesh definitions draw as billboards)" : "drawn lines"), err.what());
 				prog.vert.reset();
 				prog.frag.reset();
 			}
@@ -254,6 +260,24 @@ bool VkShaderManager::CompileNextShader()
 						ok ? "compiled" : "NOT available", (int)MAX_PASS_TYPES,
 						r_beams_drawn ? "ON" : "off",
 						(r_beams_drawn && !ok) ? ", so beams stay per-pixel" : "");
+				}
+
+				// [MESHPARTICLES] The same rule once more: the mesh effect for every pass, or no
+				// mesh draw at all -- and then every definition that names a mesh keeps drawing
+				// as its billboard (MeshParticleBuffer::SyncDefinitions never hides one).
+				if (fb->mMeshParticles != nullptr)
+				{
+					bool ok = true;
+					for (int pass = 0; pass < MAX_PASS_TYPES; pass++)
+					{
+						if ((int)mEffectShaders[pass].size() <= EFF_MESHPARTICLES || !mEffectShaders[pass][EFF_MESHPARTICLES].vert || !mEffectShaders[pass][EFF_MESHPARTICLES].frag)
+							ok = false;
+					}
+					fb->mMeshParticles->ShaderFailed = !ok;
+					fb->mMeshParticles->ShaderReady = ok;
+					Printf("MeshParticles: effect shader %s for %d passes%s\n",
+						ok ? "compiled" : "NOT available", (int)MAX_PASS_TYPES,
+						ok ? "" : " -- definitions that name a mesh draw as their billboards");
 				}
 				return true;
 			}
