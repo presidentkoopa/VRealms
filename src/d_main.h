@@ -115,6 +115,8 @@ struct FIWADInfo
 	int LoadLights = -1;
 	//FString DiscordAppId = nullptr;
 	FString SteamAppId = nullptr;
+	bool NoStockActors = false;		// IWADINFO NoStockActors: same as -nostockactors
+	FString ClassAliases;			// IWADINFO ClassAliases = "alias=target[,...]": same as -classalias
 };
 
 struct FFoundWadInfo

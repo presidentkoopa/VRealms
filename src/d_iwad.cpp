@@ -157,6 +157,16 @@ void FIWadManager::ParseIWadInfo(const char *fn, const char *data, int datasize,
 				{
 					iwad->nokeyboardcheats = true;
 				}
+				else if (sc.Compare("NoStockActors"))
+				{
+					iwad->NoStockActors = true;
+				}
+				else if (sc.Compare("ClassAliases"))
+				{
+					sc.MustGetStringName("=");
+					sc.MustGetString();
+					iwad->ClassAliases = sc.String;
+				}
 				else if (sc.Compare("SkipBexStringsIfLanguage"))
 				{
 					iwad->SkipBexStringsIfLanguage = true;

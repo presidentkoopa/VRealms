@@ -495,6 +495,13 @@ inline int shouldUpscale(FGameTexture* tex, EUpscaleFlags UseType)
 	return tex->GetUpscaleFlag();
 }
 
+// [DDS] GZSelaco a46c31630a: the textures gl_texture_quality may start at a smaller stored mip level
+// (FMaterial puts CTF_ReduceQuality on their base layer; hw_unloadSprites drops them when it changes).
+inline bool shouldScaleQuality(FGameTexture* tex) {
+	auto useType = tex->GetUseType();
+	return useType == ETextureType::Sprite || useType == ETextureType::SkinSprite || useType == ETextureType::Decal;
+}
+
 struct FTexCoordInfo
 {
 	int mRenderWidth;

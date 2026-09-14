@@ -96,6 +96,7 @@ enum
 	// caller for the reason AActor::FollowBodyYaw exists: the renderer's own
 	// heading is not visible to script and is not the same number as HmdYaw.
 	MDL_FOLLOWBODY					= 1<<22,	// psprite rides the body frame at draw rate; seat from DPSprite::BodyOfs
+	MDL_NOPIXELSTRETCH				= 1<<23,	// MODELDEF NoPixelStretch: no pixel-stretch scale, so the model pitches and rolls undistorted (GZSelaco 1e7fd30b59, which used 1<<16)
 };
 
 FSpriteModelFrame * FindModelFrame(AActor * thing, int sprite, int frame, bool dropped);

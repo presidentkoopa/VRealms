@@ -23,6 +23,8 @@
 #include "vk_levelfield.h"	// [LEVELFIELD]
 #include "vk_debrispool.h"	// [DEBRISPOOL]
 #include "hw_debrisframe.h"	// [DEBRISPOOL] DebrisPoolFrameForBackend
+#include "vk_surfacedamage.h"	// [SURFACEDAMAGE]
+#include "hw_surfacedamageframe.h"	// [SURFACEDAMAGE] SurfaceDamageFrameForBackend
 #include "vk_renderstate.h"
 #include "vulkan/system/vk_renderdevice.h"
 #include "vulkan/system/vk_commandbuffer.h"
@@ -43,7 +45,7 @@ VkComputeManager::VkComputeManager(VulkanRenderDevice* fb) : fb(fb)
 
 VkComputeManager::~VkComputeManager()
 {
-	// Members go in reverse order: the debris pool, the level field and the smoke volume (and their
+	// Members go in reverse order: the surface damage atlas, the debris pool, the level field and the smoke volume (and their
 	// descriptor sets) first, then the sampler, then the pools. The device is idle by now (the render device's
 	// destructor waits for it), so nothing needs a delete list.
 }
@@ -80,7 +82,14 @@ void VkComputeManager::RunFrame(const FrameComputeInput& input)
 	if (mDebrisPool != nullptr)
 		mDebrisPool->Run(debris);
 
-	// [SURFACEDAMAGE] #17 runs here, after the debris pool.
+	// [SURFACEDAMAGE] #17, after the debris pool: constructed the first time damage is painted; it frees its pages itself when
+	// damage is no longer asked for. Its frame comes through SurfaceDamageFrameForBackend (the debris pool's arrangement), acted
+	// on once per serial ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md").
+	const SurfaceDamageFrame& damage = SurfaceDamageFrameForBackend();
+	if (mSurfaceDamage == nullptr && damage.Active)
+		mSurfaceDamage = std::make_unique<VkSurfaceDamage>(this);
+	if (mSurfaceDamage != nullptr)
+		mSurfaceDamage->Run(damage);
 
 	if (mWorkBegun)
 	{

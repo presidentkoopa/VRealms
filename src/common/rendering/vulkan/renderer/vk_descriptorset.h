@@ -80,6 +80,7 @@ private:
 	void CreateHWBufferPool();
 	void CreateFixedSetPool();
 	void EnsureLevelFieldStandIns();	// [LEVELFIELD]
+	void EnsureSurfaceDamageStandIns();	// [SURFACEDAMAGE]
 
 	std::unique_ptr<VulkanDescriptorSet> AllocatePPDescriptorSet(VulkanDescriptorSetLayout* layout);
 
@@ -106,6 +107,14 @@ private:
 	std::unique_ptr<VulkanImage> LevelFieldHeaderStandIn;
 	std::unique_ptr<VulkanImageView> LevelFieldHeaderStandInView;
 	std::unique_ptr<VulkanSampler> LevelFieldSampler;
+
+	// [SURFACEDAMAGE] Fixed set bindings 7 and 8 while the damage atlas does not exist: one zeroed 1 x 1 x 1 RGBA8 array and a
+	// nearest sampler. Declared before the sets, so the sets go first on destruction. SurfaceDamageFixedBound: UpdateFixedSet
+	// wrote the real atlas this frame (UpdateHWBufferSet combines it into SurfaceDamageStatus().Bound).
+	std::unique_ptr<VulkanImage> SurfaceDamageStandIn;
+	std::unique_ptr<VulkanImageView> SurfaceDamageStandInView;
+	std::unique_ptr<VulkanSampler> SurfaceDamageStandInSampler;
+	bool SurfaceDamageFixedBound = false;
 
 	std::unique_ptr<VulkanDescriptorSet> HWBufferSet;
 	std::unique_ptr<VulkanDescriptorSet> FixedSet;

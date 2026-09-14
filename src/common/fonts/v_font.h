@@ -137,6 +137,7 @@ public:
 	void SetName(FName nm) { FontName = nm; }
 
 	int GetDisplacement() const { return Displacement; }
+	int GetInfDisplacement() const { return InfDisplacement; }	// only font.inf's Displacement; text drawing adds this one
 
 	static int GetLuminosity(uint32_t* colorsused, TArray<double>& Luminosity, int* minlum = nullptr, int* maxlum = nullptr);
 	EFontType GetType() const { return Type; }
@@ -155,6 +156,9 @@ public:
 		Displacement = other.Displacement;
 		Cursor = other.Cursor;
 		noTranslate = other.noTranslate;
+		InfDisplacement = other.InfDisplacement;
+		No1252 = other.No1252;
+		infNoTranslate = other.infNoTranslate;
 		MixedCase = other.MixedCase;
 		forceremap = other.forceremap;
 		Chars = other.Chars;
@@ -167,7 +171,7 @@ protected:
 
 	void FixXMoves();
 
-	void ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int width, int height, const DVector2 &Scale);
+	void ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int width, int height, const DVector2 &Scale, TMap<int, int> &explicitWidths);
 
 	EFontType Type = EFontType::Unknown;
 	FName AltFontName = NAME_None;
@@ -177,12 +181,15 @@ protected:
 	int GlobalKerning;
 	int TranslationType = 0;
 	int Displacement = 0;
+	int InfDisplacement = 0;	// font.inf Displacement (GZSelaco); kept apart so fonts that compute Displacement draw as before
 	int16_t MinLum = -1, MaxLum = -1;
 	char Cursor;
 	bool noTranslate = false;
 	bool MixedCase = false;
 	bool forceremap = false;
 	bool lowercaselatinonly = false;
+	bool No1252 = false;		// font.inf No1252: sheet fonts keep 0x80-0x9f instead of remapping Windows-1252
+	bool infNoTranslate = false;	// font.inf NoTranslate: GetColorTranslation returns no table, only the colour
 	struct CharData
 	{
 		FGameTexture *OriginalPic = nullptr;

@@ -2262,6 +2262,29 @@ OptionMenu DeveloperOptionsMenu protected
 	Option "Debris landing sounds", "r_debris_sounds", "OnOff"
 	// [DEBRISSOUNDS] r_debris_sounds_volume -- how loud they are, on top of each definition's landvolume and the sound volume.
 	Slider "Debris landing sound volume", "r_debris_sounds_volume", 0, 1, 0.05, 2
+	// [SURFACEDAMAGE] r_damage -- "Wall damage" ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): lasting holes, gouges, soot,
+	// scorch, hot metal and wet patches that mods paint (PaintSurfaceDamage). On by default; nothing is allocated until a mod
+	// paints. Off: nothing is drawn and the damage memory is freed. RS_Ballistics' "Ballistics & Effects" page mirrors these
+	// rows under Wall damage. Read by the renderer every frame. Vulkan only.
+	Option "Wall damage", "r_damage", "OnOff"
+	// [SURFACEDAMAGE] r_damage_memory -- how many damaged 64-unit patches are kept before the oldest are reused. Changing it
+	// clears all damage: the memory is made again. Vulkan only.
+	Option "Damage memory (changing it clears all damage)", "r_damage_memory", "DamageMemorySizes"
+	// [SURFACEDAMAGE] r_damage_heat -- struck surfaces glow where a mod paints heat, then cool. Vulkan only.
+	Option "Heat glow", "r_damage_heat", "OnOff"
+	// [SURFACEDAMAGE] The live sliders: how dark soot, how deep holes and how bright heat draw, over what the mods paint (1 = as
+	// painted). Read by the renderer every frame, so they change with this menu open. Vulkan only.
+	Slider "Damage soot", "r_damage_soot_scale", 0, 2, 0.1, 1
+	Slider "Damage hole depth", "r_damage_depth_scale", 0, 2, 0.1, 1
+	Slider "Damage heat", "r_damage_heat_scale", 0, 2, 0.1, 1
+	// [SURFACEDAMAGE] r_damage_debug -- a desk check: every damage tile tinted by its look, its edges drawn. Not saved.
+	Option "Show damage tiles", "r_damage_debug", "OnOff"
+	// [SURFACEDAMAGE] r_damage_test -- a test, not a setting: while on, every quarter second the wall or floor at the centre of
+	// your view is painted -- a hole, a hot hit that glows and cools, scorch, a wet patch, cycling through every brush -- so
+	// wall damage can be judged before a mod paints any. Not saved. Vulkan only.
+	Option "Wall damage test (paints where you look)", "r_damage_test", "OnOff"
+	// [SURFACEDAMAGE] The brushes and looks DAMAGEDEFS loaded, and what the damage memory holds, to the log.
+	Command "List damage brushes and looks (to the log)", "damagebrushes"
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
@@ -2476,6 +2499,16 @@ OptionValue "Anisotropy"
 	16, "$OPTVAL_16X"
 }
 
+// [DDS] gl_texture_quality: the stored mip level compressed DDS sprites, skins and decals start from
+OptionValue "TextureQuality"
+{
+	0, "Full"
+	1, "Half"
+	2, "Quarter"
+	3, "Eighth"
+	4, "Sixteenth"
+}
+
 OptionValue "Multisample"
 {
 	1,  "$OPTVAL_OFF"
@@ -2536,6 +2569,16 @@ OptionValue "DebrisPoolSizes"
 	16384, "16,384 (2.9 MB, default)"
 	32768, "32,768 (5.8 MB)"
 	65536, "65,536 (11.5 MB)"
+}
+
+// [SURFACEDAMAGE] r_damage_memory's sizes (Developer options, "Damage memory"): the damage tiles' memory, how many damaged
+// 64-unit patches that holds, and what the GPU spends with each page's mip level (a quarter more).
+OptionValue "DamageMemorySizes"
+{
+	64, "64 MB (900 patches; 80 MB on the GPU)"
+	128, "128 MB (1,800 patches; 160 MB on the GPU)"
+	256, "256 MB (3,600 patches; 320 MB on the GPU, default)"
+	512, "512 MB (7,200 patches; 640 MB on the GPU)"
 }
 
 OptionValue "HqResizeModes"
@@ -2640,6 +2683,7 @@ OptionMenu "GLTextureGLOptions" protected
 
 	Option "$GLTEXMNU_TEXFILTER",    gl_texture_filter,             FilterModes
 	Option "$GLTEXMNU_ANISOTROPIC",  gl_texture_filter_anisotropic, Anisotropy
+	Option "Compressed Texture Quality", gl_texture_quality,        TextureQuality
 	ifOption(MMX) {
 		Option "$GLTEXMNU_HQRESIZE", gl_texture_hqresizemode,       HqResizeModes
 	} else {
@@ -2654,7 +2698,7 @@ OptionMenu "GLTextureGLOptions" protected
 	Option "$GLTEXMNU_PRECACHETEX",  gl_precache,                   YesNo
 	Option "$GLTEXMNU_SORTDRAWLIST", gl_sort_textures,              YesNo
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar gl_texture_filter gl_texture_filter_anisotropic gl_texture_format gl_texture_usehires gl_texture_hqresizemode gl_texture_hqresizemult gl_texture_hqresize_textures gl_texture_hqresize_sprites gl_texture_hqresize_fonts gl_precache gl_sort_textures"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar gl_texture_filter gl_texture_filter_anisotropic gl_texture_quality gl_texture_format gl_texture_usehires gl_texture_hqresizemode gl_texture_hqresizemult gl_texture_hqresize_textures gl_texture_hqresize_sprites gl_texture_hqresize_fonts gl_precache gl_sort_textures"
 	Class "GLTextureGLOptions"
 }
 

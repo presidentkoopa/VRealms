@@ -52,6 +52,7 @@ FMemArena ClassDataAllocator(32768);	// use this for all static class data that 
 
 TArray<PClass *> PClass::AllClasses;
 TMap<FName, PClass*> PClass::ClassMap;
+static TMap<FName, FName> ClassAliases;	// see PClass::AddClassAlias
 TArray<VMFunction**> PClass::FunctionPtrList;
 bool PClass::bShutdown;
 bool PClass::bVMOperational;
@@ -434,7 +435,36 @@ PClass *PClass::FindClass (FName zaname)
 		return nullptr;
 	}
 	auto k = ClassMap.CheckKey(zaname);
+	if (k) return *k;
+	auto alias = ClassAliases.CheckKey(zaname);
+	if (alias == nullptr) return nullptr;
+	k = ClassMap.CheckKey(*alias);
 	return k ? *k : nullptr;
+}
+
+//==========================================================================
+//
+// PClass :: AddClassAlias / ClearClassAliases / GetClassAliasTarget
+//
+// Set from -classalias and IWADINFO ClassAliases before the scripts compile (D_InitGame), cleared on
+// every game init. Empty unless something asks, so FindClass behaves exactly as before for everything else.
+//
+//==========================================================================
+
+void PClass::AddClassAlias(FName alias, FName target)
+{
+	if (alias != NAME_None && target != NAME_None && alias != target) ClassAliases[alias] = target;
+}
+
+void PClass::ClearClassAliases()
+{
+	ClassAliases.Clear();
+}
+
+FName PClass::GetClassAliasTarget(FName alias)
+{
+	auto target = ClassAliases.CheckKey(alias);
+	return target ? *target : FName(NAME_None);
 }
 
 //==========================================================================

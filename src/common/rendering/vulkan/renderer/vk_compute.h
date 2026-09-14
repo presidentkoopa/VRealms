@@ -44,6 +44,7 @@ class VulkanRenderDevice;
 class VkSmokeVolume;
 class VkLevelField;	// [LEVELFIELD]
 class VkDebrisPool;	// [DEBRISPOOL]
+class VkSurfaceDamage;	// [SURFACEDAMAGE]
 struct FrameComputeInput;
 
 // One binding of a compute program's descriptor set (set 0), compute stage.
@@ -118,6 +119,10 @@ public:
 	// Null until a debris burst is first taken.
 	VkDebrisPool* GetDebrisPool() const { return mDebrisPool.get(); }
 
+	// [SURFACEDAMAGE] The surface damage atlas (#17), whose pages, detail textures and data the descriptor sets bind
+	// (VkDescriptorSetManager: fixed bindings 7 and 8, set 1 binding 13). Null until damage is first painted.
+	VkSurfaceDamage* GetSurfaceDamage() const { return mSurfaceDamage.get(); }
+
 private:
 	VulkanRenderDevice* fb = nullptr;
 
@@ -129,6 +134,7 @@ private:
 	std::unique_ptr<VkSmokeVolume> mSmokeVolume;
 	std::unique_ptr<VkLevelField> mLevelField;	// [LEVELFIELD]
 	std::unique_ptr<VkDebrisPool> mDebrisPool;	// [DEBRISPOOL]
+	std::unique_ptr<VkSurfaceDamage> mSurfaceDamage;	// [SURFACEDAMAGE]
 
 	bool mWorkBegun = false;
 };

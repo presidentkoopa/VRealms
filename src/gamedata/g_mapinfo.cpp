@@ -251,6 +251,11 @@ void level_info_t::Reset()
 	cluster = 0;
 	partime = 0;
 	sucktime = 0;
+	levelgroup = 0;
+	areaNum = 0;
+	invasiontier = 0;
+	tilt = tiltAngle = 0.0;
+	Description = "";
 	flags = 0;
 	if (gameinfo.gametype == GAME_Hexen)
 		flags2 = 0;
@@ -1025,6 +1030,50 @@ DEFINE_MAP_OPTION(author, true)
 	parse.ParseAssign();
 	parse.sc.MustGetString();
 	info->AuthorName = parse.sc.String;
+}
+
+// Map data standalone games read from script (GZSelaco). The engine only stores them.
+DEFINE_MAP_OPTION(levelgroup, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+	info->levelgroup = parse.sc.Number;
+}
+
+DEFINE_MAP_OPTION(areaNum, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+	info->areaNum = parse.sc.Number;
+}
+
+DEFINE_MAP_OPTION(description, true)
+{
+	// Selaco localizes at parse time; stored raw here, scripts can StringTable.Localize it.
+	parse.ParseAssign();
+	parse.sc.MustGetString();
+	info->Description = strbin1(parse.sc.String);
+}
+
+DEFINE_MAP_OPTION(invasiontier, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+	info->invasiontier = parse.sc.Number;
+}
+
+DEFINE_MAP_OPTION(tilt, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetFloat();
+	info->tilt = parse.sc.Float;
+}
+
+DEFINE_MAP_OPTION(tiltAngle, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetFloat();
+	info->tiltAngle = parse.sc.Float;
 }
 
 DEFINE_MAP_OPTION(label, true)
@@ -1895,6 +1944,9 @@ MapFlagHandlers[] =
 	{ "nofogofwar",						MITYPE_SETFLAG3,	LEVEL3_NOFOGOFWAR, 0 },
 	{ "useskymist",						MITYPE_SETFLAG3,	LEVEL3_SKYMIST, 0 },
 	{ "noambientocclusion",				MITYPE_SETFLAG3,	LEVEL3_NOAMBIENTOCCLUSION, 0 },
+	{ "rainymap",						MITYPE_SETFLAG3,	LEVEL3_RAINYMAP, 0 },	// game hints for script (GZSelaco)
+	{ "windymap",						MITYPE_SETFLAG3,	LEVEL3_WINDYMAP, 0 },
+	{ "saferoom",						MITYPE_SETFLAG3,	LEVEL3_SAFEROOM, 0 },
 	{ "nobotnodes",						MITYPE_IGNORE,	0, 0 },		// Skulltag option: nobotnodes
 	{ "nopassover",						MITYPE_COMPATFLAG, COMPATF_NO_PASSMOBJ, 0 },
 	{ "passover",						MITYPE_CLRCOMPATFLAG, COMPATF_NO_PASSMOBJ, 0 },

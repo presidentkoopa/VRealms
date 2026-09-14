@@ -47,6 +47,7 @@
 #include "hw_sectorplanes.h"	// [SECTORPLANES] SectorPlanes::BeginFrame
 #include "hw_levelfield.h"		// [LEVELFIELD] LevelField::PrepareFrame
 #include "hw_debrispool.h"		// [DEBRISPOOL] DebrisPool::PrepareFrame
+#include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -166,6 +167,7 @@ static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp,
 	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.Angles.Yaw.Radians(), vp.TicFrac, serial, input.Smoke);
 	LevelField::Get().PrepareFrame(Level, vp.Pos, serial, input.LevelField);	// [LEVELFIELD] #8
 	DebrisPool::Get().PrepareFrame(Level, serial);	// [DEBRISPOOL] #9: its frame reaches the backend through DebrisPoolFrameForBackend
+	SurfaceDamage::Get().PrepareFrame(Level, vp.Pos.X, vp.Pos.Y, vp.Pos.Z, vp.Angles.Yaw.Radians(), vp.Angles.Pitch.Radians(), serial);	// [SURFACEDAMAGE] #17: its frame reaches the backend through SurfaceDamageFrameForBackend
 }
 
 //-----------------------------------------------------------------------------

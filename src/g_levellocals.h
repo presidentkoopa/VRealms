@@ -616,6 +616,23 @@ struct FDebrisBurstEvent
 	float    Ambient = 1.f;
 };
 
+// [SURFACEDAMAGE] One PaintSurfaceDamage (#17, "Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): a brush pressed into the
+// surface at Pos, facing Normal (unit), turned so its +x follows Axis along the surface (unit; zero = unrotated). Brush is
+// the DAMAGEDEFS brush's name (an FName index). Radius in map units; Depth, Soot, Heat and Wet 0..1. Clamped by the native
+// (vmthunks.cpp); the renderer finds the surface (hw_surfacedamage.cpp).
+struct FSurfaceDamagePaintEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	DVector3 Normal{ 0., 0., 1. };
+	DVector3 Axis{ 0., 0., 0. };
+	int      Brush = 0;
+	double   Radius = 0.;
+	double   Depth = 0.;
+	double   Soot = 0.;
+	double   Heat = 0.;
+	double   Wet = 0.;
+};
+
 struct FLevelLocals
 {
 	void *level;
@@ -1100,6 +1117,9 @@ public:
 	FString		NextMap;			// go here when using the regular exit
 	FString		NextSecretMap;		// map to go to when used secret exit
 	FString		AuthorName;
+	int			levelgroup, areaNum;	// MAPINFO data for scripts (GZSelaco); stored only
+	int			invasiontier;
+	double		tilt, tiltAngle;
 	FString		F1Pic;
 	FTranslator *Translator;
 	EMapType	maptype;
@@ -1590,6 +1610,9 @@ public:
 	FEffectTicQueue<FSmokeCarveEvent, MAX_SMOKE_CARVES_PER_TIC> SmokeCarves;
 	FEffectTicQueue<FEffectImpulseEvent, MAX_EFFECT_IMPULSES_PER_TIC> EffectImpulses;
 	FEffectTicQueue<FDebrisBurstEvent, MAX_DEBRIS_BURSTS_PER_TIC> DebrisBursts;	// [DEBRISPOOL] written by SpawnParticles
+	// [SURFACEDAMAGE] PaintSurfaceDamage calls per tic (SH4's number for #17): a Super Shotgun blast into a wall is 20.
+	static constexpr int MAX_SURFACE_DAMAGE_PAINTS_PER_TIC = 128;
+	FEffectTicQueue<FSurfaceDamagePaintEvent, MAX_SURFACE_DAMAGE_PAINTS_PER_TIC> SurfaceDamagePaints;	// [SURFACEDAMAGE] written by PaintSurfaceDamage
 
 	// P_Ticker, at the top of this level's tic, before any writer runs.
 	void BeginEffectTic()
@@ -1598,6 +1621,7 @@ public:
 		SmokeCarves.BeginTic(maptime);
 		EffectImpulses.BeginTic(maptime);
 		DebrisBursts.BeginTic(maptime);
+		SurfaceDamagePaints.BeginTic(maptime);	// [SURFACEDAMAGE]
 	}
 
 	// ClearLevelData. maptime restarts at 0 on the new map.
@@ -1607,6 +1631,7 @@ public:
 		SmokeCarves.Reset(0);
 		EffectImpulses.Reset(0);
 		DebrisBursts.Reset(0);
+		SurfaceDamagePaints.Reset(0);	// [SURFACEDAMAGE]
 	}
 
 	// [DEBRISPOOL] Raised by ClearGpuParticles: the renderer's debris pool empties, as the ring does. A new

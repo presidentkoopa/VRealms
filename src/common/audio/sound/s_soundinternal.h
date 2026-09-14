@@ -87,6 +87,35 @@ private:
 constexpr FSoundID NO_SOUND = FSoundID::fromInt(0);
 constexpr FSoundID INVALID_SOUND = FSoundID::fromInt(-1);
 
+// [SOUNDHANDLES] A handle to one started sound, so it can be changed or stopped later (GZSelaco 5e3644b940, f86a8cc6c9;
+// ZScript's SoundHandle type, core/types.cpp PSoundHandle, and its methods, engine/base.zs SoundHandleStruct).
+//
+// - A start call that returns a handle ISSUES one every time (SoundEngine::IssueSoundHandle), whether or not a sound
+//   then starts on this machine: sound off, a $limit, a CHANF_LOCAL sound for another view, no free voice. The channel
+//   it starts, if any, carries the id in FSoundChan::HandleID; SoundEngine::IsPlaying/SetPitch/SetVolume/StopSound
+//   look for it there, and a finished, stopped or never-started sound's handle just finds nothing.
+// - Netplay: sound is this machine's presentation and so is a handle. Whether a handle is valid depends only on a start
+//   call having been made -- never on this machine's sound state -- so play code may keep one and test IsValid().
+//   The id's VALUE comes from a per-machine counter: equal and ordered the same way on every machine, but never a
+//   number for gameplay. A sound's state (IsPlaying) is ui-only in ZScript for the same reason.
+// - Savegames never hold an id: a SoundHandle field loads invalid (PSoundHandle::WriteValue). The counter is never reset,
+//   so a handle kept across a map change or a load cannot match a later sound.
+// - Both conversions are explicit, so a handle is never taken for a channel number (S_StopSound(int) / (FSoundHandle)).
+class FSoundHandle
+{
+public:
+	FSoundHandle() = default;
+	constexpr explicit FSoundHandle(int id) : ID(id) {}
+	FSoundHandle(const FSoundHandle &other) = default;
+	FSoundHandle &operator=(const FSoundHandle &other) = default;
+	bool operator ==(FSoundHandle other) const { return ID == other.ID; }
+	bool operator !=(FSoundHandle other) const { return ID != other.ID; }
+	constexpr explicit operator int() const { return ID; }
+	constexpr bool IsValid() const { return ID > 0; }	// ZScript's builtin SoundHandle.IsValid() is the same test
+private:
+	int ID = 0;
+};
+
  struct FRandomSoundList
  {
 	 TArray<FSoundID> Choices;
@@ -143,6 +172,7 @@ struct FSoundChan : public FISoundChannel
 	FSoundChan **PrevChan;	// Previous channel in this list.
 	FSoundID	SoundID;	// Sound ID of playing sound.
 	FSoundID	OrgID;		// Sound ID of sound used to start this channel.
+	int			HandleID;	// [SOUNDHANDLES] The FSoundHandle this sound was started with; 0 = none. Never saved.
 	float		Volume;
 	int 		EntChannel;	// Actor's sound channel.
 	int			UserData;	// Not used by the engine, the caller can use this to store some additional info.
@@ -224,6 +254,7 @@ protected:
 	TMap<int, FSoundID> ResIdMap;
 	TArray<FRandomSoundList> S_rnd;
 	bool blockNewSounds = false;
+	int LastSoundHandle = 0;	// [SOUNDHANDLES] the last id IssueSoundHandle handed out; never reset (FSoundHandle)
 
 private:
 	void LinkChannel(FSoundChan* chan, FSoundChan** head);
@@ -296,6 +327,15 @@ public:
 	void SetPitch(FSoundChan* chan, float dpitch);
 	void SetVolume(FSoundChan* chan, float vol);
 
+	// [SOUNDHANDLES] Handles (FSoundHandle above; s_sound.cpp). IssueSoundHandle hands out the next id. The rest reach the
+	// channel carrying a handle and return false when there is none (finished, stopped, never started, invalid).
+	FSoundHandle IssueSoundHandle();
+	FSoundChan* FindChannel(FSoundHandle handle);
+	bool IsPlaying(FSoundHandle handle);
+	bool SetPitch(FSoundHandle handle, float pitch);
+	bool SetVolume(FSoundHandle handle, float volume);
+	bool StopSound(FSoundHandle handle);
+
 	FSoundChan* GetChannel(void* syschan);
 	void RestoreEvictedChannels();
 	void CalcPosVel(FSoundChan* chan, FVector3* pos, FVector3* vel);
@@ -312,7 +352,8 @@ public:
 	void UpdateSounds(int time);
 
 	FSoundChan* StartSound(int sourcetype, const void* source,
-		const FVector3* pt, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, FRolloffInfo* rolloff = nullptr, float spitch = 0.0f, float startTime = 0.0f);
+		const FVector3* pt, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, FRolloffInfo* rolloff = nullptr, float spitch = 0.0f, float startTime = 0.0f,
+		FSoundHandle* handleOut = nullptr);	// [SOUNDHANDLES] not null: *handleOut is issued if invalid, and the channel started carries it
 
 	// Stops an origin-less sound from playing from this channel.
 	void StopSoundID(FSoundID sound_id);

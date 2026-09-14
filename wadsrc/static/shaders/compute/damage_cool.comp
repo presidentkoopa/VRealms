@@ -1,0 +1,51 @@
+// [SURFACEDAMAGE] Cools the hot surface damage tiles ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"; the C++ is
+// vk_surfacedamage.cpp, the constants hw_surfacedamageframe.h).
+//
+// Every 8 world tics the CPU lists the tiles still hot, and each texel's heat (blue) becomes max(heat x keep - subtract, 0).
+// Two passes due in one frame arrive folded into one keep and one subtract. Only heat changes; soot, depth and wet are
+// written back as they were read. The tiles' level 1 is rebuilt after this by damage_stamp.comp's DAMAGE_MIP program.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2DArray DamagePages;
+
+// hw_surfacedamageframe.h SurfaceDamageTileGpu.
+struct SurfaceDamageTile
+{
+	int Tile;
+	int First;
+	int Count;
+	int Flags;
+};
+layout(set = 0, binding = 3, std430) readonly buffer DamageTiles
+{
+	SurfaceDamageTile tiles[];
+};
+
+// vk_surfacedamage.cpp DamageDispatchConstants: Range x the first tile record, y how many; Cool x keep, y subtract.
+layout(push_constant) uniform DamageDispatchConstants
+{
+	ivec4 Range;
+	vec4 Cool;
+};
+
+// hw_surfacedamageframe.h SurfaceDamageTileOrigin.
+ivec2 DamageSlotOrigin(int tile)
+{
+	int slot = tile % 225;
+	return ivec2(slot % 15, slot / 15) * 132;
+}
+
+void main()
+{
+	uvec3 id = gl_GlobalInvocationID;
+	if (id.x >= 132u || id.y >= 132u || int(id.z) >= Range.y)
+		return;
+	SurfaceDamageTile t = tiles[Range.x + int(id.z)];
+	ivec3 at = ivec3(DamageSlotOrigin(t.Tile) + ivec2(id.xy), t.Tile / 225);
+	vec4 texel = imageLoad(DamagePages, at);
+	if (texel.b <= 0.0)
+		return;
+	texel.b = max(texel.b * Cool.x - Cool.y, 0.0);
+	imageStore(DamagePages, at, texel);
+}

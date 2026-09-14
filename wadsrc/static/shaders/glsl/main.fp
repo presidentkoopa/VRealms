@@ -3958,6 +3958,182 @@ vec4 ApplyFadeColor(vec4 frag)
 	return frag;
 }
 
+#ifdef SURFACE_DAMAGE
+//===========================================================================
+//
+// [SURFACEDAMAGE] LASTING SURFACE DAMAGE ("Engine docs/SURFACE_DAMAGE_PLAN.md" #17,
+// "Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): bullet holes, gouges, soot, scorch, hot
+// metal and wet patches that stay on walls and floors. Only the Vulkan backend's programs
+// of this lump define SURFACE_DAMAGE (vk_shader.cpp); GL and GLES never compile any of it.
+//
+// A wall part or a flat that owns damage tiles is drawn with its record slot + 1 in the
+// per-draw data; every other draw -- and every draw while nothing is damaged -- has 0 and
+// returns on the first line of ApplySurfaceDamage. The record gives the surface's own
+// (u, v) in map units as two planes over the world position: for a wall, u along its line
+// and v down from its pegging anchor, so holes ride a door's face with the door. The hash
+// finds the 64-unit cell's tile; the tile's texels are r soot, g hole depth, b heat,
+// a wetness (hw_surfacedamageframe.h has the layouts and the C++ twin of the hash).
+//
+// It changes the material before anything lights it, and adds the heat glow as emissive
+// light after getLightColor. No beam, fog slab or viewpoint value is read or changed here.
+//
+//===========================================================================
+
+// The per-draw key: uFogPad2's slot, which hw_renderstate.h names uSurfaceDamageKey.
+#define uSurfaceDamageKey data[uDataIndex].uFogPad2
+
+// hw_surfacedamageframe.h: [0] scales (soot, depth, heat, show tiles), [1] x the hash's
+// entry count, [2..) 16 looks x 4 vec4 (rim, inside, detail, finish), [66..) 8,192 surface
+// records x 2 vec4 (U, V), [16450..) the hash (slot + 1, cell u, cell v, tile + look x 65536).
+layout(set = 1, binding = 13, std430) buffer readonly SurfaceDamageSSO
+{
+	vec4 surfaceDamageData[];
+};
+layout(set = 0, binding = 7) uniform sampler2DArray SurfaceDamagePages;
+layout(set = 0, binding = 8) uniform sampler2DArray SurfaceDamageDetail;
+
+const int SURFACE_DAMAGE_LOOKS_AT = 2;
+const int SURFACE_DAMAGE_SURFACES_AT = 66;
+const int SURFACE_DAMAGE_HASH_AT = 16450;
+
+// The heat glow ApplySurfaceDamage found for this pixel, added after the lighting in main().
+bool gSurfaceDamageGlows = false;
+vec3 gSurfaceDamageGlow = vec3(0.0);
+
+// hw_surfacedamageframe.h SurfaceDamageHash, token for token.
+uint SurfaceDamageHash(uint slot, int cellU, int cellV)
+{
+	uint h = slot * 0x9E3779B1u;
+	h ^= uint(cellU) * 0x85EBCA77u;
+	h = (h ^ (h >> 15)) * 0x2C1B3C6Du;
+	h ^= uint(cellV) * 0xC2B2AE3Du;
+	h = (h ^ (h >> 12)) * 0x297A2D39u;
+	return h ^ (h >> 15);
+}
+
+// Hot metal: dull red, through orange, to yellow-white, brighter than 1 at full heat so bloom takes it.
+vec3 SurfaceDamageHeatColor(float heat)
+{
+	vec3 dull = vec3(0.45, 0.04, 0.0);
+	vec3 orange = vec3(1.0, 0.36, 0.05);
+	vec3 whiteHot = vec3(1.0, 0.86, 0.6);
+	vec3 ramp = heat < 0.5 ? mix(dull, orange, heat * 2.0) : mix(orange, whiteHot, heat * 2.0 - 1.0);
+	return ramp * heat * heat * 3.0;
+}
+
+void ApplySurfaceDamage(inout Material material)
+{
+	int damageKey = uSurfaceDamageKey;
+	if (damageKey <= 0)
+		return;
+
+	// From here the control flow is the same for the whole draw, so every derivative is taken here and every texture read
+	// below has a sound LOD, whatever cell or tile a pixel is in.
+	int record = SURFACE_DAMAGE_SURFACES_AT + (damageKey - 1) * 2;
+	vec4 planeU = surfaceDamageData[record];
+	vec4 planeV = surfaceDamageData[record + 1];
+	vec2 uv = vec2(dot(pixelpos.xyz, planeU.xyz) + planeU.w, dot(pixelpos.xyz, planeV.xyz) + planeV.w);
+	vec2 uvDx = dFdx(uv);
+	vec2 uvDy = dFdy(uv);
+	vec2 stDx = dFdx(vTexCoord.st);
+	vec2 stDy = dFdy(vTexCoord.st);
+
+	// The cell's tile: four probes of the hash. Not found leaves everything below at no damage.
+	vec2 cell = floor(uv / 64.0);
+	uint hashMask = uint(surfaceDamageData[1].x) - 1u;
+	uint damageHash = SurfaceDamageHash(uint(damageKey - 1), int(cell.x), int(cell.y));
+	float found = 0.0;
+	int tileAndLook = 0;
+	for (int probe = 0; probe < 4; probe++)
+	{
+		vec4 entry = surfaceDamageData[SURFACE_DAMAGE_HASH_AT + int((damageHash + uint(probe)) & hashMask)];
+		if (entry.x == float(damageKey) && entry.y == cell.x && entry.z == cell.y)
+		{
+			tileAndLook = int(entry.w);
+			found = 1.0;
+			break;
+		}
+	}
+
+	int tile = tileAndLook % 65536;
+	int look = clamp(tileAndLook / 65536, 0, 15);
+	int slot = tile % 225;
+	vec2 texel = vec2(float(slot % 15), float(slot / 15)) * 132.0 + 2.0 + (uv - cell * 64.0) * 2.0;
+	vec3 at = vec3(texel / 2048.0, float(tile / 225));
+	float lod = clamp(log2(max(max(length(uvDx), length(uvDy)) * 2.0, 1.0)), 0.0, 1.0);
+	vec4 damage = textureLod(SurfaceDamagePages, at, lod) * found;
+	float depthAlongU = textureLod(SurfaceDamagePages, at + vec3(1.0 / 2048.0, 0.0, 0.0), lod).g * found;
+	float depthAlongV = textureLod(SurfaceDamagePages, at + vec3(0.0, 1.0 / 2048.0, 0.0), lod).g * found;
+
+	vec4 scales = surfaceDamageData[0];
+	int lookAt = SURFACE_DAMAGE_LOOKS_AT + look * 4;
+	vec4 lookRim = surfaceDamageData[lookAt];
+	vec4 lookInside = surfaceDamageData[lookAt + 1];
+	vec4 lookDetail = surfaceDamageData[lookAt + 2];
+	vec4 lookFinish = surfaceDamageData[lookAt + 3];
+
+	float soot = clamp(damage.r * scales.x, 0.0, 1.0);
+	float depth = clamp(damage.g * scales.y, 0.0, 1.0);
+	float heat = clamp(damage.b * scales.z, 0.0, 1.0);
+	float wet = damage.a;
+	// The depth's climb per texel along u and v: a hole's edge.
+	vec2 slope = vec2(depthAlongU - damage.g, depthAlongV - damage.g) * scales.y;
+
+	// The look's tiling detail breaks holes and rims up (explicit gradients: no LOD jump at a cell's edge).
+	float detailScale = max(lookDetail.y, 1.0);
+	vec4 grain = textureGrad(SurfaceDamageDetail, vec3(uv / detailScale, lookDetail.x), uvDx / detailScale, uvDy / detailScale);
+	float hole = clamp(depth * mix(1.0, 0.55 + 0.9 * grain.g, lookDetail.z), 0.0, 1.0);
+	float rim = clamp(length(slope) * lookDetail.w, 0.0, 1.0) * (1.0 - hole) * mix(1.0, 0.5 + grain.r, lookDetail.z);
+
+	// Inside a hole the surface's own texture is seen further in: fetched again, shifted away from the eye by the look's depth,
+	// through the (u, v) -> (s, t) map the derivatives give. With no hole the shift is 0 and the texel is the same one.
+	mat2 uvMap = mat2(uvDx, uvDy);
+	mat2 uvToSt = abs(determinant(uvMap)) > 1.0e-10 ? mat2(stDx, stDy) * inverse(uvMap) : mat2(0.0);
+	vec3 toEye = uCameraPos.xyz - pixelpos.xyz;
+	float eyeDistance = max(length(toEye), 1.0);
+	float facing = max(abs(dot(toEye / eyeDistance, normalize(vWorldNormal.xyz))), 0.25);
+	vec2 shift = -vec2(dot(toEye, planeU.xyz), dot(toEye, planeV.xyz)) / (eyeDistance * facing) * lookFinish.w * hole;
+	vec4 inner = getTexel(vTexCoord.st + uvToSt * shift);
+
+	vec3 base = material.Base.rgb;
+	base = mix(base, inner.rgb, hole * step(0.001, lookFinish.w));
+	base = mix(base, base * lookInside.rgb, hole * lookInside.a);
+	base = mix(base, lookRim.rgb, rim * lookRim.a);
+	base *= 1.0 - soot * (0.8 + 0.2 * grain.a);
+	base *= 1.0 - 0.3 * wet;
+	material.Base.rgb = base;
+
+	// Holes bend the surface for dynamic lights (sector light does not use normals, so holes read mostly through the darkening
+	// and the parallax above).
+	vec3 bend = (slope.x * normalize(planeU.xyz) + slope.y * normalize(planeV.xyz)) * lookFinish.z * 2.0;
+	if (dot(material.Normal, material.Normal) > 0.25 && dot(bend, bend) > 0.0)
+		material.Normal = normalize(material.Normal + bend);
+
+	// Wet: more specular and less rough (the SPECULAR and PBR materials light it).
+	float shine = wet * lookFinish.x;
+	material.Specular += vec3(shine);
+	material.Glossiness = max(material.Glossiness, shine * 48.0);
+	material.SpecularLevel += shine;
+	material.Roughness = mix(material.Roughness, 0.08, clamp(shine, 0.0, 1.0));
+
+	// Only hot things glow.
+	if (heat > 0.0)
+	{
+		gSurfaceDamageGlow = SurfaceDamageHeatColor(heat) * (0.8 + 0.4 * grain.r);
+		gSurfaceDamageGlows = true;
+	}
+
+	// "Show damage tiles": each tile tinted by its look, its edges drawn.
+	if (scales.w > 0.5 && found > 0.5)
+	{
+		vec2 inTile = uv - cell * 64.0;
+		float edge = step(min(min(inTile.x, inTile.y), min(64.0 - inTile.x, 64.0 - inTile.y)), 1.0);
+		vec3 tint = fract(vec3(0.37, 0.61, 0.83) * float(look + 1)) * 0.6 + 0.4;
+		material.Base.rgb = mix(material.Base.rgb * mix(vec3(1.0), tint, 0.35), vec3(1.0, 0.9, 0.2), edge);
+	}
+}
+#endif
+
 //===========================================================================
 //
 // Main shader routine
@@ -3986,6 +4162,12 @@ void main()
 	SetupMaterial(material);
 #else
 	Material material = ProcessMaterial();
+#endif
+
+#ifdef SURFACE_DAMAGE
+	// [SURFACEDAMAGE] Lasting damage changes this surface's material before anything lights it (every draw without damage: one
+	// compare and a return).
+	ApplySurfaceDamage(material);
 #endif
 
 	// [OUTLINE] An actor traced in neon by its own sprite. HERE, before the
@@ -4036,6 +4218,17 @@ void main()
 		if ((uTextureMode & 0xffff) != 7)
 		{
 			frag = getLightColor(material, fogdist, fogfactor);
+#ifdef SURFACE_DAMAGE
+			// [SURFACEDAMAGE] Hot metal glows: emissive light added after the lighting, so a dark room does not dim it and bloom
+			// takes it; the fog below still covers it.
+			if (gSurfaceDamageGlows)
+			{
+				frag.rgb += gSurfaceDamageGlow;
+#ifdef SCENE_LIGHT_MASK
+				gMaskEmissive += gSurfaceDamageGlow.r + gSurfaceDamageGlow.g + gSurfaceDamageGlow.b;	// [LIGHTMASK] emissive light
+#endif
+			}
+#endif
 
 			//
 			// colored fog

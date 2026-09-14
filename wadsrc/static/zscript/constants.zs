@@ -1493,6 +1493,9 @@ enum ELevelFlags
 	LEVEL3_SECRET				= 0x00200000,	// level is a secret level
 	LEVEL3_SKYMIST				= 0x00400000,   // level skyfog uses the skymist texture
 	LEVEL3_NOAMBIENTOCCLUSION	= 0x00800000,   // disables ambient occlusion on this map
+	LEVEL3_RAINYMAP				= 0x01000000,	// MAPINFO RainyMap (GZSelaco used 0x00200000)
+	LEVEL3_SAFEROOM				= 0x02000000,	// MAPINFO Saferoom (GZSelaco used 0x00400000)
+	LEVEL3_WINDYMAP				= 0x04000000,	// MAPINFO WindyMap (GZSelaco used 0x00800000)
 };
 
 // [RH] Compatibility flags.

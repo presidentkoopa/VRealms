@@ -217,6 +217,7 @@ enum EFxType
 	EFX_StringCast,
 	EFX_ColorCast,
 	EFX_SoundCast,
+	EFX_SoundHandleCast,	// [SOUNDHANDLES]
 	EFX_TranslationCast,
 	EFX_TypeCast,
 	EFX_PlusSign,
@@ -708,6 +709,20 @@ public:
 
 	FxSoundCast(FxExpression *x);
 	~FxSoundCast();
+	FxExpression *Resolve(FCompileContext&);
+
+	ExpEmit Emit(VMFunctionBuilder *build);
+};
+
+// [SOUNDHANDLES] Conversion to ZScript's SoundHandle -- GZSelaco's cast (codegen.cpp).
+class FxSoundHandleCast : public FxExpression
+{
+	FxExpression *basex;
+
+public:
+
+	FxSoundHandleCast(FxExpression *x);
+	~FxSoundHandleCast();
 	FxExpression *Resolve(FCompileContext&);
 
 	ExpEmit Emit(VMFunctionBuilder *build);

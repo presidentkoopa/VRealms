@@ -260,6 +260,10 @@ enum ELevelFlags : unsigned int
 	LEVEL3_SECRET				= 0x00200000,   // level is a secret level
 	LEVEL3_SKYMIST				= 0x00400000,   // level skyfog uses the skymist texture
 	LEVEL3_NOAMBIENTOCCLUSION	= 0x00800000,   // disables ambient occlusion on this map
+	// Game hints scripts read (GZSelaco). Selaco used 0x00200000-0x00800000, which SECRET/SKYMIST/NOAMBIENTOCCLUSION hold here.
+	LEVEL3_RAINYMAP				= 0x01000000,	// draw rain under F_SKY
+	LEVEL3_SAFEROOM				= 0x02000000,	// the map has a safe room
+	LEVEL3_WINDYMAP				= 0x04000000,	// wind instead of rain under F_SKY
 };
 
 
@@ -341,6 +345,12 @@ struct level_info_t
 	FString		LevelName;
 	FString		MapLabel;
 	FString		AuthorName;
+	// Map data standalone games read from script (GZSelaco): LevelGroup, AreaNum, InvasionTier, Tilt, TiltAngle,
+	// Description. Stored only; nothing in the engine reads them yet (Tilt rendering is Selaco port Phase 2).
+	FString		Description;
+	int			levelgroup, areaNum;
+	int			invasiontier;
+	double		tilt, tiltAngle;
 	int8_t		WallVertLight, WallHorizLight;
 	int			musicorder;
 	FileSys::FCompressedBuffer	Snapshot;

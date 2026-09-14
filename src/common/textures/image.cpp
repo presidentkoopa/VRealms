@@ -172,6 +172,22 @@ int FImageSource::CopyTranslatedPixels(FBitmap *bmp, const PalEntry *remap, int 
 	return 0;
 }
 
+//===========================================================================
+//
+// [DDS] GZSelaco 9d6ab015a7: only images whose stored pixels are GPU
+// block-compressed (IsGPUOnly) have any to give. Selaco stopped with a fatal
+// error here; a null buffer lets every caller fall back to the CPU decode.
+//
+//===========================================================================
+
+int FImageSource::ReadCompressedPixels(FileReader* reader, unsigned char** data, size_t& size, size_t& unitSize, int& mipLevels)
+{
+	*data = nullptr;
+	size = unitSize = 0;
+	mipLevels = 0;
+	return 0;
+}
+
 //==========================================================================
 //
 //

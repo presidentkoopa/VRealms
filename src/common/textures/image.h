@@ -40,6 +40,8 @@
 #endif
 
 class FImageSource;
+namespace FileSys { class FileReader; }
+using FileSys::FileReader;	// [DDS] FImageSource::ReadCompressedPixels (files.h has the same using)
 using PrecacheInfo = TMap<int, std::pair<int, int>>;
 extern FMemArena ImageArena;
 
@@ -105,6 +107,19 @@ public:
 	virtual bool SupportRemap0() { return false; }		// Unfortunate hackery that's needed for Hexen's skies. Only the image can know about the needed parameters
 	virtual bool IsRawCompatible() { return true; }		// Same thing for mid texture compatibility handling. Can only be determined by looking at the composition data which is private to the image.
 
+	// [DDS] Compressed DDS textures (GZSelaco 9d6ab015a7, 1c5f0b120d; Selaco's names).
+	// IsGPUOnly: the stored pixels are already in a GPU block-compressed format (getVKFormat,
+	// getGLFormat) and carry their own mip levels, so VkHardwareTexture uploads them as they are
+	// when the device has the format. In Selaco such an image could only live on the GPU; here
+	// the CPU decoders still read it, for a device without the format and for anything that
+	// changes its pixels (a translation, the sprite frame).
+	virtual bool IsGPUOnly() { return false; }
+	virtual int getGLFormat() const { return 0; }
+	virtual int getVKFormat() const { return 0; }
+	// False when the sprite code must not add its 1-pixel filtering frame (FGameTexture::ShouldExpandSprite):
+	// the image is placed by its own header and goes up as it is stored.
+	virtual bool CanExpandSprite() { return true; }
+
 	void CopySize(FImageSource &other) noexcept
 	{
 		Width = other.Width;
@@ -133,6 +148,11 @@ public:
 	TArray<uint8_t> GetPalettedPixels(int conversion, int frame = 0);
 
 	virtual int CopyPixels(FBitmap* bmp, int conversion, int frame = 0);
+
+	// [DDS] Thread safe. Every stored level, top first, exactly as the GPU takes it, in a malloc'd
+	// buffer the caller frees: size = all levels, unitSize = the top level, mipLevels = the header's
+	// count. Returns bTranslucent. Only IsGPUOnly images have any; the rest give a null buffer.
+	virtual int ReadCompressedPixels(FileReader* reader, unsigned char** data, size_t& size, size_t& unitSize, int& mipLevels);
 
 	FBitmap GetCachedBitmap(const PalEntry *remap, int conversion, int *trans = nullptr, int frame = 0);
 

@@ -190,6 +190,13 @@ FARG(savedir, "Configuration", "Sets an alternate directory for saving game file
 	"Specifies an alternate directory to use for saved files. If this is not specified, " GAMENAME
 	" stores them in the directory indicated by the save_dir CVAR.");
 
+FARG(nostockactors, "Game", "Leaves the built-in game actors out of the script compile.", "",
+	"Skips the Doom, Heretic, Hexen, Strife, Chex and Raven actor scripts in the engine package, for standalone"
+	" games that ship their own actor library and reuse those class names. The IWADINFO key NoStockActors"
+	" does the same.");
+FARG(classalias, "Game", "Makes one class name resolve to another.", "alias=target[,alias=target...]",
+	"For content written against an engine that renamed a class, e.g. -classalias WeaponBase=Weapon. A class"
+	" that really has the alias name still wins. The IWADINFO key ClassAliases does the same.");
 FARG(norun, "Debug", "Quits the game early to check for script errors.", "",
 	"Quits the game just before video initialization. To be used to check for errors in scripts"
 	" without actually running the game.");
@@ -2295,6 +2302,9 @@ void ParseCVarInfo()
 			FBaseCVar *cvar;
 			bool customCVar = false;
 			FName customCVarClassName;
+			// 'setdefault <name> = <value>;' replaces the default of a CVAR that already exists instead of creating
+			// one (GZSelaco 8dde47bff4). A CVAR that does not exist only warns (GZSelaco d077477399).
+			bool setDefault = false;
 
 			// Check for flag tokens.
 			while (sc.TokenType == TK_Identifier)
@@ -2331,11 +2341,22 @@ void ParseCVarInfo()
 					customCVarClassName = sc.String;
 					sc.MustGetStringName(")");
 				}
+				else if (stricmp(sc.String, "setdefault") == 0)
+				{
+					setDefault = true;
+					sc.MustGetToken(TK_Identifier);	// the name of the CVAR whose default changes
+					break;
+				}
 				else
 				{
 					sc.ScriptError("Unknown cvar attribute '%s'", sc.String);
 				}
 				sc.MustGetAnyToken();
+			}
+
+			if (setDefault && (cvarflags != (CVAR_MOD|CVAR_ARCHIVE) || customCVar))
+			{
+				sc.ScriptError("setdefault cannot be combined with any other flags");
 			}
 
 			// Possibility of defining a cvar as 'server nosave' or 'user nosave' is kept for
@@ -2346,44 +2367,47 @@ void ParseCVarInfo()
 				cvarflags &= ~CVAR_USERINFO;
 			}
 
-			// Do some sanity checks.
-			// No need to check server-nosave and user-nosave combinations because they
-			// are made impossible right above.
-			if ((cvarflags & (CVAR_SERVERINFO|CVAR_USERINFO|CVAR_CONFIG_ONLY)) == 0 ||
-				(cvarflags & (CVAR_SERVERINFO|CVAR_USERINFO)) == (CVAR_SERVERINFO|CVAR_USERINFO))
+			if (!setDefault)
 			{
-				sc.ScriptError("One of 'server', 'user', or 'nosave' must be specified");
-			}
-			// The next token must be the cvar type.
-			if (sc.TokenType == TK_Bool)
-			{
-				cvartype = CVAR_Bool;
-			}
-			else if (sc.TokenType == TK_Int)
-			{
-				cvartype = CVAR_Int;
-			}
-			else if (sc.TokenType == TK_Float)
-			{
-				cvartype = CVAR_Float;
-			}
-			else if (sc.TokenType == TK_Color)
-			{
-				cvartype = CVAR_Color;
-			}
-			else if (sc.TokenType == TK_String)
-			{
-				cvartype = CVAR_String;
-			}
-			else
-			{
-				sc.ScriptError("Bad cvar type '%s'", sc.String);
-			}
-			// The next token must be the cvar name.
-			sc.MustGetToken(TK_Identifier);
-			if (FindCVar(sc.String, NULL) != NULL)
-			{
-				sc.ScriptError("cvar '%s' already exists", sc.String);
+				// Do some sanity checks.
+				// No need to check server-nosave and user-nosave combinations because they
+				// are made impossible right above.
+				if ((cvarflags & (CVAR_SERVERINFO|CVAR_USERINFO|CVAR_CONFIG_ONLY)) == 0 ||
+					(cvarflags & (CVAR_SERVERINFO|CVAR_USERINFO)) == (CVAR_SERVERINFO|CVAR_USERINFO))
+				{
+					sc.ScriptError("One of 'server', 'user', or 'nosave' must be specified");
+				}
+				// The next token must be the cvar type.
+				if (sc.TokenType == TK_Bool)
+				{
+					cvartype = CVAR_Bool;
+				}
+				else if (sc.TokenType == TK_Int)
+				{
+					cvartype = CVAR_Int;
+				}
+				else if (sc.TokenType == TK_Float)
+				{
+					cvartype = CVAR_Float;
+				}
+				else if (sc.TokenType == TK_Color)
+				{
+					cvartype = CVAR_Color;
+				}
+				else if (sc.TokenType == TK_String)
+				{
+					cvartype = CVAR_String;
+				}
+				else
+				{
+					sc.ScriptError("Bad cvar type '%s'", sc.String);
+				}
+				// The next token must be the cvar name.
+				sc.MustGetToken(TK_Identifier);
+				if (FindCVar(sc.String, NULL) != NULL)
+				{
+					sc.ScriptError("cvar '%s' already exists", sc.String);
+				}
 			}
 			cvarname = sc.String;
 			// A default value is optional and signalled by a '=' token.
@@ -2412,9 +2436,24 @@ void ParseCVarInfo()
 					break;
 				}
 			}
-			// Now create the cvar.
-			cvar = customCVar ? C_CreateZSCustomCVar(cvarname.GetChars(), cvartype, cvarflags, customCVarClassName) : C_CreateCVar(cvarname.GetChars(), cvartype, cvarflags);
-			if (cvardefault != NULL)
+			else if (setDefault)
+			{
+				sc.ScriptError("setdefault requires a value");
+			}
+			if (setDefault)
+			{
+				cvar = FindCVar(cvarname.GetChars(), NULL);
+				if (cvar == nullptr)
+				{
+					Printf("Warning: CVAR %s could not be found for setdefault\n", cvarname.GetChars());
+				}
+			}
+			else
+			{
+				// Now create the cvar.
+				cvar = customCVar ? C_CreateZSCustomCVar(cvarname.GetChars(), cvartype, cvarflags, customCVarClassName) : C_CreateCVar(cvarname.GetChars(), cvartype, cvarflags);
+			}
+			if (cvar != nullptr && cvardefault != NULL)
 			{
 				UCVarValue val;
 				val.String = cvardefault;
@@ -3998,6 +4037,39 @@ static int FileSystemPrintf(FSMessageLevel level, const char* fmt, ...)
 	return (int)text.Len();
 }
 
+void ZCC_SetSkipStockGameActors(bool on);
+
+//==========================================================================
+//
+// D_AddClassAliases
+//
+// "alias=target[,alias=target...]" from -classalias or IWADINFO ClassAliases.
+//
+//==========================================================================
+
+static void D_AddClassAliases(const char *list)
+{
+	if (list == nullptr || *list == 0) return;
+	TArray<FString> pairs;
+	FString(list).Split(pairs, ",");
+	for (auto &pair : pairs)
+	{
+		pair.StripLeftRight();
+		auto eq = pair.IndexOf('=');
+		if (eq <= 0 || eq >= (ptrdiff_t)pair.Len() - 1)
+		{
+			if (pair.IsNotEmpty()) Printf(TEXTCOLOR_RED "Class alias '%s' ignored: expected alias=target\n", pair.GetChars());
+			continue;
+		}
+		FString alias = pair.Left(eq);
+		FString target = pair.Mid(eq + 1);
+		alias.StripLeftRight();
+		target.StripLeftRight();
+		PClass::AddClassAlias(FName(alias.GetChars()), FName(target.GetChars()));
+		if (!batchrun) Printf("Class alias: %s -> %s\n", alias.GetChars(), target.GetChars());
+	}
+}
+
 //==========================================================================
 //
 // D_InitGame
@@ -4262,6 +4334,14 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	FTeam::ParseTeamInfo ();
 
 	R_ParseTrnslate();
+
+	// Standalone games opt in from the command line or their IWADINFO; both default to off and both must be set
+	// before the script compile PClassActor::StaticInit runs. See ZCC_SetSkipStockGameActors, PClass::AddClassAlias.
+	ZCC_SetSkipStockGameActors(Args->CheckParm(FArg_nostockactors) > 0 || iwad_info->NoStockActors);
+	PClass::ClearClassAliases();
+	D_AddClassAliases(iwad_info->ClassAliases.GetChars());
+	D_AddClassAliases(Args->CheckValue(FArg_classalias));
+
 	PClassActor::StaticInit ();
 	FBaseCVar::InitZSCallbacks ();
 

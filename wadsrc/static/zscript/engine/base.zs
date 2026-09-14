@@ -1020,6 +1020,19 @@ struct QuatStruct native unsafe(internal)
 	// native Quat Inverse();
 }
 
+// [SOUNDHANDLES] The methods of SoundHandle -- what S_StartSound, S_StartSoundAt and Actor.StartSound return, an int like
+// Sound. IsValid() and SetInvalid() are builtins. A handle reaches its sound only while that sound plays; on a finished,
+// stopped or never-started sound these do nothing. Call them on a variable or a field, not straight on a call's result.
+// Sound is this machine's presentation: never let it decide gameplay. That is why IsPlaying is ui-only; a handle's number
+// differs between machines, and a savegame loads every handle invalid. (GZSelaco f86a8cc6c9 -- names kept for Selaco.)
+struct SoundHandleStruct native
+{
+	native void SetVolume(float volume);
+	native void SetPitch(float pitch);
+	native void StopSound();
+	native ui bool IsPlaying();
+}
+
 struct ScriptSavedPos
 {
 	readonly voidptr SavedScriptPtr;

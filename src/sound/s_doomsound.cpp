@@ -364,9 +364,11 @@ void S_InitData()
 //
 //==========================================================================
 
-void S_SoundPitch(int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
+FSoundHandle S_SoundPitch(int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
 {
-	soundEngine->StartSound(SOURCE_None, nullptr, nullptr, channel, flags, sound_id, volume, attenuation, nullptr, pitch, startTime);
+	FSoundHandle handle;
+	soundEngine->StartSound(SOURCE_None, nullptr, nullptr, channel, flags, sound_id, volume, attenuation, nullptr, pitch, startTime, &handle);
+	return handle;
 }
 
 void S_Sound(int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation)
@@ -397,14 +399,90 @@ DEFINE_ACTION_FUNCTION(DObject, S_StartSound)
 	PARAM_FLOAT(attn);
 	PARAM_FLOAT(pitch);
 	PARAM_FLOAT(startTime);
-	S_SoundPitch(channel, EChanFlags::FromInt(flags), id, static_cast<float>(volume), static_cast<float>(attn), static_cast<float>(pitch), static_cast<float>(startTime));
+	// [SOUNDHANDLES] Returns the sound's handle (doombase.zs declares SoundHandle; with the older `void` declaration
+	// numret is 0 and nothing is returned).
+	ACTION_RETURN_INT((int)S_SoundPitch(channel, EChanFlags::FromInt(flags), id, static_cast<float>(volume), static_cast<float>(attn), static_cast<float>(pitch), static_cast<float>(startTime)));
+}
+
+//==========================================================================
+//
+// [SOUNDHANDLES] S_StopSound, S_SoundPitch (ZScript, Object)
+//
+// Origin-less sounds -- S_StartSound's -- by channel, as A_StopSound and
+// A_SoundPitch are for an actor. GZSelaco 091463aae3 ("so UI can actually stop
+// looping sounds") and 2c323d0d15. CHAN_AUTO stops every channel's; a
+// sound_id stops only that sound.
+//
+//==========================================================================
+
+DEFINE_ACTION_FUNCTION(DObject, S_StopSound)
+{
+	PARAM_PROLOGUE;
+	PARAM_INT(channel);
+	PARAM_SOUND(id);
+	soundEngine->StopSound(channel, id);
 	return 0;
 }
 
-static void S_StartSoundAt(double x, double y, double z, int sound_id, int channel, int flags, double volume, double attenuation, double pitch, double startTime)
+DEFINE_ACTION_FUNCTION(DObject, S_SoundPitch)
+{
+	PARAM_PROLOGUE;
+	PARAM_INT(channel);
+	PARAM_FLOAT(pitch);
+	soundEngine->ChangeSoundPitch(SOURCE_None, nullptr, channel, pitch);
+	return 0;
+}
+
+//==========================================================================
+//
+// [SOUNDHANDLES] SoundHandleStruct -- the methods of ZScript's SoundHandle
+//
+// engine/base.zs. Self is the handle's own storage. Nothing a sound does comes
+// back to play code: the three changers return nothing, and IsPlaying is ui-only.
+// GZSelaco f86a8cc6c9.
+//
+//==========================================================================
+
+DEFINE_ACTION_FUNCTION(FSoundHandleStruct, SetVolume)
+{
+	PARAM_PROLOGUE;
+	PARAM_POINTER(handle, FSoundHandle);
+	PARAM_FLOAT(volume);
+	if (handle != nullptr) S_ChangeSoundVolume(*handle, volume);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(FSoundHandleStruct, SetPitch)
+{
+	PARAM_PROLOGUE;
+	PARAM_POINTER(handle, FSoundHandle);
+	PARAM_FLOAT(pitch);
+	if (handle != nullptr) S_ChangeSoundPitch(*handle, pitch);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(FSoundHandleStruct, StopSound)
+{
+	PARAM_PROLOGUE;
+	PARAM_POINTER(handle, FSoundHandle);
+	if (handle != nullptr) S_StopSound(*handle);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(FSoundHandleStruct, IsPlaying)
+{
+	PARAM_PROLOGUE;
+	PARAM_POINTER(handle, FSoundHandle);
+	ACTION_RETURN_BOOL(handle != nullptr && soundEngine->IsPlaying(*handle));
+}
+
+// [SOUNDHANDLES] Returns the sound's handle as an int (a direct native: doombase.zs's SoundHandle return, or its older void).
+static int S_StartSoundAt(double x, double y, double z, int sound_id, int channel, int flags, double volume, double attenuation, double pitch, double startTime)
 {
 	FVector3 pos = { (float)x, (float)z, (float)y };
-	soundEngine->StartSound(SOURCE_Unattached, nullptr, &pos, channel, EChanFlags::FromInt(flags), FSoundID::fromInt(sound_id), (float)volume, (float)attenuation, nullptr, (float)pitch, (float)startTime);
+	FSoundHandle handle;
+	soundEngine->StartSound(SOURCE_Unattached, nullptr, &pos, channel, EChanFlags::FromInt(flags), FSoundID::fromInt(sound_id), (float)volume, (float)attenuation, nullptr, (float)pitch, (float)startTime, &handle);
+	return (int)handle;
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(DObject, S_StartSoundAt, S_StartSoundAt)
@@ -420,8 +498,7 @@ DEFINE_ACTION_FUNCTION_NATIVE(DObject, S_StartSoundAt, S_StartSoundAt)
 	PARAM_FLOAT(attn);
 	PARAM_FLOAT(pitch);
 	PARAM_FLOAT(startTime);
-	S_StartSoundAt(x, y, z, id, channel, flags, volume, attn, pitch, startTime);
-	return 0;
+	ACTION_RETURN_INT(S_StartSoundAt(x, y, z, id, channel, flags, volume, attn, pitch, startTime));
 }
 
 //==========================================================================
@@ -502,8 +579,11 @@ void DoomSoundEngine::StopChannel(FSoundChan* chan)
 //
 //==========================================================================
 
-void S_SoundPitchActor(AActor *ent, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
+FSoundHandle S_SoundPitchActor(AActor *ent, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
 {
+	// [SOUNDHANDLES] Issued before VerifyActorSound can refuse the sound (FSoundHandle).
+	FSoundHandle handle = soundEngine->IssueSoundHandle();
+
 #if 0
 	// sound source debug printout
 	Printf("sound '%s' from '%s'\n", soundEngine->GetSoundName(sound_id), ent->GetClass()->TypeName.GetChars());
@@ -531,7 +611,8 @@ void S_SoundPitchActor(AActor *ent, int channel, EChanFlags flags, FSoundID soun
 	}
 
 	if (VerifyActorSound(ent, sound_id, channel, flags))
-		soundEngine->StartSound (SOURCE_Actor, ent, nullptr, channel, flags, sound_id, volume, attenuation, 0, pitch, startTime);
+		soundEngine->StartSound (SOURCE_Actor, ent, nullptr, channel, flags, sound_id, volume, attenuation, 0, pitch, startTime, &handle);
+	return handle;
 }
 
 void S_Sound(AActor *ent, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation)
@@ -595,12 +676,15 @@ void S_Sound(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags f
 //
 //==========================================================================
 
-void S_SoundPitchAt(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
+FSoundHandle S_SoundPitchAt(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation, float pitch, float startTime)
 {
-	if (Level != primaryLevel) return;
+	// [SOUNDHANDLES] Issued before anything can refuse the sound (FSoundHandle); S_SoundPitch(Level, pos, ...) is this.
+	FSoundHandle handle = soundEngine->IssueSoundHandle();
+	if (Level != primaryLevel) return handle;
 	// The sound system switches Y and Z around.
 	FVector3 p((float)pos.X, (float)pos.Z, (float)pos.Y);
-	soundEngine->StartSound (SOURCE_Unattached, nullptr, &p, channel, flags, sound_id, volume, attenuation, nullptr, pitch, startTime);
+	soundEngine->StartSound (SOURCE_Unattached, nullptr, &p, channel, flags, sound_id, volume, attenuation, nullptr, pitch, startTime, &handle);
+	return handle;
 }
 
 //==========================================================================
@@ -623,16 +707,19 @@ void S_Sound (const sector_t *sec, int channel, EChanFlags flags, FSoundID sfxid
 //
 //==========================================================================
 
-void S_PlaySoundPitch(AActor *a, int chan, EChanFlags flags, FSoundID sid, float vol, float atten, float pitch, float startTime = 0.f)
+FSoundHandle S_PlaySoundPitch(AActor *a, int chan, EChanFlags flags, FSoundID sid, float vol, float atten, float pitch, float startTime = 0.f)
 {
+	// [SOUNDHANDLES] Every path hands back exactly one issued handle, including the ones that play nothing -- a silent
+	// sector, CHANF_NOSTOP while it plays, a CHANF_LOCAL sound for another view -- so the handle's validity is the same on
+	// every machine (FSoundHandle). The two start calls below issue their own.
 	if (a == nullptr || a->Sector->Flags & SECF_SILENT || a->Level != primaryLevel)
-		return;
+		return soundEngine->IssueSoundHandle();
 
 	if (!(flags & CHANF_LOCAL))
 	{
 		if (!(flags & CHANF_NOSTOP) || !S_IsActorPlayingSomething(a, chan, sid))
 		{
-			S_SoundPitchActor(a, chan, flags, sid, vol, atten, pitch, startTime);
+			return S_SoundPitchActor(a, chan, flags, sid, vol, atten, pitch, startTime);
 		}
 	}
 	else
@@ -641,10 +728,11 @@ void S_PlaySoundPitch(AActor *a, int chan, EChanFlags flags, FSoundID sid, float
 		{
 			if (!(flags & CHANF_NOSTOP) || !soundEngine->IsSourcePlayingSomething(SOURCE_None, nullptr, chan, sid))
 			{
-				S_SoundPitch(chan, flags, sid, vol, ATTN_NONE, pitch, startTime);
+				return S_SoundPitch(chan, flags, sid, vol, ATTN_NONE, pitch, startTime);
 			}
 		}
 	}
+	return soundEngine->IssueSoundHandle();
 }
 
 void S_PlaySound(AActor *a, int chan, EChanFlags flags, FSoundID sid, float vol, float atten)
@@ -655,6 +743,12 @@ void S_PlaySound(AActor *a, int chan, EChanFlags flags, FSoundID sid, float vol,
 void A_StartSound(AActor *self, int soundid, int channel, int flags, double volume, double attenuation, double pitch, double startTime)
 {
 	S_PlaySoundPitch(self, channel, EChanFlags::FromInt(flags), FSoundID::fromInt(soundid), (float)volume, (float)attenuation, (float)pitch, (float)startTime);
+}
+
+// [SOUNDHANDLES] A_StartSound, returning the handle's id -- ZScript's Actor.StartSound (a direct native).
+int StartSound(AActor *self, int soundid, int channel, int flags, double volume, double attenuation, double pitch, double startTime)
+{
+	return (int)S_PlaySoundPitch(self, channel, EChanFlags::FromInt(flags), FSoundID::fromInt(soundid), (float)volume, (float)attenuation, (float)pitch, (float)startTime);
 }
 
 void A_PlaySound(AActor* self, int soundid, int channel, double volume, int looping, double attenuation, int local, double pitch)
@@ -751,6 +845,30 @@ void S_ChangeActorSoundVolume(AActor *actor, int channel, double dvolume)
 void S_ChangeActorSoundPitch(AActor *actor, int channel, double pitch)
 {
 	soundEngine->ChangeSoundPitch(SOURCE_Actor, actor, channel, pitch);
+}
+
+//==========================================================================
+//
+// [SOUNDHANDLES] S_StopSound, S_ChangeSoundVolume, S_ChangeSoundPitch - by handle
+//
+// One started sound, whatever its source (s_soundinternal.h FSoundHandle).
+// False when the handle reaches no sound. GZSelaco's names (5e3644b940).
+//
+//==========================================================================
+
+bool S_StopSound(FSoundHandle handle)
+{
+	return soundEngine->StopSound(handle);
+}
+
+bool S_ChangeSoundVolume(FSoundHandle handle, double volume)
+{
+	return soundEngine->SetVolume(handle, (float)volume);
+}
+
+bool S_ChangeSoundPitch(FSoundHandle handle, double pitch)
+{
+	return soundEngine->SetPitch(handle, (float)pitch);
 }
 
 //==========================================================================

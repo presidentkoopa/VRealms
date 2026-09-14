@@ -1094,6 +1094,10 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername
 	// [LIGHTMASK] The mask programs only: the output's define and its location, the colour
 	// attachment right after the draw buffers (VkRenderPassSetup::CreateRenderPass).
 	if (lightMask) code << "#define SCENE_LIGHT_MASK\n#define LIGHT_MASK_LOCATION " << (gbufferpass ? "3" : "1") << "\n";
+	// [SURFACEDAMAGE] main.fp's lasting surface damage lookup ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"). Only this backend's
+	// programs of that lump define it, so GL's and GLES's main.fp never compile the lookup, and every other lump's program is
+	// exactly what it was. Its bindings (fixed 7 and 8, set 1 13) are in every pipeline layout (vk_descriptorset.cpp).
+	if (frag_lump != nullptr && FString(frag_lump).Compare("shaders/glsl/main.fp") == 0) code << "#define SURFACE_DAMAGE\n";
 
 	// [2a] Only an effect's scene-depth variant gets the scene depth declaration;
 	// see sceneDepthBindings. After the prolog, so it can use HW_VIEWPOINT_INDEX

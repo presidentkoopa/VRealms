@@ -206,10 +206,14 @@ extend class Object
 		return a, b;
 	}
 	deprecated("4.3", "Use S_StartSound() instead") native static void S_Sound (Sound sound_id, int channel, float volume = 1, float attenuation = ATTN_NORM, float pitch = 0.0, float startTime = 0.0);
-	native static void S_StartSound (Sound sound_id, int channel, int flags = 0, float volume = 1, float attenuation = ATTN_NORM, float pitch = 0.0, float startTime = 0.0);
-	native static void S_StartSoundAt(Vector3 pos, Sound sound_id, int channel, int flags = 0, double volume = 1, double attenuation = ATTN_NORM, double pitch = 0.0, double startTime = 0.0);
+	// [SOUNDHANDLES] S_StartSound and S_StartSoundAt return the sound's handle (engine/base.zs SoundHandleStruct).
+	// S_StopSound and S_SoundPitch reach origin-less sounds by channel (CHAN_AUTO = every channel). GZSelaco's names.
+	native static SoundHandle S_StartSound (Sound sound_id, int channel, int flags = 0, float volume = 1, float attenuation = ATTN_NORM, float pitch = 0.0, float startTime = 0.0);
+	native static SoundHandle S_StartSoundAt(Vector3 pos, Sound sound_id, int channel, int flags = 0, double volume = 1, double attenuation = ATTN_NORM, double pitch = 0.0, double startTime = 0.0);
+	native static void S_StopSound (int channel, Sound sound_id = -1);
 	native static void S_PauseSound (bool notmusic, bool notsfx);
 	native static void S_ResumeSound (bool notsfx);
+	native static void S_SoundPitch(int channel, float pitch = 1.0);
 	native static bool S_ChangeMusic(String music_name, int order = 0, bool looping = true, bool force = false);
 	native static float S_GetLength(Sound sound_id);
 	native static void MarkSound(Sound snd);
@@ -272,11 +276,10 @@ class Thinker : Object native play
 	// Sleep(tics): stop ticking, and wake after `tics` tics once ShouldWake agrees (asked every tic from then on).
 	// SleepIndefinite(): stop ticking until Wake(). Wake(): tick again from this tic, in the statnum list it slept from.
 	// A sleeper keeps its place in the world and can still be found (ThinkerIterator; STAT_SLEEP lists) and destroyed.
-	// Wake is virtual in GZSelaco. It stays a plain function here until the owner rules on the [VIRTUALSHADOW] compiler
-	// proposal: RS_Main (ZScript 4.14) declares its own Wake() in a Thinker subclass, which a virtual Wake would break.
+	// Wake is virtual, as in GZSelaco (DThinker::CallWake already dispatches to an override).
 	virtual native void Sleep(int tics);
 	virtual native bool ShouldWake();
-	native void Wake();
+	virtual native void Wake();
 	virtual native void SleepIndefinite();
 
 	static clearscope int Tics2Seconds(int tics)
@@ -457,6 +460,10 @@ struct LevelInfo native
 	native readonly String LevelName;
 	native readonly String MapLabel;
 	native readonly String AuthorName;
+	native readonly String Description;	// MAPINFO data for scripts (GZSelaco)
+	native readonly int levelgroup, areaNum;
+	native readonly int invasiontier;
+	native readonly double tilt, tiltAngle;
 	native readonly int musicorder;
 	native readonly float skyspeed1;
 	native readonly float skyspeed2;
@@ -550,6 +557,12 @@ struct LevelLocals native
 	native readonly String F1Pic;
 	native readonly int maptype;
 	native readonly String AuthorName;
+	native readonly int levelgroup, areaNum;	// MAPINFO data for scripts (GZSelaco)
+	native int invasiontier;
+	native double tilt, tiltAngle;
+	native readonly bool rainymap;
+	native readonly bool windymap;
+	native readonly bool saferoom;
 	native String LightningSound;
 	native readonly String Music;
 	native readonly int musicorder;
@@ -1245,6 +1258,21 @@ struct LevelLocals native
 	// it; debris will read the same call. A blast that also clears the smoke at its
 	// centre calls CarveSmoke with start == end as well.
 	native clearscope void PushEffectImpulse(Vector3 pos, double radius, double strength);
+	// [SURFACEDAMAGE] LASTING SURFACE DAMAGE ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): presses a brush
+	// into the wall or floor at pos -- a bullet hole, a gouge, soot, scorch, heat that glows and cools, a wet
+	// patch -- that stays for the map (until the player's "Damage memory" reuses the oldest patches). normal is
+	// the surface's facing at the hit: the engine traces a few units into it to find the wall part or flat
+	// (two-sided middles, 3D floors, polyobjects and sky are not painted). brush names a DAMAGEDEFS brush
+	// ('round' is built in; an unknown name paints 'round' and logs once); its variant is picked by a hash of
+	// pos, so hits do not repeat and every machine picks the same. radius (0.5..64 map units) is the brush's
+	// half-size. depth, soot, heat and wet (0..1) scale the brush's masks: depth keeps the deepest hit; soot,
+	// heat and wet add up. axis, when not (0,0,0), turns the brush so its +x runs along the axis on the surface
+	// (a gouge along the shot, a saw cut, wood grain); (0,0,0) is unrotated. Vulkan only; the player's "Wall
+	// damage" switch decides whether their machine draws it. EVENTS: 128 a tic, more are dropped (logged once per
+	// map). CLEARSCOPE and ONE-WAY: nothing reads it back, it is not saved, and gameplay cannot branch on it --
+	// safe from play code in a netgame. A call with a non-finite number, a zero normal or nothing to paint is
+	// ignored.
+	native clearscope void PaintSurfaceDamage(Vector3 pos, Vector3 normal, Name brush, double radius, double depth = 1.0, double soot = 0.0, double heat = 0.0, double wet = 0.0, Vector3 axis = (0,0,0));
 
 	// [BB] Sweep -- up to eight thin bands of light travelling through the
 	// world, each tested per pixel against world position on every surface,

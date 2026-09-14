@@ -183,6 +183,25 @@ CUSTOM_CVARD(Int, gl_texture_filter, 0, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOIN
 	}
 }
 
+// [DDS] GZSelaco a46c31630a: the stored mip level compressed DDS sprites, skins and decals start from
+// (VkHardwareTexture::CreateCompressedTexture). 0 = the top level: full quality, as before. Textures
+// that are not compressed DDS ignore it. Read by the renderer whenever such a texture is uploaded;
+// changing it drops those textures, so the next draw uploads them from the new level.
+extern void hw_unloadSprites();
+CUSTOM_CVARD(Int, gl_texture_quality, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "changes texture quality. 0 = full, 2 = low")
+{
+	if (self < 0 || self > 4)
+	{
+		self = 0;
+		return;
+	}
+	if (screen != nullptr)
+	{
+		hw_unloadSprites();
+		screen->SetTextureFilterMode();	// For Vulkan, rebuild descriptors
+	}
+}
+
 CVAR(Bool, gl_precache, true, CVAR_ARCHIVE)
 
 // [SELACO PRECACHE] Selaco's precache switches, under Selaco's names (read by PrecacheLevel in

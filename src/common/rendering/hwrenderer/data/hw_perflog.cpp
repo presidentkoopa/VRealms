@@ -59,6 +59,13 @@ EXTERN_CVAR(Int, r_debris_pool)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Bool, r_debris_test)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Bool, r_debris_sounds)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Float, r_debris_sounds_volume)	// [DEBRISSOUNDS] hw_debrislanding.cpp
+EXTERN_CVAR(Bool, r_damage)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Int, r_damage_memory)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Bool, r_damage_heat)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Float, r_damage_soot_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Float, r_damage_depth_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Float, r_damage_heat_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Bool, r_damage_test)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -238,7 +245,9 @@ namespace
 				"counted per step (gpu_ms, inside fx.compute); fx.debrispool (cpu_fx_ms) is the pool's CPU side on each frame it "
 				"is asked for: bursts into pieces, slots, pushes, wake boxes and the mesh instance list. fx.debrisland (cpu_fx_ms) "
 				"is the debris landing sounds on frames with work: flying each new burst's pieces to their first landing, the "
-				"level check of the earliest, and starting the sounds that are due.\n\n";
+				"level check of the earliest, and starting the sounds that are due. fx.damagepaint is the surface damage atlas: "
+				"on gpu_ms its stamps, cooling and mip rebuilds (frames with damage work, inside fx.compute); on cpu_fx_ms its "
+				"paint traces, cell cover, tiles, anchors and dispatch lists (every frame while damage is held).\n\n";
 			HeaderWritten = true;
 		}
 
@@ -289,6 +298,10 @@ namespace
 			(int)*r_debris, (double)(float)*r_debris_life, (int)*r_debris_pool, (int)*r_debris_test);
 		// [DEBRISSOUNDS] And the landing sounds' switches, so a fx.debrisland before/after labels itself.
 		out.AppendFormat(" r_debris_sounds=%d r_debris_sounds_volume=%g", (int)*r_debris_sounds, (double)(float)*r_debris_sounds_volume);
+		// [SURFACEDAMAGE] And the wall damage switches, so a fx.damagepaint / scene.opaque before/after labels itself.
+		out.AppendFormat(" r_damage=%d r_damage_memory=%d r_damage_heat=%d r_damage_soot_scale=%g r_damage_depth_scale=%g r_damage_heat_scale=%g r_damage_test=%d",
+			(int)*r_damage, (int)*r_damage_memory, (int)*r_damage_heat, (double)(float)*r_damage_soot_scale, (double)(float)*r_damage_depth_scale,
+			(double)(float)*r_damage_heat_scale, (int)*r_damage_test);
 		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
 		// (lightmask: 1 while the scene draws the mask this frame).
 		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",

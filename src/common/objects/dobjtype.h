@@ -95,9 +95,11 @@ public:
 	unsigned			 MetaSize = 0;
 	FName				 TypeName = NAME_None;
 	FName				 SourceLumpName = NAME_None;
+	int					 SourceLump = -1;	// lump the class was defined in; 'singleunit' compares its archive
 	bool				 bRuntimeClass = false;	// class was defined at run-time, not compile-time
 	bool				 bDecorateClass = false;	// may be subject to some idiosyncracies due to DECORATE backwards compatibility
 	bool				 bAbstract = false;
+	bool				 bUnitOnly = false;	// declared 'singleunit'
 	bool				 bSealed = false;
 	bool				 bFinal = false;
 	bool				 bOptional = false;
@@ -171,6 +173,13 @@ public:
 	static VMFunction *FindFunction(FName cls, FName func);
 	static void FindFunction(VMFunction **pptr, FName cls, FName func);
 	PClass *FindClassTentative(FName name);
+
+	// Class-name aliases (-classalias, IWADINFO ClassAliases). FindClass answers a name no class has with the
+	// class the alias points at, so content written against an engine that renamed a class loads unchanged
+	// (GZSelaco renamed Weapon to WeaponBase). A class that really has the alias name always wins.
+	static void AddClassAlias(FName alias, FName target);
+	static void ClearClassAliases();
+	static FName GetClassAliasTarget(FName alias);
 
 	static TMap<FName, PClass*> ClassMap;
 	static TArray<PClass *> AllClasses;

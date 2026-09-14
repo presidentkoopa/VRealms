@@ -85,6 +85,29 @@ static FString ResolveIncludePath(const FString &path,const FString &lumpname){
 }
 
 static FString ZCCTokenName(int terminal);
+
+// -nostockactors / IWADINFO NoStockActors. A standalone game that ships its own actor library may reuse class
+// names the built-in games define (Selaco's Stimpack, PLASMARIFLE, ...), so the game-specific stock actor
+// scripts are left out of the compile. The shared bases (inventory, player, shared/) always load. zscript.txt
+// itself is untouched, so with this off the include list -- and class registration order -- is exactly as before.
+static bool SkipStockGameActors = false;
+
+void ZCC_SetSkipStockGameActors(bool on)
+{
+	SkipStockGameActors = on;
+}
+
+static bool IsStockGameActorInclude(const FString &path)
+{
+	static const char *const stockDirs[] = { "zscript/actors/doom/", "zscript/actors/heretic/", "zscript/actors/hexen/",
+		"zscript/actors/strife/", "zscript/actors/chex/", "zscript/actors/raven/" };
+	for (auto dir : stockDirs)
+	{
+		if (strnicmp(path.GetChars(), dir, strlen(dir)) == 0) return true;
+	}
+	return false;
+}
+
 void AddInclude(ZCC_ExprConstant *node)
 {
 	assert(node->Type == TypeString);
@@ -92,6 +115,12 @@ void AddInclude(ZCC_ExprConstant *node)
 	FScriptPosition pos(*node);
 
 	FString path = ResolveIncludePath(*node->StringVal, pos.FileName.GetChars());
+
+	if (SkipStockGameActors && IsStockGameActorInclude(path))
+	{
+		DPrintf(DMSG_NOTIFY, "Skipping stock game actor script %s\n", path.GetChars());
+		return;
+	}
 
 	if (Includes.Find(path) >= Includes.Size())
 	{
@@ -182,6 +211,7 @@ static void InitTokenMap()
 	TOKENDEF (',',				ZCC_COMMA);
 	TOKENDEF (TK_Class,			ZCC_CLASS);
 	TOKENDEF (TK_Abstract,		ZCC_ABSTRACT);
+	TOKENDEF (TK_Unit,			ZCC_UNIT);
 	TOKENDEF (TK_Native,		ZCC_NATIVE);
 	TOKENDEF (TK_Action,		ZCC_ACTION);
 	TOKENDEF (TK_Replaces,		ZCC_REPLACES);

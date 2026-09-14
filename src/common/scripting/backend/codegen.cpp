@@ -204,6 +204,13 @@ static PContainerType *FindContainerType(FName name, FCompileContext &ctx)
 static PClass *FindClassType(FName name, FCompileContext &ctx)
 {
 	auto sym = ctx.CurGlobals->Symbols.FindSymbol(name, true);
+	if (sym == nullptr)
+	{
+		// A class-name alias (PClass::AddClassAlias: -classalias, IWADINFO ClassAliases) names its target here too:
+		// casts like WeaponBase(x) and explicit class<WeaponBase> conversions. No alias registered = no change.
+		FName aliasTarget = PClass::GetClassAliasTarget(name);
+		if (aliasTarget != NAME_None) sym = ctx.CurGlobals->Symbols.FindSymbol(aliasTarget, true);
+	}
 	if (sym && sym->IsKindOf(RUNTIME_CLASS(PSymbolType)))
 	{
 		auto type = static_cast<PSymbolType*>(sym);
@@ -1570,6 +1577,74 @@ ExpEmit FxSoundCast::Emit(VMFunctionBuilder *build)
 
 //==========================================================================
 //
+// [SOUNDHANDLES] FxSoundHandleCast -- conversion to ZScript's SoundHandle
+//
+// GZSelaco's cast (5e3644b940), so its scripts compile the same: an int or a
+// Sound is retyped (a handle is an int); a string constant gives 0 (an
+// invalid handle), and any other string the index of the sound of that name.
+// Only ints mean anything as a handle. Fixed from GZSelaco: an int came out
+// typed Sound, not SoundHandle.
+//
+//==========================================================================
+
+FxSoundHandleCast::FxSoundHandleCast(FxExpression *x)
+	: FxExpression(EFX_SoundHandleCast, x->ScriptPosition)
+{
+	basex = x;
+	ValueType = TypeSoundHandle;
+}
+
+FxSoundHandleCast::~FxSoundHandleCast()
+{
+	SAFE_DELETE(basex);
+}
+
+FxExpression *FxSoundHandleCast::Resolve(FCompileContext &ctx)
+{
+	CHECKRESOLVED();
+	SAFE_RESOLVE(basex, ctx);
+
+	if (basex->ValueType == TypeSoundHandle || basex->ValueType == TypeSound || basex->ValueType->isInt())
+	{
+		FxExpression *x = basex;
+		x->ValueType = TypeSoundHandle;
+		basex = nullptr;
+		delete this;
+		return x;
+	}
+	else if (basex->ValueType == TypeString)
+	{
+		if (basex->isConstant())
+		{
+			ExpVal constval = static_cast<FxConstant *>(basex)->GetValue();
+			FxExpression *x = new FxConstant(constval.GetInt(), ScriptPosition);
+			x->ValueType = TypeSoundHandle;
+			delete this;
+			return x;
+		}
+		return this;
+	}
+	else
+	{
+		ScriptPosition.Message(MSG_ERROR, "Cannot convert to sound handle");
+		delete this;
+		return nullptr;
+	}
+}
+
+ExpEmit FxSoundHandleCast::Emit(VMFunctionBuilder *build)
+{
+	ExpEmit from = basex->Emit(build);
+	assert(!from.Konst);
+	assert(basex->ValueType == TypeString);
+	from.Free(build);
+	ExpEmit to(build, REGT_INT);
+	build->Emit(OP_CAST, to.RegNum, from.RegNum, CAST_S2So);
+	return to;
+}
+
+//==========================================================================
+//
 //
 //
 //==========================================================================
@@ -1935,6 +2010,15 @@ FxExpression *FxTypeCast::Resolve(FCompileContext &ctx)
 	{
 		basex->ValueType = TypeTextureID;
 		auto x = basex;
+		basex = nullptr;
+		delete this;
+		return x;
+	}
+	else if (ValueType == TypeSoundHandle)
+	{
+		// [SOUNDHANDLES] `handle = 0`, SoundHandle(x) and GZSelaco's other conversions (FxSoundHandleCast).
+		FxExpression *x = new FxSoundHandleCast(basex);
+		x = x->Resolve(ctx);
 		basex = nullptr;
 		delete this;
 		return x;
@@ -8325,6 +8409,11 @@ ExpEmit FxArrayElement::Emit(VMFunctionBuilder *build)
 
 static bool CheckFunctionCompatiblity(FScriptPosition &ScriptPosition, PFunction *caller, PFunction *callee)
 {
+	// 'singleunit' (GZSelaco 785924a40d, as shipped).
+	if ((callee->Variants[0].Flags & VARF_Unit) || (caller->Variants[0].Flags & VARF_Unit))
+	{
+		ScriptPosition.Message(MSG_ERROR, "Function %s is unit only\n", callee->SymbolName.GetChars());
+	}
 	if (callee->Variants[0].Flags & VARF_Method)
 	{
 		// The called function must support all usage modes of the current function. It may support more, but must not support less.
@@ -8479,6 +8568,39 @@ PFunction* FindClassMemberFunction(PContainerType* selfcls, PContainerType* func
 		{
 			sc.Message(MSG_WARNING, "Call to deprecated function %s", symbol->SymbolName.GetChars());
 		}
+		// 'singleunit' (GZSelaco 785924a40d): a unit-only function may only be called from the archive (wad/pk3) that defines it.
+		else if (funcsym->Variants[0].Flags & VARF_Unit)
+		{
+			int calleeLump = cls_target != nullptr ? cls_target->Descriptor->SourceLump : -1;
+			int callerLump = cls_ctx != nullptr ? cls_ctx->Descriptor->SourceLump : -1;
+			const char* calleeName = cls_target != nullptr ? cls_target->DescriptiveName() : nullptr;
+			const char* callerName = cls_ctx != nullptr ? cls_ctx->DescriptiveName() : nullptr;
+			if (calleeLump == -1 && cls_target == nullptr && funcsym->OwningClass->isStruct())
+			{
+				auto strct = static_cast<PStruct*>(funcsym->OwningClass);
+				calleeLump = strct->sourceLump;
+				calleeName = strct->DescriptiveName();
+			}
+			if (callerLump == -1 && cls_ctx == nullptr && funccls->isStruct())
+			{
+				auto strct = static_cast<PStruct*>(funccls);
+				callerLump = strct->sourceLump;
+				callerName = strct->DescriptiveName();
+			}
+			if (callerLump != -1 && calleeLump != -1)
+			{
+				int callerContainer = fileSystem.GetFileContainer(callerLump);
+				int calleeContainer = fileSystem.GetFileContainer(calleeLump);
+				if (!(callerContainer >= 0 && calleeContainer >= 0 && calleeContainer == callerContainer))
+				{
+					sc.Message(MSG_ERROR, "%s does not have permission to call (%s) %s", callerName, calleeName, symbol->SymbolName.GetChars());
+				}
+			}
+			else
+			{
+				sc.Message(MSG_ERROR, "%s tries to call %s but the unit context could not be determined.", callerName, calleeName);
+			}
+		}
 	}
 	// return nullptr if the name cannot be found in the symbol table so that the calling code can do other checks.
 	return funcsym;
@@ -8610,6 +8732,21 @@ FxExpression *FxFunctionCall::Resolve(FCompileContext& ctx)
 	// Last but not least: Check builtins and type casts. The random functions can take a named RNG if specified.
 	// Note that for all builtins the used arguments have to be nulled in the ArgList so that they won't get deleted before they get used.
 	FxExpression *func = nullptr;
+
+	// [SOUNDHANDLES] SoundHandle(x), as TextureID(x) below. Compared as an FName: namedef.h belongs to another lane.
+	static const FName SoundHandleName("SoundHandle");
+	if (MethodName == SoundHandleName)
+	{
+		if (CheckArgSize(MethodName, ArgList, 1, 1, ScriptPosition))
+		{
+			func = new FxTypeCast(ArgList[0], TypeSoundHandle, true, true);
+			ArgList[0] = nullptr;
+			delete this;
+			return func->Resolve(ctx);
+		}
+		delete this;
+		return nullptr;
+	}
 
 	switch (MethodName.GetIndex())
 	{
@@ -8899,8 +9036,10 @@ FxExpression *FxMemberFunctionCall::Resolve(FCompileContext& ctx)
 		// If the left side is a class name for a static member function call it needs to be resolved manually
 		// because the resulting value type would cause problems in nearly every other place where identifiers are being used.
 		// [ZZ] substitute ccls for String internal type.
+		static const FName SoundHandleName("SoundHandle");	// [SOUNDHANDLES] namedef.h is another lane's
 		if (id == NAME_String) ccls = TypeStringStruct;
 		else if (id == NAME_Quat || id == NAME_FQuat) ccls = TypeQuaternionStruct;
+		else if (id == SoundHandleName) ccls = TypeSoundHandleStruct;	// [SOUNDHANDLES] SoundHandle.X(), as GZSelaco f86a8cc6c9
 		else ccls = FindContainerType(id, ctx);
 		if (ccls != nullptr) static_cast<FxIdentifier *>(Self)->noglobal = true;
 	}
@@ -8985,6 +9124,38 @@ FxExpression *FxMemberFunctionCall::Resolve(FCompileContext& ctx)
 	}
 
 	// Note: These builtins would better be relegated to the actual type objects, instead of polluting this file, but that's a task for later.
+
+	// [SOUNDHANDLES] SoundHandle builtins (GZSelaco 5e3644b940 / f86a8cc6c9). Before the numeric test below, which an
+	// int-compatible SoundHandle would otherwise take. IsValid/SetInvalid map straight to int operations; every other
+	// method is SoundHandleStruct's (engine/base.zs), called with the handle's address as self, as String's are.
+	if (Self->ValueType == TypeSoundHandle)
+	{
+		if (MethodName == NAME_IsValid || MethodName == NAME_SetInvalid)
+		{
+			if (ArgList.Size() > 0)
+			{
+				ScriptPosition.Message(MSG_ERROR, "Too many parameters in call to %s", MethodName.GetChars());
+				delete this;
+				return nullptr;
+			}
+			Self->ValueType = TypeSInt32;
+			FxExpression *x = nullptr;
+			if (MethodName == NAME_IsValid)
+			{
+				x = new FxCompareRel('>', Self, new FxConstant(0, ScriptPosition));
+			}
+			else
+			{
+				x = new FxAssign(Self, new FxConstant(0, ScriptPosition));
+			}
+			Self = nullptr;
+			SAFE_RESOLVE(x, ctx);
+			if (MethodName == NAME_SetInvalid) x->ValueType = TypeVoid; // override the default type of the assignment operator.
+			delete this;
+			return x;
+		}
+		Self->ValueType = TypeSoundHandleStruct;
+	}
 
 	// Texture builtins.
 	if (Self->ValueType->isNumeric())

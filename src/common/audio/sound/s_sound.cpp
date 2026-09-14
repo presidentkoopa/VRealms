@@ -399,7 +399,7 @@ static float CalcPitch(int pitchmask, float defpitch, float defpitchmax)
 
 FSoundChan *SoundEngine::StartSound(int type, const void *source,
 	const FVector3 *pt, int channel, EChanFlags flags, FSoundID sound_id, float volume, float attenuation,
-	FRolloffInfo *forcedrolloff, float spitch, float startTime)
+	FRolloffInfo *forcedrolloff, float spitch, float startTime, FSoundHandle *handleOut)
 {
 	sfxinfo_t *sfx;
 	EChanFlags chanflags = flags;
@@ -408,6 +408,13 @@ FSoundChan *SoundEngine::StartSound(int type, const void *source,
 	FSoundChan *chan;
 	FVector3 pos, vel;
 	FRolloffInfo *rolloff;
+
+	// [SOUNDHANDLES] A handle asked for is issued before anything below can refuse the sound, so whether it is valid
+	// never depends on this machine's sound state (FSoundHandle). A caller that issued one already passes it in.
+	if (handleOut != nullptr && !handleOut->IsValid())
+	{
+		*handleOut = IssueSoundHandle();
+	}
 
 	if (!isValidSoundId(sound_id) || volume <= 0 || nosfx || !SoundEnabled() || blockNewSounds)
 		return NULL;
@@ -615,6 +622,7 @@ FSoundChan *SoundEngine::StartSound(int type, const void *source,
 	}
 	if (chan != NULL)
 	{
+		if (handleOut != nullptr) chan->HandleID = (int)*handleOut;	// [SOUNDHANDLES]
 		chan->SoundID = sound_id;
 		chan->OrgID = org_id;
 		chan->EntChannel = channel;
@@ -1077,6 +1085,73 @@ void SoundEngine::SetPitch(FSoundChan *chan, float pitch)
 	assert(chan != nullptr);
 	GSnd->ChannelPitch(chan, max(0.0001f, pitch));
 	chan->Pitch = pitch;
+}
+
+//==========================================================================
+//
+// [SOUNDHANDLES] Sound handles (FSoundHandle, s_soundinternal.h)
+//
+// A handle finds the one channel whose HandleID it is. A channel carries the
+// id from StartSound until it is returned to the free pool (ReturnChannel
+// clears it), including while it is evicted and waiting to restart, so a
+// looping sound keeps its handle. Ids are unique for the session, so a stale
+// handle never finds another sound. The changers go through the same
+// SetPitch/SetVolume/StopChannel as the channel and actor forms, so
+// FSoundChan::Pitch stays the pitch the sound was asked to play at -- the one
+// place an engine-wide pitch multiplier would apply on top of it.
+//
+//==========================================================================
+
+FSoundHandle SoundEngine::IssueSoundHandle()
+{
+	// 1 .. INT_MAX, then back to 1: 0 stays "no handle", and nothing is negative.
+	LastSoundHandle = (LastSoundHandle <= 0 || LastSoundHandle >= 0x7fffffff) ? 1 : LastSoundHandle + 1;
+	return FSoundHandle(LastSoundHandle);
+}
+
+FSoundChan *SoundEngine::FindChannel(FSoundHandle handle)
+{
+	if (!handle.IsValid())
+		return nullptr;
+
+	for (FSoundChan *chan = Channels; chan != nullptr; chan = chan->NextChan)
+	{
+		if (chan->HandleID == (int)handle)
+			return chan;
+	}
+	return nullptr;
+}
+
+bool SoundEngine::IsPlaying(FSoundHandle handle)
+{
+	return FindChannel(handle) != nullptr;
+}
+
+bool SoundEngine::SetPitch(FSoundHandle handle, float pitch)
+{
+	FSoundChan *chan = FindChannel(handle);
+	if (chan == nullptr)
+		return false;
+	SetPitch(chan, pitch);
+	return true;
+}
+
+bool SoundEngine::SetVolume(FSoundHandle handle, float volume)
+{
+	FSoundChan *chan = FindChannel(handle);
+	if (chan == nullptr)
+		return false;
+	SetVolume(chan, volume);
+	return true;
+}
+
+bool SoundEngine::StopSound(FSoundHandle handle)
+{
+	FSoundChan *chan = FindChannel(handle);
+	if (chan == nullptr)
+		return false;
+	StopChannel(chan);
+	return true;
 }
 
 //==========================================================================

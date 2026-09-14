@@ -35,6 +35,7 @@
 #include "vk_imagetransition.h"
 #include "hw_material.h"
 #include <list>
+#include <cstdlib>	// [DDS] free, VkCompressedPixels
 
 struct FMaterialState;
 class VulkanDescriptorSet;
@@ -43,6 +44,29 @@ class VulkanImageView;
 class VulkanBuffer;
 class VulkanRenderDevice;
 class FGameTexture;
+class FImageSource;
+class VulkanDevice;
+
+// [DDS] An image's stored block-compressed levels (FImageSource::ReadCompressedPixels), top level
+// first, as VkHardwareTexture::CreateCompressedTexture uploads them. Read on any thread.
+struct VkCompressedPixels
+{
+	unsigned char* data = nullptr;	// malloc'd by ReadCompressedPixels
+	size_t size = 0;				// every stored level
+	size_t unitSize = 0;			// the top level
+	int storedMips = 0;				// the file's mip count (0 or 1: the top level only)
+	int width = 0;
+	int height = 0;
+	int blockSize = 0;				// bytes per 4x4 block: 8 for BC1, 16 for BC3 and BC7
+	VkFormat format = VK_FORMAT_UNDEFINED;
+
+	VkCompressedPixels() = default;
+	VkCompressedPixels(const VkCompressedPixels&) = delete;
+	VkCompressedPixels& operator=(const VkCompressedPixels&) = delete;
+	~VkCompressedPixels() { free(data); }
+
+	bool Read(FImageSource* src);
+};
 
 class VkHardwareTexture : public IHardwareTexture
 {
@@ -63,6 +87,17 @@ public:
 	void ReleaseLoadedFromQueue(VulkanCommandBuffer* cmd, int fromQueueFamily, int toQueueFamily);
 	void AcquireLoadedFromQueue(VulkanCommandBuffer* cmd, int fromQueueFamily, int toQueueFamily);
 
+	// [DDS] Compressed DDS textures (GZSelaco 490044c411, a46c31630a, 1c5f0b120d, 5c93e38c6c).
+	// CanUploadCompressed: this request may use the image's stored levels as they are -- no
+	// translation, no sprite frame, not indexed, and the device has the format. Anything else
+	// decodes on the CPU exactly as before.
+	bool CanUploadCompressed(FTexture *tex, int translation, int flags);
+	static bool DeviceSupportsCompressed(VulkanDevice *device, VkFormat format);
+	// The stored levels into mLoadedImage (a background loader's image). Returns the level count; 0 = nothing was created.
+	int BackgroundCreateCompressedTexture(VkCommandBufferManager* bufManager, const VkCompressedPixels& pixels, bool allowQualityReduction);
+	// Selaco's name: one stored level into an image created with room for it, still in TRANSFER_DST.
+	void CreateTextureMipMap(VkCommandBufferManager* bufManager, VkTextureImage* img, int mipLevel, int w, int h, int pixelsize, VkFormat format, const void* pixels, int totalSize);
+
 	// Wipe screen
 	void CreateWipeTexture(int w, int h, const char *name);
 
@@ -74,6 +109,8 @@ public:
 
 private:
 	void CreateImage(FTexture *tex, int translation, int flags);
+	bool CreateCompressedImage(FTexture *tex, int translation, int flags);	// [DDS] false: decode on the CPU
+	int CreateCompressedTexture(VkCommandBufferManager *bufManager, VkTextureImage *img, const VkCompressedPixels &pixels, bool allowQualityReduction);	// [DDS]
 
 	void CreateTexture(int w, int h, int pixelsize, VkFormat format, const void *pixels, bool mipmap);
 	void CreateTexture(VkCommandBufferManager *bufManager, VkTextureImage *img, int w, int h, int pixelsize, VkFormat format, const void *pixels, int mipmap, bool generateMipmaps = true, int totalSize = -1);

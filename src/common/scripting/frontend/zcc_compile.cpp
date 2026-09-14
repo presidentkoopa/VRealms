@@ -829,6 +829,7 @@ void ZCCCompiler::CreateStructTypes()
 			auto etype = NewEnum(e->NodeName, s->Type());
 			s->Type()->Symbols.AddSymbol(Create<PSymbolType>(e->NodeName, etype));
 		}
+		(static_cast<PStruct*>(s->Type()))->sourceLump = s->strct->SourceLump;	// 'singleunit' (GZSelaco 785924a40d)
 	}
 }
 
@@ -922,6 +923,7 @@ void ZCCCompiler::CreateClassTypes()
 					}
 					c->cls->Type = NewClassType(me, AST.FileNo);
 					me->SourceLumpName = *c->cls->SourceName;
+					me->SourceLump = c->cls->SourceLump;
 				}
 				else
 				{
@@ -956,8 +958,13 @@ void ZCCCompiler::CreateClassTypes()
 					c->cls->Type = NewClassType(parent->FindClassTentative(c->NodeName()), AST.FileNo);
 				}
 
+				c->ClassType()->SourceLump = c->cls->SourceLump;
+
 				if (c->cls->Flags & ZCC_Abstract)
 					c->ClassType()->bAbstract = true;
+
+				if (c->cls->Flags & ZCC_Unit)
+					c->ClassType()->bUnitOnly = true;
 
 				if (c->cls->Flags & ZCC_Version)
 				{
@@ -2240,6 +2247,12 @@ PType *ZCCCompiler::ResolveUserType(PType *outertype, ZCC_BasicType *type, ZCC_I
 	// We first look in the current class and its parents, and then in the current namespace and its parents.
 	if (symt != nullptr) sym = symt->FindSymbol(id->Id, true);
 	if (sym == nullptr && type->UserType == id) sym = OutNamespace->Symbols.FindSymbol(id->Id, true);
+	if (sym == nullptr && type->UserType == id)
+	{
+		// A class-name alias (PClass::AddClassAlias: -classalias, IWADINFO ClassAliases) names its target's type.
+		FName aliasTarget = PClass::GetClassAliasTarget(id->Id);
+		if (aliasTarget != NAME_None) sym = OutNamespace->Symbols.FindSymbol(aliasTarget, true);
+	}
 	if (sym != nullptr && sym->IsKindOf(RUNTIME_CLASS(PSymbolType)))
 	{
 		auto ptype = static_cast<PSymbolType *>(sym)->Type;
@@ -2541,6 +2554,7 @@ void ZCCCompiler::CompileFunction(ZCC_StructWork *c, ZCC_FuncDeclarator *f, bool
 		if (f->Flags & ZCC_Virtual) varflags |= VARF_Virtual;
 		if (f->Flags & ZCC_Override) varflags |= VARF_Override;
 		if (f->Flags & ZCC_Abstract) varflags |= VARF_Abstract;
+		if (f->Flags & ZCC_Unit) varflags |= VARF_Unit;	// 'singleunit' (GZSelaco 785924a40d)
 		if (f->Flags & ZCC_VarArg) varflags |= VARF_VarArg;
 		if (f->Flags & ZCC_FuncConst) varflags |= (mVersion >= MakeVersion(4, 15, 1) ? VARF_ReadOnly | VARF_SafeConst : VARF_ReadOnly); // FuncConst method is internally marked as VARF_ReadOnly
 		if (f->Flags & ZCC_FuncConstUnsafe) varflags |= VARF_ReadOnly;

@@ -92,6 +92,7 @@ enum
 	ZCC_UnsafeClearScope	= 1 << 25,
 	ZCC_VMInternalStruct	= 1 << 26,
 	ZCC_NoRollback			= 1 << 27,
+	ZCC_Unit				= 1 << 28,	// 'singleunit': only callable from the archive that defines it (GZSelaco 785924a40d, which used 1 << 23)
 };
 
 // Function parameter modifiers
@@ -725,5 +726,8 @@ ZCC_TreeNode *TreeNodeDeepCopy(ZCC_AST *ast, ZCC_TreeNode *orig, bool copySiblin
 
 // Main entry point for the parser. Returns some data needed by the compiler.
 PNamespace* ParseOneScript(const int baselump, ZCCParseState& state);
+
+// -nostockactors / IWADINFO NoStockActors: leave the game-specific stock actor scripts out. Set before parsing.
+void ZCC_SetSkipStockGameActors(bool on);
 
 #endif

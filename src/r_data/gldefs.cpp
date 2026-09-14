@@ -1867,10 +1867,28 @@ class GLDefsParser
 			sc.MustGetString();
 			FTextureID no = TexMan.CheckForTexture(sc.String, type);
 			auto tex = TexMan.GetGameTexture(no);
+			// HardwareShader <type> <texture> <copyname> { ... } (GZSelaco 23371e897b): a second name copies the texture
+			// under that name and the shader goes on the copy, so the original stays usable without the shader.
+			// Selaco copied its size from the original onto the original; the copy takes it here.
+			bool skipOpeningBrace = false;
+			if (sc.GetString())
+			{
+				if (sc.Compare("{"))
+				{
+					skipOpeningBrace = true;
+				}
+				else if (tex != nullptr)
+				{
+					auto copy = MakeGameTexture(tex->GetTexture(), sc.String, type);
+					copy->CopySize(tex, true);
+					TexMan.AddGameTexture(copy);
+					tex = copy;
+				}
+			}
 			if (tex) tex->AddAutoMaterials();
 			MaterialLayers mlay = { -1000, -1000 };
 
-			sc.MustGetToken('{');
+			if (!skipOpeningBrace) sc.MustGetToken('{');
 			while (!sc.CheckToken('}'))
 			{
 				sc.MustGetString();

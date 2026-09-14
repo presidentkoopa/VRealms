@@ -287,7 +287,7 @@ void DrawTextCommon(F2DDrawer *drawer, FFont *font, int normalcolor, double x, d
 
 	ch = string;
 	cx = x;
-	cy = y;
+	cy = y + font->GetInfDisplacement();	// font.inf Displacement (GZSelaco 0de90e19a6); 0 for every other font
 
 	if (parms.monospace == EMonospacing::CellCenter)
 		cx += parms.spacing / 2;

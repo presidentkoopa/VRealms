@@ -47,6 +47,7 @@ static thread_local TArray<FFlatLightCandidate> flatLightCandidates;
 #include "texturemanager.h"
 #include "hw_viewpointbuffer.h"
 #include "m_round.h"
+#include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamageFlatKey
 
 CVAR(Int, gl_max_vertices, 0, CVAR_ARCHIVE)
 
@@ -398,6 +399,11 @@ float FogScaleForSector(FLevelLocals *Level, sector_t *sec);
 void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 {
 	state.SetFogDensityScale(FogScaleForSector(di->Level, sector));
+	// [SURFACEDAMAGE] This plane's lasting damage ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): its record slot + 1, or 0 when it
+	// holds no damage tiles; a 3D floor's plane is never painted. Set only when non-zero and put back to 0 at the end, so every
+	// other draw -- and every flat while nothing is damaged -- uploads exactly what it did.
+	const int surfaceDamageKey = (renderflags & SSRF_RENDER3DPLANES) ? 0 : SurfaceDamageFlatKey(sector, ceiling);
+	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(surfaceDamageKey);
 #ifdef _DEBUG
 	if (sector->sectornum == gl_breaksec)
 	{
@@ -533,6 +539,7 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 	state.SetAddColor(0);
 	state.ApplyTextureManipulation(nullptr);
 	if (plane.plane.dithertransflag) state.SetEffect(EFF_NONE);
+	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(0);	// [SURFACEDAMAGE]
 }
 
 //==========================================================================

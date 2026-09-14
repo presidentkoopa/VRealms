@@ -719,6 +719,13 @@ void ZCCDoomCompiler::ProcessDefaultProperty(PClassActor *cls, ZCC_PropertyStmt 
 		{
 			name = cls->TypeName;
 		}
+		else
+		{
+			// A class-name alias (PClass::AddClassAlias) qualifies properties as its target does: WeaponBase.AmmoUse
+			// is Weapon.AmmoUse. No alias registered = no change.
+			FName aliasTarget = PClass::GetClassAliasTarget(name);
+			if (aliasTarget != NAME_None) name = aliasTarget;
+		}
 
 		// a two-name property
 		propname << name.GetChars() << "." << FName(static_cast<ZCC_Identifier *>(namenode->SiblingNext)->Id).GetChars();
@@ -784,6 +791,13 @@ void ZCCDoomCompiler::ProcessDefaultFlag(PClassActor *cls, ZCC_FlagStmt *flg)
 		if(namenode->Id == NAME_self)
 		{
 			n1 = cls->TypeName.GetChars();
+		}
+		else
+		{
+			// A class-name alias (PClass::AddClassAlias) qualifies flags as its target does: +WeaponBase.NOAUTOAIM
+			// is +Weapon.NOAUTOAIM. No alias registered = no change.
+			FName aliasTarget = PClass::GetClassAliasTarget(FName(namenode->Id));
+			if (aliasTarget != NAME_None) n1 = aliasTarget.GetChars();
 		}
 
 

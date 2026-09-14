@@ -708,6 +708,167 @@ void FTextureManager::LoadTextureDefs(int wadnum, const char *lumpname, FMultipa
 	}
 }
 
+//==========================================================================
+//
+// WeaponSprite <sprite> [, <width>, <height>] { Scale | XScale | YScale | Offset | Offset2 | WorldPanning | NoTrim | Mips | NoMips }
+//
+// Sets offsets and scale on a sprite that already exists instead of building a multipatch texture; the scale
+// defaults to 3. From GZSelaco (4bf99b0ae5, 38729f48a3, 3431d6ba01), where TEXTURES offsets became float for
+// half-resolution weapon sprites. Offsets are integer here, so they round to the nearest texel. Selaco also marks
+// these sprites never-expand; that texture flag is not ported yet (see SELACO_PHASE0_IMPL_NOTES.md).
+//
+//==========================================================================
+
+static void ParseWeaponSprite(FScanner &sc, int lump)
+{
+	sc.SetCMode(true);
+	sc.MustGetString();
+
+	FString name(sc.String);
+	name.ToUpper();
+
+	int width = -1, height = -1;
+	bool mips = false;
+
+	if (sc.CheckString(","))
+	{
+		sc.MustGetNumber();
+		width = sc.Number;
+		sc.MustGetStringName(",");
+		sc.MustGetNumber();
+		height = sc.Number;
+	}
+
+	FTextureID texID = TexMan.CheckForTexture(name.GetChars(), ETextureType::Sprite, FTextureManager::TEXMAN_Overridable);
+	FGameTexture *tex = TexMan.GetGameTexture(texID, false);
+	if (!texID.isValid() || tex == nullptr)
+	{
+		// Not a short sprite name: try the full name inside the defining archive.
+		int wadnum = fileSystem.GetFileContainer(lump);
+		int num = fileSystem.CheckNumForName(name.GetChars(), ns_sprites, wadnum, false);
+		const char *fullName = num < 0 ? nullptr : fileSystem.GetFileFullName(num);
+		if (fullName != nullptr)
+		{
+			texID = TexMan.CheckForTexture(fullName, ETextureType::Sprite, FTextureManager::TEXMAN_Overridable);
+			tex = TexMan.GetGameTexture(texID, false);
+		}
+	}
+	if (!texID.isValid() || tex == nullptr)
+	{
+		sc.ScriptMessage("Warning: Unknown sprite: %s", name.GetChars());
+		tex = nullptr;
+	}
+
+	double scalex = 3.0, scaley = 3.0;
+	bool bWorldPanning = false, bNoTrim = false;
+	bool offset2set = false;
+	double LeftOffset[2] = { 0, 0 };
+	double TopOffset[2] = { 0, 0 };
+
+	if (sc.CheckString("{"))
+	{
+		while (!sc.CheckString("}"))
+		{
+			sc.MustGetString();
+			if (sc.Compare("Scale"))
+			{
+				// Selaco read the second value without consuming it; both are read here.
+				sc.MustGetFloat();
+				scalex = sc.Float;
+				sc.MustGetStringName(",");
+				sc.MustGetFloat();
+				scaley = sc.Float;
+				if (scalex == 0 || scaley == 0) sc.ScriptError("Texture %s is defined with null scale\n", name.GetChars());
+			}
+			else if (sc.Compare("XScale"))
+			{
+				sc.MustGetFloat();
+				scalex = sc.Float;
+				if (scalex == 0) sc.ScriptError("Texture %s is defined with null x-scale\n", name.GetChars());
+			}
+			else if (sc.Compare("YScale"))
+			{
+				sc.MustGetFloat();
+				scaley = sc.Float;
+				if (scaley == 0) sc.ScriptError("Texture %s is defined with null y-scale\n", name.GetChars());
+			}
+			else if (sc.Compare("WorldPanning"))
+			{
+				bWorldPanning = true;
+			}
+			else if (sc.Compare("NoTrim"))
+			{
+				bNoTrim = true;
+			}
+			else if (sc.Compare("NoMips"))
+			{
+				mips = false;
+			}
+			else if (sc.Compare("Mips"))
+			{
+				mips = true;
+			}
+			else if (sc.Compare("Offset"))
+			{
+				sc.MustGetFloat();
+				LeftOffset[0] = sc.Float;
+				sc.MustGetStringName(",");
+				sc.MustGetFloat();
+				TopOffset[0] = sc.Float;
+				if (!offset2set)
+				{
+					LeftOffset[1] = LeftOffset[0];
+					TopOffset[1] = TopOffset[0];
+				}
+			}
+			else if (sc.Compare("Offset2"))
+			{
+				sc.MustGetFloat();
+				LeftOffset[1] = sc.Float;
+				sc.MustGetStringName(",");
+				sc.MustGetFloat();
+				TopOffset[1] = sc.Float;
+				offset2set = true;
+			}
+			else
+			{
+				sc.ScriptError("Unknown WeaponSprite property '%s'", sc.String);
+			}
+		}
+	}
+
+	if (tex != nullptr)
+	{
+		auto roundOffset = [](double v) { return int(v < 0 ? v - 0.5 : v + 0.5); };
+		int tw = tex->GetTexelWidth();
+		int th = tex->GetTexelHeight();
+		bool sizeMatch = (width == tw && height == th);
+
+		if (width > 0 && height > 0 && !sizeMatch && tw <= width && th <= height)
+		{
+			// A reduced-resolution image standing in for the authored size (Selaco's half-resolution weapons): keep
+			// the authored display size and scale the offsets by the same factor. Like Selaco, only a factor of 2 is exact.
+			tex->SetDisplaySize(
+				float((width % 2) != 0 ? (width - 1) / scalex : width / scalex),
+				float((height % 2) != 0 ? (height - 1) / scaley : height / scaley));
+			tex->SetOffsets(0, roundOffset(tex->GetScaleX() / scalex * LeftOffset[0]), roundOffset(tex->GetScaleY() / scaley * TopOffset[0]));
+			tex->SetOffsets(1, roundOffset(tex->GetScaleX() / scalex * LeftOffset[1]), roundOffset(tex->GetScaleY() / scaley * TopOffset[1]));
+		}
+		else
+		{
+			if (width > 0 && height > 0) tex->SetSize(width, height);
+			tex->SetOffsets(0, roundOffset(LeftOffset[0]), roundOffset(TopOffset[0]));
+			tex->SetOffsets(1, roundOffset(LeftOffset[1]), roundOffset(TopOffset[1]));
+			tex->SetScale((float)scalex, (float)scaley);
+		}
+		tex->SetWorldPanning(bWorldPanning);
+		tex->SetNoTrimming(bNoTrim);
+		tex->SetNoMipmap(!mips);
+	}
+
+	sc.SetCMode(false);
+}
+
 void FTextureManager::ParseTextureDef(int lump, FMultipatchTextureBuilder &build)
 {
 	TArray<FTextureID> tlist;
@@ -861,6 +1022,10 @@ void FTextureManager::ParseTextureDef(int lump, FMultipatchTextureBuilder &build
 		else if (sc.Compare("graphic"))
 		{
 			build.ParseTexture(sc, ETextureType::MiscPatch, lump);
+		}
+		else if (sc.Compare("weaponsprite"))
+		{
+			ParseWeaponSprite(sc, lump);
 		}
 		else if (sc.Compare("#include"))
 		{

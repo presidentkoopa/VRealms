@@ -47,7 +47,9 @@ inline void S_Sound(int channel, EChanFlags flags, const FString& sfxid, float v
 {
 	S_Sound(channel, flags, S_FindSound(sfxid), volume, attenuation);
 }
-void S_SoundPitch(int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
+// [SOUNDHANDLES] The pitched start calls return the sound's handle (s_soundinternal.h FSoundHandle): always a valid one,
+// whether or not the sound starts on this machine. Callers that do not want it ignore it.
+FSoundHandle S_SoundPitch(int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
 
 
 void S_Sound (AActor *ent, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation);
@@ -62,9 +64,14 @@ void S_Sound(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags f
 // [DEBRISSOUNDS] A point is the source, with a pitch (0 = the sound's own SNDINFO pitch) and a start time: S_Sound's point
 // form plus what S_SoundPitchActor adds to the actor form. No actor and no thinker, so presentation code can play a sound
 // at a place without touching the playsim (debris landing sounds, hw_debrislanding.cpp).
-void S_SoundPitchAt(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
+FSoundHandle S_SoundPitchAt(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
+// [SOUNDHANDLES] GZSelaco's name for S_SoundPitchAt (593952566e), so code ported from it compiles unchanged.
+inline FSoundHandle S_SoundPitch(FLevelLocals *Level, const DVector3 &pos, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f)
+{
+	return S_SoundPitchAt(Level, pos, channel, flags, sfxid, volume, attenuation, pitch, startTime);
+}
 
-void S_SoundPitchActor (AActor *ent, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
+FSoundHandle S_SoundPitchActor (AActor *ent, int channel, EChanFlags flags, FSoundID sfxid, float volume, float attenuation, float pitch, float startTime = 0.f);
 
 // [Nash] Used by ACS and DECORATE
 void S_PlaySound(AActor *a, int chan, EChanFlags flags, FSoundID sid, float vol, float atten);
@@ -91,12 +98,22 @@ void S_ChangeActorSoundVolume(AActor *actor, int channel, double volume);
 // Change a playing sound's pitch
 void S_ChangeActorSoundPitch(AActor *actor, int channel, double pitch);
 
+// [SOUNDHANDLES] One started sound, by its handle (s_soundinternal.h FSoundHandle). Each returns false when the handle
+// reaches no sound (finished, stopped, never started, invalid). This machine's presentation only: never decide gameplay
+// with the result. Names as GZSelaco's (5e3644b940). SoundEngine::IsPlaying(handle) answers whether it still plays.
+bool S_StopSound(FSoundHandle handle);
+bool S_ChangeSoundVolume(FSoundHandle handle, double volume);
+bool S_ChangeSoundPitch(FSoundHandle handle, double pitch);
+
 // Stores/retrieves playing channel information in an archive.
 void S_SerializeSounds(FSerializer &arc);
 
 // these must retain their integer sound IDs because they are direct native functions for ZScript.
 void A_PlaySound(AActor *self, int soundid, int channel, double volume, int looping, double attenuation, int local, double pitch);
 void A_StartSound(AActor* self, int soundid, int channel, int flags, double volume, double attenuation,  double pitch, double startTime = 0.);
+// [SOUNDHANDLES] A_StartSound returning the sound's handle id: the direct native behind ZScript's Actor.StartSound
+// (vmthunks_actors.cpp). GZSelaco f86a8cc6c9.
+int StartSound(AActor* self, int soundid, int channel, int flags, double volume, double attenuation, double pitch, double startTime = 0.);
 static void S_SetListener(AActor *listenactor);
 void S_SoundReset();
 void S_ResumeSound(bool state);

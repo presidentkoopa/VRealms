@@ -166,6 +166,7 @@ std2:
 
 		/* Other keywords from UnrealScript */
 		'abstract'					{ RET(TK_Abstract); }
+		'singleunit'				{ RET(ParseVersion >= MakeVersion(4, 12, 0)? TK_Unit : TK_Identifier); }
 		'foreach'					{ RET(ParseVersion >= MakeVersion(4, 10, 0)? TK_ForEach : TK_Identifier); }
 		'unsafe'					{ RET(ParseVersion >= MakeVersion(4, 15, 1)? TK_Unsafe : TK_Identifier); }
 		'true'						{ RET(TK_True); }

@@ -32,6 +32,7 @@ enum ECreateTexBufferFlags
 	CTF_Indexed = 4,		// Tell the backend to create an indexed texture.
 	CTF_CheckOnly = 8,		// Only runs the code to get a content ID but does not create a texture. Can be used to access a caching system for the hardware textures.
 	CTF_ProcessData = 16,	// run postprocessing on the generated buffer. This is only needed when using the data for a hardware texture.
+	CTF_ReduceQuality = 32,	// Allow reduction in resolution, using gl_texture_quality ([DDS] GZSelaco a46c31630a: only compressed images read it, and it never picks a slot)
 };
 
 class FHardwareTextureContainer
@@ -78,6 +79,9 @@ private:
 
  	TranslatedTexture * GetTexID(int translation, int scaleflags)
 	{
+		// [DDS] CTF_ReduceQuality says how a compressed image is uploaded, not which texture it is: one slot either way.
+		scaleflags &= ~CTF_ReduceQuality;
+
 		// Allow negative indices to pass through unchanged.
 		// This is needed for allowing the client to allocate slots that aren't matched to a palette, e.g. Build's indexed variants.
 		if (translation >= 0)
@@ -121,8 +125,9 @@ private:
 public:
 	void Clean()
 	{
-		hwDefTex[0].Delete();
-		hwDefTex[1].Delete();
+		// [DDS] GZSelaco a46c31630a: all four default slots, so an upscaled one (CTF_Upscale) is dropped
+		// as well when gl_texture_quality has the compressed textures uploaded again.
+		for (auto& tt : hwDefTex) tt.Delete();
 		hwTex_Translated.Clear();
 	}
 

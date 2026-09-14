@@ -1936,6 +1936,9 @@ std::vector<VulkanCompatibleDevice> VulkanDeviceBuilder::FindDevices(const std::
 		enabledFeatures.Features.shaderClipDistance = deviceFeatures.Features.shaderClipDistance;
 		enabledFeatures.Features.multiDrawIndirect = deviceFeatures.Features.multiDrawIndirect;
 		enabledFeatures.Features.independentBlend = deviceFeatures.Features.independentBlend;
+		// UZDXREMA [DDS] Block-compressed textures (BC1/BC3/BC7 DDS) go up as they are stored when the
+		// device has them; VkHardwareTexture::DeviceSupportsCompressed checks this before it tries.
+		enabledFeatures.Features.textureCompressionBC = deviceFeatures.Features.textureCompressionBC;
 		enabledFeatures.Multiview.multiview = deviceFeatures.Multiview.multiview;
 		enabledFeatures.Multiview.multiviewGeometryShader = deviceFeatures.Multiview.multiviewGeometryShader;
 		enabledFeatures.Multiview.multiviewTessellationShader = deviceFeatures.Multiview.multiviewTessellationShader;

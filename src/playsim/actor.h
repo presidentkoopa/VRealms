@@ -661,14 +661,17 @@ enum EThingSpecialActivationType
 
 class FDecalBase;
 
+// Null when the class does not exist: -nostockactors leaves the stock game classes out (GZSelaco 766321f356).
 inline AActor *GetDefaultByName (const char *name)
 {
-	return (AActor *)(PClass::FindClass(name)->Defaults);
+	PClass *pc = PClass::FindClass(name);
+	return pc != nullptr ? (AActor *)pc->Defaults : nullptr;
 }
 
 inline AActor* GetDefaultByName(FName name)
 {
-	return (AActor*)(PClass::FindClass(name)->Defaults);
+	PClass *pc = PClass::FindClass(name);
+	return pc != nullptr ? (AActor *)pc->Defaults : nullptr;
 }
 
 inline AActor *GetDefaultByType (const PClass *type)

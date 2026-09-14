@@ -245,6 +245,20 @@ DEFINE_ACTION_FUNCTION(AActor, A_StartSound)
 	return 0;
 }
 
+// [SOUNDHANDLES] Actor.StartSound: A_StartSound returning the sound's handle (s_doomsound.cpp StartSound). GZSelaco f86a8cc6c9.
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, StartSound, StartSound)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(soundid);
+	PARAM_INT(channel);
+	PARAM_INT(flags);
+	PARAM_FLOAT(volume);
+	PARAM_FLOAT(attenuation);
+	PARAM_FLOAT(pitch);
+	PARAM_FLOAT(startTime);
+	ACTION_RETURN_INT(StartSound(self, soundid, channel, flags, volume, attenuation, pitch, startTime));
+}
+
 
 void A_StartSoundIfNotSame(AActor *self, int soundid, int checksoundid, int channel, int flags, double volume, double attenuation, double pitch, double startTime)
 {

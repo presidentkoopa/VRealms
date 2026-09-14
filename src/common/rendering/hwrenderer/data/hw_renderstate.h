@@ -342,7 +342,12 @@ struct StreamData
 	// inside #ifdef MODEL_EYE_FADE, so no other program's text or SPIR-V changes.
 	float uEyeFadeNear;
 	float uEyeFadeFar;
-	int uFogPad2;
+	// [SURFACEDAMAGE] This draw's lasting surface damage: the damaged surface's record slot + 1, or 0 for none
+	// (hw_surfacedamage.h, "Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"). This was uFogPad2: the same std140 slot, so
+	// MAX_STREAM_DATA and every offset are unchanged -- and 0, what the pad always held, means "none", so every draw that
+	// never sets it uploads exactly the bytes it did. The Vulkan prolog keeps the slot's name; main.fp reads it as
+	// uSurfaceDamageKey only inside #ifdef SURFACE_DAMAGE, which only the Vulkan backend defines.
+	int uSurfaceDamageKey;
 };
 
 class FRenderState
@@ -782,6 +787,12 @@ public:
 	{
 		mStreamData.uEyeFadeNear = nearDist;
 		mStreamData.uEyeFadeFar = farDist;
+	}
+
+	// [SURFACEDAMAGE] See uSurfaceDamageKey. RenderTexturedWall and DrawFlat set it only while non-zero and put 0 back after.
+	void SetSurfaceDamageKey(int key)
+	{
+		mStreamData.uSurfaceDamageKey = key;
 	}
 
 	void SetFlatGlowParams(float r, float g, float b, float reach, const FVector4 &farColor, int falloff, int lineCount, const FVector4* lines, int isCeiling = 0)

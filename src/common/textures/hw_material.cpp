@@ -49,6 +49,11 @@ FMaterial::FMaterial(FGameTexture * tx, int scaleflags)
 	auto imgtex = tx->GetTexture();
 	mTextureLayers.Push({ imgtex, scaleflags });
 
+	// [DDS] gl_texture_quality (GZSelaco a46c31630a): a sprite's, skin's or decal's own image may start
+	// at a smaller stored mip level. Only the base layer carries the flag, only compressed images read
+	// it (VkHardwareTexture), and it stays out of scaleflags, so it never picks a material or a slot.
+	if (shouldScaleQuality(tx)) mTextureLayers[0].scaleFlags |= CTF_ReduceQuality;
+
 	if (tx->GetUseType() == ETextureType::SWCanvas && static_cast<FWrapperTexture*>(imgtex)->GetColorFormat() == 0)
 	{
 		mShaderIndex = SHADER_Paletted;

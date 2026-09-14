@@ -4191,6 +4191,75 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, PushEffectImpulse, PushEffectImpulse
 	return 0;
 }
 
+//==========================================================================
+//
+// [SURFACEDAMAGE] PaintSurfaceDamage -- lasting damage pressed into the wall or flat at pos ("Engine docs/
+// SURFACE_DAMAGE_17_IMPL_NOTES.md"). ONE-WAY, like the smoke natives above: it only queues an event
+// (FLevelLocals::SurfaceDamagePaints, 128 a tic); the renderer finds the surface, hands out tiles and stamps the
+// brush (hw_surfacedamage.cpp). Nothing is returned, nothing is serialized, no RNG: every machine queues the same
+// paint, and each draws it -- or does not, when its damage is off.
+//
+//==========================================================================
+
+static void PaintSurfaceDamage(FLevelLocals *self, double px, double py, double pz, double nx, double ny, double nz, int brush,
+	double radius, double depth, double soot, double heat, double wet, double ax, double ay, double az)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("PaintSurfaceDamage", badLogged, { px, py, pz, nx, ny, nz, radius, depth, soot, heat, wet, ax, ay, az }))
+		return;
+
+	const double depthC = clamp(depth, 0., 1.);
+	const double sootC = clamp(soot, 0., 1.);
+	const double heatC = clamp(heat, 0., 1.);
+	const double wetC = clamp(wet, 0., 1.);
+	// Nothing to press in: not queued, so it asks for no atlas either.
+	if (depthC <= 0. && sootC <= 0. && heatC <= 0. && wetC <= 0.)
+		return;
+	// The normal says which way the surface faces; without one there is no surface to find.
+	const DVector3 normal(nx, ny, nz);
+	const double normalLength = normal.Length();
+	if (normalLength < 1e-6)
+		return;
+
+	FSurfaceDamagePaintEvent *e = self->SurfaceDamagePaints.Push();
+	if (e == nullptr)
+	{
+		LogEffectQueueFull(self->SurfaceDamagePaints.FullLogged, "PaintSurfaceDamage", FLevelLocals::MAX_SURFACE_DAMAGE_PAINTS_PER_TIC);
+		return;
+	}
+	e->Pos = DVector3(px, py, pz);
+	e->Normal = normal / normalLength;
+	// axis (0,0,0) -- the ZScript default -- is "unrotated".
+	const DVector3 axis = ClampEffectVector(ax, ay, az, 65536.);
+	const double axisLength = axis.Length();
+	e->Axis = axisLength > 1e-6 ? axis / axisLength : DVector3(0., 0., 0.);
+	e->Brush = brush;
+	// hw_surfacedamageframe.h's SURFACE_DAMAGE_RADIUS_MIN / _MAX.
+	e->Radius = clamp(radius, 0.5, 64.);
+	e->Depth = depthC;
+	e->Soot = sootC;
+	e->Heat = heatC;
+	e->Wet = wetC;
+}
+
+// _NATIVE0, NOT _NATIVE: 16 VM arguments (self, two Vector3s, the brush, five numbers, a Vector3) sit exactly at asmjit's
+// 16-argument direct-call cap -- see the note on SetVolumetricBeam. The VM calling convention has no such limit.
+DEFINE_ACTION_FUNCTION_NATIVE0(FLevelLocals, PaintSurfaceDamage, PaintSurfaceDamage)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(nx); PARAM_FLOAT(ny); PARAM_FLOAT(nz);
+	PARAM_NAME(brush);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(depth);
+	PARAM_FLOAT(soot);
+	PARAM_FLOAT(heat);
+	PARAM_FLOAT(wet);
+	PARAM_FLOAT(ax); PARAM_FLOAT(ay); PARAM_FLOAT(az);
+	PaintSurfaceDamage(self, px, py, pz, nx, ny, nz, brush.GetIndex(), radius, depth, soot, heat, wet, ax, ay, az);
+	return 0;
+}
+
 // [RS fork] DIAGNOSTICS FOR THE LEVEL VISUAL STATE -- the sweep, glow, fog and
 // darkness setters and the render gates that read them. Off by default and not
 // archived. When on, each setter prints when a value CHANGES (never per tic)
@@ -8156,6 +8225,12 @@ DEFINE_FIELD_X(LevelInfo, level_info_t, Music)
 DEFINE_FIELD_X(LevelInfo, level_info_t, LightningSound)
 DEFINE_FIELD_X(LevelInfo, level_info_t, LevelName)
 DEFINE_FIELD_X(LevelInfo, level_info_t, AuthorName)
+DEFINE_FIELD_X(LevelInfo, level_info_t, Description)	// MAPINFO data for scripts (GZSelaco)
+DEFINE_FIELD_X(LevelInfo, level_info_t, levelgroup)
+DEFINE_FIELD_X(LevelInfo, level_info_t, areaNum)
+DEFINE_FIELD_X(LevelInfo, level_info_t, invasiontier)
+DEFINE_FIELD_X(LevelInfo, level_info_t, tilt)
+DEFINE_FIELD_X(LevelInfo, level_info_t, tiltAngle)
 DEFINE_FIELD_X(LevelInfo, level_info_t, MapLabel)
 DEFINE_FIELD_X(LevelInfo, level_info_t, musicorder)
 DEFINE_FIELD_X(LevelInfo, level_info_t, skyspeed1)
@@ -8201,6 +8276,11 @@ DEFINE_FIELD(FLevelLocals, NextMap)
 DEFINE_FIELD(FLevelLocals, NextSecretMap)
 DEFINE_FIELD(FLevelLocals, F1Pic)
 DEFINE_FIELD(FLevelLocals, AuthorName)
+DEFINE_FIELD(FLevelLocals, levelgroup)	// MAPINFO data for scripts (GZSelaco)
+DEFINE_FIELD(FLevelLocals, areaNum)
+DEFINE_FIELD(FLevelLocals, invasiontier)
+DEFINE_FIELD(FLevelLocals, tilt)
+DEFINE_FIELD(FLevelLocals, tiltAngle)
 DEFINE_FIELD(FLevelLocals, maptype)
 DEFINE_FIELD(FLevelLocals, LightningSound)
 DEFINE_FIELD(FLevelLocals, Music)
@@ -8252,6 +8332,9 @@ DEFINE_FIELD_BIT(FLevelLocals, flags2, infinite_flight, LEVEL2_INFINITE_FLIGHT)
 DEFINE_FIELD_BIT(FLevelLocals, flags2, no_dlg_freeze, LEVEL2_CONV_SINGLE_UNFREEZE)
 DEFINE_FIELD_BIT(FLevelLocals, flags2, keepfullinventory, LEVEL2_KEEPFULLINVENTORY)
 DEFINE_FIELD_BIT(FLevelLocals, flags3, removeitems, LEVEL3_REMOVEITEMS)
+DEFINE_FIELD_BIT(FLevelLocals, flags3, rainymap, LEVEL3_RAINYMAP)	// MAPINFO hints for scripts (GZSelaco)
+DEFINE_FIELD_BIT(FLevelLocals, flags3, windymap, LEVEL3_WINDYMAP)
+DEFINE_FIELD_BIT(FLevelLocals, flags3, saferoom, LEVEL3_SAFEROOM)
 
 DEFINE_FIELD_X(Sector, sector_t, floorplane)
 DEFINE_FIELD_X(Sector, sector_t, ceilingplane)

@@ -853,6 +853,7 @@ set (VULKAN_SOURCES
 	common/rendering/vulkan/renderer/vk_smokevolume.cpp
 	common/rendering/vulkan/renderer/vk_levelfield.cpp
 	common/rendering/vulkan/renderer/vk_debrispool.cpp
+	common/rendering/vulkan/renderer/vk_surfacedamage.cpp
 	common/rendering/vulkan/shaders/vk_shader.cpp
 	common/rendering/vulkan/shaders/vk_ppshader.cpp
 	common/rendering/vulkan/textures/vk_samplers.cpp
@@ -977,6 +978,7 @@ set (PCH_SOURCES
 	gamedata/defblocks.cpp
 	gamedata/particledefs.cpp
 	gamedata/surfacedefs.cpp
+	gamedata/damagedefs.cpp
 	gamedata/g_mapinfo.cpp
 	gamedata/g_skill.cpp
 	gamedata/gi.cpp
@@ -1040,6 +1042,7 @@ set (PCH_SOURCES
 	rendering/hwrenderer/hw_levelfield.cpp
 	rendering/hwrenderer/hw_debrispool.cpp
 	rendering/hwrenderer/hw_debrislanding.cpp
+	rendering/hwrenderer/hw_surfacedamage.cpp
 	rendering/hwrenderer/doom_aabbtree.cpp
 	rendering/hwrenderer/doom_levelmesh.cpp
 	rendering/hwrenderer/hw_models.cpp

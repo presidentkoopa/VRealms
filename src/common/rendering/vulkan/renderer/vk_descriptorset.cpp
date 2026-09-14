@@ -44,6 +44,8 @@
 #include "vk_levelfield.h"
 #include "vk_debrispool.h"		// [DEBRISPOOL] the debris pool's buffers for set 1 bindings 10 and 11
 #include "hw_debrisframe.h"
+#include "vk_surfacedamage.h"		// [SURFACEDAMAGE] the damage atlas for fixed bindings 7 and 8 and set 1 binding 13
+#include "hw_surfacedamageframe.h"
 
 VkDescriptorSetManager::VkDescriptorSetManager(VulkanRenderDevice* fb) : fb(fb)
 {
@@ -136,6 +138,16 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 	VulkanBuffer* debrisDefinitions = debrisBound ? debrisPool->GetDefinitionBuffer() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
 	DebrisPoolStatus().Bound = debrisBound;
 
+	// [SURFACEDAMAGE] Binding 13 (vk_surfacedamage.h): the damage atlas's data -- looks, surface records, hash. Always written,
+	// the bone buffer standing in while the atlas does not exist: only main.fp's SURFACE_DAMAGE lookup reads it, and only on a
+	// draw with a non-zero key, which the CPU side gives only while SurfaceDamageStatus().Bound -- set here, with UpdateFixedSet's
+	// half, to what this frame's sets hold. The atlas is made and freed inside a frame's compute, after this runs: made this
+	// frame, bound from the next; freed this frame, alive on the delete list until this frame's commands are done.
+	VkSurfaceDamage* surfaceDamage = fb->GetCompute() != nullptr ? fb->GetCompute()->GetSurfaceDamage() : nullptr;
+	const bool surfaceDamageBound = surfaceDamage != nullptr && surfaceDamage->IsAllocated();
+	VulkanBuffer* surfaceDamageData = surfaceDamageBound ? surfaceDamage->GetDataBuffer() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
+	SurfaceDamageStatus().Bound = surfaceDamageBound && SurfaceDamageFixedBound;
+
 	WriteDescriptors()
 		.AddBuffer(HWBufferSet.get(), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->ViewpointUBO->mBuffer.get(), 0, viewpointRange)
 		.AddBuffer(HWBufferSet.get(), 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->MatrixBuffer->UniformBuffer->mBuffer.get(), 0, sizeof(MatricesUBO))
@@ -150,6 +162,7 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 		.AddBuffer(HWBufferSet.get(), 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debrisPieces)	// [DEBRISPOOL]
 		.AddBuffer(HWBufferSet.get(), 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debrisDefinitions)	// [DEBRISPOOL]
 		.AddBuffer(HWBufferSet.get(), 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sectorPlaneSSO->mBuffer.get())	// [SECTORPLANES]
+		.AddBuffer(HWBufferSet.get(), 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, surfaceDamageData)	// [SURFACEDAMAGE]
 		.Execute(fb->device.get());
 }
 
@@ -225,6 +238,24 @@ void VkDescriptorSetManager::UpdateFixedSet()
 	update.AddCombinedImageSampler(FixedSet.get(), 6, levelFieldBound ? levelField->GetFieldView(1) : LevelFieldStandInView.get(), LevelFieldSampler.get(), VK_IMAGE_LAYOUT_GENERAL);
 	update.AddCombinedImageSampler(FixedSet.get(), 9, levelFieldBound ? levelField->GetHeaderView() : LevelFieldHeaderStandInView.get(), headerSampler, VK_IMAGE_LAYOUT_GENERAL);
 
+	// [SURFACEDAMAGE] Bindings 7 and 8: the damage atlas's pages (two levels, GENERAL -- the stamp compute writes them) and the
+	// looks' detail textures ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"). Declared in GLSL only by main.fp's SURFACE_DAMAGE
+	// programs (the Vulkan prolog's define). Always written: while the atlas does not exist, one zeroed 1 x 1 x 1 array stands in
+	// for both, so every pipeline can carry them in its layout.
+	EnsureSurfaceDamageStandIns();
+	VkSurfaceDamage* surfaceDamage = fb->GetCompute() != nullptr ? fb->GetCompute()->GetSurfaceDamage() : nullptr;
+	SurfaceDamageFixedBound = surfaceDamage != nullptr && surfaceDamage->IsAllocated();
+	if (SurfaceDamageFixedBound)
+	{
+		update.AddCombinedImageSampler(FixedSet.get(), 7, surfaceDamage->GetPagesView(), surfaceDamage->GetPagesSampler(), VK_IMAGE_LAYOUT_GENERAL);
+		update.AddCombinedImageSampler(FixedSet.get(), 8, surfaceDamage->GetDetailView(), surfaceDamage->GetDetailSampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
+	else
+	{
+		update.AddCombinedImageSampler(FixedSet.get(), 7, SurfaceDamageStandInView.get(), SurfaceDamageStandInSampler.get(), VK_IMAGE_LAYOUT_GENERAL);
+		update.AddCombinedImageSampler(FixedSet.get(), 8, SurfaceDamageStandInView.get(), SurfaceDamageStandInSampler.get(), VK_IMAGE_LAYOUT_GENERAL);
+	}
+
 	update.Execute(fb->device.get());
 }
 
@@ -283,6 +314,49 @@ void VkDescriptorSetManager::EnsureLevelFieldStandIns()
 	range.layerCount = 1;
 	cmd->clearColorImage(LevelFieldStandIn->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
 	cmd->clearColorImage(LevelFieldHeaderStandIn->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+}
+
+// [SURFACEDAMAGE] The stand-in for fixed set bindings 7 and 8 while the damage atlas does not exist: a 1 x 1 x 1 RGBA8 2D array,
+// zero, in GENERAL (the layout both bindings are written with), and a nearest sampler. Made the first time the fixed set is
+// written (Init, before VkComputeManager exists). No draw reads it: the CPU side gives no key while the stand-in is bound.
+void VkDescriptorSetManager::EnsureSurfaceDamageStandIns()
+{
+	if (SurfaceDamageStandInView && SurfaceDamageStandInSampler)
+		return;
+
+	VulkanDevice* device = fb->device.get();
+	SurfaceDamageStandIn = ImageBuilder()
+		.Size(1, 1, 1, 1)
+		.Format(VK_FORMAT_R8G8B8A8_UNORM)
+		.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		.DebugName("VkDescriptorSetManager.SurfaceDamageStandIn")
+		.Create(device);
+	SurfaceDamageStandInView = ImageViewBuilder()
+		.Type(VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+		.Image(SurfaceDamageStandIn.get(), VK_FORMAT_R8G8B8A8_UNORM)
+		.DebugName("VkDescriptorSetManager.SurfaceDamageStandInView")
+		.Create(device);
+	SurfaceDamageStandInSampler = SamplerBuilder()
+		.MagFilter(VK_FILTER_NEAREST)
+		.MinFilter(VK_FILTER_NEAREST)
+		.MipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+		.AddressMode(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+		.MaxLod(0.25f)
+		.DebugName("VkDescriptorSetManager.SurfaceDamageStandInSampler")
+		.Create(device);
+
+	VulkanCommandBuffer* cmd = fb->GetCommands()->GetTransferCommands();
+	PipelineBarrier()
+		.AddImage(SurfaceDamageStandIn.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT)
+		.Execute(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+	VkClearColorValue zero = {};
+	VkImageSubresourceRange range = {};
+	range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	range.baseMipLevel = 0;
+	range.levelCount = 1;
+	range.baseArrayLayer = 0;
+	range.layerCount = 1;
+	cmd->clearColorImage(SurfaceDamageStandIn->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
 }
 
 bool VkDescriptorSetManager::IsSceneDepthReadTarget(VulkanImageView* depthStencilView, int layers, uint32_t viewMask) const
@@ -459,7 +533,8 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 	// carries it. Vulkan guarantees only 4 per stage (maxPerStageDescriptorStorageBuffers);
 	// desktop GPUs report far more, and this fork targets desktop Vulkan. A device below 9
 	// fails pipeline layout creation, so say plainly why before it does. (The fragment stage
-	// has three: lights 3, particle definitions 7, sector planes 12.)
+	// has four: lights 3, particle definitions 7, sector planes 12, [SURFACEDAMAGE] damage data 13 --
+	// Vulkan's guaranteed four.)
 	{
 		const uint32_t vertexStageStorageBuffers = 9;
 		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorStorageBuffers;
@@ -505,6 +580,10 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 		// fragment, per review X1: #8 reads it per vertex, #17 per pixel. No lump declares
 		// it yet, so no scene shader changed when it was added.
 		.AddBinding(12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+		// [SURFACEDAMAGE] 13: the surface damage atlas's data -- looks, surface records, the hash (vk_surfacedamage.h,
+		// hw_surfacedamageframe.h). Fragment only: main.fp's SURFACE_DAMAGE lookup reads it per pixel. The review's X1 table
+		// gave #17 binding 11; #9 took 11 first, so #17 takes the next free number ("Engine docs/DEBRIS_9_IMPL_NOTES.md").
+		.AddBinding(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT)
 		.DebugName("VkDescriptorSetManager.HWBufferSetLayout")
 		.Create(fb->device.get());
 }
@@ -530,10 +609,28 @@ void VkDescriptorSetManager::CreateFixedSetLayout()
 	// 9 its header -- a binding the X1 table did not have: the windows travel with the field instead of in
 	// the viewpoint block ("Engine docs/COLLISION_8_IMPL_NOTES.md", deviation 1). Vertex stage: declared in
 	// GLSL only by gpuparticles.vp's LEVEL_FIELD_COLLISION programs. Always written with a valid image, so
-	// every pipeline can carry them in its layout. 7 and 8 stay reserved for #17's damage pages.
+	// every pipeline can carry them in its layout. 7 and 8 are #17's damage pages and detail (below).
 	builder.AddBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT);
 	builder.AddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT);
 	builder.AddBinding(9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT);
+	// [SURFACEDAMAGE] The surface damage atlas (UpdateFixedSet): 7 the pages (2D array, two levels), 8 the looks' detail
+	// textures (2D array). Fragment stage: declared in GLSL only by main.fp's SURFACE_DAMAGE programs. Always written with a
+	// valid image, so every pipeline can carry them in its layout.
+	builder.AddBinding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	builder.AddBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	// Those two put six samplers of the fixed set in the fragment stage (0, 1, 3, 4, 7, 8), and a material's texture set adds up
+	// to twelve more. Vulkan guarantees 16 per stage (maxPerStageDescriptorSamplers); desktop GPUs report far more, and this fork
+	// targets desktop Vulkan. Say plainly why before a smaller device fails.
+	{
+		const uint32_t fragmentStageSamplers = 6 + 12;
+		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorSamplers;
+		if (allowed < fragmentStageSamplers)
+		{
+			Printf(TEXTCOLOR_RED "Vulkan: this device allows %u samplers per shader stage, but a scene pipeline can need %u in the fragment stage "
+				"(shadow map, lightmap, scene depth, particle atlas, damage pages, damage detail, and up to twelve material textures) -- "
+				"pipelines of materials with many texture layers may fail on this device\n", (unsigned)allowed, (unsigned)fragmentStageSamplers);
+		}
+	}
 	builder.DebugName("VkDescriptorSetManager.FixedSetLayout");
 	FixedSetLayout = builder.Create(fb->device.get());
 }
@@ -549,7 +646,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 		// [SECTORPLANES] 7: and the sector planes (12).
 		// [MESHPARTICLES] 8: and the mesh particles (9).
 		// [DEBRISPOOL] 10: and the debris pieces (10) and debris definitions (11) -- the plan's number.
-		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * maxSets)
+		// [SURFACEDAMAGE] 11: and the surface damage data (13).
+		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11 * maxSets)
 		.MaxSets(maxSets)
 		.DebugName("VkDescriptorSetManager.HWBufferDescriptorPool")
 		.Create(fb->device.get());
@@ -561,7 +659,8 @@ void VkDescriptorSetManager::CreateFixedSetPool()
 	// [2a] 3, not 2: shadowmap (binding 0), lightmap (1), scene depth (3).
 	// [2c] 4: and the particle atlas (4). Too few here fails set allocation.
 	// [LEVELFIELD] 7: and the level field's fine (5), coarse (6) and header (9).
-	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * maxSets);
+	// [SURFACEDAMAGE] 9: and the surface damage pages (7) and detail (8).
+	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 * maxSets);
 	if (fb->RaytracingEnabled())
 		poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * maxSets);
 	poolbuilder.MaxSets(maxSets);

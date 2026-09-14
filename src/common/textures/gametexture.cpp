@@ -39,6 +39,7 @@
 #include "hw_material.h"
 #include "cmdlib.h"
 #include "m_round.h"
+#include "v_video.h"	// [DDS] screen, for hw_unloadSprites
 
 FTexture *CreateBrightmapTexture(FImageSource*);
 
@@ -308,6 +309,18 @@ bool FGameTexture::ShouldExpandSprite()
 		expandSprite = false;
 		return false;
 	}
+	// [DDS] An image placed by its own header and uploaded as it is stored (a DX10 DDS file,
+	// FImageSource::CanExpandSprite) gets no frame: adding one means decoding it on the CPU.
+	// GZSelaco draws those sprites without it too. The brightmap and glow map share the base's
+	// layout, so any of the three decides.
+	for (FTexture* layer : { Base.get(), Brightmap.get(), Layers ? Layers->Glowmap.get() : nullptr })
+	{
+		if (layer != nullptr && layer->GetImage() != nullptr && !layer->GetImage()->CanExpandSprite())
+		{
+			expandSprite = false;
+			return false;
+		}
+	}
 	expandSprite = true;
 	return true;
 }
@@ -413,6 +426,37 @@ void FGameTexture::CleanHardwareData(bool full)
 {
 	if (full) Base->CleanHardwareTextures();
 	for (auto mat : Material) if (mat) mat->DeleteDescriptors();
+}
+
+//===========================================================================
+//
+// [DDS] gl_texture_quality changed (GZSelaco a46c31630a; Selaco's name): drop
+// the textures it applies to -- sprites, skins and decals whose layers go up
+// compressed -- so the next draw uploads them from the new starting mip level.
+// The cvar then resets every texture descriptor set (SetTextureFilterMode).
+//
+//===========================================================================
+
+void hw_unloadSprites()
+{
+	if (screen == nullptr) return;
+	screen->FlushBackground();
+
+	TArray<FTexture*> layers;
+	for (int i = 1; i < TexMan.NumTextures(); i++)
+	{
+		auto gametex = TexMan.GameByIndex(i);
+		if (gametex == nullptr || !gametex->isValid() || !shouldScaleQuality(gametex)) continue;
+
+		gametex->GetLayers(layers);
+		for (auto layer : layers)
+		{
+			if (layer->GetImage() && layer->GetImage()->IsGPUOnly())
+			{
+				layer->CleanHardwareTextures();
+			}
+		}
+	}
 }
 
 

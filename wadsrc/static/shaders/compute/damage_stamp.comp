@@ -1,0 +1,111 @@
+// [SURFACEDAMAGE] Presses this frame's brushes into the surface damage pages, tile by tile ("Engine docs/
+// SURFACE_DAMAGE_17_IMPL_NOTES.md"; the C++ is vk_surfacedamage.cpp, the layouts hw_surfacedamageframe.h).
+//
+// One invocation per texel of a tile's 132 x 132 slot (its 2-texel gutter included), per listed tile (z). Each tile is
+// listed once in a dispatch, so no two invocations ever write the same texel. A tile's texel is read (or starts at zero
+// when the tile was just handed out), every one of the tile's stamps is combined into it -- depth takes the maximum; soot,
+// heat and wet add; all clamped to 1 -- and it is written back.
+//
+// With DAMAGE_MIP defined, the same tiles' level 1 is rebuilt from level 0: each level-1 texel the average of its 2 x 2
+// level-0 texels (the 66 x 66 slot keeps a 1-texel gutter).
+//
+// A brush stamp's mask is read in the brush's own square, -1 .. 1 on both axes, turned by the stamp's rotation and
+// mirrored when flagged, at the LOD that fits its radius -- so a 2-unit bullet hole reads the mask's small mip, not its
+// 128 x 128 original.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// hw_surfacedamageframe.h SurfaceDamageTileGpu.
+struct SurfaceDamageTile
+{
+	int Tile;
+	int First;
+	int Count;
+	int Flags;
+};
+layout(set = 0, binding = 3, std430) readonly buffer DamageTiles
+{
+	SurfaceDamageTile tiles[];
+};
+
+// vk_surfacedamage.cpp DamageDispatchConstants: Range x the first tile record, y how many; Cool x keep, y subtract.
+layout(push_constant) uniform DamageDispatchConstants
+{
+	ivec4 Range;
+	vec4 Cool;
+};
+
+// hw_surfacedamageframe.h SurfaceDamageTileOrigin.
+ivec2 DamageSlotOrigin(int tile)
+{
+	int slot = tile % 225;
+	return ivec2(slot % 15, slot / 15) * 132;
+}
+
+#ifdef DAMAGE_MIP
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2DArray DamageLevelOne;
+layout(set = 0, binding = 1, rgba8) uniform readonly image2DArray DamageLevelZero;
+
+void main()
+{
+	uvec3 id = gl_GlobalInvocationID;
+	if (id.x >= 66u || id.y >= 66u || int(id.z) >= Range.y)
+		return;
+	SurfaceDamageTile t = tiles[Range.x + int(id.z)];
+	int page = t.Tile / 225;
+	ivec2 origin = DamageSlotOrigin(t.Tile);
+	ivec2 src = origin + ivec2(id.xy) * 2;
+	vec4 total = imageLoad(DamageLevelZero, ivec3(src, page)) + imageLoad(DamageLevelZero, ivec3(src + ivec2(1, 0), page)) +
+		imageLoad(DamageLevelZero, ivec3(src + ivec2(0, 1), page)) + imageLoad(DamageLevelZero, ivec3(src + ivec2(1, 1), page));
+	imageStore(DamageLevelOne, ivec3(origin / 2 + ivec2(id.xy), page), total * 0.25);
+}
+
+#else
+
+layout(set = 0, binding = 0, rgba8) uniform image2DArray DamagePages;
+layout(set = 0, binding = 1) uniform sampler2DArray DamageBrushes;
+
+// hw_surfacedamageframe.h SurfaceDamageStampGpu.
+struct SurfaceDamageStamp
+{
+	vec4 Place;		// xy centre (slot texels), zw rotation (cos, sin)
+	vec4 Shape;		// x 1 / radius (texels), y layer, z mirrored, w LOD
+	vec4 Amount;	// depth, soot, heat, wet
+};
+layout(set = 0, binding = 2, std430) readonly buffer DamageStamps
+{
+	SurfaceDamageStamp stamps[];
+};
+
+void main()
+{
+	uvec3 id = gl_GlobalInvocationID;
+	if (id.x >= 132u || id.y >= 132u || int(id.z) >= Range.y)
+		return;
+	SurfaceDamageTile t = tiles[Range.x + int(id.z)];
+	ivec3 at = ivec3(DamageSlotOrigin(t.Tile) + ivec2(id.xy), t.Tile / 225);
+
+	vec4 texel = (t.Flags & 1) != 0 ? vec4(0.0) : imageLoad(DamagePages, at);
+	vec2 centre = vec2(id.xy) + 0.5;
+	int count = min(t.Count, 64);
+	for (int i = 0; i < count; i++)
+	{
+		SurfaceDamageStamp s = stamps[t.First + i];
+		vec2 offset = centre - s.Place.xy;
+		// Into the brush's square: its +x axis is (cos, sin) in the slot's texels.
+		vec2 square = vec2(dot(offset, s.Place.zw), dot(offset, vec2(-s.Place.w, s.Place.z))) * s.Shape.x;
+		if (s.Shape.z > 0.5)
+			square.y = -square.y;
+		if (abs(square.x) >= 1.0 || abs(square.y) >= 1.0)
+			continue;
+		vec4 mask = textureLod(DamageBrushes, vec3(square * 0.5 + 0.5, s.Shape.y), s.Shape.w);
+		texel.g = max(texel.g, mask.g * s.Amount.x);
+		texel.r = min(texel.r + mask.r * s.Amount.y, 1.0);
+		texel.b = min(texel.b + mask.b * s.Amount.z, 1.0);
+		texel.a = min(texel.a + mask.a * s.Amount.w, 1.0);
+	}
+	imageStore(DamagePages, at, texel);
+}
+
+#endif

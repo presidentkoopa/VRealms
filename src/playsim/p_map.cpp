@@ -4879,11 +4879,13 @@ static void P_CallPuffHit(AActor *puff, const FTraceResults &trace)
 	}
 }
 
-// A puff class opts in to GZSelaco's hitscan splash handling by overriding PuffSplash. A Splash state alone does not:
-// existing mods use that label for their own states (RS_Main has three), and they must splash exactly as before.
+// A puff class takes GZSelaco's hitscan splash handling when it has a Splash state or overrides PuffSplash. GZSelaco
+// runs it for every puff (a temporary puff spawned PF_SPLASHING, so into its Splash state, then PuffSplash, then the
+// engine splash if unhandled); for a puff with neither, that is the stock splash, so it is skipped here.
 static bool P_PuffHandlesSplash(AActor *puffDefaults)
 {
 	if (puffDefaults == nullptr) return false;
+	if (puffDefaults->FindState(NAME_Splash) != nullptr) return true;
 	IFOVERRIDENVIRTUALPTRNAME(puffDefaults, NAME_Actor, PuffSplash)
 	{
 		return true;

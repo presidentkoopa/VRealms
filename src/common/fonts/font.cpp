@@ -72,6 +72,11 @@ FFont::FFont (const char *name, const char *nametemplate, const char *filetempla
 	SpaceWidth = 0;
 	FontHeight = 0;
 	int FixedWidth = 0;
+	// Sheet fonts, extended by GZSelaco 0de90e19a6: CellSize's height is the sheet cell, and a FontHeight given
+	// anywhere in font.inf stays the line height. CharWidth sets single glyph widths.
+	int CellHeight = 0;
+	bool fontHeightSet = false;
+	TMap<int, int> explicitWidths;
 
 	TMap<int, FGameTexture*> charMap;
 	int minchar = INT_MAX;
@@ -110,10 +115,23 @@ FFont::FFont (const char *name, const char *nametemplate, const char *filetempla
 						sc.MustGetValue(false);
 						GlobalKerning = sc.Number;
 					}
+					else if (sc.Compare("Displacement"))
+					{
+						// Vertical draw offset for every glyph (GZSelaco 0de90e19a6).
+						sc.MustGetValue(false);
+						Displacement = sc.Number;
+						InfDisplacement = sc.Number;
+					}
 					else if (sc.Compare("Altfont"))
 					{
 						sc.MustGetString();
 						AltFontName = sc.String;
+					}
+					else if (sc.Compare("Cursor"))
+					{
+						// The glyph used as the text-input cursor (GZSelaco a20baf3c4a).
+						sc.MustGetString();
+						if (sc.StringLen > 0) SetCursor(sc.String[0]);
 					}
 					else if (sc.Compare("Scale"))
 					{
@@ -134,6 +152,7 @@ FFont::FFont (const char *name, const char *nametemplate, const char *filetempla
 					{
 						sc.MustGetValue(false);
 						FontHeight = sc.Number;
+						fontHeightSet = true;
 					}
 					else if (sc.Compare("CellSize"))
 					{
@@ -141,7 +160,8 @@ FFont::FFont (const char *name, const char *nametemplate, const char *filetempla
 						FixedWidth = sc.Number;
 						sc.MustGetToken(',');
 						sc.MustGetValue(false);
-						FontHeight = sc.Number;
+						CellHeight = sc.Number;
+						if (!fontHeightSet) FontHeight = sc.Number;	// an explicit FontHeight wins, wherever it is in the file
 					}
 					else if (sc.Compare("minluminosity"))
 					{
@@ -173,6 +193,26 @@ FFont::FFont (const char *name, const char *nametemplate, const char *filetempla
 					{
 						lowercaselatinonly = true;
 					}
+					else if (sc.Compare("CharWidth"))
+					{
+						// CharWidth <code> = <width>: one glyph's width in a sheet font (GZSelaco 0de90e19a6).
+						sc.MustGetValue(false);
+						int charCode = sc.Number;
+						sc.MustGetToken('=');
+						sc.MustGetValue(false);
+						explicitWidths[charCode] = sc.Number;
+					}
+					else if (sc.Compare("No1252"))
+					{
+						// Leave 0x80-0x9f where they are instead of remapping Windows-1252 (GZSelaco 0de90e19a6).
+						No1252 = true;
+					}
+					else if (sc.Compare("NoTranslate"))
+					{
+						// Colour the glyphs directly instead of through a translation table (GZSelaco 61531b7f8d, 71153f74c4).
+						noTranslate = true;
+						infNoTranslate = true;
+					}
 
 				}
 			}
@@ -181,7 +221,7 @@ FFont::FFont (const char *name, const char *nametemplate, const char *filetempla
 
 	if (FixedWidth > 0)
 	{
-		ReadSheetFont(folderdata, FixedWidth, FontHeight, Scale);
+		ReadSheetFont(folderdata, FixedWidth, CellHeight, Scale, explicitWidths);
 		Type = Folder;
 	}
 	else
@@ -387,7 +427,7 @@ public:
 	}
 
 };
-void FFont::ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int width, int height, const DVector2 &Scale)
+void FFont::ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int width, int height, const DVector2 &Scale, TMap<int, int> &explicitWidths)
 {
 	TMap<int, FGameTexture*> charMap;
 	int minchar = INT_MAX;
@@ -417,7 +457,13 @@ void FFont::ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int wid
 				{
 					for (int x = 0; x < numtex_x; x++)
 					{
-						auto image = new FSheetTexture(sheetBitmaps.Size() - 1, x * width, y * height, width, height);
+						int thisPosition = int(position) + x + y * numtex_x;
+						// font.inf CharWidth: the glyph keeps its cell origin but takes its own width (GZSelaco
+						// 0de90e19a6), never reaching past the sheet's right edge.
+						int *explicitWidth = explicitWidths.CheckKey(thisPosition);
+						int charWidth = explicitWidth ? *explicitWidth : width;
+						charWidth = std::max(1, std::min(charWidth, tex->GetTexelWidth() - x * width));
+						auto image = new FSheetTexture(sheetBitmaps.Size() - 1, x * width, y * height, charWidth, height);
 						FImageTexture *imgtex = new FImageTexture(image);
 						auto gtex = MakeGameTexture(imgtex, nullptr, ETextureType::FontChar);
 						gtex->SetWorldPanning(true);
@@ -425,7 +471,7 @@ void FFont::ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int wid
 						gtex->SetOffsets(1, 0, 0);
 						gtex->SetScale((float)Scale.X, (float)Scale.Y);
 						TexMan.AddGameTexture(gtex);
-						charMap.Insert(int(position) + x + y * numtex_x, gtex);
+						charMap.Insert(thisPosition, gtex);
 					}
 				}
 			}
@@ -455,10 +501,11 @@ void FFont::ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int wid
 			Chars[i].OriginalPic->CopySize(*lump, true);
 			if (Chars[i].OriginalPic != *lump) TexMan.AddGameTexture(Chars[i].OriginalPic);
 		}
-		Chars[i].XMove = int(width / Scale.X);
+		auto explicitWidth = explicitWidths.CheckKey(FirstChar + i);
+		Chars[i].XMove = explicitWidth ? int(*explicitWidth / Scale.X) : int(width / Scale.X);
 	}
 
-	if (map1252)
+	if (map1252 && !No1252)
 	{
 		// Move the Windows-1252 characters to their proper place.
 		for (int i = 0x80; i < 0xa0; i++)
@@ -470,7 +517,12 @@ void FFont::ReadSheetFont(std::vector<FileSys::FolderEntry> &folderdata, int wid
 		}
 	}
 
-	SpaceWidth = width;
+	// An explicit SpaceWidth now holds for sheet fonts; without one, CharWidth 32 or the cell width (GZSelaco 0de90e19a6).
+	if (SpaceWidth == 0)
+	{
+		auto spaceWidth = explicitWidths.CheckKey(32);
+		SpaceWidth = spaceWidth ? *spaceWidth : width;
+	}
 }
 
 //==========================================================================
@@ -715,6 +767,9 @@ FTranslationID FFont::GetColorTranslation (EColorRange range, PalEntry *color) c
 			retcolor.a = 255;
 		}
 		if (color != nullptr) *color = retcolor;
+		// font.inf NoTranslate: the colour above is the whole answer (GZSelaco 61531b7f8d, 71153f74c4). Fonts made
+		// no-translate any other way keep returning their table as before.
+		if (infNoTranslate) return INVALID_TRANSLATION;
 	}
 	if (range == CR_UNDEFINED)
 		return INVALID_TRANSLATION;

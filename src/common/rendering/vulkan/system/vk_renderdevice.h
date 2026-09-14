@@ -49,6 +49,7 @@ class VkPostprocess;
 class VkComputeManager;		// [COMPUTE] vk_compute.h
 struct FrameComputeInput;	// [COMPUTE] hw_framecompute.h
 class VkTextureImage;
+struct VkCompressedPixels;	// [DDS] vk_hwtexture.h
 class SWSceneDrawer;
 enum class PPTextureType;
 class FModel;
@@ -71,6 +72,7 @@ struct VkTexLoadOut
 	bool uploadedInThread = false;
 	bool needsQueueOwnershipTransfer = false;
 	int uploadQueueFamily = -1;
+	std::shared_ptr<VkCompressedPixels> compressed;	// [DDS] stored levels a load-only worker read; UploadLoadedTextures uploads them
 };
 
 struct VkModelLoadIn

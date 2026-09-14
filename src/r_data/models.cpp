@@ -2269,7 +2269,7 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 			-pivoty / yscale);
 	}
 
-	if (!(flags & MDL_CORRECTPIXELSTRETCH) && modelIDs.Size() > 0)
+	if (!(flags & MDL_CORRECTPIXELSTRETCH) && !(flags & MDL_NOPIXELSTRETCH) && modelIDs.Size() > 0)	// NoPixelStretch (GZSelaco 1e7fd30b59)
 	{
 		stretch = (modelIDs[0] >= 0 ? Models[modelIDs[0]]->getAspectFactor(Level->info->pixelstretch) : 1.f) / Level->info->pixelstretch;
 		objectToWorldMatrix.scale(1, stretch, 1);
@@ -3962,6 +3962,7 @@ void ParseModelDefLump(int Lump)
 				sc.ScriptError("MODELDEF: Unknown actor type '%s'\n", sc.String);
 			}
 			smf.type = type;
+			unsigned int preParseFrames = SpriteModelFrames.Size();	// frames earlier blocks defined: what 'inherits' copies from
 			FScanner::SavedPos scPos = sc.SavePos();
 			sc.MustGetStringName("{");
 			while (!sc.CheckString("}"))
@@ -4056,6 +4057,55 @@ void ParseModelDefLump(int Lump)
 					smf.yscale = sc.Float;
 					sc.MustGetFloat();
 					smf.zscale = sc.Float;
+				}
+				else if (sc.Compare("inherits"))
+				{
+					// inherits <class>: copies every frame another class defined in an earlier MODELDEF block, then lets
+					// this block's models, skins, placement and flags override them (GZSelaco e1e266c2c5, from
+					// ShinyMetagross #1487). Parse-time data only; the struct copy carries every field, placementCVars too.
+					sc.MustGetString();
+					auto type2 = PClass::FindClass(sc.String);
+					if (!type2 || type2->Defaults == nullptr)
+					{
+						sc.ScriptError("MODELDEF: Unknown actor type '%s'\n", sc.String);
+					}
+					for (unsigned int i = 0; i < preParseFrames; i++)
+					{
+						if (SpriteModelFrames[i].type != type2) continue;
+						FSpriteModelFrame frame = SpriteModelFrames[i];
+						frame.type = type;
+						unsigned int n = SpriteModelFrames.Push(frame);
+						FSpriteModelFrame &dst = SpriteModelFrames[n];
+						for (unsigned int j = 0; j < smf.modelsAmount && j < dst.modelIDs.Size() && j < dst.skinIDs.Size(); j++)
+						{
+							if (smf.modelIDs[j] != -1) dst.modelIDs[j] = smf.modelIDs[j];
+							if (smf.skinIDs[j].isValid()) dst.skinIDs[j] = smf.skinIDs[j];
+						}
+						for (unsigned int j = 0; j < smf.surfaceskinIDs.Size() && j < dst.surfaceskinIDs.Size(); j++)
+						{
+							if (smf.surfaceskinIDs[j].isValid()) dst.surfaceskinIDs[j] = smf.surfaceskinIDs[j];
+						}
+						if (smf.xscale != 1.f) dst.xscale = smf.xscale;
+						if (smf.yscale != 1.f) dst.yscale = smf.yscale;
+						if (smf.zscale != 1.f) dst.zscale = smf.zscale;
+						if (smf.xoffset != 0.f) dst.xoffset = smf.xoffset;
+						if (smf.yoffset != 0.f) dst.yoffset = smf.yoffset;
+						if (smf.zoffset != 0.f) dst.zoffset = smf.zoffset;
+						if (smf.angleoffset != 0.f) dst.angleoffset = smf.angleoffset;
+						if (smf.pitchoffset != 0.f) dst.pitchoffset = smf.pitchoffset;
+						if (smf.rolloffset != 0.f) dst.rolloffset = smf.rolloffset;
+						if (smf.rotationSpeed != 0.f) dst.rotationSpeed = smf.rotationSpeed;
+						if (smf.xrotate != 0.f) dst.xrotate = smf.xrotate;
+						if (smf.yrotate != 0.f) dst.yrotate = smf.yrotate;
+						if (smf.zrotate != 0.f) dst.zrotate = smf.zrotate;
+						// GZSelaco writes all three rotation-centre overrides into rotationCenterX. Kept as-is so
+						// Selaco's MODELDEF data lands where it was authored against.
+						if (smf.rotationCenterX != 0.f) dst.rotationCenterX = smf.rotationCenterX;
+						if (smf.rotationCenterY != 0.f) dst.rotationCenterX = smf.rotationCenterY;
+						if (smf.rotationCenterZ != 0.f) dst.rotationCenterX = smf.rotationCenterZ;
+						dst.flags |= smf.flags;
+					}
+					GetDefaultByType(type)->hasmodel = true;
 				}
 				// [BB] Added zoffset reading.
 				// Now it must be considered deprecated.
@@ -4401,6 +4451,11 @@ void ParseModelDefLump(int Lump)
 				else if (sc.Compare("noautoreverse"))
 				{
 					smf.flags |= MDL_NOAUTOREVERSE;
+				}
+				else if (sc.Compare("nopixelstretch"))
+				{
+					// No pixel-stretch scale, so the model can pitch and roll undistorted (GZSelaco 1e7fd30b59).
+					smf.flags |= MDL_NOPIXELSTRETCH;
 				}
 				else
 				{

@@ -2021,6 +2021,11 @@ void FLevelLocals::Init()
 	NextSecretMap = info->NextSecretMap;
 	F1Pic = info->F1Pic;
 	AuthorName = info->AuthorName;
+	levelgroup = info->levelgroup;	// MAPINFO data for scripts (GZSelaco)
+	areaNum = info->areaNum;
+	invasiontier = info->invasiontier;
+	tilt = info->tilt;
+	tiltAngle = info->tiltAngle;
 	hazardcolor = info->hazardcolor;
 	hazardflash = info->hazardflash;
 

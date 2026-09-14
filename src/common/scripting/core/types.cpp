@@ -46,6 +46,7 @@ PFloat *TypeFloat32, *TypeFloat64;
 PString *TypeString;
 PName *TypeName;
 PSound *TypeSound;
+PSoundHandle *TypeSoundHandle;	// [SOUNDHANDLES] declared in types.h; the definition was missing (LNK2001)
 PColor *TypeColor;
 PTextureID *TypeTextureID;
 PTranslationID* TypeTranslationID;
@@ -63,6 +64,7 @@ PStruct* TypeFVector4;
 PStruct* TypeFQuaternion;
 PStruct *TypeColorStruct;
 PStruct *TypeStringStruct;
+PStruct *TypeSoundHandleStruct;	// [SOUNDHANDLES] SoundHandle's methods, engine/base.zs
 PStruct* TypeQuaternionStruct;
 PPointer *TypeNullPtr;
 PPointer *TypeVoidPtr;
@@ -314,6 +316,8 @@ void PType::StaticInit()
 	TypeTable.AddType(TypeSpriteID = new PSpriteID, NAME_SpriteID);
 	TypeTable.AddType(TypeTextureID = new PTextureID, NAME_TextureID);
 	TypeTable.AddType(TypeTranslationID = new PTranslationID, NAME_TranslationID);
+	// [SOUNDHANDLES] The name is compared as an FName here and in codegen.cpp -- namedef.h belongs to another lane.
+	TypeTable.AddType(TypeSoundHandle = new PSoundHandle, FName("SoundHandle"));
 
 	TypeVoidPtr = NewPointer(TypeVoid, false);
 	TypeRawFunction = new PPointer;
@@ -323,6 +327,7 @@ void PType::StaticInit()
 	TypeColorStruct = NewStruct("@ColorStruct", nullptr);	//This name is intentionally obfuscated so that it cannot be used explicitly. The point of this type is to gain access to the single channels of a color value.
 	TypeStringStruct = NewStruct("Stringstruct", nullptr, true);
 	TypeQuaternionStruct = NewStruct("QuatStruct", nullptr, true);
+	TypeSoundHandleStruct = NewStruct("SoundHandleStruct", nullptr, true);	// [SOUNDHANDLES] SoundHandle's methods, engine/base.zs
 	TypeFont = NewPointer(NewStruct("Font", nullptr, true));
 #ifdef __BIG_ENDIAN__
 	TypeColorStruct->AddField(NAME_a, TypeUInt8);
@@ -479,6 +484,7 @@ void PType::StaticInit()
 	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(NAME_String, TypeString));
 	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(NAME_Name, TypeName));
 	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(NAME_Sound, TypeSound));
+	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(FName("SoundHandle"), TypeSoundHandle));	// [SOUNDHANDLES] how zcc_compile resolves the type name
 	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(NAME_Color, TypeColor));
 	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(NAME_State, TypeState));
 	Namespaces.GlobalNamespace->Symbols.AddSymbol(Create<PSymbolType>(NAME_Vector2, TypeVector2));
@@ -1415,6 +1421,63 @@ bool PSound::ReadValue(FSerializer &ar, const char *key, void *addr) const
 		*(FSoundID *)addr = S_FindSound(cptr);
 		return true;
 	}
+}
+
+/* PSoundHandle ***********************************************************/
+
+//==========================================================================
+//
+// [SOUNDHANDLES] PSoundHandle Default Constructor
+//
+//==========================================================================
+
+PSoundHandle::PSoundHandle()
+	: PInt(sizeof(FSoundHandle), true)
+{
+	mDescriptiveName = "SoundHandle";
+	Flags |= TYPE_IntNotInt;
+	static_assert(sizeof(FSoundHandle) == alignof(FSoundHandle), "SoundHandle not properly aligned");
+}
+
+//==========================================================================
+//
+// PSoundHandle :: WriteValue
+//
+// A handle's id comes from this machine's counter (FSoundHandle), so a savegame
+// stores 0: two machines' saves never differ by it, and the handle loads
+// invalid. A value is still written so arrays keep their element count. A
+// prediction rollback never leaves this machine, so it keeps the id.
+//
+//==========================================================================
+
+void PSoundHandle::WriteValue(FSerializer &ar, const char *key, const void *addr) const
+{
+	if (ar.IsRollback())
+	{
+		PInt::WriteValue(ar, key, addr);
+		return;
+	}
+	int64_t val = 0;
+	ar(key, val);
+}
+
+//==========================================================================
+//
+// PSoundHandle :: ReadValue
+//
+//==========================================================================
+
+bool PSoundHandle::ReadValue(FSerializer &ar, const char *key, void *addr) const
+{
+	if (ar.IsRollback())
+	{
+		return PInt::ReadValue(ar, key, addr);
+	}
+	NumericValue val;
+	ar(key, val);	// consumed either way, so the next array element reads its own value
+	if (val.type == NumericValue::NM_invalid) return false;
+	*(FSoundHandle *)addr = FSoundHandle();
+	return true;
 }
 
 /* PColor *****************************************************************/

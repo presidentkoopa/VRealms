@@ -166,27 +166,54 @@ bool VkTexLoadThread::loadResource(VkTexLoadIn& input, VkTexLoadOut& output)
 		return false;
 	}
 
-	auto texBuffer = input.texture->CreateTexBuffer(input.translation, input.scaleFlags | CTF_ProcessData);
-	output.pixels = std::shared_ptr<uint8_t>(texBuffer.mBuffer, std::default_delete<uint8_t[]>());
-	texBuffer.mBuffer = nullptr;
-	output.width = texBuffer.mWidth;
-	output.height = texBuffer.mHeight;
 	output.scaleFlags = input.scaleFlags;
 	output.hardwareTexture = input.hardwareTexture;
 
 	const bool indexed = !!(input.scaleFlags & CTF_Indexed);
 	const bool canUploadInThread = cmd != nullptr && uploadQueue.familySupportsGraphics;
-	if (canUploadInThread && output.pixels != nullptr)
+
+	// [DDS] A block-compressed image skips the decode: its stored levels are read here and go up in
+	// this thread when it can upload, or from the main thread (UploadLoadedTextures) when it cannot.
+	bool uploadedCompressed = false;
+	if (input.hardwareTexture->CanUploadCompressed(input.texture, input.translation, input.scaleFlags))
 	{
-		output.hardwareTexture->BackgroundCreateTexture(
-			cmd,
-			output.width,
-			output.height,
-			indexed ? 1 : 4,
-			indexed ? VK_FORMAT_R8_UNORM : VK_FORMAT_B8G8R8A8_UNORM,
-			output.pixels.get(),
-			indexed ? 0 : -1,
-			!indexed);
+		auto compressed = std::make_shared<VkCompressedPixels>();
+		if (compressed->Read(input.texture->GetImage()))
+		{
+			output.width = compressed->width;
+			output.height = compressed->height;
+			if (!canUploadInThread)
+			{
+				output.compressed = std::move(compressed);
+				return true;
+			}
+			uploadedCompressed = output.hardwareTexture->BackgroundCreateCompressedTexture(cmd, *compressed, !!(input.scaleFlags & CTF_ReduceQuality)) > 0;
+		}
+	}
+
+	if (!uploadedCompressed)
+	{
+		auto texBuffer = input.texture->CreateTexBuffer(input.translation, input.scaleFlags | CTF_ProcessData);
+		output.pixels = std::shared_ptr<uint8_t>(texBuffer.mBuffer, std::default_delete<uint8_t[]>());
+		texBuffer.mBuffer = nullptr;
+		output.width = texBuffer.mWidth;
+		output.height = texBuffer.mHeight;
+	}
+
+	if (uploadedCompressed || (canUploadInThread && output.pixels != nullptr))
+	{
+		if (!uploadedCompressed)
+		{
+			output.hardwareTexture->BackgroundCreateTexture(
+				cmd,
+				output.width,
+				output.height,
+				indexed ? 1 : 4,
+				indexed ? VK_FORMAT_R8_UNORM : VK_FORMAT_B8G8R8A8_UNORM,
+				output.pixels.get(),
+				indexed ? 0 : -1,
+				!indexed);
+		}
 		output.hardwareTexture->CheckFinalTransition(cmd->GetTransferCommands(), true);
 		cmd->WaitForCommands(false, true);
 		output.uploadedInThread = true;
@@ -281,6 +308,13 @@ VulkanRenderDevice::VulkanRenderDevice(void *hMonitor, bool fullscreen, std::sha
 		(device->SupportsExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME) && device->EnabledFeatures.Fault.deviceFault) ? "ON" : "unavailable",
 		device->SupportsExtension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME) ? "ON" : (vk_gpu_checkpoints ? "unavailable" : "off"),
 		device->EnabledFeatures.Features.robustBufferAccess ? "ON" : "off");
+
+	// [DDS] Whether compressed DDS textures (BC1/BC3/BC7) go to the GPU as they are stored, or are decoded
+	// on the CPU like every other texture -- said out loud, since both look the same until VRAM runs out.
+	Printf("Vulkan textures: compressed DDS upload %s\n",
+		(VkHardwareTexture::DeviceSupportsCompressed(device.get(), VK_FORMAT_BC1_RGB_UNORM_BLOCK) &&
+		 VkHardwareTexture::DeviceSupportsCompressed(device.get(), VK_FORMAT_BC3_UNORM_BLOCK) &&
+		 VkHardwareTexture::DeviceSupportsCompressed(device.get(), VK_FORMAT_BC7_UNORM_BLOCK)) ? "ON" : "unavailable, DDS textures are decoded on the CPU");
 
 	// Printf, not a dialog: the log is flushed line by line (c_console.cpp), so
 	// this survives the process being killed -- which is often how a device
@@ -942,6 +976,17 @@ void VulkanRenderDevice::UploadLoadedTextures(bool flush)
 		if (loaded.uploadedInThread)
 		{
 			loaded.hardwareTexture->SetHardwareState(IHardwareTexture::READY);
+		}
+		else if (loaded.compressed != nullptr)
+		{
+			// [DDS] A load-only worker read the stored levels; they go up here. If that makes nothing, the
+			// texture stays unloaded and GetImage creates it the ordinary way on its next draw.
+			if (loaded.hardwareTexture->BackgroundCreateCompressedTexture(mCommands.get(), *loaded.compressed, !!(loaded.scaleFlags & CTF_ReduceQuality)) > 0)
+			{
+				loaded.hardwareTexture->CheckFinalTransition(mCommands->GetTransferCommands(), true);
+				loaded.hardwareTexture->SetHardwareState(IHardwareTexture::READY);
+			}
+			loaded.compressed.reset();
 		}
 		else if (loaded.pixels != nullptr)
 		{

@@ -107,6 +107,7 @@ static thread_local TArray<FWallLightCandidate> wallLightCandidates;
 #include "hw_skydome.h"
 #include "hw_walldispatcher.h"
 #include "m_round.h"
+#include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamageWallKey
 
 EXTERN_CVAR(Int, gl_max_vertices)
 
@@ -331,6 +332,13 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	state.SetFogDensityScale(FogScaleForSector(di->Level, frontsector));
 	SetGlowPlanes(state, frontsector->ceilingplane, frontsector->floorplane);
 
+	// [SURFACEDAMAGE] This wall part's lasting damage ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): its record slot + 1, or 0
+	// when it holds no damage tiles. Set only when non-zero and put back to 0 at the end, so every other draw -- and every wall
+	// while nothing is damaged -- uploads exactly what it did.
+	const int surfaceDamageKey = SurfaceDamageWallKey(seg->sidedef,
+		type == RENDERWALL_TOP ? 0 : type == RENDERWALL_M1S ? 1 : type == RENDERWALL_BOTTOM ? 2 : -1);
+	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(surfaceDamageKey);
+
 	state.SetMaterial(texture, UF_Texture, 0, flags & 3, NO_TRANSLATION, -1);
 #ifdef NPOT_EMULATION
 	// Test code, could be reactivated as a compatibility option in the unlikely event that some old vanilla map eve needs it.
@@ -463,6 +471,7 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	state.ClearFlatGlow();
 
 	state.ApplyTextureManipulation(nullptr);
+	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(0);	// [SURFACEDAMAGE]
 }
 
 //==========================================================================
