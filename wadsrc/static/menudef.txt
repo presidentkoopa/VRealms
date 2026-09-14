@@ -2183,6 +2183,13 @@ OptionMenu DeveloperOptionsMenu protected
 	// keys -- and how full the inline cache is, to the console and the log (the
 	// `particles` CCMD), so a PARTICLEDEFS lump can be checked without typing.
 	Command "List particle definitions (to the log)", "particles"
+	// [2c] r_gpuparticles_atlas_size -- the particle atlas's layer side, 128 or 256
+	// pixels ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c). One layer per frame of
+	// every textured particle definition, at most 256 layers: up to 85 MiB of VRAM at
+	// 256, 21 MiB at 128, and only the layers loaded definitions use are allocated.
+	// Renderer-read every frame: the atlas rebuilds on the next frame, with this menu
+	// still open. Vulkan only.
+	Slider "Particle atlas size (px, rebuilds at once)", "r_gpuparticles_atlas_size", 128, 256, 128, 0
 	StaticText " "
 	StaticText "$DEVOPTMNU_OPTIONS_MARKED_WITH_RESTART", "Brown"
 	StaticText " "

@@ -26,6 +26,11 @@
 ** e.y stretch -- with e.x = orient - 16. No stage 2 record has e.x below -1, so
 ** each record says which kind it is, and DrawLegacyParticle is the stage 1 code.
 **
+** [2c] FLIPBOOKS. A definition whose flipbook.x is an atlas layer (not -1) is
+** textured: which frame is showing is worked out here, once per particle, from its
+** age -- never from anything random -- and handed to gpuparticles.fp flat, as the
+** two frames' atlas layers and how far the particle is from one to the next.
+**
 **---------------------------------------------------------------------------
 **
 ** Copyright 2026 UZDXREMA
@@ -41,6 +46,10 @@ layout(location = 8) in uvec4 aParticle;
 
 layout(location = 0) out vec2 vParticleCorner;
 layout(location = 1) out vec4 vParticleColor;
+// [2c] x the atlas layer of the frame showing (-1 = untextured, the round dot)
+// y the next frame's layer  z how far into it, 0..1  w the definition slot (-1 for
+// a legacy record), which stage 2d's per-definition soft distance reads.
+layout(location = 2) flat out vec4 vParticleFlipbook;
 
 const vec2 kParticleCorners[6] = vec2[6](
 	vec2(-1.0, -1.0), vec2( 1.0, -1.0), vec2( 1.0,  1.0),
@@ -57,6 +66,7 @@ void CollapseParticle()
 	gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 	vParticleCorner = vec2(0.0);
 	vParticleColor = vec4(0.0);
+	vParticleFlipbook = vec4(-1.0, -1.0, 0.0, -1.0);
 }
 
 // Where one corner of the quad goes, in eye space.
@@ -141,6 +151,7 @@ void DrawLegacyParticle(GpuParticle part, int corner, float age, float life)
 
 	float fade = 1.0 - smoothstep(0.6, 1.0, t);
 	EmitParticle(eyePos, c, part.c.rgb * (part.c.w * uGpuParticleParams.w * fade));
+	vParticleFlipbook = vec4(-1.0, -1.0, 0.0, -1.0);	// [2c] stage 1 records have no texture
 }
 
 // [PARTICLEDEFS] Key i's colour, 0..1. Stored as 0xRRGGBB in a float, which holds
@@ -160,6 +171,41 @@ vec3 OctahedralDecode(vec2 e)
 	n.x += (n.x >= 0.0) ? -fold : fold;
 	n.y += (n.y >= 0.0) ? -fold : fold;
 	return normalize(n);
+}
+
+// [2c] Which flipbook frames a particle shows at `age` seconds (life fraction `t`),
+// as vParticleFlipbook: x this frame's atlas layer, y the next frame's, z how far
+// into the next, w the definition slot. Untextured definitions give x = -1.
+//   loop  the frame is age x fps, wrapping; the last frame blends into the first.
+//   once  the frames are spread over the life, t x frames; the last frame holds.
+// The definition's flipbook: x first atlas layer (-1 none), y frames, z fps, w 0 loop / 1 once.
+vec4 ParticleFlipbookFrames(int defSlot, float age, float t)
+{
+	vec4 flip = particleDefinitions[defSlot].flipbook;
+	if (flip.x < -0.5)
+		return vec4(-1.0, -1.0, 0.0, float(defSlot));
+
+	float frameCount = max(floor(flip.y + 0.5), 1.0);
+	float framePosition;
+	float frameA;
+	float frameB;
+	if (flip.w > 0.5)
+	{
+		framePosition = clamp(t * frameCount, 0.0, frameCount - 1.0);
+		frameA = floor(framePosition);
+		frameB = min(frameA + 1.0, frameCount - 1.0);
+	}
+	else
+	{
+		framePosition = mod(max(age, 0.0) * flip.z, frameCount);
+		frameA = min(floor(framePosition), frameCount - 1.0);
+		frameB = frameA + 1.0;
+		if (frameB > frameCount - 0.5)
+			frameB = 0.0;
+	}
+	float frameBlend = clamp(framePosition - frameA, 0.0, 1.0);
+	float firstLayer = floor(flip.x + 0.5);
+	return vec4(firstLayer + frameA, firstLayer + frameB, frameBlend, float(defSlot));
 }
 
 // [PARTICLEDEFS] A stage 2 record: everything about its look from its definition.
@@ -271,6 +317,7 @@ void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 		fade = 1.0 - smoothstep(0.6, 1.0, t);
 
 	EmitParticle(eyePos, c, part.c.rgb * rampColor * (part.c.w * emissive * uGpuParticleParams.w * fade));
+	vParticleFlipbook = ParticleFlipbookFrames(defSlot, age, t);	// [2c]
 }
 
 void main()

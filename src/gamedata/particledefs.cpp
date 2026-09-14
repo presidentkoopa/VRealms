@@ -49,12 +49,33 @@
 ** A bad block is refused -- one console line naming lump, line and definition --
 ** and the rest of the lump still loads (defblocks.cpp).
 **
+** [2c] FLIPBOOK FRAMES ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c, approved
+** 2026-09-13). `texture` names the FIRST frame and a count; the later frames are
+** found by name:
+**   - A six-character SPRITE frame (four-letter sprite, frame, rotation) steps its
+**     frame character and keeps the rotation: "RSSKA0", 6 is RSSKA0 .. RSSKF0,
+**     over the engine's frames A-Z, then [ \ ] -- a count running past ']' is
+**     refused, and so is an eight-character mirrored pair (RSBTA2A8) as a first
+**     frame.
+**   - Any other name ends in a decimal number that counts up, keeping its zero
+**     padding and growing only when it must: SMOKE01 .. SMOKE06, PUFF8 PUFF9
+**     PUFF10, SMOKE99 SMOKE100. The name is looked up as a sprite first, so SMOKE1
+**     counts as a number only when no sprite of that name exists.
+**   - One frame (or no count) is just that texture.
+**   - A frame that is not there refuses that ONE definition, naming the frame.
+** `loop` plays at fps; `once` spreads the frames over the particle's life; adjacent
+** frames are blended. The frames go into the particle atlas, at most
+** ParticleDefinitionBuffer::ATLAS_LAYERS layers across every definition (identical
+** runs share layers); a definition that would pass that is refused. Inline
+** definitions (SpawnGpuParticles) never have a texture.
+**
 */
 
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include "particledefs.h"
 #include "defblocks.h"
@@ -65,6 +86,7 @@
 #include "c_cvars.h"
 #include "v_video.h"
 #include "g_levellocals.h"
+#include "texturemanager.h"	// [2c] flipbook frames are found by name
 
 static_assert(sizeof(ParticleDefinitionGpu) == ParticleDefinitionBuffer::RECORD_BYTES,
 	"ParticleDefinitionGpu must be sixteen vec4s -- see ParticleDefinitionData in vk_shader.cpp");
@@ -97,7 +119,10 @@ namespace
 		FString Lump;
 		int Line = 0;
 		unsigned KeyCount = 0;
-		FString Texture;	// the first frame as written; stage 2c resolves the frames into atlas layers
+		FString Texture;	// the first frame as written ("" = no texture)
+		int TextureLine = 0;		// [2c] the line of the `texture` key, for refusals
+		TArray<FTextureID> Frames;	// [2c] the flipbook's frames, found by name at load (empty = no texture)
+		int FirstLayer = -1;		// [2c] its first atlas layer once AssignAtlasLayers has run, -1 = none
 		int Handle = 0;		// ParticleDefinitionHandle(Name)
 	};
 
@@ -129,6 +154,11 @@ namespace
 		unsigned Lumps = 0;
 		unsigned Replaced = 0;
 		FDefBlockStats Stats;
+
+		// [2c] The particle atlas layer list (AssignAtlasLayers) and its generation,
+		// which never goes backwards, so a renderer's copy always notices a reload.
+		TArray<ParticleAtlasLayer> AtlasLayers;
+		uint64_t AtlasGeneration = 0;
 
 		DefinitionTable()
 		{
@@ -302,6 +332,261 @@ namespace
 
 	//==========================================================================
 	//
+	// [2c] Flipbook frames: finding them by name, and packing them into the
+	// particle atlas's layer list
+	//
+	//==========================================================================
+
+	// The engine's sprite frame characters: 'A'..'Z', then '[', '\', ']' -- 29 of
+	// them, MAX_SPRITE_FRAMES in r_data/sprites.h.
+	const int kSpriteFrames = 29;
+#ifdef MAX_SPRITE_FRAMES
+	static_assert(kSpriteFrames == MAX_SPRITE_FRAMES, "the flipbook sprite frame rule must cover exactly the engine's sprite frames");
+#endif
+
+	// A sprite frame character's index 0..28, or -1. Lower case counts as upper, as
+	// in TexMan's name lookup.
+	int SpriteFrameIndex(char ch)
+	{
+		if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 'a' + 'A');
+		const int index = ch - 'A';
+		return (index >= 0 && index < kSpriteFrames) ? index : -1;
+	}
+
+	FTextureID NoTexture()
+	{
+		FTextureID id;
+		id.SetInvalid();
+		return id;
+	}
+
+	// A SPRITE of this name (TexMan's sprite use type, no alias), or an invalid id.
+	FTextureID FindSpriteFrame(const char *name)
+	{
+		const FTextureID id = TexMan.CheckForTexture(name, ETextureType::Sprite, FTextureManager::TEXMAN_NoAlias);
+		if (!id.isValid()) return NoTexture();
+		FGameTexture *tex = TexMan.GetGameTexture(id);
+		return (tex != nullptr && tex->GetUseType() == ETextureType::Sprite) ? id : NoTexture();
+	}
+
+	// Any texture of this name, as TexMan's any-type lookup finds it -- walls, flats,
+	// patches, graphics, sprites, TEXTURES definitions -- or an invalid id. Never the
+	// null texture.
+	FTextureID FindAnyTexture(const char *name)
+	{
+		const FTextureID id = TexMan.CheckForTexture(name, ETextureType::Any, FTextureManager::TEXMAN_TryAny);
+		return (id.isValid() && TexMan.GetGameTexture(id) != nullptr) ? id : NoTexture();
+	}
+
+	// THE APPROVED FRAME RULE (see the top of this file). Fills `frames` with `count`
+	// textures starting at `first`, or returns false with the reason -- naming the
+	// frame that is missing -- in `error`. Reads TexMan only; changes nothing.
+	bool FindFlipbookFrames(const FString &first, int count, TArray<FTextureID> &frames, FString &error)
+	{
+		frames.Clear();
+		const char *name = first.GetChars();
+		const size_t length = first.Len();
+		if (count < 1) count = 1;
+
+		// Looked up as a sprite first, so a six-character texture such as SMOKE1 counts
+		// as a number only when no sprite of that name exists.
+		const FTextureID sprite = FindSpriteFrame(name);
+		if (sprite.isValid() && length == 8 && SpriteFrameIndex(name[4]) >= 0 && SpriteFrameIndex(name[6]) >= 0)
+		{
+			error.Format("texture \"%s\" is a mirrored sprite pair (two rotations in one lump) and cannot be a first frame -- name a six-character sprite frame", name);
+			return false;
+		}
+
+		if (sprite.isValid() && length == 6 && SpriteFrameIndex(name[4]) >= 0)
+		{
+			// RULE 1 -- a sprite frame name: step the frame character, keep the rotation.
+			const int firstFrame = SpriteFrameIndex(name[4]);
+			if (firstFrame + count > kSpriteFrames)
+			{
+				error.Format("texture \"%s\", %d runs past ']', the last sprite frame (frames go A-Z, then [ \\ ]) -- from '%c' there are at most %d",
+					name, count, name[4], kSpriteFrames - firstFrame);
+				return false;
+			}
+
+			char frameName[7];
+			memcpy(frameName, name, 6);
+			frameName[6] = 0;
+			frames.Push(sprite);
+			for (int i = 1; i < count; i++)
+			{
+				frameName[4] = (char)('A' + firstFrame + i);
+				const FTextureID id = FindSpriteFrame(frameName);
+				if (!id.isValid())
+				{
+					error.Format("sprite frame \"%s\" was not found (frame %d of %d, stepping the frame letter from \"%s\")", frameName, i + 1, count, name);
+					return false;
+				}
+				frames.Push(id);
+			}
+			return true;
+		}
+
+		// RULE 2 -- any other name: its trailing decimal number counts up.
+		const FTextureID firstId = sprite.isValid() ? sprite : FindAnyTexture(name);
+		if (!firstId.isValid())
+		{
+			error.Format("texture \"%s\" was not found", name);
+			return false;
+		}
+		frames.Push(firstId);
+		if (count == 1) return true;
+
+		size_t digitsAt = length;
+		while (digitsAt > 0 && name[digitsAt - 1] >= '0' && name[digitsAt - 1] <= '9') digitsAt--;
+		const int digits = (int)(length - digitsAt);
+		if (digits == 0)
+		{
+			error.Format("texture \"%s\", %d: a flipbook's first frame must be a six-character sprite frame (such as \"RSSKA0\") or end in a number (such as \"SMOKE01\")", name, count);
+			return false;
+		}
+		if (digits > 9)
+		{
+			error.Format("texture \"%s\": its frame number has %d digits, and at most 9 are counted", name, digits);
+			return false;
+		}
+
+		const FString prefix = first.Left(digitsAt);
+		const int firstNumber = atoi(name + digitsAt);
+		for (int i = 1; i < count; i++)
+		{
+			// The zero padding as written, growing only when the number needs more
+			// digits: 09 -> 10, 99 -> 100.
+			FString number;
+			number.Format("%d", firstNumber + i);
+			FString frameName = prefix;
+			for (int pad = (int)number.Len(); pad < digits; pad++) frameName += "0";
+			frameName += number;
+
+			const FTextureID id = FindAnyTexture(frameName.GetChars());
+			if (!id.isValid())
+			{
+				error.Format("texture frame \"%s\" was not found (frame %d of %d, counting up from \"%s\")", frameName.GetChars(), i + 1, count, name);
+				return false;
+			}
+			frames.Push(id);
+		}
+		return true;
+	}
+
+	// Identical runs -- the same first frame and the same count, and so the same
+	// frames -- share their atlas layers.
+	uint64_t FlipbookRunKey(const TArray<FTextureID> &frames)
+	{
+		return ((uint64_t)(uint32_t)frames[0].GetIndex() << 16) | (uint64_t)frames.Size();
+	}
+
+	// The atlas layers the named table uses, leaving out slot `skipSlot` (-1: none)
+	// and adding `extra` (null: nothing). With skipSlot = the slot a definition
+	// replaces and extra = its frames, this is exactly what the table would use
+	// once it is accepted -- which is what the load-time budget check needs.
+	unsigned AtlasLayersInUse(const DefinitionTable &table, int skipSlot, const TArray<FTextureID> *extra)
+	{
+		TMap<uint64_t, bool> runs;
+		unsigned layers = 0;
+		auto addRun = [&](const TArray<FTextureID> &frames)
+		{
+			if (frames.Size() == 0) return;
+			const uint64_t key = FlipbookRunKey(frames);
+			if (runs.CheckKey(key) != nullptr) return;
+			runs.Insert(key, true);
+			layers += frames.Size();
+		};
+		for (unsigned i = 0; i < table.NamedCount; i++)
+		{
+			if ((int)i != skipSlot) addRun(table.Named[i].Frames);
+		}
+		if (extra != nullptr) addRun(*extra);
+		return layers;
+	}
+
+	// One flipbook's layers, appended. One scale for the whole run -- its largest
+	// frame side (display size, so a high-resolution replacement frame keeps its
+	// place) fills the layer -- and each frame centred in its layer.
+	void AppendFlipbookLayers(TArray<ParticleAtlasLayer> &layers, const TArray<FTextureID> &frames)
+	{
+		double side = 0.0;
+		for (unsigned i = 0; i < frames.Size(); i++)
+		{
+			FGameTexture *tex = TexMan.GetGameTexture(frames[i]);
+			if (tex == nullptr) continue;
+			side = std::max(side, (double)std::max(tex->GetDisplayWidth(), tex->GetDisplayHeight()));
+		}
+
+		for (unsigned i = 0; i < frames.Size(); i++)
+		{
+			ParticleAtlasLayer layer;
+			layer.Texture = frames[i];
+			layer.Left = 0.f;
+			layer.Top = 0.f;
+			layer.Width = 1.f;
+			layer.Height = 1.f;
+			FGameTexture *tex = TexMan.GetGameTexture(frames[i]);
+			if (tex != nullptr && side > 0.0)
+			{
+				const double w = tex->GetDisplayWidth() / side;
+				const double h = tex->GetDisplayHeight() / side;
+				layer.Width = (float)w;
+				layer.Height = (float)h;
+				layer.Left = (float)((1.0 - w) * 0.5);
+				layer.Top = (float)((1.0 - h) * 0.5);
+			}
+			layers.Push(layer);
+		}
+	}
+
+	// Gives every textured named definition its first atlas layer, in slot order,
+	// once every lump has loaded -- so a definition replaced by a later lump leaves
+	// no orphaned layers -- and rebuilds the layer list the renderer builds the atlas
+	// from. Returns how many definitions have a texture.
+	unsigned AssignAtlasLayers(DefinitionTable &table)
+	{
+		TMap<uint64_t, int> runStart;
+		table.AtlasLayers.Clear();
+		unsigned textured = 0;
+		for (unsigned i = 0; i < table.NamedCount; i++)
+		{
+			NamedInfo &n = table.Named[i];
+			int firstLayer = -1;
+			if (n.Frames.Size() > 0)
+			{
+				textured++;
+				const uint64_t key = FlipbookRunKey(n.Frames);
+				if (const int *start = runStart.CheckKey(key))
+				{
+					firstLayer = *start;
+				}
+				else if (table.AtlasLayers.Size() + n.Frames.Size() <= ParticleDefinitionBuffer::ATLAS_LAYERS)
+				{
+					firstLayer = (int)table.AtlasLayers.Size();
+					runStart.Insert(key, firstLayer);
+					AppendFlipbookLayers(table.AtlasLayers, n.Frames);
+				}
+				else
+				{
+					// Unreachable: the handler refuses a definition that would not fit, and
+					// counts exactly what is live once it is accepted.
+					Printf(TEXTCOLOR_ORANGE "ParticleAtlas: '%s' (%s, line %d) did not fit in the atlas and draws untextured\n",
+						n.Name.GetChars(), n.Lump.GetChars(), n.Line);
+				}
+			}
+			n.FirstLayer = firstLayer;
+			if (table.Gpu[i].flipbook[0] != (float)firstLayer)
+			{
+				table.Gpu[i].flipbook[0] = (float)firstLayer;
+				table.Stamp(i);
+			}
+		}
+		table.AtlasGeneration++;
+		return textured;
+	}
+
+	//==========================================================================
+	//
 	// One 'particle' block -> one GPU definition
 	//
 	//==========================================================================
@@ -321,6 +606,7 @@ namespace
 		double spinMin = 0.0, spinMax = 0.0;
 		int orient = 0, collide = 0, fade = 0, mode = 0;
 		FString texture;
+		int textureLine = 0;	// [2c]
 		double frames = 0.0, fps = 0.0;
 
 		for (unsigned i = 0; i < b.Entries.Size(); i++)
@@ -367,8 +653,8 @@ namespace
 			else if (e.Key.CompareNoCase("texture") == 0)
 			{
 				// texture = "<first frame>", frames, fps, loop | once. Frames, fps and
-				// mode may be left off (1, 0, loop): one still texture. Stored here;
-				// FINDING the frames and building the atlas are stage 2c.
+				// mode may be left off (1, 0, loop): one still texture. The frames are
+				// found once every key is read (FindFlipbookFrames, below the loop).
 				const unsigned n = e.Items.Size();
 				const char *usage = "'texture' is \"<first frame>\", frames, fps, loop | once";
 				if (n < 1 || n > 4)
@@ -382,6 +668,7 @@ namespace
 				if (name.Kind == FDefBlockAtom::Number || name.Text.IsEmpty())
 					return Fail(error, errorLine, e.Line, "'texture' needs the first frame's name first");
 				texture = name.Text;
+				textureLine = e.Line;
 				frames = 1.0;
 				fps = 0.0;
 				mode = 0;
@@ -414,6 +701,16 @@ namespace
 				return Fail(error, errorLine, e.Line, "unknown key '%s'", e.Key.GetChars());
 			}
 			if (!ok) return false;
+		}
+
+		// [2c] The flipbook's frames, found by name now that the count is known. A
+		// frame that is not there refuses this definition alone, naming the frame; the
+		// rest of the lump still loads.
+		TArray<FTextureID> frameIds;
+		if (!texture.IsEmpty() && !FindFlipbookFrames(texture, (int)frames, frameIds, error))
+		{
+			errorLine = textureLine;
+			return false;
 		}
 
 		// The shared time keys: every time any non-constant ramp was written with.
@@ -468,7 +765,7 @@ namespace
 		gpu.look[2] = (float)collide;
 		gpu.look[3] = (float)(fade ? PDF_FADE_SMOOTH : 0);
 
-		gpu.flipbook[0] = -1.f;	// no atlas layer until stage 2c resolves `texture`
+		gpu.flipbook[0] = -1.f;	// [2c] no atlas layer until AssignAtlasLayers, once every lump has loaded
 		gpu.flipbook[1] = (float)frames;
 		gpu.flipbook[2] = (float)fps;
 		gpu.flipbook[3] = (float)mode;
@@ -478,6 +775,8 @@ namespace
 		info.Line = b.Line;
 		info.KeyCount = count;
 		info.Texture = texture;
+		info.TextureLine = textureLine;
+		info.Frames = frameIds;
 		return true;
 	}
 }
@@ -512,11 +811,10 @@ void LoadParticleDefinitions()
 		if (!BuildDefinition(block, gpu, info, error, errorLine)) return false;
 
 		const int handle = ParticleDefinitionHandle(block.Name.GetChars());
-		int index;
-		if (int *existing = table.ByHandle.CheckKey(handle))
+		const int *existing = table.ByHandle.CheckKey(handle);
+		if (existing != nullptr)
 		{
-			index = *existing;
-			const NamedInfo &earlier = table.Named[index];
+			const NamedInfo &earlier = table.Named[*existing];
 			if (earlier.Name.CompareNoCase(block.Name.GetChars()) != 0)
 			{
 				// Two different names, one 31-bit hash. Refused here, at load, so a
@@ -525,6 +823,35 @@ void LoadParticleDefinitions()
 					handle, earlier.Name.GetChars(), earlier.Lump.GetChars(), earlier.Line);
 				return false;
 			}
+		}
+		else if (table.NamedCount >= kNamedSlots)
+		{
+			error.Format("the table already holds %u named definitions, the most it can", kNamedSlots);
+			return false;
+		}
+
+		// [2c] THE ATLAS BUDGET. Counts the layers the table would use with this
+		// definition accepted (the one it replaces left out, identical runs shared).
+		// Every acceptance keeps that at or under the cap, so the layer assignment
+		// after the last lump always fits. Nothing is changed before this check.
+		if (info.Frames.Size() > 0)
+		{
+			const int replacing = existing != nullptr ? *existing : -1;
+			if (AtlasLayersInUse(table, replacing, &info.Frames) > ParticleDefinitionBuffer::ATLAS_LAYERS)
+			{
+				const unsigned inUse = AtlasLayersInUse(table, replacing, nullptr);
+				error.Format("its flipbook \"%s\" needs %u particle atlas layers and only %u of %u are free",
+					info.Texture.GetChars(), info.Frames.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS - inUse, ParticleDefinitionBuffer::ATLAS_LAYERS);
+				errorLine = info.TextureLine;
+				return false;
+			}
+		}
+
+		int index;
+		if (existing != nullptr)
+		{
+			index = *existing;
+			const NamedInfo &earlier = table.Named[index];
 			Printf("ParticleDefinitions: '%s' at %s, line %d replaces the one at %s, line %d\n",
 				block.Name.GetChars(), block.LumpName.GetChars(), block.Line,
 				earlier.Lump.GetChars(), earlier.Line);
@@ -532,11 +859,6 @@ void LoadParticleDefinitions()
 		}
 		else
 		{
-			if (table.NamedCount >= kNamedSlots)
-			{
-				error.Format("the table already holds %u named definitions, the most it can", kNamedSlots);
-				return false;
-			}
 			index = (int)table.NamedCount++;
 			table.ByHandle.Insert(handle, index);
 		}
@@ -556,9 +878,14 @@ void LoadParticleDefinitions()
 		ReadDefinitionBlocks(lump, handler, table.Stats);
 	}
 
+	// [2c] Atlas layers for the definitions that survived every lump.
+	const unsigned textured = AssignAtlasLayers(table);
+
 	Printf("ParticleDefinitions: %u named definition%s from %u PARTICLEDEFS lump%s -- %d refused, %u replaced by a later one\n",
 		table.NamedCount, table.NamedCount == 1 ? "" : "s", table.Lumps, table.Lumps == 1 ? "" : "s",
 		table.Stats.Refused, table.Replaced);
+	Printf("ParticleDefinitions: %u textured definition%s using %u of %u particle atlas layers (the renderer builds the atlas on its next frame; Vulkan only)\n",
+		textured, textured == 1 ? "" : "s", table.AtlasLayers.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS);
 }
 
 //==========================================================================
@@ -709,6 +1036,11 @@ const uint64_t *ParticleDefinitionSlotGenerations() { return Table().SlotGenerat
 unsigned ParticleDefinitionSlotCount() { return kSlots; }
 uint64_t ParticleDefinitionGeneration() { return Table().Generation; }
 
+// [2c] For the renderer's atlas sync (ParticleDefinitionBuffer::SyncAtlasLayers).
+const ParticleAtlasLayer *ParticleAtlasLayerData() { return Table().AtlasLayers.Size() > 0 ? &Table().AtlasLayers[0] : nullptr; }
+unsigned ParticleAtlasLayerCount() { return Table().AtlasLayers.Size(); }
+uint64_t ParticleAtlasGeneration() { return Table().AtlasGeneration; }
+
 //==========================================================================
 //
 // `particles` -- the definitions and how full the inline cache is, to the
@@ -749,12 +1081,35 @@ CCMD(particles)
 
 		FString texture;
 		if (n.Texture.IsEmpty()) texture = "none";
-		else texture.Format("\"%s\" x%d at %g fps, %s (atlas: stage 2c)", n.Texture.GetChars(), (int)g.flipbook[1], g.flipbook[2], g.flipbook[3] > 0.5f ? "once" : "loop");
+		else if (n.FirstLayer >= 0)
+			texture.Format("\"%s\" x%d at %g fps, %s -- atlas layers %d..%d", n.Texture.GetChars(), (int)g.flipbook[1], g.flipbook[2], g.flipbook[3] > 0.5f ? "once" : "loop",
+				n.FirstLayer, n.FirstLayer + (int)n.Frames.Size() - 1);
+		else
+			texture.Format("\"%s\" x%d -- not in the atlas", n.Texture.GetChars(), (int)g.flipbook[1]);
 
 		Printf("  #%u %s (handle %d) -- %s, line %d\n", i, n.Name.GetChars(), n.Handle, n.Lump.GetChars(), n.Line);
 		Printf("      %u time keys, maxsize %g, %s, stretch %g, spin %g..%g, gravity %g, drag %g, fade %s, collide %s, lit %g, soft %s, texture %s\n",
 			n.KeyCount, g.motion[2], kOrientNames[orient], g.shape[1], g.shape[2], g.shape[3], g.motion[0], g.motion[1],
 			(flags & PDF_FADE_SMOOTH) ? "smooth" : "none", kCollideNames[collide], g.look[0], soft.GetChars(), texture.GetChars());
+	}
+
+	// [2c] The particle atlas: what the named flipbooks use, and what the renderer built.
+	Printf("Particle atlas: %u of %u layers used by named flipbooks (list generation %llu)\n",
+		table.AtlasLayers.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS, (unsigned long long)table.AtlasGeneration);
+	if (screen != nullptr && screen->mParticleDefinitions != nullptr)
+	{
+		const ParticleDefinitionBuffer *defs = screen->mParticleDefinitions;
+		if (defs->GetAtlasBuiltLayers() > 0)
+		{
+			Printf("  GPU atlas: %u layers of %d x %d with mips, %.2f MiB (from list generation %llu)\n",
+				defs->GetAtlasBuiltLayers(), defs->GetAtlasBuiltSize(), defs->GetAtlasBuiltSize(),
+				defs->GetAtlasBuiltBytes() / (1024.0 * 1024.0), (unsigned long long)defs->GetAtlasGeneration());
+		}
+		else
+		{
+			Printf("  GPU atlas: only the 1 x 1 placeholder%s\n",
+				table.AtlasLayers.Size() > 0 ? " -- the atlas is built on the next drawn frame" : " (no definition names a texture)");
+		}
 	}
 
 	FLevelLocals *level = primaryLevel;

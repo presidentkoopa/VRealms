@@ -133,6 +133,8 @@ EXTERN_CVAR(Bool, r_gpuparticles_debug)
 EXTERN_CVAR(Bool, r_gpuparticles_legacy)	// [2b] A/B: stage 1 records instead of inline definitions
 int GpuParticleRingCapacity();
 bool GpuParticlesLegacyPath();	// [2b] r_gpuparticles_legacy, for FLevelLocals::SpawnGpuParticles
+EXTERN_CVAR(Int, r_gpuparticles_atlas_size)	// [2c] particle atlas layer side in pixels
+int GpuParticleAtlasLayerSize();	// [2c] r_gpuparticles_atlas_size rounded to 128 or 256
 
 // [DRAWNLINES] + [BEAMLINES] see hw_cvars.cpp
 EXTERN_CVAR(Bool, r_beams_drawn)

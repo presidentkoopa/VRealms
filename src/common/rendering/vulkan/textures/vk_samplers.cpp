@@ -71,6 +71,7 @@ VkSamplerManager::VkSamplerManager(VulkanRenderDevice* fb) : fb(fb)
 	CreateHWSamplers();
 	CreateShadowmapSampler();
 	CreateLightmapSampler();
+	CreateParticleAtlasSampler();	// [2c]
 }
 
 VkSamplerManager::~VkSamplerManager()
@@ -186,5 +187,22 @@ void VkSamplerManager::CreateLightmapSampler()
 		.MagFilter(VK_FILTER_LINEAR)
 		.AddressMode(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
 		.DebugName("VkRenderBuffers.LightmapSampler")
+		.Create(fb->device.get());
+}
+
+// [2c] The particle atlas (VkTextureManager::ParticleAtlas, fixed set binding 4):
+// linear between texels and between mip levels, clamped to the edge so a quad's
+// border never wraps round to the opposite side of its own frame. Array layers
+// never filter into each other, so frames cannot bleed. Not touched by
+// ResetHWSamplers: the texture filter options are for surfaces, not particles.
+void VkSamplerManager::CreateParticleAtlasSampler()
+{
+	ParticleAtlasSampler = SamplerBuilder()
+		.MipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR)
+		.MinFilter(VK_FILTER_LINEAR)
+		.MagFilter(VK_FILTER_LINEAR)
+		.AddressMode(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+		.MaxLod(100.0f)
+		.DebugName("VkSamplerManager.ParticleAtlasSampler")
 		.Create(fb->device.get());
 }

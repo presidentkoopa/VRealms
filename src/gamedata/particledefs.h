@@ -38,6 +38,12 @@
 ** This half survives a renderer rebuild. ParticleDefinitionBuffer
 ** (hw_particledefbuffer.h) is the GPU copy, synced from HWDrawInfo::ProcessScene.
 **
+** [2c] FLIPBOOKS. A named definition's `texture` names its first frame and a count;
+** the frames are found by name at load (particledefs.cpp, FindFlipbookFrames) and
+** listed here as particle atlas layers, which the renderer builds the atlas from
+** (ParticleDefinitionBuffer::SyncAtlasLayers, VkTextureManager::CreateParticleAtlas).
+** The frame list survives a renderer rebuild; the atlas image does not.
+**
 */
 
 #pragma once
@@ -100,3 +106,13 @@ const ParticleDefinitionGpu *ParticleDefinitionTableData();
 const uint64_t *ParticleDefinitionSlotGenerations();
 unsigned ParticleDefinitionSlotCount();
 uint64_t ParticleDefinitionGeneration();
+
+// [2c] For the renderer's atlas sync (ParticleDefinitionBuffer::SyncAtlasLayers):
+// one entry per particle atlas layer, in layer order -- every frame a named
+// definition's flipbook uses, a flipbook's frames on consecutive layers, identical
+// runs shared -- and the list's generation, bumped each time LoadParticleDefinitions
+// rebuilds it. A definition's first layer is its flipbook[0].
+struct ParticleAtlasLayer;
+const ParticleAtlasLayer *ParticleAtlasLayerData();
+unsigned ParticleAtlasLayerCount();
+uint64_t ParticleAtlasGeneration();

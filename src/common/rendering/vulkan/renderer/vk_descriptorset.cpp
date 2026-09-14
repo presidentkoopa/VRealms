@@ -132,6 +132,12 @@ void VkDescriptorSetManager::UpdateFixedSet()
 	if (fb->RaytracingEnabled())
 		update.AddAccelerationStructure(FixedSet.get(), 2, fb->GetRaytrace()->GetAccelStruct());
 
+	// [2c] Binding 4: the particle atlas (VkTextureManager::ParticleAtlas), read by
+	// gpuparticles.fp. Always written: the texture manager creates a 1 x 1
+	// placeholder when it is constructed, and rebuilds the atlas in its BeginFrame,
+	// which runs before this. Linear, mips, clamp (VkSamplerManager::ParticleAtlasSampler).
+	update.AddCombinedImageSampler(FixedSet.get(), 4, fb->GetTextureManager()->ParticleAtlas.View.get(), fb->GetSamplerManager()->ParticleAtlasSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
 	// [2a] Binding 3: the scene depth, depth aspect only, for effects drawn inside
 	// a read-only depth pass (FRenderState::SetSceneDepthReadable). Written with
 	// DEPTH_STENCIL_READ_ONLY_OPTIMAL, the layout the image has only inside such a
@@ -363,6 +369,11 @@ void VkDescriptorSetManager::CreateFixedSetLayout()
 	// declared in GLSL only by the effects' scene-depth variants -- so no other
 	// pipeline ever uses it while the image is a writable attachment.
 	builder.AddBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	// [2c] The particle atlas, a 2D array (UpdateFixedSet). Declared in GLSL only by
+	// gpuparticles.fp; always written with a valid image, so every pipeline can carry
+	// it in its layout. Binding 5 onward is reserved for later plans (see "Engine
+	// docs/REVIEW_SMOKE_DEBRIS_DAMAGE.md", X1).
+	builder.AddBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	builder.DebugName("VkDescriptorSetManager.FixedSetLayout");
 	FixedSetLayout = builder.Create(fb->device.get());
 }
@@ -384,7 +395,8 @@ void VkDescriptorSetManager::CreateFixedSetPool()
 {
 	DescriptorPoolBuilder poolbuilder;
 	// [2a] 3, not 2: shadowmap (binding 0), lightmap (1), scene depth (3).
-	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * maxSets);
+	// [2c] 4: and the particle atlas (4). Too few here fails set allocation.
+	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * maxSets);
 	if (fb->RaytracingEnabled())
 		poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * maxSets);
 	poolbuilder.MaxSets(maxSets);

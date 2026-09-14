@@ -27,13 +27,36 @@
 ** VulkanRenderDevice::InitializeState, null on GL and GLES. Set 1 binding 7
 ** (vk_descriptorset.cpp), vertex and fragment stages.
 **
+** [2c] It also carries the PARTICLE ATLAS LAYER LIST from the CPU table to the
+** backend that builds the atlas (VkTextureManager::CreateParticleAtlas, fixed set
+** binding 4): which texture fills each layer and where in the layer it goes. The
+** list is copied here, by generation, from HWDrawInfo::ProcessScene, so the
+** common renderer never reaches into gamedata.
+**
 */
 
 #pragma once
 
 #include <cstdint>
+#include "tarray.h"
+#include "textureid.h"
 
 class IDataBuffer;
+
+// [2c] One layer of the particle atlas, as the CPU table (particledefs.cpp) hands
+// it to the renderer: the texture whose pixels fill the layer, and the rectangle
+// they fill, in fractions of the square layer's side. Every frame of one flipbook
+// shares one scale -- the largest frame side in the run fills the layer -- and
+// sits centred, so the art keeps its proportions and a puff that grows in the art
+// still grows on screen. The rest of the layer is transparent.
+struct ParticleAtlasLayer
+{
+	FTextureID Texture;
+	float Left;
+	float Top;
+	float Width;
+	float Height;
+};
 
 class ParticleDefinitionBuffer
 {
@@ -68,9 +91,44 @@ public:
 	uint64_t GetSyncedGeneration() const { return mSyncedGeneration; }
 	uint64_t GetUploadedSlots() const { return mUploadedSlots; }	// since creation, for the `particles` CCMD
 
+	// [2c] THE PARTICLE ATLAS holds at most this many layers, one per frame; a
+	// flipbook's frames are consecutive layers. 256 layers of 256 x 256 with mips is
+	// the approved budget (about 85 MiB; the byte math is in "Engine docs/
+	// STAGE2C_IMPL_NOTES.md"). The CPU table refuses a definition that would need
+	// more, so the list handed over never exceeds it.
+	static const unsigned ATLAS_LAYERS = 256;
+
+	// [2c] Takes the CPU table's atlas layer list when `generation` differs from the
+	// one last taken (a new buffer, after a renderer restart, starts at 0 and so takes
+	// the current list). The backend compares GetAtlasGeneration with the generation
+	// it built from, and rebuilds when they differ.
+	void SyncAtlasLayers(const ParticleAtlasLayer *layers, unsigned count, uint64_t generation);
+	const TArray<ParticleAtlasLayer> &GetAtlasLayers() const { return mAtlasLayers; }
+	uint64_t GetAtlasGeneration() const { return mAtlasGeneration; }
+
+	// [2c] What the backend last built, for the `particles` CCMD: layers, the layer
+	// side in pixels, and the image's bytes (0 layers = the 1x1 placeholder only).
+	void SetAtlasBuilt(unsigned layers, int layerSize, uint64_t bytes)
+	{
+		mAtlasBuiltLayers = layers;
+		mAtlasBuiltSize = layerSize;
+		mAtlasBuiltBytes = bytes;
+	}
+	unsigned GetAtlasBuiltLayers() const { return mAtlasBuiltLayers; }
+	int GetAtlasBuiltSize() const { return mAtlasBuiltSize; }
+	uint64_t GetAtlasBuiltBytes() const { return mAtlasBuiltBytes; }
+
 private:
 	IDataBuffer *mBuffer = nullptr;
 	uint64_t mSyncedGeneration = 0;
 	uint64_t mUploadedSlots = 0;
 	bool mWarnedCount = false;
+
+	// [2c] The atlas layer list, see SyncAtlasLayers.
+	TArray<ParticleAtlasLayer> mAtlasLayers;
+	uint64_t mAtlasGeneration = 0;
+	bool mWarnedAtlasCount = false;
+	unsigned mAtlasBuiltLayers = 0;
+	int mAtlasBuiltSize = 0;
+	uint64_t mAtlasBuiltBytes = 0;
 };

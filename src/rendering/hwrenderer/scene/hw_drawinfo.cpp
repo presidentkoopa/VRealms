@@ -2816,6 +2816,12 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	{
 		screen->mParticleDefinitions->Sync(ParticleDefinitionTableData(), ParticleDefinitionSlotGenerations(),
 			ParticleDefinitionSlotCount(), ParticleDefinitionGeneration());
+
+		// [2c] The particle atlas layer list -- which texture fills each layer, and
+		// where -- goes with them. It changes only when PARTICLEDEFS lumps load, so
+		// this is a generation compare on every other frame. The backend builds the
+		// atlas from it on its next frame (VkTextureManager::BeginFrame).
+		screen->mParticleDefinitions->SyncAtlasLayers(ParticleAtlasLayerData(), ParticleAtlasLayerCount(), ParticleAtlasGeneration());
 	}
 	if (screen->mGpuParticles != nullptr && Level != nullptr)
 	{

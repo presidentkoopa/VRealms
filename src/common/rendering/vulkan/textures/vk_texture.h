@@ -62,10 +62,26 @@ public:
 	VkTextureImage Shadowmap;
 	VkTextureImage Lightmap;
 
+	// [2c] The particle atlas ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c): every
+	// frame some textured particle definition uses, one square layer per frame, a
+	// flipbook's frames on consecutive layers, premultiplied alpha with mips. Fixed set
+	// binding 4, read by gpuparticles.fp. A 1 x 1 transparent placeholder until a
+	// loaded definition names a texture, so the binding is always valid.
+	VkTextureImage ParticleAtlas;
+
 private:
 	void CreateNullTexture();
 	void CreateShadowmap();
 	void CreateLightmap();
+	// [2c] Builds ParticleAtlas from ParticleDefinitionBuffer's layer list at
+	// r_gpuparticles_atlas_size (or the placeholder). BeginFrame calls it again when the
+	// list or the size changes.
+	void CreateParticleAtlas();
+
+	// [2c] What ParticleAtlas was last built from, so BeginFrame rebuilds only on a change.
+	uint64_t ParticleAtlasBuiltGeneration = 0;
+	int ParticleAtlasBuiltSize = 0;		// layer side in pixels; 0 = the placeholder
+	unsigned ParticleAtlasBuiltLayers = 0;	// 0 = the placeholder
 
 	VkPPTexture* GetVkTexture(PPTexture* texture);
 

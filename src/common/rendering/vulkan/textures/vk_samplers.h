@@ -42,12 +42,14 @@ public:
 
 	std::unique_ptr<VulkanSampler> ShadowmapSampler;
 	std::unique_ptr<VulkanSampler> LightmapSampler;
+	std::unique_ptr<VulkanSampler> ParticleAtlasSampler;	// [2c] fixed set binding 4
 
 private:
 	void CreateHWSamplers();
 	void DeleteHWSamplers();
 	void CreateShadowmapSampler();
 	void CreateLightmapSampler();
+	void CreateParticleAtlasSampler();	// [2c]
 
 	VulkanRenderDevice* fb = nullptr;
 	std::array<std::unique_ptr<VulkanSampler>, NUMSAMPLERS> mSamplers;

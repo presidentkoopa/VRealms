@@ -88,3 +88,28 @@ void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slo
 
 	mSyncedGeneration = generation;
 }
+
+void ParticleDefinitionBuffer::SyncAtlasLayers(const ParticleAtlasLayer *layers, unsigned count, uint64_t generation)
+{
+	// [2c] Cheap when nothing changed, which is every frame after the first: the CPU
+	// list only changes when PARTICLEDEFS lumps are (re)loaded.
+	if (generation == mAtlasGeneration) return;
+
+	if (layers == nullptr) count = 0;
+	if (count > ATLAS_LAYERS)
+	{
+		// The CPU table refuses definitions past the cap, so this should be
+		// unreachable. Clamp rather than build past the budget, and say so once.
+		if (!mWarnedAtlasCount)
+		{
+			Printf(TEXTCOLOR_ORANGE "ParticleAtlas: CPU list has %u layers, the atlas holds %u, clamping\n", count, ATLAS_LAYERS);
+			mWarnedAtlasCount = true;
+		}
+		count = ATLAS_LAYERS;
+	}
+
+	mAtlasLayers.Resize(count);
+	for (unsigned i = 0; i < count; i++)
+		mAtlasLayers[i] = layers[i];
+	mAtlasGeneration = generation;
+}

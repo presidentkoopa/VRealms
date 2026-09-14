@@ -270,6 +270,23 @@ bool GpuParticlesLegacyPath()
 	return r_gpuparticles_legacy;
 }
 
+// [2c] THE PARTICLE ATLAS LAYER SIZE ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c).
+// Every textured particle definition's frames live in one texture array, one square
+// layer per frame, at most 256 layers (ParticleDefinitionBuffer::ATLAS_LAYERS). This
+// is a layer's side in pixels: 128 or 256 (anything else rounds to the nearer). With
+// mips, a full atlas is 85.3 MiB of VRAM at 256 and 21.3 MiB at 128 -- the cap; only
+// the layers loaded definitions use are allocated, and with no textured definition
+// the atlas is a 1 x 1 placeholder.
+//
+// Renderer-read: VkTextureManager::BeginFrame compares it every frame with the size
+// the atlas was built at and rebuilds on the next frame after a change, menu open or
+// not. Layer numbers do not depend on it, so no definition changes. Vulkan only.
+CVARD(Int, r_gpuparticles_atlas_size, 256, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "particle atlas layer side in pixels, 128 or 256; the atlas rebuilds at once (Vulkan only)")
+int GpuParticleAtlasLayerSize()
+{
+	return r_gpuparticles_atlas_size < 192 ? 128 : 256;
+}
+
 // The ring size, latched the first time anything asks. The CPU ring on
 // FLevelLocals and the GPU ring both size from this, so they can never
 // disagree within one run -- which is what "takes effect on restart" means.

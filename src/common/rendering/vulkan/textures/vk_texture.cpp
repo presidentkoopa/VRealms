@@ -26,12 +26,21 @@
 #include "vk_renderbuffers.h"
 #include "vulkan/renderer/vk_postprocess.h"
 #include "hw_cvars.h"
+#include "hw_particledefbuffer.h"	// [2c] the particle atlas layer list
+#include "texturemanager.h"	// [2c] the atlas's pixels come from TexMan's textures
+#include "bitmap.h"	// [2c] FBitmap, what FTexture::GetBgraBitmap returns
+#include "i_time.h"	// [2c] atlas build time, for the log
+#include "printf.h"
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 
 VkTextureManager::VkTextureManager(VulkanRenderDevice* fb) : fb(fb)
 {
 	CreateNullTexture();
 	CreateShadowmap();
 	CreateLightmap();
+	CreateParticleAtlas();	// [2c] the placeholder: no definitions are handed over yet
 }
 
 VkTextureManager::~VkTextureManager()
@@ -56,6 +65,29 @@ void VkTextureManager::BeginFrame()
 	{
 		Shadowmap.Reset(fb);
 		CreateShadowmap();
+	}
+
+	// [2c] The particle atlas, rebuilt when the CPU table's layer list (handed over by
+	// HWDrawInfo::ProcessScene) or the layer size changed since it was built.
+	// Renderer-read every frame like the shadow map above, so r_gpuparticles_atlas_size
+	// applies on the next frame, menu open or not. Runs before
+	// VkDescriptorSetManager::BeginFrame, which writes fixed binding 4 with the result.
+	const ParticleDefinitionBuffer *definitions = fb->mParticleDefinitions;
+	const uint64_t atlasGeneration = definitions != nullptr ? definitions->GetAtlasGeneration() : 0;
+	const bool atlasHasLayers = definitions != nullptr && definitions->GetAtlasLayers().Size() > 0;
+	if (!ParticleAtlas.Image || atlasGeneration != ParticleAtlasBuiltGeneration ||
+		(atlasHasLayers && GpuParticleAtlasLayerSize() != ParticleAtlasBuiltSize))
+	{
+		if (ParticleAtlas.Image && !atlasHasLayers && ParticleAtlasBuiltLayers == 0)
+		{
+			// Still no textured definition: the placeholder stays.
+			ParticleAtlasBuiltGeneration = atlasGeneration;
+		}
+		else
+		{
+			ParticleAtlas.Reset(fb);
+			CreateParticleAtlas();
+		}
 	}
 }
 
@@ -268,4 +300,324 @@ void VkTextureManager::SetLightmap(int LMTextureSize, int LMTextureCount, const 
 		.Execute(cmdbuffer);
 
 	fb->GetCommands()->TransferDeleteList->Add(std::move(stagingBuffer));
+}
+
+//==========================================================================
+//
+// [2c] THE PARTICLE ATLAS ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c)
+//
+// One B8G8R8A8 2D array -- FBitmap's byte order, as VkHardwareTexture uses -- of
+// square layers, r_gpuparticles_atlas_size on a side, with every mip level. Each
+// layer is one frame of some textured particle definition (the list is
+// ParticleDefinitionBuffer::GetAtlasLayers, built by gamedata/particledefs.cpp), a
+// flipbook's frames on consecutive layers. Pixels come from TexMan's textures via
+// FTexture::GetBgraBitmap, are PREMULTIPLIED -- so linear filtering and the mip
+// chain never bleed the colour of transparent pixels, and stage 2d's premultiplied
+// blend can use a texel as it is -- and are resampled into the rectangle the list
+// gives them. Only layers the list names are allocated; with none, the atlas is a
+// transparent 1 x 1 placeholder, so fixed binding 4 always holds a valid array.
+//
+//==========================================================================
+
+namespace
+{
+	// One source pixel a layer pixel reads, and how much.
+	struct AtlasTap
+	{
+		int Index;
+		float Weight;
+	};
+
+	// A separable tent filter along one axis: for each of `layerPixels`, the source
+	// pixels 0..sourcePixels-1 it reads, where the source spans layer pixels
+	// [start, start + length). The radius is one texel of whichever side is coarser,
+	// so it magnifies smoothly and minifies without aliasing. Weights are normalised
+	// over the whole tent, so a tent reaching past the source's edge reads
+	// transparency there and the art's border fades within one texel.
+	void AtlasTentTaps(int layerPixels, int sourcePixels, double start, double length, TArray<AtlasTap> &taps, TArray<unsigned> &firstTap)
+	{
+		taps.Clear();
+		firstTap.Resize((unsigned)layerPixels + 1);
+		const double scale = sourcePixels / std::max(length, 1e-6);	// source pixels per layer pixel
+		const double radius = std::max(1.0, scale);
+		for (int d = 0; d < layerPixels; d++)
+		{
+			firstTap[(unsigned)d] = taps.Size();
+			const double centre = ((d + 0.5) - start) * scale;
+			const int lo = (int)std::floor(centre - radius);
+			const int hi = (int)std::ceil(centre + radius);
+			double total = 0.0;
+			for (int s = lo; s <= hi; s++)
+			{
+				const double weight = 1.0 - std::fabs(s + 0.5 - centre) / radius;
+				if (weight <= 0.0) continue;
+				total += weight;
+				if (s >= 0 && s < sourcePixels)
+				{
+					AtlasTap tap = { s, (float)weight };
+					taps.Push(tap);
+				}
+			}
+			if (total > 0.0)
+			{
+				for (unsigned t = firstTap[(unsigned)d]; t < taps.Size(); t++)
+					taps[t].Weight = (float)(taps[t].Weight / total);
+			}
+		}
+		firstTap[(unsigned)layerPixels] = taps.Size();
+	}
+
+	// One layer's whole mip chain into `chain` (every level, largest first, B G R A,
+	// premultiplied): the texture resampled into the layer's rectangle, transparent
+	// around it, then each level the average of 2 x 2 texels of the one above (sides
+	// are powers of two). False when the texture has no pixels; the layer stays
+	// transparent.
+	bool FillParticleAtlasLayer(const ParticleAtlasLayer &layer, int side, uint8_t *chain, size_t chainBytes)
+	{
+		memset(chain, 0, chainBytes);
+
+		FGameTexture *gameTexture = TexMan.GetGameTexture(layer.Texture);
+		FTexture *baseTexture = gameTexture != nullptr ? gameTexture->GetTexture() : nullptr;
+		if (baseTexture == nullptr) return false;
+
+		FBitmap bitmap = baseTexture->GetBgraBitmap(nullptr);
+		const int width = bitmap.GetWidth();
+		const int height = bitmap.GetHeight();
+		const int pitch = bitmap.GetPitch();
+		const uint8_t *pixels = bitmap.GetPixels();
+		if (pixels == nullptr || width <= 0 || height <= 0) return false;
+
+		// Premultiplied, 0..1.
+		TArray<float> source;
+		source.Resize((unsigned)width * (unsigned)height * 4);
+		for (int y = 0; y < height; y++)
+		{
+			const uint8_t *row = pixels + (size_t)y * (size_t)pitch;
+			for (int x = 0; x < width; x++)
+			{
+				const float alpha = row[x * 4 + 3] / 255.f;
+				float *out = &source[((unsigned)y * (unsigned)width + (unsigned)x) * 4];
+				out[0] = row[x * 4 + 0] / 255.f * alpha;
+				out[1] = row[x * 4 + 1] / 255.f * alpha;
+				out[2] = row[x * 4 + 2] / 255.f * alpha;
+				out[3] = alpha;
+			}
+		}
+
+		TArray<AtlasTap> tapsX, tapsY;
+		TArray<unsigned> firstX, firstY;
+		AtlasTentTaps(side, width, (double)layer.Left * side, (double)layer.Width * side, tapsX, firstX);
+		AtlasTentTaps(side, height, (double)layer.Top * side, (double)layer.Height * side, tapsY, firstY);
+
+		// Across: the source's columns into the layer's, row by row.
+		TArray<float> across;
+		across.Resize((unsigned)side * (unsigned)height * 4);
+		for (int y = 0; y < height; y++)
+		{
+			for (int x = 0; x < side; x++)
+			{
+				float sum[4] = { 0.f, 0.f, 0.f, 0.f };
+				for (unsigned t = firstX[(unsigned)x]; t < firstX[(unsigned)x + 1]; t++)
+				{
+					const float *in = &source[((unsigned)y * (unsigned)width + (unsigned)tapsX[t].Index) * 4];
+					for (int c = 0; c < 4; c++) sum[c] += in[c] * tapsX[t].Weight;
+				}
+				memcpy(&across[((unsigned)y * (unsigned)side + (unsigned)x) * 4], sum, sizeof(sum));
+			}
+		}
+
+		// Down: the rows into the layer's, as level 0. A colour channel is never above
+		// alpha, so the texels stay valid premultiplied values after rounding.
+		for (int y = 0; y < side; y++)
+		{
+			for (int x = 0; x < side; x++)
+			{
+				float sum[4] = { 0.f, 0.f, 0.f, 0.f };
+				for (unsigned t = firstY[(unsigned)y]; t < firstY[(unsigned)y + 1]; t++)
+				{
+					const float *in = &across[((unsigned)tapsY[t].Index * (unsigned)side + (unsigned)x) * 4];
+					for (int c = 0; c < 4; c++) sum[c] += in[c] * tapsY[t].Weight;
+				}
+				uint8_t *out = chain + ((size_t)y * (size_t)side + (size_t)x) * 4;
+				const int alpha = std::clamp((int)std::lround(sum[3] * 255.f), 0, 255);
+				out[3] = (uint8_t)alpha;
+				for (int c = 0; c < 3; c++)
+					out[c] = (uint8_t)std::clamp((int)std::lround(sum[c] * 255.f), 0, alpha);
+			}
+		}
+
+		// The mip chain. Averages of premultiplied texels stay premultiplied.
+		uint8_t *level = chain;
+		int levelSide = side;
+		while (levelSide > 1)
+		{
+			const int nextSide = levelSide >> 1;
+			uint8_t *next = level + (size_t)levelSide * (size_t)levelSide * 4;
+			for (int y = 0; y < nextSide; y++)
+			{
+				for (int x = 0; x < nextSide; x++)
+				{
+					const uint8_t *a = level + ((size_t)(y * 2) * (size_t)levelSide + (size_t)(x * 2)) * 4;
+					const uint8_t *b = a + 4;
+					const uint8_t *c = a + (size_t)levelSide * 4;
+					const uint8_t *d = c + 4;
+					uint8_t *out = next + ((size_t)y * (size_t)nextSide + (size_t)x) * 4;
+					for (int ch = 0; ch < 4; ch++)
+						out[ch] = (uint8_t)((a[ch] + b[ch] + c[ch] + d[ch] + 2) >> 2);
+				}
+			}
+			level = next;
+			levelSide = nextSide;
+		}
+		return true;
+	}
+
+	// Creates `atlas` as a side x side x layerCount array with every mip level and
+	// uploads it; `fillLayer(i, chain, chainBytes)` writes layer i's whole chain.
+	// Returns the image's texel bytes. The staging buffer holds level 0 of every
+	// layer, then level 1 of every layer, and so on, so one copy region per level
+	// covers all layers.
+	template<class FillLayer>
+	uint64_t CreateAtlasImage(VulkanRenderDevice *fb, VkTextureImage &atlas, int side, unsigned layerCount, FillLayer &&fillLayer)
+	{
+		const VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+		int mipLevels = 1;
+		while ((side >> mipLevels) > 0) mipLevels++;
+
+		size_t mipOffset[16];
+		size_t mipBytes[16];
+		size_t chainBytes = 0;
+		size_t total = 0;
+		for (int m = 0; m < mipLevels; m++)
+		{
+			mipBytes[m] = (size_t)(side >> m) * (size_t)(side >> m) * 4;
+			mipOffset[m] = total;
+			total += mipBytes[m] * layerCount;
+			chainBytes += mipBytes[m];
+		}
+
+		auto stagingBuffer = BufferBuilder()
+			.Size(total)
+			.Usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY)
+			.DebugName("VkTextureManager.ParticleAtlasStaging")
+			.Create(fb->device.get());
+
+		TArray<uint8_t> chain;
+		chain.Resize((unsigned)chainBytes);
+		uint8_t *data = (uint8_t *)stagingBuffer->Map(0, total);
+		for (unsigned i = 0; i < layerCount; i++)
+		{
+			fillLayer(i, chain.Data(), chainBytes);
+			size_t chainOffset = 0;
+			for (int m = 0; m < mipLevels; m++)
+			{
+				memcpy(data + mipOffset[m] + (size_t)i * mipBytes[m], chain.Data() + chainOffset, mipBytes[m]);
+				chainOffset += mipBytes[m];
+			}
+		}
+		stagingBuffer->Unmap();
+
+		atlas.Image = ImageBuilder()
+			.Format(format)
+			.Size(side, side, mipLevels, (int)layerCount)
+			.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+			.DebugName("VkTextureManager.ParticleAtlas")
+			.Create(fb->device.get());
+
+		atlas.View = ImageViewBuilder()
+			.Type(VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+			.Image(atlas.Image.get(), format)
+			.DebugName("VkTextureManager.ParticleAtlasView")
+			.Create(fb->device.get());
+
+		auto cmdbuffer = fb->GetCommands()->GetTransferCommands();
+
+		// Every level of every layer in one barrier (VkImageTransition covers one layer).
+		PipelineBarrier()
+			.AddImage(atlas.Image.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, (int)layerCount)
+			.Execute(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+		std::vector<VkBufferImageCopy> regions((size_t)mipLevels);
+		for (int m = 0; m < mipLevels; m++)
+		{
+			VkBufferImageCopy &region = regions[(size_t)m];
+			region = {};
+			region.bufferOffset = mipOffset[m];
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = (uint32_t)m;
+			region.imageSubresource.baseArrayLayer = 0;
+			region.imageSubresource.layerCount = layerCount;
+			region.imageExtent.width = (uint32_t)(side >> m);
+			region.imageExtent.height = (uint32_t)(side >> m);
+			region.imageExtent.depth = 1;
+		}
+		cmdbuffer->copyBufferToImage(stagingBuffer->buffer, atlas.Image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)mipLevels, regions.data());
+
+		PipelineBarrier()
+			.AddImage(atlas.Image.get(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, (int)layerCount)
+			.Execute(cmdbuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+		atlas.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		// As VkHardwareTexture::CreateTexture does: past 64 MB of queued uploads, let
+		// them finish before going on.
+		fb->GetCommands()->TransferDeleteList->Add(std::move(stagingBuffer));
+		if (fb->GetCommands()->TransferDeleteList->TotalSize > 64 * 1024 * 1024)
+			fb->GetCommands()->WaitForCommands(false, true);
+
+		return (uint64_t)total;
+	}
+}
+
+void VkTextureManager::CreateParticleAtlas()
+{
+	ParticleDefinitionBuffer *definitions = fb->mParticleDefinitions;
+	const unsigned listed = definitions != nullptr ? definitions->GetAtlasLayers().Size() : 0;
+	const unsigned layers = listed > ParticleDefinitionBuffer::ATLAS_LAYERS ? ParticleDefinitionBuffer::ATLAS_LAYERS : listed;
+	const int layerSize = GpuParticleAtlasLayerSize();
+	const bool hadAtlas = ParticleAtlasBuiltLayers > 0;
+
+	// Recorded before building, so a build that fails is not retried every frame; the
+	// next change of the list or of the size tries again.
+	ParticleAtlasBuiltGeneration = definitions != nullptr ? definitions->GetAtlasGeneration() : 0;
+	ParticleAtlasBuiltSize = layers > 0 ? layerSize : 0;
+	ParticleAtlasBuiltLayers = 0;
+
+	if (layers > 0)
+	{
+		try
+		{
+			const uint64_t startMs = I_msTime();
+			const TArray<ParticleAtlasLayer> &list = definitions->GetAtlasLayers();
+			unsigned blank = 0;
+			const uint64_t bytes = CreateAtlasImage(fb, ParticleAtlas, layerSize, layers,
+				[&](unsigned i, uint8_t *chain, size_t chainBytes)
+				{
+					if (!FillParticleAtlasLayer(list[i], layerSize, chain, chainBytes)) blank++;
+				});
+
+			ParticleAtlasBuiltLayers = layers;
+			definitions->SetAtlasBuilt(layers, layerSize, bytes);
+			Printf("ParticleAtlas: %u layer%s of %d x %d with mips -- %.2f MiB of VRAM, built in %llu ms",
+				layers, layers == 1 ? "" : "s", layerSize, layerSize, bytes / (1024.0 * 1024.0),
+				(unsigned long long)(I_msTime() - startMs));
+			if (blank > 0)
+				Printf(TEXTCOLOR_ORANGE " -- %u layer%s had no pixels and stay%s transparent", blank, blank == 1 ? "" : "s", blank == 1 ? "s" : "");
+			Printf("\n");
+			return;
+		}
+		catch (const std::exception &err)
+		{
+			Printf(TEXTCOLOR_RED "ParticleAtlas: could not build %u layers of %d x %d -- textured particles draw nothing on this machine until the definitions or r_gpuparticles_atlas_size change:\n%s\n",
+				layers, layerSize, layerSize, err.what());
+			ParticleAtlas.Reset(fb);
+		}
+	}
+
+	// The placeholder: one transparent 1 x 1 layer. A textured definition's layer
+	// index is clamped to it when sampled, so such a particle draws nothing.
+	CreateAtlasImage(fb, ParticleAtlas, 1, 1, [](unsigned, uint8_t *chain, size_t chainBytes) { memset(chain, 0, chainBytes); });
+	if (definitions != nullptr)
+		definitions->SetAtlasBuilt(0, 0, 0);
+	if (hadAtlas)
+		Printf("ParticleAtlas: no textured particle definitions -- atlas released, 1 x 1 placeholder\n");
 }
