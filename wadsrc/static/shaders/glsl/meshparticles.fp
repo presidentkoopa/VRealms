@@ -34,11 +34,20 @@ layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 FragFog;
 layout(location = 2) out vec4 FragNormal;
 #endif
+#ifdef SCENE_LIGHT_MASK
+// [LIGHTMASK] The light mask (hw_postprocess.h, PPLightMask): the chunk's glow is emissive light, its
+// lit body is neither class. A chunk with no glow of its own (every chip, shard and dust mote: owner
+// rule, emissive 0) writes 0. Alpha 1, as the colour's.
+layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
+#endif
 
 void main()
 {
 	vec4 skinTexel = texture(tex, vMeshTexCoord);
 	FragColor = vec4(skinTexel.rgb * (vMeshBody.rgb + vMeshGlow.rgb), 1.0);
+#ifdef SCENE_LIGHT_MASK
+	FragLightMask = vec4(dot(skinTexel.rgb, vMeshGlow.rgb), 0.0, 0.0, 1.0);
+#endif
 
 #ifdef GBUFFER_PASS
 	// No fog colour (as stencil.fp), and the normal the way main.fp writes a surface's.

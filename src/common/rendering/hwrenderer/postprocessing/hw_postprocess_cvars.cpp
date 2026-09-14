@@ -108,6 +108,31 @@ CUSTOM_CVAR(Float, gl_bloom_override_strength, 1.0f, CVAR_ARCHIVE)
 	if (self > 1.0f) self = 1.0f;
 }
 
+// [LIGHTMASK] Beam light keeps its own bloom ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6; the
+// glow lane's "Keep legacy lasers" row). Step E6a builds only the light mask this needs:
+// while this is on (and gl_bloom is), the main scene pass carries one more colour
+// attachment recording, per pixel, how much of the light is beam light, and the scene
+// programs write it (hw_postprocess.h, PPLightMask). Nothing reads the mask yet but
+// r_lightmask_debug, so the picture is exactly the picture with this off; E6b gives the
+// switch its effect (the pinned bloom), the capture of the pinned look and the
+// CVAR_NOINITCALL callback that capture runs in. The first switch-on in a session
+// compiles the mask programs once (a pause) and creates the attachment, which then stays
+// allocated until the render buffers are re-created anyway (a resolution or multisample
+// change), so flipping it back and forth costs no re-create. Renderer-read every frame
+// (VulkanRenderDevice::BeginFrame). OpenGL and GLES ignore it.
+CVAR(Bool, gl_bloom_pin_beams, false, CVAR_ARCHIVE)
+
+// [LIGHTMASK] A test view of the light mask. 1: the scene in grey with each pixel's
+// share of beam light in green and of emissive light in red; 2: the beam light share
+// alone. It turns the mask on by itself (gl_bloom_pin_beams says what that costs), and it
+// is drawn where bloom would run, in bloom's place: a share is measured against the image
+// bloom reads, not the one bloom writes. Not saved. Vulkan only.
+CUSTOM_CVAR(Int, r_lightmask_debug, 0, 0)
+{
+	if (self < 0) self = 0;
+	if (self > 2) self = 2;
+}
+
 CVAR(Float, gl_exposure_scale, 1.3f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_min, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_base, 0.35f, CVAR_ARCHIVE)

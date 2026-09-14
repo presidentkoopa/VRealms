@@ -52,6 +52,12 @@ void VkPPRenderState::PopGroup()
 
 void VkPPRenderState::Draw()
 {
+	// [LIGHTMASK] A light mask carry with no image to write (VkRenderBuffers refused to make one
+	// and said so) draws nothing, and the mask stays where it was.
+	if ((Output.Type == PPTextureType::LightMaskCurrent || Output.Type == PPTextureType::LightMaskNext) &&
+		!fb->GetTextureManager()->GetTexture(Output.Type, nullptr)->Image)
+		return;
+
 	fb->GetRenderState()->EndRenderPass();
 
 	VkPPRenderPassKey key = {};
@@ -67,6 +73,8 @@ void VkPPRenderState::Draw()
 		key.OutputFormat = fb->GetFramebufferManager()->SwapChain->Format().format;
 	else if (Output.Type == PPTextureType::ShadowMap)
 		key.OutputFormat = VK_FORMAT_R32_SFLOAT;
+	else if (Output.Type == PPTextureType::LightMaskCurrent || Output.Type == PPTextureType::LightMaskNext)
+		key.OutputFormat = fb->GetBuffers()->LightMaskFormat;	// [LIGHTMASK]
 	else
 		key.OutputFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
@@ -97,6 +105,10 @@ void VkPPRenderState::Draw()
 		auto pp = fb->GetPostprocess();
 		pp->AdvancePipelineImage();
 	}
+
+	// [LIGHTMASK] And the light mask's pair, when a carry wrote the other image.
+	if (Output.Type == PPTextureType::LightMaskNext)
+		fb->GetPostprocess()->AdvanceLightMaskImage();
 }
 
 void VkPPRenderState::CopyToTexture(PPTexture* dst)

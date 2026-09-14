@@ -18,6 +18,11 @@
 layout(location=0) in vec4 vTexCoord;
 layout(location=1) in vec4 vColor;
 layout(location=0) out vec4 FragColor;
+#ifdef SCENE_LIGHT_MASK
+// [LIGHTMASK] The light mask (hw_postprocess.h, PPLightMask): no light of either class, with the
+// colour's own alpha, so what this covers loses its share exactly as its colour is covered.
+layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
+#endif
 
 void main()
 {
@@ -27,4 +32,7 @@ void main()
 	vec4 t2 = texture(texture2, vec2(vTexCoord.x, 1.0-vTexCoord.y));
 
 	FragColor = frag * vec4(t1.r, t1.g, t1.b, t2.a);
+#ifdef SCENE_LIGHT_MASK
+	FragLightMask = vec4(0.0, 0.0, 0.0, FragColor.a);
+#endif
 }

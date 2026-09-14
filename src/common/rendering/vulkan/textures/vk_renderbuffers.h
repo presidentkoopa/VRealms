@@ -66,7 +66,28 @@ public:
 
 	VulkanFramebuffer* GetOutput(VkPPRenderPassSetup* passSetup, const PPOutput& output, WhichDepthStencil stencilTest, int& framebufferWidth, int& framebufferHeight);
 
+	// [LIGHTMASK] The light mask (hw_postprocess.h, PPLightMask). SceneLightMask is the scene
+	// pass's extra colour attachment: the scene's size, samples and layers. LightMaskImage[2] is
+	// the pair it is carried through post-processing in, at the pipeline images' size and layers
+	// (VkPostprocess::GetCurrentLightMaskImage says which holds it). All null until something
+	// asks for the mask; from then on they follow every re-creation of the scene and pipeline
+	// images and are never freed on their own, so turning the mask off and on costs nothing.
+	// [1] is made the first time a carry needs it (the heat shimmer). Screen buffers only.
+	VkTextureImage SceneLightMask;
+	VkTextureImage LightMaskImage[2];
+	VkFormat LightMaskFormat = VK_FORMAT_UNDEFINED;
+
+	bool CreateLightMask(VkFormat format);
+	bool CreateLightMaskCarry();
+	bool HasLightMask() const { return SceneLightMask.Image && LightMaskImage[0].Image; }
+
 private:
+	void CreateSceneLightMask(int width, int height, VkSampleCountFlagBits samples, int layers);
+	void CreateLightMaskImage(int index, int width, int height, int layers);
+	void RefuseLightMask(const char *what);
+	bool mLightMaskWanted = false;
+	bool mLightMaskRefused = false;
+
 	void CreatePipelineDepthStencil(int width, int height, int layers);
 	void CreatePipeline(int width, int height, int layers);
 	void CreateScene(int width, int height, VkSampleCountFlagBits samples, int layers);

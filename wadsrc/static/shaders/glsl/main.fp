@@ -34,6 +34,75 @@ layout(location=0) out vec4 FragColor;
 layout(location=1) out vec4 FragFog;
 layout(location=2) out vec4 FragNormal;
 #endif
+#ifdef SCENE_LIGHT_MASK
+//
+// [LIGHTMASK] THE LIGHT MASK ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2c-2d; the C++ is
+// PPLightMask in hw_postprocess.h). Only the Vulkan mask programs define SCENE_LIGHT_MASK
+// (and LIGHT_MASK_LOCATION), so every other program of this lump is exactly what it was.
+//
+// FragLightMask = (emissive amount, pinned amount, 0, FragColor.a). An amount is the r + g + b
+// of that class's light in FragColor. The bookkeeping below follows the colour through every
+// operation and never touches it:
+//   - an additive term of a class adds its own rgb (or r + g + b) to that class;
+//   - an additive term of neither class leaves the amounts alone (the share falls by itself);
+//   - a multiply, a mix or a clamp does to the amounts what it does to the colour.
+// Inside getLightColor the classes are kept PER CHANNEL, in light units (gMask*Light), because
+// the clamps there are per channel and the texel multiplies per channel; getLightColor's return
+// turns them into amounts of the lit colour (LightMaskToSurface). From there on everything the
+// colour goes through is a scalar multiply, a mix or an addition, so plain amounts are exact.
+//
+// Pinned light today is BEAM light: BeamLightAt on the surface, the mist it lights (FogSlabAt)
+// and BeamAirGlow. Emissive sources (glow lanes, sweeps, stamps, the outline, glow textures,
+// brightmaps, shapes, ignite) join in E4a; their plumbing is already here, so they only add.
+//
+layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
+vec3 gMaskEmissiveLight = vec3(0.0);
+vec3 gMaskPinnedLight = vec3(0.0);
+float gMaskEmissive = 0.0;
+float gMaskPinned = 0.0;
+// FogSlabAt's beam-lit mist, per channel, as it adds it to the mist's colour.
+vec3 gFogSlabPinnedLight = vec3(0.0);
+
+// A scalar multiply of the fragment colour.
+void LightMaskScale(float factor)
+{
+	gMaskEmissive *= factor;
+	gMaskPinned *= factor;
+}
+
+// A per-channel multiply of the light inside getLightColor.
+void LightMaskScaleLight(vec3 factor)
+{
+	gMaskEmissiveLight *= factor;
+	gMaskPinnedLight *= factor;
+}
+
+// A light operation this shader cannot see into (a custom ProcessLight): each channel keeps its
+// share. The default ProcessLight returns its input, and x / x is exactly 1.
+void LightMaskRescaleLight(vec3 before, vec3 after)
+{
+	vec3 factor = vec3(1.0);
+	if (before.r > 1.0e-6) factor.r = max(after.r / before.r, 0.0);
+	if (before.g > 1.0e-6) factor.g = max(after.g / before.g, 0.0);
+	if (before.b > 1.0e-6) factor.b = max(after.b / before.b, 0.0);
+	LightMaskScaleLight(factor);
+}
+
+// getLightColor's return: the classes' light as amounts of the lit colour. ProcessMaterialLight
+// multiplies the light by the texel per channel (material_normal.fp: Base x (light + dynamic
+// lights)), so a class's part of the lit colour is Base . classLight -- exact while no clamp
+// bites. Its 1.4 clamp, the colour-correcting light mode and subtractive lights can leave less
+// light than that; the classes together never claim more than the pixel has.
+void LightMaskToSurface(vec3 surfaceBase, vec3 litColour)
+{
+	gMaskEmissive = max(dot(surfaceBase, gMaskEmissiveLight), 0.0);
+	gMaskPinned = max(dot(surfaceBase, gMaskPinnedLight), 0.0);
+	float litTotal = max(litColour.r + litColour.g + litColour.b, 0.0);
+	float classTotal = gMaskEmissive + gMaskPinned;
+	if (classTotal > litTotal)
+		LightMaskScale(classTotal > 0.0 ? litTotal / classTotal : 0.0);
+}
+#endif
 
 struct Material
 {
@@ -2535,6 +2604,9 @@ float FogPlaneAt(vec4 pl, vec3 p)
 
 vec4 FogSlabAt(vec3 fragPos)
 {
+#ifdef SCENE_LIGHT_MASK
+	gFogSlabPinnedLight = vec3(0.0);	// [LIGHTMASK] set again below when beams light the mist
+#endif
 	// EITHER SHAPE IS ENOUGH TO MAKE THIS WORTH RUNNING, and that is the whole
 	// of what "independent" means here. The funnel is not a feature of the
 	// layer -- it is a second shape made of the same mist, and gating it on the
@@ -3099,8 +3171,17 @@ vec4 FogSlabAt(vec3 fragPos)
 	// integrated along the ray, which is an approximation -- but the fog
 	// amount already scales with how much mist is in the way, so the mist
 	// glows near a beam and does not far from one, which is the whole read.
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] Pinned light: the mist a beam lights. Only ignite is added after it.
+	if (uBeamParams.z > 0.0)
+	{
+		gFogSlabPinnedLight = BeamLightAt(fragPos) * uBeamParams.z;
+		col += gFogSlabPinnedLight;
+	}
+#else
 	if (uBeamParams.z > 0.0)
 		col += BeamLightAt(fragPos) * uBeamParams.z;
+#endif
 
 	// IGNITED MIST, last. It is light rather than density, so it is added to
 	// the colour and it also forces a little coverage of its own -- a burning
@@ -3681,10 +3762,16 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 			if (bmode == 2)
 			{
 				color.rgb *= (1.0 + satten * scol.a);
+#ifdef SCENE_LIGHT_MASK
+				LightMaskScaleLight(vec3(1.0 + satten * scol.a));	// [LIGHTMASK]
+#endif
 			}
 			else if (bmode == 3)
 			{
 				color.rgb *= max(0.0, 1.0 - satten * scol.a);
+#ifdef SCENE_LIGHT_MASK
+				LightMaskScaleLight(vec3(max(0.0, 1.0 - satten * scol.a)));	// [LIGHTMASK]
+#endif
 			}
 			else
 			{
@@ -3702,7 +3789,14 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	//
 	// Surfaces near a beam brighten because they are near it. Nothing else
 	// had to be spawned to make that happen.
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] Pinned light: the beam's light on this surface.
+	vec3 beamSurfaceLight = BeamLightAt(pixelpos.xyz);
+	color.rgb += beamSurfaceLight;
+	gMaskPinnedLight += beamSurfaceLight;
+#else
 	color.rgb += BeamLightAt(pixelpos.xyz);
+#endif
 
 	// [STAMP] Surface stamps. Emissive, so they land here with the beams and
 	// the glow lanes -- AFTER the lighting equation and after DarknessAt, which
@@ -3716,6 +3810,9 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	// in a room turned black. Zero unless this draw is an outlined sprite.
 	color.rgb += gOutlineEmissive;
 #endif
+#ifdef SCENE_LIGHT_MASK
+	LightMaskScaleLight(1.0 / max(color.rgb, vec3(1.0)));	// [LIGHTMASK] the clamp below, per channel
+#endif
 	color = min(color, 1.0);
 
 	// these cannot be safely applied by the legacy format where the implementation cannot guarantee that the values are set.
@@ -3724,17 +3821,31 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	// apply glow
 	//
 	color.rgb = mix(color.rgb, material.Glow.rgb, material.Glow.a);
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] The glow texture covers the light it mixes over (its own colour is emissive: E4a).
+	LightMaskScaleLight(vec3(1.0 - material.Glow.a));
+#endif
 
 	//
 	// apply brightmaps
 	//
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] The clamp below, per channel (the brightmap's own light is emissive: E4a).
+	LightMaskScaleLight(1.0 / max(color.rgb + material.Bright.rgb, vec3(1.0)));
+#endif
 	color.rgb = min(color.rgb + material.Bright.rgb, 1.0);
 #endif
 
 	//
 	// apply other light manipulation by custom shaders, default is a NOP.
 	//
+#ifdef SCENE_LIGHT_MASK
+	vec3 lightBeforeProcess = color.rgb;	// [LIGHTMASK]
+#endif
 	color = ProcessLight(material, color);
+#ifdef SCENE_LIGHT_MASK
+	LightMaskRescaleLight(lightBeforeProcess, color.rgb);
+#endif
 	
 	//
 	// apply lightmaps
@@ -3747,7 +3858,14 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	//
 	// apply dynamic lights
 	//
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] The lightmap above added light of neither class: the classes' light is unchanged by it.
+	vec3 litColour = ProcessMaterialLight(material, color.rgb);
+	LightMaskToSurface(material.Base.rgb, litColour);
+	return vec4(litColour, material.Base.a * vColor.a);
+#else
 	return vec4(ProcessMaterialLight(material, color.rgb), material.Base.a * vColor.a);
+#endif
 }
 
 //===========================================================================
@@ -3816,10 +3934,16 @@ vec4 ApplyFadeColor(vec4 frag)
 		if (uGlobalFadeMode == -1)
 		{
 			frag = vec4(mix(fogcolor.rgb, frag.rgb, visibility), frag.a * visibility);
+#ifdef SCENE_LIGHT_MASK
+			LightMaskScale(visibility);	// [LIGHTMASK]
+#endif
 		}
 		else if (uGlobalFadeMode == 2)
 		{
 			frag = vec4(fogcolor.rgb, frag.a) * visibility;
+#ifdef SCENE_LIGHT_MASK
+			LightMaskScale(0.0);	// [LIGHTMASK] the fade colour replaces the colour
+#endif
 		}
 	}
 	return frag;
@@ -3910,6 +4034,9 @@ void main()
 			if (uFogEnabled < 0)
 			{
 				frag = applyFog(frag, fogfactor);
+#ifdef SCENE_LIGHT_MASK
+				LightMaskScale(fogfactor);	// [LIGHTMASK] mix(fog, frag, fogfactor)
+#endif
 			}
 		}
 		else
@@ -3946,6 +4073,14 @@ void main()
 			//
 			// At pickup 0 the fog keeps its own colour exactly as before.
 			vec3 fogCol = mix(slab.rgb, slab.rgb * (0.35 + 0.65 * frag.rgb), uFogSlabExtra.y);
+#ifdef SCENE_LIGHT_MASK
+			// [LIGHTMASK] fogCol = slab x mix(1, 0.35 + 0.65 x frag, pickup) per channel, so the mist's
+			// own beam light goes through that factor exactly (the colour it picks up from behind
+			// counts as mist). What the mist covers keeps 1 - slab.a of its amounts.
+			float mistPinned = max(dot(mix(vec3(1.0), 0.35 + 0.65 * frag.rgb, uFogSlabExtra.y), gFogSlabPinnedLight), 0.0);
+			LightMaskScale(1.0 - slab.a);
+			gMaskPinned += mistPinned * slab.a;
+#endif
 			frag.rgb = mix(frag.rgb, fogCol, slab.a);
 		}
 
@@ -3966,6 +4101,10 @@ void main()
 			// Blended AFTER the additive term, so a band that occludes hides
 			// what is behind it rather than being washed out by its own light.
 			if (airOcc > 0.0) frag.rgb = mix(frag.rgb, airOccCol, airOcc);
+#ifdef SCENE_LIGHT_MASK
+			// [LIGHTMASK] What the lattice occludes loses its share (the lattice's light is emissive: E4a).
+			if (airOcc > 0.0) LightMaskScale(1.0 - airOcc);
+#endif
 		}
 
 		// [BB] Shapes drawn onto surfaces. Emissive, so they go here with the
@@ -3982,7 +4121,14 @@ void main()
 		// own header for why this cannot live behind the normal check above.
 		frag.rgb += StandingShapesAt(pixelpos.xyz);
 
+#ifdef SCENE_LIGHT_MASK
+		// [LIGHTMASK] Pinned light: the beam seen in the air.
+		vec3 beamAirLight = BeamAirGlow(pixelpos.xyz);
+		frag.rgb += beamAirLight;
+		gMaskPinned += beamAirLight.r + beamAirLight.g + beamAirLight.b;
+#else
 		frag.rgb += BeamAirGlow(pixelpos.xyz);
+#endif
 	}
 	else // simple 2D (uses the fog color to add a color overlay)
 	{
@@ -4016,8 +4162,15 @@ void main()
 	float brightness = clamp(1.5*fragHSV.z, 0.1, 1.0);
 	if (DITHER_THRESHOLDS[index] < brightness) discard;
 	else FragColor *= 0.5;
+#ifdef SCENE_LIGHT_MASK
+	LightMaskScale(0.5);	// [LIGHTMASK]
+#endif
 #endif
 
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] With the colour's own alpha: the blend state is shared by every attachment.
+	FragLightMask = vec4(gMaskEmissive, gMaskPinned, 0.0, FragColor.a);
+#endif
 #ifdef GBUFFER_PASS
 	FragFog = vec4(AmbientOcclusionColor(), 1.0);
 	FragNormal = vec4(vEyeNormal.xyz * 0.5 + 0.5, 1.0);

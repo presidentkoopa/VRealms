@@ -229,6 +229,30 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 			(clearTargets & CT_Color) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	}
+	// [LIGHTMASK] The light mask attachment (VkRenderPassKey::LightMask), after the draw buffers
+	// and before depth, loaded, stored and cleared with the colour (a colour clear clears it to 0).
+	// Without the mask, colorAttachments is DrawBuffers and nothing below changes.
+	const int colorAttachments = PassKey.DrawBuffers + (PassKey.LightMask ? 1 : 0);
+	if (PassKey.LightMask)
+	{
+		builder.AddAttachment(
+			buffers->LightMaskFormat, (VkSampleCountFlagBits)PassKey.Samples,
+			(clearTargets & CT_Color) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+		// One line per pass layout per session, so a log shows what the mask pass really holds.
+		static unsigned loggedLayouts = 0;
+		const unsigned layoutBit = 1u << ((PassKey.DrawBuffers > 1 ? 1 : 0) | (PassKey.Samples > 1 ? 2 : 0) | (PassKey.ViewMask != 0 ? 4 : 0));
+		if (!(loggedLayouts & layoutBit))
+		{
+			loggedLayouts |= layoutBit;
+			Printf("LightMask: scene pass with the light mask -- colour attachments: target%s, mask (VkFormat %d) at %d; depth %s%d; %d blend attachments; %d samples; view mask %u\n",
+				PassKey.DrawBuffers > 2 ? ", fog, normal" : (PassKey.DrawBuffers > 1 ? ", fog" : ""),
+				(int)buffers->LightMaskFormat, colorAttachments - 1,
+				PassKey.DepthStencil ? "at " : "none, would be ", colorAttachments,
+				colorAttachments, PassKey.Samples, (unsigned)PassKey.ViewMask);
+		}
+	}
 	if (PassKey.DepthStencil && PassKey.DepthReadOnly)
 	{
 		// [2a] THE READ-ONLY DEPTH PASS (FRenderState::SetSceneDepthReadable). Load
@@ -253,7 +277,7 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 	}
 	builder.AddSubpass();
-	for (int i = 0; i < PassKey.DrawBuffers; i++)
+	for (int i = 0; i < colorAttachments; i++)	// [LIGHTMASK] the mask's reference too
 		builder.AddSubpassColorAttachmentRef(i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	if (PassKey.DepthStencil && PassKey.DepthReadOnly)
 	{
@@ -261,7 +285,7 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 		// sample the same image through binding 3 (the layout that binding is
 		// written with). The dependency adds the fragment-shader read, as the
 		// post-process passes that sample scene depth declare it.
-		builder.AddSubpassDepthStencilAttachmentRef(PassKey.DrawBuffers, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+		builder.AddSubpassDepthStencilAttachmentRef(colorAttachments, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);	// [LIGHTMASK] after every colour attachment
 		builder.AddExternalSubpassDependency(
 			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -270,7 +294,7 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 	}
 	else if (PassKey.DepthStencil)
 	{
-		builder.AddSubpassDepthStencilAttachmentRef(PassKey.DrawBuffers, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		builder.AddSubpassDepthStencilAttachmentRef(colorAttachments, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);	// [LIGHTMASK] after every colour attachment
 		builder.AddExternalSubpassDependency(
 			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -319,18 +343,28 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	// every other pipeline, and every pipeline of every ordinary pass, keeps the
 	// fragment shader it always had.
 	VulkanShader *sceneDepthFrag = nullptr;
+	// [LIGHTMASK] In a pass with the light mask, the mask variant of the fragment shader this
+	// pipeline would draw with -- of the scene-depth variant when that is the one. Null in every
+	// other pass, and then the choice below is exactly what it was.
+	VulkanShader *lightMaskFrag = nullptr;
 	if (key.SpecialEffect != EFF_NONE)
 	{
 		program = fb->GetShaderManager()->GetEffect(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
 		if (PassKey.DepthReadOnly)
 			sceneDepthFrag = fb->GetShaderManager()->GetSceneDepthEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, PassKey.Samples > 1, PassKey.ViewMask != 0);
+		if (PassKey.LightMask)
+			lightMaskFrag = sceneDepthFrag
+				? fb->GetShaderManager()->GetLightMaskSceneDepthEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, PassKey.Samples > 1, PassKey.ViewMask != 0)
+				: fb->GetShaderManager()->GetLightMaskEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
 	}
 	else
 	{
 		program = fb->GetShaderManager()->Get(key.EffectState, key.AlphaTest, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
+		if (PassKey.LightMask)
+			lightMaskFrag = fb->GetShaderManager()->GetLightMaskFrag(key.EffectState, key.AlphaTest, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
 	}
 	builder.AddVertexShader(program->vert.get());
-	builder.AddFragmentShader(sceneDepthFrag ? sceneDepthFrag : program->frag.get());
+	builder.AddFragmentShader(lightMaskFrag ? lightMaskFrag : (sceneDepthFrag ? sceneDepthFrag : program->frag.get()));
 
 	const VkVertexFormat &vfmt = *fb->GetRenderPassManager()->GetVertexFormat(key.VertexFormat);
 
@@ -410,7 +444,9 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	blendbuilder.ColorWriteMask((VkColorComponentFlags)key.ColorMask);
 	BlendMode(blendbuilder, key.RenderStyle);
 
-	for (int i = 0; i < PassKey.DrawBuffers; i++)
+	// [LIGHTMASK] One blend state per colour attachment, the light mask's included: the mask is
+	// blended with its colour's own factors, which is what keeps its amounts in step with it.
+	for (int i = 0; i < PassKey.DrawBuffers + (PassKey.LightMask ? 1 : 0); i++)
 		builder.AddColorBlendAttachment(blendbuilder.Create());
 
 	builder.RasterizationSamples((VkSampleCountFlagBits)PassKey.Samples);

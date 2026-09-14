@@ -34,6 +34,7 @@
 #include "hw_cvars.h"	// [DRAWNLINES] r_beams_drawn, for the compile line
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES] ShaderReady / ShaderFailed
 #include "hw_meshparticles.h"	// [MESHPARTICLES] ShaderReady / ShaderFailed
+#include "i_time.h"	// [LIGHTMASK] the light mask compile's time, for its log line
 
 // [2a] Effects that read the scene depth inside a read-only depth pass, and so get
 // four extra fragment variants each (single-sample / multisample x flat / layered,
@@ -333,6 +334,122 @@ VkShaderProgram *VkShaderManager::Get(unsigned int eff, bool alphateston, EPassT
 		return &mMaterialShaders[passType][eff];
 	}
 	return nullptr;
+}
+
+// [LIGHTMASK] See the declaration in vk_shader.h. The programs CompileNextShader compiled for
+// this pass, in the same order and with the same arguments, each with lightMask. Only after
+// that compile is done, so every ordinary program it mirrors exists.
+bool VkShaderManager::CompileLightMaskPrograms(EPassType passType)
+{
+	if ((int)passType < 0 || (int)passType >= MAX_PASS_TYPES || compileIndex != -1)
+		return false;
+	if (mLightMaskState[passType] != LIGHTMASK_NOT_COMPILED)
+		return mLightMaskState[passType] == LIGHTMASK_READY;
+
+	const char *mainfp = "shaders/glsl/main.fp";
+	const bool gbuffer = (passType == GBUFFER_PASS);
+	const char *passName = gbuffer ? "gbuffer" : "normal";
+	const uint64_t startNs = I_nsTime();
+	int programs = 0;
+
+	Printf("LightMask: compiling the light mask programs for the %s pass (once per session)\n", passName);
+	try
+	{
+		// Materials: the default shaders, then the user shaders -- mMaterialShaders' indices.
+		for (int i = 0; defaultshaders[i].ShaderName != nullptr; i++)
+		{
+			FString name = FString(defaultshaders[i].ShaderName) + "_lightmask";
+			mLightMaskMaterialFrag[passType].push_back(LoadFragShader(name, mainfp, defaultshaders[i].gettexelfunc, defaultshaders[i].lightfunc, defaultshaders[i].Defines, true, gbuffer, false, true));
+			programs++;
+		}
+		for (int i = 0; i < SHADER_NoTexture; i++)
+		{
+			FString name = FString(defaultshaders[i].ShaderName) + "_lightmask";
+			mLightMaskMaterialFragNAT[passType].push_back(LoadFragShader(name, mainfp, defaultshaders[i].gettexelfunc, defaultshaders[i].lightfunc, defaultshaders[i].Defines, false, gbuffer, false, true));
+			programs++;
+		}
+		for (unsigned i = 0; i < usershaders.Size(); i++)
+		{
+			FString name = ExtractFileBase(usershaders[i].shader.GetChars()) + "_lightmask";
+			FString defines = defaultshaders[usershaders[i].shaderType].Defines + usershaders[i].defines;
+			mLightMaskMaterialFrag[passType].push_back(LoadFragShader(name, mainfp, usershaders[i].shader.GetChars(), defaultshaders[usershaders[i].shaderType].lightfunc, defines.GetChars(), true, gbuffer, false, true));
+			programs++;
+		}
+		for (int i = 0; i < MAX_EFFECTS; i++)
+		{
+			// An effect whose own program did not compile is never drawn (its buffer's gate), so it
+			// needs no mask program; the same holds for a scene-depth variant that did not compile.
+			if ((int)mEffectShaders[passType].size() <= i || !mEffectShaders[passType][i].frag)
+				continue;
+			FString name = FString(effectshaders[i].ShaderName) + "_lightmask";
+			mLightMaskEffectFrag[passType][i] = LoadFragShader(name, effectshaders[i].fp1, effectshaders[i].fp2, effectshaders[i].fp3, effectshaders[i].defines, true, gbuffer, false, true);
+			programs++;
+			if (!EffectHasSceneDepthVariants(i))
+				continue;
+			for (int variant = 0; variant < SCENE_DEPTH_VARIANTS; variant++)
+			{
+				if (!mSceneDepthEffectFrag[passType][i][variant])
+					continue;
+				FString defines = effectshaders[i].defines;
+				defines << "#define SCENE_DEPTH_READ\n";
+				if (variant & 1) defines << "#define SCENE_DEPTH_MULTISAMPLE\n";
+				if (variant & 2) defines << "#define SCENE_DEPTH_LAYERED\n";
+				FString variantName;
+				variantName.Format("%s_scenedepth%d_lightmask", effectshaders[i].ShaderName, variant);
+				mLightMaskSceneDepthEffectFrag[passType][i][variant] = LoadFragShader(variantName, effectshaders[i].fp1, effectshaders[i].fp2, effectshaders[i].fp3, defines.GetChars(), true, gbuffer, true, true);
+				programs++;
+			}
+		}
+	}
+	catch (const std::exception &err)
+	{
+		Printf(TEXTCOLOR_RED "LightMask: a light mask program failed to compile (%s pass) -- the light mask stays off with that pass for this session:\n%s\n", passName, err.what());
+		mLightMaskMaterialFrag[passType].clear();
+		mLightMaskMaterialFragNAT[passType].clear();
+		for (int i = 0; i < MAX_EFFECTS; i++)
+		{
+			mLightMaskEffectFrag[passType][i].reset();
+			for (int variant = 0; variant < SCENE_DEPTH_VARIANTS; variant++)
+				mLightMaskSceneDepthEffectFrag[passType][i][variant].reset();
+		}
+		mLightMaskState[passType] = LIGHTMASK_FAILED;
+		return false;
+	}
+
+	mLightMaskState[passType] = LIGHTMASK_READY;
+	Printf("LightMask: %d light mask programs compiled for the %s pass in %.0f ms\n", programs, passName, (double)(I_nsTime() - startNs) / 1.0e6);
+	return true;
+}
+
+bool VkShaderManager::LightMaskProgramsReady(EPassType passType) const
+{
+	return (int)passType >= 0 && (int)passType < MAX_PASS_TYPES && mLightMaskState[passType] == LIGHTMASK_READY;
+}
+
+// Get's own choice between the NAT and the alpha-tested material sets.
+VulkanShader *VkShaderManager::GetLightMaskFrag(unsigned int eff, bool alphateston, EPassType passType)
+{
+	if (compileIndex != -1 || !LightMaskProgramsReady(passType))
+		return nullptr;
+	if (!alphateston && eff < SHADER_NoTexture)
+		return eff < mLightMaskMaterialFragNAT[passType].size() ? mLightMaskMaterialFragNAT[passType][eff].get() : nullptr;
+	else if (eff < mLightMaskMaterialFrag[passType].size())
+		return mLightMaskMaterialFrag[passType][eff].get();
+	return nullptr;
+}
+
+VulkanShader *VkShaderManager::GetLightMaskEffectFrag(int effect, EPassType passType)
+{
+	if (compileIndex != -1 || effect < 0 || effect >= MAX_EFFECTS || !LightMaskProgramsReady(passType))
+		return nullptr;
+	return mLightMaskEffectFrag[passType][effect].get();
+}
+
+VulkanShader *VkShaderManager::GetLightMaskSceneDepthEffectFrag(int effect, EPassType passType, bool multisample, bool layered)
+{
+	if (compileIndex != -1 || effect < 0 || effect >= MAX_EFFECTS || !LightMaskProgramsReady(passType))
+		return nullptr;
+	return mLightMaskSceneDepthEffectFrag[passType][effect][(multisample ? 1 : 0) | (layered ? 2 : 0)].get();
 }
 
 static const char *shaderBindings = R"(
@@ -939,7 +1056,7 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadVertShader(FString shadername
 		.Create(shadername.GetChars(), fb->device.get());
 }
 
-std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth)
+std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth, bool lightMask)
 {
 	FString code = GetTargetGlslVersion();
 	code << "#extension GL_GOOGLE_include_directive : enable\n";
@@ -958,6 +1075,9 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername
 	if (!fb->device->EnabledFeatures.Features.shaderClipDistance) code << "#define NO_CLIPDISTANCE_SUPPORT\n";
 	if (!alphatest) code << "#define NO_ALPHATEST\n";
 	if (gbufferpass) code << "#define GBUFFER_PASS\n";
+	// [LIGHTMASK] The mask programs only: the output's define and its location, the colour
+	// attachment right after the draw buffers (VkRenderPassSetup::CreateRenderPass).
+	if (lightMask) code << "#define SCENE_LIGHT_MASK\n#define LIGHT_MASK_LOCATION " << (gbufferpass ? "3" : "1") << "\n";
 
 	// [2a] Only an effect's scene-depth variant gets the scene depth declaration;
 	// see sceneDepthBindings. After the prolog, so it can use HW_VIEWPOINT_INDEX

@@ -104,6 +104,21 @@ public:
 	VkShaderProgram *Get(unsigned int eff, bool alphateston, EPassType passType);
 	bool CompileNextShader();
 
+	// [LIGHTMASK] THE LIGHT MASK PROGRAMS (hw_postprocess.h, PPLightMask): every scene fragment
+	// program -- materials, NAT materials, user shaders, effects and their scene-depth variants
+	// -- once more with SCENE_LIGHT_MASK, which adds the mask output at LIGHT_MASK_LOCATION.
+	// Fragment only: each draws with its ordinary program's vertex shader. Compiled for ONE
+	// pass type, synchronously, the first time a frame wants the mask with that pass
+	// (VulkanRenderDevice::BeginFrame): a one-time pause at the switch-on, never while it stays
+	// on. Any failure leaves that pass not ready for the session, with one red line, and the
+	// mask stays off. The Get* return null for a pass that is not ready.
+	bool IsCompileDone() const { return compileIndex == -1; }
+	bool CompileLightMaskPrograms(EPassType passType);
+	bool LightMaskProgramsReady(EPassType passType) const;
+	VulkanShader *GetLightMaskFrag(unsigned int eff, bool alphateston, EPassType passType);
+	VulkanShader *GetLightMaskEffectFrag(int effect, EPassType passType);
+	VulkanShader *GetLightMaskSceneDepthEffectFrag(int effect, EPassType passType, bool multisample, bool layered);
+
 	VkPPShader* GetVkShader(PPShader* shader);
 
 	void AddVkPPShader(VkPPShader* shader);
@@ -114,7 +129,9 @@ private:
 	// [2a] sceneDepth adds the effect-scoped scene depth declaration (binding 3 of
 	// the fixed set) after the shared prolog; the caller's defines pick the variant.
 	// Default false, so every existing caller compiles exactly what it did.
-	std::unique_ptr<VulkanShader> LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth = false);
+	// [LIGHTMASK] lightMask adds SCENE_LIGHT_MASK and LIGHT_MASK_LOCATION (CompileLightMaskPrograms).
+	// Default false, so every existing caller compiles exactly what it did.
+	std::unique_ptr<VulkanShader> LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth = false, bool lightMask = false);
 
 	FString GetTargetGlslVersion();
 	FString LoadPublicShaderLump(const char *lumpname);
@@ -133,6 +150,14 @@ private:
 	// Fragment only: the variant draws with the effect's own vertex shader.
 	static constexpr int SCENE_DEPTH_VARIANTS = 4;
 	std::unique_ptr<VulkanShader> mSceneDepthEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS][SCENE_DEPTH_VARIANTS];
+	// [LIGHTMASK] The mask variants of the fragment shaders above, in the same order and
+	// indexing (see CompileLightMaskPrograms). Empty / null until a pass is compiled.
+	std::vector<std::unique_ptr<VulkanShader>> mLightMaskMaterialFrag[MAX_PASS_TYPES];
+	std::vector<std::unique_ptr<VulkanShader>> mLightMaskMaterialFragNAT[MAX_PASS_TYPES];
+	std::unique_ptr<VulkanShader> mLightMaskEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS];
+	std::unique_ptr<VulkanShader> mLightMaskSceneDepthEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS][SCENE_DEPTH_VARIANTS];
+	enum { LIGHTMASK_NOT_COMPILED, LIGHTMASK_READY, LIGHTMASK_FAILED };
+	int mLightMaskState[MAX_PASS_TYPES] = {};
 	uint8_t compilePass = 0, compileState = 0;
 	int compileIndex = 0;
 

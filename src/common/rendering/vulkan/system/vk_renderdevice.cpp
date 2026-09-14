@@ -55,6 +55,7 @@
 #include "vk_renderdevice.h"
 #include "vulkan/renderer/vk_descriptorset.h"
 #include "vulkan/renderer/vk_postprocess.h"
+#include "hwrenderer/postprocessing/hw_postprocess_cvars.h"	// [LIGHTMASK] gl_ssao, gl_bloom, gl_bloom_pin_beams, r_lightmask_debug
 #include "vulkan/renderer/vk_raytrace.h"
 #include "vulkan/renderer/vk_renderpass.h"
 #include "vulkan/renderer/vk_renderstate.h"
@@ -436,6 +437,41 @@ void VulkanRenderDevice::InitializeState()
 	mSaveBuffers.reset(new VkRenderBuffers(this));
 	mActiveRenderBuffers = mScreenBuffers.get();
 
+	// [LIGHTMASK] Can this device carry the light mask (hw_postprocess.h, PPLightMask)? The G-buffer
+	// pass with the mask has 4 colour attachments, exactly Vulkan's guaranteed minimum of
+	// maxColorAttachments and maxFragmentOutputAttachments. maxFragmentCombinedOutputResources
+	// counts those outputs together with the fragment stage's storage buffers, of which set 1 has 3
+	// (bindings 3, 7 and 12, vk_descriptorset.cpp): 7 at least. The format must be a blendable,
+	// sampled colour attachment that blits both ways (the scene transfer). Decided and logged once;
+	// nothing is created here.
+	{
+		const auto &limits = device->PhysicalDevice.Properties.Properties.limits;
+		const bool limitsOk = limits.maxColorAttachments >= 4 && limits.maxFragmentOutputAttachments >= 4 && limits.maxFragmentCombinedOutputResources >= 7;
+		const VkFormatFeatureFlags wanted = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+			VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+		auto formatOk = [&](VkFormat format)
+		{
+			VkFormatProperties properties = {};
+			vkGetPhysicalDeviceFormatProperties(device->PhysicalDevice.Device, format, &properties);
+			return (properties.optimalTilingFeatures & wanted) == wanted;
+		};
+		const char *formatName = "none";
+		mLightMaskFormat = VK_FORMAT_UNDEFINED;
+		if (limitsOk && formatOk(VK_FORMAT_R16G16_SFLOAT))
+		{
+			mLightMaskFormat = VK_FORMAT_R16G16_SFLOAT;
+			formatName = "R16G16_SFLOAT";
+		}
+		else if (limitsOk && formatOk(VK_FORMAT_R16G16B16A16_SFLOAT))
+		{
+			mLightMaskFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+			formatName = "R16G16B16A16_SFLOAT (R16G16_SFLOAT lacks a feature the mask needs)";
+		}
+		Printf("LightMask: maxColorAttachments %u, maxFragmentOutputAttachments %u, maxFragmentCombinedOutputResources %u -- mask format %s%s\n",
+			limits.maxColorAttachments, limits.maxFragmentOutputAttachments, limits.maxFragmentCombinedOutputResources, formatName,
+			mLightMaskFormat == VK_FORMAT_UNDEFINED ? " (the light mask is unavailable on this device)" : "");
+	}
+
 	mPostprocess.reset(new VkPostprocess(this));
 	mDescriptorSetManager.reset(new VkDescriptorSetManager(this));
 	mRenderPassManager.reset(new VkRenderPassManager(this));
@@ -629,6 +665,7 @@ void VulkanRenderDevice::RenderTextureView(FCanvasTexture* tex, std::function<vo
 void VulkanRenderDevice::PostProcessScene(bool swscene, int fixedcm, float flash, const std::function<void()> &afterBloomDrawEndScene2D)
 {
 	if (!swscene) mPostprocess->BlitSceneToPostprocess(); // Copy the resulting scene to the current post process texture
+	else hw_postprocess.lightmask.SetPostInput(false);	// [LIGHTMASK] not a scene of ours: no mask for this eye
 	mPostprocess->PostProcessScene(fixedcm, flash, afterBloomDrawEndScene2D);
 	const auto vrmode = VRMode::GetVRModeCached(true);
 	const bool useSharedMultiviewPostprocess =
@@ -1125,6 +1162,7 @@ void VulkanRenderDevice::FirstEye()
 		mCurrentEyeIndex = 0;
 		mPostprocess->SetPipelineImagePair(0, 2);
 		mPostprocess->SetCurrentPipelineImage(0);
+		mPostprocess->SetCurrentLightMaskImage(0);	// [LIGHTMASK] as the pipeline image
 	}
 }
 
@@ -1152,6 +1190,10 @@ void VulkanRenderDevice::NextEye(int eyecount)
 		const int pipelinePairStart = useSharedMultiviewPostprocess ? 0 : (mCurrentEyeIndex % 2) * 2;
 		mPostprocess->SetPipelineImagePair(pipelinePairStart, 2);
 		mPostprocess->SetCurrentPipelineImage(pipelinePairStart);
+		// [LIGHTMASK] Each eye starts from the transferred mask, as it starts from the pair's first
+		// pipeline image: under layered post the second eye has no transfer of its own, and its
+		// layer of LightMaskImage[0] is the one the first eye's transfer filled.
+		mPostprocess->SetCurrentLightMaskImage(0);
 	}
 }
 
@@ -1230,6 +1272,7 @@ void VulkanRenderDevice::BeginFrame()
 
 	const VkSampleCountFlagBits sceneSamples = mScreenBuffers->GetSceneSamples();
 	mSaveBuffers->BeginFrame(SAVEPICWIDTH, SAVEPICHEIGHT, SAVEPICWIDTH, SAVEPICHEIGHT, 1, 1);
+	UpdateLightMask();	// [LIGHTMASK] after the buffers have this frame's sizes, before anything renders
 	mRenderState->BeginFrame();
 	mDescriptorSetManager->BeginFrame();
 }
@@ -1366,6 +1409,7 @@ void VulkanRenderDevice::SetSceneRenderTarget(bool useSSAO)
 	// GetSceneWidth/Height), so only this registration was wrong. On
 	// gameplay-eye frames the two sizes are equal and nothing changes.
 	const auto vrmode = VRMode::GetVRModeCached(true);
+	const bool lightMask = SceneHasLightMask();	// [LIGHTMASK]
 	if (vrmode != nullptr && vrmode->IsVR() && vrmode->ShouldUseMultiviewThisFrame() && GetBuffers()->GetSceneLayers() > 1)
 	{
 		mRenderState->SetRenderTarget(
@@ -1377,12 +1421,13 @@ void VulkanRenderDevice::SetSceneRenderTarget(bool useSSAO)
 			GetBuffers()->GetSceneSamples(),
 			std::max(1, vrmode->GetMultiviewLayerCount()),
 			vrmode->GetMultiviewViewMask(),
-			0);
+			0,
+			lightMask);
 		return;
 	}
 
 	const int layerIndex = GetBuffers()->GetSceneLayers() > 1 ? GetCurrentEyeLayer() : 0;
-	mRenderState->SetRenderTarget(&GetBuffers()->SceneColor, GetBuffers()->SceneDepthStencil.GetLayerView(layerIndex), GetBuffers()->GetSceneWidth(), GetBuffers()->GetSceneHeight(), VK_FORMAT_R16G16B16A16_SFLOAT, GetBuffers()->GetSceneSamples(), 1, 0, layerIndex);
+	mRenderState->SetRenderTarget(&GetBuffers()->SceneColor, GetBuffers()->SceneDepthStencil.GetLayerView(layerIndex), GetBuffers()->GetSceneWidth(), GetBuffers()->GetSceneHeight(), VK_FORMAT_R16G16B16A16_SFLOAT, GetBuffers()->GetSceneSamples(), 1, 0, layerIndex, lightMask);
 }
 
 bool VulkanRenderDevice::RaytracingEnabled()
@@ -1403,8 +1448,42 @@ bool VulkanRenderDevice::ShouldUseCurrentEyeLayer(const PPTextureType& type, con
 	case PPTextureType::SceneNormal:
 	case PPTextureType::SceneFog:
 	case PPTextureType::SceneDepth:
+	case PPTextureType::LightMaskCurrent:	// [LIGHTMASK] layered like the pipeline images
+	case PPTextureType::LightMaskNext:
 		return true;
 	default:
 		return false;
 	}
+}
+
+//==========================================================================
+//
+// [LIGHTMASK] The frame's light mask decision (hw_postprocess.h, PPLightMask). Once per displayed
+// frame, after the render buffers have this frame's sizes and before anything of the frame renders
+// (camera textures, the scene and post-processing all come after it), so everything in the frame
+// reads one answer.
+//
+//==========================================================================
+
+void VulkanRenderDevice::UpdateLightMask()
+{
+	bool active = false;
+	if (mLightMaskFormat != VK_FORMAT_UNDEFINED && PPLightMask::WantedByCvars() && mShaderManager && mShaderManager->IsCompileDone())
+	{
+		// The pass hw_entrypoint.cpp picks for the main view (useSSAO).
+		const EPassType passType = gl_ssao != 0 ? GBUFFER_PASS : NORMAL_PASS;
+		active = mShaderManager->CompileLightMaskPrograms(passType) && mScreenBuffers->CreateLightMask(mLightMaskFormat);
+	}
+	if (active != mLightMaskWasActive)
+	{
+		mLightMaskWasActive = active;
+		Printf("LightMask: %s (gl_bloom_pin_beams %d, gl_bloom %d, r_lightmask_debug %d)\n",
+			active ? "on -- the scene draws the light mask" : "off", (int)gl_bloom_pin_beams, (int)gl_bloom, (int)r_lightmask_debug);
+	}
+	hw_postprocess.lightmask.BeginFrame(active);
+}
+
+bool VulkanRenderDevice::SceneHasLightMask() const
+{
+	return hw_postprocess.lightmask.Active() && mActiveRenderBuffers == mScreenBuffers.get() && mScreenBuffers->HasLightMask();
 }

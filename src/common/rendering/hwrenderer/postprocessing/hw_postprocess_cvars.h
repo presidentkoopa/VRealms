@@ -57,6 +57,8 @@ EXTERN_CVAR(Float, gl_bloom_tint_b)
 EXTERN_CVAR(Float, gl_bloom_chromatic)
 EXTERN_CVAR(Float, gl_bloom_step)	// [BLOOMSTEP]
 EXTERN_CVAR(Float, gl_bloom_override_strength)	// [BLOOMOVERRIDE]
+EXTERN_CVAR(Bool, gl_bloom_pin_beams)	// [LIGHTMASK]
+EXTERN_CVAR(Int, r_lightmask_debug)	// [LIGHTMASK]
 EXTERN_CVAR(Float, gl_exposure_scale)
 EXTERN_CVAR(Float, gl_exposure_min)
 EXTERN_CVAR(Float, gl_exposure_base)

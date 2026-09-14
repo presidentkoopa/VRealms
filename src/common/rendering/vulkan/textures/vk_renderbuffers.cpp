@@ -30,6 +30,9 @@
 #include "vulkan/system/vk_renderdevice.h"
 #include "vulkan/system/vk_commandbuffer.h"
 #include "hw_cvars.h"
+#include "printf.h"	// [LIGHTMASK]
+#include "v_text.h"	// [LIGHTMASK] TEXTCOLOR_RED
+#include <exception>	// [LIGHTMASK]
 
 namespace
 {
@@ -259,6 +262,13 @@ void VkRenderBuffers::CreatePipeline(int width, int height, int layers)
 		barrier.AddImage(&PipelineImage[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true);
 	}
 	barrier.Execute(fb->GetCommands()->GetDrawCommands());
+
+	// [LIGHTMASK] The light mask's carry images follow the pipeline images once something has
+	// asked for the mask; [1] waits for its first use again.
+	LightMaskImage[0].Reset(fb);
+	LightMaskImage[1].Reset(fb);
+	if (mLightMaskWanted && !mLightMaskRefused)
+		CreateLightMaskImage(0, width, height, layers);
 }
 
 void VkRenderBuffers::CreateScene(int width, int height, VkSampleCountFlagBits samples, int layers)
@@ -267,6 +277,7 @@ void VkRenderBuffers::CreateScene(int width, int height, VkSampleCountFlagBits s
 	SceneDepthStencil.Reset(fb);
 	SceneNormal.Reset(fb);
 	SceneFog.Reset(fb);
+	SceneLightMask.Reset(fb);	// [LIGHTMASK]
 
 	CreateSceneColor(width, height, samples, layers);
 	CreateSceneDepthStencil(width, height, samples, layers);
@@ -279,6 +290,10 @@ void VkRenderBuffers::CreateScene(int width, int height, VkSampleCountFlagBits s
 		.AddImage(&SceneNormal, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true)
 		.AddImage(&SceneFog, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true)
 		.Execute(fb->GetCommands()->GetDrawCommands());
+
+	// [LIGHTMASK] The light mask attachment follows the scene images once something has asked for it.
+	if (mLightMaskWanted && !mLightMaskRefused)
+		CreateSceneLightMask(width, height, samples, layers);
 }
 
 void VkRenderBuffers::CreateSceneColor(int width, int height, VkSampleCountFlagBits samples, int layers)
@@ -369,7 +384,8 @@ VulkanFramebuffer* VkRenderBuffers::GetOutput(VkPPRenderPassSetup* passSetup, co
 		const bool useLayerView = fb->ShouldUseCurrentEyeLayer(output.Type, tex);
 		const int layerIndex = useLayerView ? fb->GetCurrentEyeLayer() : -1;
 		VkImageTransition imageTransition;
-		imageTransition.AddImage(tex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, output.Type == PPTextureType::NextPipelineTexture);
+		// [LIGHTMASK] The light mask's "next" image is written whole, like the next pipeline image.
+		imageTransition.AddImage(tex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, output.Type == PPTextureType::NextPipelineTexture || output.Type == PPTextureType::LightMaskNext);
 		if (stencilTest == WhichDepthStencil::Scene)
 			imageTransition.AddImage(&fb->GetBuffers()->SceneDepthStencil, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false);
 
@@ -412,4 +428,115 @@ VulkanFramebuffer* VkRenderBuffers::GetOutput(VkPPRenderPassSetup* passSetup, co
 	framebufferWidth = w;
 	framebufferHeight = h;
 	return framebuffer.get();
+}
+
+//==========================================================================
+//
+// [LIGHTMASK] The light mask images (vk_renderbuffers.h; hw_postprocess.h, PPLightMask).
+//
+// Made when a frame first wants the mask, at the sizes the buffers have then; re-made with the
+// scene and pipeline images from then on (CreateScene, CreatePipeline); never freed on their own.
+// A failure -- an unsupported sample count or layer count, or no memory -- logs one red line and
+// refuses the mask for the session: the frame's decision then keeps it off, so nothing draws
+// into or reads a missing image. What already exists is left as it is until the buffers are
+// re-created.
+//
+//==========================================================================
+
+bool VkRenderBuffers::CreateLightMask(VkFormat format)
+{
+	if (format == VK_FORMAT_UNDEFINED || mLightMaskRefused)
+		return false;
+	LightMaskFormat = format;
+	mLightMaskWanted = true;
+	if (!SceneLightMask.Image && mSceneWidth > 0 && mSceneHeight > 0)
+		CreateSceneLightMask(mSceneWidth, mSceneHeight, mSamples, mSceneLayers);
+	if (!LightMaskImage[0].Image && mWidth > 0 && mHeight > 0)
+		CreateLightMaskImage(0, mWidth, mHeight, mPipelineLayers);
+	return !mLightMaskRefused && HasLightMask();
+}
+
+bool VkRenderBuffers::CreateLightMaskCarry()
+{
+	if (!LightMaskImage[1].Image && mLightMaskWanted && !mLightMaskRefused && mWidth > 0 && mHeight > 0)
+		CreateLightMaskImage(1, mWidth, mHeight, mPipelineLayers);
+	return LightMaskImage[1].Image != nullptr;
+}
+
+void VkRenderBuffers::RefuseLightMask(const char *what)
+{
+	if (!mLightMaskRefused)
+		Printf(TEXTCOLOR_RED "LightMask: refused for this session -- %s. The light mask stays off.\n", what);
+	mLightMaskRefused = true;
+}
+
+void VkRenderBuffers::CreateSceneLightMask(int width, int height, VkSampleCountFlagBits samples, int layers)
+{
+	ImageBuilder builder;
+	builder.Size(width, height, 1, layers);
+	builder.Samples(samples);
+	builder.Format(LightMaskFormat);
+	builder.Usage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+	if (!builder.IsFormatSupported(fb->device.get()))
+	{
+		RefuseLightMask("the device cannot make the scene mask attachment at this sample count and layer count");
+		return;
+	}
+	builder.DebugName("VkRenderBuffers.SceneLightMask");
+	try
+	{
+		SceneLightMask.Image = builder.Create(fb->device.get());
+		CreateColorTargetViews(fb, SceneLightMask, LightMaskFormat,
+			"VkRenderBuffers.SceneLightMaskView",
+			"VkRenderBuffers.SceneLightMaskFramebufferView");
+	}
+	catch (const std::exception &err)
+	{
+		SceneLightMask.Reset(fb);
+		RefuseLightMask(err.what());
+		return;
+	}
+
+	VkImageTransition()
+		.AddImage(&SceneLightMask, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true)
+		.Execute(fb->GetCommands()->GetDrawCommands());
+
+	const long long texelBytes = LightMaskFormat == VK_FORMAT_R16G16_SFLOAT ? 4 : 8;
+	Printf("LightMask: scene mask attachment -- %d x %d, %d samples, %d layers, %lld bytes\n",
+		width, height, (int)samples, layers, (long long)width * height * (int)samples * layers * texelBytes);
+}
+
+void VkRenderBuffers::CreateLightMaskImage(int index, int width, int height, int layers)
+{
+	ImageBuilder builder;
+	builder.Size(width, height, 1, layers);
+	builder.Format(LightMaskFormat);
+	builder.Usage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	if (!builder.IsFormatSupported(fb->device.get()))
+	{
+		RefuseLightMask("the device cannot make the light mask carry image at this size and layer count");
+		return;
+	}
+	builder.DebugName("VkRenderBuffers.LightMaskImage");
+	try
+	{
+		LightMaskImage[index].Image = builder.Create(fb->device.get());
+		CreateColorTargetViews(fb, LightMaskImage[index], LightMaskFormat,
+			"VkRenderBuffers.LightMaskView",
+			"VkRenderBuffers.LightMaskFramebufferView");
+	}
+	catch (const std::exception &err)
+	{
+		LightMaskImage[index].Reset(fb);
+		RefuseLightMask(err.what());
+		return;
+	}
+
+	VkImageTransition()
+		.AddImage(&LightMaskImage[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true)
+		.Execute(fb->GetCommands()->GetDrawCommands());
+
+	const long long texelBytes = LightMaskFormat == VK_FORMAT_R16G16_SFLOAT ? 4 : 8;
+	Printf("LightMask: carry image %d -- %d x %d, %d layers, %lld bytes\n",
+		index, width, height, layers, (long long)width * height * layers * texelBytes);
 }

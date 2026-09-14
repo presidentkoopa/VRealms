@@ -56,7 +56,10 @@ enum class ETonemapMode : uint8_t
 
 enum class PPFilterMode { Nearest, Linear };
 enum class PPWrapMode { Clamp, Repeat };
-enum class PPTextureType { CurrentPipelineTexture, NextPipelineTexture, PPTexture, SceneColor, SceneFog, SceneNormal, SceneDepth, SwapChain, ShadowMap };
+// [LIGHTMASK] LightMaskCurrent / LightMaskNext: the pair of images the scene's light mask is
+// carried through post-processing in (PPLightMask below), used the way the pipeline images
+// are. Appended, so no existing value moves; a later addition appends after them.
+enum class PPTextureType { CurrentPipelineTexture, NextPipelineTexture, PPTexture, SceneColor, SceneFog, SceneNormal, SceneDepth, SwapChain, ShadowMap, LightMaskCurrent, LightMaskNext };
 
 class PPTextureInput
 {
@@ -173,6 +176,12 @@ public:
 		SetInputSpecialType(index, PPTextureType::SceneDepth, filter, wrap);
 	}
 
+	// [LIGHTMASK] The light mask as carried so far this eye (PPLightMask).
+	void SetInputLightMask(int index, PPFilterMode filter = PPFilterMode::Nearest, PPWrapMode wrap = PPWrapMode::Clamp)
+	{
+		SetInputSpecialType(index, PPTextureType::LightMaskCurrent, filter, wrap);
+	}
+
 	void SetInputSpecialType(int index, PPTextureType type, PPFilterMode filter = PPFilterMode::Nearest, PPWrapMode wrap = PPWrapMode::Clamp)
 	{
 		if ((int)Textures.Size() < index + 1)
@@ -222,6 +231,20 @@ public:
 	void SetOutputShadowMap()
 	{
 		Output.Type = PPTextureType::ShadowMap;
+		Output.Texture = nullptr;
+	}
+
+	// [LIGHTMASK] Write the light mask in place (a carry that adds to it), or into the other
+	// image of its pair (a carry that moves it, as the heat warp does; the pair then swaps).
+	void SetOutputLightMaskCurrent()
+	{
+		Output.Type = PPTextureType::LightMaskCurrent;
+		Output.Texture = nullptr;
+	}
+
+	void SetOutputLightMaskNext()
+	{
+		Output.Type = PPTextureType::LightMaskNext;
 		Output.Texture = nullptr;
 	}
 
@@ -1494,6 +1517,85 @@ private:
 
 /////////////////////////////////////////////////////////////////////////////
 
+/////////////////////////////////////////////////////////////////////////////
+//
+// [LIGHTMASK] THE LIGHT MASK ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2a-2e; step E6a).
+//
+// One more colour attachment of the main scene pass records, per pixel, how much of the
+// light is of two classes:
+//   R  emissive light -- light from things that give light (E4 fills it in main.fp; drawn
+//      lines, GPU particles and mesh chunks already write their glow here)
+//   G  pinned light   -- light whose bloom E6b pins to its own look; today BEAM light: the
+//      per-pixel SetBeam field (its surface light, the mist it lights, its glow in the air)
+//      and the beams r_beams_drawn routes to drawn lines
+// An AMOUNT is linear light summed over r + g + b, in the colour's own HDR units, written by
+// every scene program with the SAME alpha as its colour -- so blending, the multisample
+// resolve and linear filtering treat colour and amounts alike, and a pixel's share of a class
+// is its amount over the colour's r + g + b at any point. B and A of the mask carry nothing.
+//
+// THE FRAME'S DECISION, TAKEN ONCE. The backend decides before anything of the frame renders
+// (VulkanRenderDevice::BeginFrame: the cvars, the device's support, the mask programs compiled
+// for the pass in use, the attachment created) and everything after reads Active(): the scene
+// target, the program choice, SyncDrawnLines and Pass1. So both eyes, the layered post path
+// and the post-only eye agree. GL and GLES never call BeginFrame: never active there.
+//
+// NOTHING READS IT YET but the debug view (r_lightmask_debug), drawn in bloom's place. The heat
+// shimmer moves it with the image (PPHeatRefraction::Render) so it stays under the pixels it
+// describes. E6b's pinned bloom and E4's emissive-only bloom read LightMaskCurrent.
+//
+struct LightMaskDebugUniforms
+{
+	int DebugMode;	// r_lightmask_debug: 1 overlay, 2 pinned share alone
+	int Padding0;
+	float Padding1;
+	float Padding2;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "DebugMode", UniformType::Int, offsetof(LightMaskDebugUniforms, DebugMode) },
+			{ "Padding0", UniformType::Int, offsetof(LightMaskDebugUniforms, Padding0) },
+			{ "Padding1", UniformType::Float, offsetof(LightMaskDebugUniforms, Padding1) },
+			{ "Padding2", UniformType::Float, offsetof(LightMaskDebugUniforms, Padding2) },
+		};
+	}
+};
+
+static_assert(offsetof(LightMaskDebugUniforms, Padding2) == 12, "LightMaskDebugUniforms::Padding2 must start at 12 for std140");
+static_assert(sizeof(LightMaskDebugUniforms) == 16, "LightMaskDebugUniforms must be 16 bytes");
+
+class PPLightMask
+{
+public:
+	// What the cvars ask for: gl_bloom_pin_beams while gl_bloom is on, or the debug view.
+	// The backend adds its own conditions (support, programs, memory) before BeginFrame.
+	static bool WantedByCvars();
+
+	// Once per displayed frame, before anything renders; `active` = this frame's scene pass
+	// carries the mask (VulkanRenderDevice::BeginFrame).
+	void BeginFrame(bool active);
+	bool Active() const { return FrameActive; }
+
+	// Set by the backend's scene transfer (VkPostprocess::BlitSceneToPostprocess) for the eye
+	// being post-processed: this eye's scene drew the mask, and LightMaskCurrent now holds it.
+	// False for a scene without the mask (a save picture, the software renderer's scene).
+	void SetPostInput(bool valid) { PostInput = FrameActive && valid; }
+	bool PostInputValid() const { return PostInput; }
+
+	// The debug view, in bloom's place (Pass1). True when it drew, and then bloom does not run.
+	bool RenderDebug(PPRenderState *renderstate);
+
+private:
+	bool FrameActive = false;
+	bool PostInput = false;
+	int DebugMode = 0;
+
+	PPShader DebugShader = { "shaders/pp/lightmaskdebug.fp", "", LightMaskDebugUniforms::Desc() };
+};
+
+/////////////////////////////////////////////////////////////////////////////
+
 class Postprocess
 {
 public:
@@ -1501,6 +1603,7 @@ public:
 	PPVolumetricBeam volbeam;
 	PPHeatmap heatmap;
 	PPHeatRefraction heatrefraction;	// [HEATREFRACTION] heat shimmer
+	PPLightMask lightmask;	// [LIGHTMASK] the frame's light mask decision and its debug view
 	PPLensDistort lens;
 	PPFXAA fxaa;
 	PPCameraExposure exposure;

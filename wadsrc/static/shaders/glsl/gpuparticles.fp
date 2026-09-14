@@ -200,6 +200,13 @@ layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 FragFog;
 layout(location = 2) out vec4 FragNormal;
 #endif
+#ifdef SCENE_LIGHT_MASK
+// [LIGHTMASK] The light mask (hw_postprocess.h, PPLightMask): the glow -- the emissive colour this
+// pixel adds, heat ramp included -- is emissive light; a lit body is neither class (dust with no glow
+// writes 0). Written with the colour's own alpha (falloff when additive, occlusion when
+// premultiplied), so the blend treats the amount exactly as it treats the colour it came from.
+layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
+#endif
 
 void main()
 {
@@ -282,10 +289,18 @@ void main()
 		// top. With no body (occlusion 0) this is the additive output's colour.
 		float occlusion = vParticleBody.a * coverage;
 		FragColor = vec4(vParticleBody.rgb * (vParticleBody.a * bodyShade) + vParticleColor.rgb * glowTint * falloff, occlusion);
+#ifdef SCENE_LIGHT_MASK
+		vec3 hotLight = vParticleColor.rgb * glowTint * falloff;	// [LIGHTMASK] the glow term above
+		FragLightMask = vec4(hotLight.r + hotLight.g + hotLight.b, 0.0, 0.0, occlusion);
+#endif
 	}
 	else
 	{
 		FragColor = vec4(vParticleColor.rgb * glowTint, falloff);
+#ifdef SCENE_LIGHT_MASK
+		vec3 hotLight = vParticleColor.rgb * glowTint;	// [LIGHTMASK] all of it is glow; the blend applies falloff
+		FragLightMask = vec4(hotLight.r + hotLight.g + hotLight.b, 0.0, 0.0, falloff);
+#endif
 	}
 
 #ifdef GBUFFER_PASS

@@ -76,11 +76,22 @@ public:
 	// it was before 2a -- everywhere else. An int after the last int-sized member,
 	// so this memcmp'd key (and VkRenderTargetFramebufferKey) gains no padding.
 	int DepthReadOnly;
+	// [LIGHTMASK] Nonzero: the pass carries the light mask attachment (hw_postprocess.h,
+	// PPLightMask) after the draw buffers and before depth -- colour attachments target,
+	// [SceneFog, SceneNormal], mask; depth at DrawBuffers + 1 -- and its pipelines draw with the
+	// scene programs' SCENE_LIGHT_MASK variants. Set only on the main view's scene target
+	// while the frame draws the mask; zero everywhere else, so every other pass keeps exactly
+	// the key, render pass, framebuffer and pipelines it had. An int after DepthReadOnly, so
+	// this memcmp'd key (and VkRenderTargetFramebufferKey) still has no padding.
+	int LightMask;
 
 	bool operator<(const VkRenderPassKey &other) const { return memcmp(this, &other, sizeof(VkRenderPassKey)) < 0; }
 	bool operator==(const VkRenderPassKey &other) const { return memcmp(this, &other, sizeof(VkRenderPassKey)) == 0; }
 	bool operator!=(const VkRenderPassKey &other) const { return memcmp(this, &other, sizeof(VkRenderPassKey)) != 0; }
 };
+
+// [LIGHTMASK] Eight int-sized members and no padding: memcmp compares only bytes that were set.
+static_assert(sizeof(VkRenderPassKey) == 8 * sizeof(int), "VkRenderPassKey must stay padding-free (it is compared with memcmp)");
 
 class VkRenderPassSetup
 {

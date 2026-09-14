@@ -290,6 +290,27 @@ void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	renderstate->SetNoBlend();
 	renderstate->Draw();
 	renderstate->PopGroup();
+
+	// [LIGHTMASK] The light mask bends with the image (hw_postprocess.h, PPLightMask): the same
+	// shader, uniforms, offsets and depth tests on the mask instead of the colour, into the other
+	// image of the mask's pair. Every tap of the warp is a linear read of a linear quantity, so
+	// each pixel's amounts come from exactly where its colour came from. Both eyes of a layered
+	// post path take this branch alike (the frame's state), and it moves no pipeline image.
+	if (hw_postprocess.lightmask.PostInputValid())
+	{
+		renderstate->PushGroup("pp.lightmaskcarry");
+		renderstate->Clear();
+		renderstate->Shader = multisampled ? &WarpShaderMS : &WarpShader;
+		renderstate->Uniforms.Set(w);
+		renderstate->Viewport = screen->mScreenViewport;
+		renderstate->SetInputLightMask(0, PPFilterMode::Linear);
+		renderstate->SetInputTexture(1, &OffsetTexture, PPFilterMode::Linear);
+		renderstate->SetInputSceneDepth(2);
+		renderstate->SetOutputLightMaskNext();
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+		renderstate->PopGroup();
+	}
 }
 
 //==========================================================================
@@ -1719,6 +1740,52 @@ void PPCustomShaderInstance::AddUniformField(size_t &offset, const FString &name
 }
 
 
+//==========================================================================
+//
+// [LIGHTMASK] The light mask's frame state and its debug view (hw_postprocess.h, PPLightMask).
+//
+//==========================================================================
+
+bool PPLightMask::WantedByCvars()
+{
+	return r_lightmask_debug > 0 || (gl_bloom && gl_bloom_pin_beams);
+}
+
+void PPLightMask::BeginFrame(bool active)
+{
+	FrameActive = active;
+	PostInput = false;
+	const int mode = r_lightmask_debug;
+	DebugMode = !active ? 0 : (mode < 0 ? 0 : (mode > 2 ? 2 : mode));
+}
+
+// Where bloom runs, in its place: the colour read here is the colour bloom would have read,
+// which is what a share is measured against. Over the whole screen viewport into the next
+// pipeline image, like the lens pass, so no texel of that image is left unwritten. Both eyes of
+// a layered post path draw it or neither (the frame's state), so their pipeline images advance
+// alike. Nothing is drawn for a scene without the mask (a save picture): bloom runs there.
+bool PPLightMask::RenderDebug(PPRenderState *renderstate)
+{
+	if (DebugMode <= 0 || !PostInput)
+		return false;
+
+	LightMaskDebugUniforms uniforms = {};
+	uniforms.DebugMode = DebugMode;
+
+	renderstate->PushGroup("pp.lightmaskdebug");
+	renderstate->Clear();
+	renderstate->Shader = &DebugShader;
+	renderstate->Uniforms.Set(uniforms);
+	renderstate->Viewport = screen->mScreenViewport;
+	renderstate->SetInputCurrent(0);
+	renderstate->SetInputLightMask(1);
+	renderstate->SetOutputNext();
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+	renderstate->PopGroup();
+	return true;
+}
+
 void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int sceneHeight)
 {
 	exposure.Render(state, sceneWidth, sceneHeight);
@@ -1731,7 +1798,9 @@ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int s
 	heatmap.Render(state, sceneWidth, sceneHeight);
 	// [HEATREFRACTION] Heat refraction, then bloom: the image bends before it glows.
 	heatrefraction.Render(state, sceneWidth, sceneHeight);
-	bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
+	// [LIGHTMASK] The light mask's debug view (r_lightmask_debug) is drawn in bloom's place.
+	if (!lightmask.RenderDebug(state))
+		bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
 }
 
 void Postprocess::Pass2(PPRenderState* state, int fixedcm, float flash, int sceneWidth, int sceneHeight)

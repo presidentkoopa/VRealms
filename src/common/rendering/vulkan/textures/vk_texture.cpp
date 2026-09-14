@@ -154,6 +154,18 @@ VkTextureImage* VkTextureManager::GetTexture(const PPTextureType& type, PPTextur
 	{
 		return nullptr;
 	}
+	else if (type == PPTextureType::LightMaskCurrent || type == PPTextureType::LightMaskNext)
+	{
+		// [LIGHTMASK] The light mask's pair (VkRenderBuffers::LightMaskImage). The second image is
+		// made the first time a carry writes it; its Image stays null if that was refused.
+		int idx = fb->GetPostprocess()->GetCurrentLightMaskImage();
+		if (type == PPTextureType::LightMaskNext)
+		{
+			idx ^= 1;
+			fb->GetBuffers()->CreateLightMaskCarry();
+		}
+		return &fb->GetBuffers()->LightMaskImage[idx];
+	}
 	else
 	{
 		I_FatalError("VkPPRenderState::GetTexture not implemented yet for this texture type");

@@ -659,7 +659,7 @@ void VkRenderState::EnableDrawBuffers(int count, bool apply)
 	}
 }
 
-void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat format, VkSampleCountFlagBits samples, int layers, uint32_t viewMask, int layerIndex)
+void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat format, VkSampleCountFlagBits samples, int layers, uint32_t viewMask, int layerIndex, bool lightMask)
 {
 	EndRenderPass();
 	mSceneDepthReadOnly = false;	// [2a] a new target never inherits a read-only depth pass
@@ -673,6 +673,7 @@ void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *dept
 	mRenderTarget.Layers = layers;
 	mRenderTarget.ViewMask = viewMask;
 	mRenderTarget.LayerIndex = layerIndex;
+	mRenderTarget.LightMask = lightMask;	// [LIGHTMASK] every other target sets it back to false
 }
 
 void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
@@ -688,6 +689,10 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 	// other pass gets exactly the key -- and so the render pass, framebuffer and
 	// pipelines -- it had before 2a.
 	key.DepthReadOnly = (mSceneDepthReadOnly && key.DepthStencil) ? 1 : 0;
+	// [LIGHTMASK] Only the main view's scene target, and only while the mask programs exist for
+	// the pass these draw buffers make -- which the frame's decision already ensured for the pass
+	// the view uses (VulkanRenderDevice::BeginFrame). Zero for every other pass.
+	key.LightMask = (mRenderTarget.LightMask && fb->GetShaderManager()->LightMaskProgramsReady(key.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS)) ? 1 : 0;
 
 	mPassSetup = fb->GetRenderPassManager()->GetRenderPass(key);
 
@@ -708,6 +713,8 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 			builder.AddAttachment(useLayerView ? buffers->SceneFog.GetLayerView(mRenderTarget.LayerIndex) : buffers->SceneFog.GetFramebufferView());
 		if (key.DrawBuffers > 2)
 			builder.AddAttachment(useLayerView ? buffers->SceneNormal.GetLayerView(mRenderTarget.LayerIndex) : buffers->SceneNormal.GetFramebufferView());
+		if (key.LightMask)	// [LIGHTMASK] after the draw buffers, before depth (VkRenderPassSetup::CreateRenderPass)
+			builder.AddAttachment(useLayerView ? buffers->SceneLightMask.GetLayerView(mRenderTarget.LayerIndex) : buffers->SceneLightMask.GetFramebufferView());
 		if (key.DepthStencil)
 			builder.AddAttachment(mRenderTarget.DepthStencil);
 		builder.DebugName("VkRenderPassSetup.Framebuffer");
@@ -726,6 +733,8 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 	if (key.DrawBuffers > 1)
 		beginInfo.AddClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	if (key.DrawBuffers > 2)
+		beginInfo.AddClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	if (key.LightMask)	// [LIGHTMASK] no light of either class
 		beginInfo.AddClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	beginInfo.AddClearDepthStencil(1.0f, 0);
 	beginInfo.Execute(cmdbuffer);

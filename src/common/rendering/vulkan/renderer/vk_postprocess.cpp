@@ -200,6 +200,64 @@ void VkPostprocess::BlitSceneToPostprocess()
 			buffers->PipelineImage[mCurrentPipelineImage].Image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			1, &blit, VK_FILTER_NEAREST);
 	}
+
+	// [LIGHTMASK] The light mask goes with the colour (hw_postprocess.h, PPLightMask): the same
+	// operation over the same layers into the first image of its pair, so the resolve averages
+	// the amounts exactly as it averages the colour and the nearest blit copies them. Only when
+	// this scene drew the mask; otherwise post-processing is told this eye has none.
+	const bool lightMask = fb->SceneHasLightMask();
+	hw_postprocess.lightmask.SetPostInput(lightMask);
+	mCurrentLightMaskImage = 0;
+	if (lightMask)
+	{
+		auto sceneMask = buffers->SceneLightMask.Image.get();
+		auto carryImage = buffers->LightMaskImage[0].Image.get();
+
+		VkImageTransition()
+			.AddImage(&buffers->SceneLightMask, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, false)
+			.AddImage(&buffers->LightMaskImage[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true)
+			.Execute(fb->GetCommands()->GetDrawCommands());
+
+		if (buffers->GetSceneSamples() != VK_SAMPLE_COUNT_1_BIT)
+		{
+			VkImageResolve resolve = {};
+			resolve.srcOffset = { 0, 0, 0 };
+			resolve.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			resolve.srcSubresource.mipLevel = 0;
+			resolve.srcSubresource.baseArrayLayer = sceneLayer;
+			resolve.srcSubresource.layerCount = layerCount;
+			resolve.dstOffset = { 0, 0, 0 };
+			resolve.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			resolve.dstSubresource.mipLevel = 0;
+			resolve.dstSubresource.baseArrayLayer = pipelineLayer;
+			resolve.dstSubresource.layerCount = layerCount;
+			resolve.extent = { (uint32_t)sceneMask->width, (uint32_t)sceneMask->height, 1 };
+			cmdbuffer->resolveImage(
+				sceneMask->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				carryImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				1, &resolve);
+		}
+		else
+		{
+			VkImageBlit blit = {};
+			blit.srcOffsets[0] = { 0, 0, 0 };
+			blit.srcOffsets[1] = { sceneMask->width, sceneMask->height, 1 };
+			blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			blit.srcSubresource.mipLevel = 0;
+			blit.srcSubresource.baseArrayLayer = sceneLayer;
+			blit.srcSubresource.layerCount = layerCount;
+			blit.dstOffsets[0] = { 0, 0, 0 };
+			blit.dstOffsets[1] = { sceneMask->width, sceneMask->height, 1 };
+			blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			blit.dstSubresource.mipLevel = 0;
+			blit.dstSubresource.baseArrayLayer = pipelineLayer;
+			blit.dstSubresource.layerCount = layerCount;
+			cmdbuffer->blitImage(
+				sceneMask->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				carryImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				1, &blit, VK_FILTER_NEAREST);
+		}
+	}
 }
 
 void VkPostprocess::ImageTransitionScene(bool undefinedSrcLayout)
@@ -212,6 +270,14 @@ void VkPostprocess::ImageTransitionScene(bool undefinedSrcLayout)
 		.AddImage(&buffers->SceneNormal, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, undefinedSrcLayout)
 		.AddImage(&buffers->SceneDepthStencil, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, undefinedSrcLayout)
 		.Execute(fb->GetCommands()->GetDrawCommands());
+
+	// [LIGHTMASK] The light mask attachment, once it exists, is a scene image like the others.
+	if (buffers->SceneLightMask.Image)
+	{
+		VkImageTransition()
+			.AddImage(&buffers->SceneLightMask, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, undefinedSrcLayout)
+			.Execute(fb->GetCommands()->GetDrawCommands());
+	}
 }
 
 void VkPostprocess::BlitCurrentToImage(VkTextureImage *dstimage, VkImageLayout finallayout)

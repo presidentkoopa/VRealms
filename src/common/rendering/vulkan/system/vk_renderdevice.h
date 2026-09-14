@@ -141,6 +141,9 @@ public:
 	VkRenderBuffers *GetBuffers() { return mActiveRenderBuffers; }
 	int GetCurrentEyeLayer() const { return std::max(0, mCurrentEyeIndex); }
 	bool ShouldUseCurrentEyeLayer(const PPTextureType& type, const VkTextureImage* image) const;
+	// [LIGHTMASK] The scene being drawn carries the light mask: this frame draws it, the active
+	// buffers are the screen's (never a save picture's) and its images exist.
+	bool SceneHasLightMask() const;
 	FRenderState* RenderState() override;
 
 	unsigned int GetLightBufferBlockSize() const;
@@ -211,6 +214,7 @@ private:
 	void PrintStartupLog();
 	void CopyScreenToBuffer(int w, int h, uint8_t *data) override;
 	void UploadLoadedTextures(bool flush = false);
+	void UpdateLightMask();	// [LIGHTMASK] the frame's light mask decision, from BeginFrame
 
 	struct QueuedPatch
 	{
@@ -243,6 +247,10 @@ private:
 	bool mXRFrameBeganThisFrame = false;
 	int mCurrentEyeIndex = 0;
 	int mEyeFinalPipelineImage[2] = { 0, 2 };
+	// [LIGHTMASK] The light mask's format on this device, VK_FORMAT_UNDEFINED when the device
+	// cannot carry it (InitializeState); and last frame's decision, for the on/off log line.
+	VkFormat mLightMaskFormat = VK_FORMAT_UNDEFINED;
+	bool mLightMaskWasActive = false;
 	TSQueue<VkTexLoadIn> primaryTexQueue;
 	TSQueue<VkTexLoadIn> secondaryTexQueue;
 	TSQueue<VkTexLoadOut> outputTexQueue;

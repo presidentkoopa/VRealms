@@ -81,6 +81,16 @@ public:
 	static const unsigned LOOK_GRADIENT = 1;
 	static const unsigned LOOK_TURBULENCE = 2;
 
+	// [LIGHTMASK] A routed beam's record carries this QUARTER on top of its look flags
+	// (g.w) while the frame draws the light mask (hw_postprocess.h, PPLightMask;
+	// SyncDrawnLines): the mask programs of drawnlines.fp then write that line's glow
+	// as pinned light, as the per-pixel beam it stands in for writes its own, and every
+	// other line's as emissive light. A quarter rather than a bit: drawnlines.vp and .fp
+	// decode the flags as int(g.w + 0.5), which maps flags + 0.25 to exactly the flags,
+	// so a program without the mask -- a camera texture drawn from the same buffer in
+	// the same frame -- draws the record exactly as it did before the mask existed.
+	static constexpr float LIGHT_MASK_PINNED_MARK = 0.25f;
+
 	// A box around the line: six faces, two triangles each. drawnlines.vp keeps
 	// only the faces turned away from the eye, which cover the box's footprint
 	// exactly once, including when the eye is inside it.

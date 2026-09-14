@@ -118,6 +118,14 @@ layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 FragFog;
 layout(location = 2) out vec4 FragNormal;
 #endif
+#ifdef SCENE_LIGHT_MASK
+// [LIGHTMASK] The light mask (hw_postprocess.h, PPLightMask; only the Vulkan mask programs
+// define SCENE_LIGHT_MASK, and the C++ sets LIGHT_MASK_LOCATION). This line's glow, r + g + b,
+// as PINNED light when its record carries DrawnLineBuffer::LIGHT_MASK_PINNED_MARK -- a beam
+// r_beams_drawn routes, standing in for the per-pixel beam -- else as EMISSIVE light. Alpha 1,
+// as the colour's. Nothing above reads the mark: lineLook's int(w + 0.5) drops the quarter.
+layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
+#endif
 
 // [F1] hash13 / valueNoise, for the turbulence look.
 #include "shaders/glsl/valuenoise.glsl"
@@ -259,6 +267,11 @@ void main()
 
 	FragColor = vec4(glow, 1.0);
 
+#ifdef SCENE_LIGHT_MASK
+	// [LIGHTMASK] The mark is the quarter above the look flags (hw_drawnlinebuffer.h).
+	float glowAmount = glow.r + glow.g + glow.b;
+	FragLightMask = (fract(vLineTurbulence.w) > 0.125) ? vec4(0.0, glowAmount, 0.0, 1.0) : vec4(glowAmount, 0.0, 0.0, 1.0);
+#endif
 #ifdef GBUFFER_PASS
 	// Zero with zero alpha: under additive blending this adds nothing to the
 	// fog and normal attachments.

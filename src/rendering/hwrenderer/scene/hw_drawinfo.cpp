@@ -277,6 +277,11 @@ static void SyncDrawnLines(FLevelLocals *Level, double viewTicFrac)
 
 	unsigned n = 0, routed = 0, dropped = 0;
 
+	// [LIGHTMASK] While this frame draws the light mask (hw_postprocess.h, PPLightMask), a
+	// routed beam's record is marked as pinned light, the class the per-pixel beam it stands
+	// in for writes in main.fp. See DrawnLineBuffer::LIGHT_MASK_PINNED_MARK.
+	const bool markPinnedLight = hw_postprocess.lightmask.Active();
+
 	if (BeamsRouteToDrawnLines())
 	{
 		for (int i = 0; i < FLevelLocals::MAX_BEAMS; i++)
@@ -292,6 +297,8 @@ static void SyncDrawnLines(FLevelLocals *Level, double viewTicFrac)
 			WriteDrawnLineRecord(DrawnLineScratch[n++], a, b,
 				Level->BeamThick[i], Level->BeamSoft[i], Level->BeamColor[i], Level->BeamIntensity[i],
 				look, Level->BeamScrollSpeed, Level->BeamScrollDepth, timerSec, depthBias);
+			if (markPinnedLight)
+				DrawnLineScratch[n - 1].g[3] += DrawnLineBuffer::LIGHT_MASK_PINNED_MARK;	// [LIGHTMASK]
 			routed++;
 		}
 	}

@@ -20,6 +20,10 @@ layout(location=0) out vec4 FragColor;
 layout(location=1) out vec4 FragFog;
 layout(location=2) out vec4 FragNormal;
 #endif
+#ifdef SCENE_LIGHT_MASK
+// [LIGHTMASK] The light mask (hw_postprocess.h, PPLightMask): nothing, with the colour's alpha 0.
+layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
+#endif
 
 void main()
 {
@@ -27,5 +31,8 @@ void main()
 #ifdef GBUFFER_PASS
 	FragFog = vec4(0.0, 0.0, 0.0, 1.0);
 	FragNormal = vec4(0.5, 0.5, 0.5, 1.0);
+#endif
+#ifdef SCENE_LIGHT_MASK
+	FragLightMask = vec4(0.0);
 #endif
 }

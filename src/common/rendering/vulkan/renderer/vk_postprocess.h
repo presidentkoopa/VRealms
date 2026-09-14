@@ -68,6 +68,13 @@ public:
 	void SetPipelineImagePair(int start, int size = 2);
 	void AdvancePipelineImage();
 
+	// [LIGHTMASK] Which of VkRenderBuffers::LightMaskImage[2] holds the light mask so far for
+	// the eye being post-processed. The scene transfer and each eye's start set 0; a carry that
+	// writes LightMaskNext swaps it (VkPPRenderState::Draw).
+	int GetCurrentLightMaskImage() const { return mCurrentLightMaskImage; }
+	void SetCurrentLightMaskImage(int index) { mCurrentLightMaskImage = index & 1; }
+	void AdvanceLightMaskImage() { mCurrentLightMaskImage ^= 1; }
+
 	VulkanBuffer* GetAutomaticUniformsBuffer() { return AutomaticUniformsBuffer.get(); }
 
 private:
@@ -79,6 +86,7 @@ private:
 	int mCurrentPipelineImage = 0;
 	int mPipelinePairStart = 0;
 	int mPipelinePairSize = 2;
+	int mCurrentLightMaskImage = 0;	// [LIGHTMASK]
 
 	std::unique_ptr<VulkanBuffer> AutomaticUniformsBuffer;
 

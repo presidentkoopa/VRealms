@@ -76,7 +76,9 @@ public:
 	bool SetSceneDepthReadable(bool on) override;
 
 	void BeginFrame();
-	void SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat Format, VkSampleCountFlagBits samples, int layers = 1, uint32_t viewMask = 0, int layerIndex = 0);
+	// [LIGHTMASK] lightMask: this target is the main view's scene and carries the light mask
+	// attachment (VulkanRenderDevice::SetSceneRenderTarget). Default false for every other target.
+	void SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat Format, VkSampleCountFlagBits samples, int layers = 1, uint32_t viewMask = 0, int layerIndex = 0, bool lightMask = false);
 	void Bind(int bindingpoint, uint32_t offset);
 	void EndRenderPass();
 	void EndFrame();
@@ -161,6 +163,7 @@ protected:
 		int Layers = 1;
 		uint32_t ViewMask = 0;
 		int LayerIndex = 0;
+		bool LightMask = false;	// [LIGHTMASK] see SetRenderTarget
 	} mRenderTarget;
 };
 
