@@ -53,6 +53,7 @@ class BoneBuffer;
 class GpuParticleBuffer;
 class DrawnLineBuffer;
 class ParticleDefinitionBuffer;
+class ViewLightBuffer;
 
 enum EHWCaps
 {
@@ -164,6 +165,10 @@ public:
 	// index. Vulkan only, created beside mGpuParticles and null on GL/GLES --
 	// null-check every use. See hw_particledefbuffer.h.
 	ParticleDefinitionBuffer* mParticleDefinitions = nullptr;
+	// [VIEWLIGHTS] The dynamic lights in view this scene, for vertex-stage effects
+	// (stage 2d's lit particles first). Vulkan only, created beside mGpuParticles
+	// and null on GL/GLES -- null-check every use. See hw_viewlightbuffer.h.
+	ViewLightBuffer* mViewLights = nullptr;
 	IShadowMap mShadowMap;
 
 	int mGameScreenWidth = 0;

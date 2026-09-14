@@ -16,6 +16,7 @@
 #include <cstring>
 #include <vector>
 #include "hw_gpuparticlebuffer.h"
+#include "hw_particledefbuffer.h"	// [2d] the LOOK_* bits
 #include "shaderuniforms.h"
 #include "v_video.h"
 #include "hw_cvars.h"
@@ -92,9 +93,42 @@ void GpuParticleBuffer::Upload(const void *records, unsigned first, unsigned cou
 		(const uint8_t *)records + (size_t)first * RECORD_BYTES,
 		(size_t)count * RECORD_BYTES);
 	mUploadedSinceReport += count;
+	NoteRecordLooks(records, first, count);	// [2d]
 }
 
-void GpuParticleBuffer::Sync(const void *records, unsigned recordCount, uint64_t serial, uint64_t written)
+// [2d] For each record just uploaded: if its definition needs the premultiplied blend,
+// the view lights or its own soft distance, push that need's "alive until" out to the
+// record's death (birth + life). Free slots and legacy (stage 1) records need nothing.
+// A few compares per NEW record; a full upload looks at the whole ring once.
+void GpuParticleBuffer::NoteRecordLooks(const void *records, unsigned first, unsigned count)
+{
+	if (mSyncLooks == nullptr || mSyncLookCount == 0) return;
+
+	const uint8_t *record = (const uint8_t *)records + (size_t)first * RECORD_BYTES;
+	for (unsigned i = 0; i < count; i++, record += RECORD_BYTES)
+	{
+		float birth, life, definition, planeX;
+		memcpy(&birth, record + RECORD_BIRTH_OFFSET, sizeof(float));
+		memcpy(&life, record + RECORD_LIFE_OFFSET, sizeof(float));
+		memcpy(&definition, record + RECORD_DEFINITION_OFFSET, sizeof(float));
+		memcpy(&planeX, record + RECORD_PLANE_OFFSET, sizeof(float));
+		if (!(life > 0.f) || planeX < -8.f || !(definition >= 0.f)) continue;
+
+		// The slot as gpuparticles.vp rounds it.
+		const unsigned slot = definition >= (float)mSyncLookCount ? mSyncLookCount : (unsigned)(definition + 0.5f);
+		if (slot >= mSyncLookCount) continue;
+		const uint8_t look = mSyncLooks[slot];
+		if (look == 0) continue;
+
+		const float until = birth + life;
+		if ((look & ParticleDefinitionBuffer::LOOK_OCCLUDES) && until > mOccludersUntil) mOccludersUntil = until;
+		if ((look & ParticleDefinitionBuffer::LOOK_LIT) && until > mLitUntil) mLitUntil = until;
+		if ((look & ParticleDefinitionBuffer::LOOK_SOFT) && until > mSoftUntil) mSoftUntil = until;
+	}
+}
+
+void GpuParticleBuffer::Sync(const void *records, unsigned recordCount, uint64_t serial, uint64_t written,
+	const uint8_t *definitionLooks, unsigned definitionLookCount)
 {
 	// A level that never spawned a particle has no CPU ring. Its draw is
 	// skipped (Written == 0), so whatever the GPU still holds is never read.
@@ -122,9 +156,18 @@ void GpuParticleBuffer::Sync(const void *records, unsigned recordCount, uint64_t
 		return;
 	}
 
+	// [2d] Looked up by NoteRecordLooks for each uploaded record, this Sync only.
+	mSyncLooks = definitionLooks;
+	mSyncLookCount = definitionLooks != nullptr ? definitionLookCount : 0;
+
 	const bool full = serial != mSyncedSerial || written < mSyncedWritten || written - mSyncedWritten >= size;
 	if (full)
 	{
+		// [2d] Every record is looked at again, so start from nothing: a new level, a
+		// cleared ring or a burst bigger than the ring leaves no stale "alive" behind.
+		mOccludersUntil = NEVER_ALIVE;
+		mLitUntil = NEVER_ALIVE;
+		mSoftUntil = NEVER_ALIVE;
 		Upload(records, 0, size);
 		mFullSinceReport++;
 	}
@@ -144,6 +187,8 @@ void GpuParticleBuffer::Sync(const void *records, unsigned recordCount, uint64_t
 		mSpanSinceReport++;
 	}
 	mBuffer->Unmap();
+	mSyncLooks = nullptr;	// [2d]
+	mSyncLookCount = 0;
 
 	// One line per level, the first time that level's particles reach the GPU.
 	if (written > 0 && serial != mLoggedSerial)

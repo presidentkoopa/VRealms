@@ -37,7 +37,10 @@ enum
 	DRAWNLINE_BINDINGPOINT = 9,
 	// [PARTICLEDEFS] The particle definitions table (hw_particledefbuffer.h).
 	// Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
-	PARTICLEDEF_BINDINGPOINT = 10
+	PARTICLEDEF_BINDINGPOINT = 10,
+	// [VIEWLIGHTS] The dynamic lights in view this scene (hw_viewlightbuffer.h).
+	// Vulkan only, keyed on by VkBufferManager::CreateDataBuffer like the ring.
+	VIEWLIGHT_BINDINGPOINT = 11
 };
 
 enum class UniformType

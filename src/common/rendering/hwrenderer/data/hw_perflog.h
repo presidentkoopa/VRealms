@@ -60,6 +60,12 @@ namespace PerfLog
 	// one frame (stereo eyes) are summed into that frame's value.
 	void AddGpuSample(const char* name, double ms);
 
+	// [2d] One CPU-side timing for the frame, by name -- work an effect does on the CPU
+	// that no GPU group can time (first: "fx.viewlights", the view light fill). Same-name
+	// samples in one frame are summed, like GPU groups; each window writes them on a
+	// "cpu_fx_ms" line. Callers time only while GroupsWanted().
+	void AddCpuSample(const char* name, double ms);
+
 	// Once per frame, after screen->Update(). Only call while r_perflog > 0.
 	void EndFrame(const SceneLoad& load);
 }

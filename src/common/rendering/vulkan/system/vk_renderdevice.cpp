@@ -37,6 +37,7 @@
 #include "hw_drawnlinebuffer.h"	// [DRAWNLINES]
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES]
 #include "hw_particledefbuffer.h"	// [PARTICLEDEFS]
+#include "hw_viewlightbuffer.h"	// [VIEWLIGHTS]
 #include "hw_clock.h"
 #include "hw_lightbuffer.h"
 #include "hw_skydome.h"
@@ -366,6 +367,9 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	// [PARTICLEDEFS] beside the particles, which index it
 	delete mParticleDefinitions;
 	mParticleDefinitions = nullptr;
+	// [VIEWLIGHTS] beside the particles, which read it
+	delete mViewLights;
+	mViewLights = nullptr;
 	mShadowMap.Reset();
 
 	if (mDescriptorSetManager)
@@ -438,6 +442,10 @@ void VulkanRenderDevice::InitializeState()
 	// [PARTICLEDEFS] The definitions the particle records index; set 1 binding 7.
 	// Filled from the CPU table (gamedata/particledefs.cpp) by ProcessScene.
 	mParticleDefinitions = new ParticleDefinitionBuffer();
+	// [VIEWLIGHTS] The dynamic lights in view, which lit particles loop over in the
+	// vertex shader; set 1 binding 8. Filled every main-view scene by
+	// HWDrawInfo::ProcessScene (SyncViewLights).
+	mViewLights = new ViewLightBuffer();
 
 	mShaderManager.reset(new VkShaderManager(this));
 	mDescriptorSetManager->Init();
@@ -1264,6 +1272,10 @@ void VulkanRenderDevice::PrintStartupLog()
 	Printf("Max. texture size: %d\n", limits.maxImageDimension2D);
 	Printf("Max. uniform buffer range: %d\n", limits.maxUniformBufferRange);
 	Printf("Min. uniform buffer offset alignment: %" PRIu64 "\n", limits.minUniformBufferOffsetAlignment);
+	// [VIEWLIGHTS] The HW buffer set uses 5 storage buffers in the vertex stage (bones,
+	// particle ring, drawn lines, particle definitions, view lights), one more than
+	// Vulkan guarantees; VkDescriptorSetManager warns in red when a device reports fewer.
+	Printf("Max. storage buffers per shader stage: %u\n", (unsigned)limits.maxPerStageDescriptorStorageBuffers);
 	Printf("Graphics Queue Family: #%d\n", device->GraphicsFamily);
 	Printf("Present Queue Family: #%d\n", device->PresentFamily);
 	Printf("Upload Queue Family: #%d (%s)\n", device->UploadFamily, device->UploadFamilySupportsGraphics ? "graphics-capable" : "transfer-only");

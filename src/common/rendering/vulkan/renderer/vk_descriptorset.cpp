@@ -37,6 +37,7 @@
 #include "hw_viewpointuniforms.h"
 #include "hwrenderer/data/hw_viewpointbuffer.h"
 #include "v_2ddrawer.h"
+#include "printf.h"	// [VIEWLIGHTS] the per-stage storage buffer warning
 
 #include "vk_postprocess.h"
 
@@ -103,6 +104,12 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 	// (HWDrawInfo::RenderTranslucent).
 	VkHardwareDataBuffer* particleDefinitionSSO = fb->GetBufferManager()->ParticleDefinitionSSO ? fb->GetBufferManager()->ParticleDefinitionSSO : fb->GetBufferManager()->BoneBufferSSO;
 
+	// [VIEWLIGHTS] Binding 8, the same arrangement: always written, the bone buffer
+	// standing in if the view light buffer is somehow absent -- only gpuparticles.vp
+	// reads it, and the particle draw is gated on the real buffer
+	// (HWDrawInfo::RenderTranslucent).
+	VkHardwareDataBuffer* viewLightSSO = fb->GetBufferManager()->ViewLightSSO ? fb->GetBufferManager()->ViewLightSSO : fb->GetBufferManager()->BoneBufferSSO;
+
 	WriteDescriptors()
 		.AddBuffer(HWBufferSet.get(), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->ViewpointUBO->mBuffer.get(), 0, viewpointRange)
 		.AddBuffer(HWBufferSet.get(), 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->MatrixBuffer->UniformBuffer->mBuffer.get(), 0, sizeof(MatricesUBO))
@@ -112,6 +119,7 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 		.AddBuffer(HWBufferSet.get(), 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gpuParticleSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, drawnLineSSO->mBuffer.get())
 		.AddBuffer(HWBufferSet.get(), 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, particleDefinitionSSO->mBuffer.get())
+		.AddBuffer(HWBufferSet.get(), 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, viewLightSSO->mBuffer.get())
 		.Execute(fb->device.get());
 }
 
@@ -341,6 +349,23 @@ std::unique_ptr<VulkanDescriptorSet> VkDescriptorSetManager::AllocatePPDescripto
 
 void VkDescriptorSetManager::CreateHWBufferSetLayout()
 {
+	// [VIEWLIGHTS] This layout puts FIVE storage buffers in the vertex stage -- bones
+	// (4), particle ring (5), drawn lines (6), particle definitions (7), view lights
+	// (8) -- and every pipeline layout carries it. Vulkan guarantees only 4 per stage
+	// (maxPerStageDescriptorStorageBuffers); desktop GPUs report far more, and this
+	// fork targets desktop Vulkan. A device below 5 fails pipeline layout creation, so
+	// say plainly why before it does.
+	{
+		const uint32_t vertexStageStorageBuffers = 5;
+		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorStorageBuffers;
+		if (allowed < vertexStageStorageBuffers)
+		{
+			Printf(TEXTCOLOR_RED "Vulkan: this device allows %u storage buffers per shader stage, but the renderer's buffer set needs %u "
+				"in the vertex stage (bones, particle ring, drawn lines, particle definitions, view lights) -- pipeline layout "
+				"creation is expected to fail on this device\n", (unsigned)allowed, (unsigned)vertexStageStorageBuffers);
+		}
+	}
+
 	HWBufferSetLayout = DescriptorSetLayoutBuilder()
 		.AddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 		.AddBinding(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -351,8 +376,14 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 		.AddBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)	// [DRAWNLINES] DrawnLineSSO
 		// [PARTICLEDEFS] ParticleDefinitionSSO. Fragment too: stage 2c's flipbooks and
 		// 2d's lit/soft read the definition per pixel, and the layout should not have
-		// to change again then. Binding 8 is reserved for 2d's view light list.
+		// to change again then.
 		.AddBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+		// [VIEWLIGHTS] ViewLightSSO, the dynamic lights in view (hw_viewlightbuffer.h).
+		// Vertex only, by design: effects light themselves once per vertex, and mesh
+		// particles index the same list per instance in their vertex shader ("Engine
+		// docs/REVIEW_SMOKE_DEBRIS_DAMAGE.md" D4). Declared in GLSL by gpuparticles.vp
+		// alone. Bindings 9-12 are allocated to later plans (review X1).
+		.AddBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT)
 		.DebugName("VkDescriptorSetManager.HWBufferSetLayout")
 		.Create(fb->device.get());
 }
@@ -385,7 +416,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 		// [GPUPARTICLES] 3, not 2: lights (binding 3), bones (4), particles (5).
 		// [DRAWNLINES] 4: and drawn lines (6). Too few here fails set allocation.
 		// [PARTICLEDEFS] 5: and particle definitions (7).
-		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * maxSets)
+		// [VIEWLIGHTS] 6: and the view lights (8).
+		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * maxSets)
 		.MaxSets(maxSets)
 		.DebugName("VkDescriptorSetManager.HWBufferDescriptorPool")
 		.Create(fb->device.get());

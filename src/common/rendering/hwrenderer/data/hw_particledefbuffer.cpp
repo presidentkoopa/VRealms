@@ -20,6 +20,41 @@
 #include "v_video.h"
 #include "printf.h"
 
+// [2d] LOOK_* for one definition's 256 bytes (see ParticleDefinitionBuffer::GetSlotLooks).
+// Occludes: any of its keys has alpha above 0 -- the shader holds alpha flat outside the
+// keys and interpolates between them, so that is exactly "alpha above 0 at some point in
+// its life". The key count is clamped as gpuparticles.vp clamps it.
+static uint8_t DefinitionLook(const uint8_t *def)
+{
+	float keyCountValue, lit, soft;
+	memcpy(&keyCountValue, def + ParticleDefinitionBuffer::KEY_COUNT_OFFSET, sizeof(float));
+	memcpy(&lit, def + ParticleDefinitionBuffer::LOOK_OFFSET, sizeof(float));
+	memcpy(&soft, def + ParticleDefinitionBuffer::LOOK_OFFSET + sizeof(float), sizeof(float));
+
+	const unsigned maxKeys = (unsigned)ParticleDefinitionBuffer::KEYS;
+	unsigned keyCount = 1;
+	if (keyCountValue > 1.f)
+		keyCount = keyCountValue >= (float)maxKeys ? maxKeys : (unsigned)(keyCountValue + 0.5f);
+
+	bool occludes = false;
+	for (unsigned k = 0; k < keyCount; k++)
+	{
+		float alpha;
+		memcpy(&alpha, def + (size_t)k * ParticleDefinitionBuffer::KEY_STRIDE + ParticleDefinitionBuffer::KEY_ALPHA_OFFSET, sizeof(float));
+		if (alpha > 0.f)
+		{
+			occludes = true;
+			break;
+		}
+	}
+
+	uint8_t look = 0;
+	if (occludes) look |= ParticleDefinitionBuffer::LOOK_OCCLUDES;
+	if (occludes && lit > 0.f) look |= ParticleDefinitionBuffer::LOOK_LIT;
+	if (soft > 0.f) look |= ParticleDefinitionBuffer::LOOK_SOFT;
+	return look;
+}
+
 ParticleDefinitionBuffer::ParticleDefinitionBuffer()
 {
 	const size_t bytes = (size_t)SLOTS * RECORD_BYTES;
@@ -83,6 +118,8 @@ void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slo
 		while (i < slotCount && slotGenerations[i] > mSyncedGeneration) i++;
 		memcpy(dst + (size_t)first * RECORD_BYTES, src + (size_t)first * RECORD_BYTES, (size_t)(i - first) * RECORD_BYTES);
 		mUploadedSlots += i - first;
+		for (unsigned s = first; s < i; s++)
+			mSlotLooks[s] = DefinitionLook(src + (size_t)s * RECORD_BYTES);	// [2d]
 	}
 	mBuffer->Unmap();
 

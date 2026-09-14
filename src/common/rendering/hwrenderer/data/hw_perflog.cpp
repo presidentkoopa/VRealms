@@ -133,6 +133,7 @@ namespace
 		Stat Frame;
 		Stat Cpu[CPU_Count];
 		std::vector<Stat> Gpu;	// kept across windows so the line order is stable
+		std::vector<Stat> CpuFx;	// [2d] AddCpuSample's named CPU timings, kept the same way
 
 		uint64_t ParticlesSpawned = 0;
 		unsigned DrawnLinesMax = 0;
@@ -164,6 +165,7 @@ namespace
 		W.Frame.Clear();
 		for (auto& c : W.Cpu) c.Clear();
 		for (auto& g : W.Gpu) g.Clear();
+		for (auto& c : W.CpuFx) c.Clear();	// [2d]
 		W.ParticlesSpawned = 0;
 		W.DrawnLinesMax = 0;
 		W.BeamsMax = W.StampsMax = W.DisturbMax = 0;
@@ -188,7 +190,9 @@ namespace
 			AppendBenchmarkHeader(out);
 			out << "Legend: cpu_ms and gpu_ms are avg/p95/max per frame over the window. Same-name GPU groups in one frame "
 				"(both stereo eyes) are summed; fx.* groups are nested inside scene.translucent. load: particles_spawned is "
-				"the window total, dlights (walls+flats) is avg/max, sprites/walls/flats are avg, the rest are max.\n\n";
+				"the window total, dlights (walls+flats) is avg/max, sprites/walls/flats are avg, the rest are max. "
+				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill), avg/p95/max per "
+				"frame with same-name samples summed.\n\n";
 			HeaderWritten = true;
 		}
 
@@ -212,6 +216,8 @@ namespace
 		out.AppendFormat(" r_gpuparticles_soft=%g", (double)(float)*r_gpuparticles_soft);
 		// [2b] Likewise for the legacy particle path A/B, so the two windows label themselves.
 		out.AppendFormat(" r_gpuparticles_legacy=%d", (int)*r_gpuparticles_legacy);
+		// [2d] And the view light count, so a fx.viewlights before/after labels itself.
+		out.AppendFormat(" r_gpuparticles_lights=%d", (int)*r_gpuparticles_lights);
 		out.AppendFormat(" t=%.1fs window=%.1fs frames=%u fps=%.1f frame_ms avg=%.2f p95=%.2f max=%.2f\n",
 			I_msTime() / 1000.0, windowS, frames, fps, W.Frame.Avg(), W.Frame.P95(), W.Frame.Max);
 
@@ -229,6 +235,17 @@ namespace
 		}
 		if (!anyGpu) out << " (none: needs Vulkan with timestamp queries)";
 		out << "\n";
+
+		// [2d] Named CPU timings, only when some effect took one this window.
+		bool anyCpuFx = false;
+		for (auto& c : W.CpuFx)
+		{
+			if (c.Count == 0) continue;
+			if (!anyCpuFx) out << "cpu_fx_ms ";
+			AppendTriple(out, c);
+			anyCpuFx = true;
+		}
+		if (anyCpuFx) out << "\n";
 
 		const double n = frames > 0 ? (double)frames : 1.0;
 		out.AppendFormat("load    particles_spawned=%llu drawnlines_live=%u beams=%d stamps_live=%d disturb_live=%d dlights=%.0f/%d sprites=%.0f walls=%.0f flats=%.0f\n\n",
@@ -268,6 +285,26 @@ void PerfLog::AddGpuSample(const char* name, double ms)
 	W.Gpu.back().FrameTouched = true;
 }
 
+void PerfLog::AddCpuSample(const char* name, double ms)
+{
+	// [2d] AddGpuSample's rule, on its own list.
+	for (auto& c : W.CpuFx)
+	{
+		if (c.Name.Compare(name) == 0)
+		{
+			c.FrameValue += ms;
+			c.FrameTouched = true;
+			return;
+		}
+	}
+	if (W.CpuFx.size() >= MaxGpuNames)
+		return;
+	W.CpuFx.emplace_back();
+	W.CpuFx.back().Name = name;
+	W.CpuFx.back().FrameValue = ms;
+	W.CpuFx.back().FrameTouched = true;
+}
+
 void PerfLog::EndFrame(const SceneLoad& load)
 {
 	const int seconds = *r_perflog;
@@ -290,6 +327,7 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		for (int i = 0; i < CPU_Count; i++)
 			W.Cpu[i].Name = CpuNames[i];	// Clear() keeps names; set once per session
 		W.Gpu.clear();
+		W.CpuFx.clear();	// [2d]
 		ResetWindow(now, true);
 		HeaderWritten = false;
 		HaveParticles = false;
@@ -326,6 +364,7 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		W.StartNs = now;
 		W.LastFrameNs = now;
 		for (auto& g : W.Gpu) { g.FrameValue = 0.0; g.FrameTouched = false; }
+		for (auto& c : W.CpuFx) { c.FrameValue = 0.0; c.FrameTouched = false; }	// [2d]
 		LastParticlesWritten = load.GpuParticlesWritten;
 		HaveParticles = true;
 		return;
@@ -354,6 +393,15 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		g.Add(g.FrameValue);
 		g.FrameValue = 0.0;
 		g.FrameTouched = false;
+	}
+
+	// [2d] Named CPU timings taken this frame (AddCpuSample).
+	for (auto& c : W.CpuFx)
+	{
+		if (!c.FrameTouched) continue;
+		c.Add(c.FrameValue);
+		c.FrameValue = 0.0;
+		c.FrameTouched = false;
 	}
 
 	// Effect load.

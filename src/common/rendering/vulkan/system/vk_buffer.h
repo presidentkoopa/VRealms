@@ -61,6 +61,8 @@ public:
 	VkHardwareDataBuffer* DrawnLineSSO = nullptr;
 	// [PARTICLEDEFS] set 1 binding 7 -- see hw_particledefbuffer.h
 	VkHardwareDataBuffer* ParticleDefinitionSSO = nullptr;
+	// [VIEWLIGHTS] set 1 binding 8 -- see hw_viewlightbuffer.h
+	VkHardwareDataBuffer* ViewLightSSO = nullptr;
 
 	std::unique_ptr<VkStreamBuffer> MatrixBuffer;
 	std::unique_ptr<VkStreamBuffer> StreamBuffer;

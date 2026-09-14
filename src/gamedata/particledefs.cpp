@@ -94,6 +94,16 @@ static_assert(offsetof(ParticleDefinitionGpu, keyColor) == 128 && offsetof(Parti
 	offsetof(ParticleDefinitionGpu, shape) == 176 && offsetof(ParticleDefinitionGpu, look) == 192 &&
 	offsetof(ParticleDefinitionGpu, flipbook) == 208 && offsetof(ParticleDefinitionGpu, spare) == 224,
 	"ParticleDefinitionGpu offsets must match the std430 layout of ParticleDefinitionData in vk_shader.cpp");
+// [2d] The bytes ParticleDefinitionBuffer reads to tell what a definition's particles need
+// from the draw -- the premultiplied blend, the view lights, the read-only depth pass
+// (ParticleDefinitionBuffer::GetSlotLooks).
+static_assert(offsetof(ParticleDefinitionGpu, key) == 0 &&
+	sizeof(ParticleDefinitionGpu::key) / sizeof(ParticleDefinitionGpu::key[0]) == ParticleDefinitionBuffer::KEYS &&
+	sizeof(ParticleDefinitionGpu::key[0]) == ParticleDefinitionBuffer::KEY_STRIDE &&
+	ParticleDefinitionBuffer::KEY_ALPHA_OFFSET == 2 * sizeof(float) &&
+	ParticleDefinitionBuffer::KEY_COUNT_OFFSET == offsetof(ParticleDefinitionGpu, motion) + 3 * sizeof(float) &&
+	ParticleDefinitionBuffer::LOOK_OFFSET == offsetof(ParticleDefinitionGpu, look),
+	"ParticleDefinitionBuffer's look offsets must match ParticleDefinitionGpu: key[i].z alpha, motion.w key count, look.x lit, look.y soft");
 
 namespace
 {

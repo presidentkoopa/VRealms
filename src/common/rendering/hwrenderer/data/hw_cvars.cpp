@@ -287,6 +287,17 @@ int GpuParticleAtlasLayerSize()
 	return r_gpuparticles_atlas_size < 192 ? 128 : 256;
 }
 
+// [2d] THE VIEW LIGHTS LIT PARTICLES SEE ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2d).
+// How many of the dynamic lights in view -- nearest the eye first -- light particle
+// definitions that are lit (`lit` above 0) and occlude (alpha above 0): 0..32
+// (ViewLightBuffer::CAPACITY). 0 = sector light at spawn only, and the list is never
+// filled. The list is only filled while such a particle is alive, and nothing additive
+// or unlit reads it, so no existing effect changes at any value.
+//
+// Renderer-read every main-view scene (HWDrawInfo::ProcessScene), so the slider responds
+// with the menu open. perflog.txt times the fill as fx.viewlights. Vulkan only.
+CVARD(Int, r_gpuparticles_lights, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "how many dynamic lights in view light lit GPU particles, nearest first, 0-32; 0 = sector light only (Vulkan only)")
+
 // The ring size, latched the first time anything asks. The CPU ring on
 // FLevelLocals and the GPU ring both size from this, so they can never
 // disagree within one run -- which is what "takes effect on restart" means.

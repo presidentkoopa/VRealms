@@ -135,6 +135,7 @@ int GpuParticleRingCapacity();
 bool GpuParticlesLegacyPath();	// [2b] r_gpuparticles_legacy, for FLevelLocals::SpawnGpuParticles
 EXTERN_CVAR(Int, r_gpuparticles_atlas_size)	// [2c] particle atlas layer side in pixels
 int GpuParticleAtlasLayerSize();	// [2c] r_gpuparticles_atlas_size rounded to 128 or 256
+EXTERN_CVAR(Int, r_gpuparticles_lights)	// [2d] dynamic lights in view that light lit particles, 0-32
 
 // [DRAWNLINES] + [BEAMLINES] see hw_cvars.cpp
 EXTERN_CVAR(Bool, r_beams_drawn)

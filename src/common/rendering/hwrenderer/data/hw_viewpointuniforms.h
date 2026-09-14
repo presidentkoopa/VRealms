@@ -561,8 +561,12 @@ struct HWViewpointUniforms
 	//                        distance along the view axis = 1 / (raw * A + B).
 	//                        zw spare.
 	//   mGpuParticleParams2  x soft distance in map units (r_gpuparticles_soft,
-	//                        0 = hard edges, as before 2a); yzw spare for the
-	//                        later stage-2 particle knobs.
+	//                        0 = hard edges, as before 2a); [2d] y which output
+	//                        gpuparticles.fp writes, and so which blend
+	//                        RenderTranslucent draws the ring with: 0 STYLE_Add,
+	//                        exactly as before 2d; 1 premultiplied alpha, while a
+	//                        particle whose definition occludes is alive
+	//                        (HWDrawInfo::StartScene); zw spare.
 	//
 	// mLinearizeDepth is general, named for what it holds: any forward effect that
 	// reads scene depth through the read-only depth pass linearizes with it --

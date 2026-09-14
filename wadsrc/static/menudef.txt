@@ -2190,6 +2190,13 @@ OptionMenu DeveloperOptionsMenu protected
 	// Renderer-read every frame: the atlas rebuilds on the next frame, with this menu
 	// still open. Vulkan only.
 	Slider "Particle atlas size (px, rebuilds at once)", "r_gpuparticles_atlas_size", 128, 256, 128, 0
+	// [2d] r_gpuparticles_lights -- how many dynamic lights in view (nearest first)
+	// light lit, alpha-blended particle definitions such as smoke and dust ("Engine
+	// docs/GPU_PARTICLES_STAGE2_PLAN.md" 2d). 0 = the sector light at spawn only.
+	// Sparks, flames and every additive effect ignore it. Renderer-read every scene,
+	// so smoke already in the air responds with this menu open; perflog.txt times the
+	// list fill as fx.viewlights. Vulkan only.
+	Slider "Particle lights (0 = sector light only)", "r_gpuparticles_lights", 0, 32, 1, 0
 	StaticText " "
 	StaticText "$DEVOPTMNU_OPTIONS_MARKED_WITH_RESTART", "Brown"
 	StaticText " "

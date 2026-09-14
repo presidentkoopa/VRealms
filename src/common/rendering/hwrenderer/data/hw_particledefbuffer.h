@@ -91,6 +91,28 @@ public:
 	uint64_t GetSyncedGeneration() const { return mSyncedGeneration; }
 	uint64_t GetUploadedSlots() const { return mUploadedSlots; }	// since creation, for the `particles` CCMD
 
+	// [2d] WHAT A DEFINITION'S PARTICLES NEED FROM THE DRAW -- one byte per slot, worked
+	// out from the definition's own bytes whenever Sync copies that slot, so the common
+	// renderer never reaches into gamedata. GpuParticleBuffer::Sync looks the byte up for
+	// every record it uploads and keeps how long particles needing each piece stay alive;
+	// HWDrawInfo turns the premultiplied blend, the view light fill and the read-only
+	// depth pass on only while they are. A slot never written is 0: needs nothing.
+	enum : uint8_t
+	{
+		LOOK_OCCLUDES = 1,	// some alpha key is above 0 -- the draw needs the premultiplied blend
+		LOOK_LIT = 2,		// occludes AND lit above 0 -- the view light list is worth filling
+		LOOK_SOFT = 4,		// its own soft distance is above 0 -- the read-only depth pass is needed
+	};
+	const uint8_t *GetSlotLooks() const { return mSlotLooks; }
+
+	// [2d] Where Sync finds those in a definition's 256 bytes. particledefs.cpp asserts
+	// every one against ParticleDefinitionGpu.
+	static const unsigned KEYS = 8;
+	static const unsigned KEY_STRIDE = 16;			// key[i] starts at i * 16
+	static const unsigned KEY_ALPHA_OFFSET = 8;		// key[i].z, alpha 0..1
+	static const unsigned KEY_COUNT_OFFSET = 172;	// motion.w, the key count 1..8
+	static const unsigned LOOK_OFFSET = 192;		// look: x lit 0..1, y soft (-1 unset)
+
 	// [2c] THE PARTICLE ATLAS holds at most this many layers, one per frame; a
 	// flipbook's frames are consecutive layers. 256 layers of 256 x 256 with mips is
 	// the approved budget (about 85 MiB; the byte math is in "Engine docs/
@@ -123,6 +145,9 @@ private:
 	uint64_t mSyncedGeneration = 0;
 	uint64_t mUploadedSlots = 0;
 	bool mWarnedCount = false;
+
+	// [2d] LOOK_* per slot, see GetSlotLooks.
+	uint8_t mSlotLooks[SLOTS] = {};
 
 	// [2c] The atlas layer list, see SyncAtlasLayers.
 	TArray<ParticleAtlasLayer> mAtlasLayers;

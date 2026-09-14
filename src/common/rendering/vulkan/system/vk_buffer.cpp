@@ -58,7 +58,7 @@ void VkBufferManager::RemoveBuffer(VkHardwareBuffer* buffer)
 	buffer->fb = nullptr;
 	Buffers.erase(buffer->it);
 
-	for (VkHardwareDataBuffer** knownbuf : { &ViewpointUBO, &LightBufferSSO, &LightNodes, &LightLines, &LightList, &BoneBufferSSO, &GpuParticleSSO, &DrawnLineSSO, &ParticleDefinitionSSO })
+	for (VkHardwareDataBuffer** knownbuf : { &ViewpointUBO, &LightBufferSSO, &LightNodes, &LightLines, &LightList, &BoneBufferSSO, &GpuParticleSSO, &DrawnLineSSO, &ParticleDefinitionSSO, &ViewLightSSO })
 	{
 		if (buffer == *knownbuf) *knownbuf = nullptr;
 	}
@@ -89,6 +89,7 @@ IDataBuffer* VkBufferManager::CreateDataBuffer(int bindingpoint, bool ssbo, bool
 	case GPUPARTICLE_BINDINGPOINT: GpuParticleSSO = buffer; break;	// [GPUPARTICLES]
 	case DRAWNLINE_BINDINGPOINT: DrawnLineSSO = buffer; break;	// [DRAWNLINES]
 	case PARTICLEDEF_BINDINGPOINT: ParticleDefinitionSSO = buffer; break;	// [PARTICLEDEFS]
+	case VIEWLIGHT_BINDINGPOINT: ViewLightSSO = buffer; break;	// [VIEWLIGHTS]
 	case POSTPROCESS_BINDINGPOINT: break;
 	default: break;
 	}

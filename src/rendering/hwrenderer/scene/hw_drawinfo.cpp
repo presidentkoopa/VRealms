@@ -16,6 +16,7 @@
 */
 
 #include <algorithm>
+#include <cstddef>	// [2d] offsetof, for the particle record asserts
 #include "a_sharedglobal.h"
 #include "r_utility.h"
 #include "r_sky.h"
@@ -39,6 +40,8 @@
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES]
 #include "hw_particledefbuffer.h"	// [PARTICLEDEFS] the GPU copy of the definitions
 #include "particledefs.h"	// [PARTICLEDEFS] the CPU table it syncs from
+#include "hw_viewlightbuffer.h"	// [VIEWLIGHTS] the dynamic lights in view, for lit particles
+#include "a_dynlight.h"	// [VIEWLIGHTS] FDynamicLight, walked to fill it
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
 #include "hw_vrmodes.h"
 #include "hw_vrwheel.h"
@@ -109,6 +112,15 @@ CVAR(Bool, r_beam_interpolate, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 static_assert(DrawnLineBuffer::ROUTED_BEAM_RESERVE == (unsigned)FLevelLocals::MAX_BEAMS,
 	"DrawnLineBuffer reserves one record per beam slot for r_beams_drawn");
+
+// [2d] GpuParticleBuffer::Sync reads each uploaded record's birth, life, definition slot and
+// plane / legacy tag at these offsets to know what its particles need from the draw.
+static_assert(sizeof(FLevelLocals::GpuParticleRecord) == GpuParticleBuffer::RECORD_BYTES &&
+	offsetof(FLevelLocals::GpuParticleRecord, a) + 3 * sizeof(float) == GpuParticleBuffer::RECORD_BIRTH_OFFSET &&
+	offsetof(FLevelLocals::GpuParticleRecord, b) + 3 * sizeof(float) == GpuParticleBuffer::RECORD_LIFE_OFFSET &&
+	offsetof(FLevelLocals::GpuParticleRecord, d) == GpuParticleBuffer::RECORD_DEFINITION_OFFSET &&
+	offsetof(FLevelLocals::GpuParticleRecord, e) == GpuParticleBuffer::RECORD_PLANE_OFFSET,
+	"GpuParticleBuffer's record offsets must match FLevelLocals::GpuParticleRecord: a.w birth, b.w life, d.x definition, e.x plane");
 
 //==========================================================================
 //
@@ -284,6 +296,245 @@ static void SyncDrawnLines(FLevelLocals *Level, double viewTicFrac)
 	}
 
 	lines->Upload(DrawnLineScratch.Data(), n, routed);
+}
+
+//==========================================================================
+//
+// [VIEWLIGHTS] This scene's view light list, handed to the GPU.
+//
+// The dynamic lights lit particles loop over in gpuparticles.vp (ViewLightBuffer).
+// Filled for the main view only, and only while something reads it: a particle
+// whose definition is lit and occludes is alive, r_gpuparticles_lights is above 0
+// and dynamic lights are on (r_dynlights). Otherwise the list is emptied, which is
+// no work at all once it is empty.
+//
+// WHICH LIGHTS. Active, with a radius, visible to the player (visibletoplayer), and
+// not kept off actors (DONTLIGHTACTORS, DONTLIGHTOTHERS): a particle is lit the way
+// a sprite is (HWDrawInfo::GetDynSpriteLight), and those flags keep a light off
+// sprites. Of those, the ones whose sphere reaches into this view's frustum (either
+// eye's, under multiview), nearest the eye first -- measured to the sphere, so
+// standing inside a big light makes it nearest -- up to the slider. Colour as the
+// sprite path: rgb x GLDEFS intensity, x the owner's alpha for LIGHTMULTALPHA,
+// subtractive lights negative. Spot cones as hw_dynlightdata.cpp. No shadow map.
+//
+// NOT OCCLUSION. A light behind a wall, within its radius of smoke on this side,
+// lights that smoke. The BSP has not run yet here (DrawScene runs it), and its
+// section lists would not follow smoke drifting through a doorway either.
+//
+// World space, like the drawn lines: both eyes' draws read whatever the last scene
+// wrote (per-eye rendering writes twice a frame, multiview once), and two eyes'
+// lists can differ only at the far end of the nearest-N cut. Presentation only:
+// nothing reads the list back, and it changes only this machine's pixels.
+//
+//==========================================================================
+
+struct ViewLightCandidate
+{
+	double Distance;
+	FDynamicLight *Light;
+	float Color[3];
+};
+
+static TArray<ViewLightCandidate> ViewLightCandidates;
+static ViewLightRecord ViewLightScratch[ViewLightBuffer::CAPACITY];
+
+// The side and near planes of one view's frustum, in SHADER space (game x, z, y),
+// taken from the rows of projection x view in GL clip conventions (-w <= x, y, z
+// <= w) and normalised, so a plane's value at a point is a distance in map units.
+struct ViewLightFrustum
+{
+	double Plane[5][4];
+};
+
+static void BuildViewLightFrustum(const HWViewpointUniforms &uniforms, ViewLightFrustum &frustum)
+{
+	const auto *projection = uniforms.mProjectionMatrix.get();
+	const auto *view = uniforms.mViewMatrix.get();
+	double m[16];	// column-major, m[column * 4 + row]
+	for (int column = 0; column < 4; column++)
+	{
+		for (int row = 0; row < 4; row++)
+		{
+			double sum = 0.0;
+			for (int k = 0; k < 4; k++)
+				sum += (double)projection[k * 4 + row] * (double)view[column * 4 + k];
+			m[column * 4 + row] = sum;
+		}
+	}
+
+	// Row 3 plus or minus row 0 (left, right), row 1 (bottom, top), row 2 (near).
+	static const int axis[5] = { 0, 0, 1, 1, 2 };
+	static const double sign[5] = { 1.0, -1.0, 1.0, -1.0, 1.0 };
+	for (int i = 0; i < 5; i++)
+	{
+		double lengthSquared = 0.0;
+		for (int column = 0; column < 4; column++)
+		{
+			frustum.Plane[i][column] = m[column * 4 + 3] + sign[i] * m[column * 4 + axis[i]];
+			if (column < 3) lengthSquared += frustum.Plane[i][column] * frustum.Plane[i][column];
+		}
+		const double length = sqrt(lengthSquared);
+		if (length > 1e-12)
+		{
+			for (int column = 0; column < 4; column++)
+				frustum.Plane[i][column] /= length;
+		}
+		else
+		{
+			// A degenerate matrix: this plane rejects nothing.
+			frustum.Plane[i][0] = frustum.Plane[i][1] = frustum.Plane[i][2] = 0.0;
+			frustum.Plane[i][3] = 1.0;
+		}
+	}
+}
+
+static bool ViewLightReachesFrustum(const ViewLightFrustum &frustum, double x, double y, double z, double radius)
+{
+	for (int i = 0; i < 5; i++)
+	{
+		const double *plane = frustum.Plane[i];
+		if (plane[0] * x + plane[1] * y + plane[2] * z + plane[3] < -radius)
+			return false;
+	}
+	return true;
+}
+
+static void SyncViewLights(const HWDrawInfo *di)
+{
+	ViewLightBuffer *viewLights = screen->mViewLights;
+	if (viewLights == nullptr) return;
+
+	FLevelLocals *Level = di->Level;
+	const GpuParticleBuffer *particles = screen->mGpuParticles;
+	const int wanted = clamp((int)r_gpuparticles_lights, 0, (int)ViewLightBuffer::CAPACITY);
+	if (Level == nullptr || Level->lights == nullptr || !r_dynlights || !r_gpuparticles || wanted <= 0 ||
+		particles == nullptr || !particles->IsDrawable() || !particles->LitAliveAt(di->VPUniforms.mLevelTime.X))
+	{
+		viewLights->Upload(nullptr, 0);
+		return;
+	}
+
+	// fx.viewlights: CPU time of the fill, main view only (perflog.txt, cpu_fx_ms).
+	const bool timed = PerfLog::GroupsWanted();
+	const uint64_t startNs = timed ? I_nsTime() : 0;
+
+	ViewLightFrustum frustum[2];
+	const int frustumCount = di->HasMultiviewViewpoints ? 2 : 1;
+	if (di->HasMultiviewViewpoints)
+	{
+		BuildViewLightFrustum(di->MultiviewVPUniforms[0], frustum[0]);
+		BuildViewLightFrustum(di->MultiviewVPUniforms[1], frustum[1]);
+	}
+	else
+	{
+		BuildViewLightFrustum(di->VPUniforms, frustum[0]);
+	}
+
+	const DVector3 eye = di->Viewpoint.Pos;
+	ViewLightCandidates.Clear();
+	for (FDynamicLight *light = Level->lights; light != nullptr; light = light->next)
+	{
+		if (!light->IsActive() || !light->visibletoplayer || light->DontLightActors() || light->DontLightOthers())
+			continue;
+		const double radius = light->GetRadius();
+		if (!(radius > 0.0))
+			continue;
+
+		bool inView = false;
+		for (int f = 0; f < frustumCount && !inView; f++)
+			inView = ViewLightReachesFrustum(frustum[f], light->Pos.X, light->Pos.Z, light->Pos.Y, radius);
+		if (!inView)
+			continue;
+
+		// GetDynSpriteLight's colour.
+		float lr = light->GetRed() / 255.f;
+		float lg = light->GetGreen() / 255.f;
+		float lb = light->GetBlue() / 255.f;
+		if (light->target && (light->target->renderflags2 & RF2_LIGHTMULTALPHA))
+		{
+			const float alpha = (float)light->target->Alpha;
+			lr *= alpha;
+			lg *= alpha;
+			lb *= alpha;
+		}
+		const float intensity = (float)light->GetLightDefIntensity();
+		lr *= intensity;
+		lg *= intensity;
+		lb *= intensity;
+		if (light->IsSubtractive())
+		{
+			const float bright = sqrtf(lr * lr + lg * lg + lb * lb);
+			lr = (bright - lr) * -1;
+			lg = (bright - lg) * -1;
+			lb = (bright - lb) * -1;
+		}
+		if (lr == 0.f && lg == 0.f && lb == 0.f)
+			continue;
+
+		const double distance = (light->Pos - eye).Length() - radius;
+		ViewLightCandidate candidate;
+		candidate.Distance = distance > 0.0 ? distance : 0.0;
+		candidate.Light = light;
+		candidate.Color[0] = lr;
+		candidate.Color[1] = lg;
+		candidate.Color[2] = lb;
+		ViewLightCandidates.Push(candidate);
+	}
+
+	unsigned count = ViewLightCandidates.Size();
+	if (count > (unsigned)wanted)
+	{
+		std::nth_element(ViewLightCandidates.Data(), ViewLightCandidates.Data() + wanted, ViewLightCandidates.Data() + count,
+			[](const ViewLightCandidate &a, const ViewLightCandidate &b) { return a.Distance < b.Distance; });
+		count = (unsigned)wanted;
+	}
+
+	for (unsigned i = 0; i < count; i++)
+	{
+		const ViewLightCandidate &candidate = ViewLightCandidates[i];
+		const FDynamicLight *light = candidate.Light;
+		ViewLightRecord &record = ViewLightScratch[i];
+
+		// Shader space: game x, z, y.
+		record.origin[0] = (float)light->Pos.X;
+		record.origin[1] = (float)light->Pos.Z;
+		record.origin[2] = (float)light->Pos.Y;
+		record.origin[3] = light->GetRadius();
+		record.color[0] = candidate.Color[0];
+		record.color[1] = candidate.Color[1];
+		record.color[2] = candidate.Color[2];
+		record.color[3] = 0.f;
+
+		if (light->IsSpot())
+		{
+			// hw_dynlightdata.cpp's GetSpotlightShaderParams, uncached. A cone whose
+			// inner and outer angles are equal would make smoothstep's edges equal.
+			float cosInner = (float)light->pSpotInnerAngle->Cos();
+			float cosOuter = (float)light->pSpotOuterAngle->Cos();
+			if (!(cosOuter < cosInner)) cosOuter = cosInner - 1e-4f;
+			const DAngle negPitch = -light->Pitch;
+			const DAngle angle = light->Yaw;
+			const double xzLength = negPitch.Cos();
+			record.spotDirection[0] = float(-angle.Cos() * xzLength);
+			record.spotDirection[1] = float(-negPitch.Sin());
+			record.spotDirection[2] = float(-angle.Sin() * xzLength);
+			record.spotCone[0] = cosOuter;
+			record.spotCone[1] = cosInner;
+		}
+		else
+		{
+			record.spotDirection[0] = record.spotDirection[1] = record.spotDirection[2] = 0.f;
+			record.spotCone[0] = -2.f;
+			record.spotCone[1] = -1.f;
+		}
+		record.spotDirection[3] = 0.f;
+		record.spotCone[2] = record.spotCone[3] = 0.f;
+	}
+
+	viewLights->Upload(ViewLightScratch, count);
+
+	if (timed)
+		PerfLog::AddCpuSample("fx.viewlights", (double)(I_nsTime() - startNs) / 1e6);
 }
 
 // r_beams_debug: one line every two seconds. Runs on every backend -- the
@@ -668,7 +919,15 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		VPUniforms.mLinearizeDepth = {
 			1.0f / screen->GetZFar() - 1.0f / screen->GetZNear(),
 			max(1.0f / screen->GetZNear(), 1.e-8f), 0.f, 0.f };
-		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), 0.f, 0.f, 0.f };
+		// [2d] y: which output gpuparticles.fp writes, and so which blend RenderTranslucent
+		// draws the ring with -- it reads this same value back. 1, premultiplied, while a
+		// particle whose definition occludes (alpha above 0) is alive at this frame's level
+		// time; 0, exactly the additive draw before 2d, otherwise. What is alive comes from
+		// the ring's last Sync, one scene earlier than this frame's: a first puff draws its
+		// first frame additively (nothing, at emissive 0), and switching off is exact.
+		const bool gpuParticlesPremultiplied = screen->mGpuParticles != nullptr &&
+			screen->mGpuParticles->OccludersAliveAt(VPUniforms.mLevelTime.X);
+		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), gpuParticlesPremultiplied ? 1.f : 0.f, 0.f, 0.f };
 
 		// [BB] Sweep fill -- the pattern inside a band. Frame-global style;
 		// only the mode is per band, packed into the draw mode.
@@ -2178,11 +2437,20 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 	//     costs nothing at all
 	//   - [PARTICLEDEFS] the definitions buffer exists: every record indexes it
 	//     (set 1 binding 7), and the bone buffer only stands in for binding's sake
+	//   - [VIEWLIGHTS] likewise the view light buffer (set 1 binding 8), which lit
+	//     particles read
 	if (r_gpuparticles && screen->IsVulkan() && mCurrentPortal == nullptr && Level != nullptr &&
 		Level->GpuParticleWritten > 0 && screen->mGpuParticles != nullptr && screen->mGpuParticles->IsDrawable() &&
-		screen->mParticleDefinitions != nullptr)
+		screen->mParticleDefinitions != nullptr && screen->mViewLights != nullptr)
 	{
 		auto particles = screen->mGpuParticles;
+
+		// [2d] This frame's level time, the clock records age by, and the blend the
+		// uploaded viewpoint block told gpuparticles.fp to write for (StartScene). Read
+		// back from VPUniforms rather than decided again, so the pipeline and the shader
+		// can never disagree.
+		const float levelTime = VPUniforms.mLevelTime.X;
+		const bool premultiplied = VPUniforms.mGpuParticleParams2.Y > 0.5f;
 
 		// [2a] SOFT PARTICLES -- readable scene depth for this ONE draw. With
 		// r_gpuparticles_soft above 0 and gpuparticles' scene-depth variants
@@ -2201,8 +2469,13 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 		// save pictures, per-layer stereo) and particles there draw hard, as
 		// before. At 0, the default, none of this runs: no switch, no extra pass,
 		// no extra pipeline. fx.depthread times each switch, main view only.
+		//
+		// [2d] Also while a particle whose definition sets its own soft distance is
+		// alive (`soft` above 0, e.g. RS_Ballistics' flames), whatever the slider says:
+		// the fragment takes the definition's distance, falling back to the slider's.
+		// With the slider at 0 and no such particle alive, still no switch at all.
 		bool sceneDepthReadable = false;
-		if ((float)r_gpuparticles_soft > 0.f && particles->SceneDepthShaderReady)
+		if (((float)r_gpuparticles_soft > 0.f || particles->SoftAliveAt(levelTime)) && particles->SceneDepthShaderReady)
 		{
 			if (perfGroups) state.PushGroup("fx.depthread");	// [2a] r_perflog
 			sceneDepthReadable = state.SetSceneDepthReadable(true);
@@ -2211,9 +2484,39 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 
 		if (perfGroups) state.PushGroup("fx.gpuparticles");	// RS FORK -- r_perflog
 		state.SetEffect(EFF_GPUPARTICLES);
-		state.SetRenderStyle(STYLE_Add);
-		state.SetVertexBuffer(particles->GetVertexBuffer(), 0, 0);
-		state.Draw(DT_Triangles, 0, particles->GetVertexCount());
+		if (!premultiplied)
+		{
+			// No occluding particle alive: the additive draw exactly as before 2d.
+			state.SetRenderStyle(STYLE_Add);
+			state.SetVertexBuffer(particles->GetVertexBuffer(), 0, 0);
+			state.Draw(DT_Triangles, 0, particles->GetVertexCount());
+		}
+		else
+		{
+			// [2d] PREMULTIPLIED ALPHA (One, InvSrcAlpha): smoke and dust hide what is
+			// behind them, and additive particles in the same ring -- occlusion 0 --
+			// add exactly what they add under STYLE_Add. Still one pipeline and no
+			// sort: the ring is drawn OLDEST FIRST, [oldest, end) then [0, oldest), so
+			// rising smoke tends to draw high and far first. What this does not sort --
+			// particles against each other, against the translucent lists drawn above,
+			// and against the drawn lines drawn below -- is in "Engine docs/
+			// STAGE2D_IMPL_NOTES.md".
+			FRenderStyle premultipliedStyle;
+			premultipliedStyle.AsDWORD = 0;
+			premultipliedStyle.BlendOp = STYLEOP_Add;
+			premultipliedStyle.SrcAlpha = STYLEALPHA_One;
+			premultipliedStyle.DestAlpha = STYLEALPHA_InvSrc;
+			premultipliedStyle.Flags = 0;
+			state.SetRenderStyle(premultipliedStyle);
+			state.SetVertexBuffer(particles->GetVertexBuffer(), 0, 0);
+
+			const int vertexCount = particles->GetVertexCount();
+			const int oldestVertex = (int)particles->GetOldestSlot() * (int)GpuParticleBuffer::VERTICES_PER_RECORD;
+			if (vertexCount - oldestVertex > 0)
+				state.Draw(DT_Triangles, oldestVertex, vertexCount - oldestVertex);
+			if (oldestVertex > 0)
+				state.Draw(DT_Triangles, 0, oldestVertex);
+		}
 		particles->CountDraw();
 
 		// Restore what the rest of the translucent pass and the portal code
@@ -2825,8 +3128,12 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	}
 	if (screen->mGpuParticles != nullptr && Level != nullptr)
 	{
+		// [2d] With each definition slot's LOOK_* byte, so the ring notes how long particles
+		// needing the premultiplied blend, the view lights or their own soft distance live.
 		screen->mGpuParticles->Sync(Level->GpuParticles.Data(), Level->GpuParticles.Size(),
-			Level->GpuParticleSerial, Level->GpuParticleWritten);
+			Level->GpuParticleSerial, Level->GpuParticleWritten,
+			screen->mParticleDefinitions != nullptr ? screen->mParticleDefinitions->GetSlotLooks() : nullptr,
+			ParticleDefinitionBuffer::SLOTS);
 		screen->mGpuParticles->DebugReport(Level->GpuParticleWritten);
 	}
 
@@ -2836,6 +3143,12 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// the r_beams_debug line prints on every backend.
 	SyncDrawnLines(Level, Viewpoint.TicFrac);
 	ReportBeamLines(Level);
+
+	// [VIEWLIGHTS] The dynamic lights in view, for lit particles -- after the ring's Sync,
+	// which says whether any lit particle is alive. Main view only: a camera texture
+	// draws with the main view's list, which is the same world.
+	if (toscreen)
+		SyncViewLights(this);
 
 	DrawScene(toscreen ? DM_MAINVIEW : DM_OFFSCREEN);
 	screen->mBones->Unmap();
