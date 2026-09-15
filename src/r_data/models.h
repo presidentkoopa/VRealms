@@ -102,6 +102,10 @@ enum
 FSpriteModelFrame * FindModelFrame(AActor * thing, int sprite, int frame, bool dropped);
 FSpriteModelFrame * FindModelFrame(const PClass * ti, bool is_decoupled, int sprite, int frame, bool dropped);
 FSpriteModelFrame * FindModelFrame(const PClass * ti, int sprite, int frame, bool dropped);
+// RS FORK -- the MODELDEF block for (class, sprite, frame) and nothing else: FindModelFrameRaw's hash walk without its
+// voxel fallback, so no render cvar and no voxel changes the answer. For game-state questions that every machine in a
+// game must answer alike -- p_actionfunctions.cpp's model queries (models.cpp says more).
+FSpriteModelFrame * FindModelDefFrame(const PClass * ti, int sprite, int frame);
 FSpriteModelFrame * FindVoxelFrame(int sprite, int frame, bool dropped);
 
 // RS FORK -- r_voxels_mode / r_voxeldistance helpers, defined beside

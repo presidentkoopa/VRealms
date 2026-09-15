@@ -4813,7 +4813,7 @@ OptionMenu QuickMenu protected
 	StaticText "$QZDMNU_RECOMMEND_REFRESH_RATE", "Brown"
 	
 	StaticText " "
-	Option "$GLLIGHTMNU_LIGHTSENABLED", gl_lights, "OnOff"
+	Option "$GLLIGHTMNU_LIGHTSENABLED", r_dynlights, "OnOff"
 	StaticText "$QZDMNU_AFFECT_PERF_TIP", "Brown"
 	
 	StaticText " "
@@ -5041,7 +5041,7 @@ OptionMenu VRPerfTweakMenu protected
 
 	StaticText " "
 	Title "$GLLIGHTMNU_TITLE"
-	Option "$GLLIGHTMNU_LIGHTSENABLED",			gl_lights,				"OnOff"
+	Option "$GLLIGHTMNU_LIGHTSENABLED",			r_dynlights,			"OnOff"
 	Option "$GLLIGHTMNU_LIGHTWEAPONS",			gl_light_weapons,		"YesNo"
 	StaticText "$QZDMNU_AFFECT_PERF_TIP", "Brown"
 
@@ -5078,7 +5078,7 @@ OptionMenu VRPerfTweakMenu protected
 	}
 
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar gl_multithread vr_scene_multithread vr_openxr_multiview gl_texture_thread gl_texture_filter_anisotropic gl_texture_hqresizemode gl_texture_hqresizemult gl_precache gl_multisample gl_skydome gl_sprite_decor_distance_cull gl_sprite_distance_cull gl_line_distance_cull gl_global_fade gl_global_fade_density gl_global_fade_gradient gl_global_fade_color gl_lights gl_light_weapons gl_light_distance_cull gl_light_max_intensity gl_light_max_collected_subsectors gl_light_wall_max_lights gl_light_flat_max_lights gl_light_range_limit gl_light_wall_candidate_budget gl_light_flat_candidate_budget vr_openxr_render_scale gl_bsp_worker_threads gl_bsp_wall_batch_size gl_bsp_worker_sky_mainthread vr_openxr_multiview_mirror_reuse vr_openxr_multiview_postprocess"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar gl_multithread vr_scene_multithread vr_openxr_multiview gl_texture_thread gl_texture_filter_anisotropic gl_texture_hqresizemode gl_texture_hqresizemult gl_precache gl_multisample gl_skydome gl_sprite_decor_distance_cull gl_sprite_distance_cull gl_line_distance_cull gl_global_fade gl_global_fade_density gl_global_fade_gradient gl_global_fade_color r_dynlights gl_light_weapons gl_light_distance_cull gl_light_max_intensity gl_light_max_collected_subsectors gl_light_wall_max_lights gl_light_flat_max_lights gl_light_range_limit gl_light_wall_candidate_budget gl_light_flat_candidate_budget vr_openxr_render_scale gl_bsp_worker_threads gl_bsp_wall_batch_size gl_bsp_worker_sky_mainthread vr_openxr_multiview_mirror_reuse vr_openxr_multiview_postprocess"
 }
 
 /*=======================================

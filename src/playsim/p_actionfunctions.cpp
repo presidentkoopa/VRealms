@@ -54,6 +54,7 @@
 #include "actorinlines.h"
 #include "types.h"
 #include "model.h"
+#include "models.h"   // RS fork -- FindModelDefFrame (r_data/models.cpp), for the model queries
 #include "shadowinlines.h"
 #include "i_time.h"
 #include "c_dispatch.h"
@@ -5448,6 +5449,23 @@ static FModel * ResolveModelForSurface(AActor * self, int model_index)
 		if (id >= 0 && id < Models.SSize()) return Models[id];
 	}
 
+	// RS FORK -- ELSE THE MODELDEF BLOCK THE ACTOR IS DRAWN FROM. A class without a BaseFrame line has no entry above, so
+	// an index the actor never changed had no answer here, although the renderer draws that index from the class's
+	// MODELDEF block for the actor's sprite and frame (FindModelFrame): a part on model 1 or 2 of an ordinary MODELDEF
+	// prop could not be found by name. This asks that same block. It is reached only where everything above found
+	// nothing, so every answer given before is unchanged; and only for an actor without decoupled animations, since the
+	// renderer takes a decoupled actor's models from its BaseFrame alone. FindModelDefFrame (models.cpp) reads MODELDEF
+	// and the actor's sprite and frame only -- no render cvar, no voxel -- so every machine in a game gets the same answer.
+	if (!(self->flags9 & MF9_DECOUPLEDANIMATIONS))
+	{
+		const FSpriteModelFrame * drawnFrame = FindModelDefFrame(smf_class, self->sprite, self->frame);
+		if (drawnFrame != nullptr && drawnFrame->modelIDs.SSize() > model_index)
+		{
+			int id = drawnFrame->modelIDs[model_index];
+			if (id >= 0 && id < Models.SSize()) return Models[id];
+		}
+	}
+
 	return nullptr;
 }
 
@@ -5524,6 +5542,173 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetModelFrameCount, GetModelFrameCountNati
 	PARAM_SELF_PROLOGUE(AActor);
 	PARAM_INT(model_index);
 	ACTION_RETURN_INT(GetModelFrameCountNative(self, model_index));
+}
+
+//================================================
+//
+// RS FORK -- JOINTS BY MODEL INDEX, AND THE SAME QUESTIONS ASKED OF A CLASS.
+//
+// FindBoneIndex answers for model 0 only, needs decoupled animations and a BaseFrame (it aborts without them), and
+// gives the actor model data as a side effect. A thing drawn from several model files -- a rifle whose laser and
+// silencer are their own IQMs on its skeleton, MODELDEF Model 1 and 2 -- needs "is this joint on model N" answered the
+// way the surface queries above answer: read-only, through ResolveModelForSurface, for any actor with a model.
+//
+// A data check runs with no level and no actor (-norun -validatedata, gamedata/datavalidation.cpp), and anything may
+// want a class's model without spawning one, so the model questions also take a CLASS: the model its MODELDEF gives
+// that index -- the BaseFrame block, else the block for its spawn state's sprite and frame. That is what
+// ResolveModelForSurface answers for a fresh actor of the class that has changed none of its models. Static and
+// clearscope in actor.zs, so a DataValidator can ask.
+//
+// All of it reads MODELDEF data and actor state only -- nothing renderer-side, nothing per view -- and changes nothing.
+//
+//================================================
+
+static int FindModelJointIndexNative(AActor * self, int model_index, int jointName_i)
+{
+	FModel * mdl = ResolveModelForSurface(self, model_index);
+	if (!mdl) return -1;
+	// Case-insensitive, as FName comparison is (see FindModelSurfaceIndexNative).
+	FName want { ENamedName(jointName_i) };
+	if (want == NAME_None) return -1;
+	return mdl->FindJoint(want);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, FindModelJointIndex, FindModelJointIndexNative)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(model_index);
+	PARAM_NAME(joint_name);
+	ACTION_RETURN_INT(FindModelJointIndexNative(self, model_index, joint_name.GetIndex()));
+}
+
+static int GetModelJointCountNative(AActor * self, int model_index)
+{
+	FModel * mdl = ResolveModelForSurface(self, model_index);
+	return mdl ? mdl->NumJoints() : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetModelJointCount, GetModelJointCountNative)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(model_index);
+	ACTION_RETURN_INT(GetModelJointCountNative(self, model_index));
+}
+
+static int GetModelJointNameNative(AActor * self, int model_index, int joint)
+{
+	FModel * mdl = ResolveModelForSurface(self, model_index);
+	if (!mdl) return NAME_None;
+	return mdl->GetJointName(joint).GetIndex();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetModelJointName, GetModelJointNameNative)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(model_index);
+	PARAM_INT(joint);
+	ACTION_RETURN_INT(GetModelJointNameNative(self, model_index, joint));
+}
+
+// The model a class's MODELDEF gives an index, with no actor: ResolveModelForSurface's two MODELDEF lookups, asked for
+// a fresh actor of the class.
+static FModel * ResolveModelForClass(PClassActor * cls, int model_index)
+{
+	if (cls == nullptr || model_index < 0) return nullptr;
+
+	// Its BaseFrame block.
+	if (BaseSpriteModelFrames.CheckKey(cls)
+		&& BaseSpriteModelFrames[cls].modelIDs.SSize() > model_index)
+	{
+		int id = BaseSpriteModelFrames[cls].modelIDs[model_index];
+		if (id >= 0 && id < Models.SSize()) return Models[id];
+	}
+
+	// Else the block for its spawn state's sprite and frame -- the one a just-spawned actor is drawn from.
+	auto def = GetDefaultByType(cls);
+	if (def == nullptr || (def->flags9 & MF9_DECOUPLEDANIMATIONS) || def->SpawnState == nullptr) return nullptr;
+	const FSpriteModelFrame * drawnFrame = FindModelDefFrame(cls, def->SpawnState->sprite, def->SpawnState->GetFrame());
+	if (drawnFrame != nullptr && drawnFrame->modelIDs.SSize() > model_index)
+	{
+		int id = drawnFrame->modelIDs[model_index];
+		if (id >= 0 && id < Models.SSize()) return Models[id];
+	}
+	return nullptr;
+}
+
+static void GetClassModelFileNative(PClassActor * cls, int model_index, FString * result)
+{
+	FModel * mdl = ResolveModelForClass(cls, model_index);
+	*result = mdl ? mdl->mFileName : FString();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetClassModelFile, GetClassModelFileNative)
+{
+	PARAM_PROLOGUE;
+	PARAM_CLASS(cls, AActor);
+	PARAM_INT(model_index);
+	FString result;
+	GetClassModelFileNative(cls, model_index, &result);
+	ACTION_RETURN_STRING(result);
+}
+
+static int GetClassModelSurfaceCountNative(PClassActor * cls, int model_index)
+{
+	FModel * mdl = ResolveModelForClass(cls, model_index);
+	return mdl ? mdl->GetSurfaceCount() : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetClassModelSurfaceCount, GetClassModelSurfaceCountNative)
+{
+	PARAM_PROLOGUE;
+	PARAM_CLASS(cls, AActor);
+	PARAM_INT(model_index);
+	ACTION_RETURN_INT(GetClassModelSurfaceCountNative(cls, model_index));
+}
+
+static int GetClassModelSurfaceNameNative(PClassActor * cls, int model_index, int surface)
+{
+	FModel * mdl = ResolveModelForClass(cls, model_index);
+	if (!mdl) return NAME_None;
+	return mdl->GetSurfaceName(surface).GetIndex();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetClassModelSurfaceName, GetClassModelSurfaceNameNative)
+{
+	PARAM_PROLOGUE;
+	PARAM_CLASS(cls, AActor);
+	PARAM_INT(model_index);
+	PARAM_INT(surface);
+	ACTION_RETURN_INT(GetClassModelSurfaceNameNative(cls, model_index, surface));
+}
+
+static int GetClassModelJointCountNative(PClassActor * cls, int model_index)
+{
+	FModel * mdl = ResolveModelForClass(cls, model_index);
+	return mdl ? mdl->NumJoints() : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetClassModelJointCount, GetClassModelJointCountNative)
+{
+	PARAM_PROLOGUE;
+	PARAM_CLASS(cls, AActor);
+	PARAM_INT(model_index);
+	ACTION_RETURN_INT(GetClassModelJointCountNative(cls, model_index));
+}
+
+static int GetClassModelJointNameNative(PClassActor * cls, int model_index, int joint)
+{
+	FModel * mdl = ResolveModelForClass(cls, model_index);
+	if (!mdl) return NAME_None;
+	return mdl->GetJointName(joint).GetIndex();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetClassModelJointName, GetClassModelJointNameNative)
+{
+	PARAM_PROLOGUE;
+	PARAM_CLASS(cls, AActor);
+	PARAM_INT(model_index);
+	PARAM_INT(joint);
+	ACTION_RETURN_INT(GetClassModelJointNameNative(cls, model_index, joint));
 }
 
 //================================================

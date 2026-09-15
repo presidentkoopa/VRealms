@@ -4041,6 +4041,42 @@ FSpriteModelFrame * FindModelFrameRaw(const AActor * actorDefaults, const PClass
 	return nullptr;
 }
 
+//===========================================================================
+//
+// RS FORK -- FindModelDefFrame: the MODELDEF block for (class, sprite, frame), and nothing else.
+//
+// FindModelFrameRaw's own hash walk, without the voxel fallback it runs after a miss. That fallback reads render cvars
+// (r_drawvoxels, r_voxels_mode) and can log, so two machines in one game may get different answers from it -- right
+// for drawing, wrong for a game-state question such as "which model file is model index 1 of this actor", whose
+// answer can decide what a script does. The model queries in p_actionfunctions.cpp (ResolveModelForSurface's last
+// fallback and the class model queries) ask this instead. FindModelFrameRaw itself is unchanged.
+//
+//===========================================================================
+
+FSpriteModelFrame * FindModelDefFrame(const PClass * ti, int sprite, int frame)
+{
+	if (ti == nullptr || SpriteModelFrames.Size() == 0) return nullptr;
+	auto def = GetDefaultByType(ti);
+	if (def == nullptr || !def->hasmodel) return nullptr;
+
+	FSpriteModelFrame smf;
+
+	memset((void*)&smf, 0, sizeof(smf));
+	smf.type = ti;
+	smf.sprite = sprite;
+	smf.frame = frame;
+
+	int hash = SpriteModelHash[ModelFrameHash(&smf) % SpriteModelFrames.Size()];
+
+	while (hash >= 0)
+	{
+		FSpriteModelFrame * smff = &SpriteModelFrames[hash];
+		if (smff->type == ti && smff->sprite == sprite && smff->frame == frame) return smff;
+		hash = smff->hashnext;
+	}
+	return nullptr;
+}
+
 FSpriteModelFrame * FindModelFrame(const PClass * ti, int sprite, int frame, bool dropped)
 {
 	auto def = GetDefaultByType(ti);

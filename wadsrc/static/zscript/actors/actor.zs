@@ -1930,6 +1930,32 @@ class Actor : Thinker native
 	// know its own count.
 	native int  GetModelFrameCount(int modelindex);
 
+	// WHICH MODEL `modelindex` NAMES, for every query here: the model A_ChangeModel set at that index; else the class's
+	// MODELDEF BaseFrame block; else (RS fork) the class's MODELDEF block for the sprite and frame the actor is in --
+	// the block the renderer draws it from -- unless the actor has decoupled animations, which draw from BaseFrame
+	// alone. So a part on model 1 or 2 of an ordinary MODELDEF actor is found by name. Game state only: no render
+	// setting and no voxel changes the answer, so it is the same on every machine.
+
+	// JOINTS BY MODEL INDEX. FindBoneIndex asks model 0 only and needs decoupled animations and a BaseFrame; these ask
+	// any model index of any actor with a model, as the surface queries do, and change nothing on the actor.
+	// Case-insensitive. -1 / 0 / None when that model has no such joint, there is no model at that index, or its
+	// format has no joints (only a rigged IQM has any).
+	native int  FindModelJointIndex(int modelindex, Name joint);
+	native int  GetModelJointCount(int modelindex);
+	native Name GetModelJointName(int modelindex, int joint);
+
+	// THE SAME QUESTIONS ASKED OF A CLASS, with no actor: for a data check that runs before any level exists
+	// (DataValidator), or anything that wants a class's model without spawning one. The model the class's MODELDEF
+	// gives that index -- its BaseFrame block, else the block for its spawn state's sprite and frame: what the actor
+	// queries answer for a fresh actor of the class that has changed none of its models.
+	// GetClassModelFile is that model's file as MODELDEF named it, path included ("models/pistols/pistolet.md3");
+	// "" when there is none.
+	native clearscope static String GetClassModelFile(class<Actor> cls, int modelindex);
+	native clearscope static int    GetClassModelSurfaceCount(class<Actor> cls, int modelindex);
+	native clearscope static Name   GetClassModelSurfaceName(class<Actor> cls, int modelindex, int surface);
+	native clearscope static int    GetClassModelJointCount(class<Actor> cls, int modelindex);
+	native clearscope static Name   GetClassModelJointName(class<Actor> cls, int modelindex, int joint);
+
 	// Full state-label enumeration, sorted by state address (= source
 	// declaration order). FindState can only probe names known in advance;
 	// this returns every label the class actually defines, including
