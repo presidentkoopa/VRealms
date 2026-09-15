@@ -61,7 +61,9 @@ CUSTOM_CVAR (Int, turnspeedsprintslow, 320, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 }
 
 DEPR_CVAR (Bool, gl_lights, false, "Use r_dynlights");
-CUSTOM_CVAR (Bool, r_dynlights, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+// Dynamic lights are on by default (owner, 2026-09-15: effects on by default). With queryiwad on, the launcher's Settings
+// page shows and writes this value at every start (i_interface.cpp SaveInfo).
+CUSTOM_CVAR (Bool, r_dynlights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
 	for (auto Level : AllLevels())
 	{

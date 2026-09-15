@@ -3830,7 +3830,13 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 		// where -- goes with them. It changes only when PARTICLEDEFS lumps load, so
 		// this is a generation compare on every other frame. The backend builds the
 		// atlas from it on its next frame (VkTextureManager::BeginFrame).
-		screen->mParticleDefinitions->SyncAtlasLayers(ParticleAtlasLayerData(), ParticleAtlasLayerCount(), ParticleAtlasGeneration());
+		// [ATLASBC7] With the compressed atlas's list. First the CPU table lays the frames out again if the atlas settings changed
+		// ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"; a compare on every other scene). It runs after the definitions'
+		// Sync above, so the definitions a new layout restamps go up with the next scene, not before these lists: in a frame of
+		// one scene, the scene drawn with the atlases the backend rebuilds from these lists at its next BeginFrame.
+		RefreshParticleAtlasLayout(GpuParticleAtlasPolicy());
+		screen->mParticleDefinitions->SyncAtlasLayers(ParticleAtlasLayerData(), ParticleAtlasLayerCount(), ParticleAtlasGeneration(),
+			ParticleCompressedAtlasLayerData(), ParticleCompressedAtlasLayerCount(), ParticleCompressedAtlasSide(), ParticleCompressedAtlasGeneration());
 	}
 	if (screen->mGpuParticles != nullptr && Level != nullptr)
 	{

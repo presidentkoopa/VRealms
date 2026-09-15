@@ -744,6 +744,8 @@ public:
 	int getGLFormat() const override { return glFormat; }
 	int getVKFormat() const override { return vkFormat; }
 	bool CanExpandSprite() override { return !hasDX10Header; }
+	bool HasPremultipliedAlpha() override { return premultipliedAlpha; }	// [ATLASBC7] see image.h
+	int GetStoredMipLevels() override { return vkFormat != 0 ? storedMips : 0; }	// [ATLASBC7] the header's MipMapCount
 
 protected:
 	uint32_t Format;
@@ -760,6 +762,7 @@ protected:
 	uint8_t storedMips = 0;		// the header's MipMapCount
 	bool hasDX10Header = false;	// the pixels start at byte 148
 	bool opaqueBC1 = false;		// DX10 BC1: decode the 3-colour block's fourth index as opaque black, as the GPU does
+	bool premultipliedAlpha = false;	// [ATLASBC7] the DX10 alpha mode is DDS_ALPHA_MODE_PREMULTIPLIED
 	int glFormat = 0;
 	int vkFormat = 0;
 
@@ -928,6 +931,9 @@ FDDSTexture::FDDSTexture (FileReader &lump, int lumpnum, void *vsurfdesc, void *
 		hasDX10Header = compressed.hasDX10Header;
 		opaqueBC1 = compressed.opaqueBC1;
 		storedMips = (uint8_t)std::min<uint32_t>(surf->MipMapCount, 255);
+		// [ATLASBC7] The DX10 header's alpha mode, its miscFlags2's low three bits: DDS_ALPHA_MODE_PREMULTIPLIED (2) says the
+		// colour is stored multiplied by alpha. Nothing read it before; the compressed particle atlas takes such frames as they are.
+		premultipliedAlpha = compressed.hasDX10Header && dx10 != nullptr && (dx10->miscFlags2 & 7) == 2;
 
 		if (compressed.headerFields)
 		{

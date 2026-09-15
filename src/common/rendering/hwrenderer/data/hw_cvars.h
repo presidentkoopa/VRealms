@@ -135,7 +135,16 @@ EXTERN_CVAR(Bool, r_gpuparticles_legacy)	// [2b] A/B: stage 1 records instead of
 int GpuParticleRingCapacity();
 bool GpuParticlesLegacyPath();	// [2b] r_gpuparticles_legacy, for FLevelLocals::SpawnGpuParticles
 EXTERN_CVAR(Int, r_gpuparticles_atlas_size)	// [2c] particle atlas layer side in pixels
-int GpuParticleAtlasLayerSize();	// [2c] r_gpuparticles_atlas_size rounded to 128 or 256
+int GpuParticleAtlasLayerSize();	// [2c] r_gpuparticles_atlas_size rounded to 128, 256 or [ATLASBC7] 512
+// [ATLASBC7] the compressed particle atlas, see hw_cvars.cpp
+EXTERN_CVAR(Bool, r_gpuparticles_atlas_compressed)
+EXTERN_CVAR(Int, r_gpuparticles_atlas_compressed_size)
+EXTERN_CVAR(Int, r_gpuparticles_atlas_layers)
+EXTERN_CVAR(Int, r_gpuparticles_atlas_overflow)
+int GpuParticleAtlasCompressedSide();	// r_gpuparticles_atlas_compressed_size rounded to 256, 512 or 1024
+unsigned GpuParticleAtlasLayersPerAtlas();	// r_gpuparticles_atlas_layers rounded to a step of 256 in 256 .. 2048
+struct ParticleAtlasPolicy;
+ParticleAtlasPolicy GpuParticleAtlasPolicy();	// those settings and the device's limits (hw_particledefbuffer.h)
 EXTERN_CVAR(Int, r_gpuparticles_lights)	// [2d] dynamic lights in view that light lit particles, 0-32
 
 // [DRAWNLINES] + [BEAMLINES] see hw_cvars.cpp

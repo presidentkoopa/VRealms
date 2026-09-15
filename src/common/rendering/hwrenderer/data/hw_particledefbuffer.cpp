@@ -174,27 +174,51 @@ void ParticleDefinitionBuffer::Sync(const void *definitions, const uint64_t *slo
 	mSyncedGeneration = generation;
 }
 
-void ParticleDefinitionBuffer::SyncAtlasLayers(const ParticleAtlasLayer *layers, unsigned count, uint64_t generation)
+void ParticleDefinitionBuffer::SyncAtlasLayers(const ParticleAtlasLayer *layers, unsigned count, uint64_t generation,
+	const ParticleCompressedAtlasLayer *compressedLayers, unsigned compressedCount, int compressedSide, uint64_t compressedGeneration)
 {
 	// [2c] Cheap when nothing changed, which is every frame after the first: the CPU
-	// list only changes when PARTICLEDEFS lumps are (re)loaded.
-	if (generation == mAtlasGeneration) return;
-
-	if (layers == nullptr) count = 0;
-	if (count > ATLAS_LAYERS)
+	// list only changes when PARTICLEDEFS lumps are (re)loaded [ATLASBC7] or an atlas
+	// setting changes the layout.
+	if (generation != mAtlasGeneration)
 	{
-		// The CPU table refuses definitions past the cap, so this should be
-		// unreachable. Clamp rather than build past the budget, and say so once.
-		if (!mWarnedAtlasCount)
+		if (layers == nullptr) count = 0;
+		if (count > ATLAS_LAYERS_MAX)
 		{
-			Printf(TEXTCOLOR_ORANGE "ParticleAtlas: CPU list has %u layers, the atlas holds %u, clamping\n", count, ATLAS_LAYERS);
-			mWarnedAtlasCount = true;
+			// The CPU table lays out only what fits, so this should be unreachable.
+			// Clamp rather than build past the budget, and say so once.
+			if (!mWarnedAtlasCount)
+			{
+				Printf(TEXTCOLOR_ORANGE "ParticleAtlas: CPU list has %u layers, the atlas holds %u, clamping\n", count, ATLAS_LAYERS_MAX);
+				mWarnedAtlasCount = true;
+			}
+			count = ATLAS_LAYERS_MAX;
 		}
-		count = ATLAS_LAYERS;
+
+		mAtlasLayers.Resize(count);
+		for (unsigned i = 0; i < count; i++)
+			mAtlasLayers[i] = layers[i];
+		mAtlasGeneration = generation;
 	}
 
-	mAtlasLayers.Resize(count);
-	for (unsigned i = 0; i < count; i++)
-		mAtlasLayers[i] = layers[i];
-	mAtlasGeneration = generation;
+	// [ATLASBC7] The compressed atlas's list, by its own generation (0: nothing handed over).
+	if (compressedGeneration != 0 && compressedGeneration != mCompressedAtlasGeneration)
+	{
+		if (compressedLayers == nullptr || compressedSide <= 0) compressedCount = 0;
+		if (compressedCount > ATLAS_LAYERS_MAX)
+		{
+			if (!mWarnedCompressedAtlasCount)
+			{
+				Printf(TEXTCOLOR_ORANGE "ParticleAtlas: CPU list has %u compressed layers, the compressed atlas holds %u, clamping\n", compressedCount, ATLAS_LAYERS_MAX);
+				mWarnedCompressedAtlasCount = true;
+			}
+			compressedCount = ATLAS_LAYERS_MAX;
+		}
+
+		mCompressedAtlasLayers.Resize(compressedCount);
+		for (unsigned i = 0; i < compressedCount; i++)
+			mCompressedAtlasLayers[i] = compressedLayers[i];
+		mCompressedAtlasSide = compressedCount > 0 ? compressedSide : 0;
+		mCompressedAtlasGeneration = compressedGeneration;
+	}
 }

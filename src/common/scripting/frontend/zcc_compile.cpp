@@ -1090,6 +1090,29 @@ void ZCCCompiler::CreateClassTypes()
 			}
 		}
 	}
+
+	// A class-name alias (PClass::AddClassAlias: -classalias, IWADINFO ClassAliases) names its target's type wherever a
+	// class name is written: class<Alias>, casts, types, static member lookups. Once the target's class type exists, the
+	// alias becomes a type symbol in the same table as the target's own name, so every later lookup finds it. A name that
+	// already resolves to a symbol is left alone, so a real class with that name wins. No alias registered, nothing here.
+	{
+		TMap<FName, FName>::ConstIterator aliasIt(PClass::GetClassAliases());
+		TMap<FName, FName>::ConstPair *aliasPair;
+		while (aliasIt.NextPair(aliasPair))
+		{
+			PSymbolTable *existingTable = nullptr;
+			if (OutNamespace->Symbols.FindSymbolInTable(aliasPair->Key, existingTable) != nullptr)
+				continue;
+			PSymbolTable *targetTable = nullptr;
+			PSymbol *target = OutNamespace->Symbols.FindSymbolInTable(aliasPair->Value, targetTable);
+			if (target == nullptr || targetTable == nullptr || !target->IsKindOf(RUNTIME_CLASS(PSymbolType)))
+				continue;
+			PType *targetType = static_cast<PSymbolType *>(target)->Type;
+			if (targetType == nullptr || !targetType->isClass())
+				continue;
+			targetTable->AddSymbol(Create<PSymbolType>(aliasPair->Key, targetType));
+		}
+	}
 }
 
 //==========================================================================

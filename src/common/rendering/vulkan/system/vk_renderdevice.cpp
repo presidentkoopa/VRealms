@@ -1492,6 +1492,24 @@ void VulkanRenderDevice::SetSceneRenderTarget(bool useSSAO)
 	mRenderState->SetRenderTarget(&GetBuffers()->SceneColor, GetBuffers()->SceneDepthStencil.GetLayerView(layerIndex), GetBuffers()->GetSceneWidth(), GetBuffers()->GetSceneHeight(), VK_FORMAT_R16G16B16A16_SFLOAT, GetBuffers()->GetSceneSamples(), 1, 0, layerIndex, lightMask);
 }
 
+// [ATLASBC7] The texture array questions (v_video.h). A BC7 array needs what a compressed DDS texture needs -- the format enabled,
+// sampled with linear filtering (VkHardwareTexture::DeviceSupportsCompressed) -- and the answer never changes for a device, so it
+// is asked once. The layer limit is the device's maxImageArrayLayers (Vulkan guarantees at least 256).
+bool VulkanRenderDevice::SupportsBC7TextureArrays()
+{
+	if (mSupportsBC7TextureArrays < 0)
+		mSupportsBC7TextureArrays = VkHardwareTexture::DeviceSupportsCompressed(device.get(), VK_FORMAT_BC7_UNORM_BLOCK) ? 1 : 0;
+	return mSupportsBC7TextureArrays != 0;
+}
+
+int VulkanRenderDevice::GetMaxTextureArrayLayers()
+{
+	if (!device)
+		return 0;
+	const uint32_t layers = device->PhysicalDevice.Properties.Properties.limits.maxImageArrayLayers;
+	return layers > 0x7fffffffu ? 0x7fffffff : (int)layers;
+}
+
 bool VulkanRenderDevice::RaytracingEnabled()
 {
 	// [LIGHTSHADOWS] Decided once, in the constructor: vk_raytrace or gl_light_castshadows 2, on a GPU with ray queries.

@@ -26,6 +26,7 @@
 #include "v_video.h"
 #include "hw_cvars.h"
 #include "hw_drawnlinebuffer.h"	// [DRAWNLINES] DrawnLinesLogToggle
+#include "hw_particledefbuffer.h"	// [ATLASBC7] ParticleAtlasPolicy and the atlas layer limits
 #include "menu.h"
 #include "printf.h"
 #include "version.h"
@@ -308,19 +309,72 @@ bool GpuParticlesLegacyPath()
 
 // [2c] THE PARTICLE ATLAS LAYER SIZE ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c).
 // Every textured particle definition's frames live in one texture array, one square
-// layer per frame, at most 256 layers (ParticleDefinitionBuffer::ATLAS_LAYERS). This
-// is a layer's side in pixels: 128 or 256 (anything else rounds to the nearer). With
-// mips, a full atlas is 85.3 MiB of VRAM at 256 and 21.3 MiB at 128 -- the cap; only
-// the layers loaded definitions use are allocated, and with no textured definition
-// the atlas is a 1 x 1 placeholder.
+// layer per frame. This is a layer's side in pixels: 128, 256 or [ATLASBC7] 512
+// (anything else rounds to the nearest). With mips, 256 layers are 21.3 MiB of VRAM at
+// 128, 85.3 MiB at 256 and 341.3 MiB at 512; only the layers loaded definitions use are
+// allocated, and with no textured definition the atlas is a 1 x 1 placeholder.
+// [ATLASBC7] This is the UNCOMPRESSED atlas: PNG and Doom-graphic flipbooks, and BC7
+// ones the compressed atlas does not take. The compressed atlas has its own side, below.
 //
 // Renderer-read: VkTextureManager::BeginFrame compares it every frame with the size
 // the atlas was built at and rebuilds on the next frame after a change, menu open or
 // not. Layer numbers do not depend on it, so no definition changes. Vulkan only.
-CVARD(Int, r_gpuparticles_atlas_size, 256, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "particle atlas layer side in pixels, 128 or 256; the atlas rebuilds at once (Vulkan only)")
+CVARD(Int, r_gpuparticles_atlas_size, 256, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "uncompressed particle atlas layer side in pixels, 128, 256 or 512; the atlas rebuilds at once (Vulkan only)")
 int GpuParticleAtlasLayerSize()
 {
-	return r_gpuparticles_atlas_size < 192 ? 128 : 256;
+	return r_gpuparticles_atlas_size < 192 ? 128 : r_gpuparticles_atlas_size < 384 ? 256 : 512;
+}
+
+// [ATLASBC7] THE COMPRESSED PARTICLE ATLAS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_PLAN.md", "Engine docs/
+// PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"). A flipbook whose every frame is a premultiplied BC7 DDS goes to a second texture
+// array, uploaded as the files store it -- a quarter of the uncompressed atlas's memory at the same side -- and the uncompressed
+// atlas keeps everything else exactly as before. All four settings are renderer-read: HWDrawInfo::ProcessScene builds the
+// atlas settings from them every scene (GpuParticleAtlasPolicy, below), the CPU table lays the frames out again when they
+// changed, and VkTextureManager::BeginFrame rebuilds the atlas that changed on the next frame -- with the menu open. Rebuilding
+// the compressed atlas reads its frames from the packages again: a pause of a second or a few. Presentation only (not
+// SERVERINFO): the layout changes nothing but this machine's pixels. Vulkan only; GL and GLES draw no GPU particles.
+//
+//   r_gpuparticles_atlas_compressed       1 (default, owner 2026-09-15): BC7 flipbooks use the compressed atlas. 0: every
+//                                         flipbook goes to the uncompressed atlas, decoded on the CPU -- it should look the
+//                                         same at 4x the memory (the side-by-side check). A device that cannot sample BC7
+//                                         arrays behaves as 0.
+//   r_gpuparticles_atlas_compressed_size  the compressed atlas's side cap: 256, 512 (default, owner) or 1024 pixels (anything
+//                                         else rounds to the nearest). The atlas is never bigger than its biggest book, so a
+//                                         high setting costs nothing until books that big are loaded. A bigger book uploads
+//                                         from a smaller stored level; a smaller book goes to the uncompressed atlas.
+//   r_gpuparticles_atlas_layers           frames each atlas may hold, 256 .. 2048 (default) in steps of 256, never more than
+//                                         the device allows. Memory is spent only on the frames loaded flipbooks use.
+//   r_gpuparticles_atlas_overflow         when flipbooks want more frames than that: 1 (default, owner) long flipbooks play
+//                                         fewer frames over the same time, so every effect still shows; 0 the flipbooks past
+//                                         the cap draw as plain glowing dots.
+CVARD(Bool, r_gpuparticles_atlas_compressed, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "BC7 DDS particle flipbooks use the compressed particle atlas; off decodes them into the uncompressed atlas at 4x the memory (Vulkan only)")
+CVARD(Int, r_gpuparticles_atlas_compressed_size, 512, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "compressed particle atlas layer side cap in pixels, 256, 512 or 1024; the atlas rebuilds at once (Vulkan only)")
+CVARD(Int, r_gpuparticles_atlas_layers, 2048, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "flipbook frames each particle atlas may hold, 256-2048 in steps of 256 (Vulkan only)")
+CVARD(Int, r_gpuparticles_atlas_overflow, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "when particle flipbooks want more frames than an atlas holds: 1 long flipbooks play fewer frames, 0 the last ones draw as plain dots (Vulkan only)")
+
+int GpuParticleAtlasCompressedSide()
+{
+	return r_gpuparticles_atlas_compressed_size < 384 ? 256 : r_gpuparticles_atlas_compressed_size < 768 ? 512 : 1024;
+}
+
+unsigned GpuParticleAtlasLayersPerAtlas()
+{
+	const int step = (int)ParticleDefinitionBuffer::ATLAS_LAYERS_MIN;
+	const int clamped = std::clamp((int)r_gpuparticles_atlas_layers, step, (int)ParticleDefinitionBuffer::ATLAS_LAYERS_MAX);
+	return (unsigned)((clamped + step / 2) / step * step);
+}
+
+ParticleAtlasPolicy GpuParticleAtlasPolicy()
+{
+	ParticleAtlasPolicy policy;
+	policy.Compressed = r_gpuparticles_atlas_compressed && screen != nullptr && screen->SupportsBC7TextureArrays();
+	policy.CompressedSide = GpuParticleAtlasCompressedSide();
+	policy.LayersPerAtlas = GpuParticleAtlasLayersPerAtlas();
+	const int deviceLayers = screen != nullptr ? screen->GetMaxTextureArrayLayers() : 0;
+	if (deviceLayers > 0 && (unsigned)deviceLayers < policy.LayersPerAtlas)
+		policy.LayersPerAtlas = (unsigned)deviceLayers;
+	policy.ThinOverflow = r_gpuparticles_atlas_overflow != 0;
+	return policy;
 }
 
 // [2d] THE VIEW LIGHTS LIT PARTICLES SEE ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2d).

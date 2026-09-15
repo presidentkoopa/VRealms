@@ -82,6 +82,11 @@ enum
 	// The stage 1 fade: emissive (and, from 2d, alpha) times 1 - smoothstep(0.6, 1, t).
 	// `fade = smooth` in a lump; every inline definition has it.
 	PDF_FADE_SMOOTH = 1,
+	// [ATLASBC7] The flipbook's frames are in the COMPRESSED particle atlas (BC7, fixed set binding 10) rather than the
+	// uncompressed one (binding 4); flipbook[0] counts layers within the atlas this names. Set only by the atlas layout
+	// (particledefs.cpp, AssignAtlasLayers) -- no lump key writes it. gpuparticles.fp reads it; every other reader of these
+	// flags tests PDF_FADE_SMOOTH alone.
+	PDF_ATLAS_COMPRESSED = 2,
 };
 
 // [LOOKS] What spare[0][0] holds: the shape gpuparticles.fp generates for the particle
@@ -139,6 +144,25 @@ struct ParticleAtlasLayer;
 const ParticleAtlasLayer *ParticleAtlasLayerData();
 unsigned ParticleAtlasLayerCount();
 uint64_t ParticleAtlasGeneration();
+
+// [ATLASBC7] THE COMPRESSED PARTICLE ATLAS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"). A flipbook whose every
+// frame is a premultiplied BC7 DDS of one power-of-two side goes to a second, BC7 atlas (ParticleDefinitionBuffer::
+// SyncAtlasLayers' compressed list, VkTextureManager::ParticleAtlasCompressed): its layer list in layer order, the side every
+// layer has (0 = no compressed layers) and its own generation, which never goes backwards. A definition whose frames are
+// there has PDF_ATLAS_COMPRESSED.
+struct ParticleCompressedAtlasLayer;
+const ParticleCompressedAtlasLayer *ParticleCompressedAtlasLayerData();
+unsigned ParticleCompressedAtlasLayerCount();
+int ParticleCompressedAtlasSide();
+uint64_t ParticleCompressedAtlasGeneration();
+
+// [ATLASBC7] Lays every flipbook's frames into the two atlases again when `policy` -- the renderer's atlas settings and what the
+// device can hold (hw_particledefbuffer.h) -- differs from the one they were laid out with; the first call always does. Called by
+// HWDrawInfo::ProcessScene every scene, so a menu setting applies with the menu open; a compare otherwise. CPU only: TexMan
+// lookups, no pixels. A list's generation moves, and a definition is stamped, only when that list or that definition changed.
+// Render-side only: the layout can differ between machines and changes nothing but this machine's pixels.
+struct ParticleAtlasPolicy;
+void RefreshParticleAtlasLayout(const ParticleAtlasPolicy &policy);
 
 // [MESHPARTICLES] For the renderer's mesh particles (MeshParticleBuffer::SyncDefinitions,
 // hw_meshparticles.h): one entry per named definition that names a `mesh`, in slot order, each

@@ -467,6 +467,11 @@ FName PClass::GetClassAliasTarget(FName alias)
 	return target ? *target : FName(NAME_None);
 }
 
+const TMap<FName, FName> &PClass::GetClassAliases()
+{
+	return ClassAliases;
+}
+
 //==========================================================================
 //
 // PClass :: CreateNew

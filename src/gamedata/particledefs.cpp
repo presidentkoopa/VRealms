@@ -189,10 +189,21 @@
 **   - One frame (or no count) is just that texture.
 **   - A frame that is not there refuses that ONE definition, naming the frame.
 ** `loop` plays at fps; `once` spreads the frames over the particle's life; adjacent
-** frames are blended. The frames go into the particle atlas, at most
-** ParticleDefinitionBuffer::ATLAS_LAYERS layers across every definition (identical
-** runs share layers); a definition that would pass that is refused. Inline
-** definitions (SpawnGpuParticles) never have a texture.
+** frames are blended. The frames go into the particle atlas (identical runs share
+** layers). Inline definitions (SpawnGpuParticles) never have a texture.
+**
+** [ATLASBC7] COMPRESSED FLIPBOOKS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_PLAN.md" 3,
+** "Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"). No new key. A flipbook whose
+** every frame is a DX10 BC7 DDS with premultiplied alpha -- square, a power of two of at
+** least 256, its whole mip chain stored, every frame one side -- goes to the COMPRESSED
+** atlas and uploads as stored, at a quarter of the memory: one file per frame under
+** textures/, an 8-character name counting up (RBVS0001 .. RBVS0064, rule 2 above). Any
+** other flipbook, and such a book while "Compressed flipbooks" is off, goes to the
+** uncompressed atlas as before (a premultiplied DDS is not premultiplied again). Each
+** atlas holds "Flipbook frames per atlas" (r_gpuparticles_atlas_layers) frames; flipbooks
+** wanting more play fewer frames over the same time, or with r_gpuparticles_atlas_overflow
+** 0 the last ones draw untextured. A definition is refused only when the flipbooks would
+** need more frames than both atlases could ever hold (2 x 2048).
 **
 */
 
@@ -212,6 +223,7 @@
 #include "v_video.h"
 #include "g_levellocals.h"
 #include "texturemanager.h"	// [2c] flipbook frames are found by name
+#include "image.h"	// [ATLASBC7] FImageSource: how a flipbook frame is stored
 #include "hw_meshparticles.h"	// [MESHPARTICLES] ParticleMeshDefinition, MAX_TRIANGLES, the render state in `particles`
 #include "model.h"	// [MESHPARTICLES] LoadSkin, the skin lookup the model loader uses
 #include "m_swap.h"	// [MESHPARTICLES] LittleLong / LittleShort for the md3 check
@@ -301,6 +313,10 @@ namespace
 		int TextureLine = 0;		// [2c] the line of the `texture` key, for refusals
 		TArray<FTextureID> Frames;	// [2c] the flipbook's frames, found by name at load (empty = no texture)
 		int FirstLayer = -1;		// [2c] its first atlas layer once AssignAtlasLayers has run, -1 = none
+		double FlipbookFps = 0.0;	// [ATLASBC7] `texture`'s fps as written: a thinned loop plays at fps x kept frames / frames
+		unsigned FramesKept = 0;	// [ATLASBC7] its frames in the atlas once AssignAtlasLayers has run (fewer when thinned; 0 = none)
+		bool AtlasCompressed = false;	// [ATLASBC7] they are in the compressed atlas (look[3] has PDF_ATLAS_COMPRESSED)
+		int CompressedRefusal = 0;	// [ATLASBC7] a flipbook with BC7 frames that went uncompressed: why (EFlipbookRefusal); else 0
 		int Handle = 0;		// ParticleDefinitionHandle(Name)
 		bool HasMesh = false;		// [MESHPARTICLES] the definition names a `mesh`
 		int MeshLine = 0;			// [MESHPARTICLES] the line of the `mesh` key
@@ -345,6 +361,13 @@ namespace
 		// which never goes backwards, so a renderer's copy always notices a reload.
 		TArray<ParticleAtlasLayer> AtlasLayers;
 		uint64_t AtlasGeneration = 0;
+		// [ATLASBC7] The compressed atlas's list, its side (0 = no layers) and its generation, which never goes backwards; and the
+		// atlas settings the layout was made with (RefreshParticleAtlasLayout; the defaults until the renderer's first scene).
+		TArray<ParticleCompressedAtlasLayer> CompressedAtlasLayers;
+		int CompressedAtlasSide = 0;
+		uint64_t CompressedAtlasGeneration = 0;
+		ParticleAtlasPolicy AtlasPolicy;
+		bool AtlasPolicyApplied = false;
 
 		// [MESHPARTICLES] The definitions that name a mesh, in slot order (AssignMeshList), and the
 		// list's generation, which never goes backwards, so the renderer's copy notices a reload.
@@ -730,10 +753,150 @@ namespace
 		return layers;
 	}
 
+	// BEGIN ATLASBC7 HARNESS: fit
+	// [ATLASBC7] WHEN FLIPBOOKS WANT MORE FRAMES THAN AN ATLAS HOLDS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md").
+	// frames[r] is run r's frame count, in the order the atlas lays its runs out; kept[r] becomes how many of them it keeps
+	// (0 = none: the run's definitions draw untextured). Every frame, when together they fit in `cap`. Past it:
+	//   thin  each run keeps max(1, floor(frames x cap / wanted)) -- every book shrinks by the same share, so every effect still
+	//         shows -- and a run that still does not fit after the runs before it (many one-frame runs rounding up) keeps none.
+	//   dots  a run keeps all its frames if they fit after the runs before it, else none (stage 2c's rule).
+	// Integer arithmetic only: the same answer on every machine, no RNG.
+	void FitFlipbookRuns(const unsigned *frames, unsigned count, unsigned cap, bool thin, unsigned *kept)
+	{
+		uint64_t wanted = 0;
+		for (unsigned r = 0; r < count; r++)
+			wanted += frames[r];
+		uint64_t used = 0;
+		for (unsigned r = 0; r < count; r++)
+		{
+			uint64_t want = frames[r];
+			if (thin && wanted > cap)
+			{
+				want = (uint64_t)frames[r] * cap / wanted;
+				if (want < 1) want = 1;
+			}
+			if (used + want <= cap)
+			{
+				kept[r] = (unsigned)want;
+				used += want;
+			}
+			else
+			{
+				kept[r] = 0;
+			}
+		}
+	}
+
+	// Which of a run's `frames` its kept frame k (0 .. kept-1) shows: evenly spaced from the first, floor(k x frames / kept).
+	unsigned ThinnedFlipbookFrame(unsigned k, unsigned kept, unsigned frames)
+	{
+		return kept >= frames ? k : (unsigned)((uint64_t)k * frames / kept);
+	}
+	// END ATLASBC7 HARNESS: fit
+
+	// BEGIN ATLASBC7 HARNESS: eligible
+	// [ATLASBC7] WHICH FLIPBOOKS GO TO THE COMPRESSED ATLAS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_PLAN.md" 2b). One frame as the
+	// rules read it, and the rules in order; the first one a book breaks is its reason. A book that breaks any goes to the
+	// uncompressed atlas whole, decoded on the CPU.
+	struct FlipbookFrameFormat
+	{
+		bool Bc7;			// a DX10 DDS stored as BC7 (IsGPUOnly, VK_FORMAT_BC7_UNORM_BLOCK)
+		bool Premultiplied;	// its DX10 alpha mode is premultiplied (HasPremultipliedAlpha)
+		int Width;
+		int Height;
+		int StoredMips;		// the levels the file stores (GetStoredMipLevels)
+	};
+
+	enum EFlipbookRefusal
+	{
+		FBR_NONE = 0,			// every rule passed: compressed
+		FBR_NOT_BC7,			// a frame is not a BC7 DDS
+		FBR_NOT_PREMULTIPLIED,	// a frame's alpha mode is not premultiplied
+		FBR_NOT_SQUARE,			// a frame is not square, a power of two, at least kCompressedFlipbookMinSide
+		FBR_PARTIAL_CHAIN,		// a frame's stored levels stop before 1 x 1
+		FBR_MIXED_SIDES,		// the frames are not all one side
+		FBR_SWITCHED_OFF,		// compressed flipbooks are off, or the device cannot sample BC7 arrays
+		FBR_BELOW_SIDE,			// smaller than the compressed atlas's side (decided once every book's side is known)
+		FBR_COUNT
+	};
+
+	const int kCompressedFlipbookMinSide = 256;
+	const int kCompressedFlipbookMaxSide = 16384;
+
+	// The first rule `frames` break (FBR_NONE: none), and the book's side in `side` when it breaks none.
+	int CompressedFlipbookRefusal(const FlipbookFrameFormat *frames, unsigned count, bool compressedAllowed, int &side)
+	{
+		side = 0;
+		if (count == 0) return FBR_NOT_BC7;
+		for (unsigned i = 0; i < count; i++)
+		{
+			if (!frames[i].Bc7) return FBR_NOT_BC7;
+		}
+		for (unsigned i = 0; i < count; i++)
+		{
+			if (!frames[i].Premultiplied) return FBR_NOT_PREMULTIPLIED;
+		}
+		for (unsigned i = 0; i < count; i++)
+		{
+			const int w = frames[i].Width;
+			if (w != frames[i].Height || w < kCompressedFlipbookMinSide || w > kCompressedFlipbookMaxSide || (w & (w - 1)) != 0)
+				return FBR_NOT_SQUARE;
+		}
+		for (unsigned i = 0; i < count; i++)
+		{
+			int levels = 1;
+			while ((frames[i].Width >> levels) > 0) levels++;
+			if (frames[i].StoredMips < levels) return FBR_PARTIAL_CHAIN;
+		}
+		for (unsigned i = 1; i < count; i++)
+		{
+			if (frames[i].Width != frames[0].Width) return FBR_MIXED_SIDES;
+		}
+		if (!compressedAllowed) return FBR_SWITCHED_OFF;
+		side = frames[0].Width;
+		return FBR_NONE;
+	}
+	// END ATLASBC7 HARNESS: eligible
+
+	// [ATLASBC7] Each EFlipbookRefusal in words, for the `particles` CCMD and the developer notices.
+	const char *const kFlipbookRefusalText[] = {
+		"compressed",
+		"not every frame is a BC7 DDS",
+		"a frame's DX10 alpha mode is not premultiplied (miscFlags2 2)",
+		"a frame is not square, a power of two and at least 256 on a side",
+		"a frame's stored mip levels stop before 1 x 1",
+		"its frames are not all one size",
+		"compressed flipbooks are off (r_gpuparticles_atlas_compressed 0), or this device cannot sample BC7 texture arrays",
+		"it is smaller than the compressed atlas's side",
+	};
+	static_assert(sizeof(kFlipbookRefusalText) / sizeof(kFlipbookRefusalText[0]) == FBR_COUNT, "kFlipbookRefusalText must name every EFlipbookRefusal");
+
+	// [ATLASBC7] VK_FORMAT_BC7_UNORM_BLOCK, the number FImageSource::getVKFormat gives a BC7 DDS (vulkan_core.h; the S2 DDS
+	// classifier returns it). Written out because gamedata does not include Vulkan.
+	const int kVkFormatBC7Unorm = 145;
+
+	// [ATLASBC7] One flipbook frame's stored format, from its image.
+	FlipbookFrameFormat StoredFrameFormat(FTextureID id)
+	{
+		FlipbookFrameFormat format = { false, false, 0, 0, 0 };
+		FGameTexture *gameTexture = TexMan.GetGameTexture(id);
+		FTexture *texture = gameTexture != nullptr ? gameTexture->GetTexture() : nullptr;
+		FImageSource *image = texture != nullptr ? texture->GetImage() : nullptr;
+		if (image == nullptr) return format;
+		format.Bc7 = image->IsGPUOnly() && image->getVKFormat() == kVkFormatBC7Unorm;
+		format.Premultiplied = image->HasPremultipliedAlpha();
+		format.Width = image->GetWidth();
+		format.Height = image->GetHeight();
+		format.StoredMips = image->GetStoredMipLevels();
+		return format;
+	}
+
 	// One flipbook's layers, appended. One scale for the whole run -- its largest
 	// frame side (display size, so a high-resolution replacement frame keeps its
 	// place) fills the layer -- and each frame centred in its layer.
-	void AppendFlipbookLayers(TArray<ParticleAtlasLayer> &layers, const TArray<FTextureID> &frames)
+	// [ATLASBC7] `kept` of its frames (ThinnedFlipbookFrame; all of them unless the atlas is over its cap). The scale is still the
+	// whole run's, so a thinned book's frames sit where they did.
+	void AppendFlipbookLayers(TArray<ParticleAtlasLayer> &layers, const TArray<FTextureID> &frames, unsigned kept)
 	{
 		double side = 0.0;
 		for (unsigned i = 0; i < frames.Size(); i++)
@@ -743,8 +906,9 @@ namespace
 			side = std::max(side, (double)std::max(tex->GetDisplayWidth(), tex->GetDisplayHeight()));
 		}
 
-		for (unsigned i = 0; i < frames.Size(); i++)
+		for (unsigned k = 0; k < kept; k++)
 		{
+			const unsigned i = ThinnedFlipbookFrame(k, kept, frames.Size());
 			ParticleAtlasLayer layer;
 			layer.Texture = frames[i];
 			layer.Left = 0.f;
@@ -765,49 +929,249 @@ namespace
 		}
 	}
 
+	// [ATLASBC7] One compressed flipbook's layers, appended: `kept` of its frames (ThinnedFlipbookFrame), each uploaded from the
+	// stored level whose side is the atlas's -- every frame of the book is `bookSide`, a power of two no smaller than `atlasSide`.
+	void AppendCompressedFlipbookLayers(TArray<ParticleCompressedAtlasLayer> &layers, const TArray<FTextureID> &frames, unsigned kept, int bookSide, int atlasSide)
+	{
+		int startLevel = 0;
+		while (atlasSide > 0 && startLevel < 30 && (atlasSide << startLevel) < bookSide) startLevel++;
+		for (unsigned k = 0; k < kept; k++)
+		{
+			ParticleCompressedAtlasLayer layer;
+			layer.Texture = frames[ThinnedFlipbookFrame(k, kept, frames.Size())];
+			layer.StartLevel = startLevel;
+			layers.Push(layer);
+		}
+	}
+
 	// Gives every textured named definition its first atlas layer, in slot order,
 	// once every lump has loaded -- so a definition replaced by a later lump leaves
 	// no orphaned layers -- and rebuilds the layer list the renderer builds the atlas
 	// from. Returns how many definitions have a texture.
-	unsigned AssignAtlasLayers(DefinitionTable &table)
+	//
+	// [ATLASBC7] TWO ATLASES, laid out by table.AtlasPolicy ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"):
+	//   1. Each distinct run (identical runs still share their layers) is checked against the compressed rules.
+	//   2. The compressed atlas's side is the policy's side cap or the biggest compressed book, whichever is smaller. A compressed
+	//      book smaller than that goes uncompressed (FBR_BELOW_SIDE): no book is dragged down by a smaller one.
+	//   3. The uncompressed atlas lays out the runs with no BC7 frame first, in slot order, then the BC7 runs that went
+	//      uncompressed -- so a flipbook that is not BC7 has the layers it had with no BC7 book loaded. The compressed atlas lays
+	//      out its runs in slot order.
+	//   4. Each atlas fits its runs in the policy's cap (FitFlipbookRuns). A thinned `loop` plays at fps x kept / frames, so its
+	//      loop keeps its length; a thinned `once` needs nothing more.
+	//   5. Each definition's flipbook x (first layer), y (frames), z (fps) and look.w's PDF_ATLAS_COMPRESSED are written, and the
+	//      slot stamped, only where they changed: a flipbook that fits and is not BC7 keeps exactly its bytes.
+	// `fromLoad` (LoadParticleDefinitions) always moves both generations and reports nothing: the renderer's first scene lays the
+	// frames out with its own settings. Otherwise (RefreshParticleAtlasLayout) a generation moves only when its list changed, and
+	// the layout is reported -- one summary line, and with `developer` a line per definition thinned, dropped or gone uncompressed.
+	unsigned AssignAtlasLayers(DefinitionTable &table, bool fromLoad)
 	{
-		TMap<uint64_t, int> runStart;
-		table.AtlasLayers.Clear();
+		const ParticleAtlasPolicy &policy = table.AtlasPolicy;
+		const unsigned layersMax = ParticleDefinitionBuffer::ATLAS_LAYERS_MAX;
+		const unsigned cap = std::clamp(policy.LayersPerAtlas, 1u, layersMax);
+		int sideCap = kCompressedFlipbookMinSide;
+		while (sideCap < kCompressedFlipbookMaxSide && sideCap * 2 <= policy.CompressedSide) sideCap *= 2;
+
+		// 1. The distinct runs, in slot order.
+		struct AtlasRun
+		{
+			unsigned Slot;		// the first definition using it
+			unsigned Frames;
+			int Refusal;		// EFlipbookRefusal
+			int Side;			// its frames' side when compressed
+			bool HasBc7;		// some frame is a BC7 DDS
+			unsigned Kept;
+			int FirstLayer;
+		};
+		TArray<AtlasRun> runs;
+		TMap<uint64_t, unsigned> runOf;
+		TArray<FlipbookFrameFormat> formats;
 		unsigned textured = 0;
 		for (unsigned i = 0; i < table.NamedCount; i++)
 		{
-			NamedInfo &n = table.Named[i];
-			int firstLayer = -1;
-			if (n.Frames.Size() > 0)
+			const NamedInfo &n = table.Named[i];
+			if (n.Frames.Size() == 0) continue;
+			textured++;
+			const uint64_t key = FlipbookRunKey(n.Frames);
+			if (runOf.CheckKey(key) != nullptr) continue;
+
+			AtlasRun run;
+			run.Slot = i;
+			run.Frames = n.Frames.Size();
+			run.HasBc7 = false;
+			formats.Resize(n.Frames.Size());
+			for (unsigned f = 0; f < n.Frames.Size(); f++)
 			{
-				textured++;
-				const uint64_t key = FlipbookRunKey(n.Frames);
-				if (const int *start = runStart.CheckKey(key))
+				formats[f] = StoredFrameFormat(n.Frames[f]);
+				if (formats[f].Bc7) run.HasBc7 = true;
+			}
+			run.Refusal = CompressedFlipbookRefusal(&formats[0], formats.Size(), policy.Compressed, run.Side);
+			run.Kept = 0;
+			run.FirstLayer = -1;
+			runOf.Insert(key, runs.Size());
+			runs.Push(run);
+		}
+
+		// 2. The compressed atlas's side.
+		int biggest = 0;
+		for (const AtlasRun &run : runs)
+		{
+			if (run.Refusal == FBR_NONE) biggest = std::max(biggest, run.Side);
+		}
+		const int compressedSide = biggest > 0 ? std::min(sideCap, biggest) : 0;
+		for (AtlasRun &run : runs)
+		{
+			if (run.Refusal == FBR_NONE && run.Side < compressedSide) run.Refusal = FBR_BELOW_SIDE;
+		}
+
+		// 3. The order each atlas lays its runs out in.
+		TArray<unsigned> orderUncompressed, orderCompressed;
+		for (unsigned r = 0; r < runs.Size(); r++)
+		{
+			if (runs[r].Refusal == FBR_NONE) orderCompressed.Push(r);
+			else if (!runs[r].HasBc7) orderUncompressed.Push(r);
+		}
+		for (unsigned r = 0; r < runs.Size(); r++)
+		{
+			if (runs[r].Refusal != FBR_NONE && runs[r].HasBc7) orderUncompressed.Push(r);
+		}
+
+		// 4. What fits, and the two lists.
+		TArray<ParticleAtlasLayer> layers;
+		TArray<ParticleCompressedAtlasLayer> compressedLayers;
+		uint64_t wanted[2] = { 0, 0 };
+		for (int atlas = 0; atlas < 2; atlas++)
+		{
+			const TArray<unsigned> &order = atlas == 0 ? orderUncompressed : orderCompressed;
+			if (order.Size() == 0) continue;
+			TArray<unsigned> frames, kept;
+			frames.Resize(order.Size());
+			kept.Resize(order.Size());
+			for (unsigned k = 0; k < order.Size(); k++)
+			{
+				frames[k] = runs[order[k]].Frames;
+				wanted[atlas] += frames[k];
+			}
+			FitFlipbookRuns(&frames[0], order.Size(), cap, policy.ThinOverflow, &kept[0]);
+			for (unsigned k = 0; k < order.Size(); k++)
+			{
+				AtlasRun &run = runs[order[k]];
+				run.Kept = kept[k];
+				if (run.Kept == 0) continue;
+				const TArray<FTextureID> &runFrames = table.Named[run.Slot].Frames;
+				if (atlas == 0)
 				{
-					firstLayer = *start;
-				}
-				else if (table.AtlasLayers.Size() + n.Frames.Size() <= ParticleDefinitionBuffer::ATLAS_LAYERS)
-				{
-					firstLayer = (int)table.AtlasLayers.Size();
-					runStart.Insert(key, firstLayer);
-					AppendFlipbookLayers(table.AtlasLayers, n.Frames);
+					run.FirstLayer = (int)layers.Size();
+					AppendFlipbookLayers(layers, runFrames, run.Kept);
 				}
 				else
 				{
-					// Unreachable: the handler refuses a definition that would not fit, and
-					// counts exactly what is live once it is accepted.
-					Printf(TEXTCOLOR_ORANGE "ParticleAtlas: '%s' (%s, line %d) did not fit in the atlas and draws untextured\n",
-						n.Name.GetChars(), n.Lump.GetChars(), n.Line);
+					run.FirstLayer = (int)compressedLayers.Size();
+					AppendCompressedFlipbookLayers(compressedLayers, runFrames, run.Kept, run.Side, compressedSide);
+				}
+			}
+		}
+
+		// 5. The definitions.
+		for (unsigned i = 0; i < table.NamedCount; i++)
+		{
+			NamedInfo &n = table.Named[i];
+			ParticleDefinitionGpu &g = table.Gpu[i];
+			int firstLayer = -1;
+			bool compressed = false;
+			float frameCount = g.flipbook[1];
+			float frameRate = g.flipbook[2];
+			n.FramesKept = 0;
+			n.CompressedRefusal = 0;
+			if (n.Frames.Size() > 0)
+			{
+				const AtlasRun &run = runs[*runOf.CheckKey(FlipbookRunKey(n.Frames))];
+				firstLayer = run.Kept > 0 ? run.FirstLayer : -1;
+				compressed = run.Kept > 0 && run.Refusal == FBR_NONE;
+				n.FramesKept = run.Kept;
+				n.CompressedRefusal = run.HasBc7 ? run.Refusal : 0;
+				// As the lump wrote them, unless thinned.
+				frameCount = (float)n.Frames.Size();
+				frameRate = (float)n.FlipbookFps;
+				if (run.Kept > 0 && run.Kept < run.Frames)
+				{
+					frameCount = (float)run.Kept;
+					if (g.flipbook[3] < 0.5f)
+						frameRate = (float)(n.FlipbookFps * run.Kept / run.Frames);
+				}
+				if (!fromLoad)
+				{
+					const char *atlasName = run.Refusal == FBR_NONE ? "compressed" : "uncompressed";
+					if (run.Kept == 0)
+						DPrintf(DMSG_NOTIFY, "ParticleAtlas: '%s' (%s, line %d) -- flipbook \"%s\" did not fit in the %s atlas and draws untextured\n",
+							n.Name.GetChars(), n.Lump.GetChars(), n.Line, n.Texture.GetChars(), atlasName);
+					else if (run.Kept < run.Frames)
+						DPrintf(DMSG_NOTIFY, "ParticleAtlas: '%s' (%s, line %d) -- flipbook \"%s\" plays %u of its %u frames (the %s atlas holds %u)\n",
+							n.Name.GetChars(), n.Lump.GetChars(), n.Line, n.Texture.GetChars(), run.Kept, run.Frames, atlasName, cap);
+					if (n.CompressedRefusal != FBR_NONE)
+						DPrintf(DMSG_NOTIFY, "ParticleAtlas: '%s' (%s, line %d) -- flipbook \"%s\" has BC7 frames but is uncompressed: %s\n",
+							n.Name.GetChars(), n.Lump.GetChars(), n.Line, n.Texture.GetChars(), kFlipbookRefusalText[n.CompressedRefusal]);
 				}
 			}
 			n.FirstLayer = firstLayer;
-			if (table.Gpu[i].flipbook[0] != (float)firstLayer)
+			n.AtlasCompressed = compressed;
+
+			const int flags = (int)g.look[3];
+			const int wantFlags = compressed ? (flags | PDF_ATLAS_COMPRESSED) : (flags & ~PDF_ATLAS_COMPRESSED);
+			if (g.flipbook[0] != (float)firstLayer || g.flipbook[1] != frameCount || g.flipbook[2] != frameRate || flags != wantFlags)
 			{
-				table.Gpu[i].flipbook[0] = (float)firstLayer;
+				g.flipbook[0] = (float)firstLayer;
+				g.flipbook[1] = frameCount;
+				g.flipbook[2] = frameRate;
+				g.look[3] = (float)wantFlags;
 				table.Stamp(i);
 			}
 		}
-		table.AtlasGeneration++;
+
+		// The lists, and their generations.
+		bool uncompressedChanged = layers.Size() != table.AtlasLayers.Size();
+		for (unsigned l = 0; !uncompressedChanged && l < layers.Size(); l++)
+		{
+			const ParticleAtlasLayer &a = layers[l];
+			const ParticleAtlasLayer &b = table.AtlasLayers[l];
+			uncompressedChanged = a.Texture != b.Texture || a.Left != b.Left || a.Top != b.Top || a.Width != b.Width || a.Height != b.Height;
+		}
+		const int listedSide = compressedLayers.Size() > 0 ? compressedSide : 0;
+		bool compressedChanged = compressedLayers.Size() != table.CompressedAtlasLayers.Size() || listedSide != table.CompressedAtlasSide;
+		for (unsigned l = 0; !compressedChanged && l < compressedLayers.Size(); l++)
+		{
+			const ParticleCompressedAtlasLayer &a = compressedLayers[l];
+			const ParticleCompressedAtlasLayer &b = table.CompressedAtlasLayers[l];
+			compressedChanged = a.Texture != b.Texture || a.StartLevel != b.StartLevel;
+		}
+		table.AtlasLayers = layers;
+		table.CompressedAtlasLayers = compressedLayers;
+		table.CompressedAtlasSide = listedSide;
+		if (fromLoad || uncompressedChanged) table.AtlasGeneration++;
+		if (fromLoad || compressedChanged) table.CompressedAtlasGeneration++;
+
+		if (!fromLoad && textured > 0)
+		{
+			unsigned thinnedBooks = 0, droppedBooks = 0, uncompressedBc7Books = 0;
+			for (const AtlasRun &run : runs)
+			{
+				if (run.Kept == 0) droppedBooks++;
+				else if (run.Kept < run.Frames) thinnedBooks++;
+				if (run.HasBc7 && run.Refusal != FBR_NONE) uncompressedBc7Books++;
+			}
+			FString line;
+			line.Format("ParticleAtlas: flipbook layout -- %u uncompressed frame%s, %u compressed", layers.Size(), layers.Size() == 1 ? "" : "s", compressedLayers.Size());
+			if (listedSide > 0) line.AppendFormat(" at %d x %d", listedSide, listedSide);
+			line.AppendFormat("; at most %u frames an atlas", cap);
+			if (thinnedBooks > 0 || droppedBooks > 0)
+				line.AppendFormat(" -- flipbooks want %llu uncompressed and %llu compressed frames", (unsigned long long)wanted[0], (unsigned long long)wanted[1]);
+			if (thinnedBooks > 0)
+				line.AppendFormat(", %u long flipbook%s play%s fewer frames", thinnedBooks, thinnedBooks == 1 ? "" : "s", thinnedBooks == 1 ? "s" : "");
+			if (droppedBooks > 0)
+				line.AppendFormat(", %u flipbook%s draw%s as plain dots", droppedBooks, droppedBooks == 1 ? "" : "s", droppedBooks == 1 ? "s" : "");
+			if (uncompressedBc7Books > 0)
+				line.AppendFormat(" -- %u BC7 flipbook%s went uncompressed (developer 1 says why)", uncompressedBc7Books, uncompressedBc7Books == 1 ? "" : "s");
+			Printf("%s%s\n", (thinnedBooks > 0 || droppedBooks > 0) ? TEXTCOLOR_ORANGE : "", line.GetChars());
+		}
 		return textured;
 	}
 
@@ -1566,6 +1930,7 @@ namespace
 		info.Texture = texture;
 		info.TextureLine = textureLine;
 		info.Frames = frameIds;
+		info.FlipbookFps = fps;	// [ATLASBC7] a thinned loop's fps is worked out from it
 		info.HasMesh = meshLine != 0;	// [MESHPARTICLES]
 		info.MeshLine = meshLine;
 		info.MeshSkinName = meshSkin;
@@ -1661,16 +2026,19 @@ void LoadParticleDefinitions()
 
 		// [2c] THE ATLAS BUDGET. Counts the layers the table would use with this
 		// definition accepted (the one it replaces left out, identical runs shared).
-		// Every acceptance keeps that at or under the cap, so the layer assignment
-		// after the last lump always fits. Nothing is changed before this check.
+		// Nothing is changed before this check.
+		// [ATLASBC7] Which atlas a flipbook goes to, and how many of its frames fit, is the renderer's layout
+		// (AssignAtlasLayers, by the atlas settings), which thins or drops what does not fit. So the load refuses only
+		// past what both atlases could ever hold together.
 		if (info.Frames.Size() > 0)
 		{
 			const int replacing = existing != nullptr ? *existing : -1;
-			if (AtlasLayersInUse(table, replacing, &info.Frames) > ParticleDefinitionBuffer::ATLAS_LAYERS)
+			const unsigned ceiling = 2 * ParticleDefinitionBuffer::ATLAS_LAYERS_MAX;
+			if (AtlasLayersInUse(table, replacing, &info.Frames) > ceiling)
 			{
 				const unsigned inUse = AtlasLayersInUse(table, replacing, nullptr);
-				error.Format("its flipbook \"%s\" needs %u particle atlas layers and only %u of %u are free",
-					info.Texture.GetChars(), info.Frames.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS - inUse, ParticleDefinitionBuffer::ATLAS_LAYERS);
+				error.Format("its flipbook \"%s\" needs %u frames and only %u of the %u both particle atlases could ever hold are free",
+					info.Texture.GetChars(), info.Frames.Size(), ceiling - inUse, ceiling);
 				errorLine = info.TextureLine;
 				return false;
 			}
@@ -1708,7 +2076,7 @@ void LoadParticleDefinitions()
 	}
 
 	// [2c] Atlas layers for the definitions that survived every lump.
-	const unsigned textured = AssignAtlasLayers(table);
+	const unsigned textured = AssignAtlasLayers(table, true);
 	// [MESHPARTICLES] And the mesh list, the same way.
 	const unsigned meshed = AssignMeshList(table);
 	// [DEBRISPOOL] And the debris list.
@@ -1719,8 +2087,11 @@ void LoadParticleDefinitions()
 	Printf("ParticleDefinitions: %u named definition%s from %u PARTICLEDEFS lump%s -- %d refused, %u replaced by a later one\n",
 		table.NamedCount, table.NamedCount == 1 ? "" : "s", table.Lumps, table.Lumps == 1 ? "" : "s",
 		table.Stats.Refused, table.Replaced);
-	Printf("ParticleDefinitions: %u textured definition%s using %u of %u particle atlas layers (the renderer builds the atlas on its next frame; Vulkan only)\n",
-		textured, textured == 1 ? "" : "s", table.AtlasLayers.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS);
+	// [ATLASBC7] Frames, not layers: which atlas each flipbook goes to, and how many of its frames fit, is the renderer's layout on
+	// its first scene (RefreshParticleAtlasLayout), which prints its own line.
+	const unsigned flipbookFrames = AtlasLayersInUse(table, -1, nullptr);
+	Printf("ParticleDefinitions: %u textured definition%s with %u flipbook frame%s (the renderer lays them into its particle atlases and builds them on its next frames; Vulkan only)\n",
+		textured, textured == 1 ? "" : "s", flipbookFrames, flipbookFrames == 1 ? "" : "s");
 	Printf("ParticleDefinitions: %u definition%s name%s a mesh (drawn as instanced 3D meshes while r_meshparticles is on; Vulkan only)\n",
 		meshed, meshed == 1 ? "" : "s", meshed == 1 ? "s" : "");
 	Printf("ParticleDefinitions: %u definition%s %s debris (restitution: simulated in the debris pool while r_debris is on; Vulkan only)\n",
@@ -1891,6 +2262,22 @@ const ParticleAtlasLayer *ParticleAtlasLayerData() { return Table().AtlasLayers.
 unsigned ParticleAtlasLayerCount() { return Table().AtlasLayers.Size(); }
 uint64_t ParticleAtlasGeneration() { return Table().AtlasGeneration; }
 
+// [ATLASBC7] And the compressed atlas's list, for the same sync.
+const ParticleCompressedAtlasLayer *ParticleCompressedAtlasLayerData() { return Table().CompressedAtlasLayers.Size() > 0 ? &Table().CompressedAtlasLayers[0] : nullptr; }
+unsigned ParticleCompressedAtlasLayerCount() { return Table().CompressedAtlasLayers.Size(); }
+int ParticleCompressedAtlasSide() { return Table().CompressedAtlasSide; }
+uint64_t ParticleCompressedAtlasGeneration() { return Table().CompressedAtlasGeneration; }
+
+// [ATLASBC7] See particledefs.h. The first call always lays out (and prints the layout); after that only a changed policy does.
+void RefreshParticleAtlasLayout(const ParticleAtlasPolicy &policy)
+{
+	DefinitionTable &table = Table();
+	if (table.AtlasPolicyApplied && policy == table.AtlasPolicy) return;
+	table.AtlasPolicy = policy;
+	table.AtlasPolicyApplied = true;
+	AssignAtlasLayers(table, false);
+}
+
 // [MESHPARTICLES] For the renderer's mesh particles (MeshParticleBuffer::SyncDefinitions).
 const ParticleMeshDefinition *ParticleMeshDefinitionData() { return Table().Meshes.Size() > 0 ? &Table().Meshes[0] : nullptr; }
 unsigned ParticleMeshDefinitionCount() { return Table().Meshes.Size(); }
@@ -1957,10 +2344,17 @@ CCMD(particles)
 		FString texture;
 		if (n.Texture.IsEmpty()) texture = "none";
 		else if (n.FirstLayer >= 0)
-			texture.Format("\"%s\" x%d at %g fps, %s -- atlas layers %d..%d", n.Texture.GetChars(), (int)g.flipbook[1], g.flipbook[2], g.flipbook[3] > 0.5f ? "once" : "loop",
-				n.FirstLayer, n.FirstLayer + (int)n.Frames.Size() - 1);
+		{
+			// [ATLASBC7] Which atlas, and how many frames it plays when thinned.
+			texture.Format("\"%s\" x%u at %g fps, %s -- %s atlas layers %d..%d", n.Texture.GetChars(), n.Frames.Size(), n.FlipbookFps, g.flipbook[3] > 0.5f ? "once" : "loop",
+				n.AtlasCompressed ? "compressed" : "uncompressed", n.FirstLayer, n.FirstLayer + (int)n.FramesKept - 1);
+			if (n.FramesKept < n.Frames.Size())
+				texture.AppendFormat(" (plays %u of its %u frames, at %g fps)", n.FramesKept, n.Frames.Size(), g.flipbook[2]);
+		}
 		else
-			texture.Format("\"%s\" x%d -- not in the atlas", n.Texture.GetChars(), (int)g.flipbook[1]);
+			texture.Format("\"%s\" x%u -- not in the atlas (it draws as a plain dot)", n.Texture.GetChars(), n.Frames.Size());
+		if (n.CompressedRefusal > FBR_NONE && n.CompressedRefusal < FBR_COUNT)
+			texture.AppendFormat(" -- uncompressed: %s", kFlipbookRefusalText[n.CompressedRefusal]);	// [ATLASBC7]
 
 		Printf("  #%u %s (handle %d) -- %s, line %d\n", i, n.Name.GetChars(), n.Handle, n.Lump.GetChars(), n.Line);
 		Printf("      %u time keys, maxsize %g, %s, stretch %g, spin %g..%g, gravity %g, drag %g, fade %s, collide %s, lit %g, soft %s, texture %s\n",
@@ -2049,8 +2443,15 @@ CCMD(particles)
 	}
 
 	// [2c] The particle atlas: what the named flipbooks use, and what the renderer built.
-	Printf("Particle atlas: %u of %u layers used by named flipbooks (list generation %llu)\n",
-		table.AtlasLayers.Size(), ParticleDefinitionBuffer::ATLAS_LAYERS, (unsigned long long)table.AtlasGeneration);
+	// [ATLASBC7] Both atlases, and the settings they were laid out with.
+	const ParticleAtlasPolicy &atlasPolicy = table.AtlasPolicy;
+	Printf("Particle atlas: %u uncompressed and %u compressed layers used by named flipbooks, at most %u an atlas (list generations %llu, %llu)\n",
+		table.AtlasLayers.Size(), table.CompressedAtlasLayers.Size(), atlasPolicy.LayersPerAtlas,
+		(unsigned long long)table.AtlasGeneration, (unsigned long long)table.CompressedAtlasGeneration);
+	Printf("  laid out %s: compressed flipbooks %s, compressed side cap %d (this layout: %d), past the cap %s\n",
+		table.AtlasPolicyApplied ? "by the renderer's atlas settings" : "at load, before the renderer's first scene",
+		atlasPolicy.Compressed ? "on" : "off (switched off, or the device cannot sample BC7 arrays)", atlasPolicy.CompressedSide, table.CompressedAtlasSide,
+		atlasPolicy.ThinOverflow ? "long flipbooks play fewer frames" : "the last flipbooks draw as plain dots");
 	if (screen != nullptr && screen->mParticleDefinitions != nullptr)
 	{
 		const ParticleDefinitionBuffer *defs = screen->mParticleDefinitions;
@@ -2064,6 +2465,18 @@ CCMD(particles)
 		{
 			Printf("  GPU atlas: only the 1 x 1 placeholder%s\n",
 				table.AtlasLayers.Size() > 0 ? " -- the atlas is built on the next drawn frame" : " (no definition names a texture)");
+		}
+		// [ATLASBC7]
+		if (defs->GetCompressedAtlasBuiltLayers() > 0)
+		{
+			Printf("  GPU compressed atlas: %u layers of %d x %d BC7 with mips, %.2f MiB (from list generation %llu)\n",
+				defs->GetCompressedAtlasBuiltLayers(), defs->GetCompressedAtlasBuiltSide(), defs->GetCompressedAtlasBuiltSide(),
+				defs->GetCompressedAtlasBuiltBytes() / (1024.0 * 1024.0), (unsigned long long)defs->GetCompressedAtlasGeneration());
+		}
+		else
+		{
+			Printf("  GPU compressed atlas: only the 1 x 1 placeholder%s\n",
+				table.CompressedAtlasLayers.Size() > 0 ? " -- it is built on the next drawn frame" : " (no flipbook is compressed)");
 		}
 	}
 

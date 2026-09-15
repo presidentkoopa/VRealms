@@ -116,6 +116,13 @@ public:
 	virtual bool IsGPUOnly() { return false; }
 	virtual int getGLFormat() const { return 0; }
 	virtual int getVKFormat() const { return 0; }
+	// [ATLASBC7] What a reader that uploads or premultiplies stored pixels must know ("Engine docs/
+	// PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"; the compressed particle atlas is the first). HasPremultipliedAlpha: the stored
+	// colour is already multiplied by alpha (a DX10 DDS whose alpha mode says so), so premultiplying it again would darken it.
+	// GetStoredMipLevels: how many mip levels the file stores, the top level included (0 or 1: the top level only). The
+	// defaults say "nothing stored": every image but such a DDS answers exactly as before.
+	virtual bool HasPremultipliedAlpha() { return false; }
+	virtual int GetStoredMipLevels() { return 0; }
 	// False when the sprite code must not add its 1-pixel filtering frame (FGameTexture::ShouldExpandSprite):
 	// the image is placed by its own header and goes up as it is stored.
 	virtual bool CanExpandSprite() { return true; }

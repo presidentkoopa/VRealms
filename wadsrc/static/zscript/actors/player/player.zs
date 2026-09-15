@@ -2692,7 +2692,7 @@ class PlayerPawn : Actor
 	{
 		let player = self.player;
 		let weapon = hand ? player.OffhandWeapon : player.ReadyWeapon;
-		if (player.PendingWeapon != WP_NOCHANGE &&
+		if (player.PendingWeapon != WP_NOCHANGE && player.PendingWeapon != null &&
 			((player.PendingWeapon.bOffhandWeapon && hand == 1) || 
 			(!player.PendingWeapon.bOffhandWeapon && hand == 0)))
 		{

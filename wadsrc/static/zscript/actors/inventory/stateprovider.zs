@@ -517,8 +517,9 @@ class StateProvider : Inventory
 		int refireok = weapon == player.ReadyWeapon ? WF_REFIRESWITCHOK : WF_OFFHANDREFIRESWITCHOK;
 		int attackbt = weapon == player.ReadyWeapon ? BT_ATTACK : BT_OFFHANDATTACK;
 		int altattackbt = weapon == player.ReadyWeapon ? BT_ALTATTACK : BT_OFFHANDALTATTACK;
+		// A null PendingWeapon counts as the main hand's change (see Weapon.A_Raise), never a dereference.
 		pending = player.PendingWeapon != WP_NOCHANGE && (player.WeaponState & refireok)
-			&& (player.PendingWeapon.bOffhandWeapon == weapon.bOffhandWeapon);
+			&& ((player.PendingWeapon ? player.PendingWeapon.bOffhandWeapon : false) == weapon.bOffhandWeapon);
 		if ((player.cmd.buttons & attackbt)
 			&& !weapon.bAltFire && !pending && player.health > 0)
 		{

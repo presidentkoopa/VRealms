@@ -54,6 +54,11 @@ layout(location = 6) flat in vec4 vParticleLightDir;
 // mips. Declared here and not in vk_shader.cpp's shared prolog: only this effect
 // reads it, so no other shader is touched. Vulkan only, like the whole effect.
 layout(set = 0, binding = 4) uniform sampler2DArray ParticleAtlas;
+// [ATLASBC7] THE COMPRESSED PARTICLE ATLAS, fixed set binding 10 (VkTextureManager::ParticleAtlasCompressed): flipbooks stored as
+// premultiplied BC7 DDS frames, one layer each, uploaded as stored with their own mips. Read with ParticleAtlas's sampler,
+// coordinates and derivatives, for a definition whose look.w has PDF_ATLAS_COMPRESSED (2) ("Engine docs/
+// PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md").
+layout(set = 0, binding = 10) uniform sampler2DArray ParticleAtlasCompressed;
 
 // [LOOKS] hash13 / valueNoise, the noise drawnlines.fp's turbulence already uses.
 #include "shaders/glsl/valuenoise.glsl"
@@ -245,8 +250,22 @@ void main()
 		// [2c] FLIPBOOK. This frame and the next, mixed by how far the particle is into
 		// the next, so 8 fps art stays smooth at 90 Hz. The atlas is premultiplied, so
 		// neither this mix nor the filtering bleeds transparent pixels' colour.
-		vec4 frameNow = textureGrad(ParticleAtlas, vec3(atlasCoord, vParticleFlipbook.x), atlasCoordDx, atlasCoordDy);
-		vec4 frameNext = textureGrad(ParticleAtlas, vec3(atlasCoord, vParticleFlipbook.y), atlasCoordDx, atlasCoordDy);
+		// [ATLASBC7] From the atlas the definition's frames are in: PDF_ATLAS_COMPRESSED (2) in its look.w, read by the slot
+		// vParticleFlipbook.w carries, clamped as ParticleLook clamps it. Both atlases hold premultiplied texels, so everything
+		// after the two reads is the same for either.
+		int atlasSlot = clamp(int(vParticleFlipbook.w + 0.5), 0, kParticleDefinitionSlots - 1);
+		vec4 frameNow;
+		vec4 frameNext;
+		if ((int(particleDefinitions[atlasSlot].look.w + 0.5) & 2) != 0)
+		{
+			frameNow = textureGrad(ParticleAtlasCompressed, vec3(atlasCoord, vParticleFlipbook.x), atlasCoordDx, atlasCoordDy);
+			frameNext = textureGrad(ParticleAtlasCompressed, vec3(atlasCoord, vParticleFlipbook.y), atlasCoordDx, atlasCoordDy);
+		}
+		else
+		{
+			frameNow = textureGrad(ParticleAtlas, vec3(atlasCoord, vParticleFlipbook.x), atlasCoordDx, atlasCoordDy);
+			frameNext = textureGrad(ParticleAtlas, vec3(atlasCoord, vParticleFlipbook.y), atlasCoordDx, atlasCoordDy);
+		}
 		vec4 atlasTexel = mix(frameNow, frameNext, vParticleFlipbook.z);
 
 		// The emissive part is scaled by the texel's luminance ("Engine docs/

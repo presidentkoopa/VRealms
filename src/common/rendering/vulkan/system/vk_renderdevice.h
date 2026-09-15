@@ -153,6 +153,8 @@ public:
 	VulkanRenderDevice(void *hMonitor, bool fullscreen, std::shared_ptr<VulkanSurface> surface);
 	~VulkanRenderDevice();
 	bool IsVulkan() override { return true; }
+	bool SupportsBC7TextureArrays() override;	// [ATLASBC7] see v_video.h
+	int GetMaxTextureArrayLayers() override;	// [ATLASBC7]
 
 	void Update() override;
 
@@ -255,6 +257,8 @@ private:
 	// cannot carry it (InitializeState); and last frame's decision, for the on/off log line.
 	VkFormat mLightMaskFormat = VK_FORMAT_UNDEFINED;
 	bool mLightMaskWasActive = false;
+	// [ATLASBC7] SupportsBC7TextureArrays' answer once asked (-1 not yet): it never changes for a device.
+	int mSupportsBC7TextureArrays = -1;
 	TSQueue<VkTexLoadIn> primaryTexQueue;
 	TSQueue<VkTexLoadIn> secondaryTexQueue;
 	TSQueue<VkTexLoadOut> outputTexQueue;

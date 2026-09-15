@@ -200,6 +200,10 @@ void VkDescriptorSetManager::UpdateFixedSet()
 	// placeholder when it is constructed, and rebuilds the atlas in its BeginFrame,
 	// which runs before this. Linear, mips, clamp (VkSamplerManager::ParticleAtlasSampler).
 	update.AddCombinedImageSampler(FixedSet.get(), 4, fb->GetTextureManager()->ParticleAtlas.View.get(), fb->GetSamplerManager()->ParticleAtlasSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	// [ATLASBC7] Binding 10: the compressed particle atlas (VkTextureManager::ParticleAtlasCompressed), read by gpuparticles.fp
+	// beside binding 4. Always written, for the same reasons: a placeholder from construction, rebuilt in the texture manager's
+	// BeginFrame before this. The same sampler: linear, mips, clamp suit BC7 layers too.
+	update.AddCombinedImageSampler(FixedSet.get(), 10, fb->GetTextureManager()->ParticleAtlasCompressed.View.get(), fb->GetSamplerManager()->ParticleAtlasSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// [2a] Binding 3: the scene depth, depth aspect only, for effects drawn inside
 	// a read-only depth pass (FRenderState::SetSceneDepthReadable). Written with
@@ -637,16 +641,19 @@ void VkDescriptorSetManager::CreateFixedSetLayout()
 	// valid image, so every pipeline can carry them in its layout.
 	builder.AddBinding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	builder.AddBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
-	// Those two put six samplers of the fixed set in the fragment stage (0, 1, 3, 4, 7, 8), and a material's texture set adds up
-	// to twelve more. Vulkan guarantees 16 per stage (maxPerStageDescriptorSamplers); desktop GPUs report far more, and this fork
-	// targets desktop Vulkan. Say plainly why before a smaller device fails.
+	// [ATLASBC7] The compressed particle atlas, a BC7 2D array (UpdateFixedSet), 10 being the next free number. Declared in GLSL only
+	// by gpuparticles.fp, beside binding 4; always written with a valid image, so every pipeline can carry it in its layout.
+	builder.AddBinding(10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	// Those put seven samplers of the fixed set in the fragment stage (0, 1, 3, 4, 7, 8, [ATLASBC7] 10), and a material's texture set
+	// adds up to twelve more. Vulkan guarantees 16 per stage (maxPerStageDescriptorSamplers); desktop GPUs report far more, and this
+	// fork targets desktop Vulkan. Say plainly why before a smaller device fails.
 	{
-		const uint32_t fragmentStageSamplers = 6 + 12;
+		const uint32_t fragmentStageSamplers = 7 + 12;
 		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorSamplers;
 		if (allowed < fragmentStageSamplers)
 		{
 			Printf(TEXTCOLOR_RED "Vulkan: this device allows %u samplers per shader stage, but a scene pipeline can need %u in the fragment stage "
-				"(shadow map, lightmap, scene depth, particle atlas, damage pages, damage detail, and up to twelve material textures) -- "
+				"(shadow map, lightmap, scene depth, particle atlas, compressed particle atlas, damage pages, damage detail, and up to twelve material textures) -- "
 				"pipelines of materials with many texture layers may fail on this device\n", (unsigned)allowed, (unsigned)fragmentStageSamplers);
 		}
 	}
@@ -680,7 +687,8 @@ void VkDescriptorSetManager::CreateFixedSetPool()
 	// [2c] 4: and the particle atlas (4). Too few here fails set allocation.
 	// [LEVELFIELD] 7: and the level field's fine (5), coarse (6) and header (9).
 	// [SURFACEDAMAGE] 9: and the surface damage pages (7) and detail (8).
-	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 * maxSets);
+	// [ATLASBC7] 10: and the compressed particle atlas (10).
+	poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 * maxSets);
 	if (fb->RaytracingEnabled())
 		poolbuilder.AddPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 * maxSets);
 	poolbuilder.MaxSets(maxSets);

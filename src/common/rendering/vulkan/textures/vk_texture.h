@@ -68,6 +68,11 @@ public:
 	// binding 4, read by gpuparticles.fp. A 1 x 1 transparent placeholder until a
 	// loaded definition names a texture, so the binding is always valid.
 	VkTextureImage ParticleAtlas;
+	// [ATLASBC7] The COMPRESSED particle atlas ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"): flipbooks stored as
+	// premultiplied BC7 DDS frames, one layer each, uploaded as stored -- BC7, every layer one side, the files' own mips. Fixed
+	// set binding 10, read by gpuparticles.fp for a definition with PDF_ATLAS_COMPRESSED. A 1 x 1 transparent placeholder while
+	// no flipbook is compressed, so the binding is always valid.
+	VkTextureImage ParticleAtlasCompressed;
 
 private:
 	void CreateNullTexture();
@@ -77,11 +82,17 @@ private:
 	// r_gpuparticles_atlas_size (or the placeholder). BeginFrame calls it again when the
 	// list or the size changes.
 	void CreateParticleAtlas();
+	// [ATLASBC7] Builds ParticleAtlasCompressed from ParticleDefinitionBuffer's compressed list, at the side that list gives (or
+	// the placeholder). BeginFrame calls it again when that list or side changes.
+	void CreateCompressedParticleAtlas();
 
 	// [2c] What ParticleAtlas was last built from, so BeginFrame rebuilds only on a change.
 	uint64_t ParticleAtlasBuiltGeneration = 0;
 	int ParticleAtlasBuiltSize = 0;		// layer side in pixels; 0 = the placeholder
 	unsigned ParticleAtlasBuiltLayers = 0;	// 0 = the placeholder
+	// [ATLASBC7] The same for ParticleAtlasCompressed. Its side comes with its list, so the list's generation covers it.
+	uint64_t ParticleAtlasCompressedBuiltGeneration = 0;
+	unsigned ParticleAtlasCompressedBuiltLayers = 0;	// 0 = the placeholder
 
 	VkPPTexture* GetVkTexture(PPTexture* texture);
 

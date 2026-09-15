@@ -2123,6 +2123,27 @@ OptionValue "WallBatchSizes"
 	128, "128"
 }
 
+// [ATLASBC7] The particle atlas rows of the developer options (r_gpuparticles_atlas_*, hw_cvars.cpp).
+OptionValue "ParticleAtlasSizes"
+{
+	128, "128"
+	256, "256"
+	512, "512"
+}
+
+OptionValue "ParticleAtlasCompressedSizes"
+{
+	256, "256"
+	512, "512"
+	1024, "1024"
+}
+
+OptionValue "ParticleAtlasOverflow"
+{
+	1, "Play fewer frames"
+	0, "Plain glowing dots"
+}
+
 OptionMenu DeveloperOptionsMenu protected
 {
 	Title "$DEVOPTMNU_TITLE"
@@ -2184,13 +2205,30 @@ OptionMenu DeveloperOptionsMenu protected
 	// keys -- and how full the inline cache is, to the console and the log (the
 	// `particles` CCMD), so a PARTICLEDEFS lump can be checked without typing.
 	Command "List particle definitions (to the log)", "particles"
-	// [2c] r_gpuparticles_atlas_size -- the particle atlas's layer side, 128 or 256
-	// pixels ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c). One layer per frame of
-	// every textured particle definition, at most 256 layers: up to 85 MiB of VRAM at
-	// 256, 21 MiB at 128, and only the layers loaded definitions use are allocated.
+	// [2c] r_gpuparticles_atlas_size -- the particle atlas's layer side, 128, 256 or
+	// [ATLASBC7] 512 pixels ("Engine docs/GPU_PARTICLES_STAGE2_PLAN.md" 2c). One layer per
+	// frame: 256 layers are 21 MiB of VRAM at 128, 85 MiB at 256, 341 MiB at 512, and only
+	// the layers loaded definitions use are allocated. [ATLASBC7] This is the UNCOMPRESSED
+	// atlas; a choice of the three sizes (a slider's 384 stop would be a size it is not).
 	// Renderer-read every frame: the atlas rebuilds on the next frame, with this menu
 	// still open. Vulkan only.
-	Slider "Particle atlas size (px, rebuilds at once)", "r_gpuparticles_atlas_size", 128, 256, 128, 0
+	Option "Particle atlas size (px, rebuilds at once)", "r_gpuparticles_atlas_size", "ParticleAtlasSizes"
+	// [ATLASBC7] THE COMPRESSED PARTICLE ATLAS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"): flipbooks stored as
+	// premultiplied BC7 DDS frames upload as stored, at a quarter of the memory. All four rows are renderer-read (the CPU
+	// layout every scene, the atlases on the next frame), so they apply with this menu open; a change rebuilds the atlas it
+	// affects, a pause of a second or a few. Presentation only. Vulkan only.
+	//   r_gpuparticles_atlas_compressed -- on by default (owner, 2026-09-15). Off puts every flipbook in the uncompressed
+	//   atlas: it should look the same at 4x the memory; the row stays for side-by-side checks.
+	Option "Compressed flipbooks (DDS)", "r_gpuparticles_atlas_compressed", "OnOff"
+	//   r_gpuparticles_atlas_compressed_size -- the compressed atlas's side cap: 512 by default (owner), or 256 or 1024. Never
+	//   bigger than the biggest loaded book; a bigger book uploads a smaller stored level.
+	Option "Compressed flipbook resolution", "r_gpuparticles_atlas_compressed_size", "ParticleAtlasCompressedSizes"
+	//   r_gpuparticles_atlas_layers -- frames each atlas may hold, 256 .. 2048 (default), never past the device. Memory is
+	//   spent only on frames loaded flipbooks use (2048 compressed frames at 512 are 683 MiB).
+	Slider "Flipbook frames per atlas", "r_gpuparticles_atlas_layers", 256, 2048, 256, 0
+	//   r_gpuparticles_atlas_overflow -- when flipbooks want more frames than that: play fewer frames (default, owner), so
+	//   every effect still shows, or draw the last ones as plain glowing dots.
+	Option "When flipbooks do not fit", "r_gpuparticles_atlas_overflow", "ParticleAtlasOverflow"
 	// [2d] r_gpuparticles_lights -- how many dynamic lights in view (nearest first)
 	// light lit, alpha-blended particle definitions such as smoke and dust ("Engine
 	// docs/GPU_PARTICLES_STAGE2_PLAN.md" 2d). 0 = the sector light at spawn only.

@@ -397,8 +397,10 @@ class Weapon : StateProvider
 		{
 			return;
 		}
-		if (player.PendingWeapon != WP_NOCHANGE && 
-			player.PendingWeapon.bOffhandWeapon == weapon.bOffhandWeapon)
+		// UZDXREMA: a null PendingWeapon (destroyed out from under the player, or a switch to nothing) is a change for the
+		// MAIN hand -- vanilla lowers on any PendingWeapon but WP_NOCHANGE -- never a dereference.
+		if (player.PendingWeapon != WP_NOCHANGE &&
+			(player.PendingWeapon ? player.PendingWeapon.bOffhandWeapon : false) == weapon.bOffhandWeapon)
 		{
 			player.mo.DropWeapon(weapon.bOffhandWeapon);
 			return;

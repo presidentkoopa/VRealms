@@ -199,6 +199,12 @@ public:
 	virtual ~DFrameBuffer();
 	virtual void InitializeState() = 0;	// For stuff that needs 'screen' set.
 	virtual bool IsVulkan() { return false; }
+	// [ATLASBC7] What the device can hold in a texture array ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"; the
+	// compressed particle atlas asks first), named for what they report. The Vulkan device answers; the defaults report nothing.
+	//   SupportsBC7TextureArrays  BC7 images can be created, uploaded and sampled with linear filtering
+	//   GetMaxTextureArrayLayers  the most layers one texture array may have (0 = not known here)
+	virtual bool SupportsBC7TextureArrays() { return false; }
+	virtual int GetMaxTextureArrayLayers() { return 0; }
 	virtual bool IsPoly() { return false; }
 	virtual int GetShaderCount();
 	virtual bool CompileNextShader() { return true; }

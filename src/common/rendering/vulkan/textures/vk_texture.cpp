@@ -33,6 +33,7 @@
 #include "hw_particledefbuffer.h"	// [2c] the particle atlas layer list
 #include "texturemanager.h"	// [2c] the atlas's pixels come from TexMan's textures
 #include "bitmap.h"	// [2c] FBitmap, what FTexture::GetBgraBitmap returns
+#include "image.h"	// [ATLASBC7] FImageSource::HasPremultipliedAlpha, and the stored levels VkCompressedPixels reads
 #include "i_time.h"	// [2c] atlas build time, for the log
 #include "printf.h"
 #include <algorithm>
@@ -45,6 +46,7 @@ VkTextureManager::VkTextureManager(VulkanRenderDevice* fb) : fb(fb)
 	CreateShadowmap();
 	CreateLightmap();
 	CreateParticleAtlas();	// [2c] the placeholder: no definitions are handed over yet
+	CreateCompressedParticleAtlas();	// [ATLASBC7] and the compressed atlas's
 }
 
 VkTextureManager::~VkTextureManager()
@@ -91,6 +93,25 @@ void VkTextureManager::BeginFrame()
 		{
 			ParticleAtlas.Reset(fb);
 			CreateParticleAtlas();
+		}
+	}
+
+	// [ATLASBC7] The compressed particle atlas, rebuilt when its list -- which carries its side -- changed since it was built. Only
+	// the atlas whose list changed is rebuilt: a compressed setting never rebuilds the uncompressed atlas, nor the other way round
+	// unless the layout moved flipbooks between them.
+	const uint64_t compressedGeneration = definitions != nullptr ? definitions->GetCompressedAtlasGeneration() : 0;
+	const bool compressedHasLayers = definitions != nullptr && definitions->GetCompressedAtlasLayers().Size() > 0;
+	if (!ParticleAtlasCompressed.Image || compressedGeneration != ParticleAtlasCompressedBuiltGeneration)
+	{
+		if (ParticleAtlasCompressed.Image && !compressedHasLayers && ParticleAtlasCompressedBuiltLayers == 0)
+		{
+			// Still no compressed flipbook: the placeholder stays.
+			ParticleAtlasCompressedBuiltGeneration = compressedGeneration;
+		}
+		else
+		{
+			ParticleAtlasCompressed.Reset(fb);
+			CreateCompressedParticleAtlas();
 		}
 	}
 }
@@ -370,6 +391,12 @@ void VkTextureManager::SetLightmap(int LMTextureSize, int LMTextureCount, const 
 // gives them. Only layers the list names are allocated; with none, the atlas is a
 // transparent 1 x 1 placeholder, so fixed binding 4 always holds a valid array.
 //
+// [ATLASBC7] THE COMPRESSED PARTICLE ATLAS ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md"), fixed binding 10: a second
+// 2D array, BC7, for flipbooks stored as premultiplied BC7 DDS frames (ParticleDefinitionBuffer::GetCompressedAtlasLayers). A
+// block cannot be resampled or premultiplied, so each layer is the frame's stored levels as they are, from the stored level
+// whose side is the atlas's; the CPU table only lists frames for which that holds. Both atlases stage their pixels in batches of
+// whole layers (UploadAtlasImage), so a 683 MiB compressed atlas never sits in host memory at once.
+//
 //==========================================================================
 
 namespace
@@ -440,7 +467,11 @@ namespace
 		const uint8_t *pixels = bitmap.GetPixels();
 		if (pixels == nullptr || width <= 0 || height <= 0) return false;
 
-		// Premultiplied, 0..1.
+		// Premultiplied, 0..1. [ATLASBC7] A source stored premultiplied already -- a DDS whose DX10 alpha mode says so
+		// (FImageSource::HasPremultipliedAlpha), such as a BC7 flipbook the compressed atlas did not take -- is taken as it is:
+		// premultiplying it again would darken every soft edge. Every other source goes through exactly the lines it did.
+		FImageSource *sourceImage = baseTexture->GetImage();
+		const bool storedPremultiplied = sourceImage != nullptr && sourceImage->HasPremultipliedAlpha();
 		TArray<float> source;
 		source.Resize((unsigned)width * (unsigned)height * 4);
 		for (int y = 0; y < height; y++)
@@ -450,9 +481,18 @@ namespace
 			{
 				const float alpha = row[x * 4 + 3] / 255.f;
 				float *out = &source[((unsigned)y * (unsigned)width + (unsigned)x) * 4];
-				out[0] = row[x * 4 + 0] / 255.f * alpha;
-				out[1] = row[x * 4 + 1] / 255.f * alpha;
-				out[2] = row[x * 4 + 2] / 255.f * alpha;
+				if (storedPremultiplied)
+				{
+					out[0] = row[x * 4 + 0] / 255.f;
+					out[1] = row[x * 4 + 1] / 255.f;
+					out[2] = row[x * 4 + 2] / 255.f;
+				}
+				else
+				{
+					out[0] = row[x * 4 + 0] / 255.f * alpha;
+					out[1] = row[x * 4 + 1] / 255.f * alpha;
+					out[2] = row[x * 4 + 2] / 255.f * alpha;
+				}
 				out[3] = alpha;
 			}
 		}
@@ -525,99 +565,194 @@ namespace
 		return true;
 	}
 
-	// Creates `atlas` as a side x side x layerCount array with every mip level and
-	// uploads it; `fillLayer(i, chain, chainBytes)` writes layer i's whole chain.
-	// Returns the image's texel bytes. The staging buffer holds level 0 of every
-	// layer, then level 1 of every layer, and so on, so one copy region per level
-	// covers all layers.
-	template<class FillLayer>
-	uint64_t CreateAtlasImage(VulkanRenderDevice *fb, VkTextureImage &atlas, int side, unsigned layerCount, FillLayer &&fillLayer)
+	// BEGIN ATLASBC7 HARNESS: upload
+	// [ATLASBC7] THE UPLOAD PLAN BOTH ATLASES SHARE ("Engine docs/PARTICLE_ATLAS_COMPRESSED_IMPL_NOTES.md").
+	//
+	// Staging in batches: one staging buffer carries as many WHOLE layers as fit in kAtlasStagingBytes (at least one) -- level 0
+	// of those layers, then level 1, and so on -- so one copy region per level covers the batch. Every level of every layer
+	// lands where the single staging buffer before batching put it, and host memory never holds much more than one batch: a
+	// 2048-layer compressed atlas at 512 is 683 MiB. An atlas under the batch size is one batch, the upload it always was.
+	const size_t kAtlasStagingBytes = 64 * 1024 * 1024;
+	const int kAtlasMaxLevels = 16;
+
+	unsigned AtlasLayersPerBatch(size_t chainBytes, unsigned layerCount)
 	{
-		const VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
-		int mipLevels = 1;
-		while ((side >> mipLevels) > 0) mipLevels++;
+		const size_t perBatch = chainBytes > 0 ? kAtlasStagingBytes / chainBytes : (size_t)layerCount;
+		if (perBatch < 1) return layerCount > 0 ? 1 : 0;
+		return perBatch < (size_t)layerCount ? (unsigned)perBatch : layerCount;
+	}
 
-		size_t mipOffset[16];
-		size_t mipBytes[16];
+	// A BC7 level `level` of an image `side` pixels on a side: (side >> level, never below 1) on a side, in 4 x 4 blocks of 16
+	// bytes -- Vulkan's rule for a block-compressed level, whose extent may stop short of a whole block only at its edge, as
+	// VkHardwareTexture's compressed upload plans it (vk_hwtexture.cpp, PlanCompressedUpload).
+	size_t CompressedAtlasLevelBytes(int side, int level)
+	{
+		const int levelSide = std::max(side >> level, 1);
+		const size_t blocks = (size_t)std::max((levelSide + 3) / 4, 1);
+		return blocks * blocks * 16;
+	}
+
+	// Where stored level `level` starts in a square BC7 image's stored levels (top level first, no padding), `width` on a side.
+	size_t CompressedStoredLevelOffset(int width, int level)
+	{
+		size_t offset = 0;
+		for (int k = 0; k < level; k++)
+			offset += CompressedAtlasLevelBytes(width, k);
+		return offset;
+	}
+	// END ATLASBC7 HARNESS: upload
+
+	// Creates `atlas` as a side x side x layerCount 2D array of `format` with `levels` mip
+	// levels and uploads it. Level m of a layer is levelBytes[m] bytes; `fillLayer(i,
+	// chain, chainBytes)` writes layer i's levels one after another. Returns the image's
+	// texel bytes. [ATLASBC7] Staged in batches of whole layers (AtlasLayersPerBatch).
+	template<class FillLayer>
+	uint64_t UploadAtlasImage(VulkanRenderDevice *fb, VkTextureImage &atlas, VkFormat format, int side, int levels, const size_t *levelBytes,
+		unsigned layerCount, const char *imageName, const char *viewName, FillLayer &&fillLayer)
+	{
 		size_t chainBytes = 0;
-		size_t total = 0;
-		for (int m = 0; m < mipLevels; m++)
-		{
-			mipBytes[m] = (size_t)(side >> m) * (size_t)(side >> m) * 4;
-			mipOffset[m] = total;
-			total += mipBytes[m] * layerCount;
-			chainBytes += mipBytes[m];
-		}
-
-		auto stagingBuffer = BufferBuilder()
-			.Size(total)
-			.Usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY)
-			.DebugName("VkTextureManager.ParticleAtlasStaging")
-			.Create(fb->device.get());
-
-		TArray<uint8_t> chain;
-		chain.Resize((unsigned)chainBytes);
-		uint8_t *data = (uint8_t *)stagingBuffer->Map(0, total);
-		for (unsigned i = 0; i < layerCount; i++)
-		{
-			fillLayer(i, chain.Data(), chainBytes);
-			size_t chainOffset = 0;
-			for (int m = 0; m < mipLevels; m++)
-			{
-				memcpy(data + mipOffset[m] + (size_t)i * mipBytes[m], chain.Data() + chainOffset, mipBytes[m]);
-				chainOffset += mipBytes[m];
-			}
-		}
-		stagingBuffer->Unmap();
+		for (int m = 0; m < levels; m++)
+			chainBytes += levelBytes[m];
 
 		atlas.Image = ImageBuilder()
 			.Format(format)
-			.Size(side, side, mipLevels, (int)layerCount)
+			.Size(side, side, levels, (int)layerCount)
 			.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-			.DebugName("VkTextureManager.ParticleAtlas")
+			.DebugName(imageName)
 			.Create(fb->device.get());
 
 		atlas.View = ImageViewBuilder()
 			.Type(VK_IMAGE_VIEW_TYPE_2D_ARRAY)
 			.Image(atlas.Image.get(), format)
-			.DebugName("VkTextureManager.ParticleAtlasView")
+			.DebugName(viewName)
 			.Create(fb->device.get());
-
-		auto cmdbuffer = fb->GetCommands()->GetTransferCommands();
 
 		// Every level of every layer in one barrier (VkImageTransition covers one layer).
 		PipelineBarrier()
-			.AddImage(atlas.Image.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, (int)layerCount)
-			.Execute(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			.AddImage(atlas.Image.get(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, (int)layerCount)
+			.Execute(fb->GetCommands()->GetTransferCommands(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-		std::vector<VkBufferImageCopy> regions((size_t)mipLevels);
-		for (int m = 0; m < mipLevels; m++)
+		TArray<uint8_t> chain;
+		chain.Resize((unsigned)chainBytes);
+		const unsigned perBatch = AtlasLayersPerBatch(chainBytes, layerCount);
+		for (unsigned first = 0; first < layerCount; first += perBatch)
 		{
-			VkBufferImageCopy &region = regions[(size_t)m];
-			region = {};
-			region.bufferOffset = mipOffset[m];
-			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			region.imageSubresource.mipLevel = (uint32_t)m;
-			region.imageSubresource.baseArrayLayer = 0;
-			region.imageSubresource.layerCount = layerCount;
-			region.imageExtent.width = (uint32_t)(side >> m);
-			region.imageExtent.height = (uint32_t)(side >> m);
-			region.imageExtent.depth = 1;
+			const unsigned count = std::min(perBatch, layerCount - first);
+			size_t levelOffset[kAtlasMaxLevels];
+			size_t total = 0;
+			for (int m = 0; m < levels; m++)
+			{
+				levelOffset[m] = total;
+				total += levelBytes[m] * count;
+			}
+
+			auto stagingBuffer = BufferBuilder()
+				.Size(total)
+				.Usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY)
+				.DebugName("VkTextureManager.ParticleAtlasStaging")
+				.Create(fb->device.get());
+
+			uint8_t *data = (uint8_t *)stagingBuffer->Map(0, total);
+			for (unsigned i = 0; i < count; i++)
+			{
+				fillLayer(first + i, chain.Data(), chainBytes);
+				size_t chainOffset = 0;
+				for (int m = 0; m < levels; m++)
+				{
+					memcpy(data + levelOffset[m] + (size_t)i * levelBytes[m], chain.Data() + chainOffset, levelBytes[m]);
+					chainOffset += levelBytes[m];
+				}
+			}
+			stagingBuffer->Unmap();
+
+			std::vector<VkBufferImageCopy> regions((size_t)levels);
+			for (int m = 0; m < levels; m++)
+			{
+				VkBufferImageCopy &region = regions[(size_t)m];
+				region = {};
+				region.bufferOffset = levelOffset[m];
+				region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				region.imageSubresource.mipLevel = (uint32_t)m;
+				region.imageSubresource.baseArrayLayer = first;
+				region.imageSubresource.layerCount = count;
+				region.imageExtent.width = (uint32_t)std::max(side >> m, 1);
+				region.imageExtent.height = (uint32_t)std::max(side >> m, 1);
+				region.imageExtent.depth = 1;
+			}
+			fb->GetCommands()->GetTransferCommands()->copyBufferToImage(stagingBuffer->buffer, atlas.Image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)levels, regions.data());
+
+			// As VkHardwareTexture::CreateTexture does: past 64 MB of queued uploads, let
+			// them finish before going on.
+			fb->GetCommands()->TransferDeleteList->Add(std::move(stagingBuffer));
+			if (fb->GetCommands()->TransferDeleteList->TotalSize > 64 * 1024 * 1024)
+				fb->GetCommands()->WaitForCommands(false, true);
 		}
-		cmdbuffer->copyBufferToImage(stagingBuffer->buffer, atlas.Image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)mipLevels, regions.data());
 
 		PipelineBarrier()
-			.AddImage(atlas.Image.get(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, (int)layerCount)
-			.Execute(cmdbuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+			.AddImage(atlas.Image.get(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, (int)layerCount)
+			.Execute(fb->GetCommands()->GetTransferCommands(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 		atlas.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-		// As VkHardwareTexture::CreateTexture does: past 64 MB of queued uploads, let
-		// them finish before going on.
-		fb->GetCommands()->TransferDeleteList->Add(std::move(stagingBuffer));
-		if (fb->GetCommands()->TransferDeleteList->TotalSize > 64 * 1024 * 1024)
-			fb->GetCommands()->WaitForCommands(false, true);
+		return (uint64_t)chainBytes * layerCount;
+	}
 
-		return (uint64_t)total;
+	// Creates `atlas` as a side x side x layerCount B8G8R8A8 array with every mip level and
+	// uploads it; `fillLayer(i, chain, chainBytes)` writes layer i's whole chain.
+	// Returns the image's texel bytes. The staging holds level 0 of every layer, then
+	// level 1 of every layer, and so on, [ATLASBC7] a batch of layers at a time.
+	template<class FillLayer>
+	uint64_t CreateAtlasImage(VulkanRenderDevice *fb, VkTextureImage &atlas, int side, unsigned layerCount, FillLayer &&fillLayer,
+		const char *imageName = "VkTextureManager.ParticleAtlas", const char *viewName = "VkTextureManager.ParticleAtlasView")
+	{
+		int mipLevels = 1;
+		while ((side >> mipLevels) > 0) mipLevels++;
+
+		size_t mipBytes[kAtlasMaxLevels];
+		for (int m = 0; m < mipLevels; m++)
+			mipBytes[m] = (size_t)(side >> m) * (size_t)(side >> m) * 4;
+
+		return UploadAtlasImage(fb, atlas, VK_FORMAT_B8G8R8A8_UNORM, side, mipLevels, mipBytes, layerCount, imageName, viewName, fillLayer);
+	}
+
+	// [ATLASBC7] A BC7 block all sixteen texels of which decode to 0, 0, 0, 0: mode 6 (its mode bit, bit 6 of the first byte) with
+	// every endpoint, p-bit and index 0. What a compressed layer holds where its frame could not be read, as a blank uncompressed
+	// layer is transparent.
+	const uint8_t kTransparentBC7Block[16] = { 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+	// [ATLASBC7] One compressed layer's levels into `chain`: the frame's stored levels from layer.StartLevel, as stored, `levels`
+	// of them (the atlas's side down to 1 x 1). False, and the layer transparent, when the frame cannot be read as the list
+	// promised -- not a BC7 DDS any more, another side, levels missing or short.
+	bool FillCompressedAtlasLayer(const ParticleCompressedAtlasLayer &layer, int side, int levels, uint8_t *chain, size_t chainBytes)
+	{
+		for (size_t offset = 0; offset + sizeof(kTransparentBC7Block) <= chainBytes; offset += sizeof(kTransparentBC7Block))
+			memcpy(chain + offset, kTransparentBC7Block, sizeof(kTransparentBC7Block));
+
+		FGameTexture *gameTexture = TexMan.GetGameTexture(layer.Texture);
+		FTexture *baseTexture = gameTexture != nullptr ? gameTexture->GetTexture() : nullptr;
+		FImageSource *image = baseTexture != nullptr ? baseTexture->GetImage() : nullptr;
+		if (image == nullptr || layer.StartLevel < 0 || layer.StartLevel > 15)
+			return false;
+		VkCompressedPixels pixels;
+		if (!pixels.Read(image))
+			return false;
+		if (pixels.format != VK_FORMAT_BC7_UNORM_BLOCK || pixels.blockSize != 16 || pixels.width != pixels.height ||
+			pixels.width != (side << layer.StartLevel) || pixels.storedMips < layer.StartLevel + levels)
+			return false;
+
+		size_t needed = 0;
+		for (int m = 0; m < levels; m++)
+			needed += CompressedAtlasLevelBytes(side, m);
+		if (needed != chainBytes || CompressedStoredLevelOffset(pixels.width, layer.StartLevel) + needed > pixels.size)
+			return false;
+
+		size_t out = 0;
+		for (int m = 0; m < levels; m++)
+		{
+			const size_t bytes = CompressedAtlasLevelBytes(side, m);
+			memcpy(chain + out, pixels.data + CompressedStoredLevelOffset(pixels.width, layer.StartLevel + m), bytes);
+			out += bytes;
+		}
+		return true;
 	}
 }
 
@@ -625,7 +760,7 @@ void VkTextureManager::CreateParticleAtlas()
 {
 	ParticleDefinitionBuffer *definitions = fb->mParticleDefinitions;
 	const unsigned listed = definitions != nullptr ? definitions->GetAtlasLayers().Size() : 0;
-	const unsigned layers = listed > ParticleDefinitionBuffer::ATLAS_LAYERS ? ParticleDefinitionBuffer::ATLAS_LAYERS : listed;
+	const unsigned layers = listed > ParticleDefinitionBuffer::ATLAS_LAYERS_MAX ? ParticleDefinitionBuffer::ATLAS_LAYERS_MAX : listed;
 	const int layerSize = GpuParticleAtlasLayerSize();
 	const bool hadAtlas = ParticleAtlasBuiltLayers > 0;
 
@@ -673,4 +808,71 @@ void VkTextureManager::CreateParticleAtlas()
 		definitions->SetAtlasBuilt(0, 0, 0);
 	if (hadAtlas)
 		Printf("ParticleAtlas: no textured particle definitions -- atlas released, 1 x 1 placeholder\n");
+}
+
+void VkTextureManager::CreateCompressedParticleAtlas()
+{
+	// [ATLASBC7] See the atlas section's comment above.
+	ParticleDefinitionBuffer *definitions = fb->mParticleDefinitions;
+	const unsigned listed = definitions != nullptr ? definitions->GetCompressedAtlasLayers().Size() : 0;
+	const unsigned layers = listed > ParticleDefinitionBuffer::ATLAS_LAYERS_MAX ? ParticleDefinitionBuffer::ATLAS_LAYERS_MAX : listed;
+	const int side = definitions != nullptr ? definitions->GetCompressedAtlasSide() : 0;
+	const bool hadAtlas = ParticleAtlasCompressedBuiltLayers > 0;
+
+	// Recorded before building, so a build that fails is not retried every frame; the next change of the list (or of its side,
+	// which moves its generation) tries again.
+	ParticleAtlasCompressedBuiltGeneration = definitions != nullptr ? definitions->GetCompressedAtlasGeneration() : 0;
+	ParticleAtlasCompressedBuiltLayers = 0;
+
+	int levels = 0;
+	while (side > 0 && levels < 31 && (side >> levels) > 0) levels++;
+	const bool sideValid = side >= 4 && (side & (side - 1)) == 0 && levels <= kAtlasMaxLevels;
+	if (layers > 0 && !sideValid)
+	{
+		Printf(TEXTCOLOR_RED "ParticleAtlas: the compressed list's side %d is not a power of two from 4 to %d -- compressed flipbooks draw nothing on this machine\n",
+			side, 1 << (kAtlasMaxLevels - 1));
+	}
+
+	if (layers > 0 && sideValid)
+	{
+		try
+		{
+			const uint64_t startMs = I_msTime();
+			const TArray<ParticleCompressedAtlasLayer> &list = definitions->GetCompressedAtlasLayers();
+			size_t levelBytes[kAtlasMaxLevels];
+			for (int m = 0; m < levels; m++)
+				levelBytes[m] = CompressedAtlasLevelBytes(side, m);
+			unsigned blank = 0;
+			const uint64_t bytes = UploadAtlasImage(fb, ParticleAtlasCompressed, VK_FORMAT_BC7_UNORM_BLOCK, side, levels, levelBytes, layers,
+				"VkTextureManager.ParticleAtlasCompressed", "VkTextureManager.ParticleAtlasCompressedView",
+				[&](unsigned i, uint8_t *chain, size_t chainBytes)
+				{
+					if (!FillCompressedAtlasLayer(list[i], side, levels, chain, chainBytes)) blank++;
+				});
+
+			ParticleAtlasCompressedBuiltLayers = layers;
+			definitions->SetCompressedAtlasBuilt(layers, side, bytes);
+			Printf("ParticleAtlas: compressed (BC7) %u layer%s of %d x %d with mips -- %.2f MiB of VRAM, built in %llu ms",
+				layers, layers == 1 ? "" : "s", side, side, bytes / (1024.0 * 1024.0), (unsigned long long)(I_msTime() - startMs));
+			if (blank > 0)
+				Printf(TEXTCOLOR_ORANGE " -- %u frame%s could not be read as listed and stay%s transparent", blank, blank == 1 ? "" : "s", blank == 1 ? "s" : "");
+			Printf("\n");
+			return;
+		}
+		catch (const std::exception &err)
+		{
+			Printf(TEXTCOLOR_RED "ParticleAtlas: could not build the compressed atlas, %u layers of %d x %d -- compressed flipbooks draw nothing on this machine until the definitions or the atlas settings change:\n%s\n",
+				layers, side, side, err.what());
+			ParticleAtlasCompressed.Reset(fb);
+		}
+	}
+
+	// The placeholder: one transparent 1 x 1 B8G8R8A8 layer, so fixed binding 10 always holds a valid array. A compressed
+	// definition's layer index is clamped to it when sampled, so such a particle draws nothing.
+	CreateAtlasImage(fb, ParticleAtlasCompressed, 1, 1, [](unsigned, uint8_t *chain, size_t chainBytes) { memset(chain, 0, chainBytes); },
+		"VkTextureManager.ParticleAtlasCompressed", "VkTextureManager.ParticleAtlasCompressedView");
+	if (definitions != nullptr)
+		definitions->SetCompressedAtlasBuilt(0, 0, 0);
+	if (hadAtlas)
+		Printf("ParticleAtlas: no compressed flipbooks -- compressed atlas released, 1 x 1 placeholder\n");
 }

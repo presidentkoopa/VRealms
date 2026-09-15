@@ -180,6 +180,7 @@ public:
 	static void AddClassAlias(FName alias, FName target);
 	static void ClearClassAliases();
 	static FName GetClassAliasTarget(FName alias);
+	static const TMap<FName, FName> &GetClassAliases();	// alias -> target, for the script compiler's type symbols
 
 	static TMap<FName, PClass*> ClassMap;
 	static TArray<PClass *> AllClasses;
