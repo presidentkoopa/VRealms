@@ -2285,6 +2285,35 @@ class Actor : Thinker native
 	// 'None' clears every joint; modelIndex -1 clears every model index. Both halves.
 	native void ClearModelJointDrawPose(Name joint = 'None', int modelIndex = -1);
 
+	// RS fork -- JOINT OFFSETS AND JOINT DRIVES (render only, like the joint poses above; src/r_data/model_reach.cpp,
+	// Engine docs/MODEL_JOINT_DRIVE_PLAN.md pieces B and C). A rigged part moved exactly as a mesh surface is moved by
+	// SetModelSurfaceOffset and the SetModelSurfaceDrive family -- the same meanings, the same arguments, the same
+	// solver -- but on a NAMED JOINT, for a gun whose parts are bones (an IQM).
+	//
+	// ALL VECTORS ARE IN MODEL SPACE, as the surface calls take them: the renderer's, y up, the file's (x, z, y). The
+	// transform is laid on the joint as drawn -- its animation and the draw poses above included -- and everything under
+	// the joint rides it. A reach chain overwrites it on the chain's own joints.
+	//
+	// SetModelJointOffset: turn about the model origin by rot, then move by ofs, interpolated from the last tic's value to
+	// the drawn instant. Re-assert it every tic, as a surface offset is. Refused for a missing joint name or a NaN.
+	// While a joint has a drive, its offset is not drawn.
+	native bool   SetModelJointOffset(Name joint, Vector3 ofs, Quat rot, int modelIndex = 0);
+	native bool   ClearModelJointOffset(Name joint, int modelIndex = 0);
+	// THE HAND DRIVE ON A JOINT, drawn from the live controller on the frame being drawn. Each call is its
+	// SetModelSurfaceDrive* twin: a plain slide (distance along axis, mesh units), a turn as it slides (Rotation, after
+	// Drive), a hinge (degrees about axis through pivot, under 180), and a second stage (Stage, after Drive or Hinge;
+	// kind DRIVESTAGE_*, split in [0.001, 0.999]). startValue resumes where the part is. Up to 16 joints per actor.
+	// ClearModelJointDrive hands the joint back to script: the drive switches off and its entry stays, as a surface
+	// slot does -- set a joint's drive and offset once and keep updating them; do not add and remove them per grab.
+	// GetModelJointDrawnValue is what was DRAWN, 0..1, with GetModelSurfaceDrawnValue's contract (decide gameplay on
+	// what was on screen); read it before clearing.
+	native bool   SetModelJointDrive(Name joint, int modelIndex, int hand, Vector3 axis, double distance, double startValue);
+	native bool   SetModelJointDriveRotation(Name joint, int modelIndex, Vector3 axis, double degrees, Vector3 pivot);
+	native bool   SetModelJointDriveHinge(Name joint, int modelIndex, int hand, Vector3 axis, double degrees, Vector3 pivot, double startValue);
+	native bool   SetModelJointDriveStage(Name joint, int modelIndex, int kind, Vector3 axis, double amount, Vector3 pivot, double split);
+	native bool   ClearModelJointDrive(Name joint, int modelIndex = 0);
+	native double GetModelJointDrawnValue(Name joint, int modelIndex = 0);
+
 	// RS fork -- REACH CHAINS (render only; src/r_data/model_reach.h).
 	//
 	// Three joints of this actor's model -- root -> mid -> end, e.g. upper arm,

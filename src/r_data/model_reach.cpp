@@ -50,6 +50,8 @@
 #include <cmath>
 #include "model_reach.h"
 #include "model_reach_math.h"
+#include "model_handdrive.h"	// RS fork -- pieces B/C: the hand drive on a joint
+#include "hw_vrmodes.h"		// RS fork -- piece C: the live controller
 #include "level_solid_query.h"
 #include "actor.h"
 #include "actorinlines.h"
@@ -96,6 +98,7 @@ namespace
 
 constexpr int REACH_CHAINS = 4;
 constexpr int JOINT_POSES  = 64;
+constexpr int JOINT_EDITS  = 16;	// pieces B and C: joint offsets, and joint drives, per actor
 constexpr int POSE_CACHES  = 4;
 
 // Clearance: how many level regions one solve may use, and how deep a face slab reaches behind
@@ -134,6 +137,34 @@ struct FJointDrawPose
 	FQuaternion rotation = FQuaternion(0.f, 0.f, 0.f, 1.f);
 	int         ofsMode = JDO_CLEAR;
 	FVector3    offset = FVector3(0.f, 0.f, 0.f);	// in the joint's PARENT's local units, like a bone translation
+};
+
+// ---- PIECES B AND C: joint offsets and joint drives (Engine docs/MODEL_JOINT_DRIVE_PLAN.md) -------------------------
+//
+// B, A JOINT OFFSET IN MODEL SPACE -- Actor.SetModelSurfaceOffset's twin for a rigged part. Model space (the renderer's,
+// the file's (x, z, y)): rotate about the model origin, then offset. Laid on the joint as drawn, G' = D_anc * T * G, with
+// T entering joint space as S*T*S (section 11 condition 4), so a card's axis and pivot work on a joint whatever bind
+// rotation the modeller left. Interpolated from the previous tic's value to the drawn instant, so a part let go of
+// does not step at 35 Hz.
+struct FJointOffsetEntry
+{
+	FName    joint = NAME_None;
+	int      modelIndex = 0;
+	FVector3 offset = FVector3(0.f, 0.f, 0.f);
+	FVector4 rotation = FVector4(0.f, 0.f, 0.f, 1.f);
+	FVector3 prevOffset = FVector3(0.f, 0.f, 0.f);
+	FVector4 prevRotation = FVector4(0.f, 0.f, 0.f, 1.f);
+	int      tic = -1;	// gametic of the last set; interpolated only on the tic right after one
+};
+
+// C, A JOINT DRIVE -- the hand drive (model_handdrive.h) on a joint: the very solver a surface drive uses, stamped with
+// the frame (condition 5) so a second draw of the same frame replays. Its drawn value is published into `drive.value`
+// for Actor.GetModelJointDrawnValue, exactly as a surface drive's is for GetModelSurfaceDrawnValue.
+struct FJointDriveEntry
+{
+	FName      joint = NAME_None;
+	int        modelIndex = 0;
+	FHandDrive drive;
 };
 
 struct FReachChain
@@ -248,11 +279,22 @@ struct FDrawPoseEntry
 	int         poseGeneration = -1;
 	TArray<int> poseJoints;	// parallel to poses; -1 = not on this model
 
+	// Pieces B and C: at most JOINT_EDITS each. Created by their setters (condition 3). Adding or removing one bumps
+	// generation; a value update does not (condition 2).
+	TArray<FJointOffsetEntry> offsets;
+	TArray<FJointDriveEntry>  drives;
+	FModel     *editModel = nullptr;
+	int         editModelJoints = -1;
+	int         editGeneration = -1;
+	TArray<int> offsetJoints;	// parallel to offsets; -1 = not on this model
+	TArray<int> driveJoints;	// parallel to drives; -1 = not on this model
+
 	FPoseCache caches[POSE_CACHES];
 
 	bool HasContent() const
 	{
 		if (poses.Size() > 0) return true;
+		if (offsets.Size() > 0 || drives.Size() > 0) return true;
 		for (const auto &c : chains) if (c.used) return true;
 		return false;
 	}
@@ -424,6 +466,141 @@ void ApplyPoses(FDrawPoseEntry &e, FJointPoseWork &w, int modelIndex)
 		default: break;
 		}
 		w.SetLocal(j, t);
+	}
+}
+
+// ---- pieces B and C: joint offsets and joint drives -------------------------------------------------------------------
+
+void ResolveJointEdits(FDrawPoseEntry &e, FModel *model, const AActor *actor, int modelIndex)
+{
+	const int n = model->NumJoints();
+	if (e.editModel == model && e.editModelJoints == n && e.editGeneration == e.generation
+		&& e.offsetJoints.Size() == e.offsets.Size() && e.driveJoints.Size() == e.drives.Size()) return;
+	e.editModel = model;
+	e.editModelJoints = n;
+	e.editGeneration = e.generation;
+	auto resolve = [&](FName joint, int entryModel, const char *what) -> int
+	{
+		const int j = model->FindJoint(joint);
+		if (j >= 0 && j < n) return j;
+		if (entryModel == modelIndex)
+			Printf(TEXTCOLOR_YELLOW "[JOINTPOSE] %s: joint '%s' is not on %s -- that joint %s is ignored on this model\n",
+				ActorName(actor), joint.GetChars(), model->mFileName.GetChars(), what);
+		return -1;
+	};
+	e.offsetJoints.Resize(e.offsets.Size());
+	for (unsigned k = 0; k < e.offsets.Size(); k++) e.offsetJoints[k] = resolve(e.offsets[k].joint, e.offsets[k].modelIndex, "offset");
+	e.driveJoints.Resize(e.drives.Size());
+	for (unsigned k = 0; k < e.drives.Size(); k++) e.driveJoints[k] = resolve(e.drives[k].joint, e.drives[k].modelIndex, "drive");
+}
+
+// A MODEL-SPACE PART TRANSFORM ON A JOINT: rotate about the model origin by rotModel, then move by ofsModel -- the
+// surface transform's meaning -- laid on joint j as it is posed locally, against its parent's DRAWN global:
+//     local' = Gp^-1 * (S T S) * Gp * L
+// With no draw pose on j, Gp * L is j's drawn global G, and once the ancestors' edits ride it this is
+// G' = D_anc * T * G (condition 4). T enters joint space as S*T*S: the offset SwapYZ'd, the quaternion (x, y, z, w) as
+// (-x, -z, -y, w) -- a plain swap would mirror the turn.
+bool ApplyModelTransform(FJointPoseWork &w, int j, const FVector3 &ofsModel, const FVector4 &rotModel)
+{
+	TRS cur;
+	if (!w.LocalCur(j, cur)) return false;
+	TRS t;
+	t.translation = SwapYZ(ofsModel);
+	t.rotation = FQuaternion(-rotModel.X, -rotModel.Z, -rotModel.Y, rotModel.W).Unit();
+	t.scaling = FVector3(1.f, 1.f, 1.f);
+	const VSMatrix T = ComposeTRS(t);
+	const int p = w.Parent(j);
+	VSMatrix local;
+	if (p >= 0)
+	{
+		VSMatrix gp = w.GlobalOrig(p);
+		VSMatrix gpInv;
+		if (!gp.inverseMatrix(gpInv)) return false;
+		local = MatMul(gpInv, MatMul(T, MatMul(gp, ComposeTRS(cur))));
+	}
+	else
+	{
+		local = MatMul(T, ComposeTRS(cur));
+	}
+	TRS out;
+	DecomposeTRS(local, out);
+	w.SetLocal(j, out);
+	return true;
+}
+
+// THE FRAME A DRIVEN PART'S TRANSFORM LIVES IN, as a model-to-world matrix: T is laid before the edits above the joint
+// (condition 4), so the hand must be read against the model matrix those edits carry -- objectToWorld * (S * D_anc * S),
+// D_anc the parent's posed global times its drawn global's inverse. With nothing edited above the joint, objectToWorld.
+VSMatrix PartToWorld(FJointPoseWork &w, int j, const VSMatrix &objectToWorld)
+{
+	VSMatrix partToWorld = objectToWorld;
+	const int p = w.Parent(j);
+	if (p < 0) return partToWorld;
+	VSMatrix gOrig = w.GlobalOrig(p);
+	VSMatrix gOrigInv;
+	if (!gOrig.inverseMatrix(gOrigInv)) return partToWorld;
+	VSMatrix m;
+	m.loadMatrix(kSwapYZ);
+	m.multMatrix(MatMul(w.GlobalPosed(p), gOrigInv));
+	m.multMatrix(kSwapYZ);
+	partToWorld.multMatrix(m);
+	return partToWorld;
+}
+
+bool JointDriven(const FDrawPoseEntry &e, FName joint, int modelIndex)
+{
+	for (const auto &d : e.drives)
+		if (d.joint == joint && d.modelIndex == modelIndex && d.drive.on) return true;
+	return false;
+}
+
+// PIECE B: every offset of this model index, interpolated to the drawn instant when it was set on the last tic. A driven
+// joint ignores its offset while driven, as a driven surface ignores its script offset.
+void ApplyJointOffsets(FDrawPoseEntry &e, FJointPoseWork &w, int modelIndex, double ticFrac)
+{
+	for (unsigned k = 0; k < e.offsets.Size(); k++)
+	{
+		const FJointOffsetEntry &o = e.offsets[k];
+		const int j = e.offsetJoints[k];
+		if (o.modelIndex != modelIndex || j < 0 || JointDriven(e, o.joint, modelIndex)) continue;
+		FVector3 ofs = o.offset;
+		FVector4 rot = o.rotation;
+		if (o.tic == gametic - 1)
+		{
+			const float f = Clampf((float)ticFrac, 0.f, 1.f);
+			ofs = o.prevOffset + (o.offset - o.prevOffset) * f;
+			// NLERP, SHORTEST ARC, as the surface path's SurfaceSetPose.
+			FVector4 a = o.prevRotation;
+			const FVector4 &b = o.rotation;
+			if (a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W < 0.f) a = FVector4(-a.X, -a.Y, -a.Z, -a.W);
+			FVector4 q(a.X + (b.X - a.X) * f, a.Y + (b.Y - a.Y) * f, a.Z + (b.Z - a.Z) * f, a.W + (b.W - a.W) * f);
+			const float len = (float)sqrt(q.X * q.X + q.Y * q.Y + q.Z * q.Z + q.W * q.W);
+			rot = (len > 0.0001f) ? FVector4(q.X / len, q.Y / len, q.Z / len, q.W / len) : FVector4(0.f, 0.f, 0.f, 1.f);
+		}
+		ApplyModelTransform(w, j, ofs, rot);
+	}
+}
+
+// PIECE C: every live drive of this model index, from the live controller on the frame being drawn. GetHandTransform,
+// never GetWeaponTransform: the surface drive's reason (models.cpp) -- that one mirrors X for some weapons, which a
+// signed axis reads as a sign flip. No VR, or no hand this frame: the drive is not drawn, as a surface drive is not.
+void ApplyJointDrives(FDrawPoseEntry &e, FJointPoseWork &w, int modelIndex, const VSMatrix &objectToWorld, uint64_t frame)
+{
+	if (e.drives.Size() == 0) return;
+	auto vrmode = VRMode::GetVRModeCached(true);
+	if (vrmode == nullptr || !vrmode->IsVR()) return;
+	for (unsigned k = 0; k < e.drives.Size(); k++)
+	{
+		FJointDriveEntry &dr = e.drives[k];
+		const int j = e.driveJoints[k];
+		if (dr.modelIndex != modelIndex || j < 0 || !dr.drive.on) continue;
+		VSMatrix handMat;
+		if (!vrmode->GetHandTransform(VR_ControllerForHand(dr.drive.hand == 1 ? VR_OFFHAND : VR_MAINHAND), &handMat)) continue;
+		FVector3 ofs;
+		FVector4 rot;
+		FHandDriveStep step;
+		HandDrive_OwnerStep(dr.drive, handMat, PartToWorld(w, j, objectToWorld), ofs, rot, step, frame);
+		ApplyModelTransform(w, j, ofs, rot);
 	}
 }
 
@@ -1004,6 +1181,15 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 				ResolvePoses(e, model, actor);
 				ApplyPoses(e, work, modelIndex);
 			}
+			if (e.offsets.Size() > 0 || e.drives.Size() > 0)
+			{
+				// PIECES B AND C, after the draw poses and before the chains (condition 1): model-space joint offsets,
+				// then hand drives, each laid on its joint as drawn. A chain overwrites them on its root, mid and end;
+				// an aim turns on top of a drive.
+				ResolveJointEdits(e, model, actor, modelIndex);
+				ApplyJointOffsets(e, work, modelIndex, sc.ticFrac);
+				ApplyJointDrives(e, work, modelIndex, sc.objectToWorld, frame);
+			}
 			for (int ci = 0; ci < REACH_CHAINS; ci++)
 			{
 				FReachChain &c = e.chains[ci];
@@ -1185,6 +1371,329 @@ DEFINE_ACTION_FUNCTION(AActor, ClearModelJointDrawPose)
 		DropIfEmpty(self);
 	}
 	return 0;
+}
+
+// ---- pieces B and C: the ZScript setters (Engine docs/MODEL_JOINT_DRIVE_PLAN.md) -------------------------------------
+//
+// ENTRIES ARE MADE BY THE SETTERS (section 11 condition 3) and dropped when cleared. Adding or removing one bumps the
+// entry's generation, so its joint resolves again; a value update does not (condition 2), so a rig re-asserting a part
+// every tic never re-resolves a chain or throws away its smoothing.
+//
+// THE ONE GETTER, GetModelJointDrawnValue, is a hand drive's published drawn value: the same contract, and the same
+// netplay status, as GetModelSurfaceDrawnValue (MODEL_JOINT_DRIVE_PLAN.md section 6). No posed joint is readable.
+
+static FJointOffsetEntry *JointOffsetFor(FDrawPoseEntry &e, FName joint, int modelIndex, bool create)
+{
+	for (auto &o : e.offsets)
+		if (o.joint == joint && o.modelIndex == modelIndex) return &o;
+	if (!create || e.offsets.Size() >= JOINT_EDITS) return nullptr;
+	FJointOffsetEntry o;
+	o.joint = joint;
+	o.modelIndex = modelIndex;
+	e.offsets.Push(o);
+	Changed(e);
+	return &e.offsets.Last();
+}
+
+static FJointDriveEntry *JointDriveFor(FDrawPoseEntry &e, FName joint, int modelIndex, bool create)
+{
+	for (auto &d : e.drives)
+		if (d.joint == joint && d.modelIndex == modelIndex) return &d;
+	if (!create || e.drives.Size() >= JOINT_EDITS) return nullptr;
+	FJointDriveEntry d;
+	d.joint = joint;
+	d.modelIndex = modelIndex;
+	e.drives.Push(d);
+	Changed(e);
+	return &e.drives.Last();
+}
+
+static FJointDriveEntry *LiveJointDrive(AActor *self, FName joint, int modelIndex)
+{
+	FDrawPoseEntry *e = EntryFor(self, false);
+	FJointDriveEntry *d = e ? JointDriveFor(*e, joint, modelIndex, false) : nullptr;
+	return (d && d->drive.on) ? d : nullptr;
+}
+
+DEFINE_ACTION_FUNCTION(AActor, SetModelJointOffset)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_FLOAT(ox);
+	PARAM_FLOAT(oy);
+	PARAM_FLOAT(oz);
+	PARAM_FLOAT(qx);
+	PARAM_FLOAT(qy);
+	PARAM_FLOAT(qz);
+	PARAM_FLOAT(qw);
+	PARAM_INT(modelIndex);
+
+	if (joint == NAME_None || modelIndex < 0 || !FiniteVec(ox, oy, oz) || !std::isfinite(qx) || !std::isfinite(qy)
+		|| !std::isfinite(qz) || !std::isfinite(qw)) ACTION_RETURN_BOOL(false);
+	// An all-zero quaternion is "never written" and reads as identity, as SetModelSurfaceOffset's.
+	const double ql = sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+	const FVector4 q = (ql > 1e-6) ? FVector4((float)(qx / ql), (float)(qy / ql), (float)(qz / ql), (float)(qw / ql)) : FVector4(0.f, 0.f, 0.f, 1.f);
+	const FVector3 ofs((float)ox, (float)oy, (float)oz);
+
+	FDrawPoseEntry *e = EntryFor(self, true);
+	FJointOffsetEntry *o = e ? JointOffsetFor(*e, joint, modelIndex, true) : nullptr;
+	if (o == nullptr)
+	{
+		DropIfEmpty(self);
+		ACTION_RETURN_BOOL(false);
+	}
+	// The value it moves FROM is the last tic's: kept once per tic, so a rig re-asserting within one tic blends from where
+	// the part was drawn last tic, and a fresh entry starts still.
+	if (o->tic != gametic)
+	{
+		o->prevOffset   = (o->tic < 0) ? ofs : o->offset;
+		o->prevRotation = (o->tic < 0) ? q : o->rotation;
+		o->tic = gametic;
+	}
+	o->offset = ofs;
+	o->rotation = q;
+	ACTION_RETURN_BOOL(true);
+}
+
+DEFINE_ACTION_FUNCTION(AActor, ClearModelJointOffset)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+
+	FDrawPoseEntry *e = EntryFor(self, false);
+	if (e == nullptr) ACTION_RETURN_BOOL(true);
+	for (int k = (int)e->offsets.Size() - 1; k >= 0; k--)
+	{
+		if (e->offsets[k].joint == joint && e->offsets[k].modelIndex == modelIndex)
+		{
+			e->offsets.Delete(k);
+			Changed(*e);
+		}
+	}
+	DropIfEmpty(self);
+	ACTION_RETURN_BOOL(true);
+}
+
+// The plain drive: the same arguments, refusals and state as Actor.SetModelSurfaceDrive, on a named joint.
+DEFINE_ACTION_FUNCTION(AActor, SetModelJointDrive)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+	PARAM_INT(hand);
+	PARAM_FLOAT(axisx);
+	PARAM_FLOAT(axisy);
+	PARAM_FLOAT(axisz);
+	PARAM_FLOAT(distance);
+	PARAM_FLOAT(startValue);
+
+	FVector3 axis((float)axisx, (float)axisy, (float)axisz);
+	const float len = (float)axis.Length();
+	if (joint == NAME_None || modelIndex < 0 || !std::isfinite(len) || len < 0.0001f || distance == 0.0
+		|| !std::isfinite(distance) || !std::isfinite(startValue)) ACTION_RETURN_BOOL(false);
+	axis /= len;
+
+	FDrawPoseEntry *e = EntryFor(self, true);
+	FJointDriveEntry *dr = e ? JointDriveFor(*e, joint, modelIndex, true) : nullptr;
+	if (dr == nullptr)
+	{
+		DropIfEmpty(self);
+		ACTION_RETURN_BOOL(false);
+	}
+	FHandDrive &d = dr->drive;
+	const float start = (float)clamp(startValue, 0.0, 1.0);
+	d.on         = true;
+	d.hand       = (hand == 1) ? 1 : 0;
+	d.axis       = axis;
+	d.dist       = (float)distance;
+	d.base       = start;
+	d.armed      = false;   // the renderer captures the anchor
+	d.value      = start;
+	d.turnDeg    = 0.f;     // a pure slide until told otherwise
+	d.hinge      = false;
+	d.stage2Kind = HANDDRIVE_None;
+	d.inStage2   = false;
+	d.stampFrame = 0;
+	ACTION_RETURN_BOOL(true);
+}
+
+// And turn as it goes: Actor.SetModelSurfaceDriveRotation's twin. Only a joint already driven, and not a hinge.
+DEFINE_ACTION_FUNCTION(AActor, SetModelJointDriveRotation)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+	PARAM_FLOAT(axisx);
+	PARAM_FLOAT(axisy);
+	PARAM_FLOAT(axisz);
+	PARAM_FLOAT(degrees);
+	PARAM_FLOAT(pivotx);
+	PARAM_FLOAT(pivoty);
+	PARAM_FLOAT(pivotz);
+
+	FJointDriveEntry *dr = LiveJointDrive(self, joint, modelIndex);
+	if (dr == nullptr || dr->drive.hinge) ACTION_RETURN_BOOL(false);
+	FHandDrive &d = dr->drive;
+	if (degrees == 0.0)
+	{
+		d.turnDeg = 0.f;
+		d.stampFrame = 0;
+		ACTION_RETURN_BOOL(true);
+	}
+	FVector3 axis((float)axisx, (float)axisy, (float)axisz);
+	const float len = (float)axis.Length();
+	if (!std::isfinite(len) || len < 0.0001f || !std::isfinite(degrees) || !FiniteVec(pivotx, pivoty, pivotz)) ACTION_RETURN_BOOL(false);
+	d.turnAxis   = axis / len;
+	d.turnDeg    = (float)degrees;
+	d.turnPivot  = FVector3((float)pivotx, (float)pivoty, (float)pivotz);
+	d.stampFrame = 0;
+	ACTION_RETURN_BOOL(true);
+}
+
+// A joint that only turns, driven by the hand: Actor.SetModelSurfaceDriveHinge's twin. |degrees| under 180.
+DEFINE_ACTION_FUNCTION(AActor, SetModelJointDriveHinge)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+	PARAM_INT(hand);
+	PARAM_FLOAT(axisx);
+	PARAM_FLOAT(axisy);
+	PARAM_FLOAT(axisz);
+	PARAM_FLOAT(degrees);
+	PARAM_FLOAT(pivotx);
+	PARAM_FLOAT(pivoty);
+	PARAM_FLOAT(pivotz);
+	PARAM_FLOAT(startValue);
+
+	FVector3 axis((float)axisx, (float)axisy, (float)axisz);
+	const float deg = (float)degrees;
+	const float len = (float)axis.Length();
+	if (joint == NAME_None || modelIndex < 0 || !FiniteVec(axisx, axisy, axisz) || !FiniteVec(pivotx, pivoty, pivotz)
+		|| !std::isfinite(deg) || !std::isfinite(len) || !std::isfinite(startValue)
+		|| len < 0.0001f || deg == 0.f || fabs(deg) >= 180.f) ACTION_RETURN_BOOL(false);
+	axis /= len;
+
+	FDrawPoseEntry *e = EntryFor(self, true);
+	FJointDriveEntry *dr = e ? JointDriveFor(*e, joint, modelIndex, true) : nullptr;
+	if (dr == nullptr)
+	{
+		DropIfEmpty(self);
+		ACTION_RETURN_BOOL(false);
+	}
+	FHandDrive &d = dr->drive;
+	const float start = (float)clamp(startValue, 0.0, 1.0);
+	d.on           = true;
+	d.hand         = (hand == 1) ? 1 : 0;
+	d.axis         = axis;
+	d.dist         = 1.f;
+	d.turnAxis     = axis;
+	d.turnDeg      = deg;
+	d.turnPivot    = FVector3((float)pivotx, (float)pivoty, (float)pivotz);
+	d.hinge        = true;
+	d.stage2Kind   = HANDDRIVE_None;
+	d.inStage2     = false;
+	d.base         = start;
+	d.stageBase[0] = start;
+	d.stageBase[1] = 0.f;
+	d.armed        = false;
+	d.value        = start;
+	d.stampFrame   = 0;
+	ACTION_RETURN_BOOL(true);
+}
+
+// Then a second motion, in the same pull: Actor.SetModelSurfaceDriveStage's twin. kind 0 removes it.
+DEFINE_ACTION_FUNCTION(AActor, SetModelJointDriveStage)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+	PARAM_INT(kind);
+	PARAM_FLOAT(axisx);
+	PARAM_FLOAT(axisy);
+	PARAM_FLOAT(axisz);
+	PARAM_FLOAT(amount);
+	PARAM_FLOAT(pivotx);
+	PARAM_FLOAT(pivoty);
+	PARAM_FLOAT(pivotz);
+	PARAM_FLOAT(split);
+
+	FJointDriveEntry *dr = LiveJointDrive(self, joint, modelIndex);
+	if (dr == nullptr) ACTION_RETURN_BOOL(false);
+	FHandDrive &d = dr->drive;
+	const float V = (float)clamp((double)d.value, 0.0, 1.0);
+
+	if (kind == HANDDRIVE_None)
+	{
+		d.stage2Kind   = HANDDRIVE_None;
+		d.inStage2     = false;
+		d.base         = V;
+		d.stageBase[0] = V;
+		d.stageBase[1] = 0.f;
+		d.armed        = false;
+		d.value        = V;
+		d.stampFrame   = 0;
+		ACTION_RETURN_BOOL(true);
+	}
+
+	// Refused on the FLOAT values the solver will use, as the surface native's: see its comment.
+	FVector3 axis((float)axisx, (float)axisy, (float)axisz);
+	const FVector3 pivot((float)pivotx, (float)pivoty, (float)pivotz);
+	const float amt = (float)amount;
+	const float S = (float)split;
+	const float len = (float)axis.Length();
+	if ((kind != HANDDRIVE_Slide && kind != HANDDRIVE_Hinge) || !FiniteVec(axisx, axisy, axisz) || !FiniteVec(pivotx, pivoty, pivotz)
+		|| !std::isfinite(amt) || !std::isfinite(len) || len < 0.0001f || amt == 0.f || (kind == HANDDRIVE_Hinge && fabs(amt) >= 180.f)
+		|| !(S >= 1e-3f && S <= 1.f - 1e-3f)) ACTION_RETURN_BOOL(false);
+
+	d.stage2Kind   = (uint8_t)kind;
+	d.stage2Axis   = axis / len;
+	d.stage2Amount = amt;
+	d.stage2Pivot  = pivot;
+	d.split        = S;
+	d.inStage2     = (V > S);
+	d.stageBase[0] = (V >= S) ? 1.f : V / S;
+	d.stageBase[1] = (V > S) ? (V - S) / (1.f - S) : 0.f;
+	d.armed        = false;   // re-armed with both measures on the next drawn frame
+	d.value        = V;
+	d.stampFrame   = 0;
+	ACTION_RETURN_BOOL(true);
+}
+
+// Hand the joint back to script: the drive switches OFF and its entry STAYS, as ClearModelSurfaceDrive leaves its slot --
+// so a grab and a release never add or remove an entry, never bump the generation, and never cost this actor's reach
+// chains their smoothing (the Body IK lane's note). The drawn value stays readable. Its offset draws again.
+DEFINE_ACTION_FUNCTION(AActor, ClearModelJointDrive)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+
+	FDrawPoseEntry *e = EntryFor(self, false);
+	FJointDriveEntry *dr = e ? JointDriveFor(*e, joint, modelIndex, false) : nullptr;
+	if (dr == nullptr) ACTION_RETURN_BOOL(true);
+	FHandDrive &d = dr->drive;
+	d.on         = false;
+	d.armed      = false;
+	d.turnDeg    = 0.f;
+	d.hinge      = false;
+	d.stage2Kind = HANDDRIVE_None;
+	d.inStage2   = false;
+	d.stampFrame = 0;
+	ACTION_RETURN_BOOL(true);
+}
+
+// WHAT WAS DRAWN, 0..1: a joint drive's published value; 0 when the joint has no drive.
+DEFINE_ACTION_FUNCTION(AActor, GetModelJointDrawnValue)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(joint);
+	PARAM_INT(modelIndex);
+
+	FDrawPoseEntry *e = EntryFor(self, false);
+	FJointDriveEntry *dr = e ? JointDriveFor(*e, joint, modelIndex, false) : nullptr;
+	ACTION_RETURN_FLOAT(dr ? (double)dr->drive.value : 0.0);
 }
 
 DEFINE_ACTION_FUNCTION(AActor, SetModelReachChain)
