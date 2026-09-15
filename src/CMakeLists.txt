@@ -983,6 +983,7 @@ set (PCH_SOURCES
 	gamedata/volumedefs.cpp
 	gamedata/surfacedefs.cpp
 	gamedata/damagedefs.cpp
+	gamedata/datavalidation.cpp
 	gamedata/g_mapinfo.cpp
 	gamedata/g_skill.cpp
 	gamedata/gi.cpp

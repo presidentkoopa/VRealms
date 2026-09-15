@@ -116,6 +116,7 @@
 #include "v_video.h"
 #include "version.h"
 #include "vm.h"
+#include "datavalidation.h"	// RS fork -- -validatedata: D_RunDataValidators at the early -norun exit
 #include "wi_stuff.h"
 #include "wipe.h"
 #include "zwidget/window/window.h"
@@ -200,6 +201,9 @@ FARG(classalias, "Game", "Makes one class name resolve to another.", "alias=targ
 FARG(norun, "Debug", "Quits the game early to check for script errors.", "",
 	"Quits the game just before video initialization. To be used to check for errors in scripts"
 	" without actually running the game.");
+FARG(validatedata, "Debug", "With -norun, also runs the data validators the loaded mods ship.", "",
+	"With -norun: before quitting, runs every DataValidator class the loaded mods ship (gamedata/datavalidation.cpp)"
+	" and exits with code 1339 instead of 1337 if any of them refused its data. Without -norun it does nothing.");
 FARG(dumpjit, "Debug", "Outputs the ZScript JIT-compilation result to a text file.", "",
 	"Outputs a result of the ZScript JIT-compilation to Assembler to the external file"
 	" \"dumpjit.txt\".");
@@ -413,6 +417,10 @@ void D_DoomLoop ();
 
 static constexpr int GAMEEXIT_NORUN = 1337;
 static constexpr int GAMEEXIT_HARD_RESTART = 1338;
+// RS FORK -- a -norun -validatedata check whose data validators refused something (gamedata/datavalidation.cpp).
+// Quiet like GAMEEXIT_NORUN (i_main.cpp), with a code of its own so a compile check can tell it from a pass.
+// NOT 1338: that is GAMEEXIT_HARD_RESTART, and GameMain restarts the engine on it.
+static constexpr int GAMEEXIT_DATAREFUSED = 1339;
 
 // EXTERNAL DATA DECLARATIONS ----------------------------------------------
 
@@ -3125,7 +3133,8 @@ static void InitShutdown(int ret = 0)
 	M_SaveDefaultsFinal();
 	DeleteStartupScreen();
 	C_UninitCVars(); // must come last so that nothing will access the CVARs anymore after deletion.
-	if (ret != GAMEEXIT_NORUN)
+	// A refused data check (GAMEEXIT_DATAREFUSED) left through the same early -norun exit, so it skips the same teardown.
+	if (ret != GAMEEXIT_NORUN && ret != GAMEEXIT_DATAREFUSED)
 	{
 		CloseWidgetResources();
 	}
@@ -4532,6 +4541,12 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	if (norun || batchrun)
 	{
+		// RS FORK -- DATA VALIDATORS (gamedata/datavalidation.cpp). A -norun check that also passes -validatedata runs every
+		// DataValidator class the loaded mods ship, here: scripts are compiled, class defaults exist, every lump is loaded,
+		// and no level exists yet. Any refusal exits GAMEEXIT_DATAREFUSED, so the check fails instead of passing data the
+		// game will refuse in play. Without the flag this exit is exactly as it was.
+		if (norun && Args->CheckParm(FArg_validatedata) && D_RunDataValidators() > 0)
+			return GAMEEXIT_DATAREFUSED;
 		return 1337; // special exit
 	}
 

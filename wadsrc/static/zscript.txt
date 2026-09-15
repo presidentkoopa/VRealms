@@ -7,6 +7,7 @@ version "5.0.0"
 #include "zscript/engine/dictionary.zs"
 #include "zscript/engine/inputevents.zs"
 #include "zscript/engine/service.zs"
+#include "zscript/engine/datavalidator.zs"
 #include "zscript/engine/ppshader.zs"
 #include "zscript/engine/screenjob.zs"
 

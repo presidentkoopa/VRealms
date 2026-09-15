@@ -396,7 +396,9 @@ int DoMain (HINSTANCE hInstance)
 	}
 
 	DestroyCustomCursor();
-	if (ret == 1337) // special exit code for 'norun'.
+	// Special exit codes for 'norun'. 1339: a -norun -validatedata check whose data validators refused something
+	// (d_main.cpp GAMEEXIT_DATAREFUSED) -- the same quiet exit, a different code for the compile check to read.
+	if (ret == 1337 || ret == 1339)
 	{
 		if (!batchrun)
 		{
