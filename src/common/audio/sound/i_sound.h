@@ -144,6 +144,11 @@ public:
 	virtual void UpdateListener (SoundListener *) = 0;
 	virtual void UpdateSounds () = 0;
 
+	// [HEARINGIMPULSE] The world's hearing (s_hearingimpulse.cpp): gain and high-frequency gain for every world sound -- never
+	// a UI sound or music -- and the level of a private ring in the ears. (1, 1, 0) is neutral. Called every sound update while
+	// a hearing impulse is live and once more at neutral when it goes idle. A renderer without it (the null renderer) ignores it.
+	virtual void SetWorldHearing (float gain, float gainHF, float ring) {}
+
 	virtual bool IsValid () = 0;
 	virtual void PrintStatus () = 0;
 	virtual void PrintDriversList () = 0;

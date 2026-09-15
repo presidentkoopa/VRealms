@@ -1277,6 +1277,19 @@ struct LevelLocals native
 	// it; debris will read the same call. A blast that also clears the smoke at its
 	// centre calls CarveSmoke with start == end as well.
 	native clearscope void PushEffectImpulse(Vector3 pos, double radius, double strength);
+	// [SENSORYIMPULSES] A FLASH THAT CAN OVERWHELM THE EYE: light of `strength` at pos (0..16; 1 = a shotgun blast
+	// at arm's length in the dark), fading with distance so that at `reach` map units (16..8192) it counts half.
+	// Each viewer's machine weighs it by how dark that viewer's surroundings were, whether they face it and whether
+	// a wall is in the way, and washes out their view for a moment; `recovery` (0.25..4) scales how long they take
+	// to recover; `tint` colours the haze (white = a plain flash). One-way and presentation only: safe from play code
+	// on every machine in a netgame; nothing is returned or saved. Repeated calls merge and never strobe.
+	native clearscope void ExposureImpulse(Vector3 pos, double strength = 1.0, double reach = 256.0, double recovery = 1.0, color tint = 0xffffffff);
+	// [SENSORYIMPULSES] A BLAST THAT CAN OVERWHELM THE EAR: sound of `strength` at pos (0..16; 1 = a shotgun blast at
+	// arm's length in a small room), fading so that at `reach` map units (16..8192) it counts half, and weighed by how
+	// enclosed the space around pos is (measured from the map). The listener's machine muffles world sound for a
+	// moment -- menu sounds and music never -- and may play a faint ring; `recovery` (0.25..4) scales how long it lasts.
+	// One-way and presentation only: safe from play code on every machine in a netgame; nothing is returned or saved.
+	native clearscope void HearingImpulse(Vector3 pos, double strength = 1.0, double reach = 256.0, double recovery = 1.0);
 	// [SURFACEDAMAGE] LASTING SURFACE DAMAGE ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): presses a brush
 	// into the wall or floor at pos -- a bullet hole, a gouge, soot, scorch, heat that glows and cools, a wet
 	// patch -- that stays for the map (until the player's "Damage memory" reuses the oldest patches). normal is

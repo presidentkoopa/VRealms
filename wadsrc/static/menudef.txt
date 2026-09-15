@@ -2490,6 +2490,33 @@ OptionMenu DeveloperOptionsMenu protected
 	// where the simulation's tiles are awake but nearly empty). Draws only while there is smoke.
 	// Not saved. Vulkan only.
 	Option "Show smoke grid slice (debug)", "r_smoke_debugslice", "OnOff"
+	// [EXPOSUREIMPULSE] Flash blindness ("Engine docs/EXPOSURE_IMPULSE_SI_L_IMPL_NOTES.md"): a flash a mod marks
+	// (LevelLocals.ExposureImpulse) -- a blast in a dark room -- washes your view out for a moment: brighter and hazy, lit things
+	// blown out and glowing, then it clears. A bright room barely changes; so does a flash far away, behind you or behind a wall.
+	// Rapid fire gives one steady wash, never a flicker: it rises over 1/16 s, at most 3 times a second, and never past 60%.
+	// Off by default (owner, 2026-09-15). Only on your machine: never the game, saves, demos or netplay. Every row is read by the
+	// renderer every frame, so it changes what is on screen with this menu open. RS_Ballistics' "Ballistics & Effects" page
+	// mirrors the main rows.
+	// r_exposureimpulse -- the switch. Off: flashes are ignored and the wash never draws.
+	Option "Flash blindness", "r_exposureimpulse", "OnOff"
+	// r_exposureimpulse_look -- how a flash hits: a strong wash that clears in about 1.5 s (recommended), a near white-out for
+	// about 3 s, or a quick sting gone in under a second.
+	Option "Flash blindness look", "r_exposureimpulse_look", "ExposureImpulseLooks"
+	// r_exposureimpulse_comfort -- slower and softer: rises over 1/4 s, at most twice a second, never past 35%, no glare and a
+	// whiter haze.
+	Option "Flash blindness comfort (slower, softer)", "r_exposureimpulse_comfort", "OnOff"
+	// r_exposureimpulse_strength -- a scale over every flash (1 = as the mods made them).
+	Slider "Flash blindness strength", "r_exposureimpulse_strength", 0, 2, 0.1, 1
+	// r_exposureimpulse_cap -- the most the view can wash out: 0.6 (60%) is the standard limit and the most it can be.
+	Slider "Flash blindness limit", "r_exposureimpulse_cap", 0.1, 0.6, 0.05, 2
+	// r_exposureimpulse_recovery_scale -- how long it takes to clear, times the look's own (1 = the look's).
+	Slider "Flash blindness recovery (x the look's own)", "r_exposureimpulse_recovery_scale", 0.5, 2, 0.25, 2
+	// r_exposureimpulse_holdbeams -- grab lasers and the Lance stay crisp and exactly themselves over the wash while "Keep legacy
+	// lasers" is on (it carries the light mask this needs). Off: they wash out with the room for that moment.
+	Option "Lasers stay crisp while flashed", "r_exposureimpulse_holdbeams", "OnOff"
+	// r_exposureimpulse_test -- a test, not a setting: this many flashes a second 64 units ahead of your head (turn "Flash
+	// blindness" on first). Works with this menu open. Not saved.
+	Slider "Flash blindness test (flashes a second)", "r_exposureimpulse_test", 0, 4, 1, 0
 	// [LIGHTMASK] r_lightmask_debug -- the light mask ("Engine docs/EMISSIVE_BLOOM_PLAN.md" E6a): shows,
 	// per pixel, how much of the light is beam light (green) and emissive light (red), measured against
 	// the image bloom reads. 1 = over a grey scene, 2 = beam light alone. It switches the mask on by itself
@@ -2742,6 +2769,30 @@ OptionValue "EmissiveVolumeBudgets"
 	128, "128 (default)"
 	256, "256"
 	512, "512"
+}
+
+// [EXPOSUREIMPULSE] Flash blindness's looks, the recommended one first (owner answers, 2026-09-15).
+OptionValue "ExposureImpulseLooks"
+{
+	0, "Strong wash (recommended)"
+	1, "Near white-out"
+	2, "Quick sting"
+}
+
+// [SENSORYIMPULSES] Ringing ears' muffle and ring, the recommended one first (owner answers, 2026-09-15). SI-H's cvars
+// (s_hearingimpulse.cpp): snd_hearingimpulse_muffle is an Int, snd_hearingimpulse_ring a Float ring level.
+OptionValue "HearingImpulseMuffles"
+{
+	0, "Heavy (recommended)"
+	1, "Mild"
+	2, "Nearly deaf"
+}
+
+OptionValue "HearingImpulseRings"
+{
+	0.35, "Faint (recommended)"
+	0.7, "Clear"
+	0, "None"
 }
 
 OptionValue "DebrisPoolSizes"
@@ -4157,6 +4208,24 @@ OptionMenu SoundOptions protected
 	Slider "$SNDMNU_CHANNELS",          "snd_channels",        64, 256, 8, 0
 	Option "$SNDMNU_BACKGROUND",        "i_soundinbackground", "OnOff"
 	Option "$SNDMNU_UNDERWATERREVERB",  "snd_waterreverb",     "OnOff"
+	// [SENSORYIMPULSES] Ringing ears ("Engine docs/SENSORY_IMPULSES_PLAN.md" 3; the cvars are SI-H's, s_hearingimpulse.cpp): a
+	// blast a mod marks (LevelLocals.HearingImpulse) close by in a small room muffles world sound for a moment, like cotton in your
+	// ears, and may leave a faint ring. Menu sounds and music are never muffled. "Small room" is measured from the map's walls
+	// and ceiling. Off by default (owner, 2026-09-15). Only on your machine. Read by the sound update every frame, so it changes
+	// with this menu open.
+	// snd_hearingimpulse -- the switch. Off: blasts are ignored and the sound is untouched.
+	Option "Ringing ears",                   "snd_hearingimpulse",                "OnOff"
+	// snd_hearingimpulse_muffle -- how hard: heavy, clearing over about 2 s (recommended), mild for about 1 s, or nearly deaf
+	// for about 4 s.
+	Option "Ringing ears muffle",            "snd_hearingimpulse_muffle",         "HearingImpulseMuffles"
+	// snd_hearingimpulse_ring -- the tone after a close blast: faint (recommended), clear, or none.
+	Option "Ear ring",                       "snd_hearingimpulse_ring",           "HearingImpulseRings"
+	// snd_hearingimpulse_strength -- a scale over every blast (1 = as the mods made them).
+	Slider "Ringing ears strength",          "snd_hearingimpulse_strength",       0, 2, 0.1, 1
+	// snd_hearingimpulse_recovery_scale -- how long it takes to clear, times the muffle's own (1 = the muffle's).
+	Slider "Ringing ears recovery (x the muffle's own)", "snd_hearingimpulse_recovery_scale", 0.5, 2, 0.25, 2
+	// snd_hearingimpulse_test -- a test, not a setting: a blast at your ears every 2.5 s (turn "Ringing ears" on first). Not saved.
+	Option "Ringing ears test (a blast every 2.5 s)", "snd_hearingimpulse_test",  "OnOff"
 	Option "$SNDMNU_RANDOMIZEPITCHES",  "snd_pitched",         "OnOff"
 	Option "$ADVSNDMNU_SAMPLERATE",     "snd_samplerate",      "SampleRates"
 	Option "$ADVSNDMNU_HRTF",           "snd_hrtf",            "AutoOffOn"
@@ -4170,7 +4239,7 @@ OptionMenu SoundOptions protected
 	StaticText " "
 	Command "$SNDMNU_RESTART",          "snd_reset"
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar snd_mastervolume snd_sfxvolume snd_musicvolume snd_footstepvolume snd_menuvolume snd_mididevice snd_waterreverb snd_pitched snd_channels snd_samplerate snd_hrtf i_soundinbackground"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar snd_mastervolume snd_sfxvolume snd_musicvolume snd_footstepvolume snd_menuvolume snd_mididevice snd_waterreverb snd_pitched snd_channels snd_samplerate snd_hrtf i_soundinbackground snd_hearingimpulse snd_hearingimpulse_muffle snd_hearingimpulse_ring snd_hearingimpulse_strength snd_hearingimpulse_recovery_scale"
 }
 
 OptionMenu MidiDevicesMenu protected

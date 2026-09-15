@@ -1117,12 +1117,12 @@ PPBloomPlan PPBloom::ChoosePlan(const PPBloomLook &rest, const PPBloomChain &res
 	return sameBeforeBlur ? PPBloomPlan::Legacy : PPBloomPlan::OneChain;
 }
 
-void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm)
+bool PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm)
 {
 	// Only bloom things if enabled and no special fixed light mode is active
 	if (!gl_bloom || fixedcm != CM_DEFAULT || gl_ssao_debug || sceneWidth <= 0 || sceneHeight <= 0)
 	{
-		return;
+		return false;	// [EXPOSUREIMPULSE] bloom did not draw for this eye
 	}
 
 	// [PINNEDBLOOM] This eye's looks and plan (above). Legacy is the bloom this function always drew.
@@ -1252,6 +1252,7 @@ void PPBloom::RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneH
 	}
 
 	renderstate->PopGroup();
+	return true;	// [EXPOSUREIMPULSE] bloom drew: levels[0] holds this eye's bloom
 }
 
 // [PINNEDBLOOM] One look's extract times one share of each pixel (bloomextract.fp BLOOM_EXTRACT_SHARE):
@@ -2730,6 +2731,100 @@ bool PPLightMask::RenderDebug(PPRenderState *renderstate)
 	return true;
 }
 
+//==========================================================================
+//
+// [EXPOSUREIMPULSE] Flash blindness's wash (hw_postprocess.h, PPExposureImpulse; the frame comes from hw_exposureimpulse.cpp).
+//
+//==========================================================================
+
+bool PPExposureImpulse::MeterReferences(float litLight, float minSpan, float &darkExposure, float &litExposure)
+{
+	// exposurecombine.fp's e = 1 / max(Base + light x Scale, Min) at no light and at the lit reference, from the live settings
+	// through E2's guards: the values the meter settles on in the dark and in a lit room.
+	const ExposureCombineUniforms combine = PPCameraExposure::CombineUniforms(gl_exposure_base, gl_exposure_min, gl_exposure_scale, gl_exposure_speed);
+	darkExposure = 1.0f / max(combine.ExposureBase, combine.ExposureMin);
+	litExposure = 1.0f / max(combine.ExposureBase + litLight * combine.ExposureScale, combine.ExposureMin);
+	return gl_bloom && std::isfinite(darkExposure) && std::isfinite(litExposure) && darkExposure - litExposure >= minSpan;
+}
+
+PPShader *PPExposureImpulse::WashShader(bool meter, bool glare, bool holdBeams)
+{
+	PPShader *const programs[8] = { &Wash, &WashMeter, &WashGlare, &WashMeterGlare, &WashHold, &WashMeterHold, &WashGlareHold, &WashMeterGlareHold };
+	return programs[(meter ? 1 : 0) | (glare ? 2 : 0) | (holdBeams ? 4 : 0)];
+}
+
+void PPExposureImpulse::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight, bool bloomed)
+{
+	// SKIPPED, NOT ZERO: nothing live means no group, no texture and no draw.
+	if (!Frame.Live || sceneWidth <= 0 || sceneHeight <= 0)
+		return;
+
+	float darkExposure = 1.0f, litExposure = 0.0f;
+	const bool meterUsable = MeterReferences(Frame.LitLight, Frame.MeterMinSpan, darkExposure, litExposure);
+
+	renderstate->PushGroup("pp.exposureimpulse");
+
+	// 1. A burst's first draw latches the darkness: this eye's exposure as PPCameraExposure::Render left it at the top of this
+	//    Pass1, before the burst's own light could move it far. Every later eye and frame of the burst reads the copy. Not
+	//    metered then: nothing is latched, and the burst stays on the fallback darkness to its end.
+	if (LatchBurst != Frame.Burst)
+	{
+		LatchBurst = Frame.Burst;
+		LatchValid = meterUsable;
+		if (LatchValid)
+		{
+			renderstate->Clear();
+			renderstate->Shader = &LatchShader;
+			renderstate->Viewport.left = 0;
+			renderstate->Viewport.top = 0;
+			renderstate->Viewport.width = 1;
+			renderstate->Viewport.height = 1;
+			renderstate->SetInputTexture(0, &hw_postprocess.exposure.CameraTexture);
+			renderstate->SetOutputTexture(&LatchTexture);
+			renderstate->SetNoBlend();
+			renderstate->Draw();
+		}
+	}
+
+	// 2. The wash, over the whole screen into the next pipeline image. The inputs are bound in the program's order: the image,
+	//    then the latch, this eye's bloom and the light mask, each only where its define is on.
+	const bool meter = LatchValid && meterUsable;
+	const bool glare = bloomed && Frame.Glare > 0.0f;
+	const bool holdBeams = Frame.HoldBeams && hw_postprocess.lightmask.PinnedBloomOn() && hw_postprocess.lightmask.PostInputValid();
+
+	ExposureImpulseUniforms uniforms = {};
+	uniforms.Scale = screen->SceneScale();
+	uniforms.Offset = screen->SceneOffset();
+	uniforms.Amount = Frame.Amount;
+	uniforms.DarkFloor = Frame.DarkFloor;
+	uniforms.FallbackDarkness = Frame.FallbackDarkness;
+	uniforms.LitExposure = meter ? litExposure : 0.0f;
+	uniforms.DarkExposure = meter ? darkExposure : 1.0f;
+	uniforms.Gain = Frame.Gain;
+	uniforms.Veil = Frame.Veil;
+	uniforms.Desaturate = Frame.Desaturate;
+	uniforms.VeilTint = Frame.VeilTint;
+	uniforms.Glare = glare ? Frame.Glare : 0.0f;
+
+	renderstate->Clear();
+	renderstate->Shader = WashShader(meter, glare, holdBeams);
+	renderstate->Uniforms.Set(uniforms);
+	renderstate->Viewport = screen->mScreenViewport;
+	int input = 0;
+	renderstate->SetInputCurrent(input++, PPFilterMode::Nearest);
+	if (meter)
+		renderstate->SetInputTexture(input++, &LatchTexture);
+	if (glare)
+		renderstate->SetInputTexture(input++, hw_postprocess.bloom.RestBloomTexture(), PPFilterMode::Linear);
+	if (holdBeams)
+		renderstate->SetInputLightMask(input++, PPFilterMode::Nearest);
+	renderstate->SetOutputNext();
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+
+	renderstate->PopGroup();
+}
+
 void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int sceneHeight)
 {
 	exposure.Render(state, sceneWidth, sceneHeight);
@@ -2748,7 +2843,12 @@ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int s
 	heatrefraction.Render(state, sceneWidth, sceneHeight);
 	// [LIGHTMASK] The light mask's debug view (r_lightmask_debug) is drawn in bloom's place.
 	if (!lightmask.RenderDebug(state))
-		bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
+	{
+		const bool bloomed = bloom.RenderBloom(state, sceneWidth, sceneHeight, fixedcm);
+		// [EXPOSUREIMPULSE] Flash blindness's wash, last: over this eye's bloomed image, re-adding its bloom as glare. Skipped
+		// entirely while no wash is live (PPExposureImpulse), and never drawn where the debug view drew.
+		exposureimpulse.Render(state, sceneWidth, sceneHeight, bloomed);
+	}
 }
 
 void Postprocess::Pass2(PPRenderState* state, int fixedcm, float flash, int sceneWidth, int sceneHeight)

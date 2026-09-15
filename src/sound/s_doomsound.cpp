@@ -51,6 +51,7 @@
 #include "s_music.h"
 #include "s_sndseq.h"
 #include "s_sound.h"
+#include "s_hearingimpulse.h"	// [HEARINGIMPULSE]
 #include "serializer_doom.h"
 #include "v_draw.h"
 #include "v_font.h"
@@ -955,6 +956,10 @@ static void S_SetListener(AActor *listenactor)
 void S_UpdateSounds (AActor *listenactor, int tics)
 {
 	S_SetListener(listenactor);
+
+	// [HEARINGIMPULSE] Ringing ears (s_hearingimpulse.h): this update's hearing impulses weighed at the listener, the envelope
+	// stepped, and the world's hearing handed to the sound renderer before the engine's update applies it. Idle: a cursor check.
+	HearingImpulses::Get().Update(primaryLevel, listenactor);
 
 	for (int i = 0; i < tics; ++i)
 	{

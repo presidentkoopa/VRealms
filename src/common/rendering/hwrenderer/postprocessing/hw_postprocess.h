@@ -1681,7 +1681,9 @@ enum class PPBloomPlan { Legacy, OneChain, TwoChains };
 class PPBloom
 {
 public:
-	void RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm);
+	// [EXPOSUREIMPULSE] True when bloom drew for this eye -- levels[0] then holds this eye's bloom (RestBloomTexture), which
+	// flash blindness's wash re-adds as glare (PPExposureImpulse, Pass1). Its draws are exactly what they were.
+	bool RenderBloom(PPRenderState *renderstate, int sceneWidth, int sceneHeight, int fixedcm);
 	void RenderBlur(PPRenderState *renderstate, int sceneWidth, int sceneHeight, float gameinfobluramount);
 
 	// [BLOOMOVERRIDE] The level's override, handed over once per scene eye with the frame
@@ -1692,6 +1694,10 @@ public:
 
 	// [PINNEDBLOOM] The plan the last RenderBloom ran (a label for the performance log).
 	PPBloomPlan LastPlan() const { return Plan; }
+
+	// [EXPOSUREIMPULSE] The rest look's bloom as the last RenderBloom that drew left it (level 0 after its chain's last blur):
+	// all of the bloom under the Legacy and OneChain plans, the room's share under TwoChains. Read right after that call.
+	PPTexture *RestBloomTexture() { return &levels[0].VTexture; }
 
 private:
 	void BlurStep(PPRenderState *renderstate, const BlurUniforms &blurUniforms, PPTexture &input, PPTexture &output, PPViewport viewport, bool vertical);
@@ -2410,6 +2416,134 @@ private:
 
 /////////////////////////////////////////////////////////////////////////////
 
+// [EXPOSUREIMPULSE] FLASH BLINDNESS: THE WASH ("Engine docs/SENSORY_IMPULSES_PLAN.md" 2d with its owner answers;
+// "Engine docs/EXPOSURE_IMPULSE_SI_L_IMPL_NOTES.md"). A flash a mod marks (LevelLocals.ExposureImpulse), weighed for this viewer
+// by hw_exposureimpulse.cpp, washes the view out for a moment: brighter, toward grey, a haze in the flash's colour and extra
+// glare, strongest where the eye was dark-adapted. hw_postprocess is common code: the game side hands in one frame's numbers
+// (PPExposureImpulseFrame) and this pass only draws them.
+//
+// SKIPPED, NOT ZERO. Render returns on its first line unless the published frame is Live: no group, no texture, no draw -- the
+// frame without this pass, which is every frame with "Flash blindness" off or no flash in the last seconds. While live, a pixel
+// with no wash (Amount 0, a pure beam pixel under HOLD_BEAMS) and every pixel outside the scene rectangle is written as read.
+//
+// WHERE (Pass1): last, after bloom -- exposure, beforebloom, smoke, volbeam, emissive volumes, heatmap, heat refraction, bloom,
+// EXPOSURE IMPULSE -- and only where the light mask's debug view did not draw in bloom's place. After bloom, so it can re-add
+// this eye's bloom as glare; the exposure meter measured the scene first, so the meter never sees the wash. Over the whole
+// screen viewport into the next pipeline image (the lens pattern). Every eye of a layered post path draws it or none: whether
+// it draws is the frame's (Live), never the eye's.
+//
+// THE DARKNESS, LATCHED. How dark-adapted the eye was is the exposure meter's own value (PPCameraExposure::CameraTexture). The
+// first draw of a burst copies it into LatchTexture before its wash; every later eye and frame of the burst reads that copy, so
+// the burst's own muzzle light cannot brighten the meter mid-wash and both eyes agree. With bloom off (the meter does not run)
+// or exposure settings whose dark and lit values are too close, the darkness is the game side's guess from the view sector.
+//
+// DRAWS (group pp.exposureimpulse):
+//   1. exposureimpulse.fp EXPOSURE_IMPULSE_LATCH  a burst's first draw, metered only: CameraTexture -> LatchTexture (1x1).
+//   2. exposureimpulse.fp [METER] [GLARE] [HOLD_BEAMS]  every eye while live: Current, then in this order the latch (METER), this
+//      eye's bloom (GLARE) and the light mask (HOLD_BEAMS) -> Next, no blend. METER: this burst's latch was taken and the meter
+//      is still usable. GLARE: bloom drew for this eye and the look has glare. HOLD_BEAMS: the player keeps lasers crisp and
+//      pinned bloom ("Keep legacy lasers") carries the light mask for this eye.
+// Nine programs at most, each compiled on first use; no existing program changes.
+struct ExposureImpulseUniforms
+{
+	FVector2 Scale;             // screen->SceneScale(): where the scene sits in the pipeline image
+	FVector2 Offset;            // screen->SceneOffset()
+	float Amount;               // the wash now, 0..0.6: the envelope times its limit; 0 writes every pixel as read
+	float DarkFloor;            // the share of the wash a fully lit room keeps
+	float FallbackDarkness;     // 0 bright .. 1 dark, when not METER
+	float LitExposure;          // METER: the meter's value in a lit room ...
+	float DarkExposure;         // ... and in the dark
+	float Gain;                 // the look: brighter by 1 + Gain x wash
+	float Veil;                 //   the haze added, VeilTint x Veil x wash
+	float Desaturate;           //   toward grey by Desaturate x wash
+	FVector3 VeilTint;          //   the haze's colour
+	float Glare;                //   GLARE: this eye's bloom x Glare x wash
+
+	//   Scale 0   Offset 8   Amount 16   DarkFloor 20   FallbackDarkness 24   LitExposure 28   DarkExposure 32   Gain 36
+	//   Veil 40   Desaturate 44   VeilTint 48   Glare 60   -> block ends 64
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "Scale", UniformType::Vec2, offsetof(ExposureImpulseUniforms, Scale) },
+			{ "Offset", UniformType::Vec2, offsetof(ExposureImpulseUniforms, Offset) },
+			{ "Amount", UniformType::Float, offsetof(ExposureImpulseUniforms, Amount) },
+			{ "DarkFloor", UniformType::Float, offsetof(ExposureImpulseUniforms, DarkFloor) },
+			{ "FallbackDarkness", UniformType::Float, offsetof(ExposureImpulseUniforms, FallbackDarkness) },
+			{ "LitExposure", UniformType::Float, offsetof(ExposureImpulseUniforms, LitExposure) },
+			{ "DarkExposure", UniformType::Float, offsetof(ExposureImpulseUniforms, DarkExposure) },
+			{ "Gain", UniformType::Float, offsetof(ExposureImpulseUniforms, Gain) },
+			{ "Veil", UniformType::Float, offsetof(ExposureImpulseUniforms, Veil) },
+			{ "Desaturate", UniformType::Float, offsetof(ExposureImpulseUniforms, Desaturate) },
+			{ "VeilTint", UniformType::Vec3, offsetof(ExposureImpulseUniforms, VeilTint) },
+			{ "Glare", UniformType::Float, offsetof(ExposureImpulseUniforms, Glare) },
+		};
+	}
+};
+
+static_assert(offsetof(ExposureImpulseUniforms, Amount) == 16, "ExposureImpulseUniforms::Amount must start at 16 for std140");
+static_assert(offsetof(ExposureImpulseUniforms, Desaturate) == 44, "ExposureImpulseUniforms::Desaturate must start at 44 for std140");
+static_assert(offsetof(ExposureImpulseUniforms, VeilTint) == 48, "ExposureImpulseUniforms::VeilTint must start at 48 for std140");
+static_assert(offsetof(ExposureImpulseUniforms, Glare) == 60, "ExposureImpulseUniforms::Glare must start at 60 for std140");
+static_assert(sizeof(ExposureImpulseUniforms) == 64, "ExposureImpulseUniforms must be 64 bytes");
+
+// One frame's wash, handed in once per displayed frame by hw_exposureimpulse.cpp (the envelope and the look,
+// hw_exposureimpulsecore.h); every eye reads the same copy. The default draws nothing.
+struct PPExposureImpulseFrame
+{
+	bool Live = false;                  // a wash is on screen this frame: Render draws
+	uint64_t Burst = 0;                 // which burst it belongs to: the first draw of a new one latches the darkness
+	float Amount = 0.0f;                // the wash now (the envelope times its limit)
+	float Gain = 0.0f;                  // the look's numbers (ExposureImpulseUniforms)
+	float Veil = 0.0f;
+	float Desaturate = 0.0f;
+	float Glare = 0.0f;                 // 0: no GLARE program (Comfort)
+	FVector3 VeilTint = FVector3(1.0f, 1.0f, 1.0f);
+	float DarkFloor = 0.0f;
+	float FallbackDarkness = 0.0f;      // 0 bright .. 1 dark, from the view sector's light
+	float LitLight = 0.5f;              // the meter's lit reference, in exposureextract.fp's units
+	float MeterMinSpan = 0.05f;         // the meter is used only when its dark and lit values differ by at least this
+	bool HoldBeams = false;             // the player keeps lasers crisp (r_exposureimpulse_holdbeams)
+};
+
+class PPExposureImpulse
+{
+public:
+	// Once per displayed frame, before the eye loop (hw_entrypoint.cpp through hw_exposureimpulse.cpp).
+	void SetFrame(const PPExposureImpulseFrame &frame) { Frame = frame; }
+	bool Live() const { return Frame.Live; }
+
+	// Pass1, after bloom. `bloomed`: RenderBloom drew for this eye.
+	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight, bool bloomed);
+
+	// The exposure meter's values in the dark (no light) and in a lit room (litLight), from the live exposure settings through E2's
+	// guards (PPCameraExposure::CombineUniforms). True when the meter can tell them apart: bloom on (the meter runs), both finite,
+	// dark above lit by at least minSpan. The debug line asks too.
+	static bool MeterReferences(float litLight, float minSpan, float &darkExposure, float &litExposure);
+
+private:
+	PPShader *WashShader(bool meter, bool glare, bool holdBeams);
+
+	PPExposureImpulseFrame Frame;
+	uint64_t LatchBurst = 0;    // the burst LatchTexture was taken for (0: none yet)
+	bool LatchValid = false;    // whether that burst was metered, so LatchTexture holds its darkness
+
+	// One texel; takes no memory until a burst is first metered.
+	PPTexture LatchTexture = { 1, 1, PixelFormat::R32f };
+
+	PPShader LatchShader = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_LATCH\n", {} };
+	PPShader Wash = { "shaders/pp/exposureimpulse.fp", "", ExposureImpulseUniforms::Desc() };
+	PPShader WashMeter = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_METER\n", ExposureImpulseUniforms::Desc() };
+	PPShader WashGlare = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_GLARE\n", ExposureImpulseUniforms::Desc() };
+	PPShader WashMeterGlare = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_METER\n#define EXPOSURE_IMPULSE_GLARE\n", ExposureImpulseUniforms::Desc() };
+	PPShader WashHold = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_HOLD_BEAMS\n", ExposureImpulseUniforms::Desc() };
+	PPShader WashMeterHold = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_METER\n#define EXPOSURE_IMPULSE_HOLD_BEAMS\n", ExposureImpulseUniforms::Desc() };
+	PPShader WashGlareHold = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_GLARE\n#define EXPOSURE_IMPULSE_HOLD_BEAMS\n", ExposureImpulseUniforms::Desc() };
+	PPShader WashMeterGlareHold = { "shaders/pp/exposureimpulse.fp", "#define EXPOSURE_IMPULSE_METER\n#define EXPOSURE_IMPULSE_GLARE\n#define EXPOSURE_IMPULSE_HOLD_BEAMS\n", ExposureImpulseUniforms::Desc() };
+};
+
+/////////////////////////////////////////////////////////////////////////////
+
 class Postprocess
 {
 public:
@@ -2420,6 +2554,7 @@ public:
 	PPSmokeVolume smokevolume;	// [SMOKEVOLUME] the smoke volume's drawing (13c)
 	PPEmissiveVolumes emissivevolumes;	// [EMISSIVEVOLUMES] the emissive volumes' drawing (#15)
 	PPLightMask lightmask;	// [LIGHTMASK] the frame's light mask decision and its debug view
+	PPExposureImpulse exposureimpulse;	// [EXPOSUREIMPULSE] flash blindness's wash, last in Pass1 (hw_exposureimpulse.cpp publishes its frame)
 	PPLensDistort lens;
 	PPFXAA fxaa;
 	PPCameraExposure exposure;

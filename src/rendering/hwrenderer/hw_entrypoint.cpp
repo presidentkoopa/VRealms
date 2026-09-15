@@ -50,6 +50,7 @@
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
 #include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::BeginFrame, PrepareFrame
+#include "hw_exposureimpulse.h"	// [EXPOSUREIMPULSE] ExposureImpulses::BeginFrame, PublishNone
 #include <algorithm>			// [LIGHTSHADOWS] std::nth_element in CollectLights
 #include <vector>
 
@@ -326,6 +327,16 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 		// [PINNEDBLOOM] Once per displayed frame, before the eye loop: whether beam light can be on
 		// screen, so pinned bloom runs its extra passes only while it can (PPBloom::ChoosePlan).
 		hw_postprocess.lightmask.SetPinnedLightLive(PinnedLightLive(mainvp.ViewLevel));
+		// [EXPOSUREIMPULSE] Flash blindness for this frame, once, from the head pose VRMode::SetUp just wrote: the level's flashes
+		// weighed for this viewer, the envelope, and the frame the wash after bloom reads in every eye (hw_exposureimpulse.h).
+		// With nothing live it publishes an empty frame and the pass does not run.
+		ExposureImpulses::Get().BeginFrame(camera->Level, mainvp, LevelDataSerial(camera->Level));
+	}
+	else if (mainview)
+	{
+		// [EXPOSUREIMPULSE] The main view drawn off screen is a save picture: it never shows a wash (camera textures never
+		// post-process). Nothing else changes; the next real frame publishes its own.
+		ExposureImpulses::Get().PublishNone();
 	}
 	const int eyeCount = vrmode->mEyeCount;
 	const bool useMultiviewScene = mainview && toscreen && vrmode->ShouldUseMultiviewThisFrame() && eyeCount >= 2;

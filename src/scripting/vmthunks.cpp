@@ -4380,6 +4380,86 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, PushEffectImpulse, PushEffectImpulse
 
 //==========================================================================
 //
+// [SENSORYIMPULSES] ExposureImpulse and HearingImpulse -- a flash that can overwhelm the eye and a blast that can overwhelm the
+// ear ("Engine docs/SENSORY_IMPULSES_PLAN.md" 2a, 3a, 6 and 7; FExposureImpulseEvent and FHearingImpulseEvent, g_levellocals.h).
+// PushEffectImpulse's shape. ONE-WAY: each only queues an event on the level's per-tic queue (64 a tic each) and returns
+// nothing; nothing reads it back into the game and nothing is serialized, so every machine queues the same event and gameplay
+// cannot branch on it. No RNG. Each machine then weighs a flash by its own view (hw_exposureimpulse.cpp) and a blast by its
+// own listener (s_hearingimpulse.cpp). A call with a non-finite number or no strength is ignored (logged once per native per
+// session); a full queue drops the event (logged once per map). Engine callers (explosion code) call the static functions.
+//
+//==========================================================================
+
+static void ExposureImpulse(FLevelLocals *self, double px, double py, double pz, double strength, double reach, double recovery, int tint)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("ExposureImpulse", badLogged, { px, py, pz, strength, reach, recovery }))
+		return;
+
+	const double strengthC = clamp(strength, 0., 16.);
+	if (strengthC <= 0.)
+		return;
+
+	FExposureImpulseEvent *e = self->ExposureImpulses.Push();
+	if (e == nullptr)
+	{
+		LogEffectQueueFull(self->ExposureImpulses.FullLogged, "ExposureImpulse", FLevelLocals::MAX_EXPOSURE_IMPULSES_PER_TIC);
+		return;
+	}
+	e->Pos = DVector3(px, py, pz);
+	e->Strength = strengthC;
+	e->Reach = clamp(reach, 16., 8192.);
+	e->Recovery = clamp(recovery, 0.25, 4.);
+	e->Tint = PalEntry((uint32_t)tint);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, ExposureImpulse, ExposureImpulse)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(strength);
+	PARAM_FLOAT(reach);
+	PARAM_FLOAT(recovery);
+	PARAM_COLOR(tint);
+	ExposureImpulse(self, px, py, pz, strength, reach, recovery, tint);
+	return 0;
+}
+
+static void HearingImpulse(FLevelLocals *self, double px, double py, double pz, double strength, double reach, double recovery)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("HearingImpulse", badLogged, { px, py, pz, strength, reach, recovery }))
+		return;
+
+	const double strengthC = clamp(strength, 0., 16.);
+	if (strengthC <= 0.)
+		return;
+
+	FHearingImpulseEvent *e = self->HearingImpulses.Push();
+	if (e == nullptr)
+	{
+		LogEffectQueueFull(self->HearingImpulses.FullLogged, "HearingImpulse", FLevelLocals::MAX_HEARING_IMPULSES_PER_TIC);
+		return;
+	}
+	e->Pos = DVector3(px, py, pz);
+	e->Strength = strengthC;
+	e->Reach = clamp(reach, 16., 8192.);
+	e->Recovery = clamp(recovery, 0.25, 4.);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HearingImpulse, HearingImpulse)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(strength);
+	PARAM_FLOAT(reach);
+	PARAM_FLOAT(recovery);
+	HearingImpulse(self, px, py, pz, strength, reach, recovery);
+	return 0;
+}
+
+//==========================================================================
+//
 // [SURFACEDAMAGE] PaintSurfaceDamage -- lasting damage pressed into the wall or flat at pos ("Engine docs/
 // SURFACE_DAMAGE_17_IMPL_NOTES.md"). ONE-WAY, like the smoke natives above: it only queues an event
 // (FLevelLocals::SurfaceDamagePaints, 128 a tic); the renderer finds the surface, hands out tiles and stamps the

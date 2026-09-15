@@ -589,6 +589,25 @@ struct FEffectImpulseEvent
 	double   Strength = 0.;
 };
 
+// [SENSORYIMPULSES] One ExposureImpulse: a flash at Pos that can overwhelm a viewer's eyes (hw_exposureimpulse.cpp).
+// Clamped by the native (vmthunks.cpp). Presentation only.
+struct FExposureImpulseEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	double   Strength = 0.;   // 0..16
+	double   Reach = 256.;    // 16..8192 map units: the distance at which it counts half
+	double   Recovery = 1.;   // 0.25..4
+	PalEntry Tint = 0xffffffff;
+};
+// [SENSORYIMPULSES] One HearingImpulse: a blast at Pos that can overwhelm a listener's ears (s_hearingimpulse.cpp).
+struct FHearingImpulseEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	double   Strength = 0.;   // 0..16
+	double   Reach = 256.;    // 16..8192
+	double   Recovery = 1.;   // 0.25..4
+};
+
 // [DEBRISPOOL] One SpawnParticles burst of a DEBRIS definition (a PARTICLEDEFS `restitution`; "Engine docs/
 // DEBRIS_9_IMPL_NOTES.md"), handed to the renderer's debris pool (hw_debrispool.cpp) instead of written to the
 // particle ring. The call's own arguments, with the definition already resolved on this machine and the seed and
@@ -1658,6 +1677,13 @@ public:
 	FEffectTicQueue<FSmokeEmitEvent, MAX_SMOKE_EMITS_PER_TIC> SmokeEmits;
 	FEffectTicQueue<FSmokeCarveEvent, MAX_SMOKE_CARVES_PER_TIC> SmokeCarves;
 	FEffectTicQueue<FEffectImpulseEvent, MAX_EFFECT_IMPULSES_PER_TIC> EffectImpulses;
+	// [SENSORYIMPULSES] ExposureImpulse and HearingImpulse calls per tic ("Engine docs/SENSORY_IMPULSES_PLAN.md" 7): 64 each, more
+	// are dropped (logged once per map). ExposureImpulses is read by the renderer (hw_exposureimpulse.cpp); HearingImpulses by the
+	// sound update (s_hearingimpulse.cpp), outside the renderer but presentation only all the same.
+	static constexpr int MAX_EXPOSURE_IMPULSES_PER_TIC = 64;
+	static constexpr int MAX_HEARING_IMPULSES_PER_TIC = 64;
+	FEffectTicQueue<FExposureImpulseEvent, MAX_EXPOSURE_IMPULSES_PER_TIC> ExposureImpulses;	// [SENSORYIMPULSES]
+	FEffectTicQueue<FHearingImpulseEvent, MAX_HEARING_IMPULSES_PER_TIC> HearingImpulses;	// [SENSORYIMPULSES]
 	FEffectTicQueue<FDebrisBurstEvent, MAX_DEBRIS_BURSTS_PER_TIC> DebrisBursts;	// [DEBRISPOOL] written by SpawnParticles
 	// [SURFACEDAMAGE] PaintSurfaceDamage calls per tic (SH4's number for #17): a Super Shotgun blast into a wall is 20.
 	static constexpr int MAX_SURFACE_DAMAGE_PAINTS_PER_TIC = 128;
@@ -1681,6 +1707,8 @@ public:
 		SurfaceDamagePaints.BeginTic(maptime);	// [SURFACEDAMAGE]
 		EffectLightSpawns.BeginTic(maptime);	// [EFFECTLIGHTS]
 		EmissiveVolumeSpawns.BeginTic(maptime);	// [EMISSIVEVOLUMES]
+		ExposureImpulses.BeginTic(maptime);	// [SENSORYIMPULSES]
+		HearingImpulses.BeginTic(maptime);	// [SENSORYIMPULSES]
 	}
 
 	// ClearLevelData. maptime restarts at 0 on the new map.
@@ -1693,6 +1721,8 @@ public:
 		SurfaceDamagePaints.Reset(0);	// [SURFACEDAMAGE]
 		EffectLightSpawns.Reset(0);	// [EFFECTLIGHTS]
 		EmissiveVolumeSpawns.Reset(0);	// [EMISSIVEVOLUMES]
+		ExposureImpulses.Reset(0);	// [SENSORYIMPULSES]
+		HearingImpulses.Reset(0);	// [SENSORYIMPULSES]
 	}
 
 	// [DEBRISPOOL] Raised by ClearGpuParticles: the renderer's debris pool empties, as the ring does. A new

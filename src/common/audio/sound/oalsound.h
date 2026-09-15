@@ -100,6 +100,9 @@ public:
 	virtual void UpdateListener(SoundListener *);
 	virtual void UpdateSounds();
 
+	// [HEARINGIMPULSE] The world's hearing (i_sound.h; oalsound.cpp says how it is applied).
+	void SetWorldHearing(float gain, float gainHF, float ring) override;
+
 	virtual void MarkStartTime(FISoundChannel*, float startTime);
 	virtual float GetAudibility(FISoundChannel*);
 
@@ -215,6 +218,20 @@ private:
 	EffectMap EnvEffects;
 
 	bool WasInWater;
+
+	// [HEARINGIMPULSE] WORLD HEARING (SetWorldHearing): the live hearing impulse's world gain and high-frequency gain -- 1 and 1
+	// at neutral, where every filter value and volume this renderer sets is the one it set before -- and the ear ring.
+	ALfloat HearingGain = 1.f;
+	ALfloat HearingGainHF = 1.f;
+	ALfloat HearingRing = 0.f;
+	bool WaterLowpass = false;		// the underwater block has EnvFilters[0]'s high frequencies at 0.125 (UpdateListener)
+	ALuint RingSource = 0;			// private: not in Sources or FreeSfx, never a channel; made on the first ring above 0
+	ALuint RingBuffer = 0;			// the generated tone (CreateRing)
+	bool RingSounding = false;		// the ring is playing, or paused with the world's sounds
+	bool RingUnavailable = false;	// making it failed: it stays off for this renderer (logged once)
+	bool CreateRing();
+	// Without EFX a world channel's volume carries the hearing gain; a UI channel, and every channel with EFX, carries 1.
+	ALfloat WorldVolumeScale(bool ui) const { return (EnvSlot == 0 && !ui) ? HearingGain : 1.f; }
 
 	TArray<OpenALSoundStream*> Streams;
 	friend class OpenALSoundStream;

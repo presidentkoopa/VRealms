@@ -56,7 +56,8 @@ CUSTOM_CVAR(Int, snd_channels, 128, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// number 
 CVARD(String, snd_aldriver, DEFAULT_DRIVER, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "See alsoftrc.sample for details")
 CVAR(Bool, snd_waterreverb, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR (String, snd_aldevice, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
-CVAR (Bool, snd_efx, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+// EFX is on by default (owner, 2026-09-15): underwater muffling and the ringing ears muffle need it.
+CVAR (Bool, snd_efx, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (String, snd_alresampler, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Int, snd_musicmode, 0, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CUSTOM_CVAR (Float, snd_superstereowidth, 0.45f, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
@@ -950,6 +951,20 @@ OpenALSoundRenderer::~OpenALSoundRenderer()
 	}
 	EnvEffects.Clear();
 
+	// [HEARINGIMPULSE] The private ear ring: its source before its buffer.
+	if(RingSource)
+	{
+		alSourceStop(RingSource);
+		alDeleteSources(1, &RingSource);
+		RingSource = 0;
+	}
+	if(RingBuffer)
+	{
+		alDeleteBuffers(1, &RingBuffer);
+		RingBuffer = 0;
+	}
+	RingSounding = false;
+
 	if(EnvSlot)
 	{
 		alDeleteAuxiliaryEffectSlots(1, &EnvSlot);
@@ -1006,6 +1021,10 @@ void OpenALSoundRenderer::SetSfxVolume(float volume)
 {
 	SfxVolume = volume;
 
+	// [HEARINGIMPULSE] The ear ring follows the sound volume.
+	if (RingSource != 0)
+		alSourcef(RingSource, AL_GAIN, SfxVolume * HearingRing);
+
 	if (!soundEngine) return;
 	FSoundChan *schan = soundEngine->GetChannels();
 	while(schan)
@@ -1017,7 +1036,8 @@ void OpenALSoundRenderer::SetSfxVolume(float volume)
 
 			alDeferUpdatesSOFT();
 			alSourcef(source, AL_MAX_GAIN, volume);
-			alSourcef(source, AL_GAIN, volume * schan->Volume);
+			// [HEARINGIMPULSE] x1 unless a hearing impulse is ducking world channels without EFX (SetWorldHearing).
+			alSourcef(source, AL_GAIN, volume * schan->Volume * WorldVolumeScale(!!(schan->ChanFlags & CHANF_UI)));
 		}
 		schan = schan->NextChan;
 	}
@@ -1345,7 +1365,8 @@ FISoundChannel *OpenALSoundRenderer::StartSound(SoundHandle sfx, float vol, floa
 	alSourcef(source, AL_DOPPLER_FACTOR, 0.f);
 	alSourcef(source, AL_ROLLOFF_FACTOR, 0.f);
 	alSourcef(source, AL_MAX_GAIN, SfxVolume);
-	alSourcef(source, AL_GAIN, SfxVolume*vol);
+	// [HEARINGIMPULSE] x1 unless a hearing impulse is ducking world sounds without EFX (UI sounds start SNDF_NOREVERB).
+	alSourcef(source, AL_GAIN, SfxVolume*vol*WorldVolumeScale(!!(chanflags&SNDF_NOREVERB)));
 	if(AL.EXT_SOURCE_RADIUS)
 		alSourcef(source, AL_SOURCE_RADIUS, 0.f);
 	if(AL.SOFT_source_spatialize)
@@ -1519,7 +1540,8 @@ FISoundChannel *OpenALSoundRenderer::StartSound3D(SoundHandle sfx, SoundListener
 	alSourcei(source, AL_LOOPING, (chanflags&SNDF_LOOP) ? AL_TRUE : AL_FALSE);
 
 	alSourcef(source, AL_MAX_GAIN, SfxVolume);
-	alSourcef(source, AL_GAIN, SfxVolume*vol);
+	// [HEARINGIMPULSE] x1 unless a hearing impulse is ducking world sounds without EFX (UI sounds start SNDF_NOREVERB).
+	alSourcef(source, AL_GAIN, SfxVolume*vol*WorldVolumeScale(!!(chanflags&SNDF_NOREVERB)));
 	if(AL.SOFT_source_spatialize)
 		alSourcei(source, AL_SOURCE_SPATIALIZE_SOFT, AL_TRUE);
 
@@ -1606,7 +1628,8 @@ void OpenALSoundRenderer::ChannelVolume(FISoundChannel *chan, float volume)
 	alDeferUpdatesSOFT();
 
 	ALuint source = GET_PTRID(chan->SysChannel);
-	alSourcef(source, AL_GAIN, SfxVolume * volume);
+	// [HEARINGIMPULSE] x1 unless a hearing impulse is ducking world channels without EFX (SetWorldHearing).
+	alSourcef(source, AL_GAIN, SfxVolume * volume * WorldVolumeScale(!!(chan->ChanFlags & CHANF_UI)));
 }
 
 void OpenALSoundRenderer::ChannelPitch(FISoundChannel *chan, float pitch)
@@ -1686,6 +1709,16 @@ void OpenALSoundRenderer::SetSfxPaused(bool paused, int slot)
 			alSourcePlayv(PausableSfx.Size(), &PausableSfx[0]);
 			getALError();
 		}
+	}
+
+	// [HEARINGIMPULSE] The ear ring pauses and resumes with the world's sounds.
+	if(RingSounding && RingSource != 0)
+	{
+		if(oldslots == 0 && SFXPaused != 0)
+			alSourcePause(RingSource);
+		else if(oldslots != 0 && SFXPaused == 0)
+			alSourcePlay(RingSource);
+		getALError();
 	}
 }
 
@@ -1852,10 +1885,12 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 				env = S_FindEnvironment(0x1600);
 				LoadReverb(env ? env : DefaultEnvironments[0]);
 
-				alFilterf(EnvFilters[0], AL_LOWPASS_GAIN, 1.f);
-				alFilterf(EnvFilters[0], AL_LOWPASS_GAINHF, 0.125f);
-				alFilterf(EnvFilters[1], AL_LOWPASS_GAIN, 1.f);
-				alFilterf(EnvFilters[1], AL_LOWPASS_GAINHF, 1.f);
+				// [HEARINGIMPULSE] A live hearing impulse's values (SetWorldHearing) with the water's on top; 1.0f x each at neutral.
+				alFilterf(EnvFilters[0], AL_LOWPASS_GAIN, HearingGain);
+				alFilterf(EnvFilters[0], AL_LOWPASS_GAINHF, HearingGainHF * 0.125f);
+				alFilterf(EnvFilters[1], AL_LOWPASS_GAIN, HearingGain);
+				alFilterf(EnvFilters[1], AL_LOWPASS_GAINHF, HearingGainHF);
+				WaterLowpass = true;
 
 				// Apply the updated filters on the sources
 				FSoundChan *schan = soundEngine->GetChannels();
@@ -1891,10 +1926,12 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		{
 			LoadReverb(env);
 
-			alFilterf(EnvFilters[0], AL_LOWPASS_GAIN, 1.f);
-			alFilterf(EnvFilters[0], AL_LOWPASS_GAINHF, 1.f);
-			alFilterf(EnvFilters[1], AL_LOWPASS_GAIN, 1.f);
-			alFilterf(EnvFilters[1], AL_LOWPASS_GAINHF, 1.f);
+			// [HEARINGIMPULSE] Back to a live hearing impulse's values (SetWorldHearing); 1.0f each at neutral.
+			alFilterf(EnvFilters[0], AL_LOWPASS_GAIN, HearingGain);
+			alFilterf(EnvFilters[0], AL_LOWPASS_GAINHF, HearingGainHF);
+			alFilterf(EnvFilters[1], AL_LOWPASS_GAIN, HearingGain);
+			alFilterf(EnvFilters[1], AL_LOWPASS_GAINHF, HearingGainHF);
+			WaterLowpass = false;
 
 			FSoundChan *schan = soundEngine->GetChannels();
 			while (schan)
@@ -1938,6 +1975,177 @@ void OpenALSoundRenderer::UpdateSounds()
 	}
 
 	PurgeStoppedSources();
+}
+
+//==========================================================================
+//
+// [HEARINGIMPULSE] WORLD HEARING ("Engine docs/SENSORY_IMPULSES_PLAN.md" 3d)
+//
+// s_hearingimpulse.cpp hands over the live hearing impulse every sound update while it is live, and (1, 1, 0) once when it goes
+// idle -- so a renderer snd_reset recreated is fed again on the next update. The calls land between that update's deferral and
+// its alProcessUpdatesSOFT (SoundEngine::UpdateSounds), so a frame's changes apply together.
+//
+//   gain, gainHF  the world's gain and high-frequency gain. With EFX they scale both environment low-pass filters -- direct and
+//                 reverb send, so the room's tail dulls too -- and are re-attached to every non-UI channel, as the underwater
+//                 block does (OpenAL copies a filter into a source when it is attached); sources started later take them at
+//                 start. The underwater block keeps its 0.125 on top. Without EFX, gain ducks the volume of every non-UI
+//                 channel (here, StartSound, StartSound3D, ChannelVolume and SetSfxVolume) and gainHF has nothing to act on.
+//   ring          the ear ring's level, times the sound volume; 0 stops it.
+//
+// UI channels (CHANF_UI, started SNDF_NOREVERB) and music streams (not channels; AL_FILTER_NULL) are never touched. Unchanged
+// gains make no AL call. At neutral every value is the one set before this existed: 1.0f x v is v.
+//
+//==========================================================================
+
+void OpenALSoundRenderer::SetWorldHearing(float gain, float gainHF, float ring)
+{
+	// A NaN reads as neutral; everything into 0..1.
+	gain = gain >= 0.f ? min(gain, 1.f) : (gain < 0.f ? 0.f : 1.f);
+	gainHF = gainHF >= 0.f ? min(gainHF, 1.f) : (gainHF < 0.f ? 0.f : 1.f);
+	ring = ring >= 0.f ? min(ring, 1.f) : 0.f;
+
+	if(gain != HearingGain || gainHF != HearingGainHF)
+	{
+		HearingGain = gain;
+		HearingGainHF = gainHF;
+		alDeferUpdatesSOFT();
+		if(EnvSlot != 0)
+		{
+			alFilterf(EnvFilters[0], AL_LOWPASS_GAIN, HearingGain);
+			alFilterf(EnvFilters[0], AL_LOWPASS_GAINHF, WaterLowpass ? HearingGainHF * 0.125f : HearingGainHF);
+			alFilterf(EnvFilters[1], AL_LOWPASS_GAIN, HearingGain);
+			alFilterf(EnvFilters[1], AL_LOWPASS_GAINHF, HearingGainHF);
+		}
+		if(soundEngine)
+		{
+			for(FSoundChan *schan = soundEngine->GetChannels(); schan != NULL; schan = schan->NextChan)
+			{
+				ALuint source = GET_PTRID(schan->SysChannel);
+				if(!source || (schan->ChanFlags & CHANF_UI))
+					continue;
+				if(EnvSlot != 0)
+				{
+					alSourcei(source, AL_DIRECT_FILTER, EnvFilters[0]);
+					alSource3i(source, AL_AUXILIARY_SEND_FILTER, EnvSlot, 0, EnvFilters[1]);
+				}
+				else
+					alSourcef(source, AL_GAIN, SfxVolume * schan->Volume * HearingGain);
+			}
+		}
+		getALError();
+	}
+
+	if(ring > 0.f && !RingUnavailable && (RingSource != 0 || CreateRing()))
+	{
+		if(ring != HearingRing || !RingSounding)
+		{
+			if(ring != HearingRing)
+				alSourcef(RingSource, AL_GAIN, SfxVolume * ring);
+			HearingRing = ring;
+			if(!RingSounding)
+			{
+				RingSounding = true;
+				if(SFXPaused == 0)
+					alSourcePlay(RingSource);
+			}
+			getALError();
+		}
+	}
+	else
+	{
+		HearingRing = 0.f;
+		if(RingSounding)
+		{
+			RingSounding = false;
+			alSourceStop(RingSource);
+			getALError();
+		}
+	}
+}
+
+// [HEARINGIMPULSE] THE EAR RING's tone, generated here (no lump, no RNG): 0.5 s of mono 16-bit at the output rate, two sines of
+// RING_CYCLES_A and RING_CYCLES_B whole cycles in the buffer (3750 Hz and 3752 Hz), so the loop is seamless and wavers at 2 Hz.
+// Each sine RING_AMPLITUDE: their sum stays within 8230 of 32767, -12 dBFS.
+static constexpr int RING_CYCLES_A = 1875;
+static constexpr int RING_CYCLES_B = 1876;
+static constexpr int RING_AMPLITUDE = 4115;		// floor(0.5 x 10^(-12/20) x 32767)
+static constexpr int RING_MIN_RATE = 16000;		// below this the tone would alias
+
+// The private ring source: head-locked (relative, at the origin, not spatialized), looping, no filter and no send -- never
+// muffled -- and never a channel, so never saved or evicted. Made on the first ring above 0; a failure keeps it off.
+bool OpenALSoundRenderer::CreateRing()
+{
+	auto fail = [this](const char *why)
+	{
+		if(RingSource != 0)
+		{
+			alDeleteSources(1, &RingSource);
+			RingSource = 0;
+		}
+		if(RingBuffer != 0)
+		{
+			alDeleteBuffers(1, &RingBuffer);
+			RingBuffer = 0;
+		}
+		alGetError();
+		RingUnavailable = true;
+		Printf(TEXTCOLOR_ORANGE "Ear ring off: %s\n", why);
+		return false;
+	};
+
+	const int rate = (int)GetOutputRate();
+	if(rate < RING_MIN_RATE)
+		return fail("the output rate is under 16000 Hz");
+	const int frames = rate / 2;
+	std::vector<int16_t> tone(frames);
+	for(int i = 0;i < frames;i++)
+	{
+		const double phase = 6.283185307179586 * i / frames;
+		tone[i] = (int16_t)floor(RING_AMPLITUDE * (sin(RING_CYCLES_A * phase) + sin(RING_CYCLES_B * phase)) + 0.5);
+	}
+
+	getALError();
+	alGenBuffers(1, &RingBuffer);
+	if(getALError() != AL_NO_ERROR)
+	{
+		RingBuffer = 0;
+		return fail("no buffer");
+	}
+	alBufferData(RingBuffer, AL_FORMAT_MONO16, tone.data(), ALsizei(frames * sizeof(int16_t)), rate);
+	if(getALError() != AL_NO_ERROR)
+		return fail("the tone would not load");
+	alGenSources(1, &RingSource);
+	if(getALError() != AL_NO_ERROR)
+	{
+		RingSource = 0;
+		return fail("no spare source on the device");
+	}
+
+	alSourcei(RingSource, AL_SOURCE_RELATIVE, AL_TRUE);
+	alSource3f(RingSource, AL_POSITION, 0.f, 0.f, 0.f);
+	alSource3f(RingSource, AL_VELOCITY, 0.f, 0.f, 0.f);
+	alSource3f(RingSource, AL_DIRECTION, 0.f, 0.f, 0.f);
+	alSourcef(RingSource, AL_ROLLOFF_FACTOR, 0.f);
+	alSourcef(RingSource, AL_DOPPLER_FACTOR, 0.f);
+	alSourcef(RingSource, AL_PITCH, 1.f);
+	alSourcef(RingSource, AL_MAX_GAIN, 1.f);
+	alSourcef(RingSource, AL_GAIN, 0.f);
+	alSourcei(RingSource, AL_LOOPING, AL_TRUE);
+	if(EnvSlot != 0)
+	{
+		alSourcei(RingSource, AL_DIRECT_FILTER, AL_FILTER_NULL);
+		alSource3i(RingSource, AL_AUXILIARY_SEND_FILTER, 0, 0, AL_FILTER_NULL);
+		alSourcef(RingSource, AL_ROOM_ROLLOFF_FACTOR, 0.f);
+		alSourcef(RingSource, AL_AIR_ABSORPTION_FACTOR, 0.f);
+	}
+	if(AL.EXT_SOURCE_RADIUS)
+		alSourcef(RingSource, AL_SOURCE_RADIUS, 0.f);
+	if(AL.SOFT_source_spatialize)
+		alSourcei(RingSource, AL_SOURCE_SPATIALIZE_SOFT, AL_FALSE);
+	alSourcei(RingSource, AL_BUFFER, RingBuffer);
+	if(getALError() != AL_NO_ERROR)
+		return fail("the tone would not attach");
+	return true;
 }
 
 bool OpenALSoundRenderer::IsValid()

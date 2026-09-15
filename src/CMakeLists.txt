@@ -964,10 +964,12 @@ set (PCH_SOURCES
 	p_tick.cpp
 	playsim/p_user.cpp
 	rendering/r_utility.cpp
+	rendering/r_levelray.cpp
 	rendering/r_sky.cpp
 	sound/s_advsound.cpp
 	sound/s_sndseq.cpp
 	sound/s_doomsound.cpp
+	sound/s_hearingimpulse.cpp
 	serializer_doom.cpp
 	scriptutil.cpp
 	st_stuff.cpp
@@ -1047,6 +1049,7 @@ set (PCH_SOURCES
 	rendering/hwrenderer/hw_surfacedamage.cpp
 	rendering/hwrenderer/hw_effectlights.cpp
 	rendering/hwrenderer/hw_emissivevolumes.cpp
+	rendering/hwrenderer/hw_exposureimpulse.cpp
 	rendering/hwrenderer/doom_aabbtree.cpp
 	rendering/hwrenderer/doom_levelmesh.cpp
 	rendering/hwrenderer/hw_models.cpp

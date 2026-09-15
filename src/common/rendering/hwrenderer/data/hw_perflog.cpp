@@ -89,6 +89,14 @@ EXTERN_CVAR(Float, r_emissivevolumes_brightness)
 EXTERN_CVAR(Int, r_emissivevolumes_test)
 EXTERN_CVAR(Int, r_emissivevolumes_steps)	// [EMISSIVEVOLUMES] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Int, r_emissivevolumes_resolution)
+EXTERN_CVAR(Bool, r_exposureimpulse)	// [EXPOSUREIMPULSE] hw_exposureimpulse.cpp
+EXTERN_CVAR(Int, r_exposureimpulse_look)
+EXTERN_CVAR(Bool, r_exposureimpulse_comfort)
+EXTERN_CVAR(Float, r_exposureimpulse_strength)
+EXTERN_CVAR(Float, r_exposureimpulse_cap)
+EXTERN_CVAR(Float, r_exposureimpulse_recovery_scale)
+EXTERN_CVAR(Bool, r_exposureimpulse_holdbeams)
+EXTERN_CVAR(Int, r_exposureimpulse_test)
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -303,6 +311,11 @@ namespace
 				"each number's largest frame in the window: volumes alive, volumes in the frame's list (at most 32), and volumes refused "
 				"(the pool full, no definition on this machine, or a class \"Volumetric flashes\" does not draw); emissivelights the "
 				"effect lights they handed over.\n\n";
+			// [EXPOSUREIMPULSE] The flash blindness names, on a legend line of their own.
+			out << "Legend (flash blindness): pp.exposureimpulse (gpu_ms) is the wash per eye -- one full-screen draw, and on a burst's "
+				"first draw a one-texel copy of the exposure meter -- only while a wash is on screen. fx.exposureimpulse (cpu_fx_ms) is its "
+				"CPU work on frames with flashes or a live wash: the queue, each flash's sight ray and the envelope. exposureimpulselive "
+				"on the block line is 1 when the last frame drew a wash.\n\n";
 			// [LIGHTSHADOWS] The light shadow names, on a legend line of their own.
 			out << "Legend (light shadows): gpu_ms shadowmap is the shadow map pass (once a frame, both eyes share it; only while it "
 				"runs). load shadowlights=rows/asked is the largest frame's shadow-map rows (effect light rows included) and, of them, "
@@ -380,6 +393,12 @@ namespace
 			(int)*r_emissivevolumes, (int)*r_emissivevolumes_length, (int)*r_emissivevolumes_motion, (int)*r_emissivevolumes_steps,
 			(int)*r_emissivevolumes_resolution, (int)*r_emissivevolumes_max, (int)*r_emissivevolumes_light,
 			(double)(float)*r_emissivevolumes_brightness, (int)*r_emissivevolumes_test);
+		// [EXPOSUREIMPULSE] And the flash blindness switches, with whether a wash is live, so a pp.exposureimpulse /
+		// fx.exposureimpulse before/after labels itself.
+		out.AppendFormat(" r_exposureimpulse=%d r_exposureimpulse_look=%d r_exposureimpulse_comfort=%d r_exposureimpulse_strength=%g r_exposureimpulse_cap=%g r_exposureimpulse_recovery_scale=%g r_exposureimpulse_holdbeams=%d r_exposureimpulse_test=%d exposureimpulselive=%d",
+			(int)*r_exposureimpulse, (int)*r_exposureimpulse_look, (int)*r_exposureimpulse_comfort, (double)(float)*r_exposureimpulse_strength,
+			(double)(float)*r_exposureimpulse_cap, (double)(float)*r_exposureimpulse_recovery_scale, (int)*r_exposureimpulse_holdbeams,
+			(int)*r_exposureimpulse_test, (int)hw_postprocess.exposureimpulse.Live());
 		// [LIGHTSHADOWS] And the light shadow switches, so a shadowmap / scene.* before/after labels itself. vk_raytrace is looked
 		// up by name (the Vulkan backend defines it); raytraced is what this session's shaders really do.
 		{
