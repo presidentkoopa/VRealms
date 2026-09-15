@@ -838,6 +838,7 @@ PPGLTextureBackend *GLPPRenderState::GetGLTexture(PPTexture *texture)
 		case PixelFormat::R32f: glformat = GL_R32F; break;
 		case PixelFormat::Rg16f: glformat = GL_RG16F; break;
 		case PixelFormat::Rgba16_snorm: glformat = GL_RGBA16_SNORM; break;
+		case PixelFormat::Rgba32f: glformat = GL_RGBA32F; break;	// [SMOKE_TEMPORAL]
 		}
 
 		if (texture->Data)

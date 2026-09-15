@@ -38,6 +38,7 @@
 #include "r_utility.h"
 
 #include "p_visualthinker.h"
+#include "hw_perflog.h"		// [PERFLOG] E9: think time in the perf log
 
 static int ThinkCount, ClientSideThinkCount;
 static cycle_t ThinkCycles, ClientSideThinkCycles;
@@ -260,6 +261,11 @@ void FThinkerCollection::RunThinkers(FLevelLocals *Level)
 	}
 
 	ThinkCycles.Unclock();
+
+	// [PERFLOG] E9: this run's think clock and thinkers -- "stat think"'s numbers -- for the perf log, only while it is on.
+	// Measurement only: nothing here changes what the playsim does.
+	if (PerfLog::ThinkWanted())
+		PerfLog::AddThinkSample(false, ThinkCycles.TimeMS(), ThinkCount);
 }
 
 //==========================================================================
@@ -462,6 +468,10 @@ void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
 	}
 
 	ClientSideThinkCycles.Unclock();
+
+	// [PERFLOG] E9: the same for the client-side thinkers.
+	if (PerfLog::ThinkWanted())
+		PerfLog::AddThinkSample(true, ClientSideThinkCycles.TimeMS(), ClientSideThinkCount);
 }
 
 //==========================================================================

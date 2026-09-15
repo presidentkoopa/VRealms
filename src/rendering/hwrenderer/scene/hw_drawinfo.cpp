@@ -3147,7 +3147,12 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 			// No occluding particle alive: the additive draw exactly as before 2d.
 			state.SetRenderStyle(STYLE_Add);
 			state.SetVertexBuffer(particles->GetVertexBuffer(), 0, 0);
-			state.Draw(DT_Triangles, 0, particles->GetVertexCount());
+			// [PARTICLEWINDOW] E1: only the runs of slots a record can still draw in, in slot order (hw_gpuparticlewindow.h) --
+			// with r_gpuparticles_window off, the whole ring in one draw, as before.
+			GpuParticleWindow::SlotRange ranges[GpuParticleWindow::MAX_RANGES];
+			const int rangeCount = particles->GetDrawRanges(levelTime, false, ranges, GpuParticleWindow::MAX_RANGES);
+			for (int i = 0; i < rangeCount; i++)
+				state.Draw(DT_Triangles, (int)(ranges[i].First * GpuParticleBuffer::VERTICES_PER_RECORD), (int)(ranges[i].Count * GpuParticleBuffer::VERTICES_PER_RECORD));
 		}
 		else
 		{
@@ -3168,12 +3173,12 @@ void HWDrawInfo::RenderTranslucent(FRenderState &state)
 			state.SetRenderStyle(premultipliedStyle);
 			state.SetVertexBuffer(particles->GetVertexBuffer(), 0, 0);
 
-			const int vertexCount = particles->GetVertexCount();
-			const int oldestVertex = (int)particles->GetOldestSlot() * (int)GpuParticleBuffer::VERTICES_PER_RECORD;
-			if (vertexCount - oldestVertex > 0)
-				state.Draw(DT_Triangles, oldestVertex, vertexCount - oldestVertex);
-			if (oldestVertex > 0)
-				state.Draw(DT_Triangles, 0, oldestVertex);
+			// [PARTICLEWINDOW] E1: the same two parts, [oldest, end) then [0, oldest), cut to the runs of slots a record can still
+			// draw in (hw_gpuparticlewindow.h) -- with r_gpuparticles_window off, exactly those two draws, as before.
+			GpuParticleWindow::SlotRange ranges[GpuParticleWindow::MAX_RANGES];
+			const int rangeCount = particles->GetDrawRanges(levelTime, true, ranges, GpuParticleWindow::MAX_RANGES);
+			for (int i = 0; i < rangeCount; i++)
+				state.Draw(DT_Triangles, (int)(ranges[i].First * GpuParticleBuffer::VERTICES_PER_RECORD), (int)(ranges[i].Count * GpuParticleBuffer::VERTICES_PER_RECORD));
 		}
 		// [DEBRISPOOL] The debris pool's billboards, with the same effect, blend and depth, after the ring (not sorted
 		// against it). DebrisPool::DrawBillboards binds its own quad buffer; the vertex data is restored below.

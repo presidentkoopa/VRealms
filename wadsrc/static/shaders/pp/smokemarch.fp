@@ -73,6 +73,41 @@ layout(binding=8) uniform sampler2D EmissiveVolumeList;	// EMISSIVE_VOLUMES_DRAW
 //       path through its glow, dimmed by the haze in front of it and by soot (the light grid's w).
 // ============================================================================
 
+// [SMOKE_TEMPORAL] SMOKE_TEMPORAL (with none of the defines above): the march for temporal accumulation (PPSmokeVolume,
+// smoketemporal.fp, "Engine docs/SMOKE_TEMPORAL_E3_IMPL_NOTES.md"). The light and the transmittance are the march's, sample for
+// sample; the differences:
+//   - the first sample's offset turns by JitterOffset every frame (this eye's golden-ratio sequence on the same screen pattern);
+//   - the alpha carries two more things for the resolve: the ray's REPRESENTATIVE DEPTH -- the opacity-weighted mean distance of
+//     its smoke, in view depth -- so the resolve finds this texel's smoke in last frame's view, and its CHANGE LEVEL -- how much
+//     of the smoke the ray can reach the simulation's last step changed (a round carving it, a blast shoving it), each place
+//     weighed by how much of the ray it could hide at the larger of the two states -- so the resolve trusts the history less
+//     there. alpha = T + 2 x (code + 256 x level): code 0..255 in sixteenths of a doubling of depth, level 0..3. T comes back
+//     within a float32 step of the alpha (at most 1.2e-4); a ray that met no smoke has T exactly 1 and light exactly 0, so the
+//     resolve still reads a clear texel as (0, 0, 0, 1). Its target is RGBA32F.
+// Without the define this file is the march, token for token.
+#if defined(SMOKE_TEMPORAL)
+const float SMOKE_TEMPORAL_CODES_PER_DOUBLING = 16.0;	// smoketemporal.fp
+const float SMOKE_TEMPORAL_CHANGE_FLOOR = 0.05;	// a change in density thinner than this counts against this, not against itself
+const float SMOKE_TEMPORAL_CHANGE_FULL = 0.5;	// the share of the reachable smoke that changed which reads as the top level
+
+// The two simulation states at a cell, and the density DensityAt gives there (its same expression).
+float DensityStatesAt(vec3 cell, out float previous, out float latest)
+{
+	vec3 halfTexel = 0.5 / GridSize;
+	vec3 uvw = clamp(cell / GridSize, halfTexel, vec3(1.0) - halfTexel);
+	previous = texture(DensityPrevious, uvw).r;
+	latest = texture(DensityLatest, uvw).r;
+	return max(mix(previous, latest, TicFrac), 0.0);
+}
+
+float SmokeTemporalPack(float transmittance, float depth, float changeShare)
+{
+	float code = transmittance < 1.0 ? clamp(floor(log2(max(depth, 1.0)) * SMOKE_TEMPORAL_CODES_PER_DOUBLING + 0.5), 0.0, 255.0) : 0.0;
+	float level = clamp(floor(changeShare / SMOKE_TEMPORAL_CHANGE_FULL * 3.0 + 0.5), 0.0, 3.0);
+	return clamp(transmittance, 0.0, 1.0) + 2.0 * (code + 256.0 * level);
+}
+#endif
+
 const float SMOKE_PHASE_G = 0.45;	// the phase's anisotropy: haze scatters forward
 const float SMOKE_LIGHT_MAX = 4.0;	// the most light a sample takes from the grid, per channel
 
@@ -610,6 +645,9 @@ void main()
 	int count = clamp(int(ceil(span / max(MinStep, 0.001))), 1, max(StepCount, 1));
 	float dt = span / float(count);
 	float jitter = InterleavedGradientNoise(gl_FragCoord.xy);
+#if defined(SMOKE_TEMPORAL)
+	jitter = fract(jitter + JitterOffset);	// [SMOKE_TEMPORAL] a new offset every frame
+#endif
 
 	// [13d] The way scattered light leaves toward this eye, in the volume's axes (GL x, z, y), and the light grid's
 	// half texel.
@@ -618,20 +656,45 @@ void main()
 
 	float transmittance = 1.0;
 	vec3 light = vec3(0.0);
+#if defined(SMOKE_TEMPORAL)
+	float depthSum = 0.0;	// [SMOKE_TEMPORAL] each sample's distance x its share of the ray's opacity
+	float changeSum = 0.0;	// [SMOKE_TEMPORAL] each sample's reach x the share of its density the last simulation step changed
+	float reachSum = 0.0;
+#endif
 	for (int i = 0; i < count; i++)
 	{
 		float t = t0 + (float(i) + jitter) * dt;
 		vec3 cell = CellAt(rd * t);
+#if defined(SMOKE_TEMPORAL)
+		float previousDensity;
+		float latestDensity;
+		float density = DensityStatesAt(cell, previousDensity, latestDensity);
+		// [SMOKE_TEMPORAL] The reach: how much of the ray this step could hide at the larger state, behind what lies in front.
+		float largest = max(max(previousDensity, latestDensity), 0.0);
+		float reach = transmittance * min(largest * Extinction * dt, 1.0);
+		changeSum += reach * abs(latestDensity - previousDensity) / max(largest, SMOKE_TEMPORAL_CHANGE_FLOOR);
+		reachSum += reach;
+#else
 		float density = DensityAt(cell);
+#endif
 		if (density <= 0.0)
 			continue;
 		float stepTransmittance = exp(-density * Extinction * dt);
 		light += transmittance * (1.0 - stepTransmittance) * LightColor * LightAt(cell, towardEye, lightHalfTexel);
+#if defined(SMOKE_TEMPORAL)
+		depthSum += transmittance * (1.0 - stepTransmittance) * t;
+#endif
 		transmittance *= stepTransmittance;
 		if (transmittance < 1.0 / 256.0)
 			break;
 	}
+#if defined(SMOKE_TEMPORAL)
+	// [SMOKE_TEMPORAL] The opacity shares sum to 1 - T, so the first is the mean distance of the smoke (/ stepLen: in view depth);
+	// the second the share of the reachable smoke that changed.
+	FragColor = vec4(light, SmokeTemporalPack(transmittance, depthSum / max(1.0 - transmittance, 1e-6) / stepLen, changeSum / max(reachSum, 1e-6)));
+#else
 	FragColor = vec4(light, transmittance);
+#endif
 }
 
 #endif

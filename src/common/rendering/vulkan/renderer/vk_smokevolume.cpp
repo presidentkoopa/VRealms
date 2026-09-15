@@ -32,9 +32,16 @@
 #include "hw_effectlightbuffer.h"			// [EFFECTLIGHTS] LD: the effect light records and bins
 #include "hw_framecompute.h"
 #include "hw_perflog.h"
+#include "hw_shadowmap.h"	// [SMOKELIGHTCULL] E6: IShadowMap::UpdateSerial, in a fill's inputs
 #include "i_time.h"
 #include "printf.h"
 #include "v_text.h"
+
+// [SMOKELIGHTCULL] E6: r_smoke_light_cull -- the smoke light grid's fill dispatches only what can change (hw_smoketilecover.h):
+// nothing on a frame nothing it reads changed, the ambient pass over the tiles whose light can have changed, each light over the
+// active tiles in its box. The grid comes out bit for bit as the whole fill leaves it ("Engine docs/OPTIMIZATION_E9_E1_E6_IMPL_NOTES.md",
+// the mirror), so this is the perf log's A/B switch and a way back, not a look. Renderer-read every frame in Run; not archived.
+CVARD(Bool, r_smoke_light_cull, true, CVAR_GLOBALCONFIG, "the smoke light grid fills only what can change -- the same light, less GPU work (Vulkan; an A/B switch)")
 
 namespace
 {
@@ -149,6 +156,10 @@ VulkanImageView* VkSmokeVolume::GetVelocityView(int stepsAgo) const
 void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 {
 	SmokeVolumeBackendStatus& status = SmokeVolumeStatus();
+	// [SMOKELIGHTCULL] E6: no light grid fill this frame until RunLight says otherwise.
+	status.LightFill = 0;
+	status.LightCells = 0;
+	status.LightCellsUncut = 0;
 
 	if (!frame.Active)
 	{
@@ -206,6 +217,9 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 	// touches them. Nothing is recorded when every volume already is.
 	RestoreComputeLayouts();
 
+	// [SMOKELIGHTCULL] E6: last frame's copy of the tile map into the mirror, before any tile work of this frame.
+	TakeTileReadback();
+
 	// [13d] The light grid at this frame's light quality: made on the volume's first frame, re-made alone when
 	// r_smoke_light_quality changes. The drawing is published only while it is held (SetupSmokeVolume).
 	EnsureLightGrid(frame.Light);
@@ -246,6 +260,11 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 			RunStep(frame, i);
 	}
 
+	// [SMOKELIGHTCULL] E6: the tile map this frame's tile work left, copied for the next frame's mirror -- only after tile work,
+	// and only while the cull is on.
+	if (r_smoke_light_cull && mLightCull.WantsCopy())
+		QueueTileReadback();
+
 	// [13c] Smoke to draw this frame: the images the drawing reads go into the layout a post-process
 	// read binds (VkTextureManager::GetTexture hands them out only then). With no smoke nothing is
 	// read, nothing moves, and nothing is recorded.
@@ -266,12 +285,12 @@ void VkSmokeVolume::Run(const SmokeVolumeFrame& frame)
 //
 //-----------------------------------------------------------------------------
 
-bool VkSmokeVolume::CreateVolume(Volume& volume, VkFormat format, int width, int height, int depth, const char* name)
+bool VkSmokeVolume::CreateVolume(Volume& volume, VkFormat format, int width, int height, int depth, const char* name, VkImageUsageFlags extraUsage)
 {
 	volume.Image = ImageBuilder()
 		.Size3D(width, height, depth)
 		.Format(format)
-		.Usage(VolumeUsage)
+		.Usage(VolumeUsage | extraUsage)	// [SMOKELIGHTCULL] E6: extraUsage
 		.DebugName(name)
 		.TryCreate(fb->device.get());
 	if (!volume.Image)
@@ -350,7 +369,7 @@ bool VkSmokeVolume::Allocate(int quality, const SmokeGridSpec& grid)
 			CreateVolume(mVelocity[1], VK_FORMAT_R16G16B16A16_SFLOAT, grid.SizeX, grid.SizeY, grid.SizeZ, "SmokeVolume.Velocity1") &&
 			CreateVolume(mSolidMask, VK_FORMAT_R8_UNORM, grid.SizeX, grid.SizeY, grid.SizeZ, "SmokeVolume.SolidMask") &&
 			CreateVolume(mTileContent, VK_FORMAT_R8_UNORM, tiles[0], tiles[1], tiles[2], "SmokeVolume.TileContent") &&
-			CreateVolume(mTileActive, VK_FORMAT_R8_UNORM, tiles[0], tiles[1], tiles[2], "SmokeVolume.TileActive");
+			CreateVolume(mTileActive, VK_FORMAT_R8_UNORM, tiles[0], tiles[1], tiles[2], "SmokeVolume.TileActive", VK_IMAGE_USAGE_TRANSFER_SRC_BIT);	// [SMOKELIGHTCULL] E6: read back
 	}
 	catch (const std::exception& e)
 	{
@@ -424,6 +443,11 @@ void VkSmokeVolume::Release(const char* why)
 		volume->Layout = VK_IMAGE_LAYOUT_UNDEFINED;	// [13c]
 	}
 	deleteList->Add(std::move(mStaging));
+	// [SMOKELIGHTCULL] E6: the tile map's host copy, and everything the cull knew about this volume.
+	deleteList->Add(std::move(mTileReadback));
+	mTileReadbackBytes = 0;
+	mTileReadbackPending = false;
+	mLightCull.Release();
 
 	Printf("SmokeVolume: released (%s) -- %llu bytes of texels freed\n", why, (unsigned long long)mTexelBytes);
 
@@ -461,6 +485,7 @@ void VkSmokeVolume::ClearContents()
 	for (Volume* volume : { &mDensityHeat[0], &mDensityHeat[1], &mVelocity[0], &mVelocity[1], &mTileContent, &mTileActive })
 		ClearImage(*volume, 0.0f);
 	mLatest = 0;
+	mLightCull.OnClear(mTiles);	// [SMOKELIGHTCULL] E6: the smoke and both tile maps are 0
 }
 
 // A new box: contents empty and the mask ALL SOLID, until the CPU's tiles open it.
@@ -800,6 +825,9 @@ void VkSmokeVolume::Shift(const int shift[3])
 	const int none[3] = { 0, 0, 0 };
 	DispatchTiles(0, latest, none, none);
 	DispatchTiles(1, latest, none, none);
+	// [SMOKELIGHTCULL] E6: the mirror moves the same whole tiles.
+	const int byTiles[3] = { shift[0] / SMOKE_TILE_CELLS, shift[1] / SMOKE_TILE_CELLS, shift[2] / SMOKE_TILE_CELLS };
+	mLightCull.OnShift(byTiles);
 
 	commands->PopGroup();
 
@@ -869,6 +897,7 @@ void VkSmokeVolume::RunStep(const SmokeVolumeFrame& frame, int stepIndex)
 				tileMax[axis] = std::min((regionMax[axis] + SMOKE_TILE_CELLS - 1) / SMOKE_TILE_CELLS + 1, mTiles[axis]);
 			}
 			DispatchTiles(2, latest, tileMin, tileMax);
+			mLightCull.OnMark(tileMin, tileMax);	// [SMOKELIGHTCULL] E6
 		}
 	}
 
@@ -904,6 +933,7 @@ void VkSmokeVolume::RunStep(const SmokeVolumeFrame& frame, int stepIndex)
 	const int none[3] = { 0, 0, 0 };
 	DispatchTiles(0, next, none, none);
 	DispatchTiles(1, next, none, none);
+	mLightCull.OnEndStep();	// [SMOKELIGHTCULL] E6
 	mLatest = next;
 
 	commands->PopGroup();
@@ -1034,6 +1064,7 @@ bool VkSmokeVolume::EnsureLightGrid(const SmokeLightFrame& light)
 	mLightQuality = quality;
 	mLightTexelBytes = texelBytes;
 	mRefusedLightQuality = 0;
+	mLightCull.OnGridMade();	// [SMOKELIGHTCULL] E6: its cells hold 0 -- the next fill writes every cell
 	mAmbientSerialUploaded = 0;
 
 	Printf("SmokeVolume: light grid quality %d -- %d x %d x %d cells at %.2f map units (%d a tile), %llu bytes of texels\n",
@@ -1138,6 +1169,32 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 
 	UploadAmbient(light);
 
+	// [SMOKELIGHTCULL] E6 (hw_smoketilecover.h): what this fill has to dispatch -- nothing when nothing it reads changed since the
+	// last fill, pass 0 over the tiles whose light can have changed, each light over the active tiles in its box. The grid comes
+	// out bit for bit as the whole fill leaves it. With r_smoke_light_cull off: the whole fill, as before.
+	SmokeLightCull::AmbientKey ambientKey;
+	ambientKey.GridSize[0] = mLightGrid.SizeX;
+	ambientKey.GridSize[1] = mLightGrid.SizeY;
+	ambientKey.GridSize[2] = mLightGrid.SizeZ;
+	ambientKey.CellsPerTile = mLightGrid.CellsPerTile;
+	ambientKey.CellSize = mLightGrid.CellSize;
+	ambientKey.AmbientSerial = mAmbientSerialUploaded;
+	ambientKey.AmbientScale = light.AmbientScale;
+	ambientKey.SootLive = frame.Sim.SootLive;
+	const bool comparable = BuildLightInputs(frame, shadowMap);
+	SmokeLightCull::Plan plan;
+	mLightCull.BeginFill(r_smoke_light_cull, ambientKey, mLightInputs.data(), mLightInputs.size(), comparable, plan);
+	SmokeVolumeBackendStatus& status = SmokeVolumeStatus();
+	if (plan.Skip)
+	{
+		status.LightFill = 2;
+		status.LightCells = 0;
+		status.LightCellsUncut = mLastFillCellsUncut;	// the same lights over the same grid as the last fill
+		if (timed)
+			PerfLog::AddCpuSample("fx.smokelight", (double)(I_nsTime() - startNs) / 1e6);
+		return;
+	}
+
 	// Written before this frame's first dispatch with it, every frame: the shadow map image may have been made
 	// again since the last one (VkTextureManager::BeginFrame), and nothing recorded earlier this frame uses the set.
 	VulkanSampler* sampler = mCompute->GetVolumeSampler();
@@ -1170,8 +1227,12 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 	ambient.Color[3] = frame.Sim.SootLive;	// [13e] pass 0 works out the soot darkness only while soot may be in the volume
 	// [13F] With surface light live this frame (glow, sweep bands, darkness, a passed look) the same pass through the
 	// SMOKE_SURFACE_LIGHT variant; otherwise, or when the variant is refused, pass 0 as it was.
-	if (!DispatchSurfaceAmbient(frame, &ambient))
-		mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &ambient, Groups(size[0]), Groups(size[1]), Groups(size[2]));
+	// [SMOKELIGHTCULL] E6: over the plan's boxes -- the whole grid, as always, unless the fill culls.
+	mFillCells = 0;
+	mFillCellsUncut = (uint64_t)size[0] * (uint64_t)size[1] * (uint64_t)size[2];
+	const bool surfaceDispatched = DispatchSurfaceAmbient(frame, &ambient, plan.Pass0, plan.Pass0Count);
+	if (!surfaceDispatched)
+		DispatchLightBoxes(mLightProgram.get(), mLightSet.get(), &ambient, plan.Pass0, plan.Pass0Count);
 
 	// Pass 1: each light, over the cells whose centre lies inside its sphere's box.
 	const int count = light.Lights != nullptr ? std::clamp(light.LightCount, 0, SMOKE_LIGHTS_MAX) : 0;
@@ -1212,10 +1273,18 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 		constants.Cone[1] = record.SpotCosInner;
 		constants.Cone[2] = (float)cellSize;
 		constants.Cone[3] = light.AmbientScale;
-		mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &constants,
-			Groups(constants.RegionMax[0] - constants.RegionMin[0]),
-			Groups(constants.RegionMax[1] - constants.RegionMin[1]),
-			Groups(constants.RegionMax[2] - constants.RegionMin[2]));
+		// [SMOKELIGHTCULL] E6: over the active tiles in its box only (the box itself unless the fill culls); a box with no active
+		// tile, no dispatch.
+		SmokeTileBox region;
+		for (int axis = 0; axis < 3; axis++)
+		{
+			region.Min[axis] = constants.RegionMin[axis];
+			region.Max[axis] = constants.RegionMax[axis];
+		}
+		mFillCellsUncut += region.Count();
+		SmokeTileBox boxes[SmokeLightCull::LIGHT_BOXES];
+		const int boxCount = mLightCull.ActiveCells(region, boxes, SmokeLightCull::LIGHT_BOXES);
+		DispatchLightBoxes(mLightProgram.get(), mLightSet.get(), &constants, boxes, boxCount);
 	}
 
 	// [EFFECTLIGHTS] LD: pass 2, the effect lights, in the same group -- only on a frame one reaches the grid.
@@ -1224,8 +1293,160 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 
 	commands->PopGroup();
 
+	// [SMOKELIGHTCULL] E6: what the next fill is compared with (a refused surface light variant is never compared), and this
+	// fill's cells for the perf log.
+	mLightCull.EndFill(!light.Surface.Live || surfaceDispatched);
+	mLastFillCellsUncut = mFillCellsUncut;
+	status.LightFill = 1;
+	status.LightCells = mFillCells;
+	status.LightCellsUncut = mFillCellsUncut;
+
 	if (timed)
 		PerfLog::AddCpuSample("fx.smokelight", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//-----------------------------------------------------------------------------
+//
+// [SMOKELIGHTCULL] E6: light only the smoke that exists (hw_smoketilecover.h; "Engine docs/OPTIMIZATION_E9_E1_E6_IMPL_NOTES.md")
+//
+//-----------------------------------------------------------------------------
+
+// One pass of smoke_light.comp over each box of light cells in turn: the push constants as given but for the region. A light cell
+// reads and writes only itself, so boxes change no value, and one box over a pass's whole region is exactly the dispatch the pass
+// always made. Adds the cells the boxes cover to this fill's count.
+void VkSmokeVolume::DispatchLightBoxes(VkComputeProgram* program, VulkanDescriptorSet* set, const void* constants, const SmokeTileBox* boxes, int count)
+{
+	SmokeLightConstants boxed;
+	memcpy(&boxed, constants, sizeof(boxed));
+	for (int i = 0; i < count; i++)
+	{
+		const SmokeTileBox& box = boxes[i];
+		if (box.IsEmpty())
+			continue;
+		for (int axis = 0; axis < 3; axis++)
+		{
+			boxed.RegionMin[axis] = box.Min[axis];
+			boxed.RegionMax[axis] = box.Max[axis];
+		}
+		mCompute->Dispatch(program, set, &boxed,
+			Groups(box.Max[0] - box.Min[0]),
+			Groups(box.Max[1] - box.Min[1]),
+			Groups(box.Max[2] - box.Min[2]));
+		mFillCells += box.Count();
+	}
+}
+
+// Everything this frame's fill reads that neither the tile maps nor the ambient key show, as bytes (mLightInputs), so a fill whose
+// inputs equal the last fill's can be skipped: the dynamic light records as pass 1 takes them; the shadow map's update serial and
+// image while a light has a row in it; the surface light pass 0's variant reads (the columns by their serial, the records byte for
+// byte). False while effect lights reach the grid: they move every frame, and their light has to leave the grid with them.
+bool VkSmokeVolume::BuildLightInputs(const SmokeVolumeFrame& frame, const VkTextureImage& shadowMap)
+{
+	const SmokeLightFrame& light = frame.Light;
+	std::vector<uint8_t>& out = mLightInputs;
+	out.clear();
+	const auto put = [&out](const void* data, size_t bytes)
+	{
+		const uint8_t* at = (const uint8_t*)data;
+		out.insert(out.end(), at, at + bytes);
+	};
+
+	const int count = light.Lights != nullptr ? std::clamp(light.LightCount, 0, SMOKE_LIGHTS_MAX) : 0;
+	put(&count, sizeof(count));
+	bool rows = false;
+	for (int i = 0; i < count; i++)
+	{
+		put(&light.Lights[i], sizeof(SmokeLightRecord));
+		rows = rows || light.Lights[i].ShadowRow >= 0;
+	}
+	if (rows)
+	{
+		const uint64_t shadow[2] = { IShadowMap::UpdateSerial, (uint64_t)(uintptr_t)shadowMap.View.get() };
+		put(shadow, sizeof(shadow));
+	}
+
+	const SmokeSurfaceLightFrame& surface = light.Surface;
+	const uint8_t live = surface.Live ? 1 : 0;
+	put(&live, sizeof(live));
+	if (surface.Live)
+	{
+		put(&surface.ColumnSerial, sizeof(surface.ColumnSerial));
+		put(&surface.ColumnFloats, sizeof(surface.ColumnFloats));
+		put(&surface.RecordFloats, sizeof(surface.RecordFloats));
+		if (surface.Records != nullptr)
+			put(surface.Records, surface.RecordFloats * sizeof(float));
+	}
+	return light.EffectLights.LightCount <= 0;
+}
+
+// After this frame's tile work: TileActive copied into a host-visible buffer (made on first use) for the next frame's mirror.
+// Recorded in the compute section, outside any render pass, while the tile map is GENERAL. A device that cannot make the buffer
+// says so once; the mirror then stays the superset the tile work keeps -- still exact, only wider.
+void VkSmokeVolume::QueueTileReadback()
+{
+	if (!IsAllocated() || !mTileActive.Image || mTileActive.Layout != VK_IMAGE_LAYOUT_GENERAL)
+		return;
+	const size_t bytes = (size_t)mTiles[0] * (size_t)mTiles[1] * (size_t)mTiles[2];
+	if (bytes == 0)
+		return;
+	if (!mTileReadback || mTileReadbackBytes != bytes)
+	{
+		fb->GetCommands()->DrawDeleteList->Add(std::move(mTileReadback));
+		mTileReadbackBytes = 0;
+		mTileReadbackPending = false;
+		try
+		{
+			mTileReadback = BufferBuilder()
+				.Usage(VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU)
+				.Size(bytes)
+				.DebugName("SmokeVolume.TileReadback")
+				.Create(fb->device.get());
+		}
+		catch (const std::exception& e)
+		{
+			Printf(TEXTCOLOR_RED "SmokeVolume: %s\n", e.what());
+			mTileReadback.reset();
+		}
+		if (!mTileReadback)
+		{
+			if (!mTileReadbackWarned)
+			{
+				mTileReadbackWarned = true;
+				Printf(TEXTCOLOR_RED "SmokeVolume: no tile map readback buffer -- the smoke light cull keeps a wider tile map (logged once)\n");
+			}
+			return;
+		}
+		mTileReadbackBytes = bytes;
+	}
+
+	VkBufferImageCopy region = {};
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = (uint32_t)mTiles[0];
+	region.imageExtent.height = (uint32_t)mTiles[1];
+	region.imageExtent.depth = (uint32_t)mTiles[2];
+	mCompute->BeginWork();
+	fb->GetCommands()->GetDrawCommands()->copyImageToBuffer(mTileActive.Image->image, VK_IMAGE_LAYOUT_GENERAL, mTileReadback->buffer, 1, &region);
+	mLightCull.CopyRecorded();
+	mTileReadbackPending = true;
+}
+
+// At the start of a Run, before any tile work: the copy the last frame recorded -- finished by now, as UploadAmbient relies on for
+// its staging buffer -- into the mirror. SmokeLightCull::TakeCopy refuses it if tile work was recorded after it.
+void VkSmokeVolume::TakeTileReadback()
+{
+	if (!mTileReadbackPending)
+		return;
+	mTileReadbackPending = false;
+	if (!mTileReadback || !IsAllocated() || mTileReadbackBytes == 0)
+		return;
+	void* data = mTileReadback->Map(0, mTileReadbackBytes);
+	if (data == nullptr)
+		return;
+	mLightCull.TakeCopy((const uint8_t*)data, mTileReadbackBytes);
+	mTileReadback->Unmap();
 }
 
 //-----------------------------------------------------------------------------
@@ -1329,10 +1550,17 @@ void VkSmokeVolume::DispatchEffectLights(const SmokeVolumeFrame& frame)
 	constants.SpotDirection[3] = -1.0f;
 	constants.Cone[2] = (float)mLightGrid.CellSize;
 	constants.Cone[3] = light.AmbientScale;
-	mCompute->Dispatch(mEffectLightProgram.get(), mEffectLightSet.get(), &constants,
-		Groups(constants.RegionMax[0] - constants.RegionMin[0]),
-		Groups(constants.RegionMax[1] - constants.RegionMin[1]),
-		Groups(constants.RegionMax[2] - constants.RegionMin[2]));
+	// [SMOKELIGHTCULL] E6: over the active tiles in the region only (the region itself unless the fill culls).
+	SmokeTileBox region;
+	for (int axis = 0; axis < 3; axis++)
+	{
+		region.Min[axis] = constants.RegionMin[axis];
+		region.Max[axis] = constants.RegionMax[axis];
+	}
+	mFillCellsUncut += region.Count();
+	SmokeTileBox boxes[SmokeLightCull::LIGHT_BOXES];
+	const int boxCount = mLightCull.ActiveCells(region, boxes, SmokeLightCull::LIGHT_BOXES);
+	DispatchLightBoxes(mEffectLightProgram.get(), mEffectLightSet.get(), &constants, boxes, boxCount);
 }
 
 //-----------------------------------------------------------------------------
@@ -1429,7 +1657,7 @@ bool VkSmokeVolume::UploadSurfaceBuffer(std::unique_ptr<VulkanBuffer>& buffer, s
 // work groups as pass 0, bindings 0-6 naming what the light set names this frame, 7 and 8 the surface buffers bound to exactly
 // this frame's bytes. Only from RunLight, after its checks and inside fx.smokelight. False, with nothing dispatched, when surface
 // light is not live, the frame's buffers do not fit the light grid held, or the program, the set or a buffer is refused.
-bool VkSmokeVolume::DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const void* ambientConstants)
+bool VkSmokeVolume::DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const void* ambientConstants, const SmokeTileBox* boxes, int boxCount)
 {
 	const SmokeSurfaceLightFrame& surface = frame.Light.Surface;
 	const size_t columns = (size_t)std::max(mLightGrid.SizeX, 0) * (size_t)std::max(mLightGrid.SizeY, 0);
@@ -1481,8 +1709,7 @@ bool VkSmokeVolume::DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const 
 		.AddBuffer(mSurfaceSet.get(), 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, mSurfaceRecords.get(), 0, recordBytes)
 		.Execute(fb->device.get());
 
-	mCompute->Dispatch(mSurfaceProgram.get(), mSurfaceSet.get(), ambientConstants,
-		Groups(mLightGrid.SizeX), Groups(mLightGrid.SizeY), Groups(mLightGrid.SizeZ));
+	DispatchLightBoxes(mSurfaceProgram.get(), mSurfaceSet.get(), ambientConstants, boxes, boxCount);	// [SMOKELIGHTCULL] E6
 	return true;
 }
 

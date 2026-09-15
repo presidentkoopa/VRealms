@@ -31,7 +31,8 @@ enum class PixelFormat
 	Rgba16f,
 	R32f,
 	Rg16f,
-	Rgba16_snorm
+	Rgba16_snorm,
+	Rgba32f		// [SMOKE_TEMPORAL] RGBA, a 32-bit float a channel: a target whose alpha carries more than a 16-bit float holds (PPSmokeVolume's temporal march)
 };
 
 enum class PostProcessUniformType

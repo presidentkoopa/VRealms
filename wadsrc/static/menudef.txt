@@ -2448,6 +2448,11 @@ OptionMenu DeveloperOptionsMenu protected
 	// smoother and costs more (perflog.txt: pp.smoke); 48 is the default. Read every frame.
 	// RS_Ballistics' "Ballistics & Effects" page mirrors this row. Vulkan only.
 	Slider "Smoke steps (32 = fastest, 48 = default, 96 = smoothest)", "r_smoke_steps", 32, 96, 16, 0
+	// [SMOKE_TEMPORAL] r_smoke_temporal -- each eye keeps the last frames of the smoke and blends each new
+	// frame in, so "Smoke steps" looks like several times as many after a few frames, for one cheap
+	// extra pass. Turn your head fast or strafe past a smoke edge to see there are no trails. On by
+	// default. Read every frame, so it changes live with this menu open. Vulkan only.
+	Option "Smoke temporal accumulation (faster smoothing)", "r_smoke_temporal", "OnOff"
 	// [13d] r_smoke_light_quality -- how finely the light inside the smoke is worked out (muzzle
 	// flashes, lamps and flashlights glowing in the haze): 1 = half the smoke grid's resolution
 	// (about 10 MB at the default smoke quality), 2 = three quarters (32 MB, the default), 3 = the

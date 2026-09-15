@@ -381,9 +381,127 @@ void PPSmokeVolume::UpdateTextures(int sceneWidth, int sceneHeight)
 	// with no beams or cones in the smoke these stay unmade.
 	CurveTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
 	BeamTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
+	// [SMOKE_TEMPORAL] The temporal march and each eye's history and depth: no memory until accumulation first runs. A new
+	// size starts every eye's history again.
+	TemporalMarchTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba32f };
+	for (int eye = 0; eye < 2; eye++)
+	{
+		TemporalHistory[eye] = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba16f };
+		TemporalPreviousDepth[eye] = { HalfViewport.width, HalfViewport.height, PixelFormat::R32f };
+		temporalEyes[eye].Valid = false;
+	}
 
 	lastWidth = sceneWidth;
 	lastHeight = sceneHeight;
+}
+
+// [SMOKE_TEMPORAL] A 4x4 inverse in double (cofactors; the same formula serves column- and row-major arrays). False when the
+// matrix is singular: no history is then trusted.
+static bool SmokeTemporalInverse(const double m[16], double out[16])
+{
+	double inv[16];
+	inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+	inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+	inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+	inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+	inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+	inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+	inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+	inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+	inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+	inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+	inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+	inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+	inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+	inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+	inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+	inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+	const double det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+	if (!(std::abs(det) > 1e-300))
+		return false;
+	for (int i = 0; i < 16; i++)
+		out[i] = inv[i] / det;
+	return true;
+}
+
+// [SMOKE_TEMPORAL] This eye's temporal march and resolve uniforms (see PPSmokeVolume), and this frame recorded as its history.
+bool PPSmokeVolume::PrepareTemporal(int eye, const SmokeMarchUniforms &march, SmokeTemporalMarchUniforms &marchOut, SmokeTemporalResolveUniforms &resolveOut)
+{
+	TemporalEye &history = temporalEyes[eye];
+	const uint64_t frame = screen->FrameCount;
+
+	double current[16], previous[16], previousInverse[16];
+	for (int i = 0; i < 16; i++)
+	{
+		current[i] = march.ViewToWorld[i];
+		previous[i] = history.ViewToWorld[i];
+	}
+
+	// The history is this eye's frame right before this one, at this size, in textures the backend still holds -- and the
+	// camera did not cut: an eye that moved or turned further in one frame than a head or a player does starts again.
+	bool valid = history.Valid && history.Frame + 1 == frame && history.Width == HalfViewport.width && history.Height == HalfViewport.height &&
+		TemporalHistory[eye].Backend != nullptr && TemporalPreviousDepth[eye].Backend != nullptr;
+	if (valid)
+	{
+		// ViewToWorld's translation is the eye; its third column the view's depth axis in the world (normalised: the view
+		// matrix carries the pixel stretch).
+		const double dx = current[12] - previous[12], dy = current[13] - previous[13], dz = current[14] - previous[14];
+		const double lengthNow = std::sqrt(current[8] * current[8] + current[9] * current[9] + current[10] * current[10]);
+		const double lengthThen = std::sqrt(previous[8] * previous[8] + previous[9] * previous[9] + previous[10] * previous[10]);
+		const double facing = (lengthNow > 0.0 && lengthThen > 0.0) ?
+			(current[8] * previous[8] + current[9] * previous[9] + current[10] * previous[10]) / (lengthNow * lengthThen) : -1.0;
+		if (!(dx * dx + dy * dy + dz * dz <= TEMPORAL_CUT_DISTANCE * TEMPORAL_CUT_DISTANCE) || !(facing >= TEMPORAL_CUT_COSINE) ||
+			!SmokeTemporalInverse(previous, previousInverse))
+			valid = false;
+	}
+
+	// The march: this eye's own, then the jitter's turn -- the golden-ratio sequence, the second eye half a turn apart, so each
+	// eye's frames fall between its earlier ones and the two eyes between each other's. Both blocks start zeroed, so every byte
+	// pushed is defined.
+	marchOut = SmokeTemporalMarchUniforms();
+	resolveOut = SmokeTemporalResolveUniforms();
+	memcpy(&marchOut, &march, sizeof(SmokeMarchUniforms));
+	const double turn = (double)history.Sequence * 0.6180339887498949 + (eye == 1 ? 0.5 : 0.0);
+	marchOut.JitterOffset = (float)(turn - std::floor(turn));
+
+	// The resolve: this eye's ray terms, and last frame's view of it -- previous view <- world <- this view, in double, so the
+	// eye's world position (tens of thousands of units) cancels before anything becomes a float.
+	resolveOut.TanHalfFov = march.TanHalfFov;
+	resolveOut.ProjOffset = march.ProjOffset;
+	resolveOut.HistoryValid = valid ? 1 : 0;
+	if (valid)
+	{
+		for (int column = 0; column < 4; column++)
+		{
+			for (int row = 0; row < 4; row++)
+			{
+				double value = 0.0;
+				for (int k = 0; k < 4; k++)
+					value += previousInverse[k * 4 + row] * current[column * 4 + k];
+				resolveOut.CurrentToPrevious[column * 4 + row] = (float)value;
+			}
+		}
+		resolveOut.PreviousTanHalfFov = history.TanHalfFov;
+		resolveOut.PreviousProjOffset = history.ProjOffset;
+	}
+	else
+	{
+		for (int i = 0; i < 16; i++)
+			resolveOut.CurrentToPrevious[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+		resolveOut.PreviousTanHalfFov = march.TanHalfFov;
+		resolveOut.PreviousProjOffset = march.ProjOffset;
+	}
+
+	// This frame is the next frame's history.
+	history.Valid = true;
+	history.Frame = frame;
+	history.Sequence++;
+	history.Width = HalfViewport.width;
+	history.Height = HalfViewport.height;
+	memcpy(history.ViewToWorld, march.ViewToWorld, sizeof(history.ViewToWorld));
+	history.TanHalfFov = march.TanHalfFov;
+	history.ProjOffset = march.ProjOffset;
+	return valid;
 }
 
 void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight)
@@ -445,10 +563,28 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	renderstate->SetNoBlend();
 	renderstate->Draw();
 
+	// [SMOKE_TEMPORAL] With r_smoke_temporal on (and the debug slice off) this eye's march turns its jitter and writes the
+	// temporal march texture, and 2b-2d below blend it with the eye's own history into MarchTexture: the blur, the curve,
+	// the composite and every pass after them read the accumulated march. Off: HEAD's draws exactly.
+	const int temporalEye = currentEye == 1 ? 1 : 0;
+	const bool temporal = r_smoke_temporal && marches[set].DebugSlice == 0;
+	SmokeTemporalMarchUniforms temporalMarch = {};
+	SmokeTemporalResolveUniforms temporalResolve = {};
+	if (temporal)
+		PrepareTemporal(temporalEye, marches[set], temporalMarch, temporalResolve);
+
 	// 2. The march, reading the volume the compute step keeps (PPExternalImage).
 	renderstate->Clear();
-	renderstate->Shader = &MarchShader;
-	renderstate->Uniforms.Set(marches[set]);
+	if (temporal)
+	{
+		renderstate->Shader = &MarchTemporalShader;
+		renderstate->Uniforms.Set(temporalMarch);
+	}
+	else
+	{
+		renderstate->Shader = &MarchShader;
+		renderstate->Uniforms.Set(marches[set]);
+	}
 	renderstate->Viewport = HalfViewport;
 	renderstate->SetInputTexture(0, &DepthTexture);
 	renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
@@ -457,9 +593,39 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	// [13d] The light grid the compute step filled this frame (VkSmokeVolume), filtered like the density.
 	renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
 	renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
-	renderstate->SetOutputTexture(&MarchTexture);
+	renderstate->SetOutputTexture(temporal ? &TemporalMarchTexture : &MarchTexture);
 	renderstate->SetNoBlend();
 	renderstate->Draw();
+
+	// [SMOKE_TEMPORAL] 2b-2d, only with accumulation.
+	if (temporal)
+	{
+		// 2b. The resolve: this frame's march (its alpha carries each texel's representative depth and change level), this
+		//     frame's depth, the eye's history and the depth it was drawn against -> the accumulated march in MarchTexture.
+		renderstate->Clear();
+		renderstate->Shader = &TemporalResolveShader;
+		renderstate->Uniforms.Set(temporalResolve);
+		renderstate->Viewport = HalfViewport;
+		renderstate->SetInputTexture(0, &TemporalMarchTexture);
+		renderstate->SetInputTexture(1, &DepthTexture);
+		renderstate->SetInputTexture(2, &TemporalHistory[temporalEye]);
+		renderstate->SetInputTexture(3, &TemporalPreviousDepth[temporalEye]);
+		renderstate->SetOutputTexture(&MarchTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+
+		// 2c, 2d. What the next frame reprojects: the resolved march before the blur, and the depth it was drawn against.
+		for (int keep = 0; keep < 2; keep++)
+		{
+			renderstate->Clear();
+			renderstate->Shader = &TemporalKeepShader;
+			renderstate->Viewport = HalfViewport;
+			renderstate->SetInputTexture(0, keep == 0 ? &MarchTexture : &DepthTexture);
+			renderstate->SetOutputTexture(keep == 0 ? &TemporalHistory[temporalEye] : &TemporalPreviousDepth[temporalEye]);
+			renderstate->SetNoBlend();
+			renderstate->Draw();
+		}
+	}
 
 	// 3. The blur that keeps to its depth: across into BlurTexture, then down back into MarchTexture.
 	for (int pass = 0; pass < 2; pass++)

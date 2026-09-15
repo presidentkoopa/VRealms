@@ -34,6 +34,10 @@
 // land a hold of up to a second -- so particle and debris lights can be judged on a mod's existing sparks and embers before any
 // definition says `light`. Renderer-read; not archived, like r_debris_test. The debris pool reads it too (hw_debrispool.cpp).
 CVARD(Bool, r_particlelights_test, false, CVAR_GLOBALCONFIG, "particle definitions that glow but have no light keys throw a test light (radius 48, up to a 1 second hold where they land) -- a test of particle lights (Vulkan only)")
+// [PARTICLEWINDOW] E1: r_gpuparticles_window -- the ring draw draws only the chunks of the ring a record can still draw in
+// (hw_gpuparticlewindow.h), not all its slots every scene. The image is identical ("Engine docs/OPTIMIZATION_E9_E1_E6_IMPL_NOTES.md",
+// the draw harness), so this is the perf log's A/B switch and a way back, not a look. Renderer-read at every ring draw; not archived.
+CVARD(Bool, r_gpuparticles_window, true, CVAR_GLOBALCONFIG, "the GPU particle ring draws only its live part -- the same image, fewer vertices (Vulkan; an A/B switch)")
 EXTERN_CVAR(Bool, r_effectlights)	// [PARTICLELIGHTS] hw_effectlights.cpp
 
 // [PARTICLELIGHTS] What the ring's particle lights keep from one sync to the next.
@@ -66,6 +70,7 @@ GpuParticleBuffer::GpuParticleBuffer(unsigned ringSize) : mRingSize(ringSize != 
 	if (mBuffer->Memory() != nullptr)
 		memset(mBuffer->Memory(), 0, recordBytes);
 	mBuffer->Unmap();
+	mWindow.Resize(mRingSize);	// [PARTICLEWINDOW] E1: every chunk empty, like the zeroed buffer
 
 	// The static quad buffer: six vertices per ring slot. Each carries the
 	// slot index split into two 16-bit halves plus the corner number, in the
@@ -121,6 +126,7 @@ void GpuParticleBuffer::Upload(const void *records, unsigned first, unsigned cou
 		(const uint8_t *)records + (size_t)first * RECORD_BYTES,
 		(size_t)count * RECORD_BYTES);
 	mUploadedSinceReport += count;
+	mWindow.NoteUpload(records, mSyncSize, first, count, RECORD_BYTES, RECORD_BIRTH_OFFSET, RECORD_LIFE_OFFSET);	// [PARTICLEWINDOW] E1
 	NoteRecordLooks(records, first, count);	// [2d]
 }
 
@@ -183,6 +189,8 @@ void GpuParticleBuffer::Sync(const void *records, unsigned recordCount, uint64_t
 		mBuffer->Unmap();
 		return;
 	}
+
+	mSyncSize = size;	// [PARTICLEWINDOW] E1: the chunks' records, this Sync
 
 	// [2d] Looked up by NoteRecordLooks for each uploaded record, this Sync only.
 	mSyncLooks = definitionLooks;
@@ -328,4 +336,25 @@ void GpuParticleBuffer::DebugReport(uint64_t written)
 	mFullSinceReport = 0;
 	mSpanSinceReport = 0;
 	mDrawsSinceReport = 0;
+
+	// [PARTICLEWINDOW] E1: what the ring draws drew over the same two seconds.
+	Printf("GpuParticles [debug]: ring draws drew %llu slots in %u ranges, ring %u slots, r_gpuparticles_window %d\n",
+		(unsigned long long)mDrawnSlotsSinceReport, mRangesSinceReport, mRingSize, (int)*r_gpuparticles_window);
+	mDrawnSlotsSinceReport = 0;
+	mRangesSinceReport = 0;
+}
+
+// [PARTICLEWINDOW] E1: see the header.
+int GpuParticleBuffer::GetDrawRanges(float levelTime, bool oldestFirst, GpuParticleWindow::SlotRange *ranges, int maxRanges)
+{
+	const int count = r_gpuparticles_window
+		? mWindow.Ranges(levelTime, GetOldestSlot(), oldestFirst, ranges, maxRanges)
+		: mWindow.WholeRanges(GetOldestSlot(), oldestFirst, ranges, maxRanges);
+	for (int i = 0; i < count; i++)
+	{
+		mDrawnSlotsFrame += ranges[i].Count;
+		mDrawnSlotsSinceReport += ranges[i].Count;
+	}
+	mRangesSinceReport += (unsigned)count;
+	return count;
 }

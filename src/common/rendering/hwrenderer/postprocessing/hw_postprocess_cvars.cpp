@@ -263,8 +263,9 @@ CUSTOM_CVAR(Int, r_lightmask_debug, 0, 0)
 //
 // r_smoke_steps: the most samples one view ray takes through the smoke, 16..128. They are spread over
 // only the stretch of the ray that crosses tiles holding smoke, so a small cloud in a big room gets
-// every one. More is smoother and makes pp.smoke cost more.
-CUSTOM_CVARD(Int, r_smoke_steps, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the most samples a view ray takes through the smoke volume, 16-128 (Vulkan only)")
+// every one. More is smoother and makes pp.smoke cost more. The default is Heavy's (r_smoke_preset below): 24 steps with
+// r_smoke_temporal on look about like 32 without it, for less.
+CUSTOM_CVARD(Int, r_smoke_steps, 24, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the most samples a view ray takes through the smoke volume, 16-128 (Vulkan only)")
 {
 	if (self < 16) self = 16;
 	if (self > 128) self = 128;
@@ -274,16 +275,22 @@ EXTERN_CVAR(Bool, r_smoke)					// hw_cvars.cpp
 EXTERN_CVAR(Int, r_smoke_quality)			// hw_cvars.cpp
 EXTERN_CVAR(Int, r_smoke_light_quality)	// hw_smokevolume.cpp
 
+EXTERN_CVAR(Bool, r_smoke_temporal)	// below, after r_smoke_cones_depth (E3)
+
 // r_smoke_preset: one dial for the smoke volume's cost and look -- 0 Off, 1 Plain, 2 Normal, 3 Heavy, 4 Extreme. Moving it sets
-// r_smoke, r_smoke_quality, r_smoke_steps and r_smoke_light_quality together; renderer-read, so it applies with the menu open.
+// r_smoke, r_smoke_quality, r_smoke_steps, r_smoke_light_quality and r_smoke_temporal together; renderer-read, so it applies
+// with the menu open. Normal, Heavy and Extreme take the temporal march and the step count of the rung below: N accumulated
+// steps look about like the next rung up without it ("Engine docs/SMOKE_TEMPORAL_E3_IMPL_NOTES.md"), so each rung keeps its
+// look for less. Plain stays the cheapest, with no history.
 // NOINITCALL: a saved preset never overwrites per-cvar tweaks at startup -- only a change applies. Any mod's menu may point at it
 // (RS_Ballistics' Smoke dial does). Plain and Normal keep quality 1; Heavy and Extreme use quality 2.
-CUSTOM_CVARD(Int, r_smoke_preset, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "smoke preset: 0 off, 1 plain, 2 normal, 3 heavy, 4 extreme (sets r_smoke, r_smoke_quality, r_smoke_steps, r_smoke_light_quality)")
+CUSTOM_CVARD(Int, r_smoke_preset, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "smoke preset: 0 off, 1 plain, 2 normal, 3 heavy, 4 extreme (sets r_smoke, r_smoke_quality, r_smoke_steps, r_smoke_light_quality, r_smoke_temporal)")
 {
 	if (self < 0) { self = 0; return; }
 	if (self > 4) { self = 4; return; }
 	static const int quality[5] = { 1, 1, 1, 2, 2 };
-	static const int steps[5] = { 32, 16, 24, 32, 48 };
+	static const int steps[5] = { 24, 16, 16, 24, 32 };
+	static const bool temporal[5] = { true, false, true, true, true };
 	static const int lightQuality[5] = { 1, 1, 1, 2, 3 };
 	int p = self;
 	if (p == 0)
@@ -295,6 +302,7 @@ CUSTOM_CVARD(Int, r_smoke_preset, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOI
 	r_smoke_quality = quality[p];
 	r_smoke_steps = steps[p];
 	r_smoke_light_quality = lightQuality[p];
+	r_smoke_temporal = temporal[p];
 }
 
 // r_smoke_density_scale: the player's "Smoke density". It multiplies how strongly smoke hides what is
@@ -326,6 +334,16 @@ CVARD(Bool, r_smoke_beams_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "haze b
 // r_smoke_cones_depth: a volumetric beam cone (the flashlight's air glow) is dimmed by the haze in front of each part of
 // it. The cone draws after the smoke, so without this haze never dims it. Off: the cone's own programs, as before.
 CVARD(Bool, r_smoke_cones_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the haze in front of a volumetric beam cone dims it (A/B check; Vulkan only)")
+
+// [SMOKE_TEMPORAL] r_smoke_temporal: temporal accumulation for the smoke march ("Engine docs/SMOKE_TEMPORAL_E3_IMPL_NOTES.md",
+// PPSmokeVolume). Each eye keeps its last frame of the smoke and blends each new frame in, found again through the camera,
+// while the march's sample offsets turn every frame -- so r_smoke_steps (still the most samples a view ray takes a frame) looks
+// like several times as many steps after a few frames, for one cheap resolve pass. Trails are held back by a neighbourhood
+// clip, depth rejection and the simulation's own density change; a cut, teleport, map change or new size starts again. Off:
+// exactly the march without it. Renderer-read every frame (PPSmokeVolume::Render), so it changes live with a menu open; a
+// preset may set it. Memory, made the first time it runs: two half-resolution textures per eye (RGBA16F + R32F) and one
+// RGBA32F shared by both. Vulkan only.
+CVARD(Bool, r_smoke_temporal, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "temporal accumulation for the smoke volume's march: each frame's steps build on the last frames' (Vulkan only)")
 
 // [EMISSIVEVOLUMES] THE EMISSIVE VOLUMES' DRAWING ("Engine docs/VOLUMETRIC_FLASH_15_PLAN.md" 2d; PPEmissiveVolumes in hw_postprocess.h).
 // Their own switches -- which draw, how long, how they move, their lights, brightness, the pool and the test -- live with the

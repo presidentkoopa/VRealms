@@ -72,6 +72,13 @@ namespace PerfLog
 	// simulation step (fx.smokesim first). Call once; remembered for the process.
 	void CountEachRun(const char* name);
 
+	// [PERFLOG] E9: SCRIPT TIME. FThinkerCollection (dthinker.cpp) hands in each tic run's think clock and the thinkers it ticked --
+	// RunThinkers (clientSide false) and RunClientSideThinkers (true), the numbers "stat think" shows -- while ThinkWanted(). Each
+	// window writes them per run, not per frame, on a second "cpu_ms" line: think and csthink avg/p95/max, the most thinkers one run
+	// ticked, and the runs. Off (r_perflog 0) the caller's cost is this one integer test a tic.
+	inline bool ThinkWanted() { return *r_perflog > 0; }
+	void AddThinkSample(bool clientSide, double ms, int thinkers);
+
 	// Once per frame, after screen->Update(). Only call while r_perflog > 0.
 	void EndFrame(const SceneLoad& load);
 }

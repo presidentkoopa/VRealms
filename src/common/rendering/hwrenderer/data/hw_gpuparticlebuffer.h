@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include "hwrenderer/data/buffers.h"
+#include "hw_gpuparticlewindow.h"	// [PARTICLEWINDOW] E1: the live part of the ring
 
 class GpuParticleBuffer
 {
@@ -98,6 +99,14 @@ public:
 	// the ring oldest first.
 	unsigned GetOldestSlot() const { return mRingSize != 0 ? (unsigned)(mSyncedWritten % mRingSize) : 0u; }
 
+	// [PARTICLEWINDOW] E1 (hw_gpuparticlewindow.h): the slot ranges the ring draw at `levelTime` draws, in its draw order --
+	// ascending, or [oldest, end) then [0, oldest) when oldestFirst. With r_gpuparticles_window on (the default), only the chunks a
+	// record can still draw in; off, the whole ring exactly as it was always drawn. Counts the slots for the perf log and the debug
+	// line.
+	int GetDrawRanges(float levelTime, bool oldestFirst, GpuParticleWindow::SlotRange *ranges, int maxRanges);
+	// [PARTICLEWINDOW] E1: the slots the ring draws drew since the last call (both eyes summed), for the perf log.
+	uint64_t TakeDrawnSlots() { const uint64_t slots = mDrawnSlotsFrame; mDrawnSlotsFrame = 0; return slots; }
+
 	// [2d] Where Sync reads a record's life and definition (FLevelLocals::GpuParticleRecord;
 	// hw_drawinfo.cpp asserts them).
 	static const unsigned RECORD_BIRTH_OFFSET = 12;			// a.w
@@ -151,6 +160,13 @@ private:
 	float mSoftUntil = NEVER_ALIVE;
 	const uint8_t *mSyncLooks = nullptr;	// only during Sync
 	unsigned mSyncLookCount = 0;
+
+	// [PARTICLEWINDOW] E1: each chunk's last drawable level time, the CPU ring's size during a Sync, and the slots drawn.
+	GpuParticleWindow mWindow;
+	unsigned mSyncSize = 0;
+	uint64_t mDrawnSlotsFrame = 0;
+	uint64_t mDrawnSlotsSinceReport = 0;
+	unsigned mRangesSinceReport = 0;
 
 	uint64_t mUploadedSinceReport = 0;
 	unsigned mFullSinceReport = 0;

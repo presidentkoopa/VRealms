@@ -8,6 +8,7 @@
 **
 **   perflog map=MAP01 [label: x] r_gpuparticles=1 r_beams_drawn=0 vr_menu_keep_world=1 t=312.0s window=5.0s frames=450 fps=90.0 frame_ms avg=11.10 p95=11.90 max=14.20
 **   cpu_ms  Scene=3.10/3.60/4.02 Post=... (avg/p95/max)
+**   cpu_ms think=1.20/2.10/3.40 csthink=0.30/0.40/0.90 thinkers=1840 csthinkers=210 tics=175   ([PERFLOG] E9: per tic run)
 **   gpu_ms  scene.opaque=2.10/2.40/2.60 ... (avg/p95/max)
 **   load    particles_spawned=250000 drawnlines_live=4 beams=6 stamps_live=11 disturb_live=3 dlights=38/52 sprites=140 walls=900 flats=410
 **
@@ -37,8 +38,10 @@
 #include "hw_cvars.h"
 #include "hwrenderer/postprocessing/hw_postprocess.h"	// [LIGHTMASK] the frame's light mask decision
 #include "hw_drawnlinebuffer.h"
+#include "hw_gpuparticlebuffer.h"	// [PARTICLEWINDOW] E1: the ring slots drawn
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightStats
 #include "hw_emissivevolumeframe.h"	// [EMISSIVEVOLUMES] EmissiveVolumeStats
+#include "hw_framecompute.h"	// [SMOKELIGHTCULL] E6: SmokeVolumeStatus, the smoke light grid's fill
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
@@ -52,6 +55,7 @@ EXTERN_CVAR(Int, r_smoke_light_quality)	// [SMOKEVOLUME] 13d, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_smoke_beams)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_beams_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_cones_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_smoke_temporal)	// [SMOKE_TEMPORAL] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_surfaceglow)	// [SMOKEVOLUME] 13f, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_smoke_darkness)	// [SMOKEVOLUME] 13f, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_particlecollision)	// [LEVELFIELD] hw_levelfield.cpp
@@ -69,6 +73,7 @@ EXTERN_CVAR(Float, r_effectlights_distance)
 EXTERN_CVAR(Bool, r_effectlights_walls)
 EXTERN_CVAR(Int, r_effectlights_test)
 EXTERN_CVAR(Bool, r_particlelights_test)	// [PARTICLELIGHTS] hw_gpuparticlebuffer.cpp
+EXTERN_CVAR(Bool, r_gpuparticles_window)	// [PARTICLEWINDOW] E1 hw_gpuparticlebuffer.cpp
 EXTERN_CVAR(Bool, r_debris_sounds)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Float, r_debris_sounds_volume)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Bool, r_damage)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
@@ -195,6 +200,7 @@ namespace
 		std::vector<Stat> CpuFx;	// [2d] AddCpuSample's named CPU timings, kept the same way
 
 		uint64_t ParticlesSpawned = 0;
+		uint64_t RingSlotsSum = 0, RingSlotsMax = 0;	// [PARTICLEWINDOW] E1: ring slots the particle draws drew a frame (both eyes)
 		unsigned DrawnLinesMax = 0;
 		int BeamsMax = 0, StampsMax = 0, DisturbMax = 0;
 		int64_t DlightsSum = 0;
@@ -207,7 +213,15 @@ namespace
 		// the relink total (dynlights_links_total) stood when the window began.
 		Stat ShadowCpu;
 		int ShadowRowsMax = 0, ShadowAskedMax = 0;
+		// [PERFLOG] E9: script time per tic run (AddThinkSample): the think and client-side think clocks, and the most thinkers
+		// one run ticked.
+		Stat Think, CsThink;
+		int ThinkersMax = 0, CsThinkersMax = 0;
 		uint64_t LinksAtStart = 0;
+		// [SMOKELIGHTCULL] E6: the smoke light grid's fills (SmokeVolumeStatus): frames filled and frames skipped, and the light
+		// cells the fills dispatched beside the cells the whole fill covers, summed over those frames.
+		uint32_t SmokeLightFilled = 0, SmokeLightSkipped = 0;
+		uint64_t SmokeLightCells = 0, SmokeLightCellsUncut = 0;
 	};
 
 	Window W;
@@ -234,6 +248,7 @@ namespace
 		for (auto& g : W.Gpu) g.Clear();
 		for (auto& c : W.CpuFx) c.Clear();	// [2d]
 		W.ParticlesSpawned = 0;
+		W.RingSlotsSum = W.RingSlotsMax = 0;	// [PARTICLEWINDOW] E1
 		W.DrawnLinesMax = 0;
 		W.BeamsMax = W.StampsMax = W.DisturbMax = 0;
 		W.DlightsSum = 0;
@@ -243,7 +258,12 @@ namespace
 		W.EmissiveVolumesMax = EmissiveVolumeFrameStats();	// [EMISSIVEVOLUMES]
 		W.ShadowCpu.Clear();	// [LIGHTSHADOWS]
 		W.ShadowRowsMax = W.ShadowAskedMax = 0;
+		W.Think.Clear();	// [PERFLOG] E9
+		W.CsThink.Clear();
+		W.ThinkersMax = W.CsThinkersMax = 0;
 		W.LinksAtStart = dynlights_links_total;
+		W.SmokeLightFilled = W.SmokeLightSkipped = 0;	// [SMOKELIGHTCULL] E6
+		W.SmokeLightCells = W.SmokeLightCellsUncut = 0;
 		W.StartNs = now;
 		if (restartClock) W.LastFrameNs = 0;
 	}
@@ -295,6 +315,12 @@ namespace
 				"level check of the earliest, and starting the sounds that are due. fx.damagepaint is the surface damage atlas: "
 				"on gpu_ms its stamps, cooling and mip rebuilds (frames with damage work, inside fx.compute); on cpu_fx_ms its "
 				"paint traces, cell cover, tiles, anchors and dispatch lists (every frame while damage is held).\n\n";
+			// [PERFLOG] E9: script time, on a legend line of its own.
+			out << "Legend (script time): the second cpu_ms line is script time per tic run, not per frame. think is the playsim "
+				"thinkers' clock (FThinkerCollection::RunThinkers: every thinker's Tick, ZScript included, and the sleep cycle); csthink "
+				"the client-side thinkers' (RunClientSideThinkers, with the effects and lights it drives); both avg/p95/max over the "
+				"window's runs. thinkers and csthinkers are the most one run ticked, tics the playsim runs in the window (0 while "
+				"paused). These are the numbers \"stat think\" shows.\n\n";
 			// [EFFECTLIGHTS] The effect light names, on a legend line of their own.
 			out << "Legend (effect lights): fx.effectlights (cpu_fx_ms) is effect lights' CPU work each frame while they are on: "
 				"the queue, moving and ranking the lights, and the bins and their upload. load effectlights=live/binned/merged/evicted "
@@ -311,11 +337,21 @@ namespace
 				"each number's largest frame in the window: volumes alive, volumes in the frame's list (at most 32), and volumes refused "
 				"(the pool full, no definition on this machine, or a class \"Volumetric flashes\" does not draw); emissivelights the "
 				"effect lights they handed over.\n\n";
+		// [PARTICLEWINDOW] E1: the ring window, on a legend line of its own.
+		out << "Legend (particle window): load ringslots=avg/max of N is the GPU particle ring's slots the particle draws drew a frame "
+			"(both eyes summed), beside the ring's size: with r_gpuparticles_window on only the chunks a live record lies in, off the "
+			"whole ring on every draw. fx.gpuparticles is their time; the image is the same either way.\n\n";
 			// [EXPOSUREIMPULSE] The flash blindness names, on a legend line of their own.
 			out << "Legend (flash blindness): pp.exposureimpulse (gpu_ms) is the wash per eye -- one full-screen draw, and on a burst's "
 				"first draw a one-texel copy of the exposure meter -- only while a wash is on screen. fx.exposureimpulse (cpu_fx_ms) is its "
 				"CPU work on frames with flashes or a live wash: the queue, each flash's sight ray and the envelope. exposureimpulselive "
 				"on the block line is 1 when the last frame drew a wash.\n\n";
+			// [SMOKELIGHTCULL] E6: the smoke light grid's cull, on a legend line of its own.
+			out << "Legend (smoke light cull): load smokelight=filled/skipped counts the window's frames whose smoke light grid was "
+				"filled, and those whose fill was skipped because nothing it reads changed (r_smoke_light_cull on the block line); "
+				"smokelightcells=dispatched/whole is the light cells the fill's dispatches covered per such frame, beside the cells the "
+				"whole fill covers (every cell of the grid, each light's box, the effect lights' region). The light is the same either "
+				"way; fx.smokelight is its time.\n\n";
 			// [LIGHTSHADOWS] The light shadow names, on a legend line of their own.
 			out << "Legend (light shadows): gpu_ms shadowmap is the shadow map pass (once a frame, both eyes share it; only while it "
 				"runs). load shadowlights=rows/asked is the largest frame's shadow-map rows (effect light rows included) and, of them, "
@@ -370,6 +406,14 @@ namespace
 			(int)*r_smoke_beams, (int)*r_smoke_beams_depth, (int)*r_smoke_cones_depth, hw_postprocess.smokevolume.PublishedBeamCount());
 		// [SMOKEVOLUME] 13f: and the surface light switches, so a fx.smokelight / fx.smokelights before/after labels itself.
 		out.AppendFormat(" r_smoke_surfaceglow=%d r_smoke_darkness=%d", (int)*r_smoke_surfaceglow, (int)*r_smoke_darkness);
+		// [SMOKE_TEMPORAL] And the march's temporal accumulation, so a pp.smoke before/after labels itself.
+		out.AppendFormat(" r_smoke_temporal=%d", (int)*r_smoke_temporal);
+		// [SMOKELIGHTCULL] E6: and the light grid cull, so a fx.smokelight before/after labels itself. Looked up by name: the Vulkan
+		// backend defines it.
+		{
+			FBaseCVar* lightCull = FindCVar("r_smoke_light_cull", nullptr);
+			out.AppendFormat(" r_smoke_light_cull=%s", lightCull != nullptr ? (lightCull->GetGenericRep(CVAR_Int).Int ? "1" : "0") : "n/a");
+		}
 		// [LEVELFIELD] And the particle collision switches, so a fx.levelfield before/after labels itself.
 		out.AppendFormat(" r_particlecollision=%d r_particlecollision_quality=%d r_particlecollision_test=%d",
 			(int)*r_particlecollision, (int)*r_particlecollision_quality, (int)*r_particlecollision_test);
@@ -388,6 +432,8 @@ namespace
 			(double)(float)*r_effectlights_distance, (int)*r_effectlights_walls, (int)*r_effectlights_test);
 		// [PARTICLELIGHTS] And the particle light test, so a before/after with it labels itself.
 		out.AppendFormat(" r_particlelights_test=%d", (int)*r_particlelights_test);
+		// [PARTICLEWINDOW] E1: and the ring window, so a fx.gpuparticles before/after labels itself.
+		out.AppendFormat(" r_gpuparticles_window=%d", (int)*r_gpuparticles_window);
 		// [EMISSIVEVOLUMES] And the emissive volume switches, so a pp.emissive / fx.emissive before/after labels itself.
 		out.AppendFormat(" r_emissivevolumes=%d r_emissivevolumes_length=%d r_emissivevolumes_motion=%d r_emissivevolumes_steps=%d r_emissivevolumes_resolution=%d r_emissivevolumes_max=%d r_emissivevolumes_light=%d r_emissivevolumes_brightness=%g r_emissivevolumes_test=%d",
 			(int)*r_emissivevolumes, (int)*r_emissivevolumes_length, (int)*r_emissivevolumes_motion, (int)*r_emissivevolumes_steps,
@@ -420,6 +466,10 @@ namespace
 		out << "cpu_ms ";
 		for (auto& c : W.Cpu) AppendTriple(out, c);
 		out << "\n";
+		// [PERFLOG] E9: script time, per tic run.
+		out.AppendFormat("cpu_ms think=%.2f/%.2f/%.2f csthink=%.2f/%.2f/%.2f thinkers=%d csthinkers=%d tics=%u\n",
+			W.Think.Avg(), W.Think.P95(), W.Think.Max, W.CsThink.Avg(), W.CsThink.P95(), W.CsThink.Max,
+			W.ThinkersMax, W.CsThinkersMax, W.Think.Count);
 
 		out << "gpu_ms ";
 		bool anyGpu = false;
@@ -451,9 +501,19 @@ namespace
 		out.AppendFormat(" effectlights=%d/%d/%d/%d effectlightrows=%d effectlightlines=%d effectlightsdropped=%d/%d",
 			W.EffectLightsMax.Live, W.EffectLightsMax.Binned, W.EffectLightsMax.Merged, W.EffectLightsMax.Evicted,
 			W.EffectLightsMax.Rows, W.EffectLightsMax.Lines, W.EffectLightsMax.NoRow, W.EffectLightsMax.Trimmed);
+		// [PARTICLEWINDOW] E1: the ring slots the particle draws drew a frame (both eyes), avg/max, and the ring's size.
+		out.AppendFormat(" ringslots=%.0f/%llu of %u", (double)W.RingSlotsSum / n, (unsigned long long)W.RingSlotsMax,
+			(screen != nullptr && screen->mGpuParticles != nullptr) ? screen->mGpuParticles->GetRingSize() : 0u);
 		// [EMISSIVEVOLUMES] The emissive volume load, on the same line.
 		out.AppendFormat(" emissive=%d/%d/%d emissivelights=%d", W.EmissiveVolumesMax.Live, W.EmissiveVolumesMax.Drawn,
 			W.EmissiveVolumesMax.Refused, W.EmissiveVolumesMax.Lights);
+		// [SMOKELIGHTCULL] E6: the smoke light grid's fills, on the same line.
+		{
+			const uint32_t smokeFrames = W.SmokeLightFilled + W.SmokeLightSkipped;
+			const double perFrame = smokeFrames > 0 ? (double)smokeFrames : 1.0;
+			out.AppendFormat(" smokelight=%u/%u smokelightcells=%.0f/%.0f", W.SmokeLightFilled, W.SmokeLightSkipped,
+				(double)W.SmokeLightCells / perFrame, (double)W.SmokeLightCellsUncut / perFrame);
+		}
 		// [LIGHTSHADOWS] The light shadow load, closing the line.
 		out.AppendFormat(" shadowlights=%d/%d shadowcpu_ms=%.2f/%.2f/%.2f relinks=%llu\n\n",
 			W.ShadowRowsMax, W.ShadowAskedMax, W.ShadowCpu.Avg(), W.ShadowCpu.P95(), W.ShadowCpu.Max,
@@ -562,6 +622,21 @@ void PerfLog::AddCpuSample(const char* name, double ms)
 	W.CpuFx.back().Name = name;
 	W.CpuFx.back().FrameValue = ms;
 	W.CpuFx.back().FrameTouched = true;
+}
+
+// [PERFLOG] E9: see the header. One sample per run; the thinker count is the run's own.
+void PerfLog::AddThinkSample(bool clientSide, double ms, int thinkers)
+{
+	if (clientSide)
+	{
+		W.CsThink.Add(ms);
+		if (thinkers > W.CsThinkersMax) W.CsThinkersMax = thinkers;
+	}
+	else
+	{
+		W.Think.Add(ms);
+		if (thinkers > W.ThinkersMax) W.ThinkersMax = thinkers;
+	}
 }
 
 void PerfLog::EndFrame(const SceneLoad& load)
@@ -676,6 +751,13 @@ void PerfLog::EndFrame(const SceneLoad& load)
 			? load.GpuParticlesWritten - LastParticlesWritten : load.GpuParticlesWritten;
 		LastParticlesWritten = load.GpuParticlesWritten;
 	}
+	// [PARTICLEWINDOW] E1: the ring slots this frame's particle draws drew (both eyes).
+	if (screen != nullptr && screen->mGpuParticles != nullptr)
+	{
+		const uint64_t slots = screen->mGpuParticles->TakeDrawnSlots();
+		W.RingSlotsSum += slots;
+		if (slots > W.RingSlotsMax) W.RingSlotsMax = slots;
+	}
 
 	unsigned drawnLines = (screen != nullptr && screen->mDrawnLines != nullptr) ? screen->mDrawnLines->GetLiveCount() : 0u;
 	if (drawnLines > W.DrawnLinesMax) W.DrawnLinesMax = drawnLines;
@@ -721,6 +803,19 @@ void PerfLog::EndFrame(const SceneLoad& load)
 			W.ShadowCpu.Add(IShadowMap::UpdateCycles.TimeMS());
 			if (IShadowMap::LightsShadowmapped > W.ShadowRowsMax) W.ShadowRowsMax = IShadowMap::LightsShadowmapped;
 			if (IShadowMap::LightsCastShadow > W.ShadowAskedMax) W.ShadowAskedMax = IShadowMap::LightsCastShadow;
+		}
+	}
+	// [SMOKELIGHTCULL] E6: this frame's smoke light grid fill (vk_smokevolume.cpp): filled or skipped, and its light cells.
+	{
+		const SmokeVolumeBackendStatus& smoke = SmokeVolumeStatus();
+		if (smoke.LightFill == 1)
+			W.SmokeLightFilled++;
+		else if (smoke.LightFill == 2)
+			W.SmokeLightSkipped++;
+		if (smoke.LightFill != 0)
+		{
+			W.SmokeLightCells += smoke.LightCells;
+			W.SmokeLightCellsUncut += smoke.LightCellsUncut;
 		}
 	}
 

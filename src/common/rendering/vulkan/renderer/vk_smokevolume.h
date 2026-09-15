@@ -82,6 +82,7 @@
 
 #include <zvulkan/vulkanobjects.h>
 #include "hw_framecompute.h"
+#include "hw_smoketilecover.h"	// [SMOKELIGHTCULL] E6: the light grid fill's planner
 #include "vulkan/textures/vk_imagetransition.h"	// [13c] VkTextureImage: a post-process pass binds the volumes
 
 class VulkanRenderDevice;
@@ -140,7 +141,8 @@ private:
 	using Volume = VkTextureImage;
 
 	bool Allocate(int quality, const SmokeGridSpec& grid);
-	bool CreateVolume(Volume& volume, VkFormat format, int width, int height, int depth, const char* name);
+	// [SMOKELIGHTCULL] E6: extraUsage adds to the volumes' usage (the tile map is copied to the host: TRANSFER_SRC).
+	bool CreateVolume(Volume& volume, VkFormat format, int width, int height, int depth, const char* name, VkImageUsageFlags extraUsage = 0);
 	void DestroyVolumesNow();
 	void Release(const char* why);
 	void ClearImage(Volume& volume, float value);
@@ -177,7 +179,15 @@ private:
 	bool EnsureSurfaceProgram();
 	bool UploadSurfaceBuffer(std::unique_ptr<VulkanBuffer>& buffer, std::unique_ptr<VulkanBuffer>& staging, size_t& capacity,
 		const float* data, size_t bytes, const char* name, const char* stagingName);
-	bool DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const void* ambientConstants);
+	// [SMOKELIGHTCULL] E6: over the given boxes of light cells (one box over the whole grid is the dispatch it always made).
+	bool DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const void* ambientConstants, const SmokeTileBox* boxes, int boxCount);
+	// [SMOKELIGHTCULL] E6 (hw_smoketilecover.h): one light pass over boxes of light cells, everything the fill reads beside the
+	// tile maps (false: not comparable), and the tile map's host copy -- recorded after the frame's tile work, taken into the
+	// mirror at the start of the next Run.
+	void DispatchLightBoxes(VkComputeProgram* program, VulkanDescriptorSet* set, const void* constants, const SmokeTileBox* boxes, int count);
+	bool BuildLightInputs(const SmokeVolumeFrame& frame, const VkTextureImage& shadowMap);
+	void QueueTileReadback();
+	void TakeTileReadback();
 
 	// [13e] The beam list image: made once (false: refused this session), the frame's list copied in (returns the beams
 	// the image holds for this frame, 0 = none), freed with the volume.
@@ -281,4 +291,16 @@ private:
 	bool mLightWarned = false;
 	bool mEffectLightWarned = false;	// [EFFECTLIGHTS] LD: no set for pass 2 (logged once)
 	bool mSurfaceWarned = false;		// [13F] no set or no buffers for the surface light variant (logged once)
+
+	// [SMOKELIGHTCULL] E6: the fill's planner (the tile mirror and the value maps); the host copy of TileActive (made on first use,
+	// pending until the next Run takes it); this fill's inputs; and the light cells the fill dispatched beside the whole fill's.
+	SmokeLightCull mLightCull;
+	std::unique_ptr<VulkanBuffer> mTileReadback;
+	size_t mTileReadbackBytes = 0;
+	bool mTileReadbackPending = false;
+	bool mTileReadbackWarned = false;
+	std::vector<uint8_t> mLightInputs;
+	uint64_t mFillCells = 0;
+	uint64_t mFillCellsUncut = 0;
+	uint64_t mLastFillCellsUncut = 0;
 };

@@ -37,6 +37,7 @@ VkPPTexture::VkPPTexture(VulkanRenderDevice* fb, PPTexture *texture) : fb(fb)
 	case PixelFormat::R32f: format = VK_FORMAT_R32_SFLOAT; pixelsize = 4; break;
 	case PixelFormat::Rg16f: format = VK_FORMAT_R16G16_SFLOAT; pixelsize = 4; break;
 	case PixelFormat::Rgba16_snorm: format = VK_FORMAT_R16G16B16A16_SNORM; pixelsize = 8; break;
+	case PixelFormat::Rgba32f: format = VK_FORMAT_R32G32B32A32_SFLOAT; pixelsize = 16; break;	// [SMOKE_TEMPORAL]
 	}
 
 	ImageBuilder imgbuilder;

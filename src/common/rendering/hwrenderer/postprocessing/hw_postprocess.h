@@ -1330,6 +1330,109 @@ struct PPSmokeBeamSettings
 	float Timer = 0.f;          // the beams' scroll clock, seconds (SyncDrawnLines hands the drawn-line path the same)
 };
 
+// [SMOKE_TEMPORAL] TEMPORAL ACCUMULATION FOR THE MARCH ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E3, "Engine docs/
+// SMOKE_TEMPORAL_E3_IMPL_NOTES.md"; r_smoke_temporal). The temporal march (smokemarch.fp SMOKE_TEMPORAL): SmokeMarchUniforms
+// member for member at the same offsets (PrepareTemporal copies it in whole), then this frame's turn of the jitter.
+struct SmokeTemporalMarchUniforms
+{
+	float ViewToWorld[16];
+	FVector2 TanHalfFov;
+	FVector2 ProjOffset;
+	FVector3 BoxMin;
+	float CellSize;
+	FVector3 GridSize;
+	float TicFrac;
+	FVector3 TileCount;
+	int StepCount;
+	FVector3 LightColor;
+	float Extinction;
+	float MinStep;
+	float SliceHeight;
+	int DebugSlice;
+	float MarchPad0;
+	float JitterOffset;       // added to every texel's first-sample offset, 0..1: this eye's golden-ratio sequence
+	float TemporalPad0;
+	float TemporalPad1;
+	float TemporalPad2;
+
+	//   the march's 0..160, then JitterOffset 160   TemporalPad0 164   TemporalPad1 168   TemporalPad2 172   -> block ends 176
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "ViewToWorld", UniformType::Mat4, offsetof(SmokeTemporalMarchUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeTemporalMarchUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeTemporalMarchUniforms, ProjOffset) },
+			{ "BoxMin", UniformType::Vec3, offsetof(SmokeTemporalMarchUniforms, BoxMin) },
+			{ "CellSize", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, CellSize) },
+			{ "GridSize", UniformType::Vec3, offsetof(SmokeTemporalMarchUniforms, GridSize) },
+			{ "TicFrac", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, TicFrac) },
+			{ "TileCount", UniformType::Vec3, offsetof(SmokeTemporalMarchUniforms, TileCount) },
+			{ "StepCount", UniformType::Int, offsetof(SmokeTemporalMarchUniforms, StepCount) },
+			{ "LightColor", UniformType::Vec3, offsetof(SmokeTemporalMarchUniforms, LightColor) },
+			{ "Extinction", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, Extinction) },
+			{ "MinStep", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, MinStep) },
+			{ "SliceHeight", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, SliceHeight) },
+			{ "DebugSlice", UniformType::Int, offsetof(SmokeTemporalMarchUniforms, DebugSlice) },
+			{ "MarchPad0", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, MarchPad0) },
+			{ "JitterOffset", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, JitterOffset) },
+			{ "TemporalPad0", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, TemporalPad0) },
+			{ "TemporalPad1", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, TemporalPad1) },
+			{ "TemporalPad2", UniformType::Float, offsetof(SmokeTemporalMarchUniforms, TemporalPad2) },
+		};
+	}
+};
+
+static_assert(offsetof(SmokeTemporalMarchUniforms, TanHalfFov) == offsetof(SmokeMarchUniforms, TanHalfFov) &&
+	offsetof(SmokeTemporalMarchUniforms, BoxMin) == offsetof(SmokeMarchUniforms, BoxMin) &&
+	offsetof(SmokeTemporalMarchUniforms, GridSize) == offsetof(SmokeMarchUniforms, GridSize) &&
+	offsetof(SmokeTemporalMarchUniforms, TileCount) == offsetof(SmokeMarchUniforms, TileCount) &&
+	offsetof(SmokeTemporalMarchUniforms, LightColor) == offsetof(SmokeMarchUniforms, LightColor) &&
+	offsetof(SmokeTemporalMarchUniforms, MinStep) == offsetof(SmokeMarchUniforms, MinStep) &&
+	offsetof(SmokeTemporalMarchUniforms, MarchPad0) == offsetof(SmokeMarchUniforms, MarchPad0),
+	"SmokeTemporalMarchUniforms must start with SmokeMarchUniforms' layout");
+static_assert(offsetof(SmokeTemporalMarchUniforms, JitterOffset) == 160, "SmokeTemporalMarchUniforms::JitterOffset must start at 160");
+static_assert(sizeof(SmokeTemporalMarchUniforms) == 176, "SmokeTemporalMarchUniforms must be 176 bytes; pad to a 16-byte row");
+
+// [SMOKE_TEMPORAL] The resolve (smoketemporal.fp): the matrix that carries a point of this eye's view space into the view space
+// its history was drawn from (translation included, worked out in double), and both frames' projection terms. The march's
+// alpha carries the rest (the representative depth, the change level).
+struct SmokeTemporalResolveUniforms
+{
+	float CurrentToPrevious[16];  // this eye's view space -> its view space last frame; identity when there is no history
+	FVector2 TanHalfFov;          // this eye's, the march's
+	FVector2 ProjOffset;
+	FVector2 PreviousTanHalfFov;  // last frame's terms for this eye (the projection may change)
+	FVector2 PreviousProjOffset;
+	int HistoryValid;             // 0: no history to use -- the resolve writes this frame's march
+	float ResolvePad0;
+	float ResolvePad1;
+	float ResolvePad2;
+
+	//   CurrentToPrevious 0   TanHalfFov 64   ProjOffset 72   PreviousTanHalfFov 80   PreviousProjOffset 88   HistoryValid 96
+	//   ResolvePad0 100   ResolvePad1 104   ResolvePad2 108   -> block ends 112
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "CurrentToPrevious", UniformType::Mat4, offsetof(SmokeTemporalResolveUniforms, CurrentToPrevious) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeTemporalResolveUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeTemporalResolveUniforms, ProjOffset) },
+			{ "PreviousTanHalfFov", UniformType::Vec2, offsetof(SmokeTemporalResolveUniforms, PreviousTanHalfFov) },
+			{ "PreviousProjOffset", UniformType::Vec2, offsetof(SmokeTemporalResolveUniforms, PreviousProjOffset) },
+			{ "HistoryValid", UniformType::Int, offsetof(SmokeTemporalResolveUniforms, HistoryValid) },
+			{ "ResolvePad0", UniformType::Float, offsetof(SmokeTemporalResolveUniforms, ResolvePad0) },
+			{ "ResolvePad1", UniformType::Float, offsetof(SmokeTemporalResolveUniforms, ResolvePad1) },
+			{ "ResolvePad2", UniformType::Float, offsetof(SmokeTemporalResolveUniforms, ResolvePad2) },
+		};
+	}
+};
+
+static_assert(offsetof(SmokeTemporalResolveUniforms, TanHalfFov) == 64, "SmokeTemporalResolveUniforms::TanHalfFov must start at 64 for std140");
+static_assert(offsetof(SmokeTemporalResolveUniforms, PreviousTanHalfFov) == 80, "SmokeTemporalResolveUniforms::PreviousTanHalfFov must start at 80 for std140");
+static_assert(offsetof(SmokeTemporalResolveUniforms, HistoryValid) == 96, "SmokeTemporalResolveUniforms::HistoryValid must start at 96 for std140");
+static_assert(sizeof(SmokeTemporalResolveUniforms) == 112, "SmokeTemporalResolveUniforms must be 112 bytes; pad to a 16-byte row");
+
 // SKIPPED, NOT ZERO. Render returns on its first line unless the renderer published a march for this
 // eye (SetupSmokeVolume, hw_drawinfo.cpp: Vulkan, r_smoke, the volume allocated, and the CPU side's bound
 // saying visible smoke may exist). With no smoke, or smoke off, the frame is exactly the frame without
@@ -1369,6 +1472,18 @@ struct PPSmokeBeamSettings
 // glow times (the transmittance to the beam - the pixel's), which undoes the dimming by haze BEHIND the beam. Still
 // (light, 1 - T) with the premultiplied blend: scene x T + inscatter. The volumetric beam pass reads the curve after
 // this (TransmittanceReady).
+//
+// [SMOKE_TEMPORAL] TEMPORAL ACCUMULATION (r_smoke_temporal, on by default; "Engine docs/SMOKE_TEMPORAL_E3_IMPL_NOTES.md").
+// Off, or with the debug slice: every draw above, program for program. On, pass 2 becomes three, all in pp.smoke:
+//   2.  smokemarch.fp SMOKE_TEMPORAL  the march, r_smoke_steps samples a ray as always, its jitter turned every frame by
+//       this eye's golden-ratio sequence; rgb light, a the transmittance + 2 x its representative depth's code (RGBA32F)
+//   2b. smoketemporal.fp  the resolve: blended with THIS EYE's history, found again with the camera matrices alone (the
+//       smoke is a world-space volume), clipped to this frame's neighbourhood, weighed by scene-depth agreement and by the
+//       simulation's own density change -- into MarchTexture, so every pass after it reads the accumulated march
+//   2c, 2d. smoketemporal.fp SMOKE_TEMPORAL_KEEP  copies of the resolved march and this frame's depth, for the next frame
+// Each eye keeps its own history (currentEye). A history is used only for the frame right after it (screen->FrameCount), at
+// the same size, on live textures, and when the eye neither moved TEMPORAL_CUT_DISTANCE nor turned past TEMPORAL_CUT_COSINE
+// in that frame -- a cut, a teleport, a map change (frames without smoke between) or a resolution change start again.
 class PPSmokeVolume
 {
 public:
@@ -1436,6 +1551,33 @@ private:
 	// [EMISSIVEVOLUMES] The curve while an emissive volume is drawn this eye: marched only where a beam or a volume can read it
 	// (with a cone, everywhere, as CurveShader), binding 8 the volume list.
 	PPShader CurveNearVolumesShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_TRANSMITTANCE_CURVE\n#define SMOKE_CURVE_NEAR_VOLUMES\n", SmokeCurveNearVolumesUniforms::Desc() };
+
+	// [SMOKE_TEMPORAL] Temporal accumulation. Per eye: when and from where its history was drawn, and the jitter's index.
+	static constexpr double TEMPORAL_CUT_DISTANCE = 64.0;	// map units an eye may move in one frame and keep its history
+	static constexpr double TEMPORAL_CUT_COSINE = 0.5;	// the cosine of the most it may turn in one frame (60 degrees)
+	struct TemporalEye
+	{
+		bool Valid = false;           // the history holds a frame this eye drew
+		uint64_t Frame = 0;           // the screen->FrameCount it was drawn in
+		uint32_t Sequence = 0;        // frames this eye has marched with accumulation: its jitter's index
+		int Width = 0;                // the half-resolution size it was drawn at
+		int Height = 0;
+		float ViewToWorld[16] = {};   // the camera it was drawn from (the march's)
+		FVector2 TanHalfFov;
+		FVector2 ProjOffset;
+	};
+	// This eye's temporal march and resolve uniforms from its march, and this frame recorded as its next history. True when
+	// the resolve may use the history.
+	bool PrepareTemporal(int eye, const SmokeMarchUniforms &march, SmokeTemporalMarchUniforms &marchOut, SmokeTemporalResolveUniforms &resolveOut);
+	TemporalEye temporalEyes[2];
+	// Half the scene's size, made the first time accumulation runs. The march texture is shared (rewritten by every eye
+	// before it is read); the history and its depth are each eye's own.
+	PPTexture TemporalMarchTexture;         // RGBA32F: rgb light, a transmittance + 2 x the representative depth's code
+	PPTexture TemporalHistory[2];           // RGBA16F: this eye's resolved march last frame, before the blur
+	PPTexture TemporalPreviousDepth[2];     // R32F: this eye's smokedepth.fp output last frame
+	PPShader MarchTemporalShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_TEMPORAL\n", SmokeTemporalMarchUniforms::Desc() };
+	PPShader TemporalResolveShader = { "shaders/pp/smoketemporal.fp", "", SmokeTemporalResolveUniforms::Desc() };
+	PPShader TemporalKeepShader = { "shaders/pp/smoketemporal.fp", "#define SMOKE_TEMPORAL_KEEP\n", {} };
 };
 
 /////////////////////////////////////////////////////////////////////////////

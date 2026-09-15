@@ -417,6 +417,12 @@ struct SmokeVolumeBackendStatus
 	int LightQuality = 0;			// [13d] the light grid the backend holds (r_smoke_light_quality); 0 = none
 	int RefusedLightQuality = 0;	// [13d] a light quality this device refused until it changes; 0 = none
 	int BeamCount = 0;				// [13e] beams the backend's beam list image holds for this frame's drawing; 0 = none (or no image)
+	// [SMOKELIGHTCULL] E6 (hw_smoketilecover.h): this frame's light grid fill -- 0 none (no smoke to draw), 1 filled, 2 skipped
+	// (nothing it reads changed since the last fill) -- the light cells its dispatches covered, and the cells the whole fill
+	// covers (the grid, every light's box, the effect lights' region). For the perf log.
+	int LightFill = 0;
+	uint64_t LightCells = 0;
+	uint64_t LightCellsUncut = 0;
 };
 
 inline SmokeVolumeBackendStatus& SmokeVolumeStatus()
