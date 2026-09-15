@@ -300,6 +300,26 @@ CVARD(Bool, r_smoke_beams_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "haze b
 // it. The cone draws after the smoke, so without this haze never dims it. Off: the cone's own programs, as before.
 CVARD(Bool, r_smoke_cones_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the haze in front of a volumetric beam cone dims it (A/B check; Vulkan only)")
 
+// [EMISSIVEVOLUMES] THE EMISSIVE VOLUMES' DRAWING ("Engine docs/VOLUMETRIC_FLASH_15_PLAN.md" 2d; PPEmissiveVolumes in hw_postprocess.h).
+// Their own switches -- which draw, how long, how they move, their lights, brightness, the pool and the test -- live with the
+// volumes in hw_emissivevolumes.cpp; these two are the pass's quality. Both are read by the renderer every frame
+// (SetupEmissiveVolumes, hw_drawinfo.cpp), so they respond with a menu open. OpenGL and GLES draw no emissive volume.
+//
+// r_emissivevolumes_steps: steps a view ray takes across a volume's whole diameter (a shorter chord takes fewer, never under 4).
+// More is smoother and makes pp.emissive cost more.
+CUSTOM_CVARD(Int, r_emissivevolumes_steps, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "steps a view ray takes across an emissive volume's diameter, 8-64 (Vulkan only)")
+{
+	if (self < 8) self = 8;
+	if (self > 64) self = 64;
+}
+
+// r_emissivevolumes_resolution: the march at half the scene's resolution (2, the default) or full (1, about four times the cost).
+CUSTOM_CVARD(Int, r_emissivevolumes_resolution, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "emissive volume march resolution: 2 half, 1 full (Vulkan only)")
+{
+	if (self < 1) self = 1;
+	if (self > 2) self = 2;
+}
+
 CVAR(Float, gl_exposure_scale, 1.3f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_min, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_base, 0.35f, CVAR_ARCHIVE)

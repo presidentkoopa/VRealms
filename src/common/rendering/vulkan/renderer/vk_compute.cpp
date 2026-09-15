@@ -25,6 +25,7 @@
 #include "hw_debrisframe.h"	// [DEBRISPOOL] DebrisPoolFrameForBackend
 #include "vk_surfacedamage.h"	// [SURFACEDAMAGE]
 #include "hw_surfacedamageframe.h"	// [SURFACEDAMAGE] SurfaceDamageFrameForBackend
+#include "vk_emissivevolumes.h"	// [EMISSIVEVOLUMES]
 #include "vk_renderstate.h"
 #include "vulkan/system/vk_renderdevice.h"
 #include "vulkan/system/vk_commandbuffer.h"
@@ -90,6 +91,13 @@ void VkComputeManager::RunFrame(const FrameComputeInput& input)
 		mSurfaceDamage = std::make_unique<VkSurfaceDamage>(this);
 	if (mSurfaceDamage != nullptr)
 		mSurfaceDamage->Run(damage);
+
+	// [EMISSIVEVOLUMES] #15, after surface damage: constructed the first frame a volume is drawn; it keeps its two small images
+	// (0.53 MB) for the session, copies each frame's list in when it changed, and reports what it holds (EmissiveVolumesStatus).
+	if (mEmissiveVolumes == nullptr && input.EmissiveVolumes.Count > 0)
+		mEmissiveVolumes = std::make_unique<VkEmissiveVolumes>(this);
+	if (mEmissiveVolumes != nullptr)
+		mEmissiveVolumes->Run(input.EmissiveVolumes);
 
 	if (mWorkBegun)
 	{

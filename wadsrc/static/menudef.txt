@@ -2312,6 +2312,34 @@ OptionMenu DeveloperOptionsMenu protected
 	// hold of up to 1 second -- so particle and debris lights can be judged on a mod's own sparks before any definition says
 	// `light`. Needs "Effect lights" on. Not saved. Vulkan only.
 	Option "Particle light test (glowing particles light)", "r_particlelights_test", "OnOff"
+	// [EMISSIVEVOLUMES] Emissive volumes ("Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): short-lived glowing gas that mods place --
+	// muzzle flashes you can look around, explosion fireballs, plasma and BFG blasts -- drawn with depth in each eye, lighting the
+	// haze around them. Nothing is done until a mod spawns one. Every row is read by the renderer every frame, so it changes what
+	// is on screen with this menu open. RS_Ballistics' "Ballistics & Effects" page mirrors these rows. Vulkan only.
+	// r_emissivevolumes -- which flashes are volumes: all (recommended), big guns and blasts, explosions only, or off. A gun whose
+	// volume is off draws its mod's older flash.
+	Option "Volumetric flashes", "r_emissivevolumes", "EmissiveVolumeClasses"
+	// r_emissivevolumes_length -- how long a gun's flash lingers: by gun (recommended), a real-world snap, or about a quarter second.
+	// Explosions keep their own length.
+	Option "Flash length", "r_emissivevolumes_length", "EmissiveVolumeLengths"
+	// r_emissivevolumes_motion -- when you swing or recoil the gun: as each flash was made (recommended: its root stays on the
+	// muzzle while the flame trails), the whole flash stays where it was fired, or it rides the gun.
+	Option "Flash motion", "r_emissivevolumes_motion", "EmissiveVolumeMotions"
+	// r_emissivevolumes_light -- each flash lights the haze and sparks around it in its own colour, flickering with it.
+	Option "Flashes light the haze", "r_emissivevolumes_light", "OnOff"
+	// r_emissivevolumes_brightness -- a live scale over every flash's brightness and light (1 = as the mods made them).
+	Slider "Flash brightness", "r_emissivevolumes_brightness", 0, 4, 0.1, 1
+	// r_emissivevolumes_steps -- how finely each flash is marched. More is smoother and costs more.
+	Option "Flash detail (steps)", "r_emissivevolumes_steps", "EmissiveVolumeSteps"
+	// r_emissivevolumes_resolution -- half (default) or full resolution; full is about four times the cost.
+	Option "Flash resolution", "r_emissivevolumes_resolution", "EmissiveVolumeResolutions"
+	// r_emissivevolumes_max -- how many can be alive at once; past it the smallest, farthest, dimmest go first.
+	Option "Flash budget (volumes alive)", "r_emissivevolumes_max", "EmissiveVolumeBudgets"
+	// r_emissivevolumes_test -- a test, not a setting: this many volumes a second about 192 units ahead of you -- a star, a gout,
+	// a brake ring and a fireball in turn, each with a light. They appear only while the game runs: close the menu. Not saved.
+	Slider "Emissive volume test (a second, 0 = off)", "r_emissivevolumes_test", 0, 16, 1, 0
+	// [EMISSIVEVOLUMES] The definitions VOLUMEDEFS loaded, to the log.
+	Command "List emissive volume definitions (to the log)", "emissivevolumes"
 	// [LIGHTSHADOWS] Light shadows, the #20 rows ("Engine docs/EFFECT_LIGHTS_LE_IMPL_NOTES.md"), mirrored here from the light
 	// options for the headset cost test. perflog.txt: gpu_ms shadowmap; load shadowlights, shadowcpu_ms, relinks.
 	// gl_light_shadowmap -- "Light shadows": every light that does not ask to cast shadows, as always. Off by default.
@@ -2630,6 +2658,52 @@ OptionValue "EffectLightBudgets"
 	1024, "1,024 (default)"
 	2048, "2,048"
 	4096, "4,096"
+}
+
+// [EMISSIVEVOLUMES] The emissive volume rows' choices, the recommended one first in each (owner answers 1, 3 and 6).
+OptionValue "EmissiveVolumeClasses"
+{
+	3, "All (recommended)"
+	2, "Big guns and blasts"
+	1, "Explosions only"
+	0, "Off"
+}
+
+OptionValue "EmissiveVolumeLengths"
+{
+	0, "By gun (recommended)"
+	1, "Snap (under 1/30 s)"
+	2, "Linger (about 1/4 s)"
+}
+
+OptionValue "EmissiveVolumeMotions"
+{
+	0, "Per flash (recommended)"
+	1, "Stays where fired"
+	2, "Rides the gun"
+}
+
+OptionValue "EmissiveVolumeSteps"
+{
+	16, "16"
+	24, "24"
+	32, "32 (default)"
+	48, "48"
+}
+
+OptionValue "EmissiveVolumeResolutions"
+{
+	2, "Half (default)"
+	1, "Full"
+}
+
+OptionValue "EmissiveVolumeBudgets"
+{
+	32, "32"
+	64, "64"
+	128, "128 (default)"
+	256, "256"
+	512, "512"
 }
 
 OptionValue "DebrisPoolSizes"

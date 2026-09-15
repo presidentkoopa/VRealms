@@ -79,6 +79,23 @@ public:
 	// words and indices -- for a CPU-side consumer's decisions, such as whether any binned light reaches the smoke box. Read-only.
 	const EffectLightCore::BinResult &FrameBins() const { return mResult; }
 
+	// [EMISSIVEVOLUMES] A light for THIS FRAME only, from a renderer-side system that places and fades it itself every frame
+	// (emissive volumes, hw_emissivevolumes.cpp). Handed over before BeginFrame, which puts it in the pool for this frame --
+	// after the budget, so it evicts no pool light -- where it ranks, takes a shadow-map row and bins exactly as a pool light in
+	// the same state would; the next BeginFrame forgets it. Game axes; Color is colour x intensity x brightness now (0..64 a
+	// channel); Flags are EFL_. False when refused: no radius of 1 or more, no colour, a number not finite, or FRAME_LIGHTS_MAX
+	// already handed over this frame. A frame with none is exactly the frame without this hook.
+	struct FrameLight
+	{
+		EffectLightCore::Vec3 A, B;			// B == A for a point
+		float Color[3] = { 0.f, 0.f, 0.f };
+		double Radius = 0.0;
+		int Flags = 0;
+		double TailBrightness = 1.0;
+	};
+	static constexpr size_t FRAME_LIGHTS_MAX = 256;
+	bool AddFrameLight(const FrameLight &light);
+
 private:
 	struct PoolLight
 	{
@@ -101,6 +118,8 @@ private:
 	std::vector<EffectLightCore::RowCandidate> mRowOrder;
 	std::vector<EffectLightCore::BinLight> mFrameLights;
 	std::vector<EffectLightCore::BinLight> mRanked;
+	std::vector<FrameLight> mAddedFrameLights;	// [EMISSIVEVOLUMES] handed over for the coming BeginFrame
+	std::vector<FrameLight> mTakenFrameLights;	// [EMISSIVEVOLUMES] what that BeginFrame took
 	EffectLightCore::BinBuilder mBuilder;
 	EffectLightCore::BinResult mResult;
 

@@ -48,6 +48,7 @@
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
 #include "hw_smokevolume.h"	// [SMOKEVOLUME] SmokeVolume::GetDrawState, for SetupSmokeVolume
 #include "hwrenderer/postprocessing/hw_postprocess_cvars.h"	// [SMOKEVOLUME] r_smoke_steps, r_smoke_density_scale, r_smoke_debugslice
+#include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::GetDrawState, for SetupEmissiveVolumes
 #include "hw_vrmodes.h"
 #include "hw_vrwheel.h"
 #include "hw_clipper.h"
@@ -1007,6 +1008,135 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 	}
 
 	PerfLog::AddCpuSample("fx.smokedraw", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//==========================================================================
+//
+// [EMISSIVEVOLUMES] This scene's emissive volume march, per eye, for PPEmissiveVolumes (hw_postprocess.h; "Engine docs/
+// EMISSIVE_VOLUMES_15_IMPL_NOTES.md").
+//
+// MAIN VIEW ONLY and before DrawScene, like SetupSmokeVolume: a camera texture has no post pass, a save picture's post pass must
+// not draw the main view's volumes, and portals run RenderScene again with their own views.
+//
+// PUBLISHED ONLY WHEN THERE ARE VOLUMES TO DRAW: Vulkan; this frame's list has volumes (EmissiveVolumes::GetDrawState, decided
+// by PrepareFrameCompute before the eye loop); and the backend holds exactly that list (EmissiveVolumesStatus, written by this
+// frame's RunFrameCompute, which put the list and the noise where a pass reads them). Otherwise the pass returns on its first
+// line, and so does the smoke's request for the curve.
+//
+// PER EYE, as SetupSmokeVolume: a multiview scene publishes a march for each eye, any other one from VPUniforms.
+//
+// THE RECTANGLE. Each eye's union of its volumes' bounding spheres on screen, so a texel no volume can cover returns clear on its
+// first line: a sphere's box in view space (its radius grown by the view matrix's largest axis scale, which carries the pixel
+// stretch), projected with the ray's own terms (TanHalfFov, ProjOffset) from its nearest and farthest depth. A sphere reaching
+// the eye's plane covers the whole screen.
+//
+//==========================================================================
+
+static void SetupEmissiveVolumes(const HWDrawInfo *di, bool toscreen)
+{
+	PPEmissiveVolumes &pass = hw_postprocess.emissivevolumes;
+	pass.ClearEyes();
+
+	FLevelLocals *Level = di->Level;
+	if (!toscreen || Level == nullptr || !screen->IsVulkan())
+		return;
+
+	const EmissiveVolumes::DrawState &draw = EmissiveVolumes::Get().GetDrawState();
+	const EmissiveVolumeBackendStatus &status = EmissiveVolumesStatus();
+	if (draw.Count <= 0 || !status.ListReady || status.Count != draw.Count || status.Serial != draw.Serial)
+		return;
+
+	const bool timed = PerfLog::GroupsWanted();
+	const uint64_t startNs = timed ? I_nsTime() : 0;
+
+	// The list's origin in GL world axes (map x, map z, map y).
+	const double originGL[3] = { draw.Origin[0], draw.Origin[2], draw.Origin[1] };
+	const int steps = clamp((int)r_emissivevolumes_steps, 8, 64);
+
+	const int eyeSets = di->HasMultiviewViewpoints ? 2 : 1;
+	for (int eye = 0; eye < eyeSets; eye++)
+	{
+		const HWViewpointUniforms &vpu = di->HasMultiviewViewpoints ? di->MultiviewVPUniforms[eye] : di->VPUniforms;
+
+		// Copies, so nothing here depends on which VSMatrix members are const (as SetupHeatSources).
+		VSMatrix view = vpu.mViewMatrix;
+		VSMatrix projection = vpu.mProjectionMatrix;
+		VSMatrix viewToWorld;
+		if (!view.inverseMatrix(viewToWorld))
+			viewToWorld.loadIdentity();
+		const float *vm = view.get();
+		const float *inv = viewToWorld.get();
+		const float *proj = projection.get();
+
+		EmissiveVolumeUniforms u = {};
+		memcpy(u.ViewToWorld, inv, sizeof(float) * 16);
+		const double tanX = proj[0] != 0.0f ? 1.0 / proj[0] : 1.0;
+		const double tanY = proj[5] != 0.0f ? 1.0 / proj[5] : 1.0;
+		u.TanHalfFov = FVector2((float)tanX, (float)tanY);
+		u.ProjOffset = FVector2(proj[8], proj[9]);
+		// Relative to this eye: ViewToWorld's translation is the eye in GL world axes.
+		u.ListOrigin = FVector3((float)(originGL[0] - inv[12]), (float)(originGL[1] - inv[13]), (float)(originGL[2] - inv[14]));
+		u.VolumeCount = draw.Count;
+		u.StepCount = steps;
+
+		// The view matrix's largest axis scale: a world sphere of radius r fits in a view-space sphere of radius r x this.
+		double axisScale = 0.0;
+		for (int c = 0; c < 3; c++)
+			axisScale = std::max(axisScale, std::sqrt((double)vm[c * 4] * vm[c * 4] + (double)vm[c * 4 + 1] * vm[c * 4 + 1] + (double)vm[c * 4 + 2] * vm[c * 4 + 2]));
+
+		double lo[2] = { 1.0, 1.0 }, hi[2] = { 0.0, 0.0 };
+		bool whole = false;
+		for (int i = 0; i < draw.Count && !whole; i++)
+		{
+			const double wx = originGL[0] + draw.Centre[i][0], wy = originGL[1] + draw.Centre[i][1], wz = originGL[2] + draw.Centre[i][2];
+			const double vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
+			const double vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
+			const double vz = vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14];
+			const double r = draw.Radius[i] * axisScale;
+			const double nearDepth = -vz - r, farDepth = -vz + r;
+			if (!(nearDepth > 1e-3))
+			{
+				whole = true;
+				break;
+			}
+			const double view[2] = { vx, vy };
+			const double tan[2] = { tanX, tanY };
+			const double offset[2] = { proj[8], proj[9] };
+			for (int k = 0; k < 2; k++)
+			{
+				// The four corners' slopes (view / depth) over the nearest and farthest depth, then the ray's own mapping from a
+				// slope to TexCoord: ndc = slope / TanHalfFov - ProjOffset, TexCoord = (ndc + 1) / 2.
+				const double slopes[4] = { (view[k] - r) / nearDepth, (view[k] - r) / farDepth, (view[k] + r) / nearDepth, (view[k] + r) / farDepth };
+				for (double s : slopes)
+				{
+					const double coord = (s / tan[k] - offset[k] + 1.0) * 0.5;
+					lo[k] = std::min(lo[k], coord);
+					hi[k] = std::max(hi[k], coord);
+				}
+			}
+		}
+		if (whole)
+		{
+			u.RectMin = FVector2(0.0f, 0.0f);
+			u.RectMax = FVector2(1.0f, 1.0f);
+		}
+		else
+		{
+			u.RectMin = FVector2((float)clamp(lo[0] - 1e-4, 0.0, 1.0), (float)clamp(lo[1] - 1e-4, 0.0, 1.0));
+			u.RectMax = FVector2((float)clamp(hi[0] + 1e-4, 0.0, 1.0), (float)clamp(hi[1] + 1e-4, 0.0, 1.0));
+		}
+		pass.SetEyeMarch(eye, u);
+	}
+	pass.SetEyeSets(eyeSets);
+
+	PPEmissiveVolumeSettings settings;
+	settings.Count = draw.Count;
+	settings.Absorbs = draw.Absorbs;
+	settings.Resolution = clamp((int)r_emissivevolumes_resolution, 1, 2);
+	pass.SetSettings(settings);
+
+	if (timed)
+		PerfLog::AddCpuSample("fx.emissive", (double)(I_nsTime() - startNs) / 1e6);
 }
 
 //==========================================================================
@@ -3735,6 +3865,21 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	if (toscreen)
 		SyncViewLights(this);
 
+	// [PPPROJECT] Each eye's world-to-clip, for custom post-process shaders' projected uniforms. Main view only. A camera
+	// texture leaves the last main view's set in place, since a script's projection native runs before the frame's scene.
+	if (toscreen)
+	{
+		const int projectionSets = HasMultiviewViewpoints ? 2 : 1;
+		for (int eye = 0; eye < projectionSets; eye++)
+		{
+			const HWViewpointUniforms &vpu = HasMultiviewViewpoints ? MultiviewVPUniforms[eye] : VPUniforms;
+			VSMatrix projection = vpu.mProjectionMatrix;
+			VSMatrix view = vpu.mViewMatrix;
+			PPCustomShaders::SetEyeView(eye, projection.get(), view.get());
+		}
+		PPCustomShaders::SetEyeSets(projectionSets);
+	}
+
 	// [HEATREFRACTION] This view's heat sources, per eye, for the heat shimmer pass --
 	// before DrawScene, so no portal view reaches them. Cleared when not toscreen.
 	SetupHeatSources(this, toscreen);
@@ -3742,6 +3887,10 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// [SMOKEVOLUME] This view's smoke volume march, per eye, for the smoke pass -- before
 	// DrawScene, as the heat sources. Cleared when not toscreen.
 	SetupSmokeVolume(this, toscreen);
+
+	// [EMISSIVEVOLUMES] This view's emissive volume march, per eye, for their pass -- before DrawScene, as the smoke. Cleared when not
+	// toscreen.
+	SetupEmissiveVolumes(this, toscreen);
 
 	// [BLOOMOVERRIDE] The level's bloom override to the bloom pass, main view only
 	// (SyncBloomOverride above). With none ever set this is a flag test.

@@ -531,6 +531,15 @@ enum EEffectLightFlags
 	EFL_EXACTHOLD = 32,		// a landed light keeps lighting for all of `hold`, not a varied share of it
 };
 
+// [EMISSIVEVOLUMES] What LevelLocals.SpawnEmissiveVolume's volume follows (hw_emissivevolumecore.h; the tracked-pose anchors).
+enum EEmissiveVolumeFollow
+{
+	EVF_WORLD = 0,		// nothing: it stays where it was fired (its velocity still moves it)
+	EVF_MAINHAND = 1,	// the named player's main hand
+	EVF_OFFHAND = 2,	// the named player's off hand
+	EVF_HEAD = 3,		// the named player's head
+};
+
 struct LevelLocals native
 {
 	enum EUDMF
@@ -1705,6 +1714,33 @@ struct LevelLocals native
 	// particles. Presentation like every particle: nothing about a piece is returned or can be read.
 	native clearscope int ParticleDefinition(Name defName);
 	native clearscope void SpawnParticles(int def, Vector3 pos, Vector3 dir, int count, double spread, double speed, double speedJitter, double life, double lifeJitter, color tint = 0xffffffff, double intensity = 1.0, double sizeScale = 1.0, int seed = 0, int shape = 0, Vector3 surfacePoint = (0,0,0), Vector3 surfaceNormal = (0,0,0), double floorZ = -32768);
+
+	// [EMISSIVEVOLUMES] EMISSIVE VOLUMES ("Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): a short-lived glowing gas volume -- a
+	// fireball, a long gout, a star of petals, a ring -- drawn with real depth in each eye, lit hot to cool on the engine's heat
+	// ramp, flickering, and lighting the haze around it in its own colour. Muzzle flashes, explosion cores, plasma bursts, the BFG
+	// blast. Its look is a VOLUMEDEFS definition (keys: src/gamedata/volumedefs.cpp); a later definition of the same name
+	// replaces an earlier one. Vulkan only.
+	//
+	// EmissiveVolumeDefinition(name) gives a HANDLE to cache. NETPLAY: it comes from the name's text alone -- the same number on
+	// every machine, never 0 -- and says nothing about whether the definition loaded here.
+	//
+	// EmissiveVolumeEnabled(def): whether THIS machine draws that definition's volumes right now -- it loaded the definition,
+	// runs Vulkan, and the player's "Volumetric flashes" setting draws its class. PRESENTATION ONLY: use it to choose what to
+	// draw (a volume, or your older flash cone and card); never let anything that affects play branch on it.
+	//
+	// SpawnEmissiveVolume: pos is the root (a muzzle), dir the way the gas leaves (any length). scale multiplies every length,
+	// brightness the intensity, lifeScale the life (the player's "Flash length" may still shorten or stretch a gun's). tint
+	// multiplies the definition's tint. vel (map units per second) moves it, slowed by the definition's drag. seed 0 is hashed
+	// from the tic and the place, so every shot differs (a definition with `signature = 1` keeps one shape). follow
+	// (EEmissiveVolumeFollow) and followPlayer (a player number -- the gun owner's PlayerNumber(); never implied): the volume
+	// moves with that hand or head at frame rate, as its definition's `motion` (or the player's "Flash motion") says -- the root
+	// stays on the muzzle while the flame trails, the whole flash stays where fired, or it rides the gun; followShare (0..1) is
+	// how much of the motion it takes. lightScale multiplies its effect light. EVENTS: 128 a tic, more are dropped (logged once
+	// per map). CLEARSCOPE and ONE-WAY: nothing reads it back, it is not saved. A non-finite number, handle 0, or no scale or
+	// brightness is ignored.
+	native static clearscope int EmissiveVolumeDefinition(Name defName);
+	native static clearscope bool EmissiveVolumeEnabled(int def);
+	native clearscope void SpawnEmissiveVolume(int def, Vector3 pos, Vector3 dir, double scale = 1.0, double brightness = 1.0, double lifeScale = 1.0, color tint = 0xffffffff, Vector3 vel = (0,0,0), int seed = 0, int follow = 0, int followPlayer = -1, double followShare = 1.0, double lightScale = 1.0);
 
 	native clearscope void SetBeam(int index, Vector3 start, Vector3 end, double thick, double soft, color col, double intensity);
 	// WHERE THIS BEAM STARTS FROM: 0 the point given to SetBeam, 1 the main

@@ -403,7 +403,9 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	// below is 13d's.
 	const bool beamsHere = beams.BeamCount > 0 && (beams.Scatter || beams.Depth);
 	const bool conesHere = beams.Cones && hw_postprocess.volbeam.HasCones();
-	const bool curveHere = beamsHere || conesHere;
+	// [EMISSIVEVOLUMES] An emissive volume drawn this eye reads the curve too (PPEmissiveVolumes). No volume: as above.
+	const bool volumesHere = hw_postprocess.emissivevolumes.HasVolumes();
+	const bool curveHere = beamsHere || conesHere || volumesHere;
 
 	// One line whenever the variant, the eye arrangement or the textures change, so a test log shows
 	// which ran. Never one per frame.
@@ -488,8 +490,23 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 		curve.NearBeamsOnly = conesHere ? 0.0f : 1.0f;
 
 		renderstate->Clear();
-		renderstate->Shader = &CurveShader;
-		renderstate->Uniforms.Set(curve);
+		// [EMISSIVEVOLUMES] With a volume drawn this eye: the SMOKE_CURVE_NEAR_VOLUMES variant -- the same curve, marched where a
+		// beam OR a volume can read it (everywhere while a cone reads it: NearBeamsOnly 0, as CurveShader), binding 8 the volume
+		// list. It also stands the volume list in for the beam list at binding 7 when there are no beams, whose image the smoke
+		// backend makes only for beams. No volume: CurveShader, as before.
+		if (volumesHere)
+		{
+			SmokeCurveNearVolumesUniforms nearVolumes = {};
+			memcpy(&nearVolumes, &curve, sizeof(SmokeBeamScatterUniforms));
+			hw_postprocess.emissivevolumes.FillCurveUniforms(nearVolumes);
+			renderstate->Shader = &CurveNearVolumesShader;
+			renderstate->Uniforms.Set(nearVolumes);
+		}
+		else
+		{
+			renderstate->Shader = &CurveShader;
+			renderstate->Uniforms.Set(curve);
+		}
 		renderstate->Viewport = HalfViewport;
 		renderstate->SetInputTexture(0, &DepthTexture);
 		renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
@@ -499,6 +516,12 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 		renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
 		renderstate->SetInputTexture(6, &MarchTexture);
 		renderstate->SetInputExternalImage(7, PPExternalImage::SmokeBeams);
+		if (volumesHere)
+		{
+			if (beams.BeamCount <= 0)
+				renderstate->SetInputExternalImage(7, PPExternalImage::EmissiveVolumeList);	// [EMISSIVEVOLUMES] the stand-in: no beam is read
+			renderstate->SetInputExternalImage(8, PPExternalImage::EmissiveVolumeList);	// [EMISSIVEVOLUMES]
+		}
 		renderstate->SetOutputTexture(&CurveTexture);
 		renderstate->SetNoBlend();
 		renderstate->Draw();
@@ -610,6 +633,152 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 			renderstate->SetInputTexture(4, &CurveTexture);
 			renderstate->SetInputExternalImage(5, PPExternalImage::SmokeBeams);
 		}
+		renderstate->SetOutputLightMaskCurrent();
+		renderstate->SetPremultipliedAlphaBlend();
+		renderstate->Draw();
+		renderstate->PopGroup();
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+// [EMISSIVEVOLUMES] The emissive volumes' drawing: see PPEmissiveVolumes (hw_postprocess.h) and shaders/pp/emissivevolume.fp.
+
+void PPEmissiveVolumes::UpdateTextures(int sceneWidth, int sceneHeight, int resolution)
+{
+	if (sceneWidth == lastWidth && sceneHeight == lastHeight && resolution == lastResolution)
+		return;
+
+	MarchViewport.left = 0;
+	MarchViewport.top = 0;
+	MarchViewport.width = resolution == 1 ? sceneWidth : (sceneWidth + 1) / 2;
+	MarchViewport.height = resolution == 1 ? sceneHeight : (sceneHeight + 1) / 2;
+	// R32F: the linear depth each texel marches to. RGBA16F: rgb light, a transmittance.
+	DepthTexture = { MarchViewport.width, MarchViewport.height, PixelFormat::R32f };
+	MarchTexture = { MarchViewport.width, MarchViewport.height, PixelFormat::Rgba16f };
+	BlurTexture = { MarchViewport.width, MarchViewport.height, PixelFormat::Rgba16f };
+
+	lastWidth = sceneWidth;
+	lastHeight = sceneHeight;
+	lastResolution = resolution;
+}
+
+void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight)
+{
+	// SKIPPED, NOT ZERO: nothing published for this eye means no group, no texture and no draw.
+	if (eyeSets <= 0 || settings.Count <= 0 || sceneWidth <= 0 || sceneHeight <= 0)
+		return;
+
+	const int set = CurrentSet();
+	const bool multisampled = gl_multisample > 1;
+	const int resolution = settings.Resolution <= 1 ? 1 : 2;
+	UpdateTextures(sceneWidth, sceneHeight, resolution);
+
+	// This eye's smoke drew its depth and transmittance curve just before (Pass1 order): the march is dimmed by the haze in
+	// front of each step, and at half resolution it marches to the smoke's own depth texture.
+	PPSmokeVolume &smoke = hw_postprocess.smokevolume;
+	const bool inSmoke = smoke.TransmittanceReady();
+	const bool sharedDepth = inSmoke && resolution == 2;
+
+	// One line whenever the variant, the eye arrangement or the textures change, so a test log shows which ran.
+	{
+		static int loggedMultisample = -1, loggedSets = -1, loggedWidth = -1, loggedHeight = -1, loggedSmoke = -1;
+		if (loggedMultisample != (int)multisampled || loggedSets != eyeSets || loggedWidth != MarchViewport.width ||
+			loggedHeight != MarchViewport.height || loggedSmoke != (int)inSmoke)
+		{
+			loggedMultisample = (int)multisampled;
+			loggedSets = eyeSets;
+			loggedWidth = MarchViewport.width;
+			loggedHeight = MarchViewport.height;
+			loggedSmoke = (int)inSmoke;
+			Printf("emissive volumes: drawing -- %s depth read, %s, %s, march %dx%d\n",
+				multisampled ? "MULTISAMPLE" : "single-sample",
+				eyeSets >= 2 ? "a march set per eye (multiview scene)" : "one march set (each eye draws its own scene)",
+				inSmoke ? "dimmed by the haze in front" : "no smoke curve", MarchViewport.width, MarchViewport.height);
+		}
+	}
+
+	SmokeDepthUniforms depth = {};
+	depth.SceneScale = screen->SceneScale();
+	depth.SceneOffset = screen->SceneOffset();
+	depth.LinearizeDepthA = 1.0f / screen->GetZFar() - 1.0f / screen->GetZNear();
+	depth.LinearizeDepthB = max(1.0f / screen->GetZNear(), 1.e-8f);
+
+	renderstate->PushGroup("pp.emissive");
+
+	// 1. The depth to march to. Every draw below writes the whole viewport of its target with no blend, which clears what the
+	//    last eye or frame left there.
+	PPTexture *depthTexture = sharedDepth ? smoke.GetDepthTexture() : &DepthTexture;
+	if (!sharedDepth)
+	{
+		renderstate->Clear();
+		renderstate->Shader = multisampled ? &DepthShaderMS : &DepthShader;
+		renderstate->Uniforms.Set(depth);
+		renderstate->Viewport = MarchViewport;
+		renderstate->SetInputSceneDepth(0);
+		renderstate->SetOutputTexture(&DepthTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+	}
+
+	// 2. The march, reading the list and the noise the backend keeps (PPExternalImage), and in smoke the smoke's curve.
+	renderstate->Clear();
+	renderstate->Shader = inSmoke ? &MarchSmokeShader : &MarchShader;
+	renderstate->Uniforms.Set(marches[set]);
+	renderstate->Viewport = MarchViewport;
+	renderstate->SetInputTexture(0, depthTexture);
+	renderstate->SetInputExternalImage(1, PPExternalImage::EmissiveVolumeList);
+	renderstate->SetInputExternalImage(2, PPExternalImage::EmissiveNoise, PPFilterMode::Linear, PPWrapMode::Repeat);
+	if (inSmoke)
+	{
+		renderstate->SetInputTexture(3, smoke.GetMarchTexture());
+		renderstate->SetInputTexture(4, smoke.GetDepthTexture());
+		renderstate->SetInputTexture(5, smoke.GetCurveTexture());
+	}
+	renderstate->SetOutputTexture(&MarchTexture);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+
+	// 3. The blur that keeps to its depth: across into BlurTexture, then down back into MarchTexture.
+	for (int pass = 0; pass < 2; pass++)
+	{
+		renderstate->Clear();
+		renderstate->Shader = pass == 0 ? &BlurHorizontal : &BlurVertical;
+		renderstate->Viewport = MarchViewport;
+		renderstate->SetInputTexture(0, pass == 0 ? &MarchTexture : &BlurTexture);
+		renderstate->SetInputTexture(1, depthTexture);
+		renderstate->SetOutputTexture(pass == 0 ? &BlurTexture : &MarchTexture);
+		renderstate->SetNoBlend();
+		renderstate->Draw();
+	}
+
+	// 4. Up to full resolution and onto the image: scene x T + light, premultiplied, in place (no pipeline image advances).
+	renderstate->Clear();
+	renderstate->Shader = multisampled ? &CompositeShaderMS : &CompositeShader;
+	renderstate->Uniforms.Set(depth);
+	renderstate->Viewport = screen->mSceneViewport;
+	renderstate->SetInputTexture(0, &MarchTexture);
+	renderstate->SetInputTexture(1, depthTexture);
+	renderstate->SetInputSceneDepth(2);
+	renderstate->SetOutputCurrent();
+	renderstate->SetPremultipliedAlphaBlend();
+	renderstate->Draw();
+
+	renderstate->PopGroup();
+
+	// 5. [LIGHTMASK] A volume that absorbs dims the light mask by its own transmittance ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2e):
+	//    the same composite with LIGHT_MASK_CARRY onto the mask in place, adding no light of either class. A volume that only
+	//    glows needs no carry: an additive pass after the scene leaves the pinned share falling correctly.
+	if (settings.Absorbs && hw_postprocess.lightmask.PostInputValid())
+	{
+		renderstate->PushGroup("pp.lightmaskcarry");
+		renderstate->Clear();
+		renderstate->Shader = multisampled ? &MaskCarryShaderMS : &MaskCarryShader;
+		renderstate->Uniforms.Set(depth);
+		renderstate->Viewport = screen->mSceneViewport;
+		renderstate->SetInputTexture(0, &MarchTexture);
+		renderstate->SetInputTexture(1, depthTexture);
+		renderstate->SetInputSceneDepth(2);
 		renderstate->SetOutputLightMaskCurrent();
 		renderstate->SetPremultipliedAlphaBlend();
 		renderstate->Draw();
@@ -2054,6 +2223,65 @@ void PPShadowMap::Update(PPRenderState* renderstate)
 
 CVAR(Bool, gl_custompost, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)  // user can change this
 
+// [PPPROJECT] Per-eye world-to-clip for custom post-process shaders' projected uniforms (hw_postprocess.h).
+PPCustomShaders::EyeView PPCustomShaders::Eyes[2];
+int PPCustomShaders::EyeSets = 0;
+int PPCustomShaders::CurrentEye = 0;
+
+void PPCustomShaders::SetEyeView(int set, const float *projection, const float *view)
+{
+	if (set < 0 || set > 1 || projection == nullptr || view == nullptr)
+		return;
+	float *out = Eyes[set].WorldToClip;
+	for (int c = 0; c < 4; c++)
+	{
+		for (int r = 0; r < 4; r++)
+		{
+			float sum = 0.0f;
+			for (int k = 0; k < 4; k++)
+				sum += projection[k * 4 + r] * view[c * 4 + k];
+			out[c * 4 + r] = sum;
+		}
+	}
+	Eyes[set].FocalY = projection[5];
+}
+
+bool PPCustomShaders::ProjectWorld(int set, double worldX, double worldY, double worldZ, double &u, double &v, double &clipZ, double &focalY)
+{
+	if (EyeSets <= 0)
+		return false;
+	if (set < 0 || set >= EyeSets)
+		set = 0;
+	const float *m = Eyes[set].WorldToClip;
+	// Game (x, y, z) -> GL world (x, z, y), as the heat and smoke passes upload positions.
+	const double x = worldX, y = worldZ, z = worldY;
+	const double cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+	const double cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+	const double cz = m[2] * x + m[6] * y + m[10] * z + m[14];
+	const double cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+	if (cw == 0.0)
+		return false;
+	u = cx / cw * 0.5 + 0.5;
+	v = cy / cw * 0.5 + 0.5;
+	clipZ = cz;
+	focalY = Eyes[set].FocalY;
+	return true;
+}
+
+bool PP_ProjectWorldForView(double worldX, double worldY, double worldZ, double &u, double &v, double &clipZ)
+{
+	double focalY;
+	return PPCustomShaders::ProjectWorld(0, worldX, worldY, worldZ, u, v, clipZ, focalY);
+}
+
+bool PP_GetViewFocalY(double &focalY)
+{
+	if (PPCustomShaders::EyeSets <= 0)
+		return false;
+	focalY = PPCustomShaders::Eyes[0].FocalY;
+	return true;
+}
+
 void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 {
 	if (!gl_custompost)
@@ -2070,13 +2298,55 @@ void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 		mLastHeight = height;
 	}
 
+	bool depthResolved = false;	// [CUSTOMDEPTH] once per call, i.e. once per eye
 	for (auto &shader : mShaders)
 	{
 		if (shader->Desc->Target == target && shader->Desc->Enabled)
 		{
+			if (shader->UsesSceneDepth() && !depthResolved)
+			{
+				ResolveSceneDepth(renderstate);
+				depthResolved = true;
+			}
 			shader->Run(renderstate);
 		}
 	}
+}
+
+// [CUSTOMDEPTH] The scene depth as a custom shader samples it: raw [0,1] window depth in a single-sample R32F texture over
+// the screen viewport, so TexCoord reads the same pixel as InputTexture, with or without MSAA (shaders/pp/customdepth.fp).
+// Every texel is written with no blend, which clears what the last eye or frame left.
+void PPCustomShaders::ResolveSceneDepth(PPRenderState *renderstate)
+{
+	const int width = screen->mScreenViewport.width;
+	const int height = screen->mScreenViewport.height;
+	if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+		return;
+
+	if (width != mDepthWidth || height != mDepthHeight)
+	{
+		mResolvedDepth = { width, height, PixelFormat::R32f };
+		mDepthWidth = width;
+		mDepthHeight = height;
+	}
+
+	CustomDepthUniforms u = {};
+	u.SceneScale = screen->SceneScale();
+	u.SceneOffset = screen->SceneOffset();
+
+	renderstate->PushGroup("pp.customdepth");
+	renderstate->Clear();
+	renderstate->Shader = gl_multisample > 1 ? &mDepthShaderMS : &mDepthShader;
+	renderstate->Uniforms.Set(u);
+	renderstate->Viewport.left = 0;
+	renderstate->Viewport.top = 0;
+	renderstate->Viewport.width = width;
+	renderstate->Viewport.height = height;
+	renderstate->SetInputSceneDepth(0);
+	renderstate->SetOutputTexture(&mResolvedDepth);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+	renderstate->PopGroup();
 }
 
 void PPCustomShaders::UpdateLastInputTexture(PPRenderState *renderstate)
@@ -2108,14 +2378,25 @@ void PPCustomShaders::CreateShaders()
 
 	for (unsigned int i = 0; i < PostProcessShaders.Size(); i++)
 	{
-		mShaders.push_back(std::make_unique<PPCustomShaderInstance>(&PostProcessShaders[i], &mLastInputTexture));
+		mShaders.push_back(std::make_unique<PPCustomShaderInstance>(&PostProcessShaders[i], &mLastInputTexture, &mResolvedDepth));
 	}
 }
 
 /////////////////////////////////////////////////////////////////////////////
 
-PPCustomShaderInstance::PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture) : Desc(desc), LastInputTexture(lastInputTexture)
+PPCustomShaderInstance::PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture, PPTexture *resolvedDepth) : Desc(desc), LastInputTexture(lastInputTexture), ResolvedDepth(resolvedDepth)
 {
+	// [CUSTOMDEPTH] PPCustomShaders::Run resolves the scene depth before this shader runs when it names one.
+	{
+		TMap<FString, FString>::Iterator itDepth(Desc->Textures);
+		TMap<FString, FString>::Pair *pairDepth;
+		while (itDepth.NextPair(pairDepth))
+		{
+			if (!pairDepth->Value.CompareNoCase("SceneDepth"))
+				NeedsSceneDepth = true;
+		}
+	}
+
 	// Build an uniform block to be used as input
 	TMap<FString, PostProcessUniformValue>::Iterator it(Desc->Uniforms);
 	TMap<FString, PostProcessUniformValue>::Pair *pair;
@@ -2196,13 +2477,33 @@ void PPCustomShaderInstance::SetTextures(PPRenderState *renderstate)
 {
 	renderstate->SetInputCurrent(0, PPFilterMode::Linear);
 
+	// SetupShader gives every texture entry a binding in this iteration order, so each entry takes its index whether or
+	// not it resolves: a name that fails must not shift the later bindings.
 	int textureIndex = 1;
 	TMap<FString, FString>::Iterator it(Desc->Textures);
 	TMap<FString, FString>::Pair *pair;
 	while (it.NextPair(pair))
 	{
 		FString name = pair->Value;
+		if (!name.CompareNoCase("SceneDepth"))
+		{
+			// The scene depth by name (GZSelaco): this eye's depth, resolved by PPCustomShaders::Run into a single-sample
+			// texture over the screen viewport ([CUSTOMDEPTH]), so the prolog's sampler2D reads it at TexCoord with or
+			// without MSAA.
+			if (ResolvedDepth != nullptr) renderstate->SetInputTexture(textureIndex, ResolvedDepth, PPFilterMode::Nearest);
+			else if (gl_multisample > 1) renderstate->SetInputCurrent(textureIndex, PPFilterMode::Nearest);
+			else renderstate->SetInputSceneDepth(textureIndex);
+			textureIndex++;
+			continue;
+		}
 		auto gtex = TexMan.GetGameTexture(TexMan.CheckForTexture(name.GetChars(), ETextureType::Any), true);
+		if (!gtex || !gtex->isValid())
+		{
+			// Unresolved: keep the binding valid and the later indices where the prolog put them.
+			renderstate->SetInputCurrent(textureIndex, PPFilterMode::Linear);
+			textureIndex++;
+			continue;
+		}
 		if (gtex && gtex->isValid())
 		{
 			// Why does this completely circumvent the normal way of handling textures?
@@ -2260,6 +2561,28 @@ void PPCustomShaderInstance::SetUniforms(PPRenderState *renderstate)
 		if (it2 != FieldOffset.end())
 		{
 			uint8_t *dst = &uniforms[it2->second];
+
+			// [PPPROJECT] A projected uniform takes the eye being post-processed; with no view published, the script's value.
+			if (pair->Value.Projection != 0)
+			{
+				double pu, pv, clipZ, focalY;
+				if (PPCustomShaders::ProjectWorld(PPCustomShaders::CurrentEyeSet(), pair->Value.World[0], pair->Value.World[1], pair->Value.World[2], pu, pv, clipZ, focalY))
+				{
+					if (pair->Value.Projection == 1 && pair->Value.Type == PostProcessUniformType::Vec3)
+					{
+						const float point[3] = { (float)pu, (float)pv, (float)clipZ };
+						memcpy(dst, point, sizeof(point));
+						continue;
+					}
+					if (pair->Value.Projection == 2 && pair->Value.Type == PostProcessUniformType::Float)
+					{
+						const float scale = clipZ < screen->GetZNear() ? 0.0f : (float)(pair->Value.Size * 0.5 * focalY / clipZ);
+						memcpy(dst, &scale, sizeof(scale));
+						continue;
+					}
+				}
+			}
+
 			float fValues[4];
 			int iValues[4];
 			switch (pair->Value.Type)
@@ -2408,6 +2731,9 @@ void Postprocess::Pass1(PPRenderState* state, int fixedcm, int sceneWidth, int s
 	// smoke. It is skipped entirely when there is no smoke (PPSmokeVolume).
 	smokevolume.Render(state, sceneWidth, sceneHeight);
 	volbeam.Render(state, sceneWidth, sceneHeight);
+	// [EMISSIVEVOLUMES] Emissive volumes, after the cones and before the heatmap: haze in front dims them, haze behind does not,
+	// their shimmer bends them and they bloom. Skipped entirely with no volume (PPEmissiveVolumes).
+	emissivevolumes.Render(state, sceneWidth, sceneHeight);
 	heatmap.Render(state, sceneWidth, sceneHeight);
 	// [HEATREFRACTION] Heat refraction, then bloom: the image bends before it glows.
 	heatrefraction.Render(state, sceneWidth, sceneHeight);

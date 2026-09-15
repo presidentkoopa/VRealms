@@ -655,6 +655,33 @@ struct FEffectLightEvent
 	int      Flags = 0;
 };
 
+// [EMISSIVEVOLUMES] One SpawnEmissiveVolume ("Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): a short-lived glowing gas volume of
+// VOLUMEDEFS definition handle Definition, its root at Pos, its gas leaving along Dir (unit), moving with Vel. Map units and
+// seconds. When Follow is 1-3 and FollowValid, FollowPlayer's main hand, off hand or head was at FollowPos with FollowYaw and
+// FollowPitch (radians, ResolveTrackedPose's convention) when it was spawned: the renderer moves the volume by how that pose has
+// moved since. Clamped by the native (vmthunks.cpp); the renderer resolves the definition, moves, fades and draws it
+// (hw_emissivevolumes.cpp).
+struct FEmissiveVolumeEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	DVector3 Dir{ 0., 0., 1. };
+	DVector3 Vel{ 0., 0., 0. };
+	DVector3 FollowPos{ 0., 0., 0. };
+	double   Scale = 1.;
+	double   Brightness = 1.;
+	double   LifeScale = 1.;
+	double   FollowShare = 1.;
+	double   LightScale = 1.;
+	double   FollowYaw = 0.;
+	double   FollowPitch = 0.;
+	int      Definition = 0;
+	int      Seed = 0;
+	int      Follow = 0;
+	int      FollowPlayer = -1;
+	uint32_t Tint = 0xffffffff;
+	bool     FollowValid = false;
+};
+
 struct FLevelLocals
 {
 	void *level;
@@ -1639,6 +1666,10 @@ public:
 	// lights over ten tics, a Super Shotgun volley's impacts about 20 a tic.
 	static constexpr int MAX_EFFECT_LIGHTS_PER_TIC = 512;
 	FEffectTicQueue<FEffectLightEvent, MAX_EFFECT_LIGHTS_PER_TIC> EffectLightSpawns;	// [EFFECTLIGHTS] written by SpawnEffectLight
+	// [EMISSIVEVOLUMES] SpawnEmissiveVolume calls per tic ("Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): a chaingun pair is one a
+	// hand every four tics and a Super Shotgun volley one or two; 128 (SH4's number) leaves room for many guns and blasts at once.
+	static constexpr int MAX_EMISSIVE_VOLUMES_PER_TIC = 128;
+	FEffectTicQueue<FEmissiveVolumeEvent, MAX_EMISSIVE_VOLUMES_PER_TIC> EmissiveVolumeSpawns;	// [EMISSIVEVOLUMES] written by SpawnEmissiveVolume
 
 	// P_Ticker, at the top of this level's tic, before any writer runs.
 	void BeginEffectTic()
@@ -1649,6 +1680,7 @@ public:
 		DebrisBursts.BeginTic(maptime);
 		SurfaceDamagePaints.BeginTic(maptime);	// [SURFACEDAMAGE]
 		EffectLightSpawns.BeginTic(maptime);	// [EFFECTLIGHTS]
+		EmissiveVolumeSpawns.BeginTic(maptime);	// [EMISSIVEVOLUMES]
 	}
 
 	// ClearLevelData. maptime restarts at 0 on the new map.
@@ -1660,6 +1692,7 @@ public:
 		DebrisBursts.Reset(0);
 		SurfaceDamagePaints.Reset(0);	// [SURFACEDAMAGE]
 		EffectLightSpawns.Reset(0);	// [EFFECTLIGHTS]
+		EmissiveVolumeSpawns.Reset(0);	// [EMISSIVEVOLUMES]
 	}
 
 	// [DEBRISPOOL] Raised by ClearGpuParticles: the renderer's debris pool empties, as the ring does. A new

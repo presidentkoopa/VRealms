@@ -38,6 +38,7 @@
 #include "hwrenderer/postprocessing/hw_postprocess.h"	// [LIGHTMASK] the frame's light mask decision
 #include "hw_drawnlinebuffer.h"
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightStats
+#include "hw_emissivevolumeframe.h"	// [EMISSIVEVOLUMES] EmissiveVolumeStats
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
@@ -79,6 +80,15 @@ EXTERN_CVAR(Float, r_damage_heat_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
 EXTERN_CVAR(Bool, r_damage_test)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
 EXTERN_CVAR(Int, gl_light_castshadows)	// [LIGHTSHADOWS] hw_shadowmap.cpp
 EXTERN_CVAR(Int, gl_light_shadowmap_lights)	// [LIGHTSHADOWS] hw_shadowmap.cpp
+EXTERN_CVAR(Int, r_emissivevolumes)	// [EMISSIVEVOLUMES] hw_emissivevolumes.cpp
+EXTERN_CVAR(Int, r_emissivevolumes_length)
+EXTERN_CVAR(Int, r_emissivevolumes_motion)
+EXTERN_CVAR(Int, r_emissivevolumes_max)
+EXTERN_CVAR(Bool, r_emissivevolumes_light)
+EXTERN_CVAR(Float, r_emissivevolumes_brightness)
+EXTERN_CVAR(Int, r_emissivevolumes_test)
+EXTERN_CVAR(Int, r_emissivevolumes_steps)	// [EMISSIVEVOLUMES] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Int, r_emissivevolumes_resolution)
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -183,6 +193,7 @@ namespace
 		int DlightsMax = 0;
 		int64_t SpritesSum = 0, WallsSum = 0, FlatsSum = 0;
 		EffectLightFrameStats EffectLightsMax;	// [EFFECTLIGHTS] each number's largest frame in the window
+		EmissiveVolumeFrameStats EmissiveVolumesMax;	// [EMISSIVEVOLUMES] each number's largest frame in the window
 		// [LIGHTSHADOWS] The shadow map: its CPU time on each frame that ran the pass (IShadowMap::UpdateCycles -- the rows, their
 		// upload and the pass's recording); the largest frame's rows, and of them the rows of lights that ask to cast; and where
 		// the relink total (dynlights_links_total) stood when the window began.
@@ -221,6 +232,7 @@ namespace
 		W.DlightsMax = 0;
 		W.SpritesSum = W.WallsSum = W.FlatsSum = 0;
 		W.EffectLightsMax = EffectLightFrameStats();	// [EFFECTLIGHTS]
+		W.EmissiveVolumesMax = EmissiveVolumeFrameStats();	// [EMISSIVEVOLUMES]
 		W.ShadowCpu.Clear();	// [LIGHTSHADOWS]
 		W.ShadowRowsMax = W.ShadowAskedMax = 0;
 		W.LinksAtStart = dynlights_links_total;
@@ -283,6 +295,14 @@ namespace
 				"shadow-map rows they took (walls block them; the map pass then runs even with light shadows off, and shows as gpu_ms "
 				"shadowmap); effectlightlines the line lights binned; effectlightsdropped=norow/trimmed the lights not lit because the "
 				"rows ran out or the bins' index list was full.\n\n";
+			// [EMISSIVEVOLUMES] The emissive volume names, on a legend line of their own.
+			out << "Legend (emissive volumes): pp.emissive (gpu_ms) is the emissive volumes' drawing per eye -- depth, march, blur, "
+				"composite -- only while a volume is drawn; a pp.lightmaskcarry beside it only while a drawn volume absorbs. In haze the "
+				"smoke's pp.smokebeams also holds the transmittance curve they are dimmed by. fx.emissive (cpu_fx_ms) is their CPU work: "
+				"the queue, the pool, the hand follow, their lights, the list and each eye's setup. load emissive=live/drawn/refused is "
+				"each number's largest frame in the window: volumes alive, volumes in the frame's list (at most 32), and volumes refused "
+				"(the pool full, no definition on this machine, or a class \"Volumetric flashes\" does not draw); emissivelights the "
+				"effect lights they handed over.\n\n";
 			// [LIGHTSHADOWS] The light shadow names, on a legend line of their own.
 			out << "Legend (light shadows): gpu_ms shadowmap is the shadow map pass (once a frame, both eyes share it; only while it "
 				"runs). load shadowlights=rows/asked is the largest frame's shadow-map rows (effect light rows included) and, of them, "
@@ -355,6 +375,11 @@ namespace
 			(double)(float)*r_effectlights_distance, (int)*r_effectlights_walls, (int)*r_effectlights_test);
 		// [PARTICLELIGHTS] And the particle light test, so a before/after with it labels itself.
 		out.AppendFormat(" r_particlelights_test=%d", (int)*r_particlelights_test);
+		// [EMISSIVEVOLUMES] And the emissive volume switches, so a pp.emissive / fx.emissive before/after labels itself.
+		out.AppendFormat(" r_emissivevolumes=%d r_emissivevolumes_length=%d r_emissivevolumes_motion=%d r_emissivevolumes_steps=%d r_emissivevolumes_resolution=%d r_emissivevolumes_max=%d r_emissivevolumes_light=%d r_emissivevolumes_brightness=%g r_emissivevolumes_test=%d",
+			(int)*r_emissivevolumes, (int)*r_emissivevolumes_length, (int)*r_emissivevolumes_motion, (int)*r_emissivevolumes_steps,
+			(int)*r_emissivevolumes_resolution, (int)*r_emissivevolumes_max, (int)*r_emissivevolumes_light,
+			(double)(float)*r_emissivevolumes_brightness, (int)*r_emissivevolumes_test);
 		// [LIGHTSHADOWS] And the light shadow switches, so a shadowmap / scene.* before/after labels itself. vk_raytrace is looked
 		// up by name (the Vulkan backend defines it); raytraced is what this session's shaders really do.
 		{
@@ -407,6 +432,9 @@ namespace
 		out.AppendFormat(" effectlights=%d/%d/%d/%d effectlightrows=%d effectlightlines=%d effectlightsdropped=%d/%d",
 			W.EffectLightsMax.Live, W.EffectLightsMax.Binned, W.EffectLightsMax.Merged, W.EffectLightsMax.Evicted,
 			W.EffectLightsMax.Rows, W.EffectLightsMax.Lines, W.EffectLightsMax.NoRow, W.EffectLightsMax.Trimmed);
+		// [EMISSIVEVOLUMES] The emissive volume load, on the same line.
+		out.AppendFormat(" emissive=%d/%d/%d emissivelights=%d", W.EmissiveVolumesMax.Live, W.EmissiveVolumesMax.Drawn,
+			W.EmissiveVolumesMax.Refused, W.EmissiveVolumesMax.Lights);
 		// [LIGHTSHADOWS] The light shadow load, closing the line.
 		out.AppendFormat(" shadowlights=%d/%d shadowcpu_ms=%.2f/%.2f/%.2f relinks=%llu\n\n",
 			W.ShadowRowsMax, W.ShadowAskedMax, W.ShadowCpu.Avg(), W.ShadowCpu.P95(), W.ShadowCpu.Max,
@@ -654,6 +682,15 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		if (e.Trimmed > m.Trimmed) m.Trimmed = e.Trimmed;
 		if (e.Rows > m.Rows) m.Rows = e.Rows;
 		if (e.Lines > m.Lines) m.Lines = e.Lines;
+	}
+	// [EMISSIVEVOLUMES] This frame's emissive volume load (hw_emissivevolumes.cpp): each number's largest frame.
+	{
+		const EmissiveVolumeFrameStats& e = EmissiveVolumeStats();
+		EmissiveVolumeFrameStats& m = W.EmissiveVolumesMax;
+		if (e.Live > m.Live) m.Live = e.Live;
+		if (e.Drawn > m.Drawn) m.Drawn = e.Drawn;
+		if (e.Refused > m.Refused) m.Refused = e.Refused;
+		if (e.Lights > m.Lights) m.Lights = e.Lights;
 	}
 	// [LIGHTSHADOWS] This frame's shadow map, when the frame ran the pass (IShadowMap::UpdateSerial moved on; its counters keep
 	// the last pass's values otherwise).

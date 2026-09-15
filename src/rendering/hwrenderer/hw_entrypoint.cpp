@@ -49,6 +49,7 @@
 #include "hw_debrispool.h"		// [DEBRISPOOL] DebrisPool::PrepareFrame
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
+#include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::BeginFrame, PrepareFrame
 #include <algorithm>			// [LIGHTSHADOWS] std::nth_element in CollectLights
 #include <vector>
 
@@ -227,6 +228,8 @@ static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp,
 	LevelField::Get().PrepareFrame(Level, vp.Pos, serial, input.LevelField);	// [LEVELFIELD] #8
 	DebrisPool::Get().PrepareFrame(Level, serial);	// [DEBRISPOOL] #9: its frame reaches the backend through DebrisPoolFrameForBackend
 	SurfaceDamage::Get().PrepareFrame(Level, vp.Pos.X, vp.Pos.Y, vp.Pos.Z, vp.Angles.Yaw.Radians(), vp.Angles.Pitch.Radians(), serial);	// [SURFACEDAMAGE] #17: its frame reaches the backend through SurfaceDamageFrameForBackend
+	// [EMISSIVEVOLUMES] #15: every volume with the hand poses VRMode::SetUp wrote this frame, into the list the backend uploads.
+	EmissiveVolumes::Get().PrepareFrame(Level, vp.Pos, input.EmissiveVolumes);
 }
 
 //-----------------------------------------------------------------------------
@@ -262,6 +265,12 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	auto& RenderState = *screen->RenderState();
 
 	R_SetupFrame(mainvp, r_viewwindow, camera);
+
+	// [EMISSIVEVOLUMES] This frame's emissive volumes, once, before the effect lights: the queue drained, every volume at this
+	// frame's level time, and each lit volume's light handed to the effect lights, whose BeginFrame below takes it -- so it ranks
+	// and takes a shadow-map row as any effect light (hw_emissivevolumes.h). With no volume it hands over nothing.
+	if (mainview && toscreen)
+		EmissiveVolumes::Get().BeginFrame(camera->Level, mainvp.Pos, mainvp.Angles.Yaw.Radians(), mainvp.TicFrac, LevelDataSerial(camera->Level));
 
 	// [EFFECTLIGHTS] This frame's effect lights, once, before the shadow map: the queue drained, every light at this frame's
 	// level time, the pool capped, and the point lights walls block put in row order (hw_effectlights.h). True when they want
@@ -356,6 +365,8 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 			// source set the multiview scene published for it (review S8).
 			hw_postprocess.heatrefraction.SetEye(eye_ix);
 			hw_postprocess.smokevolume.SetEye(eye_ix);	// [SMOKEVOLUME] and the smoke march set
+			hw_postprocess.emissivevolumes.SetEye(eye_ix);	// [EMISSIVEVOLUMES] and the emissive volume march set
+			PPCustomShaders::SetEye(eye_ix);	// [PPPROJECT] and the projected uniforms' eye
 			screen->PostProcessScene(false, sharedPostprocessColormap, sharedPostprocessFlash, []() {});
 			eye->AdjustBlend(nullptr);
 			V_DrawBlend(mainvp.sector);
@@ -453,6 +464,8 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 			// [HEATREFRACTION] Which eye's heat sources the pass takes (review S8).
 			hw_postprocess.heatrefraction.SetEye(eye_ix);
 			hw_postprocess.smokevolume.SetEye(eye_ix);	// [SMOKEVOLUME] and which eye's smoke march
+			hw_postprocess.emissivevolumes.SetEye(eye_ix);	// [EMISSIVEVOLUMES] and which eye's emissive volume march
+			PPCustomShaders::SetEye(eye_ix);	// [PPPROJECT] and the projected uniforms' eye
 			screen->PostProcessScene(false, cm, flash, [&]() {
 				di->DrawEndScene2D(mainvp.sector, RenderState);
 			});

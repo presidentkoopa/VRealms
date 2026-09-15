@@ -45,6 +45,7 @@ class VkSmokeVolume;
 class VkLevelField;	// [LEVELFIELD]
 class VkDebrisPool;	// [DEBRISPOOL]
 class VkSurfaceDamage;	// [SURFACEDAMAGE]
+class VkEmissiveVolumes;	// [EMISSIVEVOLUMES]
 struct FrameComputeInput;
 
 // One binding of a compute program's descriptor set (set 0), compute stage.
@@ -123,6 +124,10 @@ public:
 	// (VkDescriptorSetManager: fixed bindings 7 and 8, set 1 binding 13). Null until damage is first painted.
 	VkSurfaceDamage* GetSurfaceDamage() const { return mSurfaceDamage.get(); }
 
+	// [EMISSIVEVOLUMES] The emissive volumes (#15), whose list and noise images a post-process pass reads (VkTextureManager::GetTexture,
+	// PPExternalImage::EmissiveVolumeList and EmissiveNoise). Null until a volume is first drawn.
+	VkEmissiveVolumes* GetEmissiveVolumes() const { return mEmissiveVolumes.get(); }
+
 private:
 	VulkanRenderDevice* fb = nullptr;
 
@@ -135,6 +140,7 @@ private:
 	std::unique_ptr<VkLevelField> mLevelField;	// [LEVELFIELD]
 	std::unique_ptr<VkDebrisPool> mDebrisPool;	// [DEBRISPOOL]
 	std::unique_ptr<VkSurfaceDamage> mSurfaceDamage;	// [SURFACEDAMAGE]
+	std::unique_ptr<VkEmissiveVolumes> mEmissiveVolumes;	// [EMISSIVEVOLUMES] no descriptor sets: only images
 
 	bool mWorkBegun = false;
 };

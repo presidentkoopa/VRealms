@@ -31,6 +31,7 @@
 #pragma once
 
 #include <cstdint>
+#include "hw_emissivevolumeframe.h"	// [EMISSIVEVOLUMES] EmissiveVolumeFrame
 
 // [SMOKEVOLUME] One smoke grid quality (r_smoke_quality): cells per axis and the
 // cell size in map units. Doom axes: x, y horizontal, z up.
@@ -599,4 +600,8 @@ struct FrameComputeInput
 
 	// [LEVELFIELD] #8, filled by LevelField::PrepareFrame (hw_levelfield.cpp).
 	LevelFieldFrame LevelField;
+
+	// [EMISSIVEVOLUMES] #15, filled by EmissiveVolumes::PrepareFrame (hw_emissivevolumes.cpp): the list the backend copies into its
+	// image (vk_emissivevolumes.cpp). Count 0: nothing to draw, nothing recorded.
+	EmissiveVolumeFrame EmissiveVolumes;
 };

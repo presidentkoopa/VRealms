@@ -81,6 +81,8 @@ enum class PPExternalImage
 	SmokeLight,				// [13d] the smoke's light grid: rgb the light reaching each place, a its luminance weight (3D, RGBA16F)
 	SmokeLightDirection,	// [13d] the same grid: xyz the direction light travels there, times its share (3D, RGBA8 SNORM)
 	SmokeBeams,				// [13e] the beam lines that may meet the smoke this frame: SMOKE_BEAMS_MAX x 4 texels (2D, RGBA32F)
+	EmissiveVolumeList,		// [EMISSIVEVOLUMES] this frame's drawn emissive volumes: EMISSIVE_VOLUMES_DRAWN_MAX x EMISSIVE_VOLUME_TEXELS (2D, RGBA32F)
+	EmissiveNoise,			// [EMISSIVEVOLUMES] their baked noise: EMISSIVE_NOISE_SIZE^3, r and g (3D, RG8 or RGBA8; read linear, repeat)
 	Count
 };
 
@@ -1191,6 +1193,76 @@ static_assert(offsetof(SmokeBeamScatterUniforms, TanHalfFov) == offsetof(SmokeMa
 static_assert(offsetof(SmokeBeamScatterUniforms, BeamCount) == 160, "SmokeBeamScatterUniforms::BeamCount must start at 160");
 static_assert(sizeof(SmokeBeamScatterUniforms) == 176, "SmokeBeamScatterUniforms must be 176 bytes; pad to a 16-byte row");
 
+// [EMISSIVEVOLUMES] The transmittance curve's near-volumes variant (smokemarch.fp SMOKE_TRANSMITTANCE_CURVE with
+// SMOKE_CURVE_NEAR_VOLUMES; "Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): SmokeBeamScatterUniforms member for member at the
+// same offsets (Render copies it in whole), then the emissive volume list's origin relative to this eye and its count
+// (EmissiveVolumeUniforms' ListOrigin and VolumeCount), so with no cone the curve is marched only where a beam or a volume can
+// read it.
+struct SmokeCurveNearVolumesUniforms
+{
+	float ViewToWorld[16];
+	FVector2 TanHalfFov;
+	FVector2 ProjOffset;
+	FVector3 BoxMin;
+	float CellSize;
+	FVector3 GridSize;
+	float TicFrac;
+	FVector3 TileCount;
+	int StepCount;
+	FVector3 LightColor;
+	float Extinction;
+	float MinStep;
+	float SliceHeight;
+	int DebugSlice;
+	float MarchPad0;
+	int BeamCount;
+	float BeamScatter;
+	float NearBeamsOnly;
+	float BeamPad1;
+	FVector3 VolumeOrigin;    // the emissive volume list's origin minus this eye, GL axes, map units
+	int VolumeCount;          // volumes in the list image (PPExternalImage::EmissiveVolumeList)
+
+	//   SmokeBeamScatterUniforms' 0..176, then VolumeOrigin 176   VolumeCount 188   -> block ends 192
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "ViewToWorld", UniformType::Mat4, offsetof(SmokeCurveNearVolumesUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeCurveNearVolumesUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeCurveNearVolumesUniforms, ProjOffset) },
+			{ "BoxMin", UniformType::Vec3, offsetof(SmokeCurveNearVolumesUniforms, BoxMin) },
+			{ "CellSize", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, CellSize) },
+			{ "GridSize", UniformType::Vec3, offsetof(SmokeCurveNearVolumesUniforms, GridSize) },
+			{ "TicFrac", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, TicFrac) },
+			{ "TileCount", UniformType::Vec3, offsetof(SmokeCurveNearVolumesUniforms, TileCount) },
+			{ "StepCount", UniformType::Int, offsetof(SmokeCurveNearVolumesUniforms, StepCount) },
+			{ "LightColor", UniformType::Vec3, offsetof(SmokeCurveNearVolumesUniforms, LightColor) },
+			{ "Extinction", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, Extinction) },
+			{ "MinStep", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, MinStep) },
+			{ "SliceHeight", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, SliceHeight) },
+			{ "DebugSlice", UniformType::Int, offsetof(SmokeCurveNearVolumesUniforms, DebugSlice) },
+			{ "MarchPad0", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, MarchPad0) },
+			{ "BeamCount", UniformType::Int, offsetof(SmokeCurveNearVolumesUniforms, BeamCount) },
+			{ "BeamScatter", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, BeamScatter) },
+			{ "NearBeamsOnly", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, NearBeamsOnly) },
+			{ "BeamPad1", UniformType::Float, offsetof(SmokeCurveNearVolumesUniforms, BeamPad1) },
+			{ "VolumeOrigin", UniformType::Vec3, offsetof(SmokeCurveNearVolumesUniforms, VolumeOrigin) },
+			{ "VolumeCount", UniformType::Int, offsetof(SmokeCurveNearVolumesUniforms, VolumeCount) },
+		};
+	}
+};
+
+static_assert(offsetof(SmokeCurveNearVolumesUniforms, TanHalfFov) == offsetof(SmokeBeamScatterUniforms, TanHalfFov) &&
+	offsetof(SmokeCurveNearVolumesUniforms, BoxMin) == offsetof(SmokeBeamScatterUniforms, BoxMin) &&
+	offsetof(SmokeCurveNearVolumesUniforms, TileCount) == offsetof(SmokeBeamScatterUniforms, TileCount) &&
+	offsetof(SmokeCurveNearVolumesUniforms, MinStep) == offsetof(SmokeBeamScatterUniforms, MinStep) &&
+	offsetof(SmokeCurveNearVolumesUniforms, BeamCount) == offsetof(SmokeBeamScatterUniforms, BeamCount) &&
+	offsetof(SmokeCurveNearVolumesUniforms, BeamPad1) == offsetof(SmokeBeamScatterUniforms, BeamPad1),
+	"SmokeCurveNearVolumesUniforms must start with SmokeBeamScatterUniforms' layout");
+static_assert(offsetof(SmokeCurveNearVolumesUniforms, VolumeOrigin) == 176, "SmokeCurveNearVolumesUniforms::VolumeOrigin must start at 176");
+static_assert(offsetof(SmokeCurveNearVolumesUniforms, VolumeCount) == 188, "SmokeCurveNearVolumesUniforms::VolumeCount must start at 188");
+static_assert(sizeof(SmokeCurveNearVolumesUniforms) == 192, "SmokeCurveNearVolumesUniforms must be 192 bytes");
+
 // [13e] The composite with beams (smokecomposite.fp with SMOKE_BEAMS): the depth uniforms the composite has always had,
 // the eye's ray (to find where each beam passes this pixel), and the beams' scroll, as main.fp's BeamAirGlow reads it.
 struct SmokeBeamCompositeUniforms
@@ -1318,6 +1390,9 @@ public:
 	// textures the cone pass reads it through: the blurred march (a = the whole ray's T), the depth each texel marched
 	// to, and the curve -- all half resolution, sampled with the composite's own upsample.
 	bool ConesDimmedByHaze() const { return transmittanceReady && beams.Cones; }
+	// [EMISSIVEVOLUMES] For the emissive volumes, later in the same eye's Pass1: true once this eye's smoke drew its depth and its
+	// transmittance curve (which it does whenever a volume is published for the eye). Reset at the top of every Render.
+	bool TransmittanceReady() const { return transmittanceReady; }
 	PPTexture *GetMarchTexture() { return &MarchTexture; }
 	PPTexture *GetDepthTexture() { return &DepthTexture; }
 	PPTexture *GetCurveTexture() { return &CurveTexture; }
@@ -1358,6 +1433,143 @@ private:
 	PPShader CompositeBeamsShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
 	PPShader MaskCarryBeamsShader = { "shaders/pp/smokecomposite.fp", "#define LIGHT_MASK_CARRY\n#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
 	PPShader MaskCarryBeamsShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define LIGHT_MASK_CARRY\n#define SMOKE_BEAMS\n", SmokeBeamCompositeUniforms::Desc() };
+	// [EMISSIVEVOLUMES] The curve while an emissive volume is drawn this eye: marched only where a beam or a volume can read it
+	// (with a cone, everywhere, as CurveShader), binding 8 the volume list.
+	PPShader CurveNearVolumesShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_TRANSMITTANCE_CURVE\n#define SMOKE_CURVE_NEAR_VOLUMES\n", SmokeCurveNearVolumesUniforms::Desc() };
+};
+
+/////////////////////////////////////////////////////////////////////////////
+
+// [EMISSIVEVOLUMES] EMISSIVE VOLUMES' DRAWING ("Engine docs/VOLUMETRIC_FLASH_15_PLAN.md" 2d; "Engine docs/
+// EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): short-lived glowing gas volumes -- muzzle flashes, explosion cores -- raymarched per
+// eye from the list the renderer uploads each frame (hw_emissivevolumeframe.h; vk_emissivevolumes.h).
+//
+// One eye's march (emissivevolume.fp). Positions are RELATIVE TO THAT EYE in GL world axes, as the smoke's. Filled by
+// SetupEmissiveVolumes (hw_drawinfo.cpp).
+struct EmissiveVolumeUniforms
+{
+	float ViewToWorld[16];    // plain floats: VSMatrix is not visible in this header
+	FVector2 TanHalfFov;      // 1 / projection m[0], m[5]
+	FVector2 ProjOffset;      // projection m[8], m[9]: an asymmetric (headset) eye
+	FVector3 ListOrigin;      // the list's origin minus this eye, GL axes, map units: a volume's base is ListOrigin + its row
+	int VolumeCount;          // volumes in the list image, 1..EMISSIVE_VOLUMES_DRAWN_MAX
+	FVector2 RectMin;         // TexCoord 0..1: where on this eye's screen any volume's bounding sphere can be seen
+	FVector2 RectMax;
+	int StepCount;            // r_emissivevolumes_steps: steps across a volume's diameter
+	float VolumePad0;
+	float VolumePad1;
+	float VolumePad2;
+
+	//   ViewToWorld 0   TanHalfFov 64   ProjOffset 72   ListOrigin 80   VolumeCount 92   RectMin 96   RectMax 104
+	//   StepCount 112   VolumePad0 116   VolumePad1 120   VolumePad2 124   -> block ends 128
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "ViewToWorld", UniformType::Mat4, offsetof(EmissiveVolumeUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(EmissiveVolumeUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(EmissiveVolumeUniforms, ProjOffset) },
+			{ "ListOrigin", UniformType::Vec3, offsetof(EmissiveVolumeUniforms, ListOrigin) },
+			{ "VolumeCount", UniformType::Int, offsetof(EmissiveVolumeUniforms, VolumeCount) },
+			{ "RectMin", UniformType::Vec2, offsetof(EmissiveVolumeUniforms, RectMin) },
+			{ "RectMax", UniformType::Vec2, offsetof(EmissiveVolumeUniforms, RectMax) },
+			{ "StepCount", UniformType::Int, offsetof(EmissiveVolumeUniforms, StepCount) },
+			{ "VolumePad0", UniformType::Float, offsetof(EmissiveVolumeUniforms, VolumePad0) },
+			{ "VolumePad1", UniformType::Float, offsetof(EmissiveVolumeUniforms, VolumePad1) },
+			{ "VolumePad2", UniformType::Float, offsetof(EmissiveVolumeUniforms, VolumePad2) },
+		};
+	}
+};
+
+static_assert(offsetof(EmissiveVolumeUniforms, TanHalfFov) == 64, "EmissiveVolumeUniforms::TanHalfFov must start at 64 for std140");
+static_assert(offsetof(EmissiveVolumeUniforms, ListOrigin) == 80, "EmissiveVolumeUniforms::ListOrigin must start at 80 for std140");
+static_assert(offsetof(EmissiveVolumeUniforms, VolumeCount) == 92, "EmissiveVolumeUniforms::VolumeCount must start at 92 for std140");
+static_assert(offsetof(EmissiveVolumeUniforms, RectMin) == 96, "EmissiveVolumeUniforms::RectMin must start at 96 for std140");
+static_assert(offsetof(EmissiveVolumeUniforms, StepCount) == 112, "EmissiveVolumeUniforms::StepCount must start at 112 for std140");
+static_assert(sizeof(EmissiveVolumeUniforms) == 128, "EmissiveVolumeUniforms must be 128 bytes; pad to a 16-byte row");
+
+// What the renderer publishes each frame for the drawing, the same for both eyes. The default draws nothing.
+struct PPEmissiveVolumeSettings
+{
+	int Count = 0;            // volumes the backend's list image holds for this frame (EmissiveVolumeBackendStatus::Count)
+	bool Absorbs = false;     // a drawn volume hides what is behind it: the light mask carry runs
+	int Resolution = 2;       // r_emissivevolumes_resolution: 2 half, 1 full
+};
+
+// SKIPPED, NOT ZERO. Render returns on its first line unless the renderer published a march for this eye (SetupEmissiveVolumes:
+// Vulkan, volumes in this frame's list, and the backend holding exactly that list). With no volume the frame is exactly the
+// frame without this pass: no group, no texture, no draw. Even with volumes, a pixel no volume's bound reaches is discarded by
+// the composite, never blended at zero, so everything outside them -- the lasers among it -- keeps its look bit for bit.
+//
+// WHERE (Pass1): right after the volumetric beam and before the heatmap -- exposure, beforebloom, smoke, volbeam, EMISSIVE
+// VOLUMES, heatmap, heat refraction, bloom. After the smoke composite, so haze behind a volume never dims it (haze in front does,
+// through the smoke's transmittance curve); before heat refraction, so its own shimmer bends it; before bloom, so it glows with
+// the rest look. The light mask contract's order (volbeam, heatmap, heat refraction, bloom) is kept.
+//
+// PER EYE, as the smoke: one march set per eye of a multiview scene, one otherwise; hw_entrypoint.cpp says which eye (SetEye).
+// Both eyes read the one list.
+//
+// FIVE PASSES, all but the composite and carry at the march resolution (half by default), in group pp.emissive:
+//   1. smokedepth.fp      the depth to march to -- this eye's smoke DepthTexture when the smoke drew it at half resolution
+//   2. emissivevolume.fp  the march (SMOKE_TRANSMITTANCE when the smoke drew its curve): rgb light, a transmittance (RGBA16F)
+//   3. smokeblur.fp       the blur that keeps to its depth, across then down (it keeps clear texels exactly clear)
+//   4. smokecomposite.fp  the depth-aware upsample onto the current image, premultiplied: scene x T + light
+//   5. smokecomposite.fp  LIGHT_MASK_CARRY onto the light mask, only while a drawn volume absorbs and the mask came in
+// The reused passes are new PPShader instances of the same lumps and defines as the smoke's, so they are the smoke's programs.
+class PPEmissiveVolumes
+{
+public:
+	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
+
+	void ClearEyes() { eyeSets = 0; settings = PPEmissiveVolumeSettings(); }
+	void SetEyeMarch(int eyeSet, const EmissiveVolumeUniforms &u)
+	{
+		if (eyeSet >= 0 && eyeSet < 2) marches[eyeSet] = u;
+	}
+	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
+	void SetEye(int eye) { currentEye = eye; }
+	void SetSettings(const PPEmissiveVolumeSettings &s) { settings = s; }
+
+	// Whether Render will draw this eye (its own skip test): the smoke pass asks, to draw the curve the march reads.
+	bool HasVolumes() const { return eyeSets > 0 && settings.Count > 0; }
+	int PublishedCount() const { return eyeSets > 0 ? settings.Count : 0; }
+	// The current eye's list origin and count, for the smoke's near-volumes curve.
+	void FillCurveUniforms(SmokeCurveNearVolumesUniforms &u) const
+	{
+		const EmissiveVolumeUniforms &m = marches[CurrentSet()];
+		u.VolumeOrigin = m.ListOrigin;
+		u.VolumeCount = m.VolumeCount;
+	}
+
+private:
+	int CurrentSet() const { return (eyeSets >= 2 && currentEye == 1) ? 1 : 0; }
+	void UpdateTextures(int sceneWidth, int sceneHeight, int resolution);
+
+	EmissiveVolumeUniforms marches[2] = {};
+	int eyeSets = 0;
+	int currentEye = 0;
+	PPEmissiveVolumeSettings settings;
+
+	// At the march resolution, rewritten whole by every eye before it is read, so the eyes can share them. A PPTexture takes no
+	// memory until a draw first uses it.
+	PPTexture DepthTexture;
+	PPTexture MarchTexture;
+	PPTexture BlurTexture;
+	PPViewport MarchViewport;
+	int lastWidth = 0;
+	int lastHeight = 0;
+	int lastResolution = 0;
+
+	PPShader DepthShader = { "shaders/pp/smokedepth.fp", "", SmokeDepthUniforms::Desc() };
+	PPShader DepthShaderMS = { "shaders/pp/smokedepth.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
+	PPShader MarchShader = { "shaders/pp/emissivevolume.fp", "", EmissiveVolumeUniforms::Desc() };
+	PPShader MarchSmokeShader = { "shaders/pp/emissivevolume.fp", "#define SMOKE_TRANSMITTANCE\n", EmissiveVolumeUniforms::Desc() };
+	PPShader BlurHorizontal = { "shaders/pp/smokeblur.fp", "#define BLUR_HORIZONTAL\n", {} };
+	PPShader BlurVertical = { "shaders/pp/smokeblur.fp", "#define BLUR_VERTICAL\n", {} };
+	PPShader CompositeShader = { "shaders/pp/smokecomposite.fp", "", SmokeDepthUniforms::Desc() };
+	PPShader CompositeShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
+	PPShader MaskCarryShader = { "shaders/pp/smokecomposite.fp", "#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
+	PPShader MaskCarryShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
 };
 
 
@@ -1999,10 +2211,30 @@ private:
 	int CurrentIndex = 0;
 };
 
+// [CUSTOMDEPTH] The scene depth for GLDEFS custom post-process shaders (a texture named "SceneDepth"): resolved per eye
+// into a single-sample R32F texture over the screen viewport by PPCustomShaders::Run (shaders/pp/customdepth.fp).
+struct CustomDepthUniforms
+{
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SceneScale", UniformType::Vec2, offsetof(CustomDepthUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(CustomDepthUniforms, SceneOffset) },
+		};
+	}
+};
+
 class PPCustomShaderInstance
 {
 public:
-	PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture);
+	PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture, PPTexture *resolvedDepth = nullptr);
+
+	// [CUSTOMDEPTH] Whether the definition names a texture "SceneDepth".
+	bool UsesSceneDepth() const { return NeedsSceneDepth; }
 
 	void Run(PPRenderState *renderstate);
 
@@ -2022,19 +2254,48 @@ private:
 
 	std::unique_ptr<PPPersistentBuffer> *LastInputTexture;
 	int LastInputTextureBinding = -1;
+
+	PPTexture *ResolvedDepth = nullptr;	// [CUSTOMDEPTH] owned by PPCustomShaders
+	bool NeedsSceneDepth = false;
 };
 
 class PPCustomShaders
 {
 public:
 	void Run(PPRenderState *renderstate, FString target);
+
+	// [PPPROJECT] Each eye's world-to-clip, for uniforms projected per eye (PostProcessUniformValue::Projection).
+	// Published for the main view by HWDrawInfo::ProcessScene: one set per eye of a multiview scene, else one set, since
+	// each eye then draws its own scene just before its post-process. hw_entrypoint.cpp sets the eye being post-processed.
+	struct EyeView
+	{
+		float WorldToClip[16] = {};	// projection x view, column-major, GL world axes (x, z, y)
+		float FocalY = 1.0f;		// the projection's [1][1]: 1 / tan(half the vertical field)
+	};
+	static void SetEyeView(int set, const float *projection, const float *view);
+	static void SetEyeSets(int sets) { EyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
+	static void SetEye(int eye) { CurrentEye = eye; }
+	static int CurrentEyeSet() { return (EyeSets >= 2 && CurrentEye == 1) ? 1 : 0; }
+	// Projects a world point (game axes) with one set: u, v in [0,1] across the view, clip z unscaled. False if none.
+	static bool ProjectWorld(int set, double worldX, double worldY, double worldZ, double &u, double &v, double &clipZ, double &focalY);
+	static EyeView Eyes[2];
+	static int EyeSets;
+	static int CurrentEye;
 	void UpdateLastInputTexture(PPRenderState *renderstate);
 
 private:
 	void CreateShaders();
+	void ResolveSceneDepth(PPRenderState *renderstate);	// [CUSTOMDEPTH]
 
 	std::vector<std::unique_ptr<PPCustomShaderInstance>> mShaders;
 	std::unique_ptr<PPPersistentBuffer> mLastInputTexture;
+
+	// [CUSTOMDEPTH] The resolved scene depth, the screen viewport's size, and its two shader variants.
+	PPTexture mResolvedDepth;
+	int mDepthWidth = 0;
+	int mDepthHeight = 0;
+	PPShader mDepthShader = { "shaders/pp/customdepth.fp", "", CustomDepthUniforms::Desc() };
+	PPShader mDepthShaderMS = { "shaders/pp/customdepth.fp", "#define MULTISAMPLE\n", CustomDepthUniforms::Desc() };
 	int mLastWidth = 0;
 	int mLastHeight = 0;
 };
@@ -2157,6 +2418,7 @@ public:
 	PPHeatmap heatmap;
 	PPHeatRefraction heatrefraction;	// [HEATREFRACTION] heat shimmer
 	PPSmokeVolume smokevolume;	// [SMOKEVOLUME] the smoke volume's drawing (13c)
+	PPEmissiveVolumes emissivevolumes;	// [EMISSIVEVOLUMES] the emissive volumes' drawing (#15)
 	PPLightMask lightmask;	// [LIGHTMASK] the frame's light mask decision and its debug view
 	PPLensDistort lens;
 	PPFXAA fxaa;

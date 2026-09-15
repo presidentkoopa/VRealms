@@ -27,6 +27,7 @@
 #include "vulkan/renderer/vk_postprocess.h"
 #include "vulkan/renderer/vk_compute.h"		// [SMOKEVOLUME] the external images: the smoke volume's
 #include "vulkan/renderer/vk_smokevolume.h"
+#include "vulkan/renderer/vk_emissivevolumes.h"	// [EMISSIVEVOLUMES] the emissive volumes' list and noise
 #include "hwrenderer/postprocessing/hw_postprocess.h"	// [SMOKEVOLUME] PPExternalImageFromToken
 #include "hw_cvars.h"
 #include "hw_particledefbuffer.h"	// [2c] the particle atlas layer list
@@ -191,6 +192,16 @@ VkTextureImage* VkTextureManager::GetTexture(const PPTextureType& type, PPTextur
 			case PPExternalImage::SmokeBeams: image = smoke->GetBeamListImage(); break;	// [13e] the beam list
 			default: break;
 			}
+		}
+		// [EMISSIVEVOLUMES] The emissive volumes' list and noise (vk_emissivevolumes.h), whether or not the smoke volume exists.
+		if (image == nullptr)
+		{
+			VkEmissiveVolumes* volumes = fb->GetCompute() != nullptr ? fb->GetCompute()->GetEmissiveVolumes() : nullptr;
+			const PPExternalImage which = PPExternalImageFromToken(pptexture);
+			if (volumes != nullptr && which == PPExternalImage::EmissiveVolumeList)
+				image = volumes->GetListImage();
+			else if (volumes != nullptr && which == PPExternalImage::EmissiveNoise)
+				image = volumes->GetNoiseImage();
 		}
 		if (image == nullptr || !image->Image || image->Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 			return &notReady;

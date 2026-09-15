@@ -306,6 +306,8 @@ layout(set = 0, binding = 8, std430) buffer readonly SmokeSurfaceSSO
 	vec4 surfaceDarkEye;			// xyz the eye; w the height reference
 	vec4 surfaceDesatKeep;			// main.fp's uDesatKeep: x threshold, y softness, z hue gate, w the level's drain
 	vec4 surfaceGlowWave;			// x the reach scale (already in the records), y brightness x texture means, z the colour shift
+	// [13F] 13f2: the four band arrays hold the LIVE slots only (a shape, a word, and an intensity or a live passed bit), in
+	// slot order; surfaceSwitches.y and surfacePassedTint.w count them.
 	vec4 surfaceBandOrigin[8];		// main.fp's uSweepBandOrigin: xyz the origin; w the shape, the band's own or the shared one
 	vec4 surfaceBandShape[8];		// main.fp's uSweepBands: x radius, y thickness, z softness, w the word (draw + 16 fill + 256 passed)
 	vec4 surfaceBandColor[8];		// rgb its colour (a fill's mean folded in, but for recolour bands); w its intensity
@@ -518,6 +520,8 @@ vec3 SurfaceAmbient(ivec3 cell)
 					break;
 				if ((int(surfaceBandShape[band].w) & 15) != 4)
 					continue;
+				if (surfaceBandColor[band].a == 0.0)
+					continue;	// [13F] 13f2: no intensity recolours by 0 (a slot kept for its passed bit)
 				float cover = SurfaceBandAtten(band, at) * surfaceBandColor[band].a;
 				if (cover > tintWeight)
 				{
@@ -552,6 +556,8 @@ vec3 SurfaceAmbient(ivec3 cell)
 			int mode = int(surfaceBandShape[band].w) & 15;
 			if (mode <= 0 || mode == 4)
 				continue;
+			if (surfaceBandColor[band].w == 0.0)
+				continue;	// [13F] 13f2: no intensity adds 0, lifts and crushes by 1 (a slot kept for its passed bit)
 			float atten = SurfaceBandAtten(band, at);
 			if (atten <= 0.0)
 				continue;

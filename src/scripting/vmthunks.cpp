@@ -73,6 +73,8 @@
 #include <sstream>
 #include <cmath>	// [BLOOMOVERRIDE] std::isfinite in SetBloomOverride
 #include <initializer_list>	// [SMOKEVOLUME] EffectArgsFinite
+#include "volumedefs.h"			// [EMISSIVEVOLUMES] EmissiveVolumeDefinitionHandle
+#include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumeDefinitionEnabled
 #include "d_net.h"
 
 extern int paused;
@@ -4131,6 +4133,121 @@ DEFINE_ACTION_FUNCTION_NATIVE0(FLevelLocals, SpawnEffectLight, SpawnEffectLight)
 	PARAM_FLOAT(tailLag); PARAM_FLOAT(tailBrightness);
 	SpawnEffectLight(self, px, py, pz, color, radius, intensity, life, vx, vy, vz, ex, ey, ez, fade, flags, gravity, drag,
 		land, hold, tailLag, tailBrightness);
+	return 0;
+}
+
+//==========================================================================
+//
+// [EMISSIVEVOLUMES] EmissiveVolumeDefinition, EmissiveVolumeEnabled, SpawnEmissiveVolume -- short-lived glowing gas volumes
+// ("Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"; FEmissiveVolumeEvent, g_levellocals.h; hw_emissivevolumes.cpp).
+//
+// ONE-WAY, like SpawnEffectLight: SpawnEmissiveVolume only queues an event on the level's per-tic queue and returns nothing;
+// nothing reads it back and nothing is saved, so every machine queues the same volume. No RNG: a volume's variety is a local
+// hash of its seed, or of its tic, its place in that tic's queue and where it began (EmissiveVolumeCore::SeedFor). A followed
+// pose names its player; the console player is never implied. A call with a non-finite number, handle 0, or no scale or
+// brightness is ignored.
+//
+// EmissiveVolumeDefinition returns a hash of the name, the same on every machine. EmissiveVolumeEnabled is a PRESENTATION
+// query for this machine only (which look to draw); both are static and clearscope, so a menu or HUD can ask too.
+//
+//==========================================================================
+
+static int EmissiveVolumeDefinition(int name)
+{
+	return EmissiveVolumeDefinitionHandle(FName(ENamedName(name)).GetChars());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, EmissiveVolumeDefinition, EmissiveVolumeDefinition)
+{
+	PARAM_PROLOGUE;
+	PARAM_NAME(name);
+	ACTION_RETURN_INT(EmissiveVolumeDefinition(name.GetIndex()));
+}
+
+static int EmissiveVolumeEnabled(int def)
+{
+	return EmissiveVolumeDefinitionEnabled(def) ? 1 : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, EmissiveVolumeEnabled, EmissiveVolumeEnabled)
+{
+	PARAM_PROLOGUE;
+	PARAM_INT(def);
+	ACTION_RETURN_BOOL(EmissiveVolumeEnabled(def));
+}
+
+static void SpawnEmissiveVolume(FLevelLocals *self, int def, double px, double py, double pz, double dx, double dy, double dz,
+	double scale, double brightness, double lifeScale, int tint, double vx, double vy, double vz, int seed, int follow,
+	int followPlayer, double followShare, double lightScale)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("SpawnEmissiveVolume", badLogged, { px, py, pz, dx, dy, dz, scale, brightness, lifeScale, vx, vy, vz,
+		followShare, lightScale }))
+		return;
+	// Nothing to draw: not queued.
+	if (def == 0 || !(scale > 0.) || !(brightness > 0.))
+		return;
+
+	FEmissiveVolumeEvent *e = self->EmissiveVolumeSpawns.Push();
+	if (e == nullptr)
+	{
+		LogEffectQueueFull(self->EmissiveVolumeSpawns.FullLogged, "SpawnEmissiveVolume", FLevelLocals::MAX_EMISSIVE_VOLUMES_PER_TIC);
+		return;
+	}
+	e->Definition = def;
+	e->Pos = DVector3(px, py, pz);
+	const DVector3 dir(dx, dy, dz);
+	const double length = dir.Length();
+	e->Dir = length > 1e-9 ? dir / length : DVector3(0., 0., 1.);	// no direction: straight up
+	e->Vel = ClampEffectVector(vx, vy, vz, 65536.);
+	e->Scale = clamp(scale, 0.05, 16.);
+	e->Brightness = clamp(brightness, 0., 16.);
+	e->LifeScale = clamp(lifeScale, 0.05, 16.);
+	e->FollowShare = clamp(followShare, 0., 1.);
+	e->LightScale = clamp(lightScale, 0., 16.);
+	e->Tint = (uint32_t)tint;
+	e->Seed = seed;
+	e->Follow = 0;
+	e->FollowPlayer = -1;
+	e->FollowValid = false;
+	// The followed pose as it is NOW, for the renderer to measure the hand's motion from. Only a named player in the game.
+	if (follow >= 1 && follow <= 3 && followPlayer >= 0 && followPlayer < MAXPLAYERS && self->PlayerInGame(followPlayer))
+	{
+		DVector3 posed;
+		DAngle yaw, pitch;
+		const int source = ResolveTrackedPose(self, follow, DVector3(0., 0., 0.), posed, yaw, pitch, &players[followPlayer]);
+		if (source != TPOSE_NONE && source != TPOSE_NOPLAYER)
+		{
+			e->Follow = follow;
+			e->FollowPlayer = followPlayer;
+			e->FollowValid = true;
+			e->FollowPos = posed;
+			e->FollowYaw = yaw.Radians();
+			e->FollowPitch = pitch.Radians();
+		}
+	}
+}
+
+// _NATIVE0, NOT _NATIVE: 20 VM arguments (self, three Vector3s at three floats each, and ten more) are past asmjit's 16-argument
+// direct-call cap -- see SpawnEffectLight.
+DEFINE_ACTION_FUNCTION_NATIVE0(FLevelLocals, SpawnEmissiveVolume, SpawnEmissiveVolume)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(def);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_FLOAT(dx); PARAM_FLOAT(dy); PARAM_FLOAT(dz);
+	PARAM_FLOAT(scale);
+	PARAM_FLOAT(brightness);
+	PARAM_FLOAT(lifeScale);
+	PARAM_COLOR(tint);
+	PARAM_FLOAT(vx); PARAM_FLOAT(vy); PARAM_FLOAT(vz);
+	PARAM_INT(seed);
+	PARAM_INT(follow);
+	PARAM_INT(followPlayer);
+	PARAM_FLOAT(followShare);
+	PARAM_FLOAT(lightScale);
+	SpawnEmissiveVolume(self, def, px, py, pz, dx, dy, dz, scale, brightness, lifeScale, tint, vx, vy, vz, seed, follow, followPlayer,
+		followShare, lightScale);
 	return 0;
 }
 

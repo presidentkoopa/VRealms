@@ -18,6 +18,12 @@ layout(binding=7) uniform sampler2D SmokeBeamList;		// SMOKE_BEAMS_MAX x 4 RGBA3
 layout(binding=7) uniform sampler2D TransmittanceCurve;	// 3a's output: where the ray's optical depth reaches 0, 1/3, 2/3 and all of it
 layout(binding=8) uniform sampler2D SmokeBeamList;		// SMOKE_BEAMS_MAX x 4 RGBA32F texels (hw_framecompute.h, SmokeBeamRecord)
 #endif
+// [EMISSIVEVOLUMES] SMOKE_CURVE_NEAR_VOLUMES (with SMOKE_TRANSMITTANCE_CURVE): an emissive volume is drawn this eye and reads the
+// curve, so it is also marched where a volume can read it ("Engine docs/EMISSIVE_VOLUMES_15_IMPL_NOTES.md"). Without the define
+// this file is the curve, the scatter and the march above and below, token for token.
+#if defined(SMOKE_CURVE_NEAR_VOLUMES)
+layout(binding=8) uniform sampler2D EmissiveVolumeList;	// EMISSIVE_VOLUMES_DRAWN_MAX x EMISSIVE_VOLUME_TEXELS RGBA32F (hw_emissivevolumeframe.h)
+#endif
 
 // ============================================================================
 // [SMOKEVOLUME] THE SMOKE VOLUME'S DRAWING, PASS 2 OF 4: THE MARCH.
@@ -280,6 +286,31 @@ bool NearAnyBeam(vec3 rd, float sceneT)
 	return false;
 }
 
+#if defined(SMOKE_CURVE_NEAR_VOLUMES)
+const int EMISSIVE_VOLUMES_DRAWN_MAX = 32;	// hw_emissivevolumeframe.h
+
+// [EMISSIVEVOLUMES] Whether any listed emissive volume's bounding sphere can be read on this ray between the eye and the scene:
+// the least distance from the sphere's centre (the list's rows 0 and 1: base + axis x centre along it) to the stretch
+// [0, sceneT], within the radius with a quarter to spare plus a half-resolution texel's width at that distance, as NearAnyBeam.
+// Never false where a volume's march reads the curve.
+bool NearAnyVolume(vec3 rd, float sceneT)
+{
+	int volumeCount = min(VolumeCount, EMISSIVE_VOLUMES_DRAWN_MAX);
+	for (int i = 0; i < volumeCount; i++)
+	{
+		vec4 rowBase = texelFetch(EmissiveVolumeList, ivec2(i, 0), 0);
+		vec4 rowAxis = texelFetch(EmissiveVolumeList, ivec2(i, 1), 0);
+		if (!(rowBase.w > 0.0))
+			continue;
+		vec3 centre = VolumeOrigin + rowBase.xyz + rowAxis.xyz * rowAxis.w;
+		float along = clamp(dot(centre, rd), 0.0, sceneT);
+		if (length(centre - rd * along) <= rowBase.w * 1.25 + 2.0 + 0.004 * along)
+			return true;
+	}
+	return false;
+}
+#endif
+
 #endif
 
 #if defined(SMOKE_TRANSMITTANCE_CURVE)
@@ -308,8 +339,14 @@ void main()
 	if (!MarchRay(rd, sceneT, tIn, tOut))
 		return;
 	// No cone reads the curve this eye: only where a beam can.
+#if defined(SMOKE_CURVE_NEAR_VOLUMES)
+	// [EMISSIVEVOLUMES] Or where an emissive volume can.
+	if (NearBeamsOnly > 0.5 && !NearAnyBeam(rd, sceneT) && !NearAnyVolume(rd, sceneT))
+		return;
+#else
 	if (NearBeamsOnly > 0.5 && !NearAnyBeam(rd, sceneT))
 		return;
+#endif
 	float tFirst;
 	float tLast;
 	if (!ActiveInterval(rd, tIn, tOut, tFirst, tLast))

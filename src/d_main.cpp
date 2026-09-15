@@ -395,6 +395,7 @@ void D_DoAdvanceDemo ();
 void D_LoadWadSettings ();
 void ParseGLDefs();
 void LoadParticleDefinitions();	// [PARTICLEDEFS] gamedata/particledefs.cpp
+void LoadEmissiveVolumeDefinitions();	// [EMISSIVEVOLUMES] gamedata/volumedefs.cpp
 void LoadSurfaceDefinitions();	// [SURFACEMATERIALS] gamedata/surfacedefs.cpp
 void DrawFullscreenSubtitle(FFont* font, const char *text);
 void D_Cleanup();
@@ -4376,6 +4377,10 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	// look their frames up in. A bad definition is refused with a console line;
 	// nothing here can stop the game from starting.
 	LoadParticleDefinitions();
+
+	// [EMISSIVEVOLUMES] Emissive volume definitions from every VOLUMEDEFS lump (gamedata/volumedefs.cpp). A bad definition is
+	// refused with a console line; nothing here can stop the game from starting.
+	LoadEmissiveVolumeDefinitions();
 
 	if (!batchrun) Printf ("R_Init: Init %s refresh subsystem.\n", gameinfo.ConfigName.GetChars());
 	if (StartScreen) StartScreen->LoadingStatus ("Loading graphics", 0x3f);

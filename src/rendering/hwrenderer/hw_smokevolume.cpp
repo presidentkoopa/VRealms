@@ -1920,8 +1920,8 @@ void SmokeVolume::UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, c
 		bandShape[i] = Level->SweepBandMode[i] > 0 ? Level->SweepBandMode[i] : Level->SweepMode;
 		bandWord[i] = SurfaceBandWord(Level->SweepBandDraw[i], Level->SweepBandFill[i], Level->SweepBandPassed[i]);
 		const int mode = bandWord[i] & 15;
-		if ((bandWord[i] >> 8) & 1)
-			bandPassed = true;
+		if (((bandWord[i] >> 8) & 1) && bandShape[i] > 0)
+			bandPassed = true;	// [13F] 13f2: SweepPassedAt skips a slot with no shape
 		if (bandShape[i] > 0 && bandWord[i] > 0 && Level->SweepIntensity[i] != 0.0)
 		{
 			if (mode >= 1 && mode <= 3)
@@ -1934,7 +1934,18 @@ void SmokeVolume::UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, c
 	const bool passedLook = Level->SweepPassedTintMix > 0 || Level->SweepPassedDarken > 0 || Level->SweepPassedDesat > 0;
 	const bool passedLive = darkSwitch && bandCount > 0 && bandPassed && passedLook;
 	const bool darkLive = darkSwitch && Level->DarkMode > 0;
-	const int lightBands = (glowSwitch && (bandLight || bandRecolour)) ? bandCount : 0;
+	// [13F] 13f2: THE LIVE SLOTS. RS_Sweeps (and any caller sharing the slots) sets SweepCount once and releases a slot by
+	// zeroing it -- intensity 0, shape 0, draw / fill / passed 0 -- so the count says nothing about what still draws. The
+	// records carry only the slots that can change a cell: a shape and a word (SweepBandAttenAt's own gates) and either an
+	// intensity or a passed bit the live passed look reads. In slot order, so the strongest-recolour tie is main.fp's.
+	int liveSlot[SMOKE_SURFACE_BANDS] = {};
+	int liveCount = 0;
+	for (int i = 0; i < bandCount; i++)
+	{
+		if (bandShape[i] > 0 && bandWord[i] > 0 && (Level->SweepIntensity[i] != 0.0 || (passedLive && ((bandWord[i] >> 8) & 1))))
+			liveSlot[liveCount++] = i;
+	}
+	const int lightBands = (glowSwitch && (bandLight || bandRecolour)) ? liveCount : 0;
 	if (!glowSwitch && !darkLive && !passedLive)
 		return;
 
@@ -2067,7 +2078,7 @@ void SmokeVolume::UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, c
 	};
 	put(0, glowSwitch ? 1.f : 0.f, (float)lightBands, (float)Level->SweepTrail, (float)listed);	// w: the fallback's record, the last sector record
 	put(1, (float)Level->SweepPassedTintMix, (float)Level->SweepPassedDarken, (float)Level->SweepPassedDesat, (float)Level->SweepPassedSoft);
-	put(2, Level->SweepPassedTint.r / 255.f, Level->SweepPassedTint.g / 255.f, Level->SweepPassedTint.b / 255.f, passedLive ? (float)bandCount : 0.f);
+	put(2, Level->SweepPassedTint.r / 255.f, Level->SweepPassedTint.g / 255.f, Level->SweepPassedTint.b / 255.f, passedLive ? (float)liveCount : 0.f);	// [13F] 13f2: live slots
 	put(3, (float)Level->DarkDistDepth, (float)Level->DarkDistRange, (float)Level->DarkHeightDepth, (float)Level->DarkHeightRange);
 	// The height reference as hw_drawinfo.cpp uploads it: with height follow on, the viewer's feet this frame, interpolated like
 	// the view. PrepareFrameCompute's viewpoint is the renderer's own, r_viewpoint.
@@ -2077,11 +2088,12 @@ void SmokeVolume::UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, c
 	put(4, (float)(eye.X - corner[0]), (float)(eye.Y - corner[1]), (float)(eye.Z - corner[2]), (float)(heightRef - corner[2]));
 	put(5, (float)Level->DesatKeep, (float)Level->DesatKeepSoft, (float)Level->DesatKeepHue, (float)Level->DesatGlobal);
 	put(6, reachScale, brightTexture, colourShift, 0.f);
-	for (int i = 0; i < bandCount; i++)
+	for (int k = 0; k < liveCount; k++)
 	{
+		const int i = liveSlot[k];	// [13F] 13f2: record k holds the k-th live slot
 		const DVector3& origin = Level->SweepBandMode[i] > 0 ? Level->SweepBandOrigin[i] : Level->SweepOrigin;
-		put(7 + i, (float)(origin.X - corner[0]), (float)(origin.Y - corner[1]), (float)(origin.Z - corner[2]), (float)bandShape[i]);
-		put(15 + i, (float)Level->SweepRadius[i], (float)Level->SweepThickness[i], (float)Level->SweepSoftness[i], (float)bandWord[i]);
+		put(7 + k, (float)(origin.X - corner[0]), (float)(origin.Y - corner[1]), (float)(origin.Z - corner[2]), (float)bandShape[i]);
+		put(15 + k, (float)Level->SweepRadius[i], (float)Level->SweepThickness[i], (float)Level->SweepSoftness[i], (float)bandWord[i]);
 
 		// main.fp's fill block, with the fill's mean coverage: the band's colour mixed toward the lines' by it (inverted by a
 		// negative gap), its coverage multiplied by the larger of it and the gap; the solid fill covers fully. A recolour band's
@@ -2108,8 +2120,8 @@ void SmokeVolume::UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, c
 			}
 			multiplier = std::max(coverage, std::max(gap, 0.0));
 		}
-		put(23 + i, (float)rgb[0], (float)rgb[1], (float)rgb[2], (float)Level->SweepIntensity[i]);
-		put(31 + i, (float)multiplier, (fill == 3 && mode != 4) ? 1.f : 0.f, 0.f, 0.f);
+		put(23 + k, (float)rgb[0], (float)rgb[1], (float)rgb[2], (float)Level->SweepIntensity[i]);
+		put(31 + k, (float)multiplier, (fill == 3 && mode != 4) ? 1.f : 0.f, 0.f, 0.f);
 	}
 
 	// Columns, world-aligned as 13d's column sectors: a recentre keeps what stays in the box, a column whose sector changed loses

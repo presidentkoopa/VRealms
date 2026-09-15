@@ -129,6 +129,22 @@ void EffectLights::Spawn(const Source& source)
 		mSpawned.push_back(source);
 }
 
+// [EMISSIVEVOLUMES] See the header. Checked here, so a frame light can never put a bad record in the pool.
+bool EffectLights::AddFrameLight(const FrameLight& light)
+{
+	if (mAddedFrameLights.size() >= FRAME_LIGHTS_MAX)
+		return false;
+	bool finite = std::isfinite(light.Radius) && std::isfinite(light.TailBrightness) &&
+		std::isfinite(light.A.X) && std::isfinite(light.A.Y) && std::isfinite(light.A.Z) &&
+		std::isfinite(light.B.X) && std::isfinite(light.B.Y) && std::isfinite(light.B.Z);
+	for (int c = 0; c < 3; c++)
+		finite = finite && std::isfinite(light.Color[c]);
+	if (!finite || !(light.Radius >= 1.0) || !(light.Color[0] > 0.f || light.Color[1] > 0.f || light.Color[2] > 0.f))
+		return false;
+	mAddedFrameLights.push_back(light);
+	return true;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // Step 1
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -139,6 +155,9 @@ bool EffectLights::BeginFrame(FLevelLocals* Level, const DVector3& eye, double y
 	mBegan = false;
 	mBlocking = false;
 	mRowOrder.clear();
+	// [EMISSIVEVOLUMES] The frame lights handed over for this frame; any a return below leaves unused are dropped with it.
+	mTakenFrameLights.swap(mAddedFrameLights);
+	mAddedFrameLights.clear();
 	EffectLightFrameStats& stats = EffectLightStats();
 	stats = EffectLightFrameStats();
 	if (Level == nullptr)
@@ -265,6 +284,35 @@ bool EffectLights::BeginFrame(FLevelLocals* Level, const DVector3& eye, double y
 		stats.Evicted = (int)(mPool.size() - kept);	// live lights evicted and new lights refused alike
 		mPool.swap(mPoolScratch);
 	}
+
+	// [EMISSIVEVOLUMES] This frame's frame lights (AddFrameLight) join the pool for this frame only: after the budget, so they
+	// never evict a pool light, and with a Life of 0, so the next frame's evaluation above drops them. From here they are pool
+	// lights in the state they were handed over in: rows, bins and the upload treat them as any other. None: nothing changes.
+	for (const FrameLight& f : mTakenFrameLights)
+	{
+		PoolLight p;
+		p.Source.A0 = f.A;
+		p.Source.B0 = f.B;
+		p.Source.Radius = std::clamp(f.Radius, 1.0, 1024.0);
+		p.Source.Life = 0.0;
+		p.Source.Birth = mNow;
+		p.Source.Flags = f.Flags & EFL_SCRIPT_MASK;
+		p.Source.Tier = (p.Source.Flags & EFL_IMPORTANT) ? TIER_IMPORTANT : TIER_NORMAL;
+		p.Source.TailBrightness = std::clamp(f.TailBrightness, 0.0, 1.0);
+		p.Source.Sequence = ++mSequence;
+		p.State.A = f.A;
+		p.State.B = f.B;
+		for (int c = 0; c < 3; c++)
+			p.State.Color[c] = std::clamp(f.Color[c], 0.f, 64.f);
+		p.State.Radius = p.Source.Radius;
+		p.State.Alive = true;
+		p.State.Point = f.A.X == f.B.X && f.A.Y == f.B.Y && f.A.Z == f.B.Z;
+		p.Distance = DistanceToSegment(p.State.A, p.State.B, eyeAt);
+		p.InRange = p.Distance - p.State.Radius <= reach;
+		p.Row = -1;
+		mPool.push_back(std::move(p));
+	}
+	mTakenFrameLights.clear();
 
 	// The point lights walls block, in the order they take rows (2g; the owner's answer 4). Only surfaces and the smoke read
 	// rows, so a light for neither asks for none.
