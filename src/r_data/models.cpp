@@ -40,6 +40,7 @@
 #include "hw_bonebuffer.h"
 #include "hw_vrmodes.h"
 #include "model_reach.h"  // RS fork -- draw-time joint poses and reach chains (RenderModel, RenderModelFrame)
+#include "model_handdrive.h" // RS fork -- the hand drive (HandDrive_OwnerStep, HandDrive_PoseForFollower)
 #include "c_dispatch.h"   // RS fork -- the modelsurfaces CCMD at the end of this file
 #include "v_text.h"       // RS fork -- TEXTCOLOR_* for the same
 
@@ -692,63 +693,12 @@ static bool GetPlacementCVar(const char *name, float &out)
 // value and the debug trace all belong to the OWNER's draw and stay there -- so
 // what a follower computes cannot depend on which of the two is drawn first.
 
-// Where a hand is along a part's travel axis, in the model's own space.
-//
-// NO UNIT CONSTANT, DELIBERATELY. Whatever scale the model's path applied is
-// inside modelToWorld, so inverting it undoes that scale along with everything
-// else: the hand lands in the space the mesh's own vertices are in, which is
-// the space the drive's axis and distance are measured in.
-static float SurfaceHandProjection(const VSMatrix &handMat, VSMatrix modelToWorld, const FVector3 &axis, FVector3 &handModel)
-{
-	const float *hm = handMat.get();
-	FVector3 handWorld(hm[12], hm[13], hm[14]);
-
-	VSMatrix worldToModel;
-	modelToWorld.inverseMatrix(worldToModel);
-	const float *wm = worldToModel.get();
-	handModel = FVector3(
-		wm[0]*handWorld.X + wm[4]*handWorld.Y + wm[8] *handWorld.Z + wm[12],
-		wm[1]*handWorld.X + wm[5]*handWorld.Y + wm[9] *handWorld.Z + wm[13],
-		wm[2]*handWorld.X + wm[6]*handWorld.Y + wm[10]*handWorld.Z + wm[14]);
-
-	return handModel.X*axis.X + handModel.Y*axis.Y + handModel.Z*axis.Z;
-}
-
-// A driven part at travel v (0..1): slid along its axis, and turned about its
-// pivot if SetModelSurfaceDriveRotation gave it a turn. Turn about the pivot,
-// then slide: v' = R(v - P) + P + slide. The surface transform is translate-
-// then-rotate about the mesh origin, so the pivot folds into the offset as
-// P - RP. RP comes from the very matrix multQuaternion builds from this
-// quaternion, so the pivot holds still whatever handedness that conversion has.
-static void SurfaceDrivePose(const DActorModelData *md, int s, float v, FVector3 &offset, FVector4 &rotation)
-{
-	const FVector3 axis = md->SurfOvDriveAxis[s];
-	const float dist = (md->SurfOvDriveDist[s] != 0.f) ? md->SurfOvDriveDist[s] : 1.f;
-
-	offset = axis * (v * dist);
-	rotation = FVector4(0.f, 0.f, 0.f, 1.f);
-
-	const float turn = md->SurfOvDriveTurnDeg[s] * v;
-	if (turn != 0.f)
-	{
-		const FVector3 ta = md->SurfOvDriveTurnAxis[s];
-		const FVector3 P  = md->SurfOvDriveTurnPivot[s];
-		const double half = turn * (M_PI / 360.0);   // AxisAngle's half angle
-		const float sh = (float)sin(half);
-		const FVector4 q(ta.X * sh, ta.Y * sh, ta.Z * sh, (float)cos(half));
-
-		VSMatrix turnMat;
-		turnMat.loadIdentity();
-		turnMat.multQuaternion(q);
-		const float *tm = turnMat.get();
-		const FVector3 RP(
-			tm[0]*P.X + tm[4]*P.Y + tm[8] *P.Z,
-			tm[1]*P.X + tm[5]*P.Y + tm[9] *P.Z,
-			tm[2]*P.X + tm[6]*P.Y + tm[10]*P.Z);
-		offset += P - RP;
-		rotation = q;
-	}
-}
+// THE HAND DRIVE ITSELF -- where a hand is along a part's travel axis, a driven
+// part's pose, the follower's value, the hinge and two-stage solve, and the
+// owner's arm / solve / publish -- is r_data/model_handdrive.h/.cpp (HandDrive_*),
+// shared with every other kind of part a hand drives, so a surface and a joint can
+// never disagree. What stays here is the surface side: the script-set transform
+// below, the stage trace, and a follower's slot lookup.
 
 // A script-set part transform, INTERPOLATED TO THE DRAWN INSTANT exactly as the
 // frame position is. The transform path shipped without this while the frame
@@ -795,469 +745,6 @@ static void SurfaceSetPose(const FVector3 *ovOfs, const FVector4 *ovRot, const F
 		: FVector4(0.f, 0.f, 0.f, 1.f);
 }
 
-// The travel a FOLLOWER sees: the owner's formula without the owner's writes.
-// Clamped the same way, so it is the number the owner draws this frame even
-// though only the owner re-anchors. Before the owner has drawn the part once
-// there is no anchor yet, and the value the drive resumed from is the honest
-// answer.
-static float SurfaceDriveValueForFollower(const DActorModelData *md, int s, float proj)
-{
-	float v = md->SurfOvDriveBase[s];
-	if (md->SurfOvDriveArmed[s])
-	{
-		const float dist = (md->SurfOvDriveDist[s] != 0.f) ? md->SurfOvDriveDist[s] : 1.f;
-		v = md->SurfOvDriveBase[s] + (proj - md->SurfOvDriveAnchor[s]) / dist;
-	}
-	if (v < 0.f) v = 0.f;
-	else if (v > 1.f) v = 1.f;
-	return v;
-}
-
-// ---- A DRIVE THAT ONLY TURNS, AND A DRIVE IN TWO STAGES (actor.h, SurfOvDriveHinge)
-//
-// Everything from here to SurfaceStagedValueForFollower runs ONLY for a slot
-// that SetModelSurfaceDriveHinge or SetModelSurfaceDriveStage set up. A plain
-// drive never reaches it. Both readers (the owner's draw in RenderModelFrame,
-// and SurfaceSlotPoseForFollower) ask SurfaceDriveIsStaged first and leave the
-// plain branch exactly as it was, so no existing drive is re-derived through
-// new code.
-//
-// The same split as the plain drive. The measure, the solve and the pose are
-// PURE, shared by the owner's draw and a follower. Only the owner arms, and
-// only the owner writes the solved state back.
-
-enum
-{
-	SURFSTAGE_None  = 0,
-	SURFSTAGE_Slide = 1,   // values match DRIVESTAGE_* in actor.zs
-	SURFSTAGE_Hinge = 2,
-};
-
-static bool SurfaceDriveIsStaged(const DActorModelData *md, int s)
-{
-	return md->SurfOvDriveHinge[s] || md->SurfOvDriveStage2Kind[s] != SURFSTAGE_None;
-}
-
-// One stage's motion, from whichever fields hold it. Stage 0 is the drive
-// itself: either a hinge made of the drive's turn, or the drive's own slide
-// (whose optional twist SurfaceDrivePose adds when it is posed). Stage 1 is
-// SetModelSurfaceDriveStage's.
-struct FSurfaceStageMotion
-{
-	int      kind;
-	FVector3 axis;     // unit, model space
-	float    amount;   // model units along a slide, degrees round a hinge
-	FVector3 pivot;    // model space, hinge only
-};
-
-static FSurfaceStageMotion SurfaceStageMotion(const DActorModelData *md, int s, int k)
-{
-	FSurfaceStageMotion m;
-	if (k == 0 && md->SurfOvDriveHinge[s])
-	{
-		m.kind   = SURFSTAGE_Hinge;
-		m.axis   = md->SurfOvDriveTurnAxis[s];
-		m.amount = md->SurfOvDriveTurnDeg[s];
-		m.pivot  = md->SurfOvDriveTurnPivot[s];
-	}
-	else if (k == 0)
-	{
-		m.kind   = SURFSTAGE_Slide;
-		m.axis   = md->SurfOvDriveAxis[s];
-		m.amount = md->SurfOvDriveDist[s];
-		m.pivot  = FVector3(0.f, 0.f, 0.f);
-	}
-	else
-	{
-		m.kind   = md->SurfOvDriveStage2Kind[s];
-		m.axis   = md->SurfOvDriveStage2Axis[s];
-		m.amount = md->SurfOvDriveStage2Amount[s];
-		m.pivot  = md->SurfOvDriveStage2Pivot[s];
-	}
-	// The natives refuse a zero amount. This only keeps a division honest, as
-	// the plain drive's own fallback does.
-	if (m.amount == 0.f) m.amount = 1.f;
-	return m;
-}
-
-// v turned by quaternion q, through the very matrix multQuaternion builds. That
-// is the matrix the surface is drawn with, so this cannot disagree with the
-// draw about handedness.
-static FVector3 SurfaceRotateByQuat(const FVector4 &q, const FVector3 &v)
-{
-	VSMatrix m;
-	m.loadIdentity();
-	m.multQuaternion(q);
-	const float *t = m.get();
-	return FVector3(
-		t[0]*v.X + t[4]*v.Y + t[8] *v.Z,
-		t[1]*v.X + t[5]*v.Y + t[9] *v.Z,
-		t[2]*v.X + t[6]*v.Y + t[10]*v.Z);
-}
-
-// A turn of `deg` about unit `axis` through pivot P, as a surface transform:
-// the quaternion, and the offset P - RP that holds the pivot still. The same
-// arithmetic as the turn inside SurfaceDrivePose, which is left as it was.
-static void SurfaceTurnAboutPivot(const FVector3 &axis, float deg, const FVector3 &P, FVector3 &offset, FVector4 &rotation)
-{
-	const double half = deg * (M_PI / 360.0);   // AxisAngle's half angle
-	const float sh = (float)sin(half);
-	rotation = FVector4(axis.X * sh, axis.Y * sh, axis.Z * sh, (float)cos(half));
-	offset = P - SurfaceRotateByQuat(rotation, P);
-}
-
-// Where the hand is, in stage k's own terms.
-//
-// A SLIDE: how far along its axis, in model units. This is the plain drive's
-// projection, unchanged.
-//
-// A HINGE: its ANGLE about the hinge line, in degrees, from the direction
-// SurfaceHingeArm captured. It is NOT the hand's travel along the tangent at
-// the grab point. A hand lifting a handle swings round the pivot with it, and
-// that arc projected onto a fixed tangent reads short: sin(60) / (60 in
-// radians), 83% of the way, at the top of a 60-degree lift. The handle would
-// trail the hand by ten degrees exactly where a bolt turns its corner. The
-// angle is the handle's own coordinate, so hand and part turn by the same
-// amount at every point of the swing, whatever radius the hand holds it at.
-//
-// NO LEVER, NO MINIMUM RADIUS. atan2 of the hand's two in-plane components does
-// not depend on how far out the hand is, so a hand gripping 1cm from the line
-// turns the part exactly as far as one gripping 10cm out. A fixed reach added
-// at the grab, which this once did, does not turn with the hand: it reads
-// r / (r + reach) of the swing, and a hand gripping close in could never bring
-// a bolt handle to its corner.
-//
-// False when the angle is undefined: the hand within kHingeOnLine of the hinge
-// line, where there is no direction round it. SurfaceStagedSolve then HOLDS the
-// value drawn last frame; it does not read the hand as back at its anchor.
-static const float kHingeOnLine = 1e-6f;   // mesh units: nearer the line than this, no angle
-
-static bool SurfaceStageMeasure(const DActorModelData *md, int s, int k, const FVector3 &hm, float &out)
-{
-	const FSurfaceStageMotion m = SurfaceStageMotion(md, s, k);
-	if (m.kind != SURFSTAGE_Hinge)
-	{
-		out = hm.X*m.axis.X + hm.Y*m.axis.Y + hm.Z*m.axis.Z;
-		return true;
-	}
-
-	FVector3 d = hm - m.pivot;
-	const float along = d.X*m.axis.X + d.Y*m.axis.Y + d.Z*m.axis.Z;
-	d = d - m.axis * along;
-	const FVector3 &rx = md->SurfOvDriveHingeRefX[s][k];
-	const FVector3 &ry = md->SurfOvDriveHingeRefY[s][k];
-	const float x = d.X*rx.X + d.Y*rx.Y + d.Z*rx.Z;
-	const float y = d.X*ry.X + d.Y*ry.Y + d.Z*ry.Z;
-	if (x*x + y*y < kHingeOnLine * kHingeOnLine) return false;
-	out = (float)(atan2((double)y, (double)x) * (180.0 / M_PI));
-	return true;
-}
-
-// Stage k's travel since its anchor, in that stage's own 0..1, into `out`.
-// False when the measure is undefined (see SurfaceStageMeasure), and `out` is
-// then not written. A hinge's angle difference is taken the short way round,
-// so a hand passing behind the line it is measured from does not read as a
-// whole turn. That is why a hinge stage must turn less than 180 degrees:
-// re-anchoring at the clamp keeps an honest swing from reaching the far side.
-static bool SurfaceStageTravel(const DActorModelData *md, int s, int k, const FVector3 &hm, float anchor, float &out)
-{
-	float meas;
-	if (!SurfaceStageMeasure(md, s, k, hm, meas)) return false;
-	const FSurfaceStageMotion m = SurfaceStageMotion(md, s, k);
-	float d = meas - anchor;
-	if (m.kind == SURFSTAGE_Hinge)
-	{
-		while (d > 180.f)   d -= 360.f;
-		while (d <= -180.f) d += 360.f;
-	}
-	out = d / m.amount;
-	return true;
-}
-
-// Where a hinge stage measures its angle from, captured on the drive's first
-// drawn frame. Same instant, same reason, as a plain drive's anchor. RefX is
-// the hand's own direction from the hinge line.
-//
-// RefY is where RefX goes under a +90 degree turn built by the turn's own
-// matrix. So the angle grows the way positive degrees turn the part, whatever
-// handedness the quaternion conversion has, and a negative `degrees` divides it
-// into positive travel the other way round.
-//
-// False, and nothing usable captured, when the hand is on the line and has no
-// direction from it. A slide stage has nothing to capture and is always true.
-static bool SurfaceHingeArm(DActorModelData *md, int s, int k, const FVector3 &hm)
-{
-	const FSurfaceStageMotion m = SurfaceStageMotion(md, s, k);
-	if (m.kind != SURFSTAGE_Hinge) return true;
-
-	FVector3 d = hm - m.pivot;
-	const float along = d.X*m.axis.X + d.Y*m.axis.Y + d.Z*m.axis.Z;
-	d = d - m.axis * along;
-	const float r = d.Length();
-	if (!(r >= kHingeOnLine)) return false;
-
-	const FVector3 dir = d / r;
-	md->SurfOvDriveHingeRefX[s][k] = dir;
-
-	FVector3 unusedOffset;
-	FVector4 quarter;
-	SurfaceTurnAboutPivot(m.axis, 90.f, FVector3(0.f, 0.f, 0.f), unusedOffset, quarter);
-	md->SurfOvDriveHingeRefY[s][k] = SurfaceRotateByQuat(quarter, dir);
-	return true;
-}
-
-// ARM, DON'T ANCHOR, for a staged drive: the plain drive's rule applied to
-// every stage, on the first drawn frame. Both stages are anchored at once,
-// even the one the hand is not working, because the solve reads both measures
-// every frame.
-//
-// ALL OR NOTHING. If any stage cannot be measured on this frame (a hinge with
-// the hand on its line), no anchor is written and the drive is not marked
-// armed. The value holds and the owner tries again on the next drawn frame, so
-// no stage is ever solved against an anchor it did not capture.
-static bool SurfaceStagedArm(DActorModelData *md, int s, const FVector3 &hm)
-{
-	const int stages = (md->SurfOvDriveStage2Kind[s] != SURFSTAGE_None) ? 2 : 1;
-	float meas[2] = { 0.f, 0.f };
-	for (int k = 0; k < stages; k++)
-	{
-		if (!SurfaceHingeArm(md, s, k, hm)) return false;
-		if (!SurfaceStageMeasure(md, s, k, hm, meas[k])) return false;
-	}
-	for (int k = 0; k < stages; k++) md->SurfOvDriveStageAnchor[s][k] = meas[k];
-	md->SurfOvDriveArmed[s] = true;
-	return true;
-}
-
-// A staged drive's solve state, copied out of the slot so a follower can run
-// the owner's solve on a copy and throw the copy away.
-struct FSurfaceStagedState
-{
-	bool  inStage2;
-	float anchor[2];
-	float base[2];
-};
-
-static FSurfaceStagedState SurfaceStagedLoad(const DActorModelData *md, int s)
-{
-	FSurfaceStagedState st;
-	st.inStage2 = md->SurfOvDriveInStage2[s];
-	for (int k = 0; k < 2; k++)
-	{
-		st.anchor[k] = md->SurfOvDriveStageAnchor[s][k];
-		st.base[k]   = md->SurfOvDriveStageBase[s][k];
-	}
-	return st;
-}
-
-static void SurfaceStagedStore(DActorModelData *md, int s, const FSurfaceStagedState &st)
-{
-	md->SurfOvDriveInStage2[s] = st.inStage2;
-	for (int k = 0; k < 2; k++)
-	{
-		md->SurfOvDriveStageAnchor[s][k] = st.anchor[k];
-		md->SurfOvDriveStageBase[s][k]   = st.base[k];
-	}
-}
-
-// ONE HAND, ONE VALUE, TWO MOTIONS. Returns the value drawn this frame and
-// leaves in `st` the state the owner stores. `prevValue` is the value the owner
-// drew last frame (SurfOvDriveValue). `carry`, if given, receives the share of
-// this frame's hand motion that went into the new stage, on a frame where the
-// hand changed stage; on any other frame it is left untouched.
-//
-// A HINGE ON ITS OWN is the plain drive's formula with an angle for a length:
-// base plus travel since the anchor, re-anchored at either end.
-//
-// TWO STAGES ARE AN L-SHAPED TRACK. Stage 2 cannot start until stage 1 is
-// complete, and stage 1 cannot move while stage 2 is under way. A bolt does not
-// draw back with its handle down, nor turn with the bolt out. Both hand
-// measures are read every frame. The blocked stage's anchor is kept at the
-// hand, so the moment that stage unblocks it moves from exactly where the hand
-// is. At the corner both are live and whichever the hand moves takes over.
-// Pushing back past the split returns to stage 1 by the same rule.
-//
-// A FAST HAND CROSSING THE CORNER INSIDE ONE FRAME. That frame's motion is cut
-// at the instant the working stage reached its end. Stage 1 went from `prev`
-// to w, and its end is 1, so f = (1 - prev) / (w - prev) of the frame was spent
-// finishing it. Stage 2's anchor was last frame's hand (kept there while it was
-// blocked), so the travel it reads this frame is the frame's whole motion along
-// stage 2, and only the remaining (1 - f) of it goes to stage 2. That is exact
-// for a hand moving in a straight line within one frame, which at display rate
-// is the hand's path. The overshoot along stage 1 is past its end stop and is
-// dropped, as at any clamp. Coming back is the mirror image.
-//
-// WHY NOTHING JUMPS. At the split both stages draw the identical pose (stage 2
-// at 0 is the identity, see SurfaceStagedDrivePose). The value equals the split
-// on either side of the corner, and a crossing adds only the travel the hand
-// made past it. A second draw of the same frame (the other eye) reads zero
-// travel everywhere, so it draws the same value.
-static float SurfaceStagedSolve(const DActorModelData *md, int s, const FVector3 &hm, float prevValue,
-	FSurfaceStagedState &st, float *carry = nullptr)
-{
-	// Re-anchor stage k at the hand, standing for stage travel b. Only reached
-	// on a frame whose measures are defined (the hold below returns first); the
-	// guard just keeps an anchor from ever being written from nothing.
-	auto reanchor = [&](int k, float b)
-	{
-		float meas;
-		if (SurfaceStageMeasure(md, s, k, hm, meas)) st.anchor[k] = meas;
-		st.base[k] = b;
-	};
-
-	// AN UNDEFINED MEASURE HOLDS. With the hand on a hinge's line there is no
-	// angle this frame. Reading that as zero travel would put the part back at
-	// whatever its anchor stands for (the value it had when grabbed) for a
-	// frame. Instead the value drawn last frame stands and nothing is
-	// re-anchored, and the next measurable frame reads the hand against the
-	// same anchors as the frame before.
-	const float held = (prevValue < 0.f) ? 0.f : (prevValue > 1.f) ? 1.f : prevValue;
-
-	float t0;
-	if (!SurfaceStageTravel(md, s, 0, hm, st.anchor[0], t0)) return held;
-	float w0 = st.base[0] + t0;
-
-	if (md->SurfOvDriveStage2Kind[s] == SURFSTAGE_None)
-	{
-		if (w0 < 0.f)      { reanchor(0, 0.f); w0 = 0.f; }
-		else if (w0 > 1.f) { reanchor(0, 1.f); w0 = 1.f; }
-		return w0;
-	}
-
-	const float S = md->SurfOvDriveSplit[s];
-	float t1;
-	if (!SurfaceStageTravel(md, s, 1, hm, st.anchor[1], t1)) return held;
-	float w1 = st.base[1] + t1;
-
-	// How far into its own stage last frame's drawn value was. Within a hair of
-	// the end counts as AT the end. S * 1 / S need not come back as exactly 1 in
-	// float, and reading a hand parked on the corner as still finishing stage 1
-	// would put all of its pull into f and none into stage 2: a bolt stuck at
-	// the corner.
-	const float kAtEnd = 1e-4f;
-
-	if (!st.inStage2)
-	{
-		if (w0 < 1.f)
-		{
-			if (w0 < 0.f) { reanchor(0, 0.f); w0 = 0.f; }
-			reanchor(1, 0.f);            // stage 2 blocked: kept at the hand
-			return S * w0;
-		}
-
-		float prev = prevValue / S;
-		if (prev < 0.f) prev = 0.f;
-		const float f = (prev < 1.f - kAtEnd) ? (1.f - prev) / (w0 - prev) : 0.f;
-		reanchor(0, 1.f);                // at its end stop; the overshoot is dropped
-		float u1 = (1.f - f) * w1;       // stage 2's base is 0 while it is blocked
-		if (u1 > 0.f)
-		{
-			if (u1 > 1.f) u1 = 1.f;
-			reanchor(1, u1);
-			st.inStage2 = true;
-			if (carry) *carry = 1.f - f;
-			return S + (1.f - S) * u1;
-		}
-		reanchor(1, 0.f);                // on the corner, pushing stage 2 below its start
-		return S;
-	}
-
-	if (w1 > 0.f)
-	{
-		if (w1 > 1.f) { reanchor(1, 1.f); w1 = 1.f; }
-		reanchor(0, 1.f);                // stage 1 blocked: kept at the hand
-		return S + (1.f - S) * w1;
-	}
-
-	float prev = (prevValue - S) / (1.f - S);
-	if (prev > 1.f) prev = 1.f;
-	const float f = (prev > kAtEnd) ? prev / (prev - w1) : 0.f;
-	reanchor(1, 0.f);                    // at its start stop; the overshoot is dropped
-	float u0 = 1.f + (1.f - f) * (w0 - 1.f);   // stage 1's base is 1 while it is blocked
-	if (u0 < 1.f)
-	{
-		if (u0 < 0.f) u0 = 0.f;
-		reanchor(0, u0);
-		st.inStage2 = false;
-		if (carry) *carry = 1.f - f;
-		return S * u0;
-	}
-	reanchor(0, 1.f);                    // on the corner, pushing stage 1 past its end
-	return S;
-}
-
-// Stage k's own pose at its travel u. Stage 1 as a slide is SurfaceDrivePose
-// itself, twist included, so a staged drive whose first stage is a slide draws
-// that stage exactly as a plain drive does.
-static void SurfaceStagePose(const DActorModelData *md, int s, int k, float u, FVector3 &offset, FVector4 &rotation)
-{
-	const FSurfaceStageMotion m = SurfaceStageMotion(md, s, k);
-	offset   = FVector3(0.f, 0.f, 0.f);
-	rotation = FVector4(0.f, 0.f, 0.f, 1.f);
-	if (m.kind == SURFSTAGE_Hinge)
-	{
-		if (u != 0.f) SurfaceTurnAboutPivot(m.axis, m.amount * u, m.pivot, offset, rotation);
-	}
-	else if (k == 0)
-	{
-		SurfaceDrivePose(md, s, u, offset, rotation);
-	}
-	else
-	{
-		offset = m.axis * (u * m.amount);
-	}
-}
-
-// A staged drive's pose at combined value v, in the mesh's own space.
-//
-// Below the split, stage 1 alone. Above it, stage 1 complete and stage 2
-// applied ON TOP of it, in the mesh frame:
-//     x' = R2 (R1 x + o1) + o2  =  (R2 R1) x + (R2 o1 + o2)
-// multQuaternion builds the standard rotation matrix of a unit Hamilton
-// quaternion, for which R(q2 q1) = R(q2) R(q1), so the combined turn is the
-// product q2 q1. R2 o1 goes through SurfaceRotateByQuat, the draw's own matrix.
-// At v = split, stage 2 is the identity and this is exactly stage 1's end pose,
-// so the two sides of the split meet.
-static void SurfaceStagedDrivePose(const DActorModelData *md, int s, float v, FVector3 &offset, FVector4 &rotation)
-{
-	if (md->SurfOvDriveStage2Kind[s] == SURFSTAGE_None)
-	{
-		SurfaceStagePose(md, s, 0, v, offset, rotation);
-		return;
-	}
-
-	const float S = md->SurfOvDriveSplit[s];
-	float u0 = (v >= S) ? 1.f : v / S;
-	if (u0 < 0.f) u0 = 0.f;
-	SurfaceStagePose(md, s, 0, u0, offset, rotation);
-
-	float u1 = (v - S) / (1.f - S);
-	if (u1 <= 0.f) return;
-	if (u1 > 1.f) u1 = 1.f;
-
-	FVector3 o2;
-	FVector4 q2;
-	SurfaceStagePose(md, s, 1, u1, o2, q2);
-	const FVector4 q1 = rotation;
-	offset = SurfaceRotateByQuat(q2, offset) + o2;
-	rotation = FVector4(
-		q2.W*q1.X + q2.X*q1.W + q2.Y*q1.Z - q2.Z*q1.Y,
-		q2.W*q1.Y - q2.X*q1.Z + q2.Y*q1.W + q2.Z*q1.X,
-		q2.W*q1.Z + q2.X*q1.Y - q2.Y*q1.X + q2.Z*q1.W,
-		q2.W*q1.W - q2.X*q1.X - q2.Y*q1.Y - q2.Z*q1.Z);
-}
-
-// The value a FOLLOWER sees on a staged drive: the owner's solve, run on a copy
-// of the state that is then discarded. Before the owner has armed the drive
-// there are no anchors, and the value the drive resumed from is the honest
-// answer, as for a plain drive.
-static float SurfaceStagedValueForFollower(const DActorModelData *md, int s, const FVector3 &handModel)
-{
-	if (!md->SurfOvDriveArmed[s]) return md->SurfOvDriveValue[s];
-	FSurfaceStagedState st = SurfaceStagedLoad(md, s);
-	return SurfaceStagedSolve(md, s, handModel, md->SurfOvDriveValue[s], st);
-}
-
 // DIAGNOSTIC for staged drives: renderer-local, and always on, because it
 // prints only when one arms or its hand changes stage, which is a few lines per
 // grab. One entry per (model data, slot) being driven in stages. Entries are
@@ -1299,21 +786,16 @@ static bool SurfaceSlotPoseForFollower(const DActorModelData *md, int s, const V
 	if (md == nullptr || s < 0 || s >= DActorModelData::RS_SURF_SLOTS) return false;
 	if (md->SurfOvModel[s] < 0 || md->SurfOvSurface[s] < 0) return false;
 
-	if (md->SurfOvDriveOn[s])
+	if (md->SurfDrive[s].on)
 	{
 		auto vrmode = VRMode::GetVRModeCached(true);
 		VSMatrix handMat;
-		const int dhand = (md->SurfOvDriveHand[s] == 1) ? VR_OFFHAND : VR_MAINHAND;
+		const int dhand = (md->SurfDrive[s].hand == 1) ? VR_OFFHAND : VR_MAINHAND;
 		if (vrmode && vrmode->IsVR() && vrmode->GetHandTransform(VR_ControllerForHand(dhand), &handMat))
 		{
-			FVector3 handModel;
-			const float proj = SurfaceHandProjection(handMat, modelToWorld, md->SurfOvDriveAxis[s], handModel);
 			// A hinge or two-stage drive rides its own solve; a plain drive
-			// exactly as it always has.
-			if (SurfaceDriveIsStaged(md, s))
-				SurfaceStagedDrivePose(md, s, SurfaceStagedValueForFollower(md, s, handModel), offset, rotation);
-			else
-				SurfaceDrivePose(md, s, SurfaceDriveValueForFollower(md, s, proj), offset, rotation);
+			// exactly as it always has (HandDrive_PoseForFollower).
+			HandDrive_PoseForFollower(md->SurfDrive[s], handMat, modelToWorld, offset, rotation);
 			return true;
 		}
 	}
@@ -3447,14 +2929,15 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			// difference this exists to remove and exactly what a slow test
 			// cannot show you.
 			bool driven = false;
-			if (driveData && driveData->SurfOvDriveOn[s])
+			if (driveData && driveData->SurfDrive[s].on)
 			{
 				VSMatrix modelToWorld;
 				auto vrmode = VRMode::GetVRModeCached(true);
 				if (vrmode && vrmode->IsVR() && renderer->GetModelToWorldMatrix(&modelToWorld))
 				{
+					FHandDrive &drive = driveData->SurfDrive[s];
 					VSMatrix handMat;
-					const int dhand = (driveData->SurfOvDriveHand[s] == 1) ? VR_OFFHAND : VR_MAINHAND;
+					const int dhand = (drive.hand == 1) ? VR_OFFHAND : VR_MAINHAND;
 
 					// GetHandTransform, NOT GetWeaponTransform. The latter
 					// applies a conditional X mirror (hw_vrmodes.cpp, gated on
@@ -3463,194 +2946,109 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 					// sign flip -- on one hand only, for some weapons. Silent at
 					// rest and wrong at an angle.
 					//
-					// A HINGE OR TWO-STAGE DRIVE (SetModelSurfaceDriveHinge/Stage)
-					// takes its own branch first, so the plain branch below reads
-					// exactly as it did before those existed, and no plain drive
-					// runs a line of new code.
-					const bool staged = SurfaceDriveIsStaged(driveData, s);
-					if (staged && vrmode->GetHandTransform(VR_ControllerForHand(dhand), &handMat))
+					// THE DRIVE ITSELF -- arm, solve, publish the drawn value, pose
+					// the part -- is HandDrive_OwnerStep (model_handdrive.cpp), the
+					// same function a joint drive uses. A hinge or two-stage drive
+					// takes its own branch inside it, and a plain drive reads exactly
+					// as it did. What stays here is the surface's own diagnostics,
+					// read off `step`.
+					if (vrmode->GetHandTransform(VR_ControllerForHand(dhand), &handMat))
 					{
-						// The same hand, in the same mesh space, as the plain
-						// branch. Only its position is used here; each stage
-						// measures it in its own terms (SurfaceStageMeasure).
-						FVector3 handModel;
-						SurfaceHandProjection(handMat, modelToWorld, driveData->SurfOvDriveAxis[s], handModel);
+						FHandDriveStep step;
+						HandDrive_OwnerStep(drive, handMat, modelToWorld, o.offset, o.rotation, step);
+						o.hasTransform = true;
+						driven = true;
 
-						// ARM, DON'T ANCHOR: the plain branch's rule, per stage. On a
-						// frame the hand sits on a hinge's line nothing arms and the
-						// value holds; the next drawn frame tries again (see
-						// SurfaceStagedArm).
-						if (!driveData->SurfOvDriveArmed[s] && SurfaceStagedArm(driveData, s, handModel))
+						if (step.staged)
 						{
 							// DIAGNOSTIC: the renderer has picked the drive up.
 							// Once per arm, and never more than four a second.
-							FSurfaceStageTrace *t = SurfaceStageTrace(driveData, s, true);
-							t->logged  = driveData->SurfOvDriveInStage2[s] ? 2 : 1;
-							t->pending = 0;
-							const uint64_t nowMs = I_msTime();
-							if (nowMs - t->armMs >= 250)
+							if (step.armedNow)
 							{
-								t->armMs = nowMs;
-								const bool hinge1 = driveData->SurfOvDriveHinge[s];
-								const int kind2 = driveData->SurfOvDriveStage2Kind[s];
-								char st2[96] = "none";
-								if (kind2 != SURFSTAGE_None)
-									snprintf(st2, sizeof(st2), "%s %.2f%s, split %.3f",
-										kind2 == SURFSTAGE_Hinge ? "hinge" : "slide", driveData->SurfOvDriveStage2Amount[s],
-										kind2 == SURFSTAGE_Hinge ? " deg" : " units", driveData->SurfOvDriveSplit[s]);
-								Printf("[DRIVESTAGE] model %d surf %d slot %d: renderer armed at v=%.3f, hand %d working stage %d -- stage 1 %s %.2f%s, stage 2 %s\n",
-									i, o.surface, s, driveData->SurfOvDriveValue[s], driveData->SurfOvDriveHand[s], t->logged,
-									hinge1 ? "hinge" : "slide", hinge1 ? driveData->SurfOvDriveTurnDeg[s] : driveData->SurfOvDriveDist[s],
-									hinge1 ? " deg" : " units", st2);
-							}
-						}
-
-						FSurfaceStagedState st = SurfaceStagedLoad(driveData, s);
-						const bool wasStage2 = st.inStage2;
-						const float prevV = driveData->SurfOvDriveValue[s];
-						float carry = 0.f;
-						// Not armed yet (the hand on a hinge's line since the grab):
-						// hold the value the drive resumed from, as a follower does.
-						float v = prevV;
-						if (driveData->SurfOvDriveArmed[s])
-						{
-							v = SurfaceStagedSolve(driveData, s, handModel, prevV, st, &carry);
-							SurfaceStagedStore(driveData, s, st);
-							driveData->SurfOvDriveValue[s] = v;
-						}
-
-						// The hinge, or both stages composed, from the shared pure
-						// function -- see SurfaceStagedDrivePose.
-						o.hasTransform = true;
-						SurfaceStagedDrivePose(driveData, s, v, o.offset, o.rotation);
-						driven = true;
-
-						// DIAGNOSTIC: the stage handoff, seen in the renderer, once
-						// per crossing. The frame the hand changes stage is kept,
-						// and reported once the drawn value has left the split by 2%
-						// of the whole travel in the new stage. So a hand resting on
-						// the corner cannot flood the log by dithering across it,
-						// and a crossing backed straight out of is not reported.
-						if (driveData->SurfOvDriveStage2Kind[s] != SURFSTAGE_None)
-						{
-							const bool crossed = (st.inStage2 != wasStage2);
-							FSurfaceStageTrace *t = SurfaceStageTrace(driveData, s, crossed);
-							if (t && crossed)
-							{
-								t->pending    = st.inStage2 ? 2 : 1;
-								t->crossPrev  = prevV;
-								t->crossV     = v;
-								t->crossCarry = carry;
-							}
-							if (t && t->pending != 0)
-							{
-								const float split = driveData->SurfOvDriveSplit[s];
-								if (t->pending == t->logged) t->pending = 0;
-								else if (fabs(v - split) >= 0.02f)
+								FSurfaceStageTrace *t = SurfaceStageTrace(driveData, s, true);
+								t->logged  = step.wasStage2 ? 2 : 1;
+								t->pending = 0;
+								const uint64_t nowMs = I_msTime();
+								if (nowMs - t->armMs >= 250)
 								{
-									Printf("[DRIVESTAGE] model %d surf %d slot %d: hand moved from stage %d to stage %d, now v=%.3f (split %.3f). Crossing frame drew %.3f -> %.3f and carried %.0f%% of that frame's hand motion into stage %d\n",
-										i, o.surface, s, t->logged, t->pending, v, split,
-										t->crossPrev, t->crossV, t->crossCarry * 100.f, t->pending);
-									t->logged  = t->pending;
-									t->pending = 0;
+									t->armMs = nowMs;
+									const bool hinge1 = drive.hinge;
+									const int kind2 = drive.stage2Kind;
+									char st2[96] = "none";
+									if (kind2 != HANDDRIVE_None)
+										snprintf(st2, sizeof(st2), "%s %.2f%s, split %.3f",
+											kind2 == HANDDRIVE_Hinge ? "hinge" : "slide", drive.stage2Amount,
+											kind2 == HANDDRIVE_Hinge ? " deg" : " units", drive.split);
+									Printf("[DRIVESTAGE] model %d surf %d slot %d: renderer armed at v=%.3f, hand %d working stage %d -- stage 1 %s %.2f%s, stage 2 %s\n",
+										i, o.surface, s, step.prevValue, drive.hand, t->logged,
+										hinge1 ? "hinge" : "slide", hinge1 ? drive.turnDeg : drive.dist,
+										hinge1 ? " deg" : " units", st2);
+								}
+							}
+
+							// DIAGNOSTIC: the stage handoff, seen in the renderer, once
+							// per crossing. The frame the hand changes stage is kept,
+							// and reported once the drawn value has left the split by 2%
+							// of the whole travel in the new stage. So a hand resting on
+							// the corner cannot flood the log by dithering across it,
+							// and a crossing backed straight out of is not reported.
+							if (drive.stage2Kind != HANDDRIVE_None)
+							{
+								const bool crossed = (step.st.inStage2 != step.wasStage2);
+								FSurfaceStageTrace *t = SurfaceStageTrace(driveData, s, crossed);
+								if (t && crossed)
+								{
+									t->pending    = step.st.inStage2 ? 2 : 1;
+									t->crossPrev  = step.prevValue;
+									t->crossV     = step.value;
+									t->crossCarry = step.carry;
+								}
+								if (t && t->pending != 0)
+								{
+									const float split = drive.split;
+									if (t->pending == t->logged) t->pending = 0;
+									else if (fabs(step.value - split) >= 0.02f)
+									{
+										Printf("[DRIVESTAGE] model %d surf %d slot %d: hand moved from stage %d to stage %d, now v=%.3f (split %.3f). Crossing frame drew %.3f -> %.3f and carried %.0f%% of that frame's hand motion into stage %d\n",
+											i, o.surface, s, t->logged, t->pending, step.value, split,
+											t->crossPrev, t->crossV, t->crossCarry * 100.f, t->pending);
+										t->logged  = t->pending;
+										t->pending = 0;
+									}
+								}
+							}
+
+							if (vr_surf_debug)
+							{
+								static int lastSV[16 * 64];
+								static bool svInit = false;
+								if (!svInit) { for (int k = 0; k < 16*64; k++) lastSV[k] = -0x7fffffff; svInit = true; }
+								int vslot = (i * 64 + o.surface) & (16*64 - 1);
+								int vkey = (int)(step.value * 200.f);
+								if (vkey != lastSV[vslot])
+								{
+									lastSV[vslot] = vkey;
+									Printf("[DRIVE] model %d surf %d hand %d  v=%.3f  stage %d  anchor=(%.3f %.3f) base=(%.3f %.3f)  handModel=(%.2f %.2f %.2f)\n",
+										i, o.surface, drive.hand, step.value, step.st.inStage2 ? 2 : 1,
+										step.st.anchor[0], step.st.anchor[1], step.st.base[0], step.st.base[1],
+										step.handModel.X, step.handModel.Y, step.handModel.Z);
 								}
 							}
 						}
-
-						if (vr_surf_debug)
+						else if (vr_surf_debug)
 						{
-							static int lastSV[16 * 64];
-							static bool svInit = false;
-							if (!svInit) { for (int k = 0; k < 16*64; k++) lastSV[k] = -0x7fffffff; svInit = true; }
-							int vslot = (i * 64 + o.surface) & (16*64 - 1);
-							int vkey = (int)(v * 200.f);
-							if (vkey != lastSV[vslot])
-							{
-								lastSV[vslot] = vkey;
-								Printf("[DRIVE] model %d surf %d hand %d  v=%.3f  stage %d  anchor=(%.3f %.3f) base=(%.3f %.3f)  handModel=(%.2f %.2f %.2f)\n",
-									i, o.surface, driveData->SurfOvDriveHand[s], v, st.inStage2 ? 2 : 1,
-									st.anchor[0], st.anchor[1], st.base[0], st.base[1],
-									handModel.X, handModel.Y, handModel.Z);
-							}
-						}
-					}
-					else if (!staged && vrmode->GetHandTransform(VR_ControllerForHand(dhand), &handMat))
-					{
-						// NO UNIT CONSTANT HERE, DELIBERATELY, AND NONE IS
-						// NEEDED. Whatever scale this model's path applied is
-						// inside modelToWorld, so inverting it undoes that
-						// scale along with everything else. The hand lands in
-						// the SAME space the mesh's own vertices are in, which
-						// is the space `axis` and `distance` are measured in.
-						//
-						// This is on purpose. Elsewhere in this file a bare
-						// 0.01 is multiplied in by hand on some paths and not
-						// others, and forgetting it (or applying it twice) is
-						// the "everything is 100x" bug this project keeps
-						// hitting. A conversion that is derived rather than
-						// remembered cannot be forgotten.
-						// SurfaceHandProjection: the same function a model riding
-						// this part uses (ModelFollowFrame), so the two agree.
-						FVector3 handModel;
-						const float proj = SurfaceHandProjection(handMat, modelToWorld, driveData->SurfOvDriveAxis[s], handModel);
-
-						// ARM, DON'T ANCHOR. The anchor is captured HERE, on the
-						// first drawn frame, from the same live quantity it will
-						// be differenced against. Captured at script rate it
-						// would be one tic stale at the instant of grab -- on a
-						// short stroke that is most of the travel, so the part
-						// would leap most of the way out the moment you touched
-						// it, and only when you grabbed fast.
-						if (!driveData->SurfOvDriveArmed[s])
-						{
-							driveData->SurfOvDriveAnchor[s] = proj;
-							driveData->SurfOvDriveArmed[s] = true;
-						}
-
-						const float dist = (driveData->SurfOvDriveDist[s] != 0.f)
-							? driveData->SurfOvDriveDist[s] : 1.f;
-						float v = driveData->SurfOvDriveBase[s]
-							+ (proj - driveData->SurfOvDriveAnchor[s]) / dist;
-
-						// RE-ANCHOR AT THE CLAMP. Without this, travel past an
-						// end is remembered and has to be un-travelled before
-						// the part moves again -- you overshoot a 7cm stroke by
-						// 30cm on a real pull, then wonder why the magazine
-						// ignores the first third of your push back.
-						if (v < 0.f)
-						{
-							driveData->SurfOvDriveAnchor[s] = proj;
-							driveData->SurfOvDriveBase[s] = 0.f;
-							v = 0.f;
-						}
-						else if (v > 1.f)
-						{
-							driveData->SurfOvDriveAnchor[s] = proj;
-							driveData->SurfOvDriveBase[s] = 1.f;
-							v = 1.f;
-						}
-
-						driveData->SurfOvDriveValue[s] = v;
-
-						// The slide and the turn (SetModelSurfaceDriveRotation),
-						// from the shared pure function -- see SurfaceDrivePose.
-						o.hasTransform = true;
-						SurfaceDrivePose(driveData, s, v, o.offset, o.rotation);
-						driven = true;
-
-						if (vr_surf_debug)
-						{
+							const float dist = (drive.dist != 0.f) ? drive.dist : 1.f;
 							static int lastV[16 * 64];
 							static bool vInit = false;
 							if (!vInit) { for (int k = 0; k < 16*64; k++) lastV[k] = -0x7fffffff; vInit = true; }
 							int vslot = (i * 64 + o.surface) & (16*64 - 1);
-							int vkey = (int)(v * 200.f);
+							int vkey = (int)(step.value * 200.f);
 							if (vkey != lastV[vslot])
 							{
 								lastV[vslot] = vkey;
 								Printf("[DRIVE] model %d surf %d hand %d  v=%.3f  proj=%.3f anchor=%.3f dist=%.3f  handModel=(%.2f %.2f %.2f)\n",
-									i, o.surface, dhand, v, proj, driveData->SurfOvDriveAnchor[s],
-									dist, handModel.X, handModel.Y, handModel.Z);
+									i, o.surface, dhand, step.value, step.proj, drive.anchor,
+									dist, step.handModel.X, step.handModel.Y, step.handModel.Z);
 							}
 						}
 					}

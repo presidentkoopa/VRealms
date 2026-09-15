@@ -7397,20 +7397,20 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDrive)
 	auto md = self->modelData;
 	md->SurfOvModel[slot]      = modelindex;
 	md->SurfOvSurface[slot]    = surface;
-	md->SurfOvDriveOn[slot]    = true;
-	md->SurfOvDriveHand[slot]  = (hand == 1) ? 1 : 0;
-	md->SurfOvDriveAxis[slot]  = axis;
-	md->SurfOvDriveDist[slot]  = (float)distance;
-	md->SurfOvDriveBase[slot]  = (float)clamp(startValue, 0.0, 1.0);
-	md->SurfOvDriveArmed[slot] = false;   // the renderer captures the anchor
-	md->SurfOvDriveValue[slot] = (float)clamp(startValue, 0.0, 1.0);
-	md->SurfOvDriveTurnDeg[slot] = 0.f;   // a pure slide until told otherwise
+	md->SurfDrive[slot].on    = true;
+	md->SurfDrive[slot].hand  = (hand == 1) ? 1 : 0;
+	md->SurfDrive[slot].axis  = axis;
+	md->SurfDrive[slot].dist  = (float)distance;
+	md->SurfDrive[slot].base  = (float)clamp(startValue, 0.0, 1.0);
+	md->SurfDrive[slot].armed = false;   // the renderer captures the anchor
+	md->SurfDrive[slot].value = (float)clamp(startValue, 0.0, 1.0);
+	md->SurfDrive[slot].turnDeg = 0.f;   // a pure slide until told otherwise
 	// Nor a stale hinge or second stage (SetModelSurfaceDriveHinge/Stage): a slot
 	// reused for a plain drive takes the plain branch, exactly as before those
 	// existed.
-	md->SurfOvDriveHinge[slot]      = false;
-	md->SurfOvDriveStage2Kind[slot] = 0;
-	md->SurfOvDriveInStage2[slot]   = false;
+	md->SurfDrive[slot].hinge      = false;
+	md->SurfDrive[slot].stage2Kind = 0;
+	md->SurfDrive[slot].inStage2   = false;
 	ACTION_RETURN_BOOL(true);
 }
 
@@ -7443,7 +7443,7 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveRotation)
 	PARAM_FLOAT(pivotz);
 
 	if (self->modelData == nullptr || slot < 0 || slot >= DActorModelData::RS_SURF_SLOTS
-		|| !self->modelData->SurfOvDriveOn[slot] || self->modelData->SurfOvDriveHinge[slot])
+		|| !self->modelData->SurfDrive[slot].on || self->modelData->SurfDrive[slot].hinge)
 	{
 		ACTION_RETURN_BOOL(false);
 	}
@@ -7451,7 +7451,7 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveRotation)
 	auto md = self->modelData;
 	if (degrees == 0.0)
 	{
-		md->SurfOvDriveTurnDeg[slot] = 0.f;
+		md->SurfDrive[slot].turnDeg = 0.f;
 		ACTION_RETURN_BOOL(true);
 	}
 
@@ -7463,9 +7463,9 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveRotation)
 	{
 		ACTION_RETURN_BOOL(false);
 	}
-	md->SurfOvDriveTurnAxis[slot]  = axis / len;
-	md->SurfOvDriveTurnDeg[slot]   = (float)degrees;
-	md->SurfOvDriveTurnPivot[slot] = FVector3((float)pivotx, (float)pivoty, (float)pivotz);
+	md->SurfDrive[slot].turnAxis  = axis / len;
+	md->SurfDrive[slot].turnDeg   = (float)degrees;
+	md->SurfDrive[slot].turnPivot = FVector3((float)pivotx, (float)pivoty, (float)pivotz);
 	ACTION_RETURN_BOOL(true);
 }
 
@@ -7530,24 +7530,24 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveHinge)
 	const float start = (float)clamp(startValue, 0.0, 1.0);
 	md->SurfOvModel[slot]           = modelindex;
 	md->SurfOvSurface[slot]         = surface;
-	md->SurfOvDriveOn[slot]         = true;
-	md->SurfOvDriveHand[slot]       = (hand == 1) ? 1 : 0;
+	md->SurfDrive[slot].on         = true;
+	md->SurfDrive[slot].hand       = (hand == 1) ? 1 : 0;
 	// The slide fields are not read for a hinge. They get the hinge axis and a
 	// unit distance rather than being left stale, because the projection the
 	// owner's draw shares with the plain drive is still handed an axis.
-	md->SurfOvDriveAxis[slot]       = axis;
-	md->SurfOvDriveDist[slot]       = 1.f;
-	md->SurfOvDriveTurnAxis[slot]   = axis;
-	md->SurfOvDriveTurnDeg[slot]    = (float)degrees;
-	md->SurfOvDriveTurnPivot[slot]  = FVector3((float)pivotx, (float)pivoty, (float)pivotz);
-	md->SurfOvDriveHinge[slot]      = true;
-	md->SurfOvDriveStage2Kind[slot] = 0;   // a single stage until SetModelSurfaceDriveStage says otherwise
-	md->SurfOvDriveInStage2[slot]   = false;
-	md->SurfOvDriveBase[slot]       = start;
-	md->SurfOvDriveStageBase[slot][0] = start;
-	md->SurfOvDriveStageBase[slot][1] = 0.f;
-	md->SurfOvDriveArmed[slot]      = false;   // the renderer captures the anchor
-	md->SurfOvDriveValue[slot]      = start;
+	md->SurfDrive[slot].axis       = axis;
+	md->SurfDrive[slot].dist       = 1.f;
+	md->SurfDrive[slot].turnAxis   = axis;
+	md->SurfDrive[slot].turnDeg    = (float)degrees;
+	md->SurfDrive[slot].turnPivot  = FVector3((float)pivotx, (float)pivoty, (float)pivotz);
+	md->SurfDrive[slot].hinge      = true;
+	md->SurfDrive[slot].stage2Kind = 0;   // a single stage until SetModelSurfaceDriveStage says otherwise
+	md->SurfDrive[slot].inStage2   = false;
+	md->SurfDrive[slot].base       = start;
+	md->SurfDrive[slot].stageBase[0] = start;
+	md->SurfDrive[slot].stageBase[1] = 0.f;
+	md->SurfDrive[slot].armed      = false;   // the renderer captures the anchor
+	md->SurfDrive[slot].value      = start;
 	ACTION_RETURN_BOOL(true);
 }
 
@@ -7590,23 +7590,23 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveStage)
 	PARAM_FLOAT(split);
 
 	if (self->modelData == nullptr || slot < 0 || slot >= DActorModelData::RS_SURF_SLOTS
-		|| !self->modelData->SurfOvDriveOn[slot])
+		|| !self->modelData->SurfDrive[slot].on)
 	{
 		ACTION_RETURN_BOOL(false);
 	}
 
 	auto md = self->modelData;
-	const float V = (float)clamp((double)md->SurfOvDriveValue[slot], 0.0, 1.0);
+	const float V = (float)clamp((double)md->SurfDrive[slot].value, 0.0, 1.0);
 
 	if (kind == 0)
 	{
-		md->SurfOvDriveStage2Kind[slot]   = 0;
-		md->SurfOvDriveInStage2[slot]     = false;
-		md->SurfOvDriveBase[slot]         = V;
-		md->SurfOvDriveStageBase[slot][0] = V;
-		md->SurfOvDriveStageBase[slot][1] = 0.f;
-		md->SurfOvDriveArmed[slot]        = false;
-		md->SurfOvDriveValue[slot]        = V;
+		md->SurfDrive[slot].stage2Kind   = 0;
+		md->SurfDrive[slot].inStage2     = false;
+		md->SurfDrive[slot].base         = V;
+		md->SurfDrive[slot].stageBase[0] = V;
+		md->SurfDrive[slot].stageBase[1] = 0.f;
+		md->SurfDrive[slot].armed        = false;
+		md->SurfDrive[slot].value        = V;
 		ACTION_RETURN_BOOL(true);
 	}
 
@@ -7633,20 +7633,20 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveStage)
 		ACTION_RETURN_BOOL(false);
 	}
 
-	md->SurfOvDriveStage2Kind[slot]   = (uint8_t)kind;
-	md->SurfOvDriveStage2Axis[slot]   = axis / len;
-	md->SurfOvDriveStage2Amount[slot] = amt;
-	md->SurfOvDriveStage2Pivot[slot]  = pivot;
-	md->SurfOvDriveSplit[slot]        = S;
+	md->SurfDrive[slot].stage2Kind   = (uint8_t)kind;
+	md->SurfDrive[slot].stage2Axis   = axis / len;
+	md->SurfDrive[slot].stage2Amount = amt;
+	md->SurfDrive[slot].stage2Pivot  = pivot;
+	md->SurfDrive[slot].split        = S;
 
 	// Resume where the part is, read as the combined value. Exactly AT the
 	// split is stage 1 at its end: the corner, from which the hand may go
 	// either way.
-	md->SurfOvDriveInStage2[slot]     = (V > S);
-	md->SurfOvDriveStageBase[slot][0] = (V >= S) ? 1.f : V / S;
-	md->SurfOvDriveStageBase[slot][1] = (V > S) ? (V - S) / (1.f - S) : 0.f;
-	md->SurfOvDriveArmed[slot]        = false;   // re-armed with both measures on the next drawn frame
-	md->SurfOvDriveValue[slot]        = V;
+	md->SurfDrive[slot].inStage2     = (V > S);
+	md->SurfDrive[slot].stageBase[0] = (V >= S) ? 1.f : V / S;
+	md->SurfDrive[slot].stageBase[1] = (V > S) ? (V - S) / (1.f - S) : 0.f;
+	md->SurfDrive[slot].armed        = false;   // re-armed with both measures on the next drawn frame
+	md->SurfDrive[slot].value        = V;
 
 	// DIAGNOSTIC: the script side of the handoff, so a headset test shows the
 	// stage was asked for even if the renderer never arms it. At most once per
@@ -7660,7 +7660,7 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceDriveStage)
 			self->GetClass()->TypeName.GetChars(), slot,
 			kind == 2 ? "hinge" : "slide", amount, kind == 2 ? " deg" : " units",
 			axisx / len, axisy / len, axisz / len, pivotx, pivoty, pivotz, split,
-			md->SurfOvDriveHinge[slot] ? "hinge" : "slide", (double)V, (V > S) ? 2 : 1);
+			md->SurfDrive[slot].hinge ? "hinge" : "slide", (double)V, (V > S) ? 2 : 1);
 	}
 	ACTION_RETURN_BOOL(true);
 }
@@ -7677,14 +7677,14 @@ DEFINE_ACTION_FUNCTION(AActor, ClearModelSurfaceDrive)
 	{
 		ACTION_RETURN_BOOL(false);
 	}
-	self->modelData->SurfOvDriveOn[slot]    = false;
-	self->modelData->SurfOvDriveArmed[slot] = false;
-	self->modelData->SurfOvDriveTurnDeg[slot] = 0.f;
+	self->modelData->SurfDrive[slot].on    = false;
+	self->modelData->SurfDrive[slot].armed = false;
+	self->modelData->SurfDrive[slot].turnDeg = 0.f;
 	// And the hinge and second stage, so the next drive on this slot starts
 	// plain.
-	self->modelData->SurfOvDriveHinge[slot]      = false;
-	self->modelData->SurfOvDriveStage2Kind[slot] = 0;
-	self->modelData->SurfOvDriveInStage2[slot]   = false;
+	self->modelData->SurfDrive[slot].hinge      = false;
+	self->modelData->SurfDrive[slot].stage2Kind = 0;
+	self->modelData->SurfDrive[slot].inStage2   = false;
 	ACTION_RETURN_BOOL(true);
 }
 
@@ -7704,7 +7704,7 @@ DEFINE_ACTION_FUNCTION(AActor, GetModelSurfaceDrawnValue)
 	{
 		ACTION_RETURN_FLOAT(0.0);
 	}
-	ACTION_RETURN_FLOAT(self->modelData->SurfOvDriveValue[slot]);
+	ACTION_RETURN_FLOAT(self->modelData->SurfDrive[slot].value);
 }
 
 DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceHidden)

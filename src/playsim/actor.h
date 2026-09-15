@@ -40,6 +40,7 @@
 #include "tflags.h"
 #include "portal.h"
 #include "bonecomponents.h"
+#include "model_handdrive.h"	// RS fork -- FHandDrive, DActorModelData::SurfDrive
 
 struct subsector_t;
 struct FBlockNode;
@@ -843,87 +844,15 @@ public:
 	// own travel axis, and places the part -- so the part and the hand are
 	// resolved from the same pose at the same instant and cannot separate.
 	//
-	// ARMED, NOT ANCHORED. SetModelSurfaceDrive turns a slot on and says which
-	// hand, which axis and how far; it does NOT record where the hand was.
-	// The renderer captures the anchor itself, on the first frame it draws --
-	// from the same live quantity it will difference against. Capturing at
-	// script rate instead would bake in one tic of stale hand position at the
-	// instant of grab, which on a short stroke is most of the travel: the part
-	// would leap most of the way out the moment you touched it, and only when
-	// you grabbed FAST. Invisible in slow testing, wrong in play.
+	// ONE FHandDrive PER SLOT (r_data/model_handdrive.h): armed not anchored, a
+	// turn as it travels, a hinge, a second stage, and the drawn value published
+	// back for script (GetModelSurfaceDrawnValue). What every field means, and
+	// the solver that reads and writes them, live there -- shared with every
+	// other kind of part a hand drives, so the two can never disagree.
 	//
-	// driveValue is published BACK by the renderer so script reads the same
-	// number that was drawn, rather than a second estimate of it.
-	bool     SurfOvDriveOn   [RS_SURF_SLOTS] = {};
-	int      SurfOvDriveHand [RS_SURF_SLOTS] = {};   // 0 main, 1 off
-	FVector3 SurfOvDriveAxis [RS_SURF_SLOTS] = {};   // unit, model space
-	float    SurfOvDriveDist [RS_SURF_SLOTS] = {};   // model units for full travel
-	float    SurfOvDriveBase [RS_SURF_SLOTS] = {};   // value the drive resumed FROM
-	float    SurfOvDriveAnchor[RS_SURF_SLOTS] = {};  // captured by the renderer
-	bool     SurfOvDriveArmed[RS_SURF_SLOTS] = {};   // false until the anchor is captured
-	float    SurfOvDriveValue[RS_SURF_SLOTS] = {};   // published back: what was DRAWN, 0..1
-
-	// A DRIVEN PART MAY ALSO TURN AS IT TRAVELS. At drive value v the renderer
-	// turns the part v * TurnDeg about TurnAxis through TurnPivot, then slides
-	// it along the drive axis -- one motion, still glued to the hand. A
-	// magazine that rocks into its well, a bolt handle that lifts as it draws
-	// back, a lever that swings while it slides. Without this such a part
-	// slides straight in the hand and snaps to its angle the moment script
-	// takes it back on release.
-	//
-	// INERT UNTIL SET: SetModelSurfaceDrive resets TurnDeg to 0, a pure slide,
-	// so a slot reused for a plain drive never inherits a stale turn. Set by
-	// SetModelSurfaceDriveRotation; all three are in the mesh's own space.
-	FVector3 SurfOvDriveTurnAxis [RS_SURF_SLOTS] = {};  // unit, model space
-	float    SurfOvDriveTurnDeg  [RS_SURF_SLOTS] = {};  // degrees at value 1; 0 = no turn
-	FVector3 SurfOvDriveTurnPivot[RS_SURF_SLOTS] = {};  // model space
-
-	// ---- A DRIVE THAT ONLY TURNS, AND A DRIVE IN TWO STAGES ---------------
-	//
-	// WHY. A bolt handle is lifted, then drawn back: a hinge, then a slide, as
-	// ONE motion of one hand. The drive above is a single straight stroke. Its
-	// turn only rides that stroke, so it cannot turn a part that does not also
-	// slide, and it reads the hand along one straight axis, so a hand swinging
-	// a handle round its pivot barely registers. Handing the part back to
-	// script at the corner to start a second drive is exactly the seam this
-	// system exists to remove: a tic-stale hand at the worst possible instant.
-	//
-	// SurfOvDriveHinge makes the drive itself a hinge. The part turns
-	// value * TurnDeg about TurnAxis through TurnPivot (the fields just above)
-	// with no slide, and the renderer reads the hand by its ANGLE about that
-	// line. Set by SetModelSurfaceDriveHinge.
-	//
-	// SurfOvDriveStage2* attaches a SECOND motion to the same slot. One drawn
-	// value 0..1: [0, Split] is the drive above (stage 1), [Split, 1] is this
-	// one (stage 2), and stage 1 is held fully applied for all of stage 2.
-	// Stage 2's axis and pivot are in the mesh's own space where they stand
-	// once stage 1 has finished. That is the space the hand is read in, so
-	// neither stage needs converting into the other's. Set by
-	// SetModelSurfaceDriveStage.
-	//
-	// INERT UNTIL SET, like the turn. SetModelSurfaceDrive and
-	// ClearModelSurfaceDrive reset both. A slot with neither takes the plain
-	// drive branch in models.cpp exactly as it was before these existed, not
-	// a generalised rewrite of it.
-	//
-	// NOT SERIALIZED, like every drive field above: a drive is a live hand, and
-	// a save has no hand in it to restore.
-	bool     SurfOvDriveHinge       [RS_SURF_SLOTS] = {};  // stage 1 is the turn above, with no slide
-	uint8_t  SurfOvDriveStage2Kind  [RS_SURF_SLOTS] = {};  // 0 none, 1 slide, 2 hinge
-	FVector3 SurfOvDriveStage2Axis  [RS_SURF_SLOTS] = {};  // unit, model space
-	float    SurfOvDriveStage2Amount[RS_SURF_SLOTS] = {};  // model units (slide) or degrees (hinge) at full travel
-	FVector3 SurfOvDriveStage2Pivot [RS_SURF_SLOTS] = {};  // model space, hinge only
-	float    SurfOvDriveSplit       [RS_SURF_SLOTS] = {};  // drawn value where stage 1 ends, 0 < split < 1
-
-	// The renderer's own state for those drives: armed, re-anchored and written
-	// back by the owner's draw, exactly as SurfOvDriveAnchor/Base are for a
-	// plain drive. [k] is the stage, 0 first and 1 second. Base is in that
-	// STAGE's own 0..1, not the combined value.
-	bool     SurfOvDriveInStage2   [RS_SURF_SLOTS]    = {};  // which stage the hand is working
-	float    SurfOvDriveStageAnchor[RS_SURF_SLOTS][2] = {};  // hand measure at the anchor: units along, or degrees round
-	float    SurfOvDriveStageBase  [RS_SURF_SLOTS][2] = {};  // stage travel the anchor stands for
-	FVector3 SurfOvDriveHingeRefX  [RS_SURF_SLOTS][2] = {};  // hinge: in-plane direction its angle is measured from
-	FVector3 SurfOvDriveHingeRefY  [RS_SURF_SLOTS][2] = {};  // hinge: the direction the part turns toward from RefX
+	// NOT SERIALIZED: a drive is a live hand, and a save has no hand in it to
+	// restore.
+	FHandDrive SurfDrive[RS_SURF_SLOTS];
 
 	bool AnySurfaceOverride() const
 	{
