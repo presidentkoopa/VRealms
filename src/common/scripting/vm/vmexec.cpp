@@ -164,8 +164,10 @@ void VMSelectEngine(EVMEngine engine)
 #ifdef NDEBUG
 		VMExec = VMExec_Unchecked::Exec;
 #else
-#endif
+		// The checked assignment used to sit after this #endif, so `vmengine default` chose the checked interpreter in
+		// release builds too.
 		VMExec = VMExec_Checked::Exec;
+#endif
 		break;
 	case VMEngine_Unchecked:
 		VMExec = VMExec_Unchecked::Exec;

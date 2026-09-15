@@ -1543,7 +1543,7 @@ public:
 	// at frame rate. Player by number, as DrawnLine::AnchorPlayer, so nothing dangles.
 	//
 	// The pass is PPHeatRefraction (hw_postprocess.h), filled by SetupHeatSources
-	// (hw_drawinfo.cpp); r_heatrefraction switches it, default off. These slots and
+	// (hw_drawinfo.cpp); r_heatrefraction switches it, default on. These slots and
 	// the natives are what a renderer rebuild keeps. Not serialized: cleared on map
 	// change and savegame load (p_setup.cpp), like every render slot. Setters only:
 	// nothing hands a source back to script, so gameplay cannot branch on one.

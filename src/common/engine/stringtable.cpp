@@ -538,9 +538,30 @@ bool FStringTable::ParseLanguageCSV(int filenum, const char* buffer, size_t size
 			}
 		}
 
+		// A csv whose header has no identifier column has nothing to key its strings by (row[labelcol] below would read
+		// row[-1]). Skip it with a developer notice instead of crashing.
+		if (labelcol < 0)
+		{
+			DPrintf(DMSG_WARNING, "LANGUAGE csv in '%s' has no 'identifier' column; skipped.\n", fileSystem.GetResourceFileName(filenum));
+			return true;
+		}
+		bool shortRowNoticed = false;
 		for (unsigned i = 1; i < data.Size(); i++)
 		{
 			auto &row = data[i];
+			// parseCSV keeps only the cells a line holds, and the filter, label and language columns below index the row
+			// directly. A row with fewer cells than the header (a hand-edited csv) read past its end and hung startup; its
+			// missing cells now read as empty, with one developer notice per csv.
+			if (row.Size() < data[0].Size())
+			{
+				if (!shortRowNoticed)
+				{
+					DPrintf(DMSG_WARNING, "LANGUAGE csv in '%s': row %u has %u of %u columns; the missing cells read as empty.\n",
+						fileSystem.GetResourceFileName(filenum), i + 1, (unsigned)row.Size(), (unsigned)data[0].Size());
+					shortRowNoticed = true;
+				}
+				while (row.Size() < data[0].Size()) row.Push(FString());
+			}
 			if (filtercol > -1)
 			{
 				auto filterstr = row[filtercol];

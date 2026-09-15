@@ -515,7 +515,16 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 		renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
 		renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
 		renderstate->SetInputTexture(6, &MarchTexture);
-		renderstate->SetInputExternalImage(7, PPExternalImage::SmokeBeams);
+		// [13e] The beam list only while it holds beams. The backend makes that image the first time beams meet the smoke
+		// (VkSmokeVolume::UploadBeams) and lets it go with the volume, and a draw naming a backend image that is not ready is
+		// skipped whole (VkPPRenderState::Draw): a cone in smoke before any beam then read a curve this frame never drew
+		// ("Engine docs/SMOKE_13E_BEAMLIST_FIX_NOTES.md"). With no beam the program reads nothing at 7 (NearAnyBeam runs only
+		// with NearBeamsOnly and loops BeamCount times), so BlurTexture -- this eye's own half-resolution float texture, drawn
+		// just above and bound nowhere else in this draw -- fills the binding. With beams: the list, as before.
+		if (beams.BeamCount > 0)
+			renderstate->SetInputExternalImage(7, PPExternalImage::SmokeBeams);
+		else
+			renderstate->SetInputTexture(7, &BlurTexture);
 		if (volumesHere)
 		{
 			if (beams.BeamCount <= 0)
