@@ -241,6 +241,42 @@ struct SmokeEffectLightPass
 	float Scatter = 0;					// the look's scatter, 0..1, as pass 1's colours take it
 };
 
+// [13F] SURFACE LIGHT IN THE SMOKE ("Engine docs/SMOKE_13F_IMPL_NOTES.md"; NEXT_ENGINE_QUEUE 13f with the glow lane's G4 and G5).
+//
+// What a room's surfaces and its grading do to the light in its air, in the light grid's ambient pass (pass 0), per cell:
+//   - the column's sector light (13d's bytes) through the DARKNESS CURVE (FLevelLocals::Dark*, main.fp's DarknessAt: the curve per
+//     sector, the distance and height terms per cell) and the sweeps' PASSED LOOK (main.fp's SweepPassedAt) -- r_smoke_darkness;
+//   - plus the GLOW LANES of the column's sector (sector_t's wall glow as sector_t::GetWallGlow resolves it -- a texture's GLDEFS
+//     glow when GlowColor is 0 -- measured from the column's floor and ceiling planes; its flat glow at the column, fading with
+//     height over the same reach), recoloured by recolour bands, and the SWEEP BANDS' light (add, lift, crush) -- r_smoke_surfaceglow.
+// The dynamic and effect lights (passes 1 and 2) are not graded: main.fp grades only the room's light, and adds lights, glow
+// and bands after it. Presentation only; the CPU side reads the level and writes nothing back.
+//
+// Carried by smoke_light.comp's SMOKE_SURFACE_LIGHT variant of pass 0, from two storage buffers, only on frames Live says so:
+// any other frame dispatches pass 0's own program exactly as before. Both buffers are float32 (the ints in them bit-copied):
+//   COLUMNS  ivec4 (light-grid columns x, y, 0, 0), then per column x fastest vec2 (its sector record, -1 = the fallback's; its
+//            distance to its sector's nearest edge, map units, -1 = not worked out yet). Renewed only when a column changes.
+//   RECORDS  SMOKE_SURFACE_HEADER_VEC4S header vec4s (smoke_light.comp's SmokeSurfaceSSO lists them), then the records -- the
+//            lump's surfaceRecords[], so EVERY RECORD INDEX COUNTS FROM THE FIRST RECORD AFTER THE HEADER (a column's, the
+//            fallback's, a glow record's): one vec4 per sector record (x the darkness curve or -1, y its glow record's first vec4
+//            or -1, z its colormap desaturation 0..1), the fallback's last, then SMOKE_SURFACE_GLOW_VEC4S vec4s per glowing
+//            sector. Every Live frame.
+// Positions are Doom axes, map units from the light grid's minimum corner.
+inline constexpr int SMOKE_SURFACE_BANDS = 8;										// FLevelLocals::MAX_SWEEP_BANDS
+inline constexpr int SMOKE_SURFACE_HEADER_VEC4S = 7 + 4 * SMOKE_SURFACE_BANDS;
+inline constexpr int SMOKE_SURFACE_GLOW_VEC4S = 14;
+
+// [13F] This frame's surface light, decided on the CPU (hw_smokevolume.cpp, SmokeVolume::UpdateSurfaceLight).
+struct SmokeSurfaceLightFrame
+{
+	bool Live = false;						// pass 0 takes the SMOKE_SURFACE_LIGHT variant this frame
+	const float* Columns = nullptr;			// the COLUMNS buffer (above), ColumnFloats floats
+	size_t ColumnFloats = 0;
+	uint64_t ColumnSerial = 0;				// renewed whenever the columns change: the backend copies them in when it differs
+	const float* Records = nullptr;			// the RECORDS buffer (above), RecordFloats floats
+	size_t RecordFloats = 0;
+};
+
 // [13d] This frame's light grid, decided on the CPU (hw_smokevolume.cpp).
 struct SmokeLightFrame
 {
@@ -254,6 +290,7 @@ struct SmokeLightFrame
 	size_t AmbientByteCount = 0;
 	uint64_t AmbientSerial = 0;				// renewed whenever those bytes change: the backend copies them in when it differs
 	SmokeEffectLightPass EffectLights;		// [EFFECTLIGHTS] LD: pass 2 over the effect-light bins (LightCount 0 = none)
+	SmokeSurfaceLightFrame Surface;			// [13F] surface glow, sweep bands, darkness and the passed look in pass 0 (Live false = none)
 };
 
 // [SMOKEVOLUME] 13e: BEAMS IN THE SMOKE ("Engine docs/SMOKE_VOLUME_PLAN.md" 13e, "Engine docs/SMOKE_13E_IMPL_NOTES.md").

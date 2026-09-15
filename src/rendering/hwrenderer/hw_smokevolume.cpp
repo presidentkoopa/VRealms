@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstring>
 
 #include "hw_smokevolume.h"
 #include "hw_levelsolidity.h"
@@ -30,6 +31,7 @@
 #include "a_dynlight.h"		// [13d] FDynamicLight, r_dynlights: the lights in the smoke
 #include "hw_effectlights.h"		// [EFFECTLIGHTS] LD: this frame's effect-light bins (EffectLights::FrameBins)
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] LD: the records and bins the GPU holds (GetLiveCount)
+#include "r_utility.h"				// [13F] r_viewpoint: the camera the darkness height follows (DarkHeightFollow)
 #include "doomdef.h"
 #include "v_video.h"
 #include "i_time.h"
@@ -41,6 +43,17 @@
 // Renderer-read every frame in PrepareLight, so it responds with a menu open; a change re-makes only the light
 // grid. Defined beside its one reader.
 CVAR(Int, r_smoke_light_quality, SMOKE_LIGHT_QUALITY_DEFAULT, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// [13F] r_smoke_surfaceglow -- the smoke takes the light its room's surfaces give it: glowing floors, walls and ceilings (a
+// sector's glow lanes from any mod, or a texture's GLDEFS glow) and sweep bands (their light, lift, crush and recolour). An A/B
+// check, on by default. Renderer-read every frame in PrepareLight (UpdateSurfaceLight), so it responds with a menu open.
+CVAR(Bool, r_smoke_surfaceglow, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+// [13F] r_smoke_darkness -- the smoke's room light takes the room's grading as surfaces do: the darkness curve (SetDarkness,
+// SetDarknessSpace, SetDarknessHeightFollow) and a sweep's passed look. An A/B check, on by default. Renderer-read every frame.
+CVAR(Bool, r_smoke_darkness, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// [13F] smoke_light.comp's SmokeSurfaceSSO holds a fixed eight bands: the level's band count.
+static_assert(SMOKE_SURFACE_BANDS == FLevelLocals::MAX_SWEEP_BANDS, "SMOKE_SURFACE_BANDS must be FLevelLocals::MAX_SWEEP_BANDS (smoke_light.comp)");
 
 namespace
 {
@@ -1124,6 +1137,9 @@ void SmokeVolume::PrepareLight(FLevelLocals* Level, const DVector3& eye, SmokeVo
 	// [EFFECTLIGHTS] LD: the effect lights that reach the grid (smoke_light.comp's pass 2), on frames with smoke to draw.
 	if (out.HasSmoke)
 		GatherEffectLights(Level, out, light);
+	// [13F] Surface glow, sweep bands, darkness and the passed look in the ambient pass, on frames with smoke to draw.
+	if (out.HasSmoke)
+		UpdateSurfaceLight(Level, eye, out, light);
 
 	// fx.smokelights (cpu_fx_ms): the light list and the ambient columns, every frame the volume is active.
 	if (timed)
@@ -1545,6 +1561,693 @@ void SmokeVolume::GatherEffectLights(FLevelLocals* Level, const SmokeVolumeFrame
 		pass.BinOffset[axis] = (float)(corner[axis] - binCorner[axis]);
 	}
 	pass.Scatter = (float)scatter;
+}
+
+//-----------------------------------------------------------------------------
+//
+// [13F] Surface light in the smoke: glow lanes, sweep bands, darkness and the passed look in the ambient pass ("Engine docs/
+// SMOKE_13F_IMPL_NOTES.md"; hw_framecompute.h, SmokeSurfaceLightFrame; smoke_light.comp, SurfaceAmbient)
+//
+//-----------------------------------------------------------------------------
+
+namespace
+{
+	// [13F] SURFACE LIGHT, PURE HELPERS -- numbers in, numbers out (the mirror compiles this block as it stands).
+
+	const double SURFACE_TAU = 6.283185307179586;
+
+	// The word hw_drawinfo.cpp's RenderScene leaves in a band's uSweepBands[i].w: SetSweepBand writes 1 (add), and SetSweepBandDraw
+	// (hw_renderstate.h: a draw or fill outside 0..4 is sent as 0, passed as 0 / 1) writes over it only when the band draws, fills
+	// or grades -- a draw of 0 then sent as 1.
+	int SurfaceBandWord(int draw, int fill, int passed)
+	{
+		if (!(draw > 0 || fill > 0 || passed > 0))
+			return 1;
+		int drawmode = draw > 0 ? draw : 1;
+		if (drawmode < 0 || drawmode > 4)
+			drawmode = 0;
+		if (fill < 0 || fill > 4)
+			fill = 0;
+		passed = passed != 0 ? 1 : 0;
+		return drawmode + 16 * fill + 256 * passed;
+	}
+
+	// main.fp's DarknessAt up to its curve, min light and post-gain, in the shader's float arithmetic, for a sector's light level
+	// as the default (software) light modes upload it (uLightLevel = level / 255): the share of the room's light that survives,
+	// 0..1 -- or -1 where DarknessAt returns 1 before its distance and height terms (mode off, a black sector) or the arithmetic is
+	// not finite. G4.
+	float SurfaceDarknessCurve(int mode, float adjust, float minLight, float preGain, float postGain, int lightlevel)
+	{
+		if (mode <= 0)
+			return -1.f;
+		const float lightLevel = (float)std::clamp(lightlevel, 0, 255) / 255.f;
+		const float base = lightLevel * 255.0f;
+		if (base <= 0.0f)
+			return -1.f;
+
+		const float A = adjust;
+		const float L = std::max(base + preGain, 0.0f);
+		float outL;
+		if (mode == 1)
+			outL = L - A;
+		else if (mode == 2)
+			outL = L * (1.0f - A / 256.0f);
+		else if (mode == 3)
+			outL = std::min(L, 256.0f - A);
+		else if (A <= 0.0f)
+			outL = L;
+		else
+			outL = (256.0f - std::pow(A, A / 256.0f)) * std::pow(L / 256.0f, 1.0f + (A / (33.0f - (A / 8.0f))));
+		outL = std::max(outL, minLight);
+		outL += postGain;
+		const float mul = std::clamp(outL / base, 0.0f, 1.0f);
+		return std::isfinite(mul) ? mul : -1.f;
+	}
+
+	// Trap 3: the glow's animated terms run on each draw's own material timer, which the CPU cannot follow, so the smoke takes
+	// their means over time -- a steady glow at the level the surfaces swing about. GlowWaveRaw's mean: 2 E[pow(w, sharp)] - 1,
+	// w main.fp's (detuned) swell, over one period of each sine at 64 midpoints (the detune's ratio is irrational, so its phase is
+	// independent of the first's).
+	double SurfaceWaveMean(double sharpness, double detune)
+	{
+		const int N = 64;
+		const double sharp = std::max(sharpness, 0.001);
+		double sum = 0.0;
+		for (int i = 0; i < N; i++)
+		{
+			const double w1 = 0.5 + 0.5 * std::sin(SURFACE_TAU * (i + 0.5) / N);
+			if (!(detune > 0.0))
+			{
+				sum += N * std::pow(std::clamp(w1, 0.0, 1.0), sharp);
+				continue;
+			}
+			for (int j = 0; j < N; j++)
+			{
+				const double w2 = 0.5 + 0.5 * std::sin(SURFACE_TAU * (j + 0.5) / N);
+				const double w = w1 + (w1 * w2 * 2.0 - w1) * detune;
+				sum += std::pow(std::clamp(w, 0.0, 1.0), sharp);
+			}
+		}
+		return 2.0 * sum / ((double)N * N) - 1.0;
+	}
+
+	// The glow flow's mean band: E[pow(0.5 + 0.5 sin, sharp)] over a period (256 midpoints).
+	double SurfaceFlowMean(double sharpness)
+	{
+		const int N = 256;
+		const double sharp = std::max(sharpness, 0.001);
+		double sum = 0.0;
+		for (int i = 0; i < N; i++)
+			sum += std::pow(std::clamp(0.5 + 0.5 * std::sin(SURFACE_TAU * (i + 0.5) / N), 0.0, 1.0), sharp);
+		return sum / N;
+	}
+
+	// main.fp's GITDHash21, in double.
+	double SurfaceHash21(double x, double y)
+	{
+		double qx = x * 0.1031, qy = y * 0.1031, qz = x * 0.1031;
+		qx -= std::floor(qx);
+		qy -= std::floor(qy);
+		qz -= std::floor(qz);
+		const double d = qx * (qy + 33.33) + qy * (qz + 33.33) + qz * (qx + 33.33);
+		qx += d;
+		qy += d;
+		qz += d;
+		const double h = (qx + qy) * qz;
+		return h - std::floor(h);
+	}
+
+	// The glow cells' mean vein: 1 - smoothstep(0, width, F2 - F1) over main.fp's jittered cells (32 x 32 samples over 4 x 4
+	// cells), times the mean of each cell's own pulse, 0.45 + 0.55 x 0.5.
+	double SurfaceCellMean(double width)
+	{
+		const int N = 32;
+		const double span = 4.0;
+		const double w = std::max(width, 0.01);
+		double sum = 0.0;
+		for (int j = 0; j < N; j++)
+		{
+			for (int i = 0; i < N; i++)
+			{
+				const double u = (i + 0.5) / N * span, v = (j + 0.5) / N * span;
+				const double cellX = std::floor(u), cellY = std::floor(v);
+				double d1 = 8.0, d2 = 8.0;
+				for (int gy = -1; gy <= 1; gy++)
+				{
+					for (int gx = -1; gx <= 1; gx++)
+					{
+						const double idX = cellX + gx, idY = cellY + gy;
+						const double sx = gx + SurfaceHash21(idX, idY) - (u - cellX);
+						const double sy = gy + SurfaceHash21(idX + 37.7, idY + 37.7) - (v - cellY);
+						const double d = std::sqrt(sx * sx + sy * sy);
+						if (d < d1)
+						{
+							d2 = d1;
+							d1 = d;
+						}
+						else if (d < d2)
+						{
+							d2 = d;
+						}
+					}
+				}
+				const double t = std::clamp((d2 - d1) / w, 0.0, 1.0);
+				sum += 1.0 - t * t * (3.0 - 2.0 * t);
+			}
+		}
+		return sum / ((double)N * N) * 0.725;
+	}
+
+	// The mean over a pattern period of main.fp's SweepLineAxisAA in the air, where no screen antialias widens it (its 0.0001
+	// floor): lit within `width` of a line, a smoothstep edge `soft` wide (a negative softness taken as 0), lines `spacing` apart.
+	double SurfaceLineMean(double spacing, double width, double soft)
+	{
+		if (!(spacing > 0.0))
+			return 0.0;
+		const double half = spacing * 0.5;
+		const double edge = std::max(soft, 0.0) + 0.0001;
+		const auto integral = [](double t) { return t - (t * t * t - 0.5 * t * t * t * t); };	// of 1 - smoothstep from 0 to t
+		const double lit = std::max(0.0, std::min(half, width));
+		const double t0 = std::clamp((0.0 - width) / edge, 0.0, 1.0);
+		const double t1 = std::clamp((half - width) / edge, 0.0, 1.0);
+		return std::clamp((lit + edge * (integral(t1) - integral(t0))) / half, 0.0, 1.0);
+	}
+
+	// One fill axis's mean: majors (one line in `major` about `boost` times as wide) and flicker's share of lines out.
+	double SurfaceAxisMean(double spacing, double width, double soft, double major, double boost, double flicker)
+	{
+		double mean = SurfaceLineMean(spacing, width, soft);
+		if (major >= 2.0)
+			mean += (SurfaceLineMean(spacing, width * std::max(boost, 1.0), soft) - mean) / major;
+		if (flicker > 0.0)
+			mean *= 1.0 - std::min(flicker, 1.0);
+		return mean;
+	}
+
+	// SweepFillAt's mean coverage for a fill: 1 grid (the max of the two axes: their union), 2 dots (the min: both), 3 solid,
+	// 4 pickets (the U axis alone). Rotation, drift and jitter move lines without changing their share; the gradient is not taken.
+	double SurfaceFillMean(int fill, double spacingU, double spacingV, double width, double soft, double major, double boost, double flicker)
+	{
+		if (fill == 3)
+			return 1.0;
+		const double u = SurfaceAxisMean(spacingU, width, soft, major, boost, flicker);
+		if (fill == 4)
+			return u;
+		const double v = SurfaceAxisMean(spacingV, width, soft, major, boost, flicker);
+		return fill == 2 ? u * v : u + v - u * v;
+	}
+
+	// [13F] SURFACE LIGHT, ENGINE READS.
+
+	enum
+	{
+		SURFACE_LANE_FLOOR_WALL = 1,
+		SURFACE_LANE_CEILING_WALL = 2,
+		SURFACE_LANE_FLOOR_FLAT = 4,
+		SURFACE_LANE_CEILING_FLAT = 8,
+	};
+
+	// One sector's glow lanes as smoke_light.comp's SurfaceWallLane / SurfaceFlatLane read them, SMOKE_SURFACE_GLOW_VEC4S vec4s
+	// appended to out (the floor and ceiling planes as z = a x + b y + c from the grid's corner, w the plane's longest lane reach; then the floor wall lane, the
+	// ceiling wall lane, the floor flat lane and the ceiling flat lane, three vec4s each: near colour + reach, far colour + set,
+	// falloff + intensity + present). Returns which lanes glow (SURFACE_LANE_*), nothing appended when none does.
+	//   - The WALL lanes exactly as a wall of this sector takes them: sector_t::GetWallGlow (trap 1 -- a GlowColor of 0 is the
+	//     texture's GLDEFS glow, ~0 is none, an explicit colour glows only with a height), hw_walls.cpp's GetWallGlowFar and
+	//     SetGlowFalloffIntensity (an intensity of 0 read as 1). A side's own glow belongs to that wall, not to the room's air.
+	//   - The FLAT lanes as hw_flats.cpp uploads them: colour alpha and reach above 0, a sector with lines, intensity (0 read as 1)
+	//     folded into both colours.
+	//   - Reach takes the glow wave's mean scale, as main.fp's reach takes the wave.
+	int AppendSurfaceGlow(sector_t* sec, const double corner[3], float reachScale, std::vector<float>& out)
+	{
+		float top[4] = { 0.f, 0.f, 0.f, 0.f };
+		float bottom[4] = { 0.f, 0.f, 0.f, 0.f };
+		const bool wall = sec->GetWallGlow(top, bottom);
+		const bool hasLines = sec->Lines.Size() > 0;
+		int lanes = 0;
+		if (wall && bottom[3] > 0.f)
+			lanes |= SURFACE_LANE_FLOOR_WALL;
+		if (wall && top[3] > 0.f)
+			lanes |= SURFACE_LANE_CEILING_WALL;
+		if (hasLines && sec->planes[sector_t::floor].FlatGlowColor.a > 0 && sec->planes[sector_t::floor].FlatGlowHeight > 0.f)
+			lanes |= SURFACE_LANE_FLOOR_FLAT;
+		if (hasLines && sec->planes[sector_t::ceiling].FlatGlowColor.a > 0 && sec->planes[sector_t::ceiling].FlatGlowHeight > 0.f)
+			lanes |= SURFACE_LANE_CEILING_FLAT;
+		if (lanes == 0)
+			return 0;
+
+		const auto push = [&](float x, float y, float z, float w)
+		{
+			out.push_back(x);
+			out.push_back(y);
+			out.push_back(z);
+			out.push_back(w);
+		};
+
+		// Each plane's longest lane reach -- the very float products the lanes store below -- so the lump skips a plane's two lanes
+		// wherever the air is further from it than that: exact, as each lane's own reach test would give 0 there.
+		float floorReach = 0.f, ceilingReach = 0.f;
+		if (lanes & SURFACE_LANE_FLOOR_WALL)
+			floorReach = std::max(floorReach, bottom[3] * reachScale);
+		if (lanes & SURFACE_LANE_FLOOR_FLAT)
+			floorReach = std::max(floorReach, sec->planes[sector_t::floor].FlatGlowHeight * reachScale);
+		if (lanes & SURFACE_LANE_CEILING_WALL)
+			ceilingReach = std::max(ceilingReach, top[3] * reachScale);
+		if (lanes & SURFACE_LANE_CEILING_FLAT)
+			ceilingReach = std::max(ceilingReach, sec->planes[sector_t::ceiling].FlatGlowHeight * reachScale);
+
+		// secplane_t::ZatPoint as a x + b y + c over positions from the grid's corner; w that plane's longest reach.
+		for (const secplane_t* plane : { &sec->floorplane, &sec->ceilingplane })
+		{
+			const DVector3& normal = plane->Normal();
+			const float reach = plane == &sec->floorplane ? floorReach : ceilingReach;
+			push((float)(normal.X * plane->negiC), (float)(normal.Y * plane->negiC), (float)(plane->ZatPoint(corner[0], corner[1]) - corner[2]), reach);
+		}
+
+		const auto wallLane = [&](int lane, const float* glow, int pos)
+		{
+			if (!(lanes & lane))
+			{
+				push(0.f, 0.f, 0.f, 0.f);
+				push(0.f, 0.f, 0.f, 0.f);
+				push(0.f, 0.f, 0.f, 0.f);
+				return;
+			}
+			push(glow[0], glow[1], glow[2], glow[3] * reachScale);
+			const PalEntry farColour = sec->GetGlowColorFar(pos);
+			if (farColour.a > 0)
+				push(farColour.r / 255.f, farColour.g / 255.f, farColour.b / 255.f, 1.f);
+			else
+				push(0.f, 0.f, 0.f, 0.f);
+			const float intensity = sec->GetGlowIntensity(pos) > 0.f ? sec->GetGlowIntensity(pos) : 1.0f;
+			push((float)sec->GetGlowFalloff(pos), intensity, 1.f, 0.f);
+		};
+		wallLane(SURFACE_LANE_FLOOR_WALL, bottom, sector_t::floor);
+		wallLane(SURFACE_LANE_CEILING_WALL, top, sector_t::ceiling);
+
+		const auto flatLane = [&](int lane, int pos)
+		{
+			if (!(lanes & lane))
+			{
+				push(0.f, 0.f, 0.f, 0.f);
+				push(0.f, 0.f, 0.f, 0.f);
+				push(0.f, 0.f, 0.f, 0.f);
+				return;
+			}
+			const auto& plane = sec->planes[pos];
+			const float inten = plane.FlatGlowIntensity > 0.f ? plane.FlatGlowIntensity : 1.f;
+			push(plane.FlatGlowColor.r / 255.f * inten, plane.FlatGlowColor.g / 255.f * inten, plane.FlatGlowColor.b / 255.f * inten, plane.FlatGlowHeight * reachScale);
+			const PalEntry farColour = plane.FlatGlowColorFar;
+			if (farColour.a > 0)
+				push(farColour.r / 255.f * inten, farColour.g / 255.f * inten, farColour.b / 255.f * inten, 1.f);
+			else
+				push(0.f, 0.f, 0.f, 0.f);
+			push((float)plane.FlatGlowFalloff, 1.f, 1.f, 0.f);
+		};
+		flatLane(SURFACE_LANE_FLOOR_FLAT, sector_t::floor);
+		flatLane(SURFACE_LANE_CEILING_FLAT, sector_t::ceiling);
+		return lanes;
+	}
+
+	// The distance main.fp's flat-edge glow measures at (x, y): to the nearest of the lines hw_flats.cpp uploads -- the sector's
+	// first 64, so a larger sector's air glows from the same truncated list its flat does -- in the shader's own arithmetic.
+	// -1 for a sector with no lines.
+	double SurfaceEdgeDistance(sector_t* sec, double x, double y)
+	{
+		const int count = std::min((int)sec->Lines.Size(), 64);
+		if (count <= 0)
+			return -1.0;
+		double best = 999999.0 * 999999.0;
+		for (int i = 0; i < count; i++)
+		{
+			const line_t* line = sec->Lines[i];
+			const double ax = line->v1->fX(), ay = line->v1->fY();
+			const double abx = line->v2->fX() - ax, aby = line->v2->fY() - ay;
+			const double apx = x - ax, apy = y - ay;
+			const double t = std::clamp((apx * abx + apy * aby) / std::max(abx * abx + aby * aby, 0.001), 0.0, 1.0);
+			const double dx = apx - abx * t, dy = apy - aby * t;
+			best = std::min(best, dx * dx + dy * dy);
+		}
+		return std::sqrt(best);
+	}
+}
+
+// The surface light for the ambient pass (hw_framecompute.h, SmokeSurfaceLightFrame): whether pass 0 takes its surface light
+// variant this frame, the records it reads and each column's record and flat-edge distance. Live only when something would change
+// the light -- a listed sector glows, a band gives light, the darkness curve is on, a passed look is live -- so any other frame
+// runs pass 0 exactly as before. Read-only: GetWallGlow and the glow accessors only read the level.
+void SmokeVolume::UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light)
+{
+	SmokeSurfaceLightFrame& surface = light.Surface;
+	surface = SmokeSurfaceLightFrame();
+
+	const bool glowSwitch = r_smoke_surfaceglow;
+	const bool darkSwitch = r_smoke_darkness;
+	const SmokeLightGridSpec& grid = light.Grid;
+	const size_t columns = (size_t)std::max(grid.SizeX, 0) * (size_t)std::max(grid.SizeY, 0);
+	if ((!glowSwitch && !darkSwitch) || columns == 0 || !(grid.CellSize > 0.0) || mColumnSector.size() != columns ||
+		mAmbientSize[0] != grid.SizeX || mAmbientSize[1] != grid.SizeY || mAmbientCellSize != grid.CellSize)
+		return;
+
+	// The sweep bands as the scene uploads them (hw_drawinfo.cpp, RenderScene): the count under its gate, each band's shape its
+	// own or -- trap 2, a band shape of 0 is not off -- the shared one, and the word it leaves. A band with no intensity adds
+	// nothing, lifts and crushes by 1 and recolours by 0, so it gives no light.
+	const int bandCount = (Level->SweepMode > 0 && Level->SweepCount > 0) ? std::min(Level->SweepCount, (int)FLevelLocals::MAX_SWEEP_BANDS) : 0;
+	int bandShape[SMOKE_SURFACE_BANDS] = {};
+	int bandWord[SMOKE_SURFACE_BANDS] = {};
+	bool bandLight = false, bandRecolour = false, bandPassed = false;
+	for (int i = 0; i < bandCount; i++)
+	{
+		bandShape[i] = Level->SweepBandMode[i] > 0 ? Level->SweepBandMode[i] : Level->SweepMode;
+		bandWord[i] = SurfaceBandWord(Level->SweepBandDraw[i], Level->SweepBandFill[i], Level->SweepBandPassed[i]);
+		const int mode = bandWord[i] & 15;
+		if ((bandWord[i] >> 8) & 1)
+			bandPassed = true;
+		if (bandShape[i] > 0 && bandWord[i] > 0 && Level->SweepIntensity[i] != 0.0)
+		{
+			if (mode >= 1 && mode <= 3)
+				bandLight = true;
+			else if (mode == 4)
+				bandRecolour = true;
+		}
+	}
+	// hw_drawinfo.cpp's mSweepPassedColor.w: a band grades its passed side and some term of the look changes the light.
+	const bool passedLook = Level->SweepPassedTintMix > 0 || Level->SweepPassedDarken > 0 || Level->SweepPassedDesat > 0;
+	const bool passedLive = darkSwitch && bandCount > 0 && bandPassed && passedLook;
+	const bool darkLive = darkSwitch && Level->DarkMode > 0;
+	const int lightBands = (glowSwitch && (bandLight || bandRecolour)) ? bandCount : 0;
+	if (!glowSwitch && !darkLive && !passedLive)
+		return;
+
+	// Trap 3: the glow's animated terms as their means over time, cached by their inputs.
+	float reachScale = 1.f, brightTexture = 1.f, colourShift = 0.f;
+	if (glowSwitch)
+	{
+		double wave = 0.0;
+		if (Level->GlowWaveLength > 0.0)
+		{
+			if (!mSurfaceWaveValid || mSurfaceWaveInputs[0] != Level->GlowWaveSharp || mSurfaceWaveInputs[1] != Level->GlowWaveDetune)
+			{
+				mSurfaceWaveMean = SurfaceWaveMean(Level->GlowWaveSharp, Level->GlowWaveDetune);
+				mSurfaceWaveInputs[0] = Level->GlowWaveSharp;
+				mSurfaceWaveInputs[1] = Level->GlowWaveDetune;
+				mSurfaceWaveValid = true;
+			}
+			wave = mSurfaceWaveMean;
+		}
+		// GlowTextureAt's mean: the noise's is 1 (0.25 + 1.5 x its mean of 0.5); the disturbance rings pass and the alarm pulse
+		// swings about 1, so theirs are 1; the flow's and the cells' follow their shapes.
+		double texture = 1.0;
+		if (Level->GlowFlow > 0.0)
+		{
+			if (!mSurfaceFlowValid || mSurfaceFlowInput != Level->GlowFlowSharp)
+			{
+				mSurfaceFlowMean = SurfaceFlowMean(Level->GlowFlowSharp);
+				mSurfaceFlowInput = Level->GlowFlowSharp;
+				mSurfaceFlowValid = true;
+			}
+			texture *= 1.0 + (0.3 + 1.4 * mSurfaceFlowMean - 1.0) * std::clamp(Level->GlowFlow, 0.0, 1.0);
+		}
+		if (Level->GlowCell > 0.0)
+		{
+			if (!mSurfaceCellValid || mSurfaceCellInput != Level->GlowCellWidth)
+			{
+				mSurfaceCellMean = SurfaceCellMean(Level->GlowCellWidth);
+				mSurfaceCellInput = Level->GlowCellWidth;
+				mSurfaceCellValid = true;
+			}
+			texture *= 1.0 + (0.35 + 1.9 * mSurfaceCellMean - 1.0) * std::clamp(Level->GlowCell, 0.0, 1.0);
+		}
+		reachScale = (float)(1.0 + Level->GlowWaveReach * wave);
+		colourShift = (float)(Level->GlowWaveColour * wave);
+		brightTexture = (float)((1.0 + Level->GlowWaveBright * wave) * std::max(texture, 0.0));
+	}
+
+	// Records: one per sector a column has resolved to -- its place in 13d's mAmbientSectors, so a column's record changes only
+	// when its sector does -- then the eye's sector, for the columns not resolved yet (13d's fallback).
+	const unsigned sectorCount = Level->sectors.Size();
+	bool reset = mSurfaceLevelSerial != mAmbientLevelSerial || mSurfaceSlot.size() != sectorCount || mSurfaceSize[0] != grid.SizeX ||
+		mSurfaceSize[1] != grid.SizeY || mSurfaceCellSize != grid.CellSize || mSurfaceSlotsKnown > mAmbientSectors.size();
+	for (size_t k = 0; k < mSurfaceSlotsKnown && !reset; k++)
+		reset = (unsigned)mAmbientSectors[k] >= sectorCount || mSurfaceSlot[mAmbientSectors[k]] != (int)k;
+	if (reset)
+	{
+		mSurfaceLevelSerial = mAmbientLevelSerial;
+		mSurfaceSize[0] = grid.SizeX;
+		mSurfaceSize[1] = grid.SizeY;
+		mSurfaceCellSize = grid.CellSize;
+		mSurfaceOrigin[0] = mAmbientOrigin[0];
+		mSurfaceOrigin[1] = mAmbientOrigin[1];
+		mSurfaceSlot.assign(sectorCount, -1);
+		mSurfaceSlotsKnown = 0;
+		mSurfaceColumnSector.assign(columns, INT_MIN);	// no column's: every column is compared as changed
+		mSurfaceEdge.assign(columns, -1.f);
+		mSurfaceFlatBefore.clear();
+		mSurfaceAmbientSerial = 0;
+		mSurfaceColumnsDirty = true;
+		mSurfaceEdgesPending = true;
+	}
+	for (; mSurfaceSlotsKnown < mAmbientSectors.size(); mSurfaceSlotsKnown++)
+	{
+		const int index = mAmbientSectors[mSurfaceSlotsKnown];
+		if ((unsigned)index < sectorCount)
+			mSurfaceSlot[index] = (int)mSurfaceSlotsKnown;
+	}
+
+	const double cell = frame.Grid.CellSize;
+	const double corner[3] = { frame.OriginCell[0] * cell, frame.OriginCell[1] * cell, frame.OriginCell[2] * cell };
+	const size_t first = (size_t)SMOKE_SURFACE_HEADER_VEC4S;
+	const size_t listed = mAmbientSectors.size();
+	mSurfaceRecords.assign((first + listed + 1) * 4, 0.f);
+	mSurfaceGlow.clear();
+	mSurfaceFlat.assign(listed + 1, 0);
+	bool glowAny = false, flatAny = false;
+	const auto sectorRecord = [&](size_t k, sector_t* sec)
+	{
+		float* record = &mSurfaceRecords[(first + k) * 4];
+		record[0] = -1.f;
+		record[1] = -1.f;
+		if (sec == nullptr)
+			return;
+		if (darkLive)
+			record[0] = SurfaceDarknessCurve(Level->DarkMode, (float)Level->DarkAdjust, (float)Level->DarkMinLight, (float)Level->DarkPreGain,
+				(float)Level->DarkPostGain, sec->lightlevel);
+		record[2] = sec->Colormap.Desaturation * (1.0f / 255.0f);	// main.fp's uDesaturationFactor for this sector's surfaces
+		if (glowSwitch)
+		{
+			const size_t at = mSurfaceGlow.size() / 4;
+			const int lanes = AppendSurfaceGlow(sec, corner, reachScale, mSurfaceGlow);
+			if (lanes != 0)
+			{
+				record[1] = (float)(listed + 1 + at);	// an index into the records after the header (the lump's surfaceRecords[])
+				glowAny = true;
+				if (lanes & (SURFACE_LANE_FLOOR_FLAT | SURFACE_LANE_CEILING_FLAT))
+				{
+					mSurfaceFlat[k] = 1;
+					flatAny = true;
+				}
+			}
+		}
+	};
+	for (size_t k = 0; k < listed; k++)
+		sectorRecord(k, (unsigned)mAmbientSectors[k] < sectorCount ? &Level->sectors[mAmbientSectors[k]] : nullptr);
+	sectorRecord(listed, Level->PointInSector(eye.X, eye.Y));
+
+	if (!(darkLive || passedLive || (glowSwitch && (glowAny || bandLight))))
+		return;		// nothing here changes the light: pass 0 as before
+	mSurfaceRecords.insert(mSurfaceRecords.end(), mSurfaceGlow.begin(), mSurfaceGlow.end());
+
+	// The header: smoke_light.comp's SmokeSurfaceSSO, in order.
+	float* header = mSurfaceRecords.data();
+	const auto put = [&](int vec, float x, float y, float z, float w)
+	{
+		header[vec * 4] = x;
+		header[vec * 4 + 1] = y;
+		header[vec * 4 + 2] = z;
+		header[vec * 4 + 3] = w;
+	};
+	put(0, glowSwitch ? 1.f : 0.f, (float)lightBands, (float)Level->SweepTrail, (float)listed);	// w: the fallback's record, the last sector record
+	put(1, (float)Level->SweepPassedTintMix, (float)Level->SweepPassedDarken, (float)Level->SweepPassedDesat, (float)Level->SweepPassedSoft);
+	put(2, Level->SweepPassedTint.r / 255.f, Level->SweepPassedTint.g / 255.f, Level->SweepPassedTint.b / 255.f, passedLive ? (float)bandCount : 0.f);
+	put(3, (float)Level->DarkDistDepth, (float)Level->DarkDistRange, (float)Level->DarkHeightDepth, (float)Level->DarkHeightRange);
+	// The height reference as hw_drawinfo.cpp uploads it: with height follow on, the viewer's feet this frame, interpolated like
+	// the view. PrepareFrameCompute's viewpoint is the renderer's own, r_viewpoint.
+	double heightRef = Level->DarkHeightRef;
+	if (Level->DarkHeightFollow == 1 && r_viewpoint.camera != nullptr)
+		heightRef = r_viewpoint.camera->InterpolatedPosition(r_viewpoint.TicFrac).Z + Level->DarkHeightOffset;
+	put(4, (float)(eye.X - corner[0]), (float)(eye.Y - corner[1]), (float)(eye.Z - corner[2]), (float)(heightRef - corner[2]));
+	put(5, (float)Level->DesatKeep, (float)Level->DesatKeepSoft, (float)Level->DesatKeepHue, (float)Level->DesatGlobal);
+	put(6, reachScale, brightTexture, colourShift, 0.f);
+	for (int i = 0; i < bandCount; i++)
+	{
+		const DVector3& origin = Level->SweepBandMode[i] > 0 ? Level->SweepBandOrigin[i] : Level->SweepOrigin;
+		put(7 + i, (float)(origin.X - corner[0]), (float)(origin.Y - corner[1]), (float)(origin.Z - corner[2]), (float)bandShape[i]);
+		put(15 + i, (float)Level->SweepRadius[i], (float)Level->SweepThickness[i], (float)Level->SweepSoftness[i], (float)bandWord[i]);
+
+		// main.fp's fill block, with the fill's mean coverage: the band's colour mixed toward the lines' by it (inverted by a
+		// negative gap), its coverage multiplied by the larger of it and the gap; the solid fill covers fully. A recolour band's
+		// colour is its own (main.fp's recolour pass reads no fill).
+		const PalEntry colour = Level->SweepColor[i];
+		double rgb[3] = { colour.r / 255.0, colour.g / 255.0, colour.b / 255.0 };
+		double multiplier = 1.0;
+		const int fill = (bandWord[i] >> 4) & 15;
+		const int mode = bandWord[i] & 15;
+		if (fill > 0 && mode != 4)
+		{
+			const double coverage = SurfaceFillMean(fill, Level->SweepFillSpacingU, Level->SweepFillSpacingV, Level->SweepFillWidth,
+				Level->SweepFillSoft, Level->SweepFillMajor, Level->SweepFillMajorBoost, Level->SweepFillFlicker);
+			const double gap = Level->SweepFillGap;
+			const PalEntry lines = Level->SweepFillColor;
+			const double lineRgb[3] = { lines.r / 255.0, lines.g / 255.0, lines.b / 255.0 };
+			for (int c = 0; c < 3; c++)
+			{
+				const double field = rgb[c] * std::max(gap, 0.0);
+				double mixed = field + (lineRgb[c] - field) * coverage;
+				if (gap < 0.0)
+					mixed = lineRgb[c] + (rgb[c] * -gap - lineRgb[c]) * coverage;
+				rgb[c] = mixed;
+			}
+			multiplier = std::max(coverage, std::max(gap, 0.0));
+		}
+		put(23 + i, (float)rgb[0], (float)rgb[1], (float)rgb[2], (float)Level->SweepIntensity[i]);
+		put(31 + i, (float)multiplier, (fill == 3 && mode != 4) ? 1.f : 0.f, 0.f, 0.f);
+	}
+
+	// Columns, world-aligned as 13d's column sectors: a recentre keeps what stays in the box, a column whose sector changed loses
+	// its edge distance, and the edge distances of columns whose sector has a flat lane are worked out nearest the eye first
+	// within SURFACE_EDGE_BUDGET_MS a frame (a column not worked out yet shows no flat glow).
+	const int sizeX = grid.SizeX;
+	const int sizeY = grid.SizeY;
+	if (mAmbientOrigin[0] != mSurfaceOrigin[0] || mAmbientOrigin[1] != mSurfaceOrigin[1])
+	{
+		const int dx = mAmbientOrigin[0] - mSurfaceOrigin[0];
+		const int dy = mAmbientOrigin[1] - mSurfaceOrigin[1];
+		std::vector<int> movedSector(columns, INT_MIN);
+		std::vector<float> movedEdge(columns, -1.f);
+		for (int y = 0; y < sizeY; y++)
+		{
+			const int sy = y + dy;
+			if (sy < 0 || sy >= sizeY)
+				continue;
+			for (int x = 0; x < sizeX; x++)
+			{
+				const int sx = x + dx;
+				if (sx < 0 || sx >= sizeX)
+					continue;
+				movedSector[x + (size_t)y * (size_t)sizeX] = mSurfaceColumnSector[sx + (size_t)sy * (size_t)sizeX];
+				movedEdge[x + (size_t)y * (size_t)sizeX] = mSurfaceEdge[sx + (size_t)sy * (size_t)sizeX];
+			}
+		}
+		mSurfaceColumnSector.swap(movedSector);
+		mSurfaceEdge.swap(movedEdge);
+		mSurfaceOrigin[0] = mAmbientOrigin[0];
+		mSurfaceOrigin[1] = mAmbientOrigin[1];
+		mSurfaceColumnsDirty = true;
+		mSurfaceEdgesPending = true;
+	}
+	if (mSurfaceAmbientSerial != mAmbientSerial)
+	{
+		// 13d's serial moves whenever a column changes (and when a sector's light does): compare.
+		for (size_t i = 0; i < columns; i++)
+		{
+			if (mSurfaceColumnSector[i] != mColumnSector[i])
+			{
+				mSurfaceColumnSector[i] = mColumnSector[i];
+				mSurfaceEdge[i] = -1.f;
+				mSurfaceColumnsDirty = true;
+				mSurfaceEdgesPending = true;
+			}
+		}
+		mSurfaceAmbientSerial = mAmbientSerial;
+	}
+	if (mSurfaceFlat != mSurfaceFlatBefore)
+	{
+		mSurfaceFlatBefore = mSurfaceFlat;
+		mSurfaceEdgesPending = true;
+	}
+
+	if (flatAny && mSurfaceEdgesPending)
+	{
+		const int B = AMBIENT_BLOCK_COLUMNS;
+		const int blocksX = (sizeX + B - 1) / B;
+		const int blocksY = (sizeY + B - 1) / B;
+		const double lightCell = grid.CellSize;
+		struct Block
+		{
+			int Index;
+			double Distance2;
+		};
+		std::vector<Block> order;
+		order.reserve((size_t)blocksX * (size_t)blocksY);
+		for (int b = 0; b < blocksX * blocksY; b++)
+		{
+			const double cx = (mAmbientOrigin[0] + (b % blocksX + 0.5) * B) * lightCell - eye.X;
+			const double cy = (mAmbientOrigin[1] + (b / blocksX + 0.5) * B) * lightCell - eye.Y;
+			order.push_back({ b, cx * cx + cy * cy });
+		}
+		std::sort(order.begin(), order.end(), [](const Block& a, const Block& b) { return a.Distance2 < b.Distance2; });
+
+		const uint64_t startNs = I_nsTime();
+		bool workedAny = false, stopped = false;
+		for (const Block& block : order)
+		{
+			if (workedAny && (double)(I_nsTime() - startNs) / 1e6 >= SURFACE_EDGE_BUDGET_MS)
+			{
+				stopped = true;
+				break;
+			}
+			const int bx = block.Index % blocksX;
+			const int by = block.Index / blocksX;
+			const int x1 = std::min((bx + 1) * B, sizeX);
+			const int y1 = std::min((by + 1) * B, sizeY);
+			for (int y = by * B; y < y1; y++)
+			{
+				for (int x = bx * B; x < x1; x++)
+				{
+					const size_t i = x + (size_t)y * (size_t)sizeX;
+					const int index = mColumnSector[i];
+					if (index < 0 || (unsigned)index >= sectorCount || mSurfaceEdge[i] >= 0.f)
+						continue;
+					const int slot = mSurfaceSlot[index];
+					if (slot < 0 || !mSurfaceFlat[(size_t)slot])
+						continue;
+					const double at[2] = { (mAmbientOrigin[0] + x + 0.5) * lightCell, (mAmbientOrigin[1] + y + 0.5) * lightCell };
+					const double edge = SurfaceEdgeDistance(&Level->sectors[index], at[0], at[1]);
+					if (edge >= 0.0)
+					{
+						mSurfaceEdge[i] = (float)edge;
+						mSurfaceColumnsDirty = true;
+					}
+					workedAny = true;
+				}
+			}
+		}
+		if (!stopped)
+			mSurfaceEdgesPending = false;
+	}
+
+	if (mSurfaceColumnsDirty || mSurfaceColumns.size() != 4 + columns * 2)
+	{
+		mSurfaceColumns.assign(4 + columns * 2, -1.f);
+		const int32_t size[4] = { sizeX, sizeY, 0, 0 };
+		memcpy(mSurfaceColumns.data(), size, sizeof(size));
+		for (size_t i = 0; i < columns; i++)
+		{
+			const int index = mColumnSector[i];
+			const int slot = (index >= 0 && (unsigned)index < sectorCount) ? mSurfaceSlot[index] : -1;
+			mSurfaceColumns[4 + i * 2] = slot >= 0 ? (float)slot : -1.f;	// an index into the records after the header
+			mSurfaceColumns[5 + i * 2] = mSurfaceEdge[i];
+		}
+		mSurfaceColumnsDirty = false;
+		if (++mSurfaceColumnSerial == 0)
+			mSurfaceColumnSerial = 1;
+	}
+
+	surface.Live = true;
+	surface.Columns = mSurfaceColumns.data();
+	surface.ColumnFloats = mSurfaceColumns.size();
+	surface.ColumnSerial = mSurfaceColumnSerial;
+	surface.Records = mSurfaceRecords.data();
+	surface.RecordFloats = mSurfaceRecords.size();
 }
 
 //-----------------------------------------------------------------------------

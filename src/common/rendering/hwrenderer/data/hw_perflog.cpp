@@ -51,6 +51,8 @@ EXTERN_CVAR(Int, r_smoke_light_quality)	// [SMOKEVOLUME] 13d, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_smoke_beams)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_beams_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_cones_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_smoke_surfaceglow)	// [SMOKEVOLUME] 13f, hw_smokevolume.cpp
+EXTERN_CVAR(Bool, r_smoke_darkness)	// [SMOKEVOLUME] 13f, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_particlecollision)	// [LEVELFIELD] hw_levelfield.cpp
 EXTERN_CVAR(Int, r_particlecollision_quality)	// [LEVELFIELD] hw_levelfield.cpp
 EXTERN_CVAR(Bool, r_particlecollision_test)	// [LEVELFIELD] hw_levelfield.cpp
@@ -259,7 +261,9 @@ namespace
 				"(cpu_fx_ms) is its per-eye setup. fx.smokelight is the smoke's light grid (frames with smoke: its ambient pass, "
 				"one pass per light, and one pass for every effect light in reach [EFFECTLIGHTS LD]; on gpu_ms inside "
 				"fx.compute, on cpu_fx_ms its recording); fx.smokelights (cpu_fx_ms) "
-				"its light list and ambient columns. pp.smokebeams is the smoke's beam and cone work per eye (the transmittance "
+				"its light list and ambient columns [13f: and, while glow, sweep bands, darkness or a passed look reach the "
+				"smoke, their records and the columns' edge distances; the ambient pass inside fx.smokelight then runs their "
+				"variant]. pp.smokebeams is the smoke's beam and cone work per eye (the transmittance "
 				"curve, and the light the beams scatter; only while beams or a flashlight cone meet the smoke) -- the beams' "
 				"depth work is inside pp.smoke's composite and the cones' inside volumetricbeam; smokebeams is how many beams "
 				"the last frame's smoke list held. fx.levelfield is the particle collision field: on cpu_fx_ms its demand "
@@ -331,6 +335,8 @@ namespace
 		// pp.smoke / pp.smokebeams / volumetricbeam before/after labels itself.
 		out.AppendFormat(" r_smoke_beams=%d r_smoke_beams_depth=%d r_smoke_cones_depth=%d smokebeams=%d",
 			(int)*r_smoke_beams, (int)*r_smoke_beams_depth, (int)*r_smoke_cones_depth, hw_postprocess.smokevolume.PublishedBeamCount());
+		// [SMOKEVOLUME] 13f: and the surface light switches, so a fx.smokelight / fx.smokelights before/after labels itself.
+		out.AppendFormat(" r_smoke_surfaceglow=%d r_smoke_darkness=%d", (int)*r_smoke_surfaceglow, (int)*r_smoke_darkness);
 		// [LEVELFIELD] And the particle collision switches, so a fx.levelfield before/after labels itself.
 		out.AppendFormat(" r_particlecollision=%d r_particlecollision_quality=%d r_particlecollision_test=%d",
 			(int)*r_particlecollision, (int)*r_particlecollision_quality, (int)*r_particlecollision_test);

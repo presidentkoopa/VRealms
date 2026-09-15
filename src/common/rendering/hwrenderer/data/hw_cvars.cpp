@@ -38,7 +38,9 @@ CUSTOM_CVAR(Int, gl_fogmode, 2, CVAR_ARCHIVE | CVAR_NOINITCALL)
 }
 
 // Optional family toggle for Selaco-style background texture/material streaming.
-CVAR(Bool, gl_texture_thread, false, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
+// The background asset loader is on by default (owner, 2026-09-15): levels load sooner and first-use texture hitches
+// drop in the headset. Drained before a level precaches and at engine cleanup (p_setup.cpp, d_main.cpp).
+CVAR(Bool, gl_texture_thread, true, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
 CVAR(Bool, gl_texture_thread_models, true, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
 CVAR(Bool, gl_texture_thread_upload, true, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
 

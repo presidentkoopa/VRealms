@@ -770,6 +770,13 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 	// [RH] Remove all particles
 	P_ClearParticles(Level);
 
+	// Background asset loader (gl_texture_thread): finish loads the previous level queued before this level's precache
+	// rebuilds texture state, so no worker still holds a texture (GZSelaco p_setup.cpp). A no-op when the loader is off.
+	if (screen != nullptr && screen->SupportsBackgroundCache())
+	{
+		screen->FlushBackground();
+	}
+
 	// preload graphics and sounds
 	if (precache)
 	{

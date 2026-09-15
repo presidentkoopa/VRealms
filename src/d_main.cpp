@@ -5074,6 +5074,14 @@ void D_Cleanup()
 	S_StopMusic(true);
 	S_ClearSoundData();
 	S_UnloadReverbDef();
+
+	// Background asset loader (gl_texture_thread): no worker may hold a texture that cleanup is about to free. GZSelaco
+	// stops its threads here; ours are created once with the render device and would not come back after a restart, so
+	// they are drained instead (the device destructor still stops them). A no-op when the loader is off.
+	if (screen != nullptr && screen->SupportsBackgroundCache())
+	{
+		screen->FlushBackground();
+	}
 	G_ClearMapinfo();
 
 	M_ClearMenus();					// close menu if open

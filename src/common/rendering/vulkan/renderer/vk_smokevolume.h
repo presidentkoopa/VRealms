@@ -61,6 +61,13 @@
 ** records and bins, storage buffers 7 and 8), made and given its own set the first time it is needed.
 ** A frame with no effect light in reach records exactly what it did before.
 **
+** [13F] SURFACE LIGHT IN PASS 0 (hw_framecompute.h, SmokeSurfaceLightFrame): on a frame the CPU side says surface light is live
+** (a column's sector glows, a sweep band gives light, the darkness curve or a passed look is on), RunLight runs pass 0 through
+** smoke_light.comp's SMOKE_SURFACE_LIGHT variant -- the light set's seven bindings plus two storage buffers, the columns (7,
+** copied in when their serial moves on) and the records (8, every such frame), device-local behind their own staging buffers
+** -- made, allocated and grown on first use and freed with the light grid. Any other frame, and any refusal, runs pass 0 exactly
+** as before.
+**
 ** CPU-side decisions -- when the volume exists, where its box is, what goes in, the
 ** mask -- are made in hw_smokevolume.cpp and arrive in SmokeVolumeFrame, so a render
 ** rebuild replaces only this file and the shaders.
@@ -164,6 +171,13 @@ private:
 	// [EFFECTLIGHTS] LD: the pass-2 variant (made on first use; false: refused this session) and its dispatch, from RunLight.
 	bool EnsureEffectLightProgram();
 	void DispatchEffectLights(const SmokeVolumeFrame& frame);
+	// [13F] Pass 0's surface light variant (made on first use; false: refused this session), a surface buffer copied in through its
+	// staging buffer (made or grown to fit; false: not made), and pass 0 through the variant -- false, with nothing dispatched,
+	// when this frame's surface light is not live or anything is refused (RunLight then dispatches pass 0 as before).
+	bool EnsureSurfaceProgram();
+	bool UploadSurfaceBuffer(std::unique_ptr<VulkanBuffer>& buffer, std::unique_ptr<VulkanBuffer>& staging, size_t& capacity,
+		const float* data, size_t bytes, const char* name, const char* stagingName);
+	bool DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const void* ambientConstants);
 
 	// [13e] The beam list image: made once (false: refused this session), the frame's list copied in (returns the beams
 	// the image holds for this frame, 0 = none), freed with the volume.
@@ -187,6 +201,8 @@ private:
 	bool mProgramsReady = false;
 	bool mProgramsFailed = false;
 	bool mEffectLightProgramFailed = false;	// [EFFECTLIGHTS] LD: not retried this session
+	std::unique_ptr<VkComputeProgram> mSurfaceProgram;	// [13F] smoke_light.comp (SMOKE_SURFACE_LIGHT), pass 0 with surface light
+	bool mSurfaceProgramFailed = false;	// [13F] not retried this session
 
 	Volume mDensityHeat[2];
 	Volume mVelocity[2];
@@ -211,6 +227,16 @@ private:
 
 	std::unique_ptr<VulkanBuffer> mStaging;	// SMOKE_MASK_UPLOAD_BYTES_PER_FRAME, for the mask tiles
 
+	// [13F] The surface light buffers (device-local storage buffers, each with its staging buffer; hw_framecompute.h): the columns,
+	// copied in when their serial moves on, and the records, every frame surface light is live; their capacities in bytes.
+	std::unique_ptr<VulkanBuffer> mSurfaceColumns;
+	std::unique_ptr<VulkanBuffer> mSurfaceColumnsStaging;
+	std::unique_ptr<VulkanBuffer> mSurfaceRecords;
+	std::unique_ptr<VulkanBuffer> mSurfaceRecordsStaging;
+	size_t mSurfaceColumnsCapacity = 0;
+	size_t mSurfaceRecordsCapacity = 0;
+	uint64_t mSurfaceColumnSerialUploaded = 0;
+
 	// [i] = the sets whose "latest" is image i of the pairs.
 	std::unique_ptr<VulkanDescriptorSet> mInjectSets[2];			// storage D[i], V[i]; sampled mask
 	std::unique_ptr<VulkanDescriptorSet> mAdvectSets[2];			// sampled D[i], V[i], mask; storage tiles, D[1-i], V[1-i]
@@ -227,6 +253,9 @@ private:
 	// [EFFECTLIGHTS] LD: the pass-2 variant's set -- the light set's bindings plus the effect light records (7) and bins (8).
 	// Written every frame pass 2 runs, before its dispatch; freed with the light set.
 	std::unique_ptr<VulkanDescriptorSet> mEffectLightSet;
+	// [13F] Pass 0's surface light variant's set -- the light set's bindings plus the columns (7) and records (8) buffers. Written
+	// every frame the variant runs, before its dispatch; freed with the light set.
+	std::unique_ptr<VulkanDescriptorSet> mSurfaceSet;
 
 	SmokeGridSpec mGrid;
 	int mTiles[3] = { 0, 0, 0 };
@@ -251,4 +280,5 @@ private:
 	uint64_t mAmbientSerialUploaded = 0;
 	bool mLightWarned = false;
 	bool mEffectLightWarned = false;	// [EFFECTLIGHTS] LD: no set for pass 2 (logged once)
+	bool mSurfaceWarned = false;		// [13F] no set or no buffers for the surface light variant (logged once)
 };

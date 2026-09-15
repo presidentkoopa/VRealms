@@ -60,6 +60,11 @@
 **     effect light this frame binned reaches the light grid, and the light cells they can reach
 **     (SmokeEffectLightPass, hw_framecompute.h), for smoke_light.comp's pass 2 over their bins. A
 **     dynamic light's shadow-map row counts only while "Light shadows" (gl_light_shadowmap) is on.
+**   - [13F] SURFACE LIGHT (SmokeSurfaceLightFrame, hw_framecompute.h): on frames with smoke to draw, whether the light grid's
+**     ambient pass takes its surface light variant -- a column's sector glows, a sweep band gives light, the darkness curve is
+**     on or a sweep's passed look is live -- and the records and columns it reads: each listed sector's darkness curve and glow
+**     lanes, the bands, and each column's record and flat-edge distance (worked out within SURFACE_EDGE_BUDGET_MS a frame,
+**     nearest the eye first). r_smoke_surfaceglow and r_smoke_darkness, defined in hw_smokevolume.cpp, are its A/B switches.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim.
 **
@@ -115,6 +120,11 @@ public:
 	// are resolved within this much CPU a frame, a block of this many columns a side at a time.
 	static constexpr double AMBIENT_BUDGET_MS = 0.25;
 	static constexpr int AMBIENT_BLOCK_COLUMNS = 16;
+
+	// [13F] A column's distance to its sector's nearest edge (the flat glow's measure) costs a pass over up to 64 lines, so it is
+	// worked out only for columns whose sector has a flat glow lane, within this much CPU a frame, a block at a time, nearest the
+	// eye first (at least one block a frame).
+	static constexpr double SURFACE_EDGE_BUDGET_MS = 0.25;
 
 	static SmokeVolume& Get();
 
@@ -215,6 +225,8 @@ private:
 	void GatherBeams(FLevelLocals* Level, const DVector3& eye, double ticFrac, SmokeVolumeFrame& out);
 	// [EFFECTLIGHTS] LD: the effect lights that reach the light grid, for pass 2 (only on frames with smoke to draw).
 	void GatherEffectLights(FLevelLocals* Level, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
+	// [13F] Surface glow, sweep bands, darkness and the passed look for the ambient pass (only on frames with smoke to draw).
+	void UpdateSurfaceLight(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
 
 	uint64_t mLevelSerial = 0;
 
@@ -287,4 +299,37 @@ private:
 
 	// [13e] This frame's beam list; the frame points into it.
 	std::vector<SmokeBeamRecord> mBeams;
+
+	// [13F] Surface light. The frame points into mSurfaceRecords (header, sector records, glow records; mSurfaceGlow is the glow
+	// records while they are gathered) and mSurfaceColumns. A sector's record is its place in mAmbientSectors, so a column's record
+	// changes only when its sector does: mSurfaceSlot maps a sector index to it (-1 none), mSurfaceSlotsKnown how much of the list it
+	// covers. mSurfaceColumnSector holds the column sectors the columns were last built from and mSurfaceEdge each column's
+	// flat-edge distance (-1 not worked out), both world-aligned from mSurfaceOrigin; mSurfaceFlat marks the records whose sector
+	// has a flat lane this frame. The glow's means over time are cached by their inputs.
+	std::vector<float> mSurfaceRecords;
+	std::vector<float> mSurfaceGlow;
+	std::vector<float> mSurfaceColumns;
+	std::vector<int> mSurfaceSlot;
+	size_t mSurfaceSlotsKnown = 0;
+	std::vector<uint8_t> mSurfaceFlat;
+	std::vector<uint8_t> mSurfaceFlatBefore;
+	std::vector<int> mSurfaceColumnSector;
+	std::vector<float> mSurfaceEdge;
+	uint64_t mSurfaceLevelSerial = 0;
+	int mSurfaceSize[2] = { 0, 0 };
+	double mSurfaceCellSize = 0;
+	int mSurfaceOrigin[2] = { 0, 0 };
+	uint64_t mSurfaceAmbientSerial = 0;
+	bool mSurfaceColumnsDirty = true;
+	bool mSurfaceEdgesPending = false;
+	uint64_t mSurfaceColumnSerial = 0;
+	bool mSurfaceWaveValid = false;
+	double mSurfaceWaveInputs[2] = { 0, 0 };
+	double mSurfaceWaveMean = 0;
+	bool mSurfaceFlowValid = false;
+	double mSurfaceFlowInput = 0;
+	double mSurfaceFlowMean = 0;
+	bool mSurfaceCellValid = false;
+	double mSurfaceCellInput = 0;
+	double mSurfaceCellMean = 0;
 };

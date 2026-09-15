@@ -1047,6 +1047,15 @@ void VkSmokeVolume::ReleaseLightGrid(const char* why)
 	auto deleteList = fb->GetCommands()->DrawDeleteList.get();
 	deleteList->Add(std::move(mLightSet));
 	deleteList->Add(std::move(mEffectLightSet));	// [EFFECTLIGHTS] LD: it names the same images
+	// [13F] So does the surface light set; its buffers go with it (the next frame with surface light makes them again).
+	deleteList->Add(std::move(mSurfaceSet));
+	deleteList->Add(std::move(mSurfaceColumns));
+	deleteList->Add(std::move(mSurfaceColumnsStaging));
+	deleteList->Add(std::move(mSurfaceRecords));
+	deleteList->Add(std::move(mSurfaceRecordsStaging));
+	mSurfaceColumnsCapacity = 0;
+	mSurfaceRecordsCapacity = 0;
+	mSurfaceColumnSerialUploaded = 0;
 	if (!mLight.Image && !mLightDirection.Image && !mAmbientColumns.Image)
 		return;
 
@@ -1159,7 +1168,10 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 	ambient.Cone[2] = (float)cellSize;
 	ambient.Cone[3] = light.AmbientScale;
 	ambient.Color[3] = frame.Sim.SootLive;	// [13e] pass 0 works out the soot darkness only while soot may be in the volume
-	mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &ambient, Groups(size[0]), Groups(size[1]), Groups(size[2]));
+	// [13F] With surface light live this frame (glow, sweep bands, darkness, a passed look) the same pass through the
+	// SMOKE_SURFACE_LIGHT variant; otherwise, or when the variant is refused, pass 0 as it was.
+	if (!DispatchSurfaceAmbient(frame, &ambient))
+		mCompute->Dispatch(mLightProgram.get(), mLightSet.get(), &ambient, Groups(size[0]), Groups(size[1]), Groups(size[2]));
 
 	// Pass 1: each light, over the cells whose centre lies inside its sphere's box.
 	const int count = light.Lights != nullptr ? std::clamp(light.LightCount, 0, SMOKE_LIGHTS_MAX) : 0;
@@ -1321,6 +1333,157 @@ void VkSmokeVolume::DispatchEffectLights(const SmokeVolumeFrame& frame)
 		Groups(constants.RegionMax[0] - constants.RegionMin[0]),
 		Groups(constants.RegionMax[1] - constants.RegionMin[1]),
 		Groups(constants.RegionMax[2] - constants.RegionMin[2]));
+}
+
+//-----------------------------------------------------------------------------
+//
+// [13F] Surface light in pass 0 ("Engine docs/SMOKE_13F_IMPL_NOTES.md"; hw_framecompute.h, SmokeSurfaceLightFrame;
+// smoke_light.comp's SurfaceAmbient)
+//
+//-----------------------------------------------------------------------------
+
+// Pass 0's SMOKE_SURFACE_LIGHT variant of smoke_light.comp: the light program's seven bindings plus the surface columns (7) and
+// records (8), storage buffers. Made the first time surface light is live, not with the other programs, so a session that never
+// has any builds and binds exactly what it did before. A device that cannot build it logs once (CreateProgram says why) and the
+// smoke keeps 13d's ambient; it is not retried this session.
+bool VkSmokeVolume::EnsureSurfaceProgram()
+{
+	if (mSurfaceProgram)
+		return true;
+	if (mSurfaceProgramFailed)
+		return false;
+
+	const VkDescriptorType storage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	const VkDescriptorType sampled = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	const VkDescriptorType buffer = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	mSurfaceProgram = mCompute->CreateProgram("shaders/compute/smoke_light.comp",
+		{ { 0, sampled }, { 1, sampled }, { 2, sampled }, { 3, storage }, { 4, storage }, { 5, sampled }, { 6, sampled }, { 7, buffer }, { 8, buffer } },
+		(uint32_t)sizeof(SmokeLightConstants), "#define SMOKE_SURFACE_LIGHT\n");
+	if (!mSurfaceProgram)
+	{
+		mSurfaceProgramFailed = true;
+		Printf(TEXTCOLOR_RED "SmokeVolume: the surface light pass did not build -- glow, sweeps and darkness do not reach the smoke this session\n");
+		return false;
+	}
+	return true;
+}
+
+// Copies `bytes` of `data` into a device-local storage buffer through its staging buffer, making both (or both again, larger:
+// a power of two from 4 KB) when they are missing or too small. The copy is recorded now, before the dispatch that reads it; the
+// frame before has finished by then, as UploadAmbient relies on, so the staging buffer is free to map.
+bool VkSmokeVolume::UploadSurfaceBuffer(std::unique_ptr<VulkanBuffer>& buffer, std::unique_ptr<VulkanBuffer>& staging, size_t& capacity,
+	const float* data, size_t bytes, const char* name, const char* stagingName)
+{
+	if (!buffer || !staging || capacity < bytes)
+	{
+		size_t size = 4096;
+		while (size < bytes)
+			size *= 2;
+		// Commands recorded earlier may still name the old pair: the frame's delete list.
+		auto deleteList = fb->GetCommands()->DrawDeleteList.get();
+		deleteList->Add(std::move(buffer));
+		deleteList->Add(std::move(staging));
+		capacity = 0;
+		try
+		{
+			buffer = BufferBuilder()
+				.Usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY)
+				.Size(size)
+				.DebugName(name)
+				.Create(fb->device.get());
+			staging = BufferBuilder()
+				.Usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU)
+				.Size(size)
+				.DebugName(stagingName)
+				.Create(fb->device.get());
+		}
+		catch (const std::exception& e)
+		{
+			Printf(TEXTCOLOR_RED "SmokeVolume: %s\n", e.what());
+			buffer.reset();
+			staging.reset();
+		}
+		if (!buffer || !staging)
+		{
+			buffer.reset();
+			staging.reset();
+			if (!mSurfaceWarned)
+			{
+				mSurfaceWarned = true;
+				Printf(TEXTCOLOR_RED "SmokeVolume: could not allocate the surface light buffers -- glow, sweeps and darkness do not reach the smoke (logged once)\n");
+			}
+			return false;
+		}
+		capacity = size;
+	}
+
+	void* mapped = staging->Map(0, bytes);
+	memcpy(mapped, data, bytes);
+	staging->Unmap();
+	mCompute->BeginWork();
+	fb->GetCommands()->GetDrawCommands()->copyBuffer(staging.get(), buffer.get(), 0, 0, bytes);
+	return true;
+}
+
+// Pass 0 through the surface light variant, on a frame the CPU side made its surface light live: the same push constants and
+// work groups as pass 0, bindings 0-6 naming what the light set names this frame, 7 and 8 the surface buffers bound to exactly
+// this frame's bytes. Only from RunLight, after its checks and inside fx.smokelight. False, with nothing dispatched, when surface
+// light is not live, the frame's buffers do not fit the light grid held, or the program, the set or a buffer is refused.
+bool VkSmokeVolume::DispatchSurfaceAmbient(const SmokeVolumeFrame& frame, const void* ambientConstants)
+{
+	const SmokeSurfaceLightFrame& surface = frame.Light.Surface;
+	const size_t columns = (size_t)std::max(mLightGrid.SizeX, 0) * (size_t)std::max(mLightGrid.SizeY, 0);
+	if (!surface.Live || surface.Records == nullptr || surface.RecordFloats < ((size_t)SMOKE_SURFACE_HEADER_VEC4S + 1) * 4 ||
+		surface.RecordFloats % 4 != 0 || surface.Columns == nullptr || columns == 0 || surface.ColumnFloats != 4 + 2 * columns)
+		return false;
+
+	if (!EnsureSurfaceProgram())
+		return false;
+	if (!mSurfaceSet)
+	{
+		mSurfaceSet = mCompute->AllocateSet(mSurfaceProgram.get());
+		if (!mSurfaceSet)
+		{
+			if (!mSurfaceWarned)
+			{
+				mSurfaceWarned = true;
+				Printf(TEXTCOLOR_RED "SmokeVolume: no descriptor set for the surface light pass -- glow, sweeps and darkness do not reach the smoke (logged once)\n");
+			}
+			return false;
+		}
+	}
+
+	const size_t columnBytes = surface.ColumnFloats * sizeof(float);
+	if (surface.ColumnSerial != mSurfaceColumnSerialUploaded || !mSurfaceColumns)
+	{
+		if (!UploadSurfaceBuffer(mSurfaceColumns, mSurfaceColumnsStaging, mSurfaceColumnsCapacity, surface.Columns, columnBytes,
+			"SmokeVolume.SurfaceColumns", "SmokeVolume.SurfaceColumnsStaging"))
+			return false;
+		mSurfaceColumnSerialUploaded = surface.ColumnSerial;
+	}
+	const size_t recordBytes = surface.RecordFloats * sizeof(float);
+	if (!UploadSurfaceBuffer(mSurfaceRecords, mSurfaceRecordsStaging, mSurfaceRecordsCapacity, surface.Records, recordBytes,
+		"SmokeVolume.SurfaceRecords", "SmokeVolume.SurfaceRecordsStaging"))
+		return false;
+
+	VkTextureImage& shadowMap = fb->GetTextureManager()->Shadowmap;
+	VulkanSampler* sampler = mCompute->GetVolumeSampler();
+	const VkImageLayout general = VK_IMAGE_LAYOUT_GENERAL;
+	WriteDescriptors()
+		.AddCombinedImageSampler(mSurfaceSet.get(), 0, mTileActive.View.get(), sampler, general)
+		.AddCombinedImageSampler(mSurfaceSet.get(), 1, mAmbientColumns.View.get(), sampler, general)
+		.AddCombinedImageSampler(mSurfaceSet.get(), 2, shadowMap.View.get(), fb->GetSamplerManager()->ShadowmapSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+		.AddStorageImage(mSurfaceSet.get(), 3, mLight.View.get(), general)
+		.AddStorageImage(mSurfaceSet.get(), 4, mLightDirection.View.get(), general)
+		.AddCombinedImageSampler(mSurfaceSet.get(), 5, mDensityHeat[mLatest].View.get(), sampler, general)
+		.AddCombinedImageSampler(mSurfaceSet.get(), 6, mVelocity[mLatest].View.get(), sampler, general)
+		.AddBuffer(mSurfaceSet.get(), 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, mSurfaceColumns.get(), 0, columnBytes)
+		.AddBuffer(mSurfaceSet.get(), 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, mSurfaceRecords.get(), 0, recordBytes)
+		.Execute(fb->device.get());
+
+	mCompute->Dispatch(mSurfaceProgram.get(), mSurfaceSet.get(), ambientConstants,
+		Groups(mLightGrid.SizeX), Groups(mLightGrid.SizeY), Groups(mLightGrid.SizeZ));
+	return true;
 }
 
 //-----------------------------------------------------------------------------

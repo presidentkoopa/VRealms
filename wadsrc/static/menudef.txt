@@ -2400,6 +2400,17 @@ OptionMenu DeveloperOptionsMenu protected
 	// behind a smoke wall glows through it faintly instead of sitting on top of it. An A/B check, on by
 	// default. Changes only pixels with smoke on them. Read every frame. Vulkan only.
 	Option "Flashlight cones dimmed by smoke (A/B check)", "r_smoke_cones_depth", "OnOff"
+	// [13F] r_smoke_surfaceglow -- the smoke takes the light its room's surfaces give it: haze over a
+	// glowing floor, beside a glowing wall base or under a glowing ceiling takes the glow's colour
+	// (Glow in the Dark, a sweep's glow, a texture's own glow), and a sweep band tints, lifts or darkens
+	// the haze it passes through. An A/B check, on by default. Off: the haze shows only the room's plain
+	// light, as before. Changes only the light inside smoke. Read every frame. Vulkan only.
+	Option "Smoke takes surface glow (A/B check)", "r_smoke_surfaceglow", "OnOff"
+	// [13F] r_smoke_darkness -- the haze takes the room's darkness as the walls do: in a map RS_Darkness
+	// makes near-black the haze goes dark too, and haze a sweep's front has passed takes its passed look.
+	// An A/B check, on by default. Off: the haze keeps the sector's own brightness, as before. Changes
+	// only the light inside smoke. Read every frame. Vulkan only.
+	Option "Smoke follows darkness (A/B check)", "r_smoke_darkness", "OnOff"
 	// r_smoke_computetest -- a smoke test source, no mod needed: placed ahead of where you look
 	// when switched on -- a puff every tic, a round through it every 10 tics, a blast every 3
 	// seconds -- running the real simulation, drawn as any smoke is (13c). With the performance log
