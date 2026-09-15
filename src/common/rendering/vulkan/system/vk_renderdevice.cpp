@@ -38,6 +38,7 @@
 #include "hw_gpuparticlebuffer.h"	// [GPUPARTICLES]
 #include "hw_particledefbuffer.h"	// [PARTICLEDEFS]
 #include "hw_viewlightbuffer.h"	// [VIEWLIGHTS]
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS]
 #include "hw_sectorplanebuffer.h"	// [SECTORPLANES]
 #include "hw_meshparticles.h"	// [MESHPARTICLES]
 #include "hw_framecompute.h"	// [COMPUTE]
@@ -412,6 +413,8 @@ VulkanRenderDevice::~VulkanRenderDevice()
 	// [VIEWLIGHTS] beside the particles, which read it
 	delete mViewLights;
 	mViewLights = nullptr;
+	// [EFFECTLIGHTS] beside the view lights, which it is created beside
+	EffectLightBuffer::Destroy();
 	// [SECTORPLANES] beside the view lights, which it is created beside
 	delete mSectorPlanes;
 	mSectorPlanes = nullptr;
@@ -529,6 +532,9 @@ void VulkanRenderDevice::InitializeState()
 	// vertex shader; set 1 binding 8. Filled every main-view scene by
 	// HWDrawInfo::ProcessScene (SyncViewLights).
 	mViewLights = new ViewLightBuffer();
+	// [EFFECTLIGHTS] The effect light records and their world bins (hw_effectlightbuffer.h); set 1 bindings 14 and 15. Written
+	// once a frame by EffectLights::PrepareFrame (hw_effectlights.cpp): empty until something spawns an effect light.
+	EffectLightBuffer::Create();
 	// [SECTORPLANES] Sectors' current floor and ceiling planes for GPU effects; set 1
 	// binding 12. Written by SectorPlanes (hw_sectorplanes.cpp) only for the sectors an
 	// active effect polls.

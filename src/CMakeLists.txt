@@ -1043,6 +1043,7 @@ set (PCH_SOURCES
 	rendering/hwrenderer/hw_debrispool.cpp
 	rendering/hwrenderer/hw_debrislanding.cpp
 	rendering/hwrenderer/hw_surfacedamage.cpp
+	rendering/hwrenderer/hw_effectlights.cpp
 	rendering/hwrenderer/doom_aabbtree.cpp
 	rendering/hwrenderer/doom_levelmesh.cpp
 	rendering/hwrenderer/hw_models.cpp
@@ -1292,6 +1293,7 @@ set (PCH_SOURCES
 	common/rendering/hwrenderer/data/hw_drawnlinebuffer.cpp
 	common/rendering/hwrenderer/data/hw_particledefbuffer.cpp
 	common/rendering/hwrenderer/data/hw_viewlightbuffer.cpp
+	common/rendering/hwrenderer/data/hw_effectlightbuffer.cpp
 	common/rendering/hwrenderer/data/hw_sectorplanebuffer.cpp
 	common/rendering/hwrenderer/data/hw_meshparticles.cpp
 	common/rendering/hwrenderer/data/hw_aabbtree.cpp

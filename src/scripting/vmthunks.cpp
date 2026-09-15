@@ -4064,6 +4064,76 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, EmitSmoke, EmitSmoke)
 	return 0;
 }
 
+//==========================================================================
+//
+// [EFFECTLIGHTS] SpawnEffectLight -- a short light that belongs to nothing ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md";
+// FEffectLightEvent, g_levellocals.h; hw_effectlights.cpp). ONE-WAY, like EmitSmoke: it only queues an event on the level's
+// per-tic queue and returns nothing; nothing reads it back and nothing is saved, so gameplay cannot branch on it, and every
+// machine queues the same light. No RNG: a landed light's varied hold is a local hash of its tic, its place in that tic's
+// queue and where it began (EffectLightCore::SeedFor). A call with a non-finite number, a radius under 1 or no intensity is
+// ignored.
+//
+//==========================================================================
+
+static void SpawnEffectLight(FLevelLocals *self, double px, double py, double pz, int color, double radius, double intensity,
+	double life, double vx, double vy, double vz, double ex, double ey, double ez, double fade, int flags, double gravity,
+	double drag, double land, double hold, double tailLag, double tailBrightness)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("SpawnEffectLight", badLogged, { px, py, pz, radius, intensity, life, vx, vy, vz, ex, ey, ez, fade,
+		gravity, drag, land, hold, tailLag, tailBrightness }))
+		return;
+	// Nothing to light: not queued.
+	if (!(radius >= 1.) || !(intensity > 0.))
+		return;
+
+	FEffectLightEvent *e = self->EffectLightSpawns.Push();
+	if (e == nullptr)
+	{
+		LogEffectQueueFull(self->EffectLightSpawns.FullLogged, "SpawnEffectLight", FLevelLocals::MAX_EFFECT_LIGHTS_PER_TIC);
+		return;
+	}
+	e->Pos = DVector3(px, py, pz);
+	// posEnd (0,0,0) is "not given" -- the ZScript default, as EmitSmoke's: a point.
+	const bool line = !(ex == 0. && ey == 0. && ez == 0.);
+	e->End = line ? LimitEffectSegmentEnd(e->Pos, DVector3(ex, ey, ez), 8192.) : e->Pos;
+	e->Vel = ClampEffectVector(vx, vy, vz, 65536.);	// a round flies about 30,000 map units a second
+	e->Radius = clamp(radius, 1., 1024.);
+	e->Intensity = clamp(intensity, 0., 16.);
+	e->Life = clamp(life, 0.001, 60.);
+	e->Fade = clamp(fade, 0., 16.);
+	e->Gravity = clamp(gravity, -65536., 65536.);
+	e->Drag = clamp(drag, 0., 64.);
+	e->Land = clamp(land, 0., 60.);
+	e->Hold = clamp(hold, 0., 60.);
+	e->TailLag = clamp(tailLag, 0., 1.);
+	e->TailBrightness = clamp(tailBrightness, 0., 1.);
+	e->Color = (uint32_t)color;
+	e->Flags = flags;
+}
+
+// _NATIVE0, NOT _NATIVE: 22 VM arguments (self, three Vector3s at three floats each, and twelve more) are past asmjit's
+// 16-argument direct-call cap -- see the note on SetVolumetricBeam. The VM calling convention has no such limit.
+DEFINE_ACTION_FUNCTION_NATIVE0(FLevelLocals, SpawnEffectLight, SpawnEffectLight)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(px); PARAM_FLOAT(py); PARAM_FLOAT(pz);
+	PARAM_COLOR(color);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(intensity);
+	PARAM_FLOAT(life);
+	PARAM_FLOAT(vx); PARAM_FLOAT(vy); PARAM_FLOAT(vz);
+	PARAM_FLOAT(ex); PARAM_FLOAT(ey); PARAM_FLOAT(ez);
+	PARAM_FLOAT(fade);
+	PARAM_INT(flags);
+	PARAM_FLOAT(gravity); PARAM_FLOAT(drag);
+	PARAM_FLOAT(land); PARAM_FLOAT(hold);
+	PARAM_FLOAT(tailLag); PARAM_FLOAT(tailBrightness);
+	SpawnEffectLight(self, px, py, pz, color, radius, intensity, life, vx, vy, vz, ex, ey, ez, fade, flags, gravity, drag,
+		land, hold, tailLag, tailBrightness);
+	return 0;
+}
+
 static void CarveSmoke(FLevelLocals *self, double sx, double sy, double sz, double ex, double ey, double ez,
 	double radius, double amount)
 {
@@ -6324,6 +6394,28 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetDrawnLineAnchor, SetDrawnLineAnch
 	PARAM_INT(mode);
 	PARAM_OBJECT(owner, AActor);
 	SetDrawnLineAnchor(self, index, mode, owner);
+	return 0;
+}
+
+// [EFFECTLIGHTS] The light a drawn line throws -- see FLevelLocals::DrawnLine's Light* members. A setter only: nothing hands
+// it back. A call with a non-finite number is ignored. 6 VM arguments: under the JIT's direct-call cap of 16.
+static void SetDrawnLineLight(FLevelLocals *self, int index, double radius, double intensity, int flags, double endBrightness)
+{
+	static bool badLogged = false;
+	if (!EffectArgsFinite("SetDrawnLineLight", badLogged, { radius, intensity, endBrightness }))
+		return;
+	self->SetDrawnLineLight(index, radius, intensity, flags, endBrightness);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetDrawnLineLight, SetDrawnLineLight)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(index);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(intensity);
+	PARAM_INT(flags);
+	PARAM_FLOAT(endBrightness);
+	SetDrawnLineLight(self, index, radius, intensity, flags, endBrightness);
 	return 0;
 }
 

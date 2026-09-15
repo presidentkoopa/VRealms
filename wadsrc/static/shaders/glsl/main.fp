@@ -751,6 +751,141 @@ float spotLightAttenuation(vec4 lightpos, vec3 spotdir, float lightCosInnerAngle
 	return smoothstep(lightCosOuterAngle, lightCosInnerAngle, cosDir);
 }
 
+#ifdef EFFECT_LIGHTS
+
+//===========================================================================
+//
+// [EFFECTLIGHTS] EFFECT LIGHTS ON THIS PIXEL ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"; LIGHTS_20_21_22_PLAN.md 2b, 2d,
+// 2g, 2h). Short lights that belong to no actor -- sparks, embers, impacts, tracers -- which the CPU sorts into world bins
+// around the eye once a frame, for both eyes (hw_effectlights.cpp). A pixel loops only its own bin.
+//
+// A light is a segment a -> b with a radius, seen from the closest point on it: attenuation (r - d) / r and N.L toward that
+// point. With a == b the closest point is a, and this is material_normal.fp's point light, statement for statement. A
+// residual glow (a crowded bin's merged lights) does not face. A light with a shadow-map row is blocked by walls.
+//
+// The layouts are hw_effectlightbuffer.h's; set 1 bindings 14 and 15 are in every pipeline layout (vk_descriptorset.cpp). The
+// per-draw gate uEffectLightMode is StreamData's padding2 slot, 0 on every draw that never sets it: 0 no effect light, 1 with
+// N.L (walls, flats, models), 2 without (sprites, whose normal is zero).
+//
+//===========================================================================
+
+struct EffectLightRecord
+{
+	vec4 a;			// xyz the start this frame        w radius
+	vec4 b;			// xyz the end (== a: a point)     w flags
+	vec4 color;		// rgb the light now               w shadow-map row, -1 none
+	vec4 extra;		// xyz where the row was cast from w brightness at b as a share of a's
+};
+
+layout(set = 1, binding = 14, std430) buffer readonly EffectLightSSO
+{
+	uint effectLightCount;
+	uint effectLightBinned;
+	uint effectLightResiduals;
+	uint effectLightSerial;
+	EffectLightRecord effectLights[];
+};
+
+layout(set = 1, binding = 15, std430) buffer readonly EffectLightBinSSO
+{
+	vec4 effectLightGridCorner;		// xyz bin (0, 0, 0)'s lowest corner   w the bin size
+	ivec4 effectLightGridSize;		// xyz bins a side (0: none binned)    w where the index list starts
+	uint effectLightBinData[];		// (offset << 6) | count a bin, then the index list
+};
+
+#define uEffectLightMode data[uDataIndex].padding2
+
+const int EFFECT_LIGHT_FACING = 1;
+const int EFFECT_LIGHT_ROW = 2;
+const int EFFECT_LIGHT_NOSURFACES = 8;
+const int EFFECT_LIGHT_BIN_LOOP_MAX = 32;
+
+// Walls between this pixel and where the light's row was cast from: one tap of the shadow map (one ray when ray traced).
+float EffectLightWallAttenuation(vec3 origin, float row, int mode)
+{
+#ifdef SUPPORTS_RAYTRACING
+	vec3 rayStart = pixelpos.xzy;
+	vec3 target = origin.xzy + 0.01;
+	return traceHit(rayStart, normalize(target - rayStart), distance(rayStart, target)) ? 0.0 : 1.0;
+#else
+#ifdef SUPPORTS_SHADOWMAPS
+	if (row < 0.0 || row >= 1024.0)
+		return 1.0;
+	vec3 planePoint = pixelpos.xyz - origin;
+	planePoint += 0.01;
+	if (dot(planePoint.xz, planePoint.xz) < 1.0)
+		return 1.0;
+	float v = (row + 0.5) / 1024.0;
+	if (mode == 1)
+		return sampleShadowmap(planePoint, v);
+	// A sprite has no plane to snap the ray to: the distance along the texel's own direction.
+	return step(dot(planePoint.xz, planePoint.xz), texture(ShadowMap, vec2(shadowDirToU(planePoint.xz), v)).x);
+#else
+	return 1.0;
+#endif
+#endif
+}
+
+vec3 EffectLightOnSurface(int index, vec3 p, vec3 normal, int mode)
+{
+	EffectLightRecord light = effectLights[index];
+	int flags = int(light.b.w);
+	if ((flags & EFFECT_LIGHT_NOSURFACES) != 0)
+		return vec3(0.0);
+
+	// The closest point on the segment. A point light is its own closest point, so a point takes material_normal.fp's path.
+	vec3 segment = light.b.xyz - light.a.xyz;
+	float lengthSquared = dot(segment, segment);
+	float share = lengthSquared > 0.0 ? clamp(dot(p - light.a.xyz, segment) / lengthSquared, 0.0, 1.0) : 0.0;
+	vec3 closest = share > 0.0 ? light.a.xyz + segment * share : light.a.xyz;
+
+	float lightdistance = distance(closest, p);
+	if (light.a.w < lightdistance)
+		return vec3(0.0);
+
+	float attenuation = clamp((light.a.w - lightdistance) / light.a.w, 0.0, 1.0);
+	if (mode == 1 && (flags & EFFECT_LIGHT_FACING) != 0)
+	{
+		vec3 lightdir = normalize(closest - p);
+		float dotprod = dot(normal, lightdir);
+		if (dotprod < -0.0001)
+			return vec3(0.0);
+		attenuation *= clamp(dotprod, 0.0, 1.0);
+	}
+	if (share > 0.0)
+		attenuation *= mix(1.0, light.extra.w, share);
+	if (attenuation <= 0.0)
+		return vec3(0.0);
+	if ((flags & EFFECT_LIGHT_ROW) != 0)
+		attenuation *= EffectLightWallAttenuation(light.extra.xyz, light.color.w, mode);
+	return light.color.rgb * attenuation;
+}
+
+// The effect light at p from the lights of p's bin.
+vec3 EffectLightsAt(vec3 p, vec3 normal, int mode)
+{
+	if (effectLightGridSize.x <= 0)
+		return vec3(0.0);
+	vec3 cellf = floor((p - effectLightGridCorner.xyz) / effectLightGridCorner.w);
+	if (any(lessThan(cellf, vec3(0.0))) || any(greaterThanEqual(cellf, vec3(effectLightGridSize.xyz))))
+		return vec3(0.0);
+	ivec3 cell = ivec3(cellf);
+	uint word = effectLightBinData[(cell.z * effectLightGridSize.y + cell.y) * effectLightGridSize.x + cell.x];
+	int first = effectLightGridSize.w + int(word >> 6u);
+	int count = min(int(word & 63u), EFFECT_LIGHT_BIN_LOOP_MAX);
+	int records = int(effectLightCount);
+	vec3 total = vec3(0.0);
+	for (int k = 0; k < count; k++)
+	{
+		int index = int(effectLightBinData[first + k]);
+		if (index < records)
+			total += EffectLightOnSurface(index, p, normal, mode);
+	}
+	return total;
+}
+
+#endif
+
 //===========================================================================
 //
 // Adjust normal vector according to the normal map
@@ -3863,6 +3998,12 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	{
 		color.rgb += texture(LightMap, vLightmap).rgb;
 	}
+
+#ifdef EFFECT_LIGHTS
+	// [EFFECTLIGHTS] Effect light, added like the dynamic lights below and sharing their clamp (hw_effectlightbuffer.h).
+	if (uEffectLightMode != 0)
+		color.rgb += desaturate(vec4(EffectLightsAt(pixelpos.xyz, material.Normal, uEffectLightMode), 1.0)).rgb;
+#endif
 
 	//
 	// apply dynamic lights

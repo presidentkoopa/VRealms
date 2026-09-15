@@ -77,7 +77,14 @@ unsigned PFunction::AddVariant(PPrototype *proto, TArray<uint32_t> &argflags, TA
 	variant.ArgFlags = std::move(argflags);
 	variant.ArgNames = std::move(argnames);
 	variant.Implementation = impl;
-	if (impl != nullptr) impl->Proto = proto;
+	if (impl != nullptr)
+	{
+		impl->Proto = proto;
+		// A native function's VMFunction gets its argument flags here (script functions get theirs in vmbuilder.cpp).
+		// PClass::FindVirtualIndex compares them against an override's, so without this no script can override a native
+		// virtual that takes a struct by value (passed as VARF_Ref), e.g. Actor.PuffHit(FLineTraceData).
+		impl->ArgFlags = variant.ArgFlags;
+	}
 
 	// SelfClass can differ from OwningClass, but this is variant-dependent.
 	// Unlike the owner there can be cases where different variants can have different SelfClasses.

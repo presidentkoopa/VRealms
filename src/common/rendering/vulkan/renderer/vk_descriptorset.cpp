@@ -46,6 +46,7 @@
 #include "hw_debrisframe.h"
 #include "vk_surfacedamage.h"		// [SURFACEDAMAGE] the damage atlas for fixed bindings 7 and 8 and set 1 binding 13
 #include "hw_surfacedamageframe.h"
+#include "hw_effectlightbuffer.h"		// [EFFECTLIGHTS] the effect light records and bins for set 1 bindings 14 and 15
 
 VkDescriptorSetManager::VkDescriptorSetManager(VulkanRenderDevice* fb) : fb(fb)
 {
@@ -148,6 +149,15 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 	VulkanBuffer* surfaceDamageData = surfaceDamageBound ? surfaceDamage->GetDataBuffer() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
 	SurfaceDamageStatus().Bound = surfaceDamageBound && SurfaceDamageFixedBound;
 
+	// [EFFECTLIGHTS] Bindings 14 and 15 (hw_effectlightbuffer.h): the effect light records and their world bins. Always written,
+	// the bone buffer standing in if they are somehow absent. No lump declares them outside an EFFECT_LIGHTS block, and those
+	// read a bin only on a draw the CPU side lets through.
+	EffectLightBuffer* effectLights = EffectLightBuffer::Instance();
+	VulkanBuffer* effectLightRecords = (effectLights != nullptr && effectLights->GetRecordBuffer() != nullptr) ?
+		static_cast<VkHardwareDataBuffer*>(effectLights->GetRecordBuffer())->mBuffer.get() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
+	VulkanBuffer* effectLightBins = (effectLights != nullptr && effectLights->GetBinBuffer() != nullptr) ?
+		static_cast<VkHardwareDataBuffer*>(effectLights->GetBinBuffer())->mBuffer.get() : fb->GetBufferManager()->BoneBufferSSO->mBuffer.get();
+
 	WriteDescriptors()
 		.AddBuffer(HWBufferSet.get(), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->ViewpointUBO->mBuffer.get(), 0, viewpointRange)
 		.AddBuffer(HWBufferSet.get(), 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, fb->GetBufferManager()->MatrixBuffer->UniformBuffer->mBuffer.get(), 0, sizeof(MatricesUBO))
@@ -163,6 +173,8 @@ void VkDescriptorSetManager::UpdateHWBufferSet()
 		.AddBuffer(HWBufferSet.get(), 11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debrisDefinitions)	// [DEBRISPOOL]
 		.AddBuffer(HWBufferSet.get(), 12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sectorPlaneSSO->mBuffer.get())	// [SECTORPLANES]
 		.AddBuffer(HWBufferSet.get(), 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, surfaceDamageData)	// [SURFACEDAMAGE]
+		.AddBuffer(HWBufferSet.get(), 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, effectLightRecords)	// [EFFECTLIGHTS]
+		.AddBuffer(HWBufferSet.get(), 15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, effectLightBins)	// [EFFECTLIGHTS]
 		.Execute(fb->device.get());
 }
 
@@ -535,14 +547,16 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 	// fails pipeline layout creation, so say plainly why before it does. (The fragment stage
 	// has four: lights 3, particle definitions 7, sector planes 12, [SURFACEDAMAGE] damage data 13 --
 	// Vulkan's guaranteed four.)
+	// [EFFECTLIGHTS] The effect light records and bins (14, 15) add two to both stages: eleven in the vertex stage, and six in the
+	// fragment stage -- past Vulkan's guaranteed four there too. The vertex stage's count is the larger, so one test says both.
 	{
-		const uint32_t vertexStageStorageBuffers = 9;
+		const uint32_t vertexStageStorageBuffers = 11;
 		const uint32_t allowed = fb->device->PhysicalDevice.Properties.Properties.limits.maxPerStageDescriptorStorageBuffers;
 		if (allowed < vertexStageStorageBuffers)
 		{
 			Printf(TEXTCOLOR_RED "Vulkan: this device allows %u storage buffers per shader stage, but the renderer's buffer set needs %u "
 				"in the vertex stage (bones, particle ring, drawn lines, particle definitions, view lights, mesh particles, debris pieces, "
-				"debris definitions, sector planes) -- pipeline layout creation is expected to fail on this device\n", (unsigned)allowed, (unsigned)vertexStageStorageBuffers);
+				"debris definitions, sector planes, effect light records, effect light bins) -- pipeline layout creation is expected to fail on this device\n", (unsigned)allowed, (unsigned)vertexStageStorageBuffers);
 		}
 	}
 
@@ -584,6 +598,11 @@ void VkDescriptorSetManager::CreateHWBufferSetLayout()
 		// hw_surfacedamageframe.h). Fragment only: main.fp's SURFACE_DAMAGE lookup reads it per pixel. The review's X1 table
 		// gave #17 binding 11; #9 took 11 first, so #17 takes the next free number ("Engine docs/DEBRIS_9_IMPL_NOTES.md").
 		.AddBinding(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT)
+		// [EFFECTLIGHTS] 14: the effect light records; 15: their world bins (hw_effectlightbuffer.h). Vertex and fragment: a
+		// surface reads a pixel's bin, a particle or a debris piece a vertex's. Declared in GLSL only inside EFFECT_LIGHTS
+		// blocks, so no program changed when they were added.
+		.AddBinding(14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+		.AddBinding(15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 		.DebugName("VkDescriptorSetManager.HWBufferSetLayout")
 		.Create(fb->device.get());
 }
@@ -647,7 +666,8 @@ void VkDescriptorSetManager::CreateHWBufferPool()
 		// [MESHPARTICLES] 8: and the mesh particles (9).
 		// [DEBRISPOOL] 10: and the debris pieces (10) and debris definitions (11) -- the plan's number.
 		// [SURFACEDAMAGE] 11: and the surface damage data (13).
-		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11 * maxSets)
+		// [EFFECTLIGHTS] 13: and the effect light records (14) and bins (15).
+		.AddPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 13 * maxSets)
 		.MaxSets(maxSets)
 		.DebugName("VkDescriptorSetManager.HWBufferDescriptorPool")
 		.Create(fb->device.get());

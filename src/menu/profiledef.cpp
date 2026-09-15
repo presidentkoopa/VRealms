@@ -136,6 +136,9 @@ void ProfileManager::CollectProfiles()
 
 const FCommandLineInfo *ProfileManager::GetProfileInfo(const char *profileName)
 {
+	// A fresh config has no cmdlineprofile key, so M_GetActiveProfile hands us null; comparing against it crashed at startup
+	// before any output (found by the SelacoVR lane with -config on a new ini).
+	if (profileName == nullptr) return nullptr;
 	for (int i = 0; i < cmdlineProfiles.Size(); i++)
 	{
 		if (!cmdlineProfiles[i].mName.Compare(profileName))

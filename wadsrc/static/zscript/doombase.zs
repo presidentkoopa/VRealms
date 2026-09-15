@@ -521,6 +521,16 @@ struct FSpawnParticleParams
 	native double rollacc;
 };
 
+// [EFFECTLIGHTS] The flags of LevelLocals.SpawnEffectLight and LevelLocals.SetDrawnLineLight (hw_effectlightcore.h).
+enum EEffectLightFlags
+{
+	EFL_IMPORTANT = 1,		// ranks above every ordinary light: the last to go when the budget runs out, never blended into a crowd's glow
+	EFL_NOSURFACES = 2,		// does not light walls, floors, models or sprites
+	EFL_NOSMOKE = 4,		// does not light the smoke
+	EFL_NOPARTICLES = 8,	// does not light particles or debris
+	EFL_EXACTHOLD = 32,		// a landed light keeps lighting for all of `hold`, not a varied share of it
+};
+
 struct LevelLocals native
 {
 	enum EUDMF
@@ -1273,6 +1283,31 @@ struct LevelLocals native
 	// safe from play code in a netgame. A call with a non-finite number, a zero normal or nothing to paint is
 	// ignored.
 	native clearscope void PaintSurfaceDamage(Vector3 pos, Vector3 normal, Name brush, double radius, double depth = 1.0, double soot = 0.0, double heat = 0.0, double wet = 0.0, Vector3 axis = (0,0,0));
+	// [EFFECTLIGHTS] EFFECT LIGHTS ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"): a short light that belongs to nothing -- a
+	// spark, an ember, an impact, a tracer. Fire and forget: the engine moves it smoothly at frame rate, fades it and removes it;
+	// there is nothing to keep or clear. Hundreds at once are fine: the engine sorts them into small boxes of space around the
+	// player each frame, and where too many crowd one box the extra ones blend into one glow. Walls block every point light (a
+	// line light's radius can still reach past a thin wall). Map lamps and A_AttachLight lights are not affected and keep their
+	// shadows. The player's "Effect lights" switch decides whether their machine draws them. Vulkan only.
+	// pos: where it is (a line's start -- a tracer's head). col and intensity (0..16): its light. radius (1..1024 map units): how
+	// far it reaches. life (seconds, 0.001..60): how long it lights, brightness x (1 - age / life) ^ fade (0..16; 0 = full until
+	// it goes out, 2 = a quick strobe). vel (map units per second): both ends move with it, under gravity (map units per second
+	// squared, down) and drag (per second) -- the particle flight maths, so a light given a particle's numbers rides that
+	// particle. posEnd, when not (0,0,0), makes it a LINE LIGHT from pos to posEnd (at most 8192 long): it lights along its whole
+	// length, as brightly for a long line as a short one. land (seconds, 0 = never): when it stops moving -- a hit, a landing;
+	// from then it keeps lighting for up to `hold` seconds, each light a different share of it (between a quarter and all of
+	// it; with EFL_EXACTHOLD all of it), dimming to nothing with the same fade. tailLag (0..1): the end follows the start's path
+	// this much slower -- 0 a rigid streak, 0.7 a tail that stretches out behind and then runs into where the head landed.
+	// tailBrightness (0..1): the end's brightness as a share of the start's.
+	//   A short fading streak: posEnd = pos - dir * 96, vel = the round's velocity, land = hit distance / speed, fade = 0,
+	//     hold = 0.05, tailBrightness = 0, flags = EFL_IMPORTANT.
+	//   A long comet tail: no posEnd, tailLag = 0.7, vel and land as above, fade = 0, hold = 0.3, tailBrightness = 0.2.
+	//   A glow at the head: no posEnd, vel and land as above, fade = 0, hold = 0.05.
+	//   A spark or ember that lands and cools: no posEnd, vel, gravity and drag as its particle's, land = when it lands, hold = 1.
+	// EVENTS: 512 a tic, more are dropped (logged once per map). CLEARSCOPE and ONE-WAY: nothing reads it back, it is not saved,
+	// and gameplay cannot branch on it -- safe from play code in a netgame. A call with a non-finite number, a radius under 1 or
+	// no intensity is ignored.
+	native clearscope void SpawnEffectLight(Vector3 pos, color col, double radius, double intensity = 1.0, double life = 0.1, Vector3 vel = (0,0,0), Vector3 posEnd = (0,0,0), double fade = 2.0, int flags = 0, double gravity = 0.0, double drag = 0.0, double land = 0.0, double hold = 0.0, double tailLag = 0.0, double tailBrightness = 1.0);
 
 	// [BB] Sweep -- up to eight thin bands of light travelling through the
 	// world, each tested per pixel against world position on every surface,
@@ -1745,6 +1780,13 @@ struct LevelLocals native
 	// player's pawn. Without one it is the local player's hand, which in netplay
 	// is wrong for every line that belongs to someone else.
 	native clearscope void SetDrawnLineAnchor(int index, int mode, Actor owner = null);
+	// [EFFECTLIGHTS] This drawn line also LIGHTS what is around it, along its whole length, every frame -- from the line's own
+	// interpolated or anchored ends, in its colour x its intensity x this intensity (0..16). radius (0..1024 map units): how far
+	// the light reaches; 0 turns it off. endBrightness (0..1): the brightness at the line's end as a share of its start's (a
+	// tracer drawn from its head with 0 fades its light along the streak). A drawn line's light always lights, as EFL_IMPORTANT;
+	// the EFL_NO flags apply. Walls do not block a line light. Presentation only, like the line; ClearDrawnLine forgets it.
+	// Vulkan only.
+	native clearscope void SetDrawnLineLight(int index, double radius, double intensity = 1.0, int flags = 0, double endBrightness = 1.0);
 	// Clearing forgets the slot completely, look and anchor included.
 	native clearscope void ClearDrawnLine(int index);
 	native clearscope void ClearDrawnLines();

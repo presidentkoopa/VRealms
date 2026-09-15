@@ -48,6 +48,7 @@
 #include "hw_levelfield.h"		// [LEVELFIELD] LevelField::PrepareFrame
 #include "hw_debrispool.h"		// [DEBRISPOOL] DebrisPool::PrepareFrame
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
+#include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -75,11 +76,16 @@ void CollectLights(FLevelLocals* Level)
 	IShadowMap* sm = &screen->mShadowMap;
 	int lightindex = 0;
 
+	// [EFFECTLIGHTS] The map pass also runs for effect lights while "Light shadows" is off (RenderViewpoint). Then no dynamic
+	// light takes a row: each keeps index 1024, which hw_dynlightdata.cpp and the smoke's gather read as "no row" -- exactly
+	// what they see when the pass does not run.
+	const bool dynamicLightRows = gl_light_shadowmap;
+
 	// Todo: this should go through the blockmap in a spiral pattern around the player so that closer lights are preferred.
 	for (auto light = Level->lights; light; light = light->next)
 	{
 		IShadowMap::LightsProcessed++;
-		if (light->shadowmapped && light->IsActive() && lightindex < 1024)
+		if (dynamicLightRows && light->shadowmapped && light->IsActive() && lightindex < 1024)
 		{
 			IShadowMap::LightsShadowmapped++;
 
@@ -93,6 +99,10 @@ void CollectLights(FLevelLocals* Level)
 		}
 
 	}
+
+	// [EFFECTLIGHTS] Then the point effect lights walls block, nearest the eye first, while rows remain (hw_effectlights.cpp).
+	// With none it returns lightindex unchanged.
+	lightindex = EffectLights::Get().AssignShadowRows(sm, lightindex);
 
 	for (; lightindex < 1024; lightindex++)
 	{
@@ -164,6 +174,9 @@ static void PrepareFrameCompute(FLevelLocals* Level, const FRenderViewpoint& vp,
 
 	const uint64_t serial = LevelDataSerial(Level);
 	SectorPlanes::Get().BeginFrame(Level, serial);
+	// [EFFECTLIGHTS] The frame's effect lights to the GPU: drawn-line lights (after VRMode::SetUp, for lines anchored to a hand),
+	// bins and upload. Before the smoke, which a later step lights from the same bins.
+	EffectLights::Get().PrepareFrame(Level, vp.Pos, vp.TicFrac);
 	SmokeVolume::Get().PrepareFrame(Level, vp.Pos, vp.Angles.Yaw.Radians(), vp.TicFrac, serial, input.Smoke);
 	LevelField::Get().PrepareFrame(Level, vp.Pos, serial, input.LevelField);	// [LEVELFIELD] #8
 	DebrisPool::Get().PrepareFrame(Level, serial);	// [DEBRISPOOL] #9: its frame reaches the backend through DebrisPoolFrameForBackend
@@ -204,7 +217,15 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 
 	R_SetupFrame(mainvp, r_viewwindow, camera);
 
-	if (mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && camera->Level->HasDynamicLights && gl_light_shadowmap)
+	// [EFFECTLIGHTS] This frame's effect lights, once, before the shadow map: the queue drained, every light at this frame's
+	// level time, the pool capped, and the point lights walls block put in row order (hw_effectlights.h). True when they want
+	// shadow-map rows, so the map pass runs for them too -- and with "Light shadows" off it then gives no dynamic light a row
+	// (CollectLights). False with no effect light: the condition below is then exactly what it was.
+	const bool effectLightRows = mainview && toscreen &&
+		EffectLights::Get().BeginFrame(camera->Level, mainvp.Pos, mainvp.Angles.Yaw.Radians(), mainvp.TicFrac, LevelDataSerial(camera->Level),
+			!(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && camera->Level->aabbTree != nullptr);
+
+	if (mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && ((camera->Level->HasDynamicLights && gl_light_shadowmap) || effectLightRows))
 	{
 		screen->SetAABBTree(camera->Level->aabbTree);
 		screen->mShadowMap.SetCollectLights([=] {

@@ -633,6 +633,28 @@ struct FSurfaceDamagePaintEvent
 	double   Wet = 0.;
 };
 
+// [EFFECTLIGHTS] One SpawnEffectLight ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"): a short light that belongs to nothing,
+// at Pos -- or along the segment to End, which is Pos for a point -- moving with Vel. Map units and seconds; Color is the call's
+// colour. Clamped by the native (vmthunks.cpp); the renderer moves, fades, lands and bins it (hw_effectlights.cpp).
+struct FEffectLightEvent
+{
+	DVector3 Pos{ 0., 0., 0. };
+	DVector3 End{ 0., 0., 0. };
+	DVector3 Vel{ 0., 0., 0. };
+	double   Radius = 0.;
+	double   Intensity = 1.;
+	double   Life = 0.1;
+	double   Fade = 2.;
+	double   Gravity = 0.;
+	double   Drag = 0.;
+	double   Land = 0.;
+	double   Hold = 0.;
+	double   TailLag = 0.;
+	double   TailBrightness = 1.;
+	uint32_t Color = 0xffffffff;
+	int      Flags = 0;
+};
+
 struct FLevelLocals
 {
 	void *level;
@@ -1613,6 +1635,10 @@ public:
 	// [SURFACEDAMAGE] PaintSurfaceDamage calls per tic (SH4's number for #17): a Super Shotgun blast into a wall is 20.
 	static constexpr int MAX_SURFACE_DAMAGE_PAINTS_PER_TIC = 128;
 	FEffectTicQueue<FSurfaceDamagePaintEvent, MAX_SURFACE_DAMAGE_PAINTS_PER_TIC> SurfaceDamagePaints;	// [SURFACEDAMAGE] written by PaintSurfaceDamage
+	// [EFFECTLIGHTS] SpawnEffectLight calls per tic ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"): a BFG spray is about 160
+	// lights over ten tics, a Super Shotgun volley's impacts about 20 a tic.
+	static constexpr int MAX_EFFECT_LIGHTS_PER_TIC = 512;
+	FEffectTicQueue<FEffectLightEvent, MAX_EFFECT_LIGHTS_PER_TIC> EffectLightSpawns;	// [EFFECTLIGHTS] written by SpawnEffectLight
 
 	// P_Ticker, at the top of this level's tic, before any writer runs.
 	void BeginEffectTic()
@@ -1622,6 +1648,7 @@ public:
 		EffectImpulses.BeginTic(maptime);
 		DebrisBursts.BeginTic(maptime);
 		SurfaceDamagePaints.BeginTic(maptime);	// [SURFACEDAMAGE]
+		EffectLightSpawns.BeginTic(maptime);	// [EFFECTLIGHTS]
 	}
 
 	// ClearLevelData. maptime restarts at 0 on the new map.
@@ -1632,6 +1659,7 @@ public:
 		EffectImpulses.Reset(0);
 		DebrisBursts.Reset(0);
 		SurfaceDamagePaints.Reset(0);	// [SURFACEDAMAGE]
+		EffectLightSpawns.Reset(0);	// [EFFECTLIGHTS]
 	}
 
 	// [DEBRISPOOL] Raised by ClearGpuParticles: the renderer's debris pool empties, as the ring does. A new
@@ -2638,6 +2666,13 @@ public:
 		double   TurbulenceStrength = 0.0;
 		double   TurbulenceScale = 0.05;     // noise cells per map unit
 		double   TurbulenceSpeed = 1.5;      // noise cells per second, rising
+		// [EFFECTLIGHTS] The LIGHT this line throws on what is around it ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"), off
+		// until SetDrawnLineLight: a line light along the line's own interpolated or anchored ends, every frame, in the line's
+		// colour x Intensity x LightIntensity (hw_effectlights.cpp). LightRadius 0 is off. The line's look does not change.
+		double   LightRadius = 0.0;          // map units
+		double   LightIntensity = 1.0;
+		double   LightEndBrightness = 1.0;   // the brightness at End as a share of the brightness at Start
+		int      LightFlags = 0;             // EFL_ (doombase.zs)
 		int      Anchor = 0;             // as BeamAnchor: 0 world, 1 main hand, 2 off hand
 		// Whose hand. -1 is the console player -- BeamAnchor's rule, which in
 		// netplay puts everyone's line at each viewer's own hand. A player number
@@ -2725,6 +2760,18 @@ public:
 		if (l == nullptr) return;
 		l->Anchor = (mode < 0 || mode > 2) ? 0 : mode;
 		l->AnchorPlayer = (playerNum >= 0 && playerNum < MAXPLAYERS) ? playerNum : -1;
+	}
+
+	// [EFFECTLIGHTS] See DrawnLine's Light* members. A setter only, like the looks: nothing hands a line's light back to
+	// script. Radius 0..1024 map units (0 turns it off), intensity 0..16, endBrightness 0..1; !(x >= 0) also catches NaN.
+	void SetDrawnLineLight(int index, double radius, double intensity, int flags, double endBrightness)
+	{
+		DrawnLine *l = DrawnLineForWrite(index);
+		if (l == nullptr) return;
+		l->LightRadius = !(radius >= 0.0) ? 0.0 : clamp(radius, 0.0, 1024.0);
+		l->LightIntensity = !(intensity >= 0.0) ? 0.0 : clamp(intensity, 0.0, 16.0);
+		l->LightEndBrightness = !(endBrightness >= 0.0) ? 0.0 : clamp(endBrightness, 0.0, 1.0);
+		l->LightFlags = flags;
 	}
 
 	// Clearing FORGETS the slot, look and anchor included, for the reason a dark

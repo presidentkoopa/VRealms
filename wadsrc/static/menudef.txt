@@ -2285,6 +2285,28 @@ OptionMenu DeveloperOptionsMenu protected
 	Option "Wall damage test (paints where you look)", "r_damage_test", "OnOff"
 	// [SURFACEDAMAGE] The brushes and looks DAMAGEDEFS loaded, and what the damage memory holds, to the log.
 	Command "List damage brushes and looks (to the log)", "damagebrushes"
+	// [EFFECTLIGHTS] r_effectlights -- "Effect lights" ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"): short lights that belong to
+	// no actor -- sparks, embers, impacts, tracers -- light what is around them, moving smoothly at frame rate. On by default;
+	// nothing is done until a mod spawns one. Off: none is drawn. Map lamps and dynamic-light weapon flashes are not affected.
+	// Read by the renderer every frame. Vulkan only.
+	Option "Effect lights", "r_effectlights", "OnOff"
+	// [EFFECTLIGHTS] r_effectlights_max -- how many can be alive at once. Past it the small, far, faded ones go first; lights a
+	// mod marks important (flashes, tracers) go last, and drawn-line lights always light.
+	Option "Effect light budget", "r_effectlights_max", "EffectLightBudgets"
+	// [EFFECTLIGHTS] r_effectlights_perbin -- how many lights one small box of space lights with before the rest blend into one
+	// glow. Higher is more exact and costs more per pixel. Read by the renderer every frame.
+	Slider "Effect lights per box (the rest blend into a glow)", "r_effectlights_perbin", 2, 32, 1, 0
+	// [EFFECTLIGHTS] r_effectlights_quality -- the size of those boxes: 1 = 64, 2 = 32 (default), 3 = 24 map units.
+	Slider "Effect light boxes (1 = 64, 2 = 32, 3 = 24 map units)", "r_effectlights_quality", 1, 3, 1, 0
+	// [EFFECTLIGHTS] r_effectlights_distance -- effect lights farther than this from you do not light.
+	Slider "Effect light distance (map units)", "r_effectlights_distance", 128, 1536, 64, 0
+	// [EFFECTLIGHTS] r_effectlights_walls -- walls block effect lights: each point light takes a row of the shadow map, which then
+	// runs even with light shadows off. Off is cheaper, and a spark behind a thin wall lights your side. On by default.
+	Option "Walls block effect lights", "r_effectlights_walls", "OnOff"
+	// [EFFECTLIGHTS] r_effectlights_test -- a test, not a setting: about this many sparks alive ahead of you (half of them land
+	// and hold), and a line light crossing the view twice a second. They spray only while the game runs: close the menu to see
+	// them. Not saved. Vulkan only.
+	Slider "Effect light test (0 = off)", "r_effectlights_test", 0, 1024, 50, 0
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
@@ -2562,6 +2584,17 @@ OptionValue "Particles"
 }
 
 // [DEBRISPOOL] r_debris_pool's sizes (Developer options, "Debris pieces"), with their memory on the GPU: 176 bytes a piece.
+// [EFFECTLIGHTS] r_effectlights_max
+OptionValue "EffectLightBudgets"
+{
+	128, "128"
+	256, "256"
+	512, "512"
+	1024, "1,024 (default)"
+	2048, "2,048"
+	4096, "4,096"
+}
+
 OptionValue "DebrisPoolSizes"
 {
 	4096, "4,096 (0.7 MB)"

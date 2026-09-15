@@ -37,6 +37,7 @@
 #include "hw_cvars.h"
 #include "hwrenderer/postprocessing/hw_postprocess.h"	// [LIGHTMASK] the frame's light mask decision
 #include "hw_drawnlinebuffer.h"
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightStats
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
@@ -57,6 +58,13 @@ EXTERN_CVAR(Bool, r_debris)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Float, r_debris_life)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Int, r_debris_pool)	// [DEBRISPOOL] hw_debrispool.cpp
 EXTERN_CVAR(Bool, r_debris_test)	// [DEBRISPOOL] hw_debrispool.cpp
+EXTERN_CVAR(Bool, r_effectlights)	// [EFFECTLIGHTS] hw_effectlights.cpp
+EXTERN_CVAR(Int, r_effectlights_max)
+EXTERN_CVAR(Int, r_effectlights_quality)
+EXTERN_CVAR(Int, r_effectlights_perbin)
+EXTERN_CVAR(Float, r_effectlights_distance)
+EXTERN_CVAR(Bool, r_effectlights_walls)
+EXTERN_CVAR(Int, r_effectlights_test)
 EXTERN_CVAR(Bool, r_debris_sounds)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Float, r_debris_sounds_volume)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Bool, r_damage)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
@@ -169,6 +177,7 @@ namespace
 		int64_t DlightsSum = 0;
 		int DlightsMax = 0;
 		int64_t SpritesSum = 0, WallsSum = 0, FlatsSum = 0;
+		EffectLightFrameStats EffectLightsMax;	// [EFFECTLIGHTS] each number's largest frame in the window
 	};
 
 	Window W;
@@ -200,6 +209,7 @@ namespace
 		W.DlightsSum = 0;
 		W.DlightsMax = 0;
 		W.SpritesSum = W.WallsSum = W.FlatsSum = 0;
+		W.EffectLightsMax = EffectLightFrameStats();	// [EFFECTLIGHTS]
 		W.StartNs = now;
 		if (restartClock) W.LastFrameNs = 0;
 	}
@@ -248,6 +258,14 @@ namespace
 				"level check of the earliest, and starting the sounds that are due. fx.damagepaint is the surface damage atlas: "
 				"on gpu_ms its stamps, cooling and mip rebuilds (frames with damage work, inside fx.compute); on cpu_fx_ms its "
 				"paint traces, cell cover, tiles, anchors and dispatch lists (every frame while damage is held).\n\n";
+			// [EFFECTLIGHTS] The effect light names, on a legend line of their own.
+			out << "Legend (effect lights): fx.effectlights (cpu_fx_ms) is effect lights' CPU work each frame while they are on: "
+				"the queue, moving and ranking the lights, and the bins and their upload. load effectlights=live/binned/merged/evicted "
+				"is each number's largest frame in the window: lights alive (fire-and-forget and drawn-line lights), lights binned, "
+				"crowded bins blended into one glow, and lights evicted or refused because the pool was full. effectlightrows is the "
+				"shadow-map rows they took (walls block them; the map pass then runs even with light shadows off, and shows as gpu_ms "
+				"shadowmap); effectlightlines the line lights binned; effectlightsdropped=norow/trimmed the lights not lit because the "
+				"rows ran out or the bins' index list was full.\n\n";
 			HeaderWritten = true;
 		}
 
@@ -302,6 +320,10 @@ namespace
 		out.AppendFormat(" r_damage=%d r_damage_memory=%d r_damage_heat=%d r_damage_soot_scale=%g r_damage_depth_scale=%g r_damage_heat_scale=%g r_damage_test=%d",
 			(int)*r_damage, (int)*r_damage_memory, (int)*r_damage_heat, (double)(float)*r_damage_soot_scale, (double)(float)*r_damage_depth_scale,
 			(double)(float)*r_damage_heat_scale, (int)*r_damage_test);
+		// [EFFECTLIGHTS] And the effect light switches, so a fx.effectlights / scene.* / shadowmap before/after labels itself.
+		out.AppendFormat(" r_effectlights=%d r_effectlights_max=%d r_effectlights_quality=%d r_effectlights_perbin=%d r_effectlights_distance=%g r_effectlights_walls=%d r_effectlights_test=%d",
+			(int)*r_effectlights, (int)*r_effectlights_max, (int)*r_effectlights_quality, (int)*r_effectlights_perbin,
+			(double)(float)*r_effectlights_distance, (int)*r_effectlights_walls, (int)*r_effectlights_test);
 		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
 		// (lightmask: 1 while the scene draws the mask this frame).
 		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",
@@ -338,9 +360,13 @@ namespace
 		if (anyCpuFx) out << "\n";
 
 		const double n = frames > 0 ? (double)frames : 1.0;
-		out.AppendFormat("load    particles_spawned=%llu drawnlines_live=%u beams=%d stamps_live=%d disturb_live=%d dlights=%.0f/%d sprites=%.0f walls=%.0f flats=%.0f\n\n",
+		out.AppendFormat("load    particles_spawned=%llu drawnlines_live=%u beams=%d stamps_live=%d disturb_live=%d dlights=%.0f/%d sprites=%.0f walls=%.0f flats=%.0f",
 			(unsigned long long)W.ParticlesSpawned, W.DrawnLinesMax, W.BeamsMax, W.StampsMax, W.DisturbMax,
 			W.DlightsSum / n, W.DlightsMax, W.SpritesSum / n, W.WallsSum / n, W.FlatsSum / n);
+		// [EFFECTLIGHTS] The effect light load, on the same line.
+		out.AppendFormat(" effectlights=%d/%d/%d/%d effectlightrows=%d effectlightlines=%d effectlightsdropped=%d/%d\n\n",
+			W.EffectLightsMax.Live, W.EffectLightsMax.Binned, W.EffectLightsMax.Merged, W.EffectLightsMax.Evicted,
+			W.EffectLightsMax.Rows, W.EffectLightsMax.Lines, W.EffectLightsMax.NoRow, W.EffectLightsMax.Trimmed);
 
 		FILE* f = fopen("perflog.txt", "at");
 		if (f != nullptr)
@@ -572,6 +598,19 @@ void PerfLog::EndFrame(const SceneLoad& load)
 	W.SpritesSum += rendered_sprites;
 	W.WallsSum += rendered_lines;
 	W.FlatsSum += rendered_flats;
+	// [EFFECTLIGHTS] This frame's effect light load (hw_effectlights.cpp): each number's largest frame.
+	{
+		const EffectLightFrameStats& e = EffectLightStats();
+		EffectLightFrameStats& m = W.EffectLightsMax;
+		if (e.Live > m.Live) m.Live = e.Live;
+		if (e.Binned > m.Binned) m.Binned = e.Binned;
+		if (e.Merged > m.Merged) m.Merged = e.Merged;
+		if (e.Evicted > m.Evicted) m.Evicted = e.Evicted;
+		if (e.NoRow > m.NoRow) m.NoRow = e.NoRow;
+		if (e.Trimmed > m.Trimmed) m.Trimmed = e.Trimmed;
+		if (e.Rows > m.Rows) m.Rows = e.Rows;
+		if (e.Lines > m.Lines) m.Lines = e.Lines;
+	}
 
 	if (now - W.StartNs >= (uint64_t)seconds * 1000000000ull)
 	{

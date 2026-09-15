@@ -43,6 +43,7 @@
 #include "hw_viewlightbuffer.h"	// [VIEWLIGHTS] the dynamic lights in view, for lit particles
 #include "hw_meshparticles.h"	// [MESHPARTICLES] mesh particles: their sync, the view light gate, the opaque-pass draw
 #include "hw_debrispool.h"	// [DEBRISPOOL] the debris pool: its gates and its two draws
+#include "hw_effectlights.h"	// [EFFECTLIGHTS] ResolveDrawnLineEnds is declared there
 #include "a_dynlight.h"	// [VIEWLIGHTS] FDynamicLight, walked to fill it
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
 #include "hw_smokevolume.h"	// [SMOKEVOLUME] SmokeVolume::GetDrawState, for SetupSmokeVolume
@@ -353,6 +354,34 @@ static void SyncDrawnLines(FLevelLocals *Level, double viewTicFrac)
 	}
 
 	lines->Upload(DrawnLineScratch.Data(), n, routed);
+}
+
+//==========================================================================
+//
+// [EFFECTLIGHTS] Where drawn line `index` is this frame, for the light it throws (SetDrawnLineLight, hw_effectlights.cpp).
+// SyncDrawnLines' own interpolation and anchor, statement for statement, so the light sits exactly on the line it draws
+// ("Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md" checks that the two agree). Game space out. Read-only.
+//
+//==========================================================================
+
+bool ResolveDrawnLineEnds(FLevelLocals *Level, int index, double viewTicFrac, DVector3 &a, DVector3 &b)
+{
+	if (Level == nullptr || index < 0 || index >= Level->DrawnLineHigh || (unsigned)index >= Level->DrawnLines.Size())
+		return false;
+	const FLevelLocals::DrawnLine &l = Level->DrawnLines[index];
+	if (!l.Live)
+		return false;
+
+	const double ticFrac = r_beam_interpolate ? viewTicFrac : 1.0;
+
+	// The beam slots' rule, per line: lerp only a line that was lit last
+	// tic and still is.
+	const bool lerpable = l.PrevLive && l.PrevIntensity > 0.0 && l.Intensity > 0.0;
+	const double f = lerpable ? ticFrac : 1.0;
+	a = l.PrevStart + (l.Start - l.PrevStart) * f;
+	b = l.PrevEnd + (l.End - l.PrevEnd) * f;
+	ResolveLineAnchor(Level, l.Anchor, a, l.AnchorPlayer);
+	return true;
 }
 
 //==========================================================================
