@@ -533,6 +533,15 @@ void IQMModel::RenderFrame(FModelRenderer* renderer, FGameTexture* skin, int fra
 	FGameTexture* lastSkin = nullptr;
 	for (unsigned i = 0; i < Meshes.Size(); i++)
 	{
+		// RS FORK -- A HIDDEN SURFACE (model.h FModelSurfaceOverride, Actor.SetModelSurfaceHidden) is a mesh not drawn at all:
+		// a rig's own arms, an attachment switched off. Only `hidden` is read here; a skinned mesh's pose and place are its
+		// bones', so the frame and transform fields of an override mean nothing to it. No override list: drawn as before.
+		if (surfov != nullptr)
+		{
+			const FModelSurfaceOverride* ov = surfov->Find((int)i);
+			if (ov != nullptr && ov->hidden) continue;
+		}
+
 		FGameTexture* meshSkin = skin;
 
 		if (!meshSkin)

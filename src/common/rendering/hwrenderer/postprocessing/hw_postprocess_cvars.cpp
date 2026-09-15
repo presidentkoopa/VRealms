@@ -264,10 +264,37 @@ CUSTOM_CVAR(Int, r_lightmask_debug, 0, 0)
 // r_smoke_steps: the most samples one view ray takes through the smoke, 16..128. They are spread over
 // only the stretch of the ray that crosses tiles holding smoke, so a small cloud in a big room gets
 // every one. More is smoother and makes pp.smoke cost more.
-CUSTOM_CVARD(Int, r_smoke_steps, 48, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the most samples a view ray takes through the smoke volume, 16-128 (Vulkan only)")
+CUSTOM_CVARD(Int, r_smoke_steps, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the most samples a view ray takes through the smoke volume, 16-128 (Vulkan only)")
 {
 	if (self < 16) self = 16;
 	if (self > 128) self = 128;
+}
+
+EXTERN_CVAR(Bool, r_smoke)					// hw_cvars.cpp
+EXTERN_CVAR(Int, r_smoke_quality)			// hw_cvars.cpp
+EXTERN_CVAR(Int, r_smoke_light_quality)	// hw_smokevolume.cpp
+
+// r_smoke_preset: one dial for the smoke volume's cost and look -- 0 Off, 1 Plain, 2 Normal, 3 Heavy, 4 Extreme. Moving it sets
+// r_smoke, r_smoke_quality, r_smoke_steps and r_smoke_light_quality together; renderer-read, so it applies with the menu open.
+// NOINITCALL: a saved preset never overwrites per-cvar tweaks at startup -- only a change applies. Any mod's menu may point at it
+// (RS_Ballistics' Smoke dial does). Plain and Normal keep quality 1; Heavy and Extreme use quality 2.
+CUSTOM_CVARD(Int, r_smoke_preset, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "smoke preset: 0 off, 1 plain, 2 normal, 3 heavy, 4 extreme (sets r_smoke, r_smoke_quality, r_smoke_steps, r_smoke_light_quality)")
+{
+	if (self < 0) { self = 0; return; }
+	if (self > 4) { self = 4; return; }
+	static const int quality[5] = { 1, 1, 1, 2, 2 };
+	static const int steps[5] = { 32, 16, 24, 32, 48 };
+	static const int lightQuality[5] = { 1, 1, 1, 2, 3 };
+	int p = self;
+	if (p == 0)
+	{
+		r_smoke = false;
+		return;
+	}
+	r_smoke = true;
+	r_smoke_quality = quality[p];
+	r_smoke_steps = steps[p];
+	r_smoke_light_quality = lightQuality[p];
 }
 
 // r_smoke_density_scale: the player's "Smoke density". It multiplies how strongly smoke hides what is

@@ -1916,6 +1916,11 @@ class Actor : Thinker native
 	// model at all. Works on plain MD3 props -- unlike the bone entry points,
 	// these do not require decoupled animations, because a surface is not a
 	// bone and a weapon prop usually has no skeleton whatsoever.
+	//
+	// ON A RIGGED IQM each mesh is a surface, named as in the file (surface index = mesh index). Only
+	// SetModelSurfaceHidden applies to one -- hide a rig's own arms mesh, or an attachment. Its meshes are
+	// placed by their bones, so SetModelSurfacePos, SetModelSurfaceOffset and the surface drives do nothing
+	// there: move a rigged part by its joint.
 	native int  FindModelSurfaceIndex(int modelindex, Name surface);
 	native int  GetModelSurfaceCount(int modelindex);
 	native Name GetModelSurfaceName(int modelindex, int surface);

@@ -139,6 +139,20 @@ public:
 	void RenderFrame(FModelRenderer* renderer, FGameTexture* skin, int frame, int frame2, double inter, FTranslationID translation, const FTextureID* surfaceskinids, int boneStartPosition, const FModelSurfaceOverrideList* surfov) override;
 	void BuildVertexBuffer(FModelRenderer* renderer) override;
 	void AddSkins(uint8_t* hitlist, const FTextureID* surfaceskinids) override;
+
+	// RS FORK -- AN IQM'S MESHES ARE ITS SURFACES, for the surface queries and the hidden flag only.
+	//
+	// Surface index = mesh index (the order RenderFrame draws them in, and SurfaceSkin's index); name = the mesh's own
+	// name in the file. So FindModelSurfaceIndex, GetModelSurfaceCount / GetModelSurfaceName and SetModelSurfaceHidden work
+	// on a rigged model: hide a rig's own arms mesh, or switch an attachment off. Frame and transform overrides do NOT
+	// apply -- a skinned mesh is placed by its bones, so a rigged part moves by its joint. Before this an IQM answered 0
+	// surfaces. No MD3-only reader sees the change: PARTICLEDEFS refuses any mesh that is not an IDP3 file at load
+	// (particledefs.cpp ReadParticleMesh), so mesh particles and the debris pool never resolve an IQM.
+	int   GetSurfaceCount() override { return (int)Meshes.Size(); }
+	FName GetSurfaceName(int surface) override
+	{
+		return (surface >= 0 && (unsigned)surface < Meshes.Size()) ? FName(Meshes[surface].Name.GetChars()) : FName(NAME_None);
+	}
 	const TArray<TRS>* AttachAnimationData() override;
 
 	ModelAnimFrame PrecalculateFrame(const ModelAnimFrame &from, const ModelAnimFrameInterp &to, float inter, const TArray<TRS>* animationData) override;
