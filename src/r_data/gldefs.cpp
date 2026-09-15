@@ -184,6 +184,7 @@ static const char *LightTags[]=
    "dontlightothers",
    "dontlightmap",
    "intensity",
+   "castshadow",	// [LIGHTSHADOWS] LF_CASTSHADOW (a_dynlight.h)
    nullptr
 };
 
@@ -211,6 +212,7 @@ enum {
    LIGHTTAG_DONTLIGHTOTHERS,
    LIGHTTAG_DONTLIGHTMAP,
    LIGHTTAG_INTENSITY,
+   LIGHTTAG_CASTSHADOW,	// [LIGHTSHADOWS]
 };
 
 //==========================================================================
@@ -490,6 +492,9 @@ class GLDefsParser
 					intVal = clamp<int>(ParseInt(sc), 1, 1024);
 					defaults->SetArg(LIGHT_INTENSITY, intVal);
 					break;
+				case LIGHTTAG_CASTSHADOW:	// [LIGHTSHADOWS] the light asks to cast shadows; gl_light_castshadows decides
+					defaults->SetCastShadow(ParseInt(sc) != 0);
+					break;
 				case LIGHTTAG_SUBTRACTIVE:
 					defaults->SetSubtractive(ParseInt(sc) != 0);
 					break;
@@ -597,6 +602,9 @@ class GLDefsParser
 				case LIGHTTAG_INTERVAL:
 					floatVal = ParseFloat(sc);
 					defaults->SetParameter(floatVal * TICRATE);
+					break;
+				case LIGHTTAG_CASTSHADOW:	// [LIGHTSHADOWS] the light asks to cast shadows; gl_light_castshadows decides
+					defaults->SetCastShadow(ParseInt(sc) != 0);
 					break;
 				case LIGHTTAG_SUBTRACTIVE:
 					defaults->SetSubtractive(ParseInt(sc) != 0);
@@ -706,6 +714,9 @@ class GLDefsParser
 					floatVal = ParseFloat(sc);
 					defaults->SetParameter(floatVal*360.);
 					break;
+				case LIGHTTAG_CASTSHADOW:	// [LIGHTSHADOWS] the light asks to cast shadows; gl_light_castshadows decides
+					defaults->SetCastShadow(ParseInt(sc) != 0);
+					break;
 				case LIGHTTAG_SUBTRACTIVE:
 					defaults->SetSubtractive(ParseInt(sc) != 0);
 					break;
@@ -813,6 +824,9 @@ class GLDefsParser
 					floatVal = ParseFloat(sc);
 					defaults->SetParameter(floatVal * 360.);
 					break;
+				case LIGHTTAG_CASTSHADOW:	// [LIGHTSHADOWS] the light asks to cast shadows; gl_light_castshadows decides
+					defaults->SetCastShadow(ParseInt(sc) != 0);
+					break;
 				case LIGHTTAG_SUBTRACTIVE:
 					defaults->SetSubtractive(ParseInt(sc) != 0);
 					break;
@@ -916,6 +930,9 @@ class GLDefsParser
 				case LIGHTTAG_SCALE:
 					floatVal = ParseFloat(sc);
 					defaults->SetArg(LIGHT_INTENSITY, clamp((int)(floatVal * 255), 1, 1024));
+					break;
+				case LIGHTTAG_CASTSHADOW:	// [LIGHTSHADOWS] the light asks to cast shadows; gl_light_castshadows decides
+					defaults->SetCastShadow(ParseInt(sc) != 0);
 					break;
 				case LIGHTTAG_SUBTRACTIVE:
 					defaults->SetSubtractive(ParseInt(sc) != 0);

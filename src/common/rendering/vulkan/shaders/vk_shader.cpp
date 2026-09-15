@@ -1055,6 +1055,10 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadVertShader(FString shadername
 	code << "#define VERTEX_SHADER\n";
 	code << defines;
 	code << "\n#define MAX_STREAM_DATA " << std::to_string(MAX_STREAM_DATA).c_str() << "\n";
+	// [EFFECTLIGHTS] The GPU particle and mesh particle vertex programs light their pieces from the effect light bins (set 1
+	// bindings 14 and 15, vertex stage) inside #ifdef EFFECT_LIGHTS: the particle step's blocks in those two lumps
+	// ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"). No other vertex program defines it, so every other one is exactly what it was.
+	if (vert_lump != nullptr && (FString(vert_lump).Compare("shaders/glsl/gpuparticles.vp") == 0 || FString(vert_lump).Compare("shaders/glsl/meshparticles.vp") == 0)) code << "#define EFFECT_LIGHTS\n";
 #ifdef NPOT_EMULATION
 	code << "#define NPOT_EMULATION\n";
 #endif
@@ -1098,6 +1102,11 @@ std::unique_ptr<VulkanShader> VkShaderManager::LoadFragShader(FString shadername
 	// programs of that lump define it, so GL's and GLES's main.fp never compile the lookup, and every other lump's program is
 	// exactly what it was. Its bindings (fixed 7 and 8, set 1 13) are in every pipeline layout (vk_descriptorset.cpp).
 	if (frag_lump != nullptr && FString(frag_lump).Compare("shaders/glsl/main.fp") == 0) code << "#define SURFACE_DAMAGE\n";
+	// [EFFECTLIGHTS] main.fp's effect lights on walls, flats, sprites and models ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"; the
+	// block itself is the core's, "Engine docs/EFFECT_LIGHTS_CORE_IMPL_NOTES.md"). Only this backend's programs of that lump define
+	// it, as SURFACE_DAMAGE, so GL's and GLES's main.fp never compile the lookup and every other lump's program is exactly what it
+	// was. Its bindings (set 1 14 and 15) are in every pipeline layout; a draw turns it on with FRenderState::SetEffectLightMode.
+	if (frag_lump != nullptr && FString(frag_lump).Compare("shaders/glsl/main.fp") == 0) code << "#define EFFECT_LIGHTS\n";
 
 	// [2a] Only an effect's scene-depth variant gets the scene depth declaration;
 	// see sceneDepthBindings. After the prolog, so it can use HW_VIEWPOINT_INDEX

@@ -246,6 +246,8 @@ private:
 	VkRenderBuffers *mActiveRenderBuffers = nullptr;
 
 	bool mVSync = false;
+	// [LIGHTSHADOWS] Ray-traced light shadows for this device's whole life, decided once in the constructor (RaytracingEnabled).
+	bool mRaytraceShadows = false;
 	bool mXRFrameBeganThisFrame = false;
 	int mCurrentEyeIndex = 0;
 	int mEyeFinalPipelineImage[2] = { 0, 2 };

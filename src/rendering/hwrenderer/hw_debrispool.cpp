@@ -42,6 +42,10 @@
 #include "v_video.h"
 #include "i_time.h"
 #include "printf.h"
+#include "r_defs.h"				// [PARTICLELIGHTS] sectors, planes and lines, for a light's landing through the level
+#include "hw_particlelights.h"		// [PARTICLELIGHTS] which pieces throw light, and their lights
+#include "hw_effectlights.h"			// [PARTICLELIGHTS] EffectLights::Spawn
+#include "hw_effectlightbuffer.h"		// [PARTICLELIGHTS] EffectLightBuffer::Instance
 #include "r_utility.h"	// [DEBRISSOUNDS] r_viewpoint.TicFrac: the landing sounds' clock is the draw's
 
 // [DEBRISPOOL] r_debris -- "Debris that stays" ("Engine docs/COLLISION_DEBRIS_MESH_PLAN.md" #9). ON BY DEFAULT (owner,
@@ -68,6 +72,11 @@ CUSTOM_CVARD(Int, r_debris_pool, DEBRIS_POOL_DEFAULT, CVAR_ARCHIVE | CVAR_GLOBAL
 // (restitution 0.3, friction 0.5; a mesh rests 10 seconds, a billboard never rests), so the pool can be judged on a mod's
 // existing chunks and sparks before any definition says `restitution`. Not archived.
 CVARD(Bool, r_debris_test, false, CVAR_GLOBALCONFIG, "collide = level particles without restitution go to the debris pool too, with test keys -- a test of the pool (Vulkan only)")
+
+// [PARTICLELIGHTS] Read for a burst's lights.
+EXTERN_CVAR(Bool, r_effectlights)			// hw_effectlights.cpp
+EXTERN_CVAR(Bool, r_particlelights_test)	// hw_gpuparticlebuffer.cpp
+EXTERN_CVAR(Bool, r_particlecollision)		// hw_levelfield.cpp: while off, the step collides with the spawn's plane only
 
 namespace
 {
@@ -108,6 +117,178 @@ namespace
 	float MeshRandom(uint32_t seedBits, uint32_t stream)
 	{
 		return (float)(FLevelLocals::GpuParticleHash(seedBits ^ FLevelLocals::GpuParticleHash(stream * 0x9e3779b9U + 0x68bc21ebU)) >> 8) / 16777216.0f;
+	}
+
+	// [PARTICLELIGHTS] DebrisLanding::TraceLanding's questions for a piece's light, answered from the level read-only: hw_debrislanding.cpp's
+	// UnitNormal and LevelQuery, token for token (that file keeps them in its own unnamed namespace).
+	using DebrisLanding::V3;
+
+	// A sector plane's unit normal (Doom axes); a degenerate plane counts as flat, facing zSign.
+	V3 UnitNormal(const secplane_t& plane, double zSign)
+	{
+		const DVector3& n = plane.Normal();
+		const double l = n.Length();
+		if (!(l > 1.0e-12))
+			return { 0.0, 0.0, zSign };
+		return { n.X / l, n.Y / l, n.Z / l };
+	}
+
+	// DebrisLanding::TraceLanding's questions, answered from the level READ-ONLY: a BSP walk (PointInSector), sector planes and
+	// a sector's own line list. No validcount, nothing written. A sector's handle is its index in Level->sectors.
+	struct LevelQuery
+	{
+		FLevelLocals* Level = nullptr;
+
+		intptr_t SectorAt(double x, double y) const
+		{
+			sector_t* sector = Level->PointInSector(x, y);
+			return sector != nullptr ? (intptr_t)sector->sectornum : -1;
+		}
+
+		double FloorAt(intptr_t index, double x, double y, V3& normal) const
+		{
+			const secplane_t& plane = Level->sectors[(unsigned)index].floorplane;
+			normal = UnitNormal(plane, 1.0);
+			return plane.ZatPoint(DVector2(x, y));
+		}
+
+		double CeilingAt(intptr_t index, double x, double y, V3& normal) const
+		{
+			const secplane_t& plane = Level->sectors[(unsigned)index].ceilingplane;
+			normal = UnitNormal(plane, -1.0);
+			return plane.ZatPoint(DVector2(x, y));
+		}
+
+		bool FirstCrossing(intptr_t index, double x0, double y0, double x1, double y1, DebrisLanding::Crossing& crossing) const
+		{
+			sector_t* sector = &Level->sectors[(unsigned)index];
+			const double dx = x1 - x0;
+			const double dy = y1 - y0;
+			bool found = false;
+			for (line_t* line : sector->Lines)
+			{
+				if (line == nullptr || line->v1 == nullptr)
+					continue;
+				sector_t* beyond = line->frontsector == sector ? line->backsector : line->frontsector;
+				if (beyond == sector)
+					continue;    // this sector on both sides: nothing to stop at
+				const DVector2 start = line->v1->fPos();
+				const DVector2 along = line->delta;
+				const double denominator = dx * along.Y - dy * along.X;
+				if (std::fabs(denominator) < 1.0e-12)
+					continue;
+				const double ax = start.X - x0;
+				const double ay = start.Y - y0;
+				const double share = (ax * along.Y - ay * along.X) / denominator;
+				const double onLine = (ax * dy - ay * dx) / denominator;
+				if (share < 0.0 || share > 1.0 || onLine < 0.0 || onLine > 1.0)
+					continue;
+				if (found && share >= crossing.Share)
+					continue;
+				const double lineLength = along.Length();
+				if (!(lineLength > 1.0e-9))
+					continue;
+				double nx = along.Y / lineLength;
+				double ny = -along.X / lineLength;
+				if (nx * (x0 - start.X) + ny * (y0 - start.Y) < 0.0)
+				{
+					nx = -nx;
+					ny = -ny;
+				}
+				const DVector2 at(x0 + dx * share, y0 + dy * share);
+				crossing.Share = share;
+				crossing.Beyond = beyond != nullptr ? (intptr_t)beyond->sectornum : -1;
+				crossing.FloorBeyond = beyond != nullptr ? beyond->floorplane.ZatPoint(at) : 0.0;
+				crossing.CeilingBeyond = beyond != nullptr ? beyond->ceilingplane.ZatPoint(at) : 0.0;
+				crossing.NormalX = nx;
+				crossing.NormalY = ny;
+				crossing.Offset = nx * start.X + ny * start.Y;
+				found = true;
+			}
+			return found;
+		}
+	};
+
+
+	// [PARTICLELIGHTS] The flight a burst's pieces share, as #11 builds it for their landing (DebrisLandingSounds::BeginBurst,
+	// statement for statement): the definition's forces and bounce, the step's radius and the contact's reach, SpawnParticles'
+	// plane and floor in shader axes, and for a burst in the air that collides with the level, the floor under it. Returns whether
+	// its pieces are traced through the level: the definition collides with it and the collision field is on.
+	bool LightFlight(FLevelLocals* Level, const FDebrisBurstEvent& burst, const DebrisDefinitionGpu& definition, float sizeTuning, DebrisLanding::Flight& shared)
+	{
+		shared = DebrisLanding::Flight();
+		shared.Gravity = definition.Motion[0];
+		shared.Drag = definition.Motion[1];
+		shared.Restitution = definition.Physics[0];
+		shared.Friction = definition.Physics[1];
+		const double sizeScale = std::max(burst.SizeScale, 0.0) * (double)sizeTuning;
+		double radius = 0.0;
+		double reach = 0.0;
+		if (definition.Body[1] > 0.5f)
+		{
+			const double scale = definition.Body[0] / std::max((double)definition.Body[2], 1.0e-4) * sizeScale;
+			const double extentX = (double)definition.BoundsMax[0] - definition.BoundsMin[0];
+			const double extentY = (double)definition.BoundsMax[1] - definition.BoundsMin[1];
+			const double extentZ = (double)definition.BoundsMax[2] - definition.BoundsMin[2];
+			radius = 0.5 * scale * std::min({ extentX, extentY, extentZ });
+			reach = scale * (extentX + extentY + extentZ) / 4.0;
+		}
+		else
+		{
+			radius = 0.5 * definition.Body[0] * sizeScale;
+			reach = radius;
+		}
+		shared.Radius = std::max(radius, DebrisLanding::kMinRadius);
+		shared.Reach = std::max(reach, DebrisLanding::kMinRadius);
+		const double normalLength = burst.SurfaceNormal.Length();
+		if (normalLength > 1.0e-6)
+		{
+			shared.HasPlane = true;
+			shared.PlaneNormal = { burst.SurfaceNormal.X / normalLength, burst.SurfaceNormal.Z / normalLength, burst.SurfaceNormal.Y / normalLength };
+			shared.PlaneOffset = shared.PlaneNormal.x * burst.SurfacePoint.X + shared.PlaneNormal.y * burst.SurfacePoint.Z + shared.PlaneNormal.z * burst.SurfacePoint.Y;
+		}
+		if (burst.FloorZ > -32768.0)
+		{
+			shared.HasFloor = true;
+			shared.FloorHeight = (float)burst.FloorZ;
+		}
+		const bool levelCollide = definition.Motion[2] > 1.5f && r_particlecollision;
+		if (levelCollide && !shared.HasPlane && !shared.HasFloor)
+		{
+			if (sector_t* sector = Level->PointInSector(burst.Pos.X, burst.Pos.Y))
+			{
+				shared.HasFloor = true;
+				shared.FloorHeight = sector->floorplane.ZatPoint(DVector2(burst.Pos.X, burst.Pos.Y));
+			}
+		}
+		return levelCollide;
+	}
+
+	// [PARTICLELIGHTS] A piece's light: its first landing as #11 predicts it -- DebrisLanding::GroupBuilder's flight for one piece
+	// (PredictFirstLanding against the burst's plane and floor, over DebrisLandingSounds::AddPiece's horizon), then, where its pieces
+	// are traced, GroupFirstLanding's trace through the level -- and ParticleLights::DebrisSource.
+	EffectLightCore::Source PieceLight(FLevelLocals* Level, const ParticleLights::SlotLight& light, const DebrisLanding::Flight& shared, bool traceLevel,
+		bool neverRests, const float record[ParticleLights::RECORD_FLOATS], uint32_t hash)
+	{
+		DebrisLanding::Flight f = shared;
+		f.Position = { record[0], record[1], record[2] };
+		f.Velocity = { record[4], record[5], record[6] };
+		// A piece that never rests is freed once its life is over (the step's `now - birth > life`), so it can only land before.
+		int maxSteps = DebrisLanding::kMaxSteps;
+		if (neverRests)
+			maxSteps = (int)std::floor((double)record[ParticleLights::R_LIFE] / DebrisLanding::kStepSeconds + 1.0e-4);
+		f.MaxSteps = std::clamp(maxSteps, 0, DebrisLanding::kMaxSteps);
+		DebrisLanding::Landing landing = DebrisLanding::PredictFirstLanding(f, f.MaxSteps);
+		if (traceLevel)
+		{
+			LevelQuery query;
+			query.Level = Level;
+			DebrisLanding::Landing trace;
+			if (DebrisLanding::TraceLanding(f, query, trace))
+				landing = trace;
+		}
+		const double point[3] = { landing.Point.x, landing.Point.y, landing.Point.z };
+		return ParticleLights::DebrisSource(light, record, hash, (float)r_gpuparticles_stretch, landing.Landed ? landing.Step : 0, point);
 	}
 }
 
@@ -251,6 +432,7 @@ void DebrisPool::PrepareFrame(FLevelLocals* Level, uint64_t levelSerial)
 
 	SyncDefinitions(test);
 	mLanding.SyncDefinitions(levelSerial);	// [DEBRISSOUNDS] the definitions' landing sounds, resolved
+	SyncLights();	// [PARTICLELIGHTS] each definition's light, again when the definitions load or the test is switched
 
 	// The level's new bursts and pushes. Always read, so the cursors keep up; kept only while this machine simulates them.
 	ReadQueues(Level, on && !refused);
@@ -474,6 +656,20 @@ void DebrisPool::SyncDefinitions(bool test)
 	mDefinitionGeneration++;
 }
 
+// [PARTICLELIGHTS] Each named definition's light (hw_particlelights.h), again whenever the definitions load or r_particlelights_test
+// is switched: ExpandBurst reads it for every burst.
+void DebrisPool::SyncLights()
+{
+	const uint64_t generation = ParticleLightGeneration();
+	const int test = r_particlelights_test ? 1 : 0;
+	if (generation == mLightListSeen && test == mLightTestSeen)
+		return;
+	mLightListSeen = generation;
+	mLightTestSeen = test;
+	mAnyLight = ParticleLights::ResolveSlots(ParticleLightDefinitionData(), ParticleLightDefinitionCount(), ParticleDefinitionTableData(),
+		DEBRIS_DEFINITION_SLOTS, test != 0, mSlotLights);
+}
+
 //-----------------------------------------------------------------------------
 //
 // Bursts and pushes in
@@ -585,6 +781,18 @@ void DebrisPool::ExpandBurst(FLevelLocals* Level, const FDebrisBurstEvent& burst
 	// [DEBRISSOUNDS] A definition with a landing sound: each piece's flight goes to the group's landing prediction.
 	const bool landing = mLanding.BeginBurst(Level, burst, tic, mDefinitions[defSlot], (float)r_gpuparticles_sizescale);
 
+	// [PARTICLELIGHTS] A definition that throws light ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md"): each piece that carries one -- a
+	// hash of its record picks the burst's lightshare, at most lightmax of them -- hands EffectLights a light that flies with it and
+	// lands where #11 predicts its first landing (PieceLight). Where the pieces collide with the level, a burst's first
+	// DebrisLanding::kMaxTraced lights are traced through it and the rest predicted against its plane and floor. Vulkan's effect
+	// lights only, while they are on.
+	const ParticleLights::SlotLight* light = mAnyLight && r_effectlights && EffectLightBuffer::Instance() != nullptr && mSlotLights[defSlot].Active ?
+		&mSlotLights[defSlot] : nullptr;
+	DebrisLanding::Flight lightFlight;
+	const bool lightLevel = light != nullptr && LightFlight(Level, burst, mDefinitions[defSlot], (float)r_gpuparticles_sizescale, lightFlight);
+	const bool lightNeverRests = !(mDefinitions[defSlot].Physics[2] > 0.f);
+	int lights = 0;
+
 	mPending.reserve(mPending.size() + (size_t)count);
 	for (int i = 0; i < count; i++)
 	{
@@ -616,6 +824,20 @@ void DebrisPool::ExpandBurst(FLevelLocals* Level, const FDebrisBurstEvent& burst
 		// [DEBRISSOUNDS] Its flight, for the group's landing sound.
 		if (landing)
 			mLanding.AddPiece(a, b);
+
+		// [PARTICLELIGHTS] Its light, when it carries one.
+		if (light != nullptr && lights < light->Max)
+		{
+			float record[ParticleLights::RECORD_FLOATS];
+			memcpy(record, p.Piece.Spawn, sizeof(record));
+			const uint32_t hash = ParticleLights::RecordHash(record);
+			if (ParticleLights::CarriesLight(hash, light->Share))
+			{
+				lights++;
+				EffectLights::Get().Spawn(PieceLight(Level, *light, lightFlight, lightLevel && lights <= DebrisLanding::kMaxTraced, lightNeverRests, record, hash));
+				mLightsSpawned++;
+			}
+		}
 
 		// The state before its first step: at its spawn point, flying at its launch velocity, its rest clock not started.
 		for (int k = 0; k < 3; k++)
@@ -667,6 +889,12 @@ void DebrisPool::ExpandBurst(FLevelLocals* Level, const FDebrisBurstEvent& burst
 	// [DEBRISSOUNDS] The group's first landing, predicted from the pieces that went in, and its sound queued.
 	if (landing)
 		mLanding.EndBurst(count);
+	// [PARTICLELIGHTS]
+	if (lights > 0 && !mLightLogged)
+	{
+		mLightLogged = true;
+		Printf("DebrisPool: first debris lights this run -- %d from one burst of particle definition slot %d (definitions with `light`; hw_particlelights.h)\n", lights, defSlot);
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -1116,5 +1344,8 @@ FString DebrisPool::Report() const
 		used, (unsigned long long)mPiecesSpawned, (unsigned long long)mPiecesRecycled, (unsigned long long)mPiecesDropped, (int)mMeshInstances.size());
 	// [DEBRISSOUNDS] And the landing sounds.
 	text.AppendFormat("\n%s", mLanding.Report().GetChars());
+	// [PARTICLELIGHTS] And the pieces' lights.
+	text.AppendFormat("\nDebris lights: %llu spawned since the start; %s", (unsigned long long)mLightsSpawned,
+		mAnyLight ? "a definition throws light (its light keys, or r_particlelights_test)" : "no definition throws light");
 	return text;
 }

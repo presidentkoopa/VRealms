@@ -2307,6 +2307,32 @@ OptionMenu DeveloperOptionsMenu protected
 	// and hold), and a line light crossing the view twice a second. They spray only while the game runs: close the menu to see
 	// them. Not saved. Vulkan only.
 	Slider "Effect light test (0 = off)", "r_effectlights_test", 0, 1024, 50, 0
+	// [PARTICLELIGHTS] r_particlelights_test -- a test, not a setting ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md"): particle definitions
+	// that glow but have no light keys (emissive above 0 at birth, alpha 0) throw a test light -- radius 48, and where they land a
+	// hold of up to 1 second -- so particle and debris lights can be judged on a mod's own sparks before any definition says
+	// `light`. Needs "Effect lights" on. Not saved. Vulkan only.
+	Option "Particle light test (glowing particles light)", "r_particlelights_test", "OnOff"
+	// [LIGHTSHADOWS] Light shadows, the #20 rows ("Engine docs/EFFECT_LIGHTS_LE_IMPL_NOTES.md"), mirrored here from the light
+	// options for the headset cost test. perflog.txt: gpu_ms shadowmap; load shadowlights, shadowcpu_ms, relinks.
+	// gl_light_shadowmap -- "Light shadows": every light that does not ask to cast shadows, as always. Off by default.
+	Option "Light shadows (lamps and other lights)", "gl_light_shadowmap", "OnOff"
+	// gl_light_castshadows -- shadows for the lights that ask to cast them (LF_CASTSHADOW: muzzle flashes, or any light a mod
+	// marks). Off (default): they cast none, even with Light shadows on. Shadow maps: they take the first shadow-map rows and
+	// walls cast their shadows; the map pass runs once a frame for both eyes while one is live and 10 s after (budget: gpu
+	// shadowmap 0.15 ms a frame, scene +0.3 ms an eye, CPU 0.1 ms). Ray traced: as shadow maps, and from the NEXT START the
+	// shaders ray trace every light that casts -- floors, ledges and 3D objects cast too; doors and lifts cast where they were at
+	// map start; 9 x softness + 1 rays for each shadowed light at each lit pixel of each eye. The most costly step, not yet
+	// measured. Needs a ray-query GPU (else shadow maps). Read by the renderer every frame; the ray-traced step at start-up only.
+	Option "Shadows for lights that ask (flashes)", "gl_light_castshadows", "LightCastShadows"
+	// gl_light_shadowmap_lights -- what that setting reaches: the lights that ask (default), or all lights -- every other light
+	// the map can shadow casts by it too, on top of Light shadows. Read every frame.
+	Option "Those shadows reach", "gl_light_shadowmap_lights", "LightCastShadowReach"
+	// gl_shadowmap_quality -- shadow sharpness: the shadow map's texels for each light (128 default; more is sharper and costs
+	// more in the map pass). Read every frame.
+	Option "Shadow sharpness", "gl_shadowmap_quality", "ShadowMapQuality"
+	// gl_shadowmap_filter -- shadow softness: shadow map taps (2 x softness + 1) or rays (ray traced: 9 x softness + 1) for each
+	// shadowed light at each pixel. 1 default. Read every frame.
+	Option "Shadow softness", "gl_shadowmap_filter", "ShadowMapFilter"
 	// [F1] r_drawnlines -- the master switch for drawn lines: SetDrawnLine lines (a
 	// flame tube, tracers) and the beams r_beams_drawn routes ("Engine docs/
 	// FLAME_ENGINE_PLAN.md" F1, its proof step). Off shows an effect without its drawn
@@ -2710,6 +2736,22 @@ OptionValue ShadowMapFilter
 	3, "$OPTVAL_PCF_HIGH"
 }
 
+// [LIGHTSHADOWS] gl_light_castshadows -- shadows for the lights that ask to cast them (LF_CASTSHADOW: a mod's muzzle flashes, or
+// any light content marks). "Engine docs/EFFECT_LIGHTS_LE_IMPL_NOTES.md". Each step names its cost; ray traced waits for a restart.
+OptionValue LightCastShadows
+{
+	0, "Off"
+	1, "Shadow maps (low cost)"
+	2, "Ray traced (restart, most costly)"
+}
+
+// [LIGHTSHADOWS] gl_light_shadowmap_lights -- what that setting reaches.
+OptionValue LightCastShadowReach
+{
+	0, "Lights that ask (flashes)"
+	1, "All lights"
+}
+
 OptionMenu "GLTextureGLOptions" protected
 {
 	Title "$GLTEXMNU_TITLE"
@@ -2744,6 +2786,13 @@ OptionMenu "GLLightOptions" protected
 	Option "$GLLIGHTMNU_LIGHTWEAPONS",          gl_light_weapons,     YesNo
 	Option "$GLLIGHTMNU_LIGHTPARTICLES",        gl_light_particles,   YesNo
 	Option "$GLLIGHTMNU_LIGHTSHADOWMAP",        gl_light_shadowmap,   YesNo
+	// [LIGHTSHADOWS] The cast-shadow setting (OptionValue LightCastShadows): shadows for the lights that ask to cast them, beside
+	// "Light shadows" above, which stays every other light's switch.
+	Option "Shadows for lights that ask",       gl_light_castshadows, LightCastShadows
+	Option "Those shadows reach",               gl_light_shadowmap_lights, LightCastShadowReach
+	StaticText "Shadow maps: walls cast. Budget 0.15 ms a frame + 0.3 ms an eye.", "Brown"
+	StaticText "Ray traced: from the next start; floors and ledges cast too.", "Brown"
+	StaticText "Ray traced costs the most; doors cast where they began.", "Brown"
 
 	StaticText ""
 	StaticText "$GLLIGHTMNU_ADVANCED", gold
@@ -2758,7 +2807,7 @@ OptionMenu "GLLightOptions" protected
 	ScaleSlider "$GLLIGHTMNU_WALL_SURFACE_LIGHT_BUDGET",	gl_light_wall_candidate_budget, 0, 32, 1, "$GLPREFMNU_LIMIT_DISABLED"
 	ScaleSlider "$GLLIGHTMNU_FLAT_SURFACE_LIGHT_BUDGET",	gl_light_flat_candidate_budget, 0, 32, 1, "$GLPREFMNU_LIMIT_DISABLED"
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS",				"resetcvar r_dynlights gl_lights gl_lights_checkside gl_light_sprites gl_light_weapons gl_light_particles gl_light_shadowmap gl_light_buffer_type gl_shadowmap_quality gl_shadowmap_filter gl_light_distance_cull gl_light_max_intensity gl_light_max_collected_subsectors gl_light_wall_max_lights gl_light_flat_max_lights gl_light_range_limit gl_light_wall_candidate_budget gl_light_flat_candidate_budget"
+	SafeCommand "$OPTMNU_DEFAULTS",				"resetcvar r_dynlights gl_lights gl_lights_checkside gl_light_sprites gl_light_weapons gl_light_particles gl_light_shadowmap gl_light_castshadows gl_light_shadowmap_lights gl_light_buffer_type gl_shadowmap_quality gl_shadowmap_filter gl_light_distance_cull gl_light_max_intensity gl_light_max_collected_subsectors gl_light_wall_max_lights gl_light_flat_max_lights gl_light_range_limit gl_light_wall_candidate_budget gl_light_flat_candidate_budget"
 }
 
 OptionMenu "OpenGLOptions" protected

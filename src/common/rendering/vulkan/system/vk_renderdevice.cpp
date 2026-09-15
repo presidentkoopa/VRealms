@@ -317,6 +317,17 @@ VulkanRenderDevice::VulkanRenderDevice(void *hMonitor, bool fullscreen, std::sha
 		 VkHardwareTexture::DeviceSupportsCompressed(device.get(), VK_FORMAT_BC3_UNORM_BLOCK) &&
 		 VkHardwareTexture::DeviceSupportsCompressed(device.get(), VK_FORMAT_BC7_UNORM_BLOCK)) ? "ON" : "unavailable, DDS textures are decoded on the CPU");
 
+	// [LIGHTSHADOWS] RAY-TRACED LIGHT SHADOWS, DECIDED ONCE for this device: vk_raytrace, or the cast-shadow setting at its top step
+	// (gl_light_castshadows 2, hw_shadowmap.cpp), on a GPU whose ray queries OptionalRayQuery enabled above. What depends on it is
+	// made from RaytracingEnabled() at start-up -- the scene shaders' SUPPORTS_RAYTRACING, the fixed descriptor set's acceleration
+	// structure binding and its pool -- while UpdateFixedSet writes that binding every frame and the level mesh builds its
+	// structures at each map load. Read live, as vk_raytrace was, a change in a running game left the layout and those writes
+	// disagreeing. Read once, a change takes effect at the next start, as the menu rows say.
+	const bool raytraceAsked = vk_raytrace || IShadowMap::CastShadowsRaytraced();
+	mRaytraceShadows = raytraceAsked && device->SupportsExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+	IShadowMap::RaytracedThisSession = mRaytraceShadows;
+	Printf("Vulkan light shadows: ray traced %s\n", mRaytraceShadows ? "ON" : (raytraceAsked ? "asked for, but this GPU has no ray queries: shadow maps" : "off"));
+
 	// Printf, not a dialog: the log is flushed line by line (c_console.cpp), so
 	// this survives the process being killed -- which is often how a device
 	// loss ends, with the OpenXR runtime taking the game down before the
@@ -1483,7 +1494,8 @@ void VulkanRenderDevice::SetSceneRenderTarget(bool useSSAO)
 
 bool VulkanRenderDevice::RaytracingEnabled()
 {
-	return vk_raytrace && device->SupportsExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+	// [LIGHTSHADOWS] Decided once, in the constructor: vk_raytrace or gl_light_castshadows 2, on a GPU with ray queries.
+	return mRaytraceShadows;
 }
 
 bool VulkanRenderDevice::ShouldUseCurrentEyeLayer(const PPTextureType& type, const VkTextureImage* image) const

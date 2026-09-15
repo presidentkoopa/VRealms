@@ -53,6 +53,7 @@
 #include "hw_dynlightdata.h"
 #include "hw_lightbuffer.h"
 #include "hw_renderstate.h"
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
 #include "quaternion.h"
 #include "hw_vrmodes.h"
 
@@ -282,6 +283,25 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 		state.ClearSpriteOutline();
 	}
 
+	// [EFFECTLIGHTS] Effect lights on this sprite or model ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"), on what takes dynamic
+	// light today, whether or not the level has dynamic lights: never a fuzz shadow, a fullbright thing or a fullbright scene. A
+	// model lit per pixel (PutSprite's test) takes mode 1, with N.L. A sprite, a particle, a voxel or a model without per-pixel
+	// lighting takes mode 2, without N.L (a sprite's normal is zero), where GetDynSpriteLight would light it: an actor with
+	// gl_light_sprites, a particle with gl_light_particles, neither asking for no dynamic light (so never a billboard). Set only on
+	// frames with an effect light on the GPU and put back to 0 at the end, so every draw on a frame with none uploads exactly what
+	// it did.
+	int effectLightMode = 0;
+	if (RenderStyle.BlendOp != STYLEOP_Shadow && !di->isFullbrightScene() && !fullbright &&
+		EffectLightBuffer::Instance() != nullptr && EffectLightBuffer::Instance()->GetLiveCount() > 0)
+	{
+		const bool litActor = gl_light_sprites && actor != nullptr && !(actor->renderflags2 & RF2_NODYNAMICLIGHTING);
+		if (modelframe != nullptr && !modelframe->isVoxel && !(modelframeflags & MDL_NOPERPIXELLIGHTING))
+			effectLightMode = litActor ? 1 : 0;
+		else if (litActor || (gl_light_particles && particle != nullptr && !(particle->flags & SPF_NODYNAMICLIGHTING)))
+			effectLightMode = 2;
+		if (effectLightMode != 0) state.SetEffectLightMode(effectLightMode);
+	}
+
 	if (RenderStyle.BlendOp != STYLEOP_Shadow)
 	{
 		if (di->Level->HasDynamicLights && !di->isFullbrightScene() && !fullbright)
@@ -509,6 +529,7 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 	state.EnableTexture(true);
 	state.SetDynLight(0, 0, 0);
 	state.SetDarknessExempt(0.f);
+	if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
 }
 
 //==========================================================================

@@ -169,7 +169,9 @@ void HWDrawInfo::GetDynSpriteLight(AActor *self, float x, float y, float z, FSec
 						frac *= (float)smoothstep(light->pSpotOuterAngle->Cos(), light->pSpotInnerAngle->Cos(), cosDir);
 					}
 
-					if (frac > 0 && (!light->shadowmapped || (light->GetRadius() > 0 && screen->mShadowMap.ShadowTest(light->Pos, { x, y, z }))))
+					// [LIGHTSHADOWS] Tested by the light's own shadow switch (IShadowMap::LightShadowAllowed): a light that asks to cast by
+					// the cast-shadow setting, any other by "Light shadows" -- the rule CollectLights gives rows by.
+					if (frac > 0 && (!light->shadowmapped || (light->GetRadius() > 0 && screen->mShadowMap.ShadowTest(light->Pos, { x, y, z }, light->CastShadow()))))
 					{
 						lr = light->GetRed() / 255.0f;
 						lg = light->GetGreen() / 255.0f;

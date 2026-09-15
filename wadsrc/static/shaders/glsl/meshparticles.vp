@@ -70,6 +70,88 @@ layout(set = 1, binding = 8, std430) buffer readonly ViewLightSSO
 // ViewLightBuffer::CAPACITY.
 const int kViewLightCapacity = 32;
 
+#ifdef EFFECT_LIGHTS
+// [PARTICLELIGHTS] EFFECT LIGHTS ON MESH PARTICLES AND DEBRIS CHUNKS ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md"; LIGHTS_20_21_22_PLAN.md
+// 2h). Sparks, embers, impacts and tracers that belong to no actor, sorted by the CPU into world bins around the eye once a frame for
+// both eyes (hw_effectlights.cpp). The light at a point loops only that point's bin, as main.fp's EffectLightsAt does for a pixel --
+// with no N.L (a particle is not a surface) and no wall test (no shadow map in the vertex stage); a light marked
+// EFFECT_LIGHT_NOPARTICLES is skipped. Compiled only with EFFECT_LIGHTS, which vk_shader.cpp defines for this lump's vertex
+// programs; without it this lump is exactly what it was.
+//
+// The layouts are hw_effectlightbuffer.h's, the same blocks main.fp declares: set 1 bindings 14 and 15, in every pipeline layout
+// for the vertex and fragment stages (vk_descriptorset.cpp).
+//   EffectLightRecord   a xyz the start this frame, w radius    b xyz the end (== a: a point), w flags
+//                       color rgb the light now, w shadow-map row    extra w the brightness at b as a share of a's
+//   EffectLightBinSSO   the occupied grid's lowest corner (w the bin size) and bins a side (w where the index list starts), then
+//                       a word a bin, (offset << 6) | count, then the index list
+struct EffectLightRecord
+{
+	vec4 a;
+	vec4 b;
+	vec4 color;
+	vec4 extra;
+};
+
+layout(set = 1, binding = 14, std430) buffer readonly EffectLightSSO
+{
+	uint effectLightCount;
+	uint effectLightBinned;
+	uint effectLightResiduals;
+	uint effectLightSerial;
+	EffectLightRecord effectLights[];
+};
+
+layout(set = 1, binding = 15, std430) buffer readonly EffectLightBinSSO
+{
+	vec4 effectLightGridCorner;
+	ivec4 effectLightGridSize;
+	uint effectLightBinData[];
+};
+
+// hw_effectlightbuffer.h's EFFECT_LIGHT_GPU_NOPARTICLES and EFFECT_LIGHT_BIN_LOOP_MAX.
+const int EFFECT_LIGHT_NOPARTICLES = 32;
+const int EFFECT_LIGHT_BIN_LOOP_MAX = 32;
+
+// The effect light at p from the lights of p's bin: each seen from the closest point of its segment, attenuated (radius -
+// distance) / radius and, along a line, by its brightness share -- EffectLightOnSurface's statements without the facing and the
+// wall.
+vec3 EffectLightsAtParticle(vec3 p)
+{
+	if (effectLightGridSize.x <= 0)
+		return vec3(0.0);
+	vec3 cellf = floor((p - effectLightGridCorner.xyz) / effectLightGridCorner.w);
+	if (any(lessThan(cellf, vec3(0.0))) || any(greaterThanEqual(cellf, vec3(effectLightGridSize.xyz))))
+		return vec3(0.0);
+	ivec3 cell = ivec3(cellf);
+	uint word = effectLightBinData[(cell.z * effectLightGridSize.y + cell.y) * effectLightGridSize.x + cell.x];
+	int first = effectLightGridSize.w + int(word >> 6u);
+	int count = min(int(word & 63u), EFFECT_LIGHT_BIN_LOOP_MAX);
+	int records = int(effectLightCount);
+	vec3 total = vec3(0.0);
+	for (int k = 0; k < count; k++)
+	{
+		int index = int(effectLightBinData[first + k]);
+		if (index >= records)
+			continue;
+		EffectLightRecord light = effectLights[index];
+		if ((int(light.b.w) & EFFECT_LIGHT_NOPARTICLES) != 0)
+			continue;
+		vec3 segment = light.b.xyz - light.a.xyz;
+		float lengthSquared = dot(segment, segment);
+		float share = lengthSquared > 0.0 ? clamp(dot(p - light.a.xyz, segment) / lengthSquared, 0.0, 1.0) : 0.0;
+		vec3 closest = share > 0.0 ? light.a.xyz + segment * share : light.a.xyz;
+		float lightdistance = distance(closest, p);
+		if (light.a.w < lightdistance)
+			continue;
+		float attenuation = clamp((light.a.w - lightdistance) / light.a.w, 0.0, 1.0);
+		if (share > 0.0)
+			attenuation *= mix(1.0, light.extra.w, share);
+		total += light.color.rgb * attenuation;
+	}
+	return total;
+}
+#endif
+
 // THE MESH PARTICLE BUFFER (MeshParticleBuffer, hw_meshparticles.h), set 1 binding 9, vertex
 // stage. std430; every member is vec4-aligned, so: header at 0, the definition records at 16
 // (288 bytes each), the instance slots at 73,744 (4 bytes each) -- the C++ asserts the same.
@@ -308,6 +390,10 @@ vec3 MeshParticleLight(vec3 pos, float ambient)
 		attenuation *= smoothstep(viewLights[i].spotCone.x, viewLights[i].spotCone.y, dot(lightDirection, viewLights[i].spotDirection.xyz));
 		light += viewLights[i].color.rgb * attenuation;
 	}
+#ifdef EFFECT_LIGHTS
+	// [PARTICLELIGHTS] And the effect lights of its bin at the chunk's centre, before the clamp: still one value for the whole chunk.
+	light += EffectLightsAtParticle(pos);
+#endif
 	return clamp(light, vec3(0.0), vec3(1.4));
 }
 

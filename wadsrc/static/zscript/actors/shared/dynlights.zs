@@ -43,6 +43,10 @@ class DynamicLight : Actor
 	flagdef spot: lightflags, 6;
 	flagdef dontlightothers: lightflags, 7;
 	flagdef dontlightmap: lightflags, 8;
+	// [LIGHTSHADOWS] This light asks to cast shadows (LF_CASTSHADOW below; a_dynlight.h): the player's cast-shadow setting,
+	// gl_light_castshadows, decides whether and how -- Off, shadow maps or ray traced. For the lights whose shadows matter, such
+	// as a weapon's muzzle flash. NOSHADOWMAP still wins.
+	flagdef castshadow: lightflags, 9;
 
 	enum EArgs
 	{
@@ -66,6 +70,7 @@ class DynamicLight : Actor
 		LF_SPOT = 64,
 		LF_DONTLIGHTOTHERS = 128,
 		LF_DONTLIGHTMAP = 256,
+		LF_CASTSHADOW = 512,	// [LIGHTSHADOWS] asks to cast shadows; gl_light_castshadows decides (flagdef castshadow)
 	};
 
 	enum ELightType

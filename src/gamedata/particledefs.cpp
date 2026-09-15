@@ -138,6 +138,27 @@
 ** apply (landpitch does); give each landing sound a `$limit` -- the engine caps how many start too
 ** (hw_debrislanding.h). "Debris landing sounds" (r_debris_sounds) and its volume are the player's.
 **
+** [PARTICLELIGHTS] LIGHT ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md", "Engine docs/LIGHTS_20_21_22_PLAN.md" 2e). A definition
+** with `light` throws light: each of its particles that carries one -- a ring particle or a debris piece -- is an effect light
+** ("Effect lights", r_effectlights) that flies with it and lights the walls, floors, models, sprites, smoke and other particles
+** around it over its life. Where many crowd together they blend into one glow; past the light budget the small, far ones stop
+** lighting first. Vulkan only. A definition without these keys throws no light.
+**
+**   light         = 48, 1.5        // radius in map units, 0 .. 1024 (0: no light); intensity 0 .. 16 (1 when left off)
+**   lightcolor    = 255 170 80     // 0..255 (or 255, 170, 80); the colour ramp's first key when left off. The spawn's tint multiplies it
+**   lightramp     = 2 @0, 0 @1     // its brightness over life, 0 .. 16, a ramp like `emissive`; left off: 1, fading as fade = smooth
+**   lightshare    = 0.5            // the share of each burst's particles that carry a light, 0..1, picked by a hash of each (1)
+**   lightmax      = 16             // at most this many lights a burst, a whole number 1 .. 4096 (16 when left off)
+**   lightline     = 1              // a streak lights as a line along its drawn length (1, the default for orient = streak) or a point (0)
+**   lighthold     = 1.5            // where it lands it keeps lighting, then cools, for a hashed share (a quarter to all) of this
+**                                  // many seconds, 0 .. 60; 0 or left off: the light goes out where it lands
+**   lightpriority = 1              // 0 low, 1 normal (left off), 2 important: ranks with flashes and tracers, which always light
+**
+** A ring particle lands where its flight first comes down onto its floor or a floor-like plane; a debris piece where its first
+** landing is predicted (the landing sound's prediction). The spawn's `intensity` scales its light too. The other keys need `light`
+** with a radius above 0; `lighthold` needs collide = plane or level; `lightline` needs orient = streak. Walls block a point light;
+** a streak's line light they do not. "Particle light test" (r_particlelights_test) lights glowing definitions without keys.
+**
 ** A ramp given one value with no '@' is constant. With several, every value needs
 ** '@t', 0 <= t <= 1, increasing; it holds its first value before the first key and
 ** its last after the last. Size, color, alpha and emissive SHARE up to 8 time keys
@@ -260,6 +281,16 @@ namespace
 	const double kLandLowestPitch = 0.25;
 	const double kLandHighestPitch = 4.0;
 
+	// [PARTICLELIGHTS] Limits and defaults of a definition's light keys (hw_particlelights.h resolves with the same).
+	const double kLightMaxRadius = 1024.0;
+	const double kLightMaxIntensity = 16.0;
+	const double kLightMaxBrightness = 16.0;
+	const double kLightShare = 1.0;
+	const double kLightMax = 16.0;
+	const double kLightMostPerBurst = 4096.0;
+	const double kLightMaxHold = 60.0;
+	const double kLightPriority = 1.0;
+
 	struct NamedInfo
 	{
 		FString Name;
@@ -277,6 +308,8 @@ namespace
 		ParticleMeshDefinition Mesh;	// [MESHPARTICLES] checked at load; Slot filled when the list is built
 		bool HasDebris = false;			// [DEBRISPOOL] the definition has `restitution`
 		ParticleDebrisDefinition Debris;	// [DEBRISPOOL] its keys; Slot filled when the list is built
+		bool HasLight = false;			// [PARTICLELIGHTS] the definition throws light (`light` with a radius above 0)
+		ParticleLightDefinition Light;	// [PARTICLELIGHTS] its keys; Slot filled when the list is built
 	};
 
 	struct InlineInfo
@@ -322,6 +355,11 @@ namespace
 		// which never goes backwards.
 		TArray<ParticleDebrisDefinition> Debris;
 		uint64_t DebrisGeneration = 0;
+
+		// [PARTICLELIGHTS] The definitions that throw light, in slot order (AssignLightList), and the list's generation, which never
+		// goes backwards.
+		TArray<ParticleLightDefinition> Lights;
+		uint64_t LightGeneration = 0;
 
 		DefinitionTable()
 		{
@@ -1005,6 +1043,21 @@ namespace
 		return table.Debris.Size();
 	}
 
+	// [PARTICLELIGHTS] The light list the renderer syncs from, in slot order, once every lump has loaded. Returns its size.
+	unsigned AssignLightList(DefinitionTable &table)
+	{
+		table.Lights.Clear();
+		for (unsigned i = 0; i < table.NamedCount; i++)
+		{
+			NamedInfo &n = table.Named[i];
+			if (!n.HasLight) continue;
+			n.Light.Slot = (int)i;
+			table.Lights.Push(n.Light);
+		}
+		table.LightGeneration++;
+		return table.Lights.Size();
+	}
+
 	//==========================================================================
 	//
 	// One 'particle' block -> one GPU definition
@@ -1051,6 +1104,13 @@ namespace
 		double landVolume = kLandVolume;
 		double landPitch[2] = { kLandPitchMin, kLandPitchMax };
 		int landSoundLine = 0, landVolumeLine = 0, landPitchLine = 0;
+		// [PARTICLELIGHTS] Read as written; checked after the loop. A key's line stays 0 when the block leaves it off.
+		double lightRadius = 0.0, lightIntensity = 1.0, lightShare = kLightShare, lightMax = kLightMax, lightlineValue = 0.0, lightHold = 0.0;
+		double lightPriority = kLightPriority;
+		double lightColor[3] = { 255.0, 255.0, 255.0 };
+		Ramp lightRamp;
+		int lightKeyLine = 0, lightColorLine = 0, lightRampLine = 0, lightShareLine = 0, lightMaxLine = 0, lightlineLine = 0, lightHoldLine = 0;
+		int lightPriorityLine = 0;
 
 		for (unsigned i = 0; i < b.Entries.Size(); i++)
 		{
@@ -1140,6 +1200,77 @@ namespace
 				ok = ReadPair(e, kLandLowestPitch, kLandHighestPitch, false, "min, max pitch, 0.25 .. 4 (1 = as recorded), or one value for both", landPitch, error, errorLine);
 				if (landPitch[1] < landPitch[0]) std::swap(landPitch[0], landPitch[1]);
 				landPitchLine = e.Line;
+			}
+			// [PARTICLELIGHTS] The light it throws.
+			else if (e.Key.CompareNoCase("light") == 0)
+			{
+				// light = <radius>[, <intensity>]
+				const unsigned n = e.Items.Size();
+				const char *usage = "'light' is <radius>[, <intensity>] -- a radius 0 .. 1024 map units (0: no light), an intensity 0 .. 16";
+				if (n < 1 || n > 2)
+					return Fail(error, errorLine, e.Line, "%s", usage);
+				for (unsigned k = 0; k < n; k++)
+				{
+					const FDefBlockItem &item = e.Items[k];
+					if (item.Atoms.Size() != 1 || item.HasAt || item.Atoms[0].Kind != FDefBlockAtom::Number)
+						return Fail(error, errorLine, item.Line, "%s", usage);
+				}
+				lightRadius = e.Items[0].Atoms[0].Value;
+				if (!(lightRadius >= 0.0 && lightRadius <= kLightMaxRadius))
+					return Fail(error, errorLine, e.Items[0].Line, "'light' radius %g is outside 0 .. %g", lightRadius, kLightMaxRadius);
+				lightIntensity = n == 2 ? e.Items[1].Atoms[0].Value : 1.0;
+				if (!(lightIntensity >= 0.0 && lightIntensity <= kLightMaxIntensity))
+					return Fail(error, errorLine, e.Items[n - 1].Line, "'light' intensity %g is outside 0 .. %g", lightIntensity, kLightMaxIntensity);
+				lightKeyLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("lightcolor") == 0)
+			{
+				// lightcolor = <red> <green> <blue> -- one colour, as `color` writes one -- or <red>, <green>, <blue>; 0 .. 255 each.
+				const unsigned n = e.Items.Size();
+				const char *usage = "'lightcolor' is one colour, red green blue 0 .. 255 -- a light's colour does not ramp (lightramp is its brightness over life)";
+				if (n != 1 && n != 3)
+					return Fail(error, errorLine, e.Line, "%s", usage);
+				unsigned channel = 0;
+				for (unsigned k = 0; k < n; k++)
+				{
+					const FDefBlockItem &item = e.Items[k];
+					if (item.HasAt || item.Atoms.Size() != (n == 1 ? 3u : 1u))
+						return Fail(error, errorLine, item.Line, "%s", usage);
+					for (unsigned m = 0; m < item.Atoms.Size(); m++)
+					{
+						const FDefBlockAtom &atom = item.Atoms[m];
+						if (atom.Kind != FDefBlockAtom::Number)
+							return Fail(error, errorLine, item.Line, "%s", usage);
+						if (!(atom.Value >= 0.0 && atom.Value <= 255.0))
+							return Fail(error, errorLine, item.Line, "'lightcolor' value %g is outside 0 .. 255", atom.Value);
+						lightColor[channel++] = atom.Value;
+					}
+				}
+				lightColorLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("lightramp") == 0) { ok = ReadRamp(e, 1, 0.0, kLightMaxBrightness, lightRamp, error, errorLine); lightRampLine = e.Line; }
+			else if (e.Key.CompareNoCase("lightshare") == 0) { ok = ReadNumber(e, 0.0, 1.0, lightShare, error, errorLine); lightShareLine = e.Line; }
+			else if (e.Key.CompareNoCase("lightmax") == 0)
+			{
+				ok = ReadNumber(e, 1.0, kLightMostPerBurst, lightMax, error, errorLine);
+				if (ok && lightMax != std::floor(lightMax))
+					return Fail(error, errorLine, e.Line, "'lightmax' = %g must be a whole number of lights, 1 .. %g", lightMax, kLightMostPerBurst);
+				lightMaxLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("lightline") == 0)
+			{
+				ok = ReadNumber(e, 0.0, 1.0, lightlineValue, error, errorLine);
+				if (ok && lightlineValue != std::floor(lightlineValue))
+					return Fail(error, errorLine, e.Line, "'lightline' is 0 (the light is a point) or 1 (a line along the streak)");
+				lightlineLine = e.Line;
+			}
+			else if (e.Key.CompareNoCase("lighthold") == 0) { ok = ReadNumber(e, 0.0, kLightMaxHold, lightHold, error, errorLine); lightHoldLine = e.Line; }
+			else if (e.Key.CompareNoCase("lightpriority") == 0)
+			{
+				ok = ReadNumber(e, 0.0, 2.0, lightPriority, error, errorLine);
+				if (ok && lightPriority != std::floor(lightPriority))
+					return Fail(error, errorLine, e.Line, "'lightpriority' is 0 (low), 1 (normal) or 2 (important)");
+				lightPriorityLine = e.Line;
 			}
 			else if (e.Key.CompareNoCase("mesh") == 0)
 			{
@@ -1325,6 +1456,27 @@ namespace
 					"'%s' needs 'landsound' -- the sound a group of these pieces makes landing", landVolumeLine != 0 ? "landvolume" : "landpitch");
 		}
 
+		// [PARTICLELIGHTS] What the light keys allow. Each refusal names the key's line; the rest of the lump still loads.
+		const bool throwsLight = lightKeyLine != 0 && lightRadius > 0.0;
+		if (!throwsLight)
+		{
+			const struct { const char *Key; int Line; } lightKeys[] = {
+				{ "lightcolor", lightColorLine }, { "lightramp", lightRampLine }, { "lightshare", lightShareLine }, { "lightmax", lightMaxLine },
+				{ "lightline", lightlineLine }, { "lighthold", lightHoldLine }, { "lightpriority", lightPriorityLine } };
+			for (const auto &k : lightKeys)
+			{
+				if (k.Line != 0)
+					return Fail(error, errorLine, k.Line, "'%s' needs a light -- light = <radius>[, <intensity>] with a radius above 0 makes the definition throw one", k.Key);
+			}
+		}
+		else
+		{
+			if (lightHoldLine != 0 && collide == 0)
+				return Fail(error, errorLine, lightHoldLine, "'lighthold' needs something to land on: collide = plane or collide = level -- a light holds where its particle lands");
+			if (lightlineLine != 0 && orient != 1)
+				return Fail(error, errorLine, lightlineLine, "'lightline' has no effect on orient = %s -- only a streak has a length to light along", kOrientNames[orient]);
+		}
+
 		// [2c] The flipbook's frames, found by name now that the count is known. A
 		// frame that is not there refuses this definition alone, naming the frame; the
 		// rest of the lump still loads.
@@ -1433,6 +1585,27 @@ namespace
 			info.Debris.LandPitchMin = (float)landPitch[0];
 			info.Debris.LandPitchMax = (float)landPitch[1];
 		}
+		info.HasLight = throwsLight;	// [PARTICLELIGHTS]
+		if (throwsLight)
+		{
+			ParticleLightDefinition &light = info.Light;
+			light.Radius = (float)lightRadius;
+			light.Intensity = (float)lightIntensity;
+			light.HasColor = lightColorLine != 0;
+			for (int c = 0; c < 3; c++)
+				light.Color[c] = (float)(lightColor[c] / 255.0);
+			light.RampKeys = lightRampLine != 0 ? (int)lightRamp.Keys.Size() : 0;
+			for (unsigned k = 0; k < (unsigned)light.RampKeys; k++)
+			{
+				light.RampTime[k] = (float)lightRamp.Keys[k].T;
+				light.RampValue[k] = (float)lightRamp.Keys[k].V[0];
+			}
+			light.Share = (float)lightShare;
+			light.Max = (int)lightMax;
+			light.Line = lightlineLine != 0 ? (int)lightlineValue : -1;
+			light.Hold = (float)lightHold;
+			light.Priority = (int)lightPriority;
+		}
 		return true;
 	}
 }
@@ -1540,6 +1713,8 @@ void LoadParticleDefinitions()
 	const unsigned meshed = AssignMeshList(table);
 	// [DEBRISPOOL] And the debris list.
 	const unsigned debris = AssignDebrisList(table);
+	// [PARTICLELIGHTS] And the light list.
+	const unsigned lit = AssignLightList(table);
 
 	Printf("ParticleDefinitions: %u named definition%s from %u PARTICLEDEFS lump%s -- %d refused, %u replaced by a later one\n",
 		table.NamedCount, table.NamedCount == 1 ? "" : "s", table.Lumps, table.Lumps == 1 ? "" : "s",
@@ -1558,6 +1733,9 @@ void LoadParticleDefinitions()
 	}
 	Printf("ParticleDefinitions: %u debris definition%s name%s a landing sound (landsound: one sound per group where it lands, while r_debris_sounds is on; Vulkan only)\n",
 		landing, landing == 1 ? "" : "s", landing == 1 ? "s" : "");
+	// [PARTICLELIGHTS]
+	Printf("ParticleDefinitions: %u definition%s throw%s a light (light: an effect light per particle that carries one, while r_effectlights is on; Vulkan only)\n",
+		lit, lit == 1 ? "" : "s", lit == 1 ? "s" : "");
 }
 
 //==========================================================================
@@ -1723,6 +1901,11 @@ const ParticleDebrisDefinition *ParticleDebrisDefinitionData() { return Table().
 unsigned ParticleDebrisDefinitionCount() { return Table().Debris.Size(); }
 uint64_t ParticleDebrisGeneration() { return Table().DebrisGeneration; }
 
+// [PARTICLELIGHTS] For the renderer's particle and debris lights (GpuParticleBuffer::SpawnRecordLights, DebrisPool::SyncLights).
+const ParticleLightDefinition *ParticleLightDefinitionData() { return Table().Lights.Size() > 0 ? &Table().Lights[0] : nullptr; }
+unsigned ParticleLightDefinitionCount() { return Table().Lights.Size(); }
+uint64_t ParticleLightGeneration() { return Table().LightGeneration; }
+
 bool ParticleDefinitionIsDebris(int slot)
 {
 	const DefinitionTable &table = Table();
@@ -1839,6 +2022,30 @@ CCMD(particles)
 					debris.LandVolume, debris.LandPitchMin, debris.LandPitchMax);
 			}
 		}
+
+		// [PARTICLELIGHTS] The light it throws, when it throws one.
+		if (n.HasLight)
+		{
+			const ParticleLightDefinition &light = n.Light;
+			FString colour, brightness, hold;
+			if (light.HasColor)
+				colour.Format("%d %d %d", (int)std::lround(light.Color[0] * 255.0), (int)std::lround(light.Color[1] * 255.0), (int)std::lround(light.Color[2] * 255.0));
+			else
+				colour = "the colour ramp's first key";
+			if (light.RampKeys == 0)
+				brightness = "1, fading as fade = smooth";
+			for (int k = 0; k < light.RampKeys; k++)
+				brightness.AppendFormat("%s%g @%g", k > 0 ? ", " : "", light.RampValue[k], light.RampTime[k]);
+			if (collide == 0)
+				hold = "never lands";
+			else if (light.Hold > 0.f)
+				hold.Format("where it lands it holds a hashed share (a quarter to all) of %g s", light.Hold);
+			else
+				hold = "goes out where it lands";
+			Printf("      light -- radius %g, intensity %g, colour %s, brightness %s; %g of each burst, at most %d; %s; %s; priority %d\n",
+				light.Radius, light.Intensity, colour.GetChars(), brightness.GetChars(), light.Share, light.Max,
+				orient == 1 && light.Line != 0 ? "a line along the streak" : "a point", hold.GetChars(), light.Priority);
+		}
 	}
 
 	// [2c] The particle atlas: what the named flipbooks use, and what the renderer built.
@@ -1914,5 +2121,9 @@ CCMD(particles)
 
 	// [DEBRISPOOL] The debris definitions and the pool (hw_debrispool.cpp).
 	Printf("Debris definitions (restitution): %u\n", table.Debris.Size());
+	// [PARTICLELIGHTS] The light definitions and the test (hw_gpuparticlebuffer.cpp).
+	FBaseCVar *lightTest = FindCVar("r_particlelights_test", nullptr);
+	Printf("Light definitions (light): %u; r_particlelights_test %s\n", table.Lights.Size(),
+		lightTest == nullptr ? "(not in this build)" : (lightTest->GetGenericRep(CVAR_Int).Int != 0 ? "1: glowing definitions without keys light too" : "0"));
 	Printf("%s\n", DebrisPoolReport().GetChars());
 }

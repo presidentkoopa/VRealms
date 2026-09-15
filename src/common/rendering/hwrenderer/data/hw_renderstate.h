@@ -301,6 +301,8 @@ struct StreamData
 	// These three stay. std140 aligns a vec4 to 16 bytes and C++ does not, so
 	// the outline block below MUST start on a lane boundary or the C++ struct
 	// and the shader's view of it silently disagree from here down.
+	// [EFFECTLIGHTS] padding2's VALUE is the per-draw effect-light mode (FRenderState::SetEffectLightMode); the slot and its
+	// name stay, because the Vulkan prolog declares them.
 	int padding1;
 	int padding2;
 	int padding3;
@@ -793,6 +795,16 @@ public:
 	void SetSurfaceDamageKey(int key)
 	{
 		mStreamData.uSurfaceDamageKey = key;
+	}
+
+	// [EFFECTLIGHTS] This draw's effect-light mode ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"): 0 none, 1 lit with N.L (walls,
+	// flats, decals, per-pixel-lit models), 2 lit without (sprites, particles, voxels -- a sprite's normal is zero). main.fp reads
+	// it as uEffectLightMode only inside #ifdef EFFECT_LIGHTS, which only the Vulkan backend defines. It rides in StreamData's
+	// padding2 (see the note there): 0, what the pad always held, means none, so a draw that never sets it uploads exactly the
+	// bytes it did. The draws set it only on frames with an effect light on the GPU and put 0 back at the end of the same function.
+	void SetEffectLightMode(int mode)
+	{
+		mStreamData.padding2 = mode;
 	}
 
 	void SetFlatGlowParams(float r, float g, float b, float reach, const FVector4 &farColor, int falloff, int lineCount, const FVector4* lines, int isCeiling = 0)

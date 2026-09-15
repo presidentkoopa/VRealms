@@ -49,6 +49,8 @@
 #include "hw_debrispool.h"		// [DEBRISPOOL] DebrisPool::PrepareFrame
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
+#include <algorithm>			// [LIGHTSHADOWS] std::nth_element in CollectLights
+#include <vector>
 
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
@@ -71,21 +73,65 @@ void CleanSWDrawer()
 #include "a_dynlight.h"
 
 
-void CollectLights(FLevelLocals* Level)
+void CollectLights(FLevelLocals* Level, const DVector3& eye)
 {
 	IShadowMap* sm = &screen->mShadowMap;
 	int lightindex = 0;
 
 	// [EFFECTLIGHTS] The map pass also runs for effect lights while "Light shadows" is off (RenderViewpoint). Then no dynamic
-	// light takes a row: each keeps index 1024, which hw_dynlightdata.cpp and the smoke's gather read as "no row" -- exactly
-	// what they see when the pass does not run.
-	const bool dynamicLightRows = gl_light_shadowmap;
+	// light takes a row -- but for the lights that ask to cast, below: each keeps index 1024, which hw_dynlightdata.cpp and the
+	// smoke's gather read as "no row" -- exactly what they see when the pass does not run.
+	//
+	// [LIGHTSHADOWS] Which dynamic lights take rows is IShadowMap::LightShadowAllowed (hw_shadowmap.cpp): a light that asks to
+	// cast (LF_CASTSHADOW) by the cast-shadow setting alone, any other by "Light shadows" -- or by the cast-shadow setting too
+	// while it reaches all lights. The lights that ask go FIRST, so a flash in your hand keeps its row in a map full of lamps:
+	// newest first, or the nearest the eye when more of them ask than there are rows. Every other light follows in list order,
+	// as before. With the setting Off the first loop does not run, and the second is exactly the loop this was for every light
+	// that does not ask; a light that asks then keeps index 1024 (no shadow).
+	const bool askingRows = IShadowMap::LightShadowAllowed(true);
+	const bool otherRows = IShadowMap::LightShadowAllowed(false);
+	if (askingRows)
+	{
+		static std::vector<FDynamicLight*> asking;	// main thread only; kept to spare the allocation
+		asking.clear();
+		for (auto light = Level->lights; light; light = light->next)
+		{
+			if (!light->CastShadow())
+				continue;
+			light->mShadowmapIndex = 1024;
+			if (light->shadowmapped && light->IsActive())
+				asking.push_back(light);
+		}
+		if (asking.size() > 1024)
+		{
+			std::nth_element(asking.begin(), asking.begin() + 1024, asking.end(), [&eye](const FDynamicLight* a, const FDynamicLight* b)
+				{ return (a->Pos - eye).LengthSquared() < (b->Pos - eye).LengthSquared(); });
+			asking.resize(1024);
+		}
+		for (auto light : asking)
+		{
+			IShadowMap::LightsShadowmapped++;
+			IShadowMap::LightsCastShadow++;
+
+			light->mShadowmapIndex = lightindex;
+			sm->SetLight(lightindex, (float)light->X(), (float)light->Y(), (float)light->Z(), light->GetRadius());
+			lightindex++;
+		}
+	}
 
 	// Todo: this should go through the blockmap in a spiral pattern around the player so that closer lights are preferred.
+	// ([LIGHTSHADOWS] The lights that ask already have the nearest rows, above.)
 	for (auto light = Level->lights; light; light = light->next)
 	{
 		IShadowMap::LightsProcessed++;
-		if (dynamicLightRows && light->shadowmapped && light->IsActive() && lightindex < 1024)
+		if (light->CastShadow())
+		{
+			// [LIGHTSHADOWS] Its row, or 1024, is the loop above's; with the setting Off it casts none.
+			if (!askingRows)
+				light->mShadowmapIndex = 1024;
+			continue;
+		}
+		if (otherRows && light->shadowmapped && light->IsActive() && lightindex < 1024)
 		{
 			IShadowMap::LightsShadowmapped++;
 
@@ -225,11 +271,18 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 		EffectLights::Get().BeginFrame(camera->Level, mainvp.Pos, mainvp.Angles.Yaw.Radians(), mainvp.TicFrac, LevelDataSerial(camera->Level),
 			!(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && camera->Level->aabbTree != nullptr);
 
-	if (mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && ((camera->Level->HasDynamicLights && gl_light_shadowmap) || effectLightRows))
+	// [LIGHTSHADOWS] The lights that ask to cast shadows run the pass by the cast-shadow setting, with "Light shadows" off too:
+	// while one is live and 10 seconds after, or whenever the level has dynamic lights while the setting reaches all lights
+	// (hw_dynlightdata.cpp). False while that setting is Off: the condition below is then exactly what it was.
+	const bool castShadowRows = mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && DynamicLightShadowRowsWanted(camera->Level);
+
+	if (mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && ((camera->Level->HasDynamicLights && (gl_light_shadowmap || castShadowRows)) || effectLightRows))
 	{
 		screen->SetAABBTree(camera->Level->aabbTree);
+		// [LIGHTSHADOWS] The eye, for the rows of the lights that ask when more of them ask than there are rows (CollectLights).
+		const DVector3 shadowEye = mainvp.Pos;
 		screen->mShadowMap.SetCollectLights([=] {
-			CollectLights(camera->Level);
+			CollectLights(camera->Level, shadowEye);
 		});
 		screen->UpdateShadowMap();
 	}

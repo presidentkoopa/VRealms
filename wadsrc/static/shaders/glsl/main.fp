@@ -586,14 +586,17 @@ float shadowAttenuation(vec4 lightpos, float lightcolorA)
 		vec3 xdir = normalize(cross(direction, v));
 		vec3 ydir = cross(direction, xdir);
 
+		// [RTSHADOWFIX] ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md") The loop casts step_count + 1 rays, so the sum is divided
+		// by that many: dividing by step_count made a fully lit pixel 10/9 bright. softshadow holds 27 offsets and filter N reads
+		// up to index 9N, so the ray-traced filter stops at 2 (19 rays): 3 and up read past the array.
 		float sum = 0.0;
-		int step_count = uShadowmapFilter * 9;
+		int step_count = min(uShadowmapFilter, 2) * 9;
 		for (int i = 0; i <= step_count; i++)
 		{
 			vec3 pos = target + xdir * softshadow[i].x + ydir * softshadow[i].y;
 			sum += traceHit(origin, normalize(pos - origin), dist) ? 0.0 : 1.0;
 		}
-		return sum / step_count;
+		return sum / float(step_count + 1);
 	}
 }
 

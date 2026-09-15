@@ -118,6 +118,9 @@ inline double HoldShare(uint32_t seed)
 // One light
 // ---------------------------------------------------------------------------------------------------------------------------
 
+// [PARTICLELIGHTS] The most keys a light's brightness curve holds (Source::CurveKeys): a particle definition ramp's most.
+inline constexpr int EFFECT_LIGHT_CURVE_KEYS = 8;
+
 // A light in the pool: what it was spawned with. CPU only, never uploaded.
 struct Source
 {
@@ -140,6 +143,23 @@ struct Source
 	int Tier = TIER_NORMAL;
 	uint32_t Seed = 0;				// the local hash a landed light's hold share comes from
 	uint64_t Sequence = 0;			// spawn order: ties go to the older light
+
+	// [PARTICLELIGHTS] Three more ways to shape a light ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md"), for particle and debris lights
+	// first (PARTICLEDEFS lightramp and lighthold). Each is inert at its default, so a light that sets none evaluates exactly as
+	// before.
+	//   - A BRIGHTNESS CURVE over Life, multiplying the Fade: CurveKeys keys of (share of Life, brightness), a straight line between
+	//     two keys -- smoothstep with CurveEased -- flat before the first and after the last, and held at its landing value once
+	//     landed. 0 keys: no curve.
+	//   - The HOLD'S OWN FADE exponent, so a light the curve shapes in flight still cools while it holds. Below 0: Fade's.
+	//   - A LAND POINT: where a landed light holds, game axes, in place of where its path had it at Land -- a landing another
+	//     flight model predicts (#11's debris step), or a point a little above the surface, so the light still lights it.
+	int CurveKeys = 0;
+	float CurveTime[EFFECT_LIGHT_CURVE_KEYS] = {};
+	float CurveValue[EFFECT_LIGHT_CURVE_KEYS] = {};
+	bool CurveEased = false;
+	double HoldFade = -1.0;
+	bool HasLandPoint = false;
+	Vec3 LandPoint;
 };
 
 // This frame's state of one light, game axes.
@@ -191,6 +211,30 @@ inline double FadeAt(double x, double exponent)
 	return std::pow(std::clamp(1.0 - x, 0.0, 1.0), exponent);
 }
 
+// [PARTICLELIGHTS] The brightness curve at x, a share of Life: 1 with no keys; flat before the first key and after the last; a
+// straight line between two keys, or smoothstep with CurveEased. Never below 0.
+inline double CurveAt(const Source &s, double x)
+{
+	const int keys = std::clamp(s.CurveKeys, 0, EFFECT_LIGHT_CURVE_KEYS);
+	if (keys == 0)
+		return 1.0;
+	if (keys == 1 || !(x > s.CurveTime[0]))
+		return std::max((double)s.CurveValue[0], 0.0);
+	for (int i = 1; i < keys; i++)
+	{
+		if (x < s.CurveTime[i])
+		{
+			const double t0 = s.CurveTime[i - 1];
+			const double t1 = s.CurveTime[i];
+			double f = t1 > t0 ? std::clamp((x - t0) / (t1 - t0), 0.0, 1.0) : 1.0;
+			if (s.CurveEased)
+				f = f * f * (3.0 - 2.0 * f);
+			return std::max((double)s.CurveValue[i - 1] + ((double)s.CurveValue[i] - (double)s.CurveValue[i - 1]) * f, 0.0);
+		}
+	}
+	return std::max((double)s.CurveValue[keys - 1], 0.0);
+}
+
 // Where the light is and how bright, at level time `now`.
 //
 // FLIGHT. Both ends fly the same path from their own start: the start on the path's clock, the end on a clock TailLag
@@ -217,13 +261,24 @@ inline Evaluated Evaluate(const Source &s, double now)
 		tailTime = std::min(tailTime, s.Land);
 	e.A = PathAt(s.A0, s.Vel, s.Gravity, s.Drag, headTime);
 	e.B = PathAt(s.B0, s.Vel, s.Gravity, s.Drag, tailTime);
+	// [PARTICLELIGHTS] A landed light with a land point holds there: its start is put on it and its end moved with it, so a point
+	// stays a point and a line keeps its shape.
+	if (landed && s.HasLandPoint && age >= s.Land)
+	{
+		const bool pointSource = s.B0.X == s.A0.X && s.B0.Y == s.A0.Y && s.B0.Z == s.A0.Z && !(s.TailLag > 0.0);
+		e.B = pointSource ? s.LandPoint : Add(e.B, Sub(s.LandPoint, e.A));
+		e.A = s.LandPoint;
+	}
 	e.Point = e.A.X == e.B.X && e.A.Y == e.B.Y && e.A.Z == e.B.Z;
 
 	double bright;
 	if (!landed || age < s.Land)
 		bright = FadeAt(s.Life > 0.0 ? age / s.Life : 1.0, s.Fade);
 	else
-		bright = FadeAt(s.Land / s.Life, s.Fade) * (hold > 0.0 ? FadeAt((age - s.Land) / hold, s.Fade) : 0.0);
+		bright = FadeAt(s.Land / s.Life, s.Fade) * (hold > 0.0 ? FadeAt((age - s.Land) / hold, s.HoldFade < 0.0 ? s.Fade : s.HoldFade) : 0.0);
+	// [PARTICLELIGHTS] The brightness curve over Life, held at its landing value once landed.
+	if (s.CurveKeys > 0)
+		bright *= CurveAt(s, s.Life > 0.0 ? (landed ? std::min(age, s.Land) : age) / s.Life : 1.0);
 	if (!e.Alive)
 		bright = 0.0;
 

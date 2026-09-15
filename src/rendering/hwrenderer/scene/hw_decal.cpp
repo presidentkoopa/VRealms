@@ -28,6 +28,7 @@
 #include "flatvertices.h"
 #include "hw_renderstate.h"
 #include "texturemanager.h"
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
 
 EXTERN_CVAR(Bool, gl_texture_thread)
 
@@ -60,6 +61,13 @@ void HWDecal::DrawDecal(HWDrawInfo *di, FRenderState &state)
 	state.SetObjectColor(DecalColor);
 
 	state.SetLightIndex(dynlightindex);
+	// [EFFECTLIGHTS] Effect lights on this decal, as on the wall under it ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"): mode 1,
+	// lit with N.L, on every decal that takes its wall's dynamic light today -- not an RF_FULLBRIGHT decal (ProcessDecal gives
+	// those no light index), not in a fullbright scene -- whether or not the level has dynamic lights. Set only on frames with
+	// an effect light on the GPU and put back to 0 at the end, so every decal on a frame with none uploads exactly what it did.
+	const int effectLightMode = (EffectLightBuffer::Instance() != nullptr && EffectLightBuffer::Instance()->GetLiveCount() > 0 &&
+		!di->isFullbrightScene() && !(decal->RenderFlags & RF_FULLBRIGHT)) ? 1 : 0;
+	if (effectLightMode != 0) state.SetEffectLightMode(effectLightMode);
 
 	// add light probe contribution
 	if (di->Level->LightProbes.Size() > 0)
@@ -130,6 +138,7 @@ void HWDecal::DrawDecal(HWDrawInfo *di, FRenderState &state)
 	state.SetObjectColor(0xffffffff);
 	state.SetFog(fc, -1);
 	state.SetDynLight(0, 0, 0);
+	if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
 }
 
 //==========================================================================

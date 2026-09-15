@@ -185,3 +185,31 @@ uint64_t ParticleDebrisGeneration();
 // slots and for every slot without the key. Render-side only, like ResolveParticleDefinitionHandle:
 // the answer can differ between machines, so nothing that affects the simulation may depend on it.
 bool ParticleDefinitionIsDebris(int slot);
+
+// [PARTICLELIGHTS] A DEFINITION THAT THROWS LIGHT ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md"; "Engine docs/
+// LIGHTS_20_21_22_PLAN.md" 2e). A named definition with a `light` radius above 0 makes its particles -- ring particles and debris
+// pieces alike -- throw effect lights (hw_effectlights.h): of each burst a hashed `lightshare`, at most `lightmax`, each a short
+// light that flies with its particle and, where it collides, lands and holds (hw_particlelights.h). Its keys live here, not in
+// ParticleDefinitionGpu (whose 256 bytes are all used), and reach the renderer as this list, the debris list's way.
+struct ParticleLightDefinition
+{
+	int Slot = -1;					// the named definition slot, 0 .. 255
+	float Radius = 0.f;				// light = <radius>: map units, above 0 .. 1024
+	float Intensity = 1.f;			// light = <radius>, <intensity>: 0 .. 16
+	bool HasColor = false;			// lightcolor given; else the colour ramp's first key
+	float Color[3] = { 1.f, 1.f, 1.f };	// lightcolor, 0..1 a channel
+	int RampKeys = 0;				// lightramp: 0 = left off (1, fading as `fade = smooth`); else its keys of (life fraction, brightness)
+	float RampTime[8] = {};
+	float RampValue[8] = {};			// 0 .. 16
+	float Share = 1.f;				// lightshare: the share of each burst's particles that carry a light, 0..1
+	int Max = 16;					// lightmax: at most this many lights a burst, 1 .. 4096
+	int Line = -1;					// lightline: -1 left off (a streak lights as a line), 0 a point, 1 a line along the streak
+	float Hold = 0.f;				// lighthold: the most seconds a landed light keeps lighting, 0 .. 60
+	int Priority = 1;				// lightpriority: 0 low, 1 normal, 2 important (ranks with flashes and tracers)
+};
+
+// One entry per named definition that throws light, in slot order, and the list's generation, bumped each time
+// LoadParticleDefinitions rebuilds it.
+const ParticleLightDefinition *ParticleLightDefinitionData();
+unsigned ParticleLightDefinitionCount();
+uint64_t ParticleLightGeneration();

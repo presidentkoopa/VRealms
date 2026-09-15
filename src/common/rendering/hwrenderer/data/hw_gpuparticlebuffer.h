@@ -73,6 +73,9 @@ public:
 	// definition slot) lets it note, for every record it uploads, how long particles
 	// that need the premultiplied blend, the view lights or their own soft distance stay
 	// alive (the *AliveAt queries below). Null notes nothing, so they all stay false.
+	//
+	// [PARTICLELIGHTS] It also hands EffectLights the lights of the new records whose named definition throws light
+	// (PARTICLEDEFS `light`, hw_particlelights.h): see SpawnRecordLights.
 	void Sync(const void *records, unsigned recordCount, uint64_t serial, uint64_t written,
 		const uint8_t *definitionLooks = nullptr, unsigned definitionLookCount = 0);
 
@@ -126,6 +129,13 @@ public:
 private:
 	void Upload(const void *records, unsigned first, unsigned count);
 	void NoteRecordLooks(const void *records, unsigned first, unsigned count);	// [2d]
+
+	// [PARTICLELIGHTS] The effect lights of the records written since the last sync ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md",
+	// hw_particlelights.h): every record of a named definition that throws light and carries one -- its burst's hashed
+	// lightshare, at most its lightmax -- goes to EffectLights::Spawn. By written index, so a full upload lights no old record again.
+	void SpawnRecordLights(const void *records, unsigned size, uint64_t serial, uint64_t written);
+	struct LightState;
+	LightState *mLights = nullptr;	// made on the first sync that could light: the definitions' lights and the ring's burst run
 
 	IDataBuffer *mBuffer = nullptr;
 	IVertexBuffer *mQuads = nullptr;

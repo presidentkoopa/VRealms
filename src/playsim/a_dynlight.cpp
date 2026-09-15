@@ -671,6 +671,7 @@ void FDynamicLight::CollectWithinRadius(const DVector3 &opos, FSection *section,
 void FDynamicLight::LinkLight()
 {
 	dynlights_link_calls++;	// [UZDXREMA] perf instrumentation
+	dynlights_links_total++;	// [LIGHTSHADOWS] never reset: the performance log's "relinks" per window (hw_clock.h)
 	UnlinkLight();
 	LinkedPos = Pos;	// [round2 B1] where these lists were built from; see R_UpdatePoseAnchoredLights
 	if (radius>0)

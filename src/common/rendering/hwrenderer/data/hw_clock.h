@@ -47,6 +47,11 @@ extern int VRFinalPresentPasses, VRMirrorPreparePasses, VRSceneTransferOps, VRSu
 
 extern int iter_dlightf, iter_dlight, draw_dlight, draw_dlightf;
 extern int dynlights_active_updates, dynlights_link_calls, dynlights_relink_calls, dynlights_unlink_calls;
+// [LIGHTSHADOWS] Every FDynamicLight::LinkLight since start-up: a light's section lists rebuilt (a moving or resizing light's tic
+// relink, a new light, a pose-anchored light moving). Never reset. ResetProfilingData clears the per-frame counters above at the
+// top of each render -- after the tics that relink -- so the performance log reads this one's growth over a window instead
+// (hw_perflog.cpp, load "relinks").
+extern uint64_t dynlights_links_total;
 extern int dynlights_collected_subsectors, dynlights_linked_sectors, dynlights_linked_sides;
 extern int dynlights_removed_sector_links, dynlights_removed_side_links;
 extern int dynlights_distance_culled_walls, dynlights_distance_culled_flats, dynlights_distance_culled_models;

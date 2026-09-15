@@ -41,6 +41,7 @@
 #include "flatvertices.h"
 #include "hw_lightbuffer.h"
 #include "hw_renderstate.h"
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
 #include "textures.h"
 #include "menu.h"
 #include <algorithm>
@@ -224,9 +225,18 @@ void HWDrawInfo::DrawPSprite(HUDSprite *huds, FRenderState &state)
 		// every ripped weapon by hand, forever.
 		state.AlphaFunc(Alpha_GEqual, huds->mframe->ignoresSkinAlpha() ? 0.f : gl_mask_threshold);
 
+		// [EFFECTLIGHTS] Effect lights on the weapon model ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"): mode 1, lit with N.L,
+		// when the model takes dynamic light today (DrawPlayerSprites: not a fuzz shadow, not a fullbright scene, gl_light_weapons,
+		// its owner not asking for no dynamic light), whether or not the level has dynamic lights. Set only on frames with an
+		// effect light on the GPU and put back to 0 after the model, so every draw on a frame with none uploads exactly what it did.
+		const int effectLightMode = (EffectLightBuffer::Instance() != nullptr && EffectLightBuffer::Instance()->GetLiveCount() > 0 &&
+			huds->RenderStyle.BlendOp != STYLEOP_Shadow && !isFullbrightScene() && gl_light_weapons &&
+			huds->owner != nullptr && !(huds->owner->renderflags2 & RF2_NODYNAMICLIGHTING)) ? 1 : 0;
+		if (effectLightMode != 0) state.SetEffectLightMode(effectLightMode);
 		FHWModelRenderer renderer(this, state, huds->lightindex);
 		RenderHUDModel(&renderer, huds->weapon, huds->translation, huds->rotation + FVector3(huds->mx / 4., (huds->my - WEAPONTOP) / -4., 0), huds->pivot, huds->mframe, Net_ModifyObjectFrac(huds->weapon, Viewpoint.TicFrac));
 		state.SetVertexBuffer(screen->mVertexData);
+		if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
 	}
 	else
 	{

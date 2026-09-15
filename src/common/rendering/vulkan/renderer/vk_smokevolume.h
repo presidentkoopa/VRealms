@@ -55,6 +55,12 @@
 ** image (PPExternalImage::SmokeBeams), made on the first frame with beams in smoke, copied into when
 ** the frame's list changed, and kept in SHADER_READ_ONLY_OPTIMAL between copies.
 **
+** [EFFECTLIGHTS] LD: EFFECT LIGHTS IN THE SMOKE (hw_framecompute.h, SmokeEffectLightPass): on a frame
+** an effect light reaches the grid, RunLight adds pass 2 after the dynamic lights -- one dispatch of
+** smoke_light.comp's SMOKE_EFFECT_LIGHTS variant (the light set's seven bindings plus the effect light
+** records and bins, storage buffers 7 and 8), made and given its own set the first time it is needed.
+** A frame with no effect light in reach records exactly what it did before.
+**
 ** CPU-side decisions -- when the volume exists, where its box is, what goes in, the
 ** mask -- are made in hw_smokevolume.cpp and arrive in SmokeVolumeFrame, so a render
 ** rebuild replaces only this file and the shaders.
@@ -155,6 +161,9 @@ private:
 	bool EnsureLightSet();
 	void UploadAmbient(const SmokeLightFrame& light);
 	void RunLight(const SmokeVolumeFrame& frame);
+	// [EFFECTLIGHTS] LD: the pass-2 variant (made on first use; false: refused this session) and its dispatch, from RunLight.
+	bool EnsureEffectLightProgram();
+	void DispatchEffectLights(const SmokeVolumeFrame& frame);
 
 	// [13e] The beam list image: made once (false: refused this session), the frame's list copied in (returns the beams
 	// the image holds for this frame, 0 = none), freed with the volume.
@@ -174,8 +183,10 @@ private:
 	std::unique_ptr<VkComputeProgram> mShiftRGBA;	// target rgba16f
 	std::unique_ptr<VkComputeProgram> mShiftR8;		// target r8
 	std::unique_ptr<VkComputeProgram> mLightProgram;	// [13d] smoke_light.comp
+	std::unique_ptr<VkComputeProgram> mEffectLightProgram;	// [EFFECTLIGHTS] LD: smoke_light.comp (SMOKE_EFFECT_LIGHTS), pass 2
 	bool mProgramsReady = false;
 	bool mProgramsFailed = false;
+	bool mEffectLightProgramFailed = false;	// [EFFECTLIGHTS] LD: not retried this session
 
 	Volume mDensityHeat[2];
 	Volume mVelocity[2];
@@ -213,6 +224,9 @@ private:
 	// frame it is used, before its first dispatch: the engine's shadow map image can be re-made between
 	// frames (gl_shadowmap_quality), and the frame before has finished by then.
 	std::unique_ptr<VulkanDescriptorSet> mLightSet;
+	// [EFFECTLIGHTS] LD: the pass-2 variant's set -- the light set's bindings plus the effect light records (7) and bins (8).
+	// Written every frame pass 2 runs, before its dispatch; freed with the light set.
+	std::unique_ptr<VulkanDescriptorSet> mEffectLightSet;
 
 	SmokeGridSpec mGrid;
 	int mTiles[3] = { 0, 0, 0 };
@@ -236,4 +250,5 @@ private:
 	int mRefusedLightQuality = 0;
 	uint64_t mAmbientSerialUploaded = 0;
 	bool mLightWarned = false;
+	bool mEffectLightWarned = false;	// [EFFECTLIGHTS] LD: no set for pass 2 (logged once)
 };

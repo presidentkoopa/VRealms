@@ -35,6 +35,9 @@
 **     definition drawn as a mesh this frame (MeshParticleBuffer::GetBillboardHidden).
 **   - LANDING SOUNDS ([DEBRISSOUNDS], hw_debrislanding.h): a burst of a definition with `landsound` is also flown on
 **     the CPU as it goes in, and its group makes one sound where and when its first piece is drawn landing.
+**   - LIGHTS ([PARTICLELIGHTS], hw_particlelights.h): a burst of a definition with `light` hands EffectLights a light for each
+**     piece that carries one (its hashed lightshare, at most its lightmax), flying with the piece and landing where #11 predicts
+**     its first landing, where it holds for a hashed share of its lighthold.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim, nothing is read back from the GPU, and no
 ** RNG is used (a piece's jitter is SpawnParticles' GpuParticleHash of its burst's seed).
@@ -48,6 +51,7 @@
 
 #include "hw_debrisframe.h"
 #include "hw_debrislanding.h"	// [DEBRISSOUNDS] DebrisLandingSounds
+#include "hw_particlelights.h"	// [PARTICLELIGHTS] ParticleLights::SlotLight
 #include "zstring.h"
 
 struct FLevelLocals;
@@ -152,6 +156,7 @@ private:
 	void BuildMeshInstances(double now);
 	void EnsureQuads(int capacity);
 	bool EnsureDrawModel(int meshIndex);
+	void SyncLights();	// [PARTICLELIGHTS]
 
 	// Frame and demand.
 	uint64_t mLevelSerial = 0;
@@ -219,6 +224,14 @@ private:
 
 	// [DEBRISSOUNDS] The groups' landing sounds: fed by ExpandBurst, played from PrepareFrame.
 	DebrisLandingSounds mLanding;
+
+	// [PARTICLELIGHTS] Each named definition's light (ParticleLights::ResolveSlots), and the light list and test it was resolved from.
+	ParticleLights::SlotLight mSlotLights[DEBRIS_DEFINITION_SLOTS];
+	uint64_t mLightListSeen = 0;
+	int mLightTestSeen = -1;
+	bool mAnyLight = false;
+	uint64_t mLightsSpawned = 0;
+	bool mLightLogged = false;
 
 	IVertexBuffer* mQuads = nullptr;
 	int mQuadCapacity = 0;

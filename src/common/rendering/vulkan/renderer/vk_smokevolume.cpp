@@ -28,6 +28,8 @@
 #include "vulkan/system/vk_commandbuffer.h"
 #include "vulkan/textures/vk_texture.h"		// [13d] the engine's shadow map image (VkTextureManager::Shadowmap)
 #include "vulkan/textures/vk_samplers.h"	// [13d] and its sampler
+#include "vulkan/system/vk_hwbuffer.h"		// [EFFECTLIGHTS] LD: the effect light buffers' Vulkan buffers
+#include "hw_effectlightbuffer.h"			// [EFFECTLIGHTS] LD: the effect light records and bins
 #include "hw_framecompute.h"
 #include "hw_perflog.h"
 #include "i_time.h"
@@ -91,6 +93,7 @@ namespace
 	static_assert(sizeof(SmokeShiftConstants) == 48, "SmokeShiftConstants must match smoke_shift.comp's push constant block (48 bytes)");
 
 	// [13d] shaders/compute/smoke_light.comp
+	// [EFFECTLIGHTS] LD: pass 2 (RegionMin.w 2) gives some members another meaning -- see DispatchEffectLights.
 	struct SmokeLightConstants
 	{
 		int32_t RegionMin[4];		// xyz first light cell; w the pass: 0 ambient, 1 a light
@@ -1043,6 +1046,7 @@ void VkSmokeVolume::ReleaseLightGrid(const char* why)
 	// Commands recorded this frame may still name these: the frame's delete list, as Release does.
 	auto deleteList = fb->GetCommands()->DrawDeleteList.get();
 	deleteList->Add(std::move(mLightSet));
+	deleteList->Add(std::move(mEffectLightSet));	// [EFFECTLIGHTS] LD: it names the same images
 	if (!mLight.Image && !mLightDirection.Image && !mAmbientColumns.Image)
 		return;
 
@@ -1202,10 +1206,121 @@ void VkSmokeVolume::RunLight(const SmokeVolumeFrame& frame)
 			Groups(constants.RegionMax[2] - constants.RegionMin[2]));
 	}
 
+	// [EFFECTLIGHTS] LD: pass 2, the effect lights, in the same group -- only on a frame one reaches the grid.
+	if (light.EffectLights.LightCount > 0)
+		DispatchEffectLights(frame);
+
 	commands->PopGroup();
 
 	if (timed)
 		PerfLog::AddCpuSample("fx.smokelight", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//-----------------------------------------------------------------------------
+//
+// [EFFECTLIGHTS] LD: effect lights in the smoke ("Engine docs/EFFECT_LIGHTS_LD_IMPL_NOTES.md"; hw_framecompute.h,
+// SmokeEffectLightPass; smoke_light.comp's EffectLightPass)
+//
+//-----------------------------------------------------------------------------
+
+// The pass-2 variant of smoke_light.comp: the light program's seven bindings plus the effect light records (7) and bins (8),
+// storage buffers. Made the first time an effect light reaches the grid, not with the other programs, so a session that never
+// has one builds and binds exactly what it did before. A device that cannot build it logs once (CreateProgram says why) and
+// the smoke keeps its ambient and dynamic light; it is not retried this session.
+bool VkSmokeVolume::EnsureEffectLightProgram()
+{
+	if (mEffectLightProgram)
+		return true;
+	if (mEffectLightProgramFailed)
+		return false;
+
+	const VkDescriptorType storage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	const VkDescriptorType sampled = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	const VkDescriptorType buffer = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	mEffectLightProgram = mCompute->CreateProgram("shaders/compute/smoke_light.comp",
+		{ { 0, sampled }, { 1, sampled }, { 2, sampled }, { 3, storage }, { 4, storage }, { 5, sampled }, { 6, sampled }, { 7, buffer }, { 8, buffer } },
+		(uint32_t)sizeof(SmokeLightConstants), "#define SMOKE_EFFECT_LIGHTS\n");
+	if (!mEffectLightProgram)
+	{
+		mEffectLightProgramFailed = true;
+		Printf(TEXTCOLOR_RED "SmokeVolume: the effect light pass did not build -- effect lights do not light the smoke this session\n");
+		return false;
+	}
+	return true;
+}
+
+// Pass 2: each light cell of the region SmokeVolume::GatherEffectLights found loops the effect lights of its bin, in one
+// dispatch -- after the dynamic lights (the order changes nothing but rounding), inside fx.smokelight. Only from RunLight, after
+// its checks, so the grid, the tile map and the shadow map are this frame's and readable.
+void VkSmokeVolume::DispatchEffectLights(const SmokeVolumeFrame& frame)
+{
+	const SmokeLightFrame& light = frame.Light;
+	const SmokeEffectLightPass& pass = light.EffectLights;
+	EffectLightBuffer* buffers = EffectLightBuffer::Instance();
+	if (pass.LightCount <= 0 || buffers == nullptr || buffers->GetRecordBuffer() == nullptr || buffers->GetBinBuffer() == nullptr)
+		return;
+
+	const int size[3] = { mLightGrid.SizeX, mLightGrid.SizeY, mLightGrid.SizeZ };
+	SmokeLightConstants constants = {};
+	for (int axis = 0; axis < 3; axis++)
+	{
+		constants.RegionMin[axis] = std::clamp(pass.RegionMin[axis], 0, size[axis]);
+		constants.RegionMax[axis] = std::clamp(pass.RegionMax[axis], 0, size[axis]);
+		if (constants.RegionMin[axis] >= constants.RegionMax[axis])
+			return;
+	}
+
+	if (!EnsureEffectLightProgram())
+		return;
+	if (!mEffectLightSet)
+	{
+		mEffectLightSet = mCompute->AllocateSet(mEffectLightProgram.get());
+		if (!mEffectLightSet)
+		{
+			if (!mEffectLightWarned)
+			{
+				mEffectLightWarned = true;
+				Printf(TEXTCOLOR_RED "SmokeVolume: no descriptor set for the effect light pass -- effect lights do not light the smoke (logged once)\n");
+			}
+			return;
+		}
+	}
+
+	// Bindings 0-6 name what the light set names this frame; 7 and 8 the effect light buffers. Written before this frame's
+	// dispatch, every frame the pass runs, as the light set is.
+	VkTextureImage& shadowMap = fb->GetTextureManager()->Shadowmap;
+	VulkanSampler* sampler = mCompute->GetVolumeSampler();
+	const VkImageLayout general = VK_IMAGE_LAYOUT_GENERAL;
+	WriteDescriptors()
+		.AddCombinedImageSampler(mEffectLightSet.get(), 0, mTileActive.View.get(), sampler, general)
+		.AddCombinedImageSampler(mEffectLightSet.get(), 1, mAmbientColumns.View.get(), sampler, general)
+		.AddCombinedImageSampler(mEffectLightSet.get(), 2, shadowMap.View.get(), fb->GetSamplerManager()->ShadowmapSampler.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+		.AddStorageImage(mEffectLightSet.get(), 3, mLight.View.get(), general)
+		.AddStorageImage(mEffectLightSet.get(), 4, mLightDirection.View.get(), general)
+		.AddCombinedImageSampler(mEffectLightSet.get(), 5, mDensityHeat[mLatest].View.get(), sampler, general)
+		.AddCombinedImageSampler(mEffectLightSet.get(), 6, mVelocity[mLatest].View.get(), sampler, general)
+		.AddBuffer(mEffectLightSet.get(), 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, static_cast<VkHardwareDataBuffer*>(buffers->GetRecordBuffer())->mBuffer.get())
+		.AddBuffer(mEffectLightSet.get(), 8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, static_cast<VkHardwareDataBuffer*>(buffers->GetBinBuffer())->mBuffer.get())
+		.Execute(fb->device.get());
+
+	// smoke_light.comp's EffectLightPass reads: RegionMin.w 2; PositionRadius.xyz the grid's corner (Doom axes, whole map units,
+	// as GatherEffectLights measured the region from); Color.rgb the look's scatter; SpotDirection.xyz the offset to the
+	// effect-light grid's corner; Cone.z the light cell size (pass 1's).
+	constants.RegionMin[3] = 2;
+	constants.RegionMax[3] = mLightGrid.CellsPerTile;
+	for (int axis = 0; axis < 3; axis++)
+	{
+		constants.PositionRadius[axis] = (float)((double)frame.OriginCell[axis] * frame.Grid.CellSize);
+		constants.Color[axis] = pass.Scatter;
+		constants.SpotDirection[axis] = pass.BinOffset[axis];
+	}
+	constants.SpotDirection[3] = -1.0f;
+	constants.Cone[2] = (float)mLightGrid.CellSize;
+	constants.Cone[3] = light.AmbientScale;
+	mCompute->Dispatch(mEffectLightProgram.get(), mEffectLightSet.get(), &constants,
+		Groups(constants.RegionMax[0] - constants.RegionMin[0]),
+		Groups(constants.RegionMax[1] - constants.RegionMin[1]),
+		Groups(constants.RegionMax[2] - constants.RegionMin[2]));
 }
 
 //-----------------------------------------------------------------------------

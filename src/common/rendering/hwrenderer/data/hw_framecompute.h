@@ -225,6 +225,22 @@ struct SmokeLightRecord
 	int ShadowRow = -1;						// its row in the engine's shadow map this frame; -1 = not occluded
 };
 
+// [EFFECTLIGHTS] LD: EFFECT LIGHTS IN THE SMOKE ("Engine docs/EFFECT_LIGHTS_LD_IMPL_NOTES.md", LIGHTS_20_21_22_PLAN.md 2h).
+//
+// Effect lights (hw_effectlights.h: sparks, embers, impacts, tracers -- points and line segments, sorted into world bins
+// around the eye once a frame) light the grid through smoke_light.comp's PASS 2: ONE dispatch over the light cells any of
+// them can reach, each cell looping only its own effect-light bin, from the same two storage buffers surfaces read. The
+// CPU side (SmokeVolume::GatherEffectLights) decides it from EffectLights::Get().FrameBins(); LightCount 0 means no pass 2
+// this frame, and then the grid is filled exactly as without effect lights. The dynamic lights keep pass 1.
+struct SmokeEffectLightPass
+{
+	int LightCount = 0;					// binned effect lights (and residual glows) whose reach meets a light cell's centre; 0 = none
+	int RegionMin[3] = { 0, 0, 0 };		// the light cells their reach covers (union of boxes, clipped to the grid), Doom axes
+	int RegionMax[3] = { 0, 0, 0 };		// one past the last
+	float BinOffset[3] = { 0, 0, 0 };	// the light grid's corner minus the effect-light grid's corner, Doom axes, map units (whole)
+	float Scatter = 0;					// the look's scatter, 0..1, as pass 1's colours take it
+};
+
 // [13d] This frame's light grid, decided on the CPU (hw_smokevolume.cpp).
 struct SmokeLightFrame
 {
@@ -237,6 +253,7 @@ struct SmokeLightFrame
 	const uint8_t* AmbientColumns = nullptr;
 	size_t AmbientByteCount = 0;
 	uint64_t AmbientSerial = 0;				// renewed whenever those bytes change: the backend copies them in when it differs
+	SmokeEffectLightPass EffectLights;		// [EFFECTLIGHTS] LD: pass 2 over the effect-light bins (LightCount 0 = none)
 };
 
 // [SMOKEVOLUME] 13e: BEAMS IN THE SMOKE ("Engine docs/SMOKE_VOLUME_PLAN.md" 13e, "Engine docs/SMOKE_13E_IMPL_NOTES.md").

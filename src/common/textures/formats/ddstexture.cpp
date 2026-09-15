@@ -1005,8 +1005,29 @@ int FDDSTexture::ReadCompressedPixels(FileReader* reader, unsigned char** data, 
 		return 0;
 	}
 
-	reader->Seek(headerSize, FileReader::SeekSet);
-	if ((size_t)reader->Read(pixels, pixelDataSize) != pixelDataSize)
+	// The reader starts at the top of the lump and may be a decompressor stream (a deflated zip/pk3 entry), which cannot
+	// seek and throws if asked. Step over the header by reading it, and treat a stream error as an unreadable lump.
+	try
+	{
+		uint8_t skip[256];
+		size_t toSkip = headerSize;
+		while (toSkip > 0)
+		{
+			const size_t chunk = std::min(toSkip, sizeof(skip));
+			if ((size_t)reader->Read(skip, chunk) != chunk)
+			{
+				free(pixels);
+				return 0;
+			}
+			toSkip -= chunk;
+		}
+		if ((size_t)reader->Read(pixels, pixelDataSize) != pixelDataSize)
+		{
+			free(pixels);
+			return 0;
+		}
+	}
+	catch (...)
 	{
 		free(pixels);
 		return 0;

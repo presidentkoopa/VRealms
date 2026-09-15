@@ -53,13 +53,74 @@
 cycle_t IShadowMap::UpdateCycles;
 int IShadowMap::LightsProcessed;
 int IShadowMap::LightsShadowmapped;
+int IShadowMap::LightsCastShadow;		// [LIGHTSHADOWS]
+uint64_t IShadowMap::UpdateSerial;		// [LIGHTSHADOWS]
+bool IShadowMap::RaytracedThisSession;	// [LIGHTSHADOWS]
 
 CVAR(Bool, gl_light_shadowmap, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+//==========================================================================
+//
+// [LIGHTSHADOWS] THE CAST-SHADOW SETTING ("Engine docs/EFFECT_LIGHTS_LE_IMPL_NOTES.md"; plan LIGHTS_20_21_22_PLAN.md
+// section 5 and the owner's answer 2). One ladder for the lights that ask to cast shadows (LF_CASTSHADOW, a_dynlight.h:
+// a mod's muzzle flashes, or any light content marks), beside "Light shadows" above, which keeps every other light exactly
+// as it always was.
+//
+//   gl_light_castshadows       0 Off (the default): lights that ask cast no shadow, whatever else is on.
+//                              1 Shadow maps: they take the FIRST shadow-map rows (CollectLights, hw_entrypoint.cpp), with
+//                                or without "Light shadows"; walls -- one-sided lines -- cast. The map pass runs once a
+//                                frame, both eyes sharing it, while one of them is live and for 10 seconds after
+//                                (DynamicLightShadowRowsWanted, hw_dynlightdata.cpp).
+//                              2 Ray traced: as 1, and the scene shaders ray trace light shadows from the NEXT START on.
+//                                The Vulkan device reads it once, as it reads vk_raytrace (VulkanRenderDevice::
+//                                RaytracingEnabled). While ray traced, every light with a row is traced -- lamps under
+//                                "Light shadows" too: floors, ledges and 3D objects cast, and the level is where it was at
+//                                map start (doors, lifts). Without ray queries, or on OpenGL, it stays shadow maps.
+//   gl_light_shadowmap_lights  what that setting reaches: 0 the lights that ask (the default); 1 all lights -- every other
+//                              light the map can shadow casts by it too, on top of "Light shadows", never less.
+//
+// Both are read by the renderer every frame (the ray-traced step aside). They are client settings: they change which lights
+// get a row, never the playsim, so each machine in a network game chooses its own.
+//
+//==========================================================================
+
+CUSTOM_CVARD(Int, gl_light_castshadows, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "shadows for lights that ask to cast them: 0 off, 1 shadow maps, 2 ray traced (from the next start)")
+{
+	if (self < IShadowMap::CASTSHADOWS_OFF || self > IShadowMap::CASTSHADOWS_RAYTRACED) self = IShadowMap::CASTSHADOWS_OFF;
+}
+
+CUSTOM_CVARD(Int, gl_light_shadowmap_lights, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "which lights gl_light_castshadows reaches: 0 lights that ask, 1 all lights")
+{
+	if (self < IShadowMap::SHADOWLIGHTS_ASKING || self > IShadowMap::SHADOWLIGHTS_ALL) self = IShadowMap::SHADOWLIGHTS_ASKING;
+}
+
+bool IShadowMap::CastShadowsOn()
+{
+	return gl_light_castshadows >= CASTSHADOWS_SHADOWMAP;
+}
+
+bool IShadowMap::CastShadowsRaytraced()
+{
+	return gl_light_castshadows == CASTSHADOWS_RAYTRACED;
+}
+
+bool IShadowMap::CastShadowsReachAllLights()
+{
+	return CastShadowsOn() && gl_light_shadowmap_lights == SHADOWLIGHTS_ALL;
+}
+
+bool IShadowMap::LightShadowAllowed(bool asksToCast)
+{
+	if (asksToCast)
+		return CastShadowsOn();
+	return gl_light_shadowmap || CastShadowsReachAllLights();
+}
 
 ADD_STAT(shadowmap)
 {
 	FString out;
-	out.Format("upload=%04.2f ms  lights=%d  shadowmapped=%d", IShadowMap::UpdateCycles.TimeMS(), IShadowMap::LightsProcessed, IShadowMap::LightsShadowmapped);
+	// [LIGHTSHADOWS] asked = the rows of lights that ask to cast shadows
+	out.Format("upload=%04.2f ms  lights=%d  shadowmapped=%d  asked=%d", IShadowMap::UpdateCycles.TimeMS(), IShadowMap::LightsProcessed, IShadowMap::LightsShadowmapped, IShadowMap::LightsCastShadow);
 	return out;
 }
 
@@ -89,16 +150,27 @@ bool IShadowMap::ShadowTest(const DVector3 &lpos, const DVector3 &pos)
 		return true;
 }
 
+// [LIGHTSHADOWS] See the header: the light's own switch in place of gl_light_shadowmap.
+bool IShadowMap::ShadowTest(const DVector3 &lpos, const DVector3 &pos, bool asksToCast)
+{
+	if (mAABBTree && LightShadowAllowed(asksToCast))
+		return mAABBTree->RayTest(lpos, pos) >= 1.0f;
+	else
+		return true;
+}
+
 bool IShadowMap::PerformUpdate()
 {
 	UpdateCycles.Reset();
 
 	LightsProcessed = 0;
 	LightsShadowmapped = 0;
+	LightsCastShadow = 0;	// [LIGHTSHADOWS]
 
 	// CollectLights will be null if the calling code decides that shadowmaps are not needed.
 	if (CollectLights != nullptr)
 	{
+		UpdateSerial++;	// [LIGHTSHADOWS] this frame ran the pass
 		UpdateCycles.Clock();
 		UploadAABBTree();
 		UploadLights();

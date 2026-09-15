@@ -108,6 +108,7 @@ static thread_local TArray<FWallLightCandidate> wallLightCandidates;
 #include "hw_walldispatcher.h"
 #include "m_round.h"
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamageWallKey
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
 
 EXTERN_CVAR(Int, gl_max_vertices)
 
@@ -339,6 +340,15 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 		type == RENDERWALL_TOP ? 0 : type == RENDERWALL_M1S ? 1 : type == RENDERWALL_BOTTOM ? 2 : -1);
 	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(surfaceDamageKey);
 
+	// [EFFECTLIGHTS] Effect lights on this wall ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"): mode 1, lit with N.L, on every wall
+	// SetupLights lights -- not an additive wall unless the level lights additive surfaces, not a fog boundary, mirror or colour
+	// wall, not in a fullbright scene -- whether or not the level has dynamic lights. Set only on frames with an effect light on the
+	// GPU and put back to 0 at the end, so every wall on a frame with none uploads exactly what it did.
+	const int effectLightMode = (EffectLightBuffer::Instance() != nullptr && EffectLightBuffer::Instance()->GetLiveCount() > 0 &&
+		di->di != nullptr && !di->isFullbrightScene() && !(RenderStyle == STYLE_Add && !di->Level->lightadditivesurfaces) &&
+		type != RENDERWALL_FOGBOUNDARY && type != RENDERWALL_MIRRORSURFACE && type != RENDERWALL_COLOR) ? 1 : 0;
+	if (effectLightMode != 0) state.SetEffectLightMode(effectLightMode);
+
 	state.SetMaterial(texture, UF_Texture, 0, flags & 3, NO_TRANSLATION, -1);
 #ifdef NPOT_EMULATION
 	// Test code, could be reactivated as a compatibility option in the unlikely event that some old vanilla map eve needs it.
@@ -472,6 +482,7 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 
 	state.ApplyTextureManipulation(nullptr);
 	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(0);	// [SURFACEDAMAGE]
+	if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
 }
 
 //==========================================================================

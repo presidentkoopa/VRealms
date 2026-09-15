@@ -48,6 +48,7 @@ static thread_local TArray<FFlatLightCandidate> flatLightCandidates;
 #include "hw_viewpointbuffer.h"
 #include "m_round.h"
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamageFlatKey
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
 
 CVAR(Int, gl_max_vertices, 0, CVAR_ARCHIVE)
 
@@ -404,6 +405,14 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 	// other draw -- and every flat while nothing is damaged -- uploads exactly what it did.
 	const int surfaceDamageKey = (renderflags & SSRF_RENDER3DPLANES) ? 0 : SurfaceDamageFlatKey(sector, ceiling);
 	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(surfaceDamageKey);
+	// [EFFECTLIGHTS] Effect lights on this plane ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"): mode 1, lit with N.L, on every
+	// plane SetupLights lights -- not an additive plane unless the level lights additive surfaces, not a flood-fill stand-in
+	// (DrawFloodPlanes draws it with no light), not in a fullbright scene -- whether or not the level has dynamic lights. Set only
+	// on frames with an effect light on the GPU and put back to 0 at the end, so every flat on a frame with none uploads exactly
+	// what it did.
+	const int effectLightMode = (EffectLightBuffer::Instance() != nullptr && EffectLightBuffer::Instance()->GetLiveCount() > 0 &&
+		!di->isFullbrightScene() && !(renderstyle == STYLE_Add && !di->Level->lightadditivesurfaces) && !(hacktype & SSRF_FLOODHACK)) ? 1 : 0;
+	if (effectLightMode != 0) state.SetEffectLightMode(effectLightMode);
 #ifdef _DEBUG
 	if (sector->sectornum == gl_breaksec)
 	{
@@ -540,6 +549,7 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 	state.ApplyTextureManipulation(nullptr);
 	if (plane.plane.dithertransflag) state.SetEffect(EFF_NONE);
 	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(0);	// [SURFACEDAMAGE]
+	if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
 }
 
 //==========================================================================

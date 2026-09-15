@@ -66,7 +66,14 @@ enum LightFlag
 	LF_DONTLIGHTACTORS = 32,
 	LF_SPOT = 64,
 	LF_DONTLIGHTOTHERS = 128,
-	LF_DONTLIGHTMAP = 256
+	LF_DONTLIGHTMAP = 256,
+	// [LIGHTSHADOWS] This light asks to cast shadows. Content sets it on the lights whose shadows matter -- a weapon's muzzle
+	// flash, a key lamp -- through A_AttachLight's flags, +DYNAMICLIGHT.CASTSHADOW or GLDEFS "castshadow 1". The player's
+	// cast-shadow setting then decides what they cost: gl_light_castshadows 0 Off (they cast none, whatever else is on),
+	// 1 shadow maps, 2 ray traced (hw_shadowmap.cpp, IShadowMap::LightShadowAllowed). Every other light keeps "Light shadows"
+	// (gl_light_shadowmap). LF_NOSHADOWMAP still wins: such a light is never shadowable. Read by the renderer only -- it
+	// decides which lights get a shadow-map row, never anything in the playsim.
+	LF_CASTSHADOW = 512
 };
 
 typedef TFlags<LightFlag> LightFlags;
@@ -101,6 +108,7 @@ public:
 	void SetDontLightOthers(bool on) { if (on) m_lightFlags |= LF_DONTLIGHTOTHERS; else m_lightFlags &= ~LF_DONTLIGHTOTHERS; }
 	void SetDontLightMap(bool on) { if (on) m_lightFlags |= LF_DONTLIGHTMAP; else m_lightFlags &= ~LF_DONTLIGHTMAP; }
 	void SetNoShadowmap(bool on) { if (on) m_lightFlags |= LF_NOSHADOWMAP; else m_lightFlags &= ~LF_NOSHADOWMAP; }
+	void SetCastShadow(bool on) { if (on) m_lightFlags |= LF_CASTSHADOW; else m_lightFlags &= ~LF_CASTSHADOW; }	// [LIGHTSHADOWS] GLDEFS "castshadow"
 	void SetLightDefIntensity(double i) { m_LightDefIntensity = i; }
 	void SetSpot(bool spot) { if (spot) m_lightFlags |= LF_SPOT; else m_lightFlags &= ~LF_SPOT; }
 	void SetSpotInnerAngle(double angle) { m_spotInnerAngle = DAngle::fromDeg(angle); }
@@ -270,6 +278,7 @@ struct FDynamicLight
 	bool IsSpot() const { return !!((*pLightFlags) & LF_SPOT); }
 	bool IsAttenuated() const { return !!((*pLightFlags) & LF_ATTENUATE); }
 	bool DontShadowmap() const { return !!((*pLightFlags) & LF_NOSHADOWMAP); }
+	bool CastShadow() const { return !!((*pLightFlags) & LF_CASTSHADOW); }	// [LIGHTSHADOWS] asks to cast shadows: see LF_CASTSHADOW
 	bool DontLightSelf() const { return !!((*pLightFlags) & (LF_DONTLIGHTSELF|LF_DONTLIGHTACTORS)); }	// dontlightactors implies dontlightself.
 	bool DontLightActors() const { return !!((*pLightFlags) & LF_DONTLIGHTACTORS); }
 	bool DontLightOthers() const { return !!((*pLightFlags) & (LF_DONTLIGHTOTHERS)); }
@@ -372,3 +381,14 @@ public:
 
 	FDynamicLightTouchLists touchlists;
 };
+
+//==========================================================================
+//
+// [LIGHTSHADOWS] Renderer side, defined in hw_dynlightdata.cpp: whether the lights that ask to cast shadows (LF_CASTSHADOW)
+// want the shadow-map pass this frame -- the cast-shadow setting on and one of them live, or one was within the last 10
+// seconds; or the setting reaches all lights. RenderViewpoint asks once a frame, main view only. False at once while the
+// setting is Off.
+//
+//==========================================================================
+
+bool DynamicLightShadowRowsWanted(FLevelLocals *Level);

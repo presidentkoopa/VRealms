@@ -56,6 +56,10 @@
 **     density; SmokeSimSettings::SootLive says whether any may be in the volume. BEAMS: on
 **     frames with smoke to draw, the beam lines whose glow may reach the box, nearest the eye
 **     (SmokeBeamFrame, hw_framecompute.h), for the smoke drawing's beam scatter and depth.
+**   - [EFFECTLIGHTS] LD: EFFECT LIGHTS (hw_effectlights.h): on frames with smoke to draw, whether any
+**     effect light this frame binned reaches the light grid, and the light cells they can reach
+**     (SmokeEffectLightPass, hw_framecompute.h), for smoke_light.comp's pass 2 over their bins. A
+**     dynamic light's shadow-map row counts only while "Light shadows" (gl_light_shadowmap) is on.
 **
 ** Main thread only. Presentation only: nothing here writes to the playsim.
 **
@@ -209,6 +213,8 @@ private:
 	void GatherLights(FLevelLocals* Level, const DVector3& eye, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
 	// [13e] The beam lines that may meet the smoke (only on frames with smoke to draw).
 	void GatherBeams(FLevelLocals* Level, const DVector3& eye, double ticFrac, SmokeVolumeFrame& out);
+	// [EFFECTLIGHTS] LD: the effect lights that reach the light grid, for pass 2 (only on frames with smoke to draw).
+	void GatherEffectLights(FLevelLocals* Level, const SmokeVolumeFrame& frame, SmokeLightFrame& light);
 
 	uint64_t mLevelSerial = 0;
 

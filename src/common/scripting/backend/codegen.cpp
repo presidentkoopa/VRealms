@@ -8409,11 +8409,8 @@ ExpEmit FxArrayElement::Emit(VMFunctionBuilder *build)
 
 static bool CheckFunctionCompatiblity(FScriptPosition &ScriptPosition, PFunction *caller, PFunction *callee)
 {
-	// 'singleunit' (GZSelaco 785924a40d, as shipped).
-	if ((callee->Variants[0].Flags & VARF_Unit) || (caller->Variants[0].Flags & VARF_Unit))
-	{
-		ScriptPosition.Message(MSG_ERROR, "Function %s is unit only\n", callee->SymbolName.GetChars());
-	}
+	// 'singleunit' is enforced where the call is resolved (FindFunction: caller and callee must share an archive), as in
+	// GZSelaco 19a79ed90. The blanket "unit only" check 785924a40d had here refused every call to or from a unit function.
 	if (callee->Variants[0].Flags & VARF_Method)
 	{
 		// The called function must support all usage modes of the current function. It may support more, but must not support less.

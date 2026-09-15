@@ -21,6 +21,8 @@
 #include"hw_cvars.h"
 #include "v_video.h"
 #include "hwrenderer/scene/hw_drawstructs.h"
+#include "hw_shadowmap.h"	// [LIGHTSHADOWS] IShadowMap::CastShadowsOn, CastShadowsReachAllLights
+#include "i_time.h"			// [LIGHTSHADOWS] I_msTime
 
 // If we want to share the array to avoid constant allocations it needs to be thread local unless it'd be littered with expensive synchronization.
 thread_local FDynLightData lightdata;
@@ -184,4 +186,50 @@ void AddLightToList(FDynLightData &dld, int group, FDynamicLight * light, bool f
 	data[13] = spotOuterAngle;
 	data[14] = 0.0f; // unused
 	data[15] = 0.0f; // unused
+}
+
+//==========================================================================
+//
+// [LIGHTSHADOWS] Whether the lights that ask to cast shadows (LF_CASTSHADOW) want the shadow-map pass this frame. Declared
+// in a_dynlight.h; RenderViewpoint runs the pass when this or "Light shadows" says so, for a level with dynamic lights.
+// The shadow index above then reads the row CollectLights gave -- or 1025, none, as before.
+//
+// With the cast-shadow setting on: while one of them is live (active, and its flood found a wall that can shadow it), and
+// for 10 SECONDS after. Between shots a flash is gone for a few tics, and each time the pass stops RenderViewpoint takes the
+// level's AABB tree away from the shadow map; handing it back re-uploads the whole tree -- a hitch at every shot otherwise
+// (the effect lights' pass lingers for the same reason). A lingering pass has only empty rows, and every texel early-outs.
+// Reaching all lights, it wants the pass whenever the level has dynamic lights, as "Light shadows" does. Off: false at
+// once, and the linger is forgotten.
+//
+// Main view only, once a frame. Reads light state the renderer already reads; writes only its own clock.
+//
+//==========================================================================
+
+static uint64_t CastShadowWantedMs = 0;
+
+bool DynamicLightShadowRowsWanted(FLevelLocals *Level)
+{
+	if (Level == nullptr || !IShadowMap::CastShadowsOn())
+	{
+		CastShadowWantedMs = 0;
+		return false;
+	}
+	if (IShadowMap::CastShadowsReachAllLights())
+		return true;
+
+	bool wanted = false;
+	for (auto light = Level->lights; light; light = light->next)
+	{
+		if (light->IsActive() && light->shadowmapped && light->CastShadow())
+		{
+			wanted = true;
+			break;
+		}
+	}
+
+	static const uint64_t kLingerMs = 10000;
+	const uint64_t nowMs = I_msTime();
+	if (wanted)
+		CastShadowWantedMs = nowMs;
+	return wanted || (CastShadowWantedMs != 0 && nowMs - CastShadowWantedMs < kLingerMs);
 }

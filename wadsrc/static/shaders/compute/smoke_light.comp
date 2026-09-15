@@ -33,6 +33,10 @@
 // for all its light, so the direction shares stay as they were. Without soot every value here is 13d's
 // exactly: darkness 0, and w stays 0.
 //
+// [EFFECTLIGHTS] LD: PASS 2, THE EFFECT LIGHTS (sparks, embers, impacts, tracers) -- only in the SMOKE_EFFECT_LIGHTS
+// variant (EffectLightPass below): one dispatch over the cells effect lights can reach, each cell looping its own
+// effect-light bin. Without that define this lump is, token for token, the program passes 0 and 1 always were.
+//
 // Axes: Doom's (x, y horizontal, z up), map units from the grid's minimum corner. Light cell c spans
 // [c, c + 1) x Cone.z map units; its centre is where the light is taken.
 //
@@ -126,6 +130,142 @@ float ShadowVisibility(vec3 fromLight, float row)
 	return lit / 3.0;
 }
 
+#ifdef SMOKE_EFFECT_LIGHTS
+
+// [EFFECTLIGHTS] LD: PASS 2, THE EFFECT LIGHTS ("Engine docs/EFFECT_LIGHTS_LD_IMPL_NOTES.md"; LIGHTS_20_21_22_PLAN.md 2h).
+//
+// The records and world bins every consumer reads (hw_effectlightbuffer.h, where the layouts are frozen), bound here as 7
+// and 8. The CPU (SmokeVolume::GatherEffectLights) dispatches this once over the light cells any effect light can reach;
+// each cell loops only its own bin. A light is a segment seen from its closest point to the cell's centre (main.fp's
+// EffectLightOnSurface), and from that point on it is pass 1's point light, statement for statement: attenuation 1 - d / r,
+// the direction away from that point, walls through its shadow-map row (cast from where the row was made), soot darkening.
+// So a light with no length lights a cell exactly as pass 1 lights it from the same place. Along a segment the brightness
+// is mix(1, extra.w, share), as on surfaces. A cell's light is loaded once, its bin's lights added in bin order, and stored
+// once -- only if one of them lit it.
+//
+// Push constants in this pass: RegionMin.w 2; PositionRadius.xyz the grid's corner (Doom axes, whole map units); Color.rgb
+// the look's scatter; SpotDirection.xyz the grid's corner minus the effect-light grid's corner (Doom axes, whole map units);
+// Cone.z the light cell size.
+
+struct EffectLightRecord
+{
+	vec4 a;			// xyz the start this frame (shader axes: x, up, game y)   w radius
+	vec4 b;			// xyz the end (== a: a point)                                 w flags
+	vec4 color;		// rgb the light now                                           w shadow-map row, -1 none
+	vec4 extra;		// xyz where the row was cast from                             w brightness at b as a share of a's
+};
+
+layout(set = 0, binding = 7, std430) buffer readonly EffectLightSSO
+{
+	uint effectLightCount;
+	uint effectLightBinned;
+	uint effectLightResiduals;
+	uint effectLightSerial;
+	EffectLightRecord effectLights[];
+};
+
+layout(set = 0, binding = 8, std430) buffer readonly EffectLightBinSSO
+{
+	vec4 effectLightGridCorner;		// xyz bin (0, 0, 0)'s lowest corner, shader axes   w the bin size
+	ivec4 effectLightGridSize;		// xyz bins a side (0: none binned)                  w where the index list starts
+	uint effectLightBinData[];		// (offset << 6) | count a bin, then the index list
+};
+
+const int EFFECT_LIGHT_ROW = 2;
+const int EFFECT_LIGHT_NOSMOKE = 16;
+const int EFFECT_LIGHT_BIN_LOOP_MAX = 32;
+
+void EffectLightPass(ivec3 cell)
+{
+	if (effectLightGridSize.x <= 0 || effectLightGridSize.y <= 0 || effectLightGridSize.z <= 0 || !(effectLightGridCorner.w > 0.0))
+		return;
+
+	// The cell's centre (Doom axes from the grid's corner, as pass 1 takes it) and the effect-light bin it lies in.
+	vec3 at = (vec3(cell) + 0.5) * Cone.z;
+	vec3 binCell = floor((at + SpotDirection.xyz).xzy / effectLightGridCorner.w);
+	if (any(lessThan(binCell, vec3(0.0))) || any(greaterThanEqual(binCell, vec3(effectLightGridSize.xyz))))
+		return;
+	ivec3 bin = ivec3(binCell);
+	uint word = effectLightBinData[(bin.z * effectLightGridSize.y + bin.y) * effectLightGridSize.x + bin.x];
+	int count = min(int(word & 63u), EFFECT_LIGHT_BIN_LOOP_MAX);
+	if (count == 0)
+		return;
+	int first = effectLightGridSize.w + int(word >> 6u);
+	int records = int(effectLightCount);
+
+	vec4 grid = imageLoad(LightGrid, cell);
+	vec4 stored = imageLoad(LightDirection, cell);	// w: the soot darkness pass 0 kept
+	vec3 light = grid.rgb;
+	float total = grid.a;
+	vec3 direction = stored.xyz;
+	bool lit = false;
+	for (int k = 0; k < count; k++)
+	{
+		int index = int(effectLightBinData[first + k]);
+		if (index >= records)
+			continue;
+		EffectLightRecord record = effectLights[index];
+		int flags = int(record.b.w);
+		if ((flags & EFFECT_LIGHT_NOSMOKE) != 0)
+			continue;
+		vec3 tint = record.color.rgb * Color.rgb;	// x the look's scatter, as pass 1's colour
+		float luminance = dot(tint, LUMINANCE);
+		if (!(luminance > 0.0))
+			continue;
+
+		// The closest point on the segment to the cell's centre; a point light is its own closest point.
+		vec3 start = record.a.xzy - PositionRadius.xyz;
+		vec3 segment = record.b.xzy - record.a.xzy;
+		float lengthSquared = dot(segment, segment);
+		float share = lengthSquared > 0.0 ? clamp(dot(at - start, segment) / lengthSquared, 0.0, 1.0) : 0.0;
+		vec3 closest = share > 0.0 ? start + segment * share : start;
+
+		// Pass 1's point light at that point (no cone).
+		vec3 fromLight = at - closest;
+		float distSquared = dot(fromLight, fromLight);
+		float radius = record.a.w;
+		if (radius <= 0.0 || distSquared >= radius * radius)
+			continue;
+
+		float dist = sqrt(distSquared);
+		float attenuation = 1.0 - dist / radius;
+		vec3 travel = dist > 1e-3 ? fromLight / dist : vec3(0.0);	// the way the light goes through this cell
+		if (share > 0.0)
+			attenuation *= mix(1.0, record.extra.w, share);
+		if (attenuation <= 0.0)
+			continue;
+		if ((flags & EFFECT_LIGHT_ROW) != 0)
+		{
+			attenuation *= ShadowVisibility(at - (record.extra.xzy - PositionRadius.xyz), record.color.w);
+			if (attenuation <= 0.0)
+				continue;
+		}
+
+		float weight = luminance * attenuation;
+		float sum = total + weight;
+		if (sum > 1e-6)
+		{
+			direction = (direction * total + travel * weight) / sum;
+			float shareLength = length(direction);
+			if (shareLength > 1.0)
+				direction /= shareLength;
+		}
+		vec3 added = tint * attenuation;
+		if (stored.w > 0.0)
+			added *= 1.0 - stored.w;	// [13e] sooty smoke sends back less of this light
+		light += added;
+		total = sum;
+		lit = true;
+	}
+	if (lit)
+	{
+		imageStore(LightGrid, cell, vec4(light, total));
+		imageStore(LightDirection, cell, vec4(direction, stored.w));
+	}
+}
+
+#endif
+
 void main()
 {
 	ivec3 cell = ivec3(gl_GlobalInvocationID) + RegionMin.xyz;
@@ -151,6 +291,14 @@ void main()
 	ivec3 tile = cell / max(RegionMax.w, 1);
 	if (texelFetch(TileActive, tile, 0).r < 0.5)
 		return;
+
+#ifdef SMOKE_EFFECT_LIGHTS
+	if (RegionMin.w == 2)
+	{
+		EffectLightPass(cell);	// [EFFECTLIGHTS] LD: pass 2
+		return;
+	}
+#endif
 
 	vec3 fromLight = (vec3(cell) + 0.5) * Cone.z - PositionRadius.xyz;
 	float distSquared = dot(fromLight, fromLight);

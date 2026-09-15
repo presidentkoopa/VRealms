@@ -466,6 +466,7 @@ void FDInputJoystick::ProcessInput()
 				info->ResponseCurve,
 				&buttonstate
 			);
+			info->Value = float(axisval);	// AddAxes reads it
 
 			Joy_GenerateButtonEvents(info->ButtonValue, buttonstate, 2, KEY_JOYAXIS1PLUS + i*2);
 			info->ButtonValue = buttonstate;
@@ -494,6 +495,8 @@ void FDInputJoystick::ProcessInput()
 				info_x->ResponseCurve, info_y->ResponseCurve,
 				&buttonstate
 			);
+			info_x->Value = float(axisval_x);	// AddAxes reads them
+			info_y->Value = float(axisval_y);
 
 			// We store all four buttons in the first axis and ignore the second.
 			Joy_GenerateButtonEvents(info_x->ButtonValue, buttonstate, 4, KEY_JOYAXIS1PLUS + (i-1)*2);

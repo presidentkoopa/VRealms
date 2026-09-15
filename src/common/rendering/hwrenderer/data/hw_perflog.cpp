@@ -65,6 +65,7 @@ EXTERN_CVAR(Int, r_effectlights_perbin)
 EXTERN_CVAR(Float, r_effectlights_distance)
 EXTERN_CVAR(Bool, r_effectlights_walls)
 EXTERN_CVAR(Int, r_effectlights_test)
+EXTERN_CVAR(Bool, r_particlelights_test)	// [PARTICLELIGHTS] hw_gpuparticlebuffer.cpp
 EXTERN_CVAR(Bool, r_debris_sounds)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Float, r_debris_sounds_volume)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Bool, r_damage)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
@@ -74,6 +75,8 @@ EXTERN_CVAR(Float, r_damage_soot_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
 EXTERN_CVAR(Float, r_damage_depth_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
 EXTERN_CVAR(Float, r_damage_heat_scale)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
 EXTERN_CVAR(Bool, r_damage_test)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
+EXTERN_CVAR(Int, gl_light_castshadows)	// [LIGHTSHADOWS] hw_shadowmap.cpp
+EXTERN_CVAR(Int, gl_light_shadowmap_lights)	// [LIGHTSHADOWS] hw_shadowmap.cpp
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -178,6 +181,12 @@ namespace
 		int DlightsMax = 0;
 		int64_t SpritesSum = 0, WallsSum = 0, FlatsSum = 0;
 		EffectLightFrameStats EffectLightsMax;	// [EFFECTLIGHTS] each number's largest frame in the window
+		// [LIGHTSHADOWS] The shadow map: its CPU time on each frame that ran the pass (IShadowMap::UpdateCycles -- the rows, their
+		// upload and the pass's recording); the largest frame's rows, and of them the rows of lights that ask to cast; and where
+		// the relink total (dynlights_links_total) stood when the window began.
+		Stat ShadowCpu;
+		int ShadowRowsMax = 0, ShadowAskedMax = 0;
+		uint64_t LinksAtStart = 0;
 	};
 
 	Window W;
@@ -210,6 +219,9 @@ namespace
 		W.DlightsMax = 0;
 		W.SpritesSum = W.WallsSum = W.FlatsSum = 0;
 		W.EffectLightsMax = EffectLightFrameStats();	// [EFFECTLIGHTS]
+		W.ShadowCpu.Clear();	// [LIGHTSHADOWS]
+		W.ShadowRowsMax = W.ShadowAskedMax = 0;
+		W.LinksAtStart = dynlights_links_total;
 		W.StartNs = now;
 		if (restartClock) W.LastFrameNs = 0;
 	}
@@ -244,8 +256,9 @@ namespace
 				"fx.sectorplanes is the renderer's sector plane poll; fx.smokemask the solid mask's rasterisation on the CPU "
 				"(frames with mask work only). pp.smoke is the smoke volume's drawing per eye (depth, march, blur, composite; "
 				"only while there is smoke); a pp.lightmaskcarry beside it dims the light mask by the same haze; fx.smokedraw "
-				"(cpu_fx_ms) is its per-eye setup. fx.smokelight is the smoke's light grid (frames with smoke: its ambient pass "
-				"and one pass per light; on gpu_ms inside fx.compute, on cpu_fx_ms its recording); fx.smokelights (cpu_fx_ms) "
+				"(cpu_fx_ms) is its per-eye setup. fx.smokelight is the smoke's light grid (frames with smoke: its ambient pass, "
+				"one pass per light, and one pass for every effect light in reach [EFFECTLIGHTS LD]; on gpu_ms inside "
+				"fx.compute, on cpu_fx_ms its recording); fx.smokelights (cpu_fx_ms) "
 				"its light list and ambient columns. pp.smokebeams is the smoke's beam and cone work per eye (the transmittance "
 				"curve, and the light the beams scatter; only while beams or a flashlight cone meet the smoke) -- the beams' "
 				"depth work is inside pp.smoke's composite and the cones' inside volumetricbeam; smokebeams is how many beams "
@@ -266,6 +279,16 @@ namespace
 				"shadow-map rows they took (walls block them; the map pass then runs even with light shadows off, and shows as gpu_ms "
 				"shadowmap); effectlightlines the line lights binned; effectlightsdropped=norow/trimmed the lights not lit because the "
 				"rows ran out or the bins' index list was full.\n\n";
+			// [LIGHTSHADOWS] The light shadow names, on a legend line of their own.
+			out << "Legend (light shadows): gpu_ms shadowmap is the shadow map pass (once a frame, both eyes share it; only while it "
+				"runs). load shadowlights=rows/asked is the largest frame's shadow-map rows (effect light rows included) and, of them, "
+				"the rows of lights that ask to cast shadows (LF_CASTSHADOW: muzzle flashes, or any light a mod marks); shadowcpu_ms "
+				"is the pass's CPU side (the rows, their upload, the pass's recording), avg/p95/max over the frames that ran it; "
+				"relinks is how many times dynamic lights' section lists were rebuilt in the window (moving or resizing lights, each "
+				"tic). The block line names gl_light_shadowmap (Light shadows), gl_light_castshadows (shadows for lights that ask: 0 "
+				"off, 1 shadow maps, 2 ray traced), gl_light_shadowmap_lights (what that reaches: 0 lights that ask, 1 all lights), "
+				"gl_shadowmap_quality and gl_shadowmap_filter, vk_raytrace, and raytraced: 1 when this session's shaders ray trace "
+				"light shadows (decided at start-up).\n\n";
 			HeaderWritten = true;
 		}
 
@@ -324,6 +347,17 @@ namespace
 		out.AppendFormat(" r_effectlights=%d r_effectlights_max=%d r_effectlights_quality=%d r_effectlights_perbin=%d r_effectlights_distance=%g r_effectlights_walls=%d r_effectlights_test=%d",
 			(int)*r_effectlights, (int)*r_effectlights_max, (int)*r_effectlights_quality, (int)*r_effectlights_perbin,
 			(double)(float)*r_effectlights_distance, (int)*r_effectlights_walls, (int)*r_effectlights_test);
+		// [PARTICLELIGHTS] And the particle light test, so a before/after with it labels itself.
+		out.AppendFormat(" r_particlelights_test=%d", (int)*r_particlelights_test);
+		// [LIGHTSHADOWS] And the light shadow switches, so a shadowmap / scene.* before/after labels itself. vk_raytrace is looked
+		// up by name (the Vulkan backend defines it); raytraced is what this session's shaders really do.
+		{
+			FBaseCVar* raytrace = FindCVar("vk_raytrace", nullptr);
+			out.AppendFormat(" gl_light_shadowmap=%d gl_light_castshadows=%d gl_light_shadowmap_lights=%d gl_shadowmap_quality=%d gl_shadowmap_filter=%d vk_raytrace=%s raytraced=%d",
+				(int)*gl_light_shadowmap, (int)*gl_light_castshadows, (int)*gl_light_shadowmap_lights, (int)*gl_shadowmap_quality,
+				(int)*gl_shadowmap_filter, raytrace != nullptr ? (raytrace->GetGenericRep(CVAR_Int).Int ? "1" : "0") : "n/a",
+				(int)IShadowMap::RaytracedThisSession);
+		}
 		// [LIGHTMASK] And the light mask, so a scene.* / pp.lightmaskcarry before/after labels itself
 		// (lightmask: 1 while the scene draws the mask this frame).
 		out.AppendFormat(" gl_bloom_pin_beams=%d r_lightmask_debug=%d lightmask=%d",
@@ -364,9 +398,13 @@ namespace
 			(unsigned long long)W.ParticlesSpawned, W.DrawnLinesMax, W.BeamsMax, W.StampsMax, W.DisturbMax,
 			W.DlightsSum / n, W.DlightsMax, W.SpritesSum / n, W.WallsSum / n, W.FlatsSum / n);
 		// [EFFECTLIGHTS] The effect light load, on the same line.
-		out.AppendFormat(" effectlights=%d/%d/%d/%d effectlightrows=%d effectlightlines=%d effectlightsdropped=%d/%d\n\n",
+		out.AppendFormat(" effectlights=%d/%d/%d/%d effectlightrows=%d effectlightlines=%d effectlightsdropped=%d/%d",
 			W.EffectLightsMax.Live, W.EffectLightsMax.Binned, W.EffectLightsMax.Merged, W.EffectLightsMax.Evicted,
 			W.EffectLightsMax.Rows, W.EffectLightsMax.Lines, W.EffectLightsMax.NoRow, W.EffectLightsMax.Trimmed);
+		// [LIGHTSHADOWS] The light shadow load, closing the line.
+		out.AppendFormat(" shadowlights=%d/%d shadowcpu_ms=%.2f/%.2f/%.2f relinks=%llu\n\n",
+			W.ShadowRowsMax, W.ShadowAskedMax, W.ShadowCpu.Avg(), W.ShadowCpu.P95(), W.ShadowCpu.Max,
+			(unsigned long long)(dynlights_links_total - W.LinksAtStart));
 
 		FILE* f = fopen("perflog.txt", "at");
 		if (f != nullptr)
@@ -610,6 +648,18 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		if (e.Trimmed > m.Trimmed) m.Trimmed = e.Trimmed;
 		if (e.Rows > m.Rows) m.Rows = e.Rows;
 		if (e.Lines > m.Lines) m.Lines = e.Lines;
+	}
+	// [LIGHTSHADOWS] This frame's shadow map, when the frame ran the pass (IShadowMap::UpdateSerial moved on; its counters keep
+	// the last pass's values otherwise).
+	{
+		static uint64_t lastShadowSerial = 0;
+		if (IShadowMap::UpdateSerial != lastShadowSerial)
+		{
+			lastShadowSerial = IShadowMap::UpdateSerial;
+			W.ShadowCpu.Add(IShadowMap::UpdateCycles.TimeMS());
+			if (IShadowMap::LightsShadowmapped > W.ShadowRowsMax) W.ShadowRowsMax = IShadowMap::LightsShadowmapped;
+			if (IShadowMap::LightsCastShadow > W.ShadowAskedMax) W.ShadowAskedMax = IShadowMap::LightsCastShadow;
+		}
 	}
 
 	if (now - W.StartNs >= (uint64_t)seconds * 1000000000ull)

@@ -22,6 +22,33 @@
 #include "hw_cvars.h"
 #include "printf.h"
 #include "i_time.h"
+#include <algorithm>
+#include "hw_perflog.h"				// [PARTICLELIGHTS] fx.effectlights
+#include "hw_effectlightbuffer.h"	// [PARTICLELIGHTS] EffectLightBuffer::Instance: Vulkan's effect lights exist
+#include "hw_effectlights.h"		// [PARTICLELIGHTS] EffectLights::Spawn
+#include "hw_particlelights.h"		// [PARTICLELIGHTS] which records throw light, and their lights
+#include "particledefs.h"			// [PARTICLELIGHTS] the definitions' light keys
+
+// [PARTICLELIGHTS] r_particlelights_test -- a test, not a setting ("Engine docs/EFFECT_LIGHTS_LC_IMPL_NOTES.md"): named particle
+// definitions without light keys that glow at birth (emissive above 0, alpha 0) throw a test light -- radius 48, and where they
+// land a hold of up to a second -- so particle and debris lights can be judged on a mod's existing sparks and embers before any
+// definition says `light`. Renderer-read; not archived, like r_debris_test. The debris pool reads it too (hw_debrispool.cpp).
+CVARD(Bool, r_particlelights_test, false, CVAR_GLOBALCONFIG, "particle definitions that glow but have no light keys throw a test light (radius 48, up to a 1 second hold where they land) -- a test of particle lights (Vulkan only)")
+EXTERN_CVAR(Bool, r_effectlights)	// [PARTICLELIGHTS] hw_effectlights.cpp
+
+// [PARTICLELIGHTS] What the ring's particle lights keep from one sync to the next.
+struct GpuParticleBuffer::LightState
+{
+	ParticleLights::SlotLight Slots[ParticleDefinitionBuffer::NAMED_SLOTS];
+	uint64_t ListGeneration = 0;
+	int TestSeen = -1;					// r_particlelights_test when Slots was resolved (-1: never)
+	bool Any = false;					// some named definition throws light
+	ParticleLights::BurstRun Run;		// the burst the last lit record was on
+	uint64_t RunSerial = 0;
+	uint64_t Spawned = 0;
+	bool FirstLogged = false;
+};
+static_assert(sizeof(float) * ParticleLights::RECORD_FLOATS == GpuParticleBuffer::RECORD_BYTES, "a particle light reads a whole ring record");
 
 GpuParticleBuffer::GpuParticleBuffer(unsigned ringSize) : mRingSize(ringSize != 0 ? ringSize : (unsigned)GpuParticleRingCapacity())
 {
@@ -84,6 +111,7 @@ GpuParticleBuffer::~GpuParticleBuffer()
 {
 	delete mQuads;
 	delete mBuffer;
+	delete mLights;	// [PARTICLELIGHTS]
 }
 
 void GpuParticleBuffer::Upload(const void *records, unsigned first, unsigned count)
@@ -199,8 +227,86 @@ void GpuParticleBuffer::Sync(const void *records, unsigned recordCount, uint64_t
 			ShaderFailed ? "FAILED" : (ShaderReady ? "ready" : "not ready"));
 	}
 
+	// [PARTICLELIGHTS] The new records' effect lights, while the synced serial and cursor still say which records this sync
+	// brought up.
+	SpawnRecordLights(records, size, serial, written);
+
 	mSyncedSerial = serial;
 	mSyncedWritten = written;
+}
+
+// [PARTICLELIGHTS] See the header. Vulkan's effect lights only, while they are on: off, or on GL and GLES, nothing is made.
+void GpuParticleBuffer::SpawnRecordLights(const void *records, unsigned size, uint64_t serial, uint64_t written)
+{
+	if (records == nullptr || size == 0 || !r_effectlights || EffectLightBuffer::Instance() == nullptr)
+		return;
+	if (mLights == nullptr)
+		mLights = new LightState();
+	LightState &state = *mLights;
+
+	// The definitions' lights, again whenever the definitions load or the test is switched.
+	const uint64_t generation = ParticleLightGeneration();
+	const int test = r_particlelights_test ? 1 : 0;
+	if (generation != state.ListGeneration || test != state.TestSeen)
+	{
+		state.ListGeneration = generation;
+		state.TestSeen = test;
+		state.Any = ParticleLights::ResolveSlots(ParticleLightDefinitionData(), ParticleLightDefinitionCount(), ParticleDefinitionTableData(),
+			(int)ParticleDefinitionBuffer::NAMED_SLOTS, test != 0, state.Slots);
+	}
+	if (!state.Any)
+		return;
+
+	const bool timed = PerfLog::GroupsWanted();
+	const uint64_t startNs = timed ? I_nsTime() : 0;
+
+	// The records written since the last sync, oldest first: at most the last `size` (older ones were overwritten unseen); after a
+	// new serial, the level's own from its first.
+	uint64_t from = written > (uint64_t)size ? written - (uint64_t)size : 0;
+	if (serial == mSyncedSerial && written >= mSyncedWritten)
+		from = std::max(from, mSyncedWritten);
+	if (serial != state.RunSerial)
+	{
+		state.Run = ParticleLights::BurstRun();
+		state.RunSerial = serial;
+	}
+
+	ParticleLights::Tuning tuning;
+	tuning.SizeScale = (float)r_gpuparticles_sizescale;
+	tuning.MaxSize = (float)r_gpuparticles_maxsize;
+	tuning.Stretch = (float)r_gpuparticles_stretch;
+	const unsigned namedSlots = ParticleDefinitionBuffer::NAMED_SLOTS;
+	unsigned spawned = 0;
+	for (uint64_t w = from; w < written; w++)
+	{
+		float record[ParticleLights::RECORD_FLOATS];
+		memcpy(record, (const uint8_t *)records + (size_t)(w % size) * RECORD_BYTES, sizeof(record));
+		// A live stage 2 record of a named definition that throws light, its slot as gpuparticles.vp rounds it.
+		const float definition = record[ParticleLights::R_DEFINITION];
+		if (!(record[ParticleLights::R_LIFE] > 0.f) || record[ParticleLights::R_PLANE] < -8.f || !(definition >= 0.f))
+			continue;
+		const unsigned slot = definition >= (float)namedSlots ? namedSlots : (unsigned)(definition + 0.5f);
+		if (slot >= namedSlots || !state.Slots[slot].Active)
+			continue;
+		const ParticleLights::SlotLight &light = state.Slots[slot];
+		state.Run.Take(record);
+		if (state.Run.Lights >= light.Max)
+			continue;
+		const uint32_t hash = ParticleLights::RecordHash(record);
+		if (!ParticleLights::CarriesLight(hash, light.Share))
+			continue;
+		state.Run.Lights++;
+		EffectLights::Get().Spawn(ParticleLights::RingSource(light, record, hash, tuning));
+		spawned++;
+	}
+	state.Spawned += spawned;
+	if (spawned > 0 && !state.FirstLogged)
+	{
+		state.FirstLogged = true;
+		Printf("GpuParticles: first particle lights this run -- %u from one sync (definitions with `light`; hw_particlelights.h)\n", spawned);
+	}
+	if (timed)
+		PerfLog::AddCpuSample("fx.effectlights", (double)(I_nsTime() - startNs) / 1e6);
 }
 
 void GpuParticleBuffer::DebugReport(uint64_t written)

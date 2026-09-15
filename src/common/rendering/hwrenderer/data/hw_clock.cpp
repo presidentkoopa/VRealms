@@ -70,6 +70,7 @@ int vertexcount, flatvertices, flatprimitives;
 int rendered_lines,rendered_flats,rendered_sprites,render_vertexsplit,render_texsplit,rendered_decals, rendered_portals, rendered_commandbuffers;
 int iter_dlightf, iter_dlight, draw_dlight, draw_dlightf;
 int dynlights_active_updates, dynlights_link_calls, dynlights_relink_calls, dynlights_unlink_calls;
+uint64_t dynlights_links_total = 0;	// [LIGHTSHADOWS] never reset (hw_clock.h)
 int dynlights_collected_subsectors, dynlights_linked_sectors, dynlights_linked_sides;
 int dynlights_removed_sector_links, dynlights_removed_side_links;
 int dynlights_distance_culled_walls, dynlights_distance_culled_flats, dynlights_distance_culled_models;

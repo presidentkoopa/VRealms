@@ -17,6 +17,7 @@
 */
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 
 #include "hw_smokevolume.h"
@@ -27,6 +28,8 @@
 #include "hw_perflog.h"
 #include "g_levellocals.h"
 #include "a_dynlight.h"		// [13d] FDynamicLight, r_dynlights: the lights in the smoke
+#include "hw_effectlights.h"		// [EFFECTLIGHTS] LD: this frame's effect-light bins (EffectLights::FrameBins)
+#include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] LD: the records and bins the GPU holds (GetLiveCount)
 #include "doomdef.h"
 #include "v_video.h"
 #include "i_time.h"
@@ -1118,6 +1121,9 @@ void SmokeVolume::PrepareLight(FLevelLocals* Level, const DVector3& eye, SmokeVo
 		GatherLights(Level, eye, out, light);
 	else
 		mLights.clear();
+	// [EFFECTLIGHTS] LD: the effect lights that reach the grid (smoke_light.comp's pass 2), on frames with smoke to draw.
+	if (out.HasSmoke)
+		GatherEffectLights(Level, out, light);
 
 	// fx.smokelights (cpu_fx_ms): the light list and the ambient columns, every frame the volume is active.
 	if (timed)
@@ -1400,7 +1406,11 @@ void SmokeVolume::GatherLights(FLevelLocals* Level, const DVector3& eye, const S
 
 	// The engine's shadow map is live this frame exactly when surfaces use it (hw_dynlightdata.cpp): its rows and
 	// every light's mShadowmapIndex were set at the top of this frame's RenderViewpoint, before the compute hook.
-	const bool shadowed = screen != nullptr && screen->mShadowMap.Enabled();
+	// [EFFECTLIGHTS] And only while "Light shadows" (gl_light_shadowmap) is on (LIGHTS_20_21_22_PLAN.md 2g): the map pass also
+	// runs for effect lights with the switch off, and then a dynamic light has no row, whatever its index says. Tested here
+	// rather than trusted to CollectLights' indices, so a dynamic light is blocked in the haze exactly while it is blocked on
+	// surfaces; with the switch on this is the test it was.
+	const bool shadowed = gl_light_shadowmap && screen != nullptr && screen->mShadowMap.Enabled();
 
 	mLights.resize(count);
 	for (size_t i = 0; i < count; i++)
@@ -1440,6 +1450,101 @@ void SmokeVolume::GatherLights(FLevelLocals* Level, const DVector3& eye, const S
 
 	light.Lights = mLights.empty() ? nullptr : mLights.data();
 	light.LightCount = (int)mLights.size();
+}
+
+//-----------------------------------------------------------------------------
+//
+// [EFFECTLIGHTS] LD: effect lights in the smoke ("Engine docs/EFFECT_LIGHTS_LD_IMPL_NOTES.md"; hw_framecompute.h,
+// SmokeEffectLightPass)
+//
+//-----------------------------------------------------------------------------
+
+// Whether any effect light this frame binned reaches the light grid, and the light cells they can reach: the union of each
+// light's box -- its segment's box grown by its radius -- as the cells whose centre lies in it, clipped to the grid (pass 1's
+// rule for a sphere's box, so no cell a light reaches is left out). Only lights the smoke takes: not EFFECT_LIGHT_GPU_NOSMOKE,
+// and with light (a colourless drawn-line light adds nothing). The records are this frame's upload as the CPU built it
+// (EffectLights::PrepareFrame runs before this in PrepareFrameCompute), used only while the GPU holds them (GetLiveCount): a
+// frame whose upload was empty -- effect lights off, nothing binned, no Vulkan buffer -- has no pass 2. Read-only.
+void SmokeVolume::GatherEffectLights(FLevelLocals* Level, const SmokeVolumeFrame& frame, SmokeLightFrame& light)
+{
+	SmokeEffectLightPass& pass = light.EffectLights;
+	pass = SmokeEffectLightPass();
+
+	double scatter = Level->SmokeLook.Scatter;
+	if (!(scatter > 0.0))
+		return;		// no light shows in this smoke (GatherLights' rule)
+	scatter = std::min(scatter, 1.0);
+
+	const EffectLightBuffer* buffer = EffectLightBuffer::Instance();
+	if (buffer == nullptr || buffer->GetLiveCount() == 0)
+		return;
+	const EffectLightCore::BinResult& bins = EffectLights::Get().FrameBins();
+	const EffectLightGridHeader& header = bins.Grid;
+	if (bins.Records.size() != (size_t)buffer->GetLiveCount() || header.Size[0] <= 0 || header.Size[1] <= 0 || header.Size[2] <= 0 ||
+		!(header.Corner[3] > 0.f) || (size_t)header.Size[3] != bins.Bins.size())
+		return;		// not the frame the GPU holds
+
+	const SmokeLightGridSpec& grid = light.Grid;
+	const int size[3] = { grid.SizeX, grid.SizeY, grid.SizeZ };
+	const double cellSize = grid.CellSize;
+	if (!(cellSize > 0.0) || size[0] <= 0 || size[1] <= 0 || size[2] <= 0)
+		return;
+	// The light grid covers the smoke box exactly, from its minimum corner (Doom axes, whole map units).
+	const double corner[3] = { (double)frame.OriginCell[0] * frame.Grid.CellSize, (double)frame.OriginCell[1] * frame.Grid.CellSize,
+		(double)frame.OriginCell[2] * frame.Grid.CellSize };
+
+	int lo[3] = { INT_MAX, INT_MAX, INT_MAX }, hi[3] = { INT_MIN, INT_MIN, INT_MIN };
+	int count = 0;
+	for (const EffectLightRecord& record : bins.Records)
+	{
+		const float flags = record.b[3];
+		if (!std::isfinite(flags) || (((int)flags) & EFFECT_LIGHT_GPU_NOSMOKE))
+			continue;
+		const double radius = record.a[3];
+		if (!(radius > 0.0) || !std::isfinite(radius) || !(EffectLightCore::Luminance(record.color) > 0.0))
+			continue;
+
+		// Records are in shader axes (x, up, game y); the grid is in Doom's.
+		const double a[3] = { record.a[0], record.a[2], record.a[1] };
+		const double b[3] = { record.b[0], record.b[2], record.b[1] };
+		int cellLo[3] = { 0, 0, 0 }, cellHi[3] = { 0, 0, 0 };
+		bool reaches = true;
+		for (int axis = 0; axis < 3 && reaches; axis++)
+		{
+			const double low = (std::min(a[axis], b[axis]) - radius - corner[axis]) / cellSize - 0.5;
+			const double high = (std::max(a[axis], b[axis]) + radius - corner[axis]) / cellSize - 0.5;
+			if (!std::isfinite(low) || !std::isfinite(high))
+			{
+				reaches = false;
+				break;
+			}
+			cellLo[axis] = std::clamp((int)std::ceil(std::clamp(low, -1.0e6, 1.0e6)), 0, size[axis]);
+			cellHi[axis] = std::clamp((int)std::floor(std::clamp(high, -1.0e6, 1.0e6)) + 1, 0, size[axis]);
+			reaches = cellLo[axis] < cellHi[axis];
+		}
+		if (!reaches)
+			continue;		// its box misses every light cell's centre
+		for (int axis = 0; axis < 3; axis++)
+		{
+			lo[axis] = std::min(lo[axis], cellLo[axis]);
+			hi[axis] = std::max(hi[axis], cellHi[axis]);
+		}
+		count++;
+	}
+	if (count == 0)
+		return;
+
+	// The effect-light grid's corner in Doom axes. Both corners are whole multiples of their cell and bin sizes, so the offset
+	// is a whole number of map units, exact in a float: the shader finds a light cell's bin from the cell's own centre.
+	const double binCorner[3] = { header.Corner[0], header.Corner[2], header.Corner[1] };
+	pass.LightCount = count;
+	for (int axis = 0; axis < 3; axis++)
+	{
+		pass.RegionMin[axis] = lo[axis];
+		pass.RegionMax[axis] = hi[axis];
+		pass.BinOffset[axis] = (float)(corner[axis] - binCorner[axis]);
+	}
+	pass.Scatter = (float)scatter;
 }
 
 //-----------------------------------------------------------------------------
