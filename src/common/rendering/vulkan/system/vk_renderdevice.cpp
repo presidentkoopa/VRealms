@@ -688,6 +688,13 @@ void VulkanRenderDevice::RenderTextureView(FCanvasTexture* tex, std::function<vo
 	VkTextureImage *depthStencil = BaseLayer->GetDepthStencil(tex);
 
 	mRenderState->EndRenderPass();
+	// [CANVASCLEAR] A texture pass neither takes a clear queued for the previous target nor leaves one
+	// behind (below). The canvas loop queues a translucent canvas's colour clear, and Draw2D its stencil
+	// clear, before Draw2D finds out the drawer is empty; then no pass begins on this texture and the
+	// queued clear used to be carried out by the next pass to begin, on any target -- the next canvas
+	// drawn that frame lost the picture it keeps to a transparent-black clear. A clear that does run
+	// here is untouched: BeginRenderPass consumes it long before the exit discard.
+	mRenderState->DiscardPendingClears();
 
 	VkImageTransition()
 		.AddImage(image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false)
@@ -703,6 +710,9 @@ void VulkanRenderDevice::RenderTextureView(FCanvasTexture* tex, std::function<vo
 	renderFunc(bounds);
 
 	mRenderState->EndRenderPass();
+	// [CANVASCLEAR] What renderFunc queued and never drew with belonged to this texture; an empty
+	// canvas keeps its picture, as it always has on Vulkan, and the next target starts clean.
+	mRenderState->DiscardPendingClears();
 
 	VkImageTransition()
 		.AddImage(image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false)

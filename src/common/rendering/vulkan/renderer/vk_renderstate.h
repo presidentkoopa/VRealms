@@ -81,6 +81,11 @@ public:
 	void SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat Format, VkSampleCountFlagBits samples, int layers = 1, uint32_t viewMask = 0, int layerIndex = 0, bool lightMask = false);
 	void Bind(int bindingpoint, uint32_t offset);
 	void EndRenderPass();
+	// [CANVASCLEAR] Forgets a clear that Clear() queued and no render pass has carried out yet. Clear()
+	// only queues: the load ops of the NEXT BeginRenderPass do the clearing, on whatever target is
+	// current by then. A caller that leaves a target without drawing on it (RenderTextureView with
+	// an empty canvas drawer) calls this so its clear is not carried out on the next target instead.
+	void DiscardPendingClears() { mClearTargets = 0; }
 	void EndFrame();
 
 protected:
