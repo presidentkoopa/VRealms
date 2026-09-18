@@ -375,6 +375,21 @@ CUSTOM_CVARD(Int, r_emissivevolumes_steps, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG,
 // (SetupEmissiveVolumes and PPEmissiveVolumes::Render); not archived.
 CVARD(Bool, r_emissivevolumes_tiles, true, CVAR_GLOBALCONFIG, "the emissive volume march loops only each screen tile's volumes -- the same image, less GPU work (Vulkan; an A/B switch)")
 
+// [FOVEATED] E4 r_effects_foveated: FIXED FOVEATED EFFECTS ("Engine docs/FOVEATED_E4_IMPL_NOTES.md").  A headset lens is sharp
+// down the middle and blurred and stretched at its rim, so a marched ray far off the lens axis does not need as many samples as
+// one down the middle.  With this on, the smoke volume's march and the emissive volumes' march scale their step count by the
+// angle between the ray and the lens axis: full inside about 25 degrees, down to FOVEATED_EDGE_SHARE (a third) by 50.  No eye
+// tracking: the centre is the lens axis, which the marches already know exactly from the eye's own asymmetric projection, and a
+// headset that reports gaze later moves the same centre.
+//
+// It scales the step CAP, so a short stretch -- smoke at your feet, a flash at your gun -- keeps every sample it ever had.  It
+// never touches the transmittance curve or the beam scatter, so a grab laser and the Lance are the same at every angle.
+//
+// Renderer-read every frame (SetupSmokeVolume and SetupEmissiveVolumes, hw_drawinfo.cpp), so it changes live with the menu open.
+// Off is exactly the march this engine always drew: the renderer then publishes 0 and each march's step cap is its own
+// expression, to the bit.
+CVARD(Bool, r_effects_foveated, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the smoke and flash marches take fewer steps the further a ray is from the middle of the lens, where the lens is blurred anyway (Vulkan only)")
+
 // r_emissivevolumes_resolution: the march at half the scene's resolution (2, the default) or full (1, about four times the cost).
 CUSTOM_CVARD(Int, r_emissivevolumes_resolution, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "emissive volume march resolution: 2 half, 1 full (Vulkan only)")
 {

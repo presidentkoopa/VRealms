@@ -85,6 +85,17 @@ EXTERN_CVAR(Bool, r_effects_sharedmarch)	// [SHAREDMARCH] E2: one march from bet
 EXTERN_CVAR(Int, r_emissivevolumes_steps)	// [EMISSIVEVOLUMES] the emissive volumes' drawing: steps across a volume
 EXTERN_CVAR(Bool, r_emissivevolumes_tiles)	// [EMISSIVETILES] E5: the march's tile lists (an A/B switch)
 EXTERN_CVAR(Int, r_emissivevolumes_resolution)	// [EMISSIVEVOLUMES] 2 half, 1 full
+EXTERN_CVAR(Bool, r_effects_foveated)	// [FOVEATED] E4: a marched ray's step count follows its angle off the lens axis
+
+// [FOVEATED] E4: FIXED FOVEATED EFFECTS ("Engine docs/FOVEATED_E4_IMPL_NOTES.md").  The share of its centre step count a
+// marched ray at the rim of the lens takes while r_effects_foveated is on.  This is the ONE number the renderer publishes;
+// the shape it is spent on -- full quality inside 25 degrees, this share by 50 -- lives in the two marches themselves
+// (smokemarch.fp, emissivevolume.fp), which is where the angle is already known.  A general name: it is not the smoke's and
+// not the flashes', it is what any pass that marches a view ray may ask of a ray at the rim.
+//
+// A constant, not a slider, as E2's near split is.  If the owner wants to tune it in the headset it becomes a renderer-read
+// cvar with a menu row, like every other tuning number here.
+constexpr float FOVEATED_EDGE_SHARE = 1.0f / 3.0f;
 EXTERN_CVAR(Float, gl_exposure_scale)
 EXTERN_CVAR(Float, gl_exposure_min)
 EXTERN_CVAR(Float, gl_exposure_base)

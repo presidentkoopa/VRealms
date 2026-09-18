@@ -993,6 +993,16 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 		u.LightColor = lightColor;
 		u.Extinction = (float)std::max(extinction, 0.0);
 		u.MinStep = (float)(cell * 0.5);
+		// [FOVEATED] E4: FIXED FOVEATED EFFECTS ("Engine docs/FOVEATED_E4_IMPL_NOTES.md"; r_effects_foveated).  The share of
+		// its steps a ray at the rim of the lens takes; 0 is off, and the march's step cap is then max(StepCount, 1), the
+		// expression it always was.  Renderer-read here, beside r_smoke_steps, so it changes live with the menu open.
+		//
+		// It rides in the march block's reserved word because EVERY march variant copies that block whole -- the plain march,
+		// the temporal march (E3) and the shared march and its fill (E2, which takes `u` again for its shared view a few lines
+		// below) -- so this one write reaches all of them, and no block changes size.  The passes that walk this same ray for
+		// another effect copy it too and never read it: the transmittance curve and the beam scatter (a grab laser, the Lance)
+		// are untouched at every angle.
+		u.MarchPad0 = r_effects_foveated ? FOVEATED_EDGE_SHARE : 0.0f;
 		u.SliceHeight = (float)-SMOKE_DEBUG_SLICE_BELOW_EYE;
 		u.DebugSlice = debugSlice ? 1 : 0;
 		pass.SetEyeMarch(eye, u);
@@ -1123,6 +1133,10 @@ static void SetupEmissiveVolumes(const HWDrawInfo *di, bool toscreen)
 		u.ListOrigin = FVector3((float)(originGL[0] - inv[12]), (float)(originGL[1] - inv[13]), (float)(originGL[2] - inv[14]));
 		u.VolumeCount = draw.Count;
 		u.StepCount = steps;
+		// [FOVEATED] E4: as the smoke's, and the same number ("Engine docs/FOVEATED_E4_IMPL_NOTES.md"; r_effects_foveated).
+		// 0 is off, and a volume's step count is then its own expression to the bit.  E2's shared view copies `u` below, so
+		// the shared march takes it too.
+		u.FoveatedEdgeShare = r_effects_foveated ? FOVEATED_EDGE_SHARE : 0.0f;
 
 		// The view matrix's largest axis scale: a world sphere of radius r fits in a view-space sphere of radius r x this.
 		double axisScale = 0.0;

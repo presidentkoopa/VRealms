@@ -101,6 +101,7 @@ EXTERN_CVAR(Int, r_emissivevolumes_test)
 EXTERN_CVAR(Int, r_emissivevolumes_steps)	// [EMISSIVEVOLUMES] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Int, r_emissivevolumes_resolution)
 EXTERN_CVAR(Bool, r_emissivevolumes_tiles)	// [EMISSIVETILES] E5: hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_effects_foveated)	// [FOVEATED] E4: hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_exposureimpulse)	// [EXPOSUREIMPULSE] hw_exposureimpulse.cpp
 EXTERN_CVAR(Int, r_exposureimpulse_look)
 EXTERN_CVAR(Bool, r_exposureimpulse_comfort)
@@ -491,6 +492,9 @@ namespace
 			(double)(float)*r_emissivevolumes_brightness, (int)*r_emissivevolumes_test);
 		// [EMISSIVETILES] E5: and the march's tile lists, so a pp.emissive before/after labels itself.
 		out.AppendFormat(" r_emissivevolumes_tiles=%d", (int)*r_emissivevolumes_tiles);
+		// [FOVEATED] E4: and the foveated step scale, which trims BOTH marches, so a pp.smoke or pp.emissive before/after
+		// labels itself.
+		out.AppendFormat(" r_effects_foveated=%d", (int)*r_effects_foveated);
 		// [EXPOSUREIMPULSE] And the flash blindness switches, with whether a wash is live, so a pp.exposureimpulse /
 		// fx.exposureimpulse before/after labels itself.
 		out.AppendFormat(" r_exposureimpulse=%d r_exposureimpulse_look=%d r_exposureimpulse_comfort=%d r_exposureimpulse_strength=%g r_exposureimpulse_cap=%g r_exposureimpulse_recovery_scale=%g r_exposureimpulse_holdbeams=%d r_exposureimpulse_test=%d exposureimpulselive=%d",

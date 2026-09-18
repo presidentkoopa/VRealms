@@ -429,6 +429,33 @@ float VolumeGrain(EmissiveVolume v, vec3 q)
 	return first * 0.65 + second * 0.35;
 }
 
+// ============================================================================
+// [FOVEATED] E4: FIXED FOVEATED EFFECTS ("Engine docs/FOVEATED_E4_IMPL_NOTES.md"; r_effects_foveated).  The smoke march's
+// rule, in the one shape this march needs.  smokemarch.fp carries the long form of why the centre is the lens axis and why
+// that one centre is right for both eyes of E2's shared march; the numbers below are the same numbers.
+//
+// THE NEAR GUARD.  Unlike the smoke's, this march's step count is not capped by a minimum step, so a volume close to the
+// head would really lose samples.  Your own muzzle flash is the volume that must not: it is the brightest thing in the
+// frame and it is right in front of you, and it can sit well off the lens axis when the gun is held out to the side.  So a
+// volume whose chord starts within FOVEATED_NEAR_UNITS of the eye keeps every step it ever had, at every angle.  That is
+// the same distance E2 splits near from far at, for the same reason, and it is stated in the same units.
+//
+// OFF is the first line: nothing published (0), or a share of 1 or more, returns exactly 1.0, and multiplying the step
+// count by exactly 1.0 is exact, so the count is the same bits it always was.
+// ============================================================================
+const float FOVEATED_FULL_TAN = 0.46631;	// tan(25 degrees): full quality inside this angle off the lens axis
+const float FOVEATED_EDGE_TAN = 1.19175;	// tan(50 degrees): the edge share from here outward
+const float FOVEATED_NEAR_UNITS = 96.0;		// map units: a volume that comes this near the eye is never coarsened
+
+// The share of its steps a volume takes: tanOff is the ray's two tangents off the lens axis (viewRay.xy), nearest the
+// distance along the ray at which this volume's chord starts.
+float FoveatedStepScale(vec2 tanOff, float edgeShare, float nearest)
+{
+	if (!(edgeShare > 0.0) || edgeShare >= 1.0 || nearest < FOVEATED_NEAR_UNITS)
+		return 1.0;
+	return mix(1.0, edgeShare, smoothstep(FOVEATED_FULL_TAN, FOVEATED_EDGE_TAN, length(tanOff)));
+}
+
 void main()
 {
 	FragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -573,7 +600,12 @@ void main()
 		// StepCount across the whole diameter, fewer for a shorter chord; and at least one step for each unit of optical depth the gas
 		// can have along the chord (a sooty volume's front is where its light comes from), never more than 64.
 		float densest = max(max(v.body.w, v.petals.w), v.ring.z);
-		int steps = clamp(max(int(float(StepCount) * (t1 - t0) / (2.0 * bound) + 0.5), int(ceil(v.emission.w * densest * (t1 - t0)))), 4, EMISSIVE_STEPS_MAX);
+		// [FOVEATED] E4: the GEOMETRIC term only.  The optical-depth term beside it (one step for each unit of depth the gas
+		// can have along the chord) and the floor of 4 are untouched, so a thick or sooty volume keeps the steps its own
+		// density asks for however far off the axis it sits -- the angle may only take away steps the shape was getting for
+		// being big on screen.  1.0 with the switch off, and multiplying by exactly 1.0 changes no bit.
+		float foveated = FoveatedStepScale(viewRay.xy, FoveatedEdgeShare, t0);
+		int steps = clamp(max(int(float(StepCount) * foveated * (t1 - t0) / (2.0 * bound) + 0.5), int(ceil(v.emission.w * densest * (t1 - t0)))), 4, EMISSIVE_STEPS_MAX);
 		float dt = (t1 - t0) / float(steps);
 		vec3 volumeLight = vec3(0.0);
 		float volumeT = 1.0;

@@ -1866,12 +1866,15 @@ struct EmissiveVolumeUniforms
 	FVector2 RectMin;         // TexCoord 0..1: where on this eye's screen any volume's bounding sphere can be seen
 	FVector2 RectMax;
 	int StepCount;            // r_emissivevolumes_steps: steps across a volume's diameter
-	float VolumePad0;
+	// [FOVEATED] E4: the share of StepCount a ray at the rim of the lens takes ("Engine docs/FOVEATED_E4_IMPL_NOTES.md";
+	// r_effects_foveated, FOVEATED_EDGE_SHARE).  0 -- nothing published -- is off, and the march's step count is then its own
+	// expression to the bit.  It takes the first of this block's three reserved words, which is what they were kept for.
+	float FoveatedEdgeShare;
 	float VolumePad1;
 	float VolumePad2;
 
 	//   ViewToWorld 0   TanHalfFov 64   ProjOffset 72   ListOrigin 80   VolumeCount 92   RectMin 96   RectMax 104
-	//   StepCount 112   VolumePad0 116   VolumePad1 120   VolumePad2 124   -> block ends 128
+	//   StepCount 112   FoveatedEdgeShare 116   VolumePad1 120   VolumePad2 124   -> block ends 128
 	static std::vector<UniformFieldDesc> Desc()
 	{
 		return
@@ -1884,7 +1887,7 @@ struct EmissiveVolumeUniforms
 			{ "RectMin", UniformType::Vec2, offsetof(EmissiveVolumeUniforms, RectMin) },
 			{ "RectMax", UniformType::Vec2, offsetof(EmissiveVolumeUniforms, RectMax) },
 			{ "StepCount", UniformType::Int, offsetof(EmissiveVolumeUniforms, StepCount) },
-			{ "VolumePad0", UniformType::Float, offsetof(EmissiveVolumeUniforms, VolumePad0) },
+			{ "FoveatedEdgeShare", UniformType::Float, offsetof(EmissiveVolumeUniforms, FoveatedEdgeShare) },	// [FOVEATED] E4
 			{ "VolumePad1", UniformType::Float, offsetof(EmissiveVolumeUniforms, VolumePad1) },
 			{ "VolumePad2", UniformType::Float, offsetof(EmissiveVolumeUniforms, VolumePad2) },
 		};

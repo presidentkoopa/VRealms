@@ -377,6 +377,8 @@ OptionMenu "OptionsMenu" protected
 	Submenu "$VRPREFMNU_TITLE",			"VROptionsMenu"
 	Submenu "$MODOPT_TITLE",			"ModOptionsMenu"
 	Submenu "$VRPERFMNU_TITLE",			"VRPerfTweakMenu"
+	Submenu "Spectator Mode",			"VRStreamingOptions"
+	Submenu "Benchmarking",				"BenchmarkingMenu"
 	StaticText " "
 	Submenu "$OPTMNU_CONTROLS",			"CustomizeControls"
 	IfNotOption(OpenXR)
@@ -2030,6 +2032,29 @@ OptionMenu VRHitscanTracerOptions protected
 	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_hitscan_tracer vr_hitscan_ricochet vr_hitscan_ricochet_chance vr_hitscan_tracer_color vr_hitscan_tracer_alpha vr_hitscan_tracer_length vr_hitscan_tracer_width vr_hitscan_tracer_speed vr_hitscan_tracer_offset"
 }
 
+// [PERFTRACK] BENCHMARKING -- the owner's own page (2026-09-18: "options -> Benchmarking").
+OptionMenu BenchmarkingMenu protected
+{
+	Title "Benchmarking"
+
+	// [PERFTRACK] TELEMETRY. The performance log above writes a block every N seconds; this writes ONE ROW A FRAME --
+	// our CPU split, the GPU groups, the scene's shape, the headset runtime's share, and a reason for every frame over
+	// budget. It is off by default and costs one integer test a frame when off. Rows are held in memory and written at
+	// the end, so the recorder never measures its own disk writes; a map change flushes, and so does switching it off.
+	// Recording a demo at the same time (`record <name>` at the console) makes that demo a benchmark: it carries the
+	// build, the whole load order and a state hash per tic, so the same fight can be replayed and compared later.
+	// Files land in the save folder unless perf_track_dir says otherwise, and the console names the path.
+	StaticText ""
+	StaticText "Telemetry", 1
+	Option "Record one row a frame", "perf_track", "OnOff"
+	Slider "Call a frame slow at (ms, 0 = one display frame)", "perf_track_hitch_ms", 0, 50, 1, 0
+	Slider "Stop recording after this many frames", "perf_track_frames", 5000, 100000, 5000, 0
+	Option "Put a state hash in recorded demos", "perf_bench_hash", "OnOff"
+	SafeCommand "Write what has been recorded so far", "perf_track_flush"
+	StaticText ""
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar perf_track perf_track_hitch_ms perf_track_frames perf_bench_hash"
+}
+
 // [SPECTATOR] [VRDEMO] What the desktop window shows while you play, and how a
 // VR demo looks when you watch it back on a monitor.
 OptionMenu VRStreamingOptions protected
@@ -2225,6 +2250,7 @@ OptionMenu DeveloperOptionsMenu protected
 	// of GPU/CPU timings and effect load is appended to perflog.txt beside
 	// benchmarks.txt; the console names the full path at map start.
 	Slider "Performance log (seconds, 0 = off)", "r_perflog", 0, 30, 1, 0
+
 	// [GOVERNOR] E8: the effects budget governor beside the log that records it (a "governor" line each window), for a before and
 	// after; the same three rows as the VR Performance page.
 	Option "Effects budget governor", "r_effects_governor", "OnOff"
@@ -2511,6 +2537,12 @@ OptionMenu DeveloperOptionsMenu protected
 	// the edges where one eye can see what the other cannot. On by default; off marches everything twice, as
 	// before. Read every frame, so it changes live with this menu open. Vulkan and a headset only.
 	Option "March smoke and flashes once for both eyes", "r_effects_sharedmarch", "OnOff"
+	// [FOVEATED] E4 r_effects_foveated -- the smoke march and the flash march take fewer steps the further a
+	// ray is from the middle of the lens, where the lens is blurred and stretched anyway: full quality inside
+	// about 25 degrees, down to a third by 50. No eye tracking; the middle is the lens's own axis. Smoke at
+	// your feet and a flash at your gun keep every sample. Lasers in smoke are not touched. On by default.
+	// Read every frame, so it changes live with this menu open. Vulkan only.
+	Option "Foveated smoke and flashes (cheaper at the lens rim)", "r_effects_foveated", "OnOff"
 	// [13d] r_smoke_light_quality -- how finely the light inside the smoke is worked out (muzzle
 	// flashes, lamps and flashlights glowing in the haze): 1 = half the smoke grid's resolution
 	// (about 10 MB at the default smoke quality), 2 = three quarters (32 MB, the default), 3 = the

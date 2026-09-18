@@ -660,6 +660,44 @@ void main()
 
 #else
 
+// ============================================================================
+// [FOVEATED] E4: FIXED FOVEATED EFFECTS ("Engine docs/FOVEATED_E4_IMPL_NOTES.md"; r_effects_foveated).
+//
+// A headset lens is sharp down the middle and blurred and stretched at its rim, so a ray far off the lens axis does not
+// need as many samples as one down the middle.  This scales the march's STEP CAP by the angle between the ray and that
+// axis: full inside FOVEATED_FULL_TAN (25 degrees), falling smoothly to the published edge share by FOVEATED_EDGE_TAN
+// (50 degrees).  Everything below the two lines is untouched: the same stretch, the same jitter, the same light.
+//
+// THE CENTRE IS THE LENS AXIS, AND IT IS EXACT.  A view ray is (ndc + ProjOffset) * TanHalfFov, so the ray ALONG the lens
+// axis is the one whose two tangents are zero -- which is where a headset's asymmetric eye really puts it, not the middle
+// of the buffer.  The angle below is therefore the true angle off the axis, and it needs no uniform, no screen centre and
+// no assumption that the frustum is symmetric.  It is also why this is right for E2's shared march, which serves both
+// eyes at once: the two eyes look the same way, so their two lens axes are the same DIRECTION and land on the same texel
+// of the shared buffer, whichever eye's projection that buffer was drawn with.  A headset that reports gaze later moves
+// the centre by subtracting a tangent-space offset from tanOff, and nothing else here changes.
+//
+// IT SCALES THE CAP, NOT THE STEP SIZE, AND THAT IS WHAT KEEPS NEAR SMOKE EXACT.  The march takes
+// ceil(span / MinStep) samples and only the cap holds a long ray back, so a short stretch -- a puff at your feet, a
+// grenade by your boot -- is still sampled at half a cell whatever the angle, and only rays long enough to be capped
+// take fewer.  Nothing near the head loses a sample, at any angle, and no near test is needed to arrange it.
+//
+// OFF is the first line.  With nothing published (0), or a share of 1 or more, this returns max(steps, 1) -- the
+// expression the march always used, so every count, every dt, every sample position and every fetch is the same bits.
+// ============================================================================
+const float FOVEATED_FULL_TAN = 0.46631;	// tan(25 degrees): full quality inside this angle off the lens axis
+const float FOVEATED_EDGE_TAN = 1.19175;	// tan(50 degrees): the edge share from here outward
+const int FOVEATED_MIN_STEPS = 8;			// never fewer than this, whatever the angle (and never more than steps)
+
+// This texel's step cap.  tanOff is the ray's two tangents off the lens axis -- viewRay.xy, which the march already has.
+int FoveatedStepCap(int steps, vec2 tanOff, float edgeShare)
+{
+	int full = max(steps, 1);
+	if (!(edgeShare > 0.0) || edgeShare >= 1.0)
+		return full;
+	float away = smoothstep(FOVEATED_FULL_TAN, FOVEATED_EDGE_TAN, length(tanOff));
+	return clamp(int(float(full) * mix(1.0, edgeShare, away) + 0.5), min(FOVEATED_MIN_STEPS, full), full);
+}
+
 void main()
 {
 	FragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -744,7 +782,10 @@ void main()
 	if (span <= 0.0)
 		return;
 
-	int count = clamp(int(ceil(span / max(MinStep, 0.001))), 1, max(StepCount, 1));
+	// [FOVEATED] E4: the only line this step changes in the march.  max(StepCount, 1) became the cap this texel's angle off
+	// the lens axis asks for; with the switch off FoveatedStepCap returns max(StepCount, 1) on its first line.  MarchPad0 is
+	// the march block's reserved word, which SetupSmokeVolume fills with the edge share (hw_drawinfo.cpp).
+	int count = clamp(int(ceil(span / max(MinStep, 0.001))), 1, FoveatedStepCap(StepCount, viewRay.xy, MarchPad0));
 	float dt = span / float(count);
 #if defined(SMOKE_SHARED_FILL)
 	// [SHAREDMARCH] E2: A HOLE WALKS TWO STRETCHES, and the loop below walks them one after the other in a single pass: the
