@@ -427,6 +427,10 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 		const DVector3 baseViewPos = vp.Pos;
 		FRenderViewpoint centerView = vp;
 		centerView.Pos = baseViewPos;
+		// [SHAREDMARCH] E2 ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"): the head this eye is about to be shifted away from,
+		// for anything that wants one view to serve both eyes. Only in a frame that really has two.
+		di->CentreViewPos = baseViewPos;
+		di->HasCentreViewPos = eyeCount >= 2;
 		const DVector3 eyeShift = eye->GetViewShift(centerView);
 		vp.Pos = baseViewPos + eyeShift;
 		if (useMultiviewScene && eye_ix == 0 && vrmode->mEyes[1] != nullptr)

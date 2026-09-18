@@ -345,6 +345,17 @@ CVARD(Bool, r_smoke_cones_depth, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "the ha
 // RGBA32F shared by both. Vulkan only.
 CVARD(Bool, r_smoke_temporal, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "temporal accumulation for the smoke volume's march: each frame's steps build on the last frames' (Vulkan only)")
 
+// [SHAREDMARCH] E2 r_effects_sharedmarch: ONE MARCH FOR BOTH EYES ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E2,
+// "Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"; PPSharedMarchWarp in hw_postprocess.h). A pass that marches a view ray --
+// the smoke volume, the emissive volumes -- marches once from a view halfway between the eyes and each eye carries that
+// result into its own texels by depth. What the carry cannot serve is still marched per eye: everything within 96 map
+// units of the head (the near shell, your own muzzle flash), and the holes the carry marks at depth edges, at the screen's
+// rim and where one eye sees past what the other can. Off: exactly the draws and the programs without it, per eye.
+// Renderer-read every frame, so it changes live with this menu open. Memory, made the first time it runs: one
+// half-resolution RGBA32F for the shared march and one for the carry, per pass. Vulkan only, and only in a stereo frame
+// (a flat frame has one eye and nothing to share).
+CVARD(Bool, r_effects_sharedmarch, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "march the smoke and the emissive volumes once from between the eyes and carry the result into each eye (Vulkan only)")
+
 // [EMISSIVEVOLUMES] THE EMISSIVE VOLUMES' DRAWING ("Engine docs/VOLUMETRIC_FLASH_15_PLAN.md" 2d; PPEmissiveVolumes in hw_postprocess.h).
 // Their own switches -- which draw, how long, how they move, their lights, brightness, the pool and the test -- live with the
 // volumes in hw_emissivevolumes.cpp; these two are the pass's quality. Both are read by the renderer every frame

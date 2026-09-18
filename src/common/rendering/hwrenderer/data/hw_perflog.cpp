@@ -59,6 +59,7 @@ EXTERN_CVAR(Bool, r_smoke_beams)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_beams_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_cones_depth)	// [SMOKEVOLUME] 13e, hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_temporal)	// [SMOKE_TEMPORAL] hw_postprocess_cvars.cpp
+EXTERN_CVAR(Bool, r_effects_sharedmarch)	// [SHAREDMARCH] E2: hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke_surfaceglow)	// [SMOKEVOLUME] 13f, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_smoke_darkness)	// [SMOKEVOLUME] 13f, hw_smokevolume.cpp
 EXTERN_CVAR(Bool, r_particlecollision)	// [LEVELFIELD] hw_levelfield.cpp
@@ -449,6 +450,9 @@ namespace
 		out.AppendFormat(" r_smoke_surfaceglow=%d r_smoke_darkness=%d", (int)*r_smoke_surfaceglow, (int)*r_smoke_darkness);
 		// [SMOKE_TEMPORAL] And the march's temporal accumulation, so a pp.smoke before/after labels itself.
 		out.AppendFormat(" r_smoke_temporal=%d", (int)*r_smoke_temporal);
+		// [SHAREDMARCH] E2: and whether the smoke and the emissive volumes marched once from between the eyes, so a pp.smoke
+		// or pp.emissive before/after labels itself.
+		out.AppendFormat(" r_effects_sharedmarch=%d", (int)*r_effects_sharedmarch);
 		// [SMOKELIGHTCULL] E6: and the light grid cull, so a fx.smokelight before/after labels itself. Looked up by name: the Vulkan
 		// backend defines it.
 		{

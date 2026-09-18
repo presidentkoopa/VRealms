@@ -24,6 +24,11 @@ layout(binding=8) uniform sampler2D SmokeBeamList;		// SMOKE_BEAMS_MAX x 4 RGBA3
 #if defined(SMOKE_CURVE_NEAR_VOLUMES)
 layout(binding=8) uniform sampler2D EmissiveVolumeList;	// EMISSIVE_VOLUMES_DRAWN_MAX x EMISSIVE_VOLUME_TEXELS RGBA32F (hw_emissivevolumeframe.h)
 #endif
+// [SHAREDMARCH] E2 ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"): SMOKE_SHARED_FILL reads what the carry left in this eye's
+// texels (shaders/pp/sharedmarchwarp.fp), so it marches only the near shell -- or the whole ray where the carry left a hole.
+#if defined(SMOKE_SHARED_FILL)
+layout(binding=6) uniform sampler2D SharedMarchCarried;
+#endif
 
 // ============================================================================
 // [SMOKEVOLUME] THE SMOKE VOLUME'S DRAWING, PASS 2 OF 4: THE MARCH.
@@ -85,7 +90,10 @@ layout(binding=8) uniform sampler2D EmissiveVolumeList;	// EMISSIVE_VOLUMES_DRAW
 //     within a float32 step of the alpha (at most 1.2e-4); a ray that met no smoke has T exactly 1 and light exactly 0, so the
 //     resolve still reads a clear texel as (0, 0, 0, 1). Its target is RGBA32F.
 // Without the define this file is the march, token for token.
-#if defined(SMOKE_TEMPORAL)
+// [SHAREDMARCH] E2: SMOKE_SHARED and SMOKE_SHARED_FILL want the same two measures the temporal march keeps -- the ray's
+// representative depth and how much of its smoke the last simulation step changed -- so this lump is compiled for them too.
+// With none of the three defines the tokens below are absent, exactly as before.
+#if defined(SMOKE_TEMPORAL) || defined(SMOKE_SHARED) || defined(SMOKE_SHARED_FILL)
 const float SMOKE_TEMPORAL_CODES_PER_DOUBLING = 16.0;	// smoketemporal.fp
 const float SMOKE_TEMPORAL_CHANGE_FLOOR = 0.05;	// a change in density thinner than this counts against this, not against itself
 const float SMOKE_TEMPORAL_CHANGE_FULL = 0.5;	// the share of the reachable smoke that changed which reads as the top level
@@ -105,6 +113,73 @@ float SmokeTemporalPack(float transmittance, float depth, float changeShare)
 	float code = transmittance < 1.0 ? clamp(floor(log2(max(depth, 1.0)) * SMOKE_TEMPORAL_CODES_PER_DOUBLING + 0.5), 0.0, 255.0) : 0.0;
 	float level = clamp(floor(changeShare / SMOKE_TEMPORAL_CHANGE_FULL * 3.0 + 0.5), 0.0, 3.0);
 	return clamp(transmittance, 0.0, 1.0) + 2.0 * (code + 256.0 * level);
+}
+#endif
+
+#if defined(SMOKE_SHARED) || defined(SMOKE_SHARED_FILL)
+// [SHAREDMARCH] E2: THE PACKED MARCH, the one format every caller writes and PPSharedMarchWarp carries. Kept token for
+// token in smokemarch.fp, emissivevolume.fp and sharedmarchwarp.fp (a post-process lump has no #include); the E2 proofs
+// compare the three texts.
+//
+// Two halves a channel, which is the precision the march's own RGBA16F target always had:
+//   r  light.r, light.g      g  light.b, transmittance      b  front depth, back depth      a  depth, change
+// Every value is clamped to a finite half before it is packed, so no channel can become a float32 NaN (a NaN would need
+// the HIGH half of a channel to be an infinity, and the high halves are the ones clamped to a range). A ray that met
+// nothing packs to light 0, transmittance 1 and zero depths, which unpacks to exactly that. Depth 0 means the texel
+// carries nothing; SHARED_MARCH_HOLE means the carry could not fill it.
+//
+// BACK CARRIES A SIGN, and it is what tells a disocclusion from an ordinary end. POSITIVE: the ray ran to its stop
+// with light still in it, so the scene is what ended it there and anything beyond that stop is hidden -- an eye whose
+// own scene reaches past it is looking around an edge at light this march never got to, and the carry marks a hole.
+// NEGATIVE: the light simply ran out before the scene did, and an eye seeing further sees nothing more. Only the
+// magnitude is the depth.
+const float SHARED_MARCH_HOLE = -1.0;
+const float SHARED_MARCH_HALF_MAX = 60000.0;
+
+struct SharedMarchSample
+{
+	vec3 Light;
+	float Transmittance;
+	float Front;
+	float Back;
+	float Depth;
+	float Change;
+};
+
+vec4 SharedMarchPack(vec3 light, float transmittance, float front, float back, float depth, float change)
+{
+	vec3 safeLight = clamp(light, vec3(0.0), vec3(SHARED_MARCH_HALF_MAX));
+	return vec4(
+		uintBitsToFloat(packHalf2x16(safeLight.rg)),
+		uintBitsToFloat(packHalf2x16(vec2(safeLight.b, clamp(transmittance, 0.0, 1.0)))),
+		uintBitsToFloat(packHalf2x16(vec2(clamp(front, 0.0, SHARED_MARCH_HALF_MAX), clamp(back, -SHARED_MARCH_HALF_MAX, SHARED_MARCH_HALF_MAX)))),
+		uintBitsToFloat(packHalf2x16(vec2(clamp(depth, SHARED_MARCH_HOLE, SHARED_MARCH_HALF_MAX), clamp(change, 0.0, 1.0)))));
+}
+
+SharedMarchSample SharedMarchUnpack(vec4 texel)
+{
+	vec2 lightRG = unpackHalf2x16(floatBitsToUint(texel.r));
+	vec2 blueAndT = unpackHalf2x16(floatBitsToUint(texel.g));
+	vec2 frontBack = unpackHalf2x16(floatBitsToUint(texel.b));
+	vec2 depthChange = unpackHalf2x16(floatBitsToUint(texel.a));
+	SharedMarchSample result;
+	result.Light = vec3(lightRG, blueAndT.x);
+	result.Transmittance = blueAndT.y;
+	result.Front = frontBack.x;
+	result.Back = frontBack.y;
+	result.Depth = depthChange.x;
+	result.Change = depthChange.y;
+	return result;
+}
+#endif
+
+#if defined(SMOKE_SHARED_FILL)
+// [SHAREDMARCH] E2: the fill writes what the eye's march always wrote -- the plain (light, transmittance) of the march, or
+// the temporal march's packed alpha when this eye is accumulating (TemporalOut). Every pass after it reads the same texture
+// it always did, in the same format.
+vec4 SmokeSharedOut(vec3 light, float transmittance, float depth, float change)
+{
+	return TemporalOut != 0 ? vec4(light, SmokeTemporalPack(transmittance, depth, change)) : vec4(light, transmittance);
 }
 #endif
 
@@ -588,6 +663,20 @@ void main()
 void main()
 {
 	FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+#if defined(SMOKE_SHARED)
+	// [SHAREDMARCH] E2: a texel of the shared march that meets nothing is the packed clear, not the plain one.
+	FragColor = SharedMarchPack(vec3(0.0), 1.0, 0.0, 0.0, 0.0, 0.0);
+#endif
+#if defined(SMOKE_SHARED_FILL)
+	// [SHAREDMARCH] E2: what the carry left in this texel. A HOLE means the carry could not serve this eye here and this
+	// pass marches the whole ray itself at FillStepCount; otherwise the carried stretch stands and only the near shell is
+	// marched here and put over it. Either way this is what the texel says if nothing below adds to it, so every early
+	// return below keeps the carry.
+	SharedMarchSample carried = SharedMarchUnpack(texelFetch(SharedMarchCarried, ivec2(gl_FragCoord.xy), 0));
+	bool carriedHole = carried.Depth <= SHARED_MARCH_HOLE * 0.5;
+	FragColor = carriedHole ? SmokeSharedOut(vec3(0.0), 1.0, 0.0, 0.0) :
+		SmokeSharedOut(carried.Light, carried.Transmittance, carried.Depth, carried.Change);
+#endif
 
 	// This pixel's ray: view space with z at -1, then the same step in world axes.
 	vec2 ndc = TexCoord * 2.0 - 1.0;
@@ -608,6 +697,14 @@ void main()
 		return;
 	tIn = max(tIn, 0.0);
 	tOut = min(tOut, sceneT);
+#if defined(SMOKE_SHARED_FILL)
+	// [SHAREDMARCH] E2: with the carry standing, this eye marches only the NEAR SHELL -- the stretch nearer than the split,
+	// which is where the two eyes really differ and where the carry's error would be largest. A hole marches the whole ray.
+	if (!carriedHole)
+		tOut = min(tOut, NearSplit);
+	if (tOut <= tIn)
+		return;
+#endif
 
 	// r_smoke_debugslice: where the ray meets the level plane SliceHeight (eye-relative) in front of the
 	// scene, the density there in false colour, and green where a tile is awake but nearly empty.
@@ -638,14 +735,43 @@ void main()
 	// sampled. Smoke is exactly 0 outside the awake tiles, so the margin costs no accuracy.
 	float t0 = max(tFirst - CellSize, tIn);
 	float t1 = min(tLast + CellSize, tOut);
+#if defined(SMOKE_SHARED)
+	// [SHAREDMARCH] E2: the shared march is the stretch PAST the split. What lies nearer is marched by each eye itself and
+	// put over this, so nothing is counted twice and nothing near is carried.
+	t0 = max(t0, NearSplit);
+#endif
 	float span = t1 - t0;
 	if (span <= 0.0)
 		return;
 
 	int count = clamp(int(ceil(span / max(MinStep, 0.001))), 1, max(StepCount, 1));
 	float dt = span / float(count);
+#if defined(SMOKE_SHARED_FILL)
+	// [SHAREDMARCH] E2: A HOLE WALKS TWO STRETCHES, and the loop below walks them one after the other in a single pass: the
+	// NEAR SHELL at the march's own step size, then the far stretch at the fill's lower one. Marching the whole ray at the
+	// fill's count instead puts eighty-seven units between samples at headset range and steps straight over a smoke grenade
+	// at your feet -- the mirror measured exactly that before this was split in two (M4b). Front to back in one loop, so the
+	// two stretches compose the way two parts of one ray always did. Where the carry stands, the far count is zero and every
+	// number here is the one the march always used.
+	float nearStart = t0;
+	float nearEnd = carriedHole ? min(t1, NearSplit) : t1;
+	float farStart = carriedHole ? max(t0, NearSplit) : 0.0;
+	float farEnd = carriedHole ? t1 : 0.0;
+	float nearSpan = max(nearEnd - nearStart, 0.0);
+	float farSpan = max(farEnd - farStart, 0.0);
+	int nearCount = nearSpan > 0.0 ? clamp(int(ceil(nearSpan / max(MinStep, 0.001))), 1, max(StepCount, 1)) : 0;
+	int farCount = farSpan > 0.0 ? clamp(int(ceil(farSpan / max(MinStep, 0.001))), 1, max(FillStepCount, 1)) : 0;
+	float dtNear = nearCount > 0 ? nearSpan / float(nearCount) : 0.0;
+	float dtFar = farCount > 0 ? farSpan / float(farCount) : 0.0;
+	count = nearCount + farCount;
+	if (count <= 0)
+		return;
+	dt = nearCount > 0 ? dtNear : dtFar;
+#endif
 	float jitter = InterleavedGradientNoise(gl_FragCoord.xy);
-#if defined(SMOKE_TEMPORAL)
+#if defined(SMOKE_TEMPORAL) || defined(SMOKE_SHARED) || defined(SMOKE_SHARED_FILL)
+	// [SHAREDMARCH] E2: the shared march and the fill take the same turned offset. With temporal accumulation off the
+	// renderer publishes 0 here and the pattern is the fixed one the march always used.
 	jitter = fract(jitter + JitterOffset);	// [SMOKE_TEMPORAL] a new offset every frame
 #endif
 
@@ -656,16 +782,31 @@ void main()
 
 	float transmittance = 1.0;
 	vec3 light = vec3(0.0);
-#if defined(SMOKE_TEMPORAL)
+#if defined(SMOKE_TEMPORAL) || defined(SMOKE_SHARED) || defined(SMOKE_SHARED_FILL)
 	float depthSum = 0.0;	// [SMOKE_TEMPORAL] each sample's distance x its share of the ray's opacity
 	float changeSum = 0.0;	// [SMOKE_TEMPORAL] each sample's reach x the share of its density the last simulation step changed
 	float reachSum = 0.0;
 #endif
+#if defined(SMOKE_SHARED)
+	// [SHAREDMARCH] E2: the ends of the stretch the light came from, which is what lets an eye whose own scene cuts the ray
+	// shorter take the right share of the optical depth instead of all of it.
+	float hitFirst = 0.0;
+	float hitLast = 0.0;
+	bool hitAny = false;
+#endif
 	for (int i = 0; i < count; i++)
 	{
+#if defined(SMOKE_SHARED_FILL)
+		// [SHAREDMARCH] E2: the two stretches, one after the other. dt changes with them, so each sample's optical depth is
+		// its own step's, and the near shell keeps the march's step size even inside a hole.
+		if (i == nearCount)
+			dt = dtFar;
+		float t = i < nearCount ? nearStart + (float(i) + jitter) * dtNear : farStart + (float(i - nearCount) + jitter) * dtFar;
+#else
 		float t = t0 + (float(i) + jitter) * dt;
+#endif
 		vec3 cell = CellAt(rd * t);
-#if defined(SMOKE_TEMPORAL)
+#if defined(SMOKE_TEMPORAL) || defined(SMOKE_SHARED) || defined(SMOKE_SHARED_FILL)
 		float previousDensity;
 		float latestDensity;
 		float density = DensityStatesAt(cell, previousDensity, latestDensity);
@@ -681,14 +822,59 @@ void main()
 			continue;
 		float stepTransmittance = exp(-density * Extinction * dt);
 		light += transmittance * (1.0 - stepTransmittance) * LightColor * LightAt(cell, towardEye, lightHalfTexel);
-#if defined(SMOKE_TEMPORAL)
+#if defined(SMOKE_TEMPORAL) || defined(SMOKE_SHARED) || defined(SMOKE_SHARED_FILL)
 		depthSum += transmittance * (1.0 - stepTransmittance) * t;
+#endif
+#if defined(SMOKE_SHARED)
+		// [SHAREDMARCH] E2: a sample stands for the step around it, so the stretch reaches half a step either side of the
+		// first and the last sample that found smoke.
+		if (!hitAny)
+		{
+			hitFirst = max(t - 0.5 * dt, 0.0);
+			hitAny = true;
+		}
+		hitLast = t + 0.5 * dt;
 #endif
 		transmittance *= stepTransmittance;
 		if (transmittance < 1.0 / 256.0)
 			break;
 	}
-#if defined(SMOKE_TEMPORAL)
+#if defined(SMOKE_SHARED)
+	// [SHAREDMARCH] E2: the packed march both eyes carry from. Every distance is put in VIEW DEPTH (/ stepLen), which is
+	// what the carry, the eye's own depth texture and the temporal resolve all speak in.
+	//
+	// BACK'S SIGN. A ray that still had smoke in its last step was STOPPED by something -- the scene, or the grid's own box --
+	// and whatever lies past that stop is hidden from this view, so an eye that sees further is looking around an edge and the
+	// carry must mark a hole. Back is then the stop itself rather than the last sample: half a step of slack there would make
+	// every texel in the smoke look disoccluded. A ray whose smoke simply ran out first carries the negative of where it ran
+	// out, and an eye that sees past that sees nothing more.
+	bool sharedCut = hitAny && (hitLast + dt >= tOut);
+	FragColor = SharedMarchPack(light, transmittance,
+		hitAny ? hitFirst / stepLen : 0.0,
+		hitAny ? (sharedCut ? tOut : -hitLast) / stepLen : 0.0,
+		transmittance < 1.0 ? depthSum / max(1.0 - transmittance, 1e-6) / stepLen : 0.0,
+		changeSum / max(reachSum, 1e-6));
+#elif defined(SMOKE_SHARED_FILL)
+	// [SHAREDMARCH] E2: the near shell this eye marched, put OVER what the carry left -- light + T x carried light, T x
+	// carried T, which is the same 'over' the march itself does between two stretches of one ray. A hole marched the whole
+	// ray, so there is nothing to put it over. The representative depth and the change level are combined by opacity, the
+	// way the temporal march defines them, so the resolve reads the same kind of number it always did.
+	float nearOpacity = 1.0 - transmittance;
+	float nearDepth = transmittance < 1.0 ? depthSum / max(nearOpacity, 1e-6) / stepLen : 0.0;
+	float nearChange = changeSum / max(reachSum, 1e-6);
+	if (carriedHole)
+	{
+		FragColor = SmokeSharedOut(light, transmittance, nearDepth, nearChange);
+	}
+	else
+	{
+		float farOpacity = transmittance * (1.0 - carried.Transmittance);
+		float weight = nearOpacity + farOpacity;
+		FragColor = SmokeSharedOut(light + transmittance * carried.Light, transmittance * carried.Transmittance,
+			weight > 1e-6 ? (nearDepth * nearOpacity + carried.Depth * farOpacity) / weight : 0.0,
+			max(nearChange, carried.Change));
+	}
+#elif defined(SMOKE_TEMPORAL)
 	// [SMOKE_TEMPORAL] The opacity shares sum to 1 - T, so the first is the mean distance of the smoke (/ stepLen: in view depth);
 	// the second the share of the reachable smoke that changed.
 	FragColor = vec4(light, SmokeTemporalPack(transmittance, depthSum / max(1.0 - transmittance, 1e-6) / stepLen, changeSum / max(reachSum, 1e-6)));

@@ -996,8 +996,35 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 		u.SliceHeight = (float)-SMOKE_DEBUG_SLICE_BELOW_EYE;
 		u.DebugSlice = debugSlice ? 1 : 0;
 		pass.SetEyeMarch(eye, u);
+
+		// [SHAREDMARCH] E2 ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"): the same march from the SHARED VIEW -- this eye's
+		// orientation and projection at the head, the point between the two eyes, which the eye loop published before it
+		// applied the shift. ViewToWorld's translation IS this eye in GL world axes (it is exactly what BoxMin is taken
+		// relative to, four lines up), so the shared view is this one with that translation moved to the head and BoxMin
+		// taken relative to the head instead. Nothing else of the march changes.
+		//
+		// Published only when the head really is between two eyes: a flat frame puts them together, and a pose that puts an
+		// eye further than a head's width from the head is not a stereo pair. Either way nothing is published and the pass
+		// marches per eye exactly as it did before this step.
+		if (di->HasCentreViewPos)
+		{
+			const double centreGL[3] = { di->CentreViewPos.X, di->CentreViewPos.Z, di->CentreViewPos.Y };
+			const double dx = (double)inv[12] - centreGL[0], dy = (double)inv[13] - centreGL[1], dz = (double)inv[14] - centreGL[2];
+			const double apart = std::sqrt(dx * dx + dy * dy + dz * dz);
+			if (apart > 1e-4 && apart < SHARED_MARCH_EYE_APART_MAX)
+			{
+				SmokeMarchUniforms centre = u;
+				centre.ViewToWorld[12] = (float)centreGL[0];
+				centre.ViewToWorld[13] = (float)centreGL[1];
+				centre.ViewToWorld[14] = (float)centreGL[2];
+				centre.BoxMin = FVector3((float)(cornerGL[0] - centreGL[0]), (float)(cornerGL[1] - centreGL[1]), (float)(cornerGL[2] - centreGL[2]));
+				pass.SetEyeCentreMarch(eye, centre);
+			}
+		}
 	}
 	pass.SetEyeSets(eyeSets);
+	// [SHAREDMARCH] E2: how near the head a stretch of a ray must come to be marched per eye instead of carried.
+	pass.SetNearSplit(SHARED_MARCH_NEAR_UNITS);
 
 	// [13e] Beams and cones in the smoke: how many beams the backend's beam list holds for this frame (it copied this
 	// frame's list in RunFrameCompute, before the eye loop), the three renderer-read switches, and what main.fp's beam
@@ -1167,6 +1194,93 @@ static void SetupEmissiveVolumes(const HWDrawInfo *di, bool toscreen)
 			u.RectMax = FVector2((float)clamp(hi[0] + 1e-4, 0.0, 1.0), (float)clamp(hi[1] + 1e-4, 0.0, 1.0));
 		}
 		pass.SetEyeMarch(eye, u);
+
+		// [SHAREDMARCH] E2 ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"): the volumes split by how near the HEAD they come.
+		// The FAR ones are marched once from the SHARED VIEW -- this eye's orientation and projection at the head -- and
+		// carried into each eye; the NEAR ones (your own muzzle flash) are marched per eye and put over the carry.
+		//
+		// THE TILE LISTS ARE THE SPLIT (E5): a volume whose bound is left empty is a volume that pass never loops. So the two
+		// lists below ARE the two halves, and neither pass needed a new uniform or a second list. Published only while the
+		// tile lists are on, the head sits between two eyes, and something is actually far.
+		{
+			ScreenTexRect centreBounds[SCREEN_TILE_ITEMS_MAX];
+			ScreenTexRect nearBounds[SCREEN_TILE_ITEMS_MAX];
+			const int splitCount = std::min(draw.Count, SCREEN_TILE_ITEMS_MAX);
+			const double centreGL[3] = { di->CentreViewPos.X, di->CentreViewPos.Z, di->CentreViewPos.Y };
+			const double dx = (double)inv[12] - centreGL[0], dy = (double)inv[13] - centreGL[1], dz = (double)inv[14] - centreGL[2];
+			const double apart = std::sqrt(dx * dx + dy * dy + dz * dz);
+			if (di->HasCentreViewPos && r_emissivevolumes_tiles && splitCount == draw.Count && apart > 1e-4 && apart < SHARED_MARCH_EYE_APART_MAX)
+			{
+				// The shared view's own view matrix: the same 3x3 (the pixel stretch with it), the translation moved to the head.
+				// A view matrix's translation is -(its 3x3) x the eye, so moving the eye by (eye - head) moves the translation by
+				// that same 3x3 times (eye - head) -- the one line below, which leaves every other property of the matrix alone.
+				float vmCentre[16];
+				memcpy(vmCentre, vm, sizeof(vmCentre));
+				for (int r = 0; r < 3; r++)
+					vmCentre[12 + r] = (float)((double)vm[12 + r] + (double)vm[r] * dx + (double)vm[4 + r] * dy + (double)vm[8 + r] * dz);
+				const double centreStretch = ScreenViewStretch(vmCentre);
+				const double eyeStretch = ScreenViewStretch(vm);
+
+				bool anyFar = false;
+				// THE TWO HALVES MUST NOT INTERLEAVE IN DEPTH. The fill puts the near volumes OVER the carried far ones, which is
+				// right only while every near volume lies entirely nearer the head than every far one: a sphere wholly inside a
+				// radius from the head precedes, along every ray from a point within that head, a sphere wholly outside a larger
+				// one. One volume big enough to straddle the split would break that order, and then nothing is published and this
+				// eye marches the whole list itself -- the order the march's own far-to-near loop gives.
+				double nearFarthest = 0.0, farNearest = 1e30;
+				ScreenTexRect centreRect;
+				for (int i = 0; i < splitCount; i++)
+				{
+					const double wx = originGL[0] + draw.Centre[i][0], wy = originGL[1] + draw.Centre[i][1], wz = originGL[2] + draw.Centre[i][2];
+					const double toHead = std::sqrt((wx - centreGL[0]) * (wx - centreGL[0]) + (wy - centreGL[1]) * (wy - centreGL[1]) + (wz - centreGL[2]) * (wz - centreGL[2]));
+					if (!(toHead - draw.Radius[i] > SHARED_MARCH_NEAR_UNITS))
+					{
+						// Near: this eye's own bound, the same one the per-eye tile list uses.
+						const double reach = ScreenTileReach(draw.Radius[i], wx - inv[12], wy - inv[13], wz - inv[14]);
+						nearBounds[i] = ScreenRectOfSphere(vm, wx, wy, wz, reach * eyeStretch, tanX, tanY, proj[8], proj[9]);
+						nearFarthest = std::max(nearFarthest, toHead + draw.Radius[i]);
+						continue;
+					}
+					farNearest = std::min(farNearest, toHead - draw.Radius[i]);
+					// Far: its bound in the shared view, which is both its tile list there and part of the shared march's rectangle.
+					const double reach = ScreenTileReach(draw.Radius[i], wx - centreGL[0], wy - centreGL[1], wz - centreGL[2]);
+					centreBounds[i] = ScreenRectOfSphere(vmCentre, wx, wy, wz, reach * centreStretch, tanX, tanY, proj[8], proj[9]);
+					anyFar = true;
+					if (centreBounds[i].Whole || !centreBounds[i].Finite)
+					{
+						centreRect.Whole = true;
+						continue;
+					}
+					for (int k = 0; k < 2; k++)
+					{
+						centreRect.Lo[k] = std::min(centreRect.Lo[k], centreBounds[i].Lo[k]);
+						centreRect.Hi[k] = std::max(centreRect.Hi[k], centreBounds[i].Hi[k]);
+					}
+				}
+
+				if (anyFar && nearFarthest <= farNearest)
+				{
+					EmissiveVolumeUniforms centre = u;
+					centre.ViewToWorld[12] = (float)centreGL[0];
+					centre.ViewToWorld[13] = (float)centreGL[1];
+					centre.ViewToWorld[14] = (float)centreGL[2];
+					centre.ListOrigin = FVector3((float)(originGL[0] - centreGL[0]), (float)(originGL[1] - centreGL[1]), (float)(originGL[2] - centreGL[2]));
+					// The shared march's rectangle: the union of the far volumes' TILE bounds, which are the rectangle's own box
+					// widened by what a float march can see past a sphere -- conservative on every side.
+					if (centreRect.Whole || centreRect.Hi[0] < centreRect.Lo[0] || centreRect.Hi[1] < centreRect.Lo[1])
+					{
+						centre.RectMin = FVector2(0.0f, 0.0f);
+						centre.RectMax = FVector2(1.0f, 1.0f);
+					}
+					else
+					{
+						centre.RectMin = FVector2((float)clamp(centreRect.Lo[0] - 1e-4, 0.0, 1.0), (float)clamp(centreRect.Lo[1] - 1e-4, 0.0, 1.0));
+						centre.RectMax = FVector2((float)clamp(centreRect.Hi[0] + 1e-4, 0.0, 1.0), (float)clamp(centreRect.Hi[1] + 1e-4, 0.0, 1.0));
+					}
+					pass.SetEyeSharedSplit(eye, centre, centreBounds, nearBounds, splitCount);
+				}
+			}
+		}
 	}
 	pass.SetEyeSets(eyeSets);
 
@@ -2179,6 +2293,7 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 	vpIndex = 0;
 	HasMultiviewViewpoints = false;
 	HasMultiviewProjectionMatrix2 = false;
+	HasCentreViewPos = false;	// [SHAREDMARCH] E2: the eye loop publishes the head, and only in a stereo frame
 
 	// Fullbright information needs to be propagated from the main view.
 	if (outer != nullptr) FullbrightFlags = outer->FullbrightFlags;

@@ -2505,6 +2505,12 @@ OptionMenu DeveloperOptionsMenu protected
 	// extra pass. Turn your head fast or strafe past a smoke edge to see there are no trails. On by
 	// default. Read every frame, so it changes live with this menu open. Vulkan only.
 	Option "Smoke temporal accumulation (faster smoothing)", "r_smoke_temporal", "OnOff"
+	// [SHAREDMARCH] E2 r_effects_sharedmarch -- the smoke and the emissive volumes are marched ONCE, from a view
+	// halfway between your eyes, and each eye carries that result into its own pixels. Anything within about three
+	// feet of your head -- your own muzzle flash, smoke at your feet -- is still marched for each eye, and so are
+	// the edges where one eye can see what the other cannot. On by default; off marches everything twice, as
+	// before. Read every frame, so it changes live with this menu open. Vulkan and a headset only.
+	Option "March smoke and flashes once for both eyes", "r_effects_sharedmarch", "OnOff"
 	// [13d] r_smoke_light_quality -- how finely the light inside the smoke is worked out (muzzle
 	// flashes, lamps and flashlights glowing in the haze): 1 = half the smoke grid's resolution
 	// (about 10 MB at the default smoke quality), 2 = three quarters (32 MB, the default), 3 = the

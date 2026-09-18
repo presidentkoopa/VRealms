@@ -61,6 +61,76 @@ uint EmissiveTileMaskAt(ivec2 texel)
 }
 #endif
 
+// [SHAREDMARCH] E2 ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E2; "Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"): the volumes
+// are marched once from a view halfway between the eyes (EMISSIVE_SHARED) and each eye carries that result into its own
+// texels (sharedmarchwarp.fp); EMISSIVE_SHARED_FILL then marches the NEAR volumes -- the only ones the tile mask lists for
+// it -- and puts them over the carry, or marches every volume where the carry left a hole. Both defines imply
+// EMISSIVE_TILES, because the tile mask is what tells each pass which volumes are its own.
+#if defined(EMISSIVE_SHARED_FILL)
+#if defined(SMOKE_TRANSMITTANCE)
+layout(binding=7) uniform sampler2D SharedMarchCarried;
+#else
+layout(binding=4) uniform sampler2D SharedMarchCarried;
+#endif
+#endif
+
+#if defined(EMISSIVE_SHARED) || defined(EMISSIVE_SHARED_FILL)
+// [SHAREDMARCH] E2: THE PACKED MARCH, the one format every caller writes and PPSharedMarchWarp carries. Kept token for
+// token in smokemarch.fp, emissivevolume.fp and sharedmarchwarp.fp (a post-process lump has no #include); the E2 proofs
+// compare the three texts.
+//
+// Two halves a channel, which is the precision the march's own RGBA16F target always had:
+//   r  light.r, light.g      g  light.b, transmittance      b  front depth, back depth      a  depth, change
+// Every value is clamped to a finite half before it is packed, so no channel can become a float32 NaN (a NaN would need
+// the HIGH half of a channel to be an infinity, and the high halves are the ones clamped to a range). A ray that met
+// nothing packs to light 0, transmittance 1 and zero depths, which unpacks to exactly that. Depth 0 means the texel
+// carries nothing; SHARED_MARCH_HOLE means the carry could not fill it.
+//
+// BACK CARRIES A SIGN, and it is what tells a disocclusion from an ordinary end. POSITIVE: the ray ran to its stop
+// with light still in it, so the scene is what ended it there and anything beyond that stop is hidden -- an eye whose
+// own scene reaches past it is looking around an edge at light this march never got to, and the carry marks a hole.
+// NEGATIVE: the light simply ran out before the scene did, and an eye seeing further sees nothing more. Only the
+// magnitude is the depth.
+const float SHARED_MARCH_HOLE = -1.0;
+const float SHARED_MARCH_HALF_MAX = 60000.0;
+
+struct SharedMarchSample
+{
+	vec3 Light;
+	float Transmittance;
+	float Front;
+	float Back;
+	float Depth;
+	float Change;
+};
+
+vec4 SharedMarchPack(vec3 light, float transmittance, float front, float back, float depth, float change)
+{
+	vec3 safeLight = clamp(light, vec3(0.0), vec3(SHARED_MARCH_HALF_MAX));
+	return vec4(
+		uintBitsToFloat(packHalf2x16(safeLight.rg)),
+		uintBitsToFloat(packHalf2x16(vec2(safeLight.b, clamp(transmittance, 0.0, 1.0)))),
+		uintBitsToFloat(packHalf2x16(vec2(clamp(front, 0.0, SHARED_MARCH_HALF_MAX), clamp(back, -SHARED_MARCH_HALF_MAX, SHARED_MARCH_HALF_MAX)))),
+		uintBitsToFloat(packHalf2x16(vec2(clamp(depth, SHARED_MARCH_HOLE, SHARED_MARCH_HALF_MAX), clamp(change, 0.0, 1.0)))));
+}
+
+SharedMarchSample SharedMarchUnpack(vec4 texel)
+{
+	vec2 lightRG = unpackHalf2x16(floatBitsToUint(texel.r));
+	vec2 blueAndT = unpackHalf2x16(floatBitsToUint(texel.g));
+	vec2 frontBack = unpackHalf2x16(floatBitsToUint(texel.b));
+	vec2 depthChange = unpackHalf2x16(floatBitsToUint(texel.a));
+	SharedMarchSample result;
+	result.Light = vec3(lightRG, blueAndT.x);
+	result.Transmittance = blueAndT.y;
+	result.Front = frontBack.x;
+	result.Back = frontBack.y;
+	result.Depth = depthChange.x;
+	result.Change = depthChange.y;
+	return result;
+}
+#endif
+
 const int EMISSIVE_VOLUMES_DRAWN_MAX = 32;		// hw_emissivevolumeframe.h
 const int EVROW_BASE = 0;
 const int EVROW_AXIS = 1;
@@ -362,6 +432,53 @@ float VolumeGrain(EmissiveVolume v, vec3 q)
 void main()
 {
 	FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+#if defined(EMISSIVE_SHARED)
+	// [SHAREDMARCH] E2: a texel of the shared march that meets no volume is the packed clear, not the plain one.
+	FragColor = SharedMarchPack(vec3(0.0), 1.0, 0.0, 0.0, 0.0, 0.0);
+#endif
+#if defined(EMISSIVE_SHARED_FILL)
+	// [SHAREDMARCH] E2: the fill needs this texel's ray before anything else, because what the carry left must be dimmed by
+	// the haze in front of it even where no near volume is marched. The rectangle and the tile test come after, and each of
+	// them leaves the carry standing.
+	vec2 ndc = TexCoord * 2.0 - 1.0;
+	vec3 viewRay = vec3((ndc + ProjOffset) * TanHalfFov, -1.0);
+	vec3 worldRay = mat3(ViewToWorld) * viewRay;
+	float stepLen = length(worldRay);
+	if (stepLen < 1e-6)
+		return;
+	vec3 rd = worldRay / stepLen;
+	float linearDepth = texelFetch(MarchDepthTexture, ivec2(gl_FragCoord.xy), 0).r;
+	float sceneT = linearDepth * stepLen;
+	vec4 smokeKnots = vec4(0.0);
+	float smokeWholeT = 1.0;
+	bool smokeDims = false;
+	float smokeShareAtScene = 0.0;
+	bool smokeRead = false;
+	SharedMarchSample carried = SharedMarchUnpack(texelFetch(SharedMarchCarried, ivec2(gl_FragCoord.xy), 0));
+	bool carriedHole = carried.Depth <= SHARED_MARCH_HOLE * 0.5;
+	vec3 carriedLight = carriedHole ? vec3(0.0) : carried.Light;
+	float carriedT = carriedHole ? 1.0 : carried.Transmittance;
+#if defined(SMOKE_TRANSMITTANCE)
+	// The haze between this eye and the carried light. The shared view has no transmittance curve of its own, so the shared
+	// march is drawn undimmed and the dimming is applied here, per eye, at the depth the carried light sits at.
+	if (!carriedHole && carried.Depth > 0.0)
+	{
+		smokeWholeT = SmokeWholeTransmittance(linearDepth, smokeKnots);
+		smokeDims = smokeWholeT < 1.0;
+		smokeShareAtScene = SmokeDepthShare(smokeKnots, sceneT);
+		smokeRead = true;
+		if (smokeDims)
+			carriedLight *= SmokeTransmittanceTo(smokeKnots, carried.Depth * stepLen, smokeShareAtScene, smokeWholeT);
+	}
+#endif
+	FragColor = vec4(carriedLight, carriedT);
+	// A hole marches every volume this eye can see; otherwise only the ones its tile lists, which are the near ones.
+	uint tileMask = carriedHole ? 0xFFFFFFFFu : EmissiveTileMaskAt(ivec2(gl_FragCoord.xy));
+	if (VolumeCount <= 0 || tileMask == 0u)
+		return;
+	if (any(lessThan(TexCoord, RectMin)) || any(greaterThan(TexCoord, RectMax)))
+		return;
+#else
 	if (VolumeCount <= 0 || any(lessThan(TexCoord, RectMin)) || any(greaterThan(TexCoord, RectMax)))
 		return;
 
@@ -399,10 +516,22 @@ void main()
 	float smokeShareAtScene = SmokeDepthShare(smokeKnots, sceneT);
 #endif	// [EMISSIVETILES] E5: EMISSIVE_TILES
 #endif
+#endif	// [SHAREDMARCH] E2: EMISSIVE_SHARED_FILL
 
 	float jitter = InterleavedGradientNoise(gl_FragCoord.xy);
 	vec3 light = vec3(0.0);
 	float transmittance = 1.0;
+#if defined(EMISSIVE_SHARED)
+	// [SHAREDMARCH] E2: the ends of the stretch the light came from, and a light-weighted depth inside it. The carry needs
+	// all three: the ends to take the right share of the optical depth when this eye's own scene cuts the ray shorter, the
+	// depth to find which texel of this pass holds the light an eye's ray is looking for.
+	float hitFirst = 0.0;
+	float hitLast = 0.0;
+	bool hitAny = false;
+	bool sharedCut = false;	// the scene cut a lit volume's chord short: see back's sign where this is packed
+	float depthSum = 0.0;
+	float weightSum = 0.0;
+#endif
 	int volumeCount = min(VolumeCount, EMISSIVE_VOLUMES_DRAWN_MAX);
 	for (int i = 0; i < volumeCount; i++)
 	{
@@ -448,6 +577,10 @@ void main()
 		float dt = (t1 - t0) / float(steps);
 		vec3 volumeLight = vec3(0.0);
 		float volumeT = 1.0;
+#if defined(EMISSIVE_SHARED)
+		float volumeDepthSum = 0.0;	// [SHAREDMARCH] E2: this volume's own, composited with the rest below
+		float volumeWeightSum = 0.0;
+#endif
 		for (int s = 0; s < steps; s++)
 		{
 			float t = t0 + (float(s) + jitter) * dt;
@@ -470,13 +603,54 @@ void main()
 			if (smokeDims)
 				emitted *= SmokeTransmittanceTo(smokeKnots, t, smokeShareAtScene, smokeWholeT);
 #endif
+#if defined(EMISSIVE_SHARED)
+			// [SHAREDMARCH] E2: the same weight the light is added with, so the depth below is the light-weighted mean of where
+			// this volume's light actually comes from rather than the middle of its chord.
+			float stepWeight = dot(volumeT * emitted * path, vec3(1.0));
+			volumeDepthSum += stepWeight * t;
+			volumeWeightSum += stepWeight;
+#endif
 			volumeLight += volumeT * emitted * path;
 			volumeT *= stepT;
 			if (volumeT < 1.0 / 256.0)
 				break;
 		}
+#if defined(EMISSIVE_SHARED)
+		// [SHAREDMARCH] E2: the depth and its weight composite exactly as the light does (this volume's own, then everything
+		// behind it dimmed by this one), so the two stay the same average. The stretch is the union of the chords that lit.
+		if (volumeWeightSum > 0.0)
+		{
+			hitFirst = hitAny ? min(hitFirst, t0) : t0;
+			hitLast = hitAny ? max(hitLast, t1) : t1;
+			hitAny = true;
+			sharedCut = sharedCut || (t1 >= sceneT - 1e-3);
+		}
+		depthSum = volumeDepthSum + depthSum * volumeT;
+		weightSum = volumeWeightSum + weightSum * volumeT;
+#endif
 		light = volumeLight + light * volumeT;
 		transmittance *= volumeT;
 	}
+#if defined(EMISSIVE_SHARED)
+	// [SHAREDMARCH] E2: the packed march both eyes carry from, every distance in VIEW DEPTH (/ stepLen). Emissive volumes
+	// live two to ten frames and keep no history, so the change field is 0.
+	// BACK'S SIGN: positive when the scene cut a lit volume's chord short, so an eye that sees past that stop is looking
+	// around an edge at a volume this march never reached and the carry marks a hole; negative when every lit chord ended
+	// on its own. Only the magnitude is the depth.
+	FragColor = SharedMarchPack(light, transmittance,
+		hitAny ? hitFirst / stepLen : 0.0,
+		hitAny ? (sharedCut ? sceneT : -hitLast) / stepLen : 0.0,
+		weightSum > 1e-9 ? depthSum / weightSum / stepLen : 0.0,
+		0.0);
+#elif defined(EMISSIVE_SHARED_FILL)
+	// [SHAREDMARCH] E2: the near volumes this eye marched, put OVER what the carry left -- the same 'over' the volume loop
+	// itself does, and right because a near volume is nearer than every carried one by construction. A hole marched every
+	// volume, so there is nothing to put it over.
+	if (carriedHole)
+		FragColor = vec4(light, transmittance);
+	else
+		FragColor = vec4(light + transmittance * carriedLight, transmittance * carriedT);
+#else
 	FragColor = vec4(light, transmittance);
+#endif
 }

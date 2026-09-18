@@ -392,6 +392,10 @@ void PPSmokeVolume::UpdateTextures(int sceneWidth, int sceneHeight)
 		TemporalPreviousDepth[eye] = { HalfViewport.width, HalfViewport.height, PixelFormat::R32f };
 		temporalEyes[eye].Valid = false;
 	}
+	// [SHAREDMARCH] E2: the shared march both eyes carry from. No memory until one runs; a new size starts it again, so no
+	// eye can carry from a texture of the wrong size.
+	SharedMarchTexture = { HalfViewport.width, HalfViewport.height, PixelFormat::Rgba32f };
+	sharedReady = false;
 
 	lastWidth = sceneWidth;
 	lastHeight = sceneHeight;
@@ -424,6 +428,70 @@ static bool SmokeTemporalInverse(const double m[16], double out[16])
 	for (int i = 0; i < 16; i++)
 		out[i] = inv[i] / det;
 	return true;
+}
+
+// [SHAREDMARCH] E2: the carry's matrices (see PPSharedMarchWarp, hw_postprocess.h), worked out in double so the eye's world
+// position -- tens of thousands of units -- cancels before anything becomes a float, exactly as PrepareTemporal does below.
+// False when either view matrix is singular: the caller then marches this eye itself, as it did before this step.
+//
+// General: it knows nothing of smoke or of volumes. Both callers hand it their own eye's view and the shared view the
+// shared march was actually drawn from, which on the second eye of a frame is the first eye's.
+static bool SharedMarchBuildWarp(const float eyeViewToWorld[16], FVector2 eyeTanHalfFov, FVector2 eyeProjOffset,
+	const float sharedViewToWorld[16], FVector2 sharedTanHalfFov, FVector2 sharedProjOffset, SharedMarchWarpUniforms &out)
+{
+	double eye[16], centre[16], eyeInverse[16], centreInverse[16];
+	for (int i = 0; i < 16; i++)
+	{
+		eye[i] = eyeViewToWorld[i];
+		centre[i] = sharedViewToWorld[i];
+	}
+	if (!SmokeTemporalInverse(eye, eyeInverse) || !SmokeTemporalInverse(centre, centreInverse))
+		return false;
+
+	out = SharedMarchWarpUniforms();
+	for (int column = 0; column < 4; column++)
+	{
+		for (int row = 0; row < 4; row++)
+		{
+			double toShared = 0.0, toEye = 0.0;
+			for (int k = 0; k < 4; k++)
+			{
+				toShared += centreInverse[k * 4 + row] * eye[column * 4 + k];
+				toEye += eyeInverse[k * 4 + row] * centre[column * 4 + k];
+			}
+			out.EyeToShared[column * 4 + row] = (float)toShared;
+			out.SharedToEye[column * 4 + row] = (float)toEye;
+		}
+	}
+	out.TanHalfFov = eyeTanHalfFov;
+	out.ProjOffset = eyeProjOffset;
+	out.SharedTanHalfFov = sharedTanHalfFov;
+	out.SharedProjOffset = sharedProjOffset;
+	out.DepthTolerance = SHARED_MARCH_DEPTH_TOLERANCE;
+	out.DepthToleranceUnits = SHARED_MARCH_DEPTH_TOLERANCE_UNITS;
+	return true;
+}
+
+// [SHAREDMARCH] E2: the carry, one draw over the whole viewport with no blend, which rewrites whatever the last eye or
+// frame left in the texture (post-process attachments are loaded, never cleared).
+void PPSharedMarchWarp::Render(PPRenderState *renderstate, const PPViewport &viewport, PPTexture *sharedMarch, PPTexture *eyeDepth, const SharedMarchWarpUniforms &uniforms)
+{
+	if (viewport.width != lastWidth || viewport.height != lastHeight)
+	{
+		Texture = { viewport.width, viewport.height, PixelFormat::Rgba32f };
+		lastWidth = viewport.width;
+		lastHeight = viewport.height;
+	}
+
+	renderstate->Clear();
+	renderstate->Shader = &Shader;
+	renderstate->Uniforms.Set(uniforms);
+	renderstate->Viewport = viewport;
+	renderstate->SetInputTexture(0, sharedMarch);
+	renderstate->SetInputTexture(1, eyeDepth);
+	renderstate->SetOutputTexture(&Texture);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
 }
 
 // [SMOKE_TEMPORAL] This eye's temporal march and resolve uniforms (see PPSmokeVolume), and this frame recorded as its history.
@@ -575,9 +643,75 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	if (temporal)
 		PrepareTemporal(temporalEye, marches[set], temporalMarch, temporalResolve);
 
+	// [SHAREDMARCH] E2: ONE MARCH FOR BOTH EYES ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"; r_effects_sharedmarch). With
+	// a shared view published (a stereo frame, no debug slice), the stretch past the near split is marched ONCE -- 2s, by
+	// whichever eye reaches here first this frame -- and each eye carries that into its own texels (2w). Pass 2 then marches
+	// only the near shell and the carry's holes. Off, or with nothing published, every draw below is the one it always was.
+	//
+	// WHERE IT MEETS THE TEMPORAL HISTORY (E3): at pass 2's output and nowhere else. The carry and the fill both finish
+	// before it, so what enters this eye's history is what always entered it -- this eye's march of this frame, in this
+	// eye's texels, in the same texture and the same packing. The resolve, the keep and the two histories are untouched.
+	//
+	// The carry is built against the view the shared march was ACTUALLY drawn from, not against what this eye published: the
+	// second eye of a frame publishes its own projection, but the texture it carries from is the first eye's.
+	const bool sharedWanted = r_effects_sharedmarch && centreValid[set] && nearSplit > 0.0f && marches[set].DebugSlice == 0;
+	const bool sharedDrawn = sharedReady && sharedFrame == screen->FrameCount && SharedMarchTexture.Backend != nullptr;
+	SharedMarchWarpUniforms warp = {};
+	const bool shared = sharedWanted && SharedMarchBuildWarp(marches[set].ViewToWorld, marches[set].TanHalfFov, marches[set].ProjOffset,
+		(sharedDrawn ? sharedView : centreMarches[set]).ViewToWorld,
+		(sharedDrawn ? sharedView : centreMarches[set]).TanHalfFov,
+		(sharedDrawn ? sharedView : centreMarches[set]).ProjOffset, warp);
+	SmokeSharedMarchUniforms sharedUniforms = {};
+	if (shared)
+	{
+		memcpy(&sharedUniforms, &marches[set], sizeof(SmokeMarchUniforms));
+		sharedUniforms.JitterOffset = temporalMarch.JitterOffset;
+		sharedUniforms.NearSplit = nearSplit;
+		sharedUniforms.FillStepCount = SharedMarchFillSteps(marches[set].StepCount);
+		sharedUniforms.TemporalOut = temporal ? 1 : 0;
+
+		if (!sharedDrawn)
+		{
+			// 2s. The shared march. It reads the depth of the eye that draws it -- the shared view has no scene of its own --
+			//     and where that is not the other eye's depth the carry marks a hole and the fill marches it per eye.
+			SmokeSharedMarchUniforms centreUniforms = sharedUniforms;
+			memcpy(&centreUniforms, &centreMarches[set], sizeof(SmokeMarchUniforms));
+			centreUniforms.TemporalOut = 0;	// the shared march writes the packed format, never the temporal one
+
+			renderstate->Clear();
+			renderstate->Shader = &MarchSharedShader;
+			renderstate->Uniforms.Set(centreUniforms);
+			renderstate->Viewport = HalfViewport;
+			renderstate->SetInputTexture(0, &DepthTexture);
+			renderstate->SetInputExternalImage(1, PPExternalImage::SmokeDensityLatest, PPFilterMode::Linear);
+			renderstate->SetInputExternalImage(2, PPExternalImage::SmokeDensityPrevious, PPFilterMode::Linear);
+			renderstate->SetInputExternalImage(3, PPExternalImage::SmokeTileActive);
+			renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
+			renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
+			renderstate->SetOutputTexture(&SharedMarchTexture);
+			renderstate->SetNoBlend();
+			renderstate->Draw();
+
+			sharedView = centreMarches[set];
+			sharedFrame = screen->FrameCount;
+			sharedReady = true;
+		}
+
+		// 2w. The carry into this eye's texels.
+		Warp.Render(renderstate, HalfViewport, &SharedMarchTexture, &DepthTexture, warp);
+	}
+
 	// 2. The march, reading the volume the compute step keeps (PPExternalImage).
+	//    [SHAREDMARCH] E2: with the carry made this draw is the FILL -- the near shell this eye marches itself, put over the
+	//    carried stretch, and the whole ray at a lower step count where the carry left a hole. Its inputs are the march's
+	//    plus the carry at 6, and it writes the same texture in the same packing, so nothing after it changes.
 	renderstate->Clear();
-	if (temporal)
+	if (shared)
+	{
+		renderstate->Shader = &MarchSharedFillShader;
+		renderstate->Uniforms.Set(sharedUniforms);
+	}
+	else if (temporal)
 	{
 		renderstate->Shader = &MarchTemporalShader;
 		renderstate->Uniforms.Set(temporalMarch);
@@ -595,6 +729,8 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 	// [13d] The light grid the compute step filled this frame (VkSmokeVolume), filtered like the density.
 	renderstate->SetInputExternalImage(4, PPExternalImage::SmokeLight, PPFilterMode::Linear);
 	renderstate->SetInputExternalImage(5, PPExternalImage::SmokeLightDirection, PPFilterMode::Linear);
+	if (shared)
+		renderstate->SetInputTexture(6, Warp.GetTexture());	// [SHAREDMARCH] E2: what the carry left in this eye's texels
 	renderstate->SetOutputTexture(temporal ? &TemporalMarchTexture : &MarchTexture);
 	renderstate->SetNoBlend();
 	renderstate->Draw();
@@ -945,12 +1081,40 @@ void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int s
 		renderstate->Draw();
 	}
 
+	// [SHAREDMARCH] E2: ONE MARCH FOR BOTH EYES ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"; r_effects_sharedmarch). The
+	// volumes further than SHARED_MARCH_NEAR_UNITS from the head are marched ONCE, from the view between the eyes, and each
+	// eye carries that into its own texels; pass 2 then marches only the NEAR volumes -- your own muzzle flash -- and puts
+	// them over the carry, or marches the whole list where the carry left a hole.
+	//
+	// THE TILE LISTS ARE THE SPLIT (E5). The shared march's mask is built from the FAR volumes' bounds in the SHARED view;
+	// the fill's from the NEAR volumes' in this eye's. A volume left out of a mask is a volume that pass never loops, so the
+	// split needed no new uniform, no second list and no change to the march's own loop. That is also why the shared path
+	// asks for the tile lists: with r_emissivevolumes_tiles off there is nothing to carry the split, and the pass marches per
+	// eye as before.
+	//
+	// Decided here, before any mask is drawn, so the mask below is always the one the program that reads it expects.
+	const bool sharedWanted = r_effects_sharedmarch && tiled && sharedSplits[set] && sharedCounts[set] == settings.Count;
+	if (sharedWanted && (MarchViewport.width != lastSharedWidth || MarchViewport.height != lastSharedHeight))
+	{
+		SharedMarchTexture = { MarchViewport.width, MarchViewport.height, PixelFormat::Rgba32f };
+		lastSharedWidth = MarchViewport.width;
+		lastSharedHeight = MarchViewport.height;
+		sharedReady = false;
+	}
+	const bool sharedDrawn = sharedReady && sharedFrame == screen->FrameCount && SharedMarchTexture.Backend != nullptr;
+	SharedMarchWarpUniforms warp = {};
+	const bool shared = sharedWanted && SharedMarchBuildWarp(marches[set].ViewToWorld, marches[set].TanHalfFov, marches[set].ProjOffset,
+		(sharedDrawn ? sharedView : centreMarches[set]).ViewToWorld,
+		(sharedDrawn ? sharedView : centreMarches[set]).TanHalfFov,
+		(sharedDrawn ? sharedView : centreMarches[set]).ProjOffset, warp);
+
 	// 1b. [EMISSIVETILES] E5: the tile mask -- each listed volume's widened bound cut into tiles at the march's size.
+	//     [SHAREDMARCH] E2: the NEAR volumes' bounds instead, when the carry is serving the far ones.
 	if (tiled)
 	{
 		uint32_t rects[SCREEN_TILE_ITEMS_MAX];
 		for (int i = 0; i < SCREEN_TILE_ITEMS_MAX; i++)
-			rects[i] = i < settings.Count ? ScreenTileRectPack(tileBounds[set][i], MarchViewport.width, MarchViewport.height) : SCREEN_TILE_RECT_NONE;
+			rects[i] = i < settings.Count ? ScreenTileRectPack(shared ? nearTileBounds[set][i] : tileBounds[set][i], MarchViewport.width, MarchViewport.height) : SCREEN_TILE_RECT_NONE;
 		TileMask.Render(renderstate, MarchViewport.width, MarchViewport.height, rects);
 
 		if (PerfLog::GroupsWanted())
@@ -973,11 +1137,48 @@ void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int s
 		}
 	}
 
+	if (shared)
+	{
+		if (!sharedDrawn)
+		{
+			// 1s. [SHAREDMARCH] E2: the FAR volumes' mask at the shared view, then the shared march. It reads the depth of the
+			//     eye that draws it, and it is drawn WITHOUT the smoke's transmittance -- the shared view has no curve of its
+			//     own -- so the haze in front is put on per eye by the fill, at the depth the carried light sits at.
+			uint32_t farRects[SCREEN_TILE_ITEMS_MAX];
+			for (int i = 0; i < SCREEN_TILE_ITEMS_MAX; i++)
+				farRects[i] = i < settings.Count ? ScreenTileRectPack(centreTileBounds[set][i], MarchViewport.width, MarchViewport.height) : SCREEN_TILE_RECT_NONE;
+			CentreTileMask.Render(renderstate, MarchViewport.width, MarchViewport.height, farRects);
+
+			renderstate->Clear();
+			renderstate->Shader = &MarchSharedShader;
+			renderstate->Uniforms.Set(centreMarches[set]);
+			renderstate->Viewport = MarchViewport;
+			renderstate->SetInputTexture(0, depthTexture);
+			renderstate->SetInputExternalImage(1, PPExternalImage::EmissiveVolumeList);
+			renderstate->SetInputExternalImage(2, PPExternalImage::EmissiveNoise, PPFilterMode::Linear, PPWrapMode::Repeat);
+			renderstate->SetInputTexture(3, CentreTileMask.GetTexture());
+			renderstate->SetOutputTexture(&SharedMarchTexture);
+			renderstate->SetNoBlend();
+			renderstate->Draw();
+
+			sharedView = centreMarches[set];
+			sharedFrame = screen->FrameCount;
+			sharedReady = true;
+		}
+
+		// 1w. [SHAREDMARCH] E2: the carry into this eye's texels.
+		Warp.Render(renderstate, MarchViewport, &SharedMarchTexture, depthTexture, warp);
+	}
+
 	// 2. The march, reading the list and the noise the backend keeps (PPExternalImage), and in smoke the smoke's curve.
+	//    [SHAREDMARCH] E2: with the carry made this draw is the FILL -- the near volumes its tile mask lists, put over the
+	//    carry, or every volume where the carry left a hole. Same inputs, plus the carry after the tile mask.
 	renderstate->Clear();
 	renderstate->Shader = inSmoke ? &MarchSmokeShader : &MarchShader;
 	if (tiled)	// [EMISSIVETILES] E5: the same march over its tile's list
 		renderstate->Shader = inSmoke ? &MarchTilesSmokeShader : &MarchTilesShader;
+	if (shared)	// [SHAREDMARCH] E2
+		renderstate->Shader = inSmoke ? &MarchSharedFillSmokeShader : &MarchSharedFillShader;
 	renderstate->Uniforms.Set(marches[set]);
 	renderstate->Viewport = MarchViewport;
 	renderstate->SetInputTexture(0, depthTexture);
@@ -991,6 +1192,8 @@ void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int s
 	}
 	if (tiled)	// [EMISSIVETILES] E5: the tile mask, after the march's other inputs
 		renderstate->SetInputTexture(inSmoke ? 6 : 3, TileMask.GetTexture());
+	if (shared)	// [SHAREDMARCH] E2: what the carry left in this eye's texels, after the tile mask
+		renderstate->SetInputTexture(inSmoke ? 7 : 4, Warp.GetTexture());
 	renderstate->SetOutputTexture(&MarchTexture);
 	renderstate->SetNoBlend();
 	renderstate->Draw();

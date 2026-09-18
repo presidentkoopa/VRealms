@@ -44,6 +44,7 @@
 #include "autosegs.h"
 #include "c_buttons.h"
 #include "c_console.h"
+#include "i_specialpaths.h"	// RS fork -- M_GetDocumentsPath, for the log that always exists
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "cmdlib.h"
@@ -4828,6 +4829,24 @@ static int D_DoomMain_Internal (void)
 	InitWidgetResources(wad);
 #endif
 	C_InitConsole(80*8, 25*8, false);
+
+	// RS FORK -- ALWAYS KEEP A LOG, IN A PLACE ANYONE CAN FIND.
+	//
+	// The engine only wrote log-debug.txt into its working directory, so where the log
+	// landed depended on who launched the game: a launcher starts it from its own folder,
+	// and the log ends up somewhere nobody thinks to look -- or nowhere at all. Every
+	// question about a crash, a refused card or a missing gun starts with "send me the
+	// log", so the log has to exist without anyone remembering to ask for it.
+	//
+	// It goes beside the config, in the user's own DoomXR folder, and it starts here so
+	// the version banner below is its first line. `+logfile` on the command line still
+	// wins: that command runs later, and it closes this log and opens its own.
+	{
+		extern void execLogfile(const char *fn, bool append);
+		FString autolog = M_GetDocumentsPath();
+		autolog += "doomxr-latest";	// execLogfile appends .txt
+		execLogfile(autolog.GetChars(), false);
+	}
 
 	Printf(
 		"%s version %s\nBuild: %s dated %s\nOS: %s\n",

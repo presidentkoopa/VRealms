@@ -1441,6 +1441,171 @@ static_assert(offsetof(SmokeTemporalResolveUniforms, PreviousTanHalfFov) == 80, 
 static_assert(offsetof(SmokeTemporalResolveUniforms, HistoryValid) == 96, "SmokeTemporalResolveUniforms::HistoryValid must start at 96 for std140");
 static_assert(sizeof(SmokeTemporalResolveUniforms) == 112, "SmokeTemporalResolveUniforms must be 112 bytes; pad to a 16-byte row");
 
+// [SHAREDMARCH] E2: ONE MARCH FOR BOTH EYES ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E2; "Engine docs/
+// SHARED_MARCH_E2_IMPL_NOTES.md"; r_effects_sharedmarch, on by default; shaders/pp/sharedmarchwarp.fp).
+//
+// A pass that marches a view ray at every texel pays for it twice, once an eye, although the eyes are 6.4 cm apart and
+// everything past a stride looks the same to both. With this on, such a pass marches ONCE from a view halfway between the
+// eyes -- the SHARED VIEW -- into a texture that keeps, besides the light and the transmittance, the FRONT and BACK depth
+// of the stretch the light came from and a representative depth inside it. Each eye then CARRIES that result into its own
+// texels by depth (PPSharedMarchWarp) and marches per eye only what the carry cannot serve:
+//   - the NEAR SHELL or the NEAR ITEMS -- anything within SHARED_MARCH_NEAR_UNITS of the head, such as your own muzzle
+//     flash -- which is where the two eyes really differ, marched per eye and put OVER the carried result;
+//   - the HOLES the carry marks (the ray leaves the shared view, the search does not settle, the neighbourhood straddles
+//     a depth edge, this eye's scene reaches past where the shared stretch ended), marched per eye at a lower step count.
+// Off: the pass runs exactly the draws, the programs and the uniforms it ran before.
+//
+// A GENERAL CAPABILITY. Nothing in the warp, in the packed format or in the near rule knows which effect is asking. The
+// smoke volume and the emissive volumes are its two callers and share all three; a third pass that marches a ray needs
+// only to publish a shared view, write the packed format and hand its own fill pass the carried texture.
+//
+// THE LASERS ARE NOT TOUCHED. The transmittance curve and the beam scatter are per-eye passes; they are neither shared
+// nor carried nor trimmed, and their step count is still the owner's own (PPSmokeBeamSettings::ScatterStepCount).
+//
+// NETPLAY: presentation only, as every other post-process pass.
+
+// How near the head a stretch of a ray, or an item, must come to be marched per eye instead of carried. 6.4 cm of eye
+// separation is about 2 map units, so at this distance the two eyes' rays to one point differ by about 0.6 degrees -- a
+// little over a half-resolution texel at headset resolution -- and past it the carry's error falls as 1 / distance.
+inline constexpr float SHARED_MARCH_NEAR_UNITS = 96.0f;
+// The furthest an eye may sit from the head and still be taken for one of a pair. A flat frame puts them together and a
+// view that lands outside this is not a stereo pair at all: either way the caller marches per eye, as before.
+inline constexpr double SHARED_MARCH_EYE_APART_MAX = 64.0;
+// How far two depths may differ and still be taken for the same surface: a share of the depth, with a floor in map units.
+inline constexpr float SHARED_MARCH_DEPTH_TOLERANCE = 0.02f;
+inline constexpr float SHARED_MARCH_DEPTH_TOLERANCE_UNITS = 2.0f;
+
+// The steps a per-eye fill march takes over a hole. A hole is a thin band at a depth edge or the screen's rim, never the
+// body of the effect, and the blur and the depth-aware upsample smooth what the shorter step leaves.
+inline int SharedMarchFillSteps(int steps)
+{
+	const int third = steps / 3;
+	return third < 8 ? 8 : (third > 24 ? 24 : third);
+}
+
+// The carry's own uniforms: both directions between the shared view and this eye (worked out in double by
+// SharedMarchBuildWarp, hw_postprocess.cpp) and both views' ray terms.
+struct SharedMarchWarpUniforms
+{
+	float EyeToShared[16];        // this eye's view space -> the shared view's
+	float SharedToEye[16];        // and back
+	FVector2 TanHalfFov;          // this eye's ray terms
+	FVector2 ProjOffset;
+	FVector2 SharedTanHalfFov;    // the shared view's
+	FVector2 SharedProjOffset;
+	float DepthTolerance;         // SHARED_MARCH_DEPTH_TOLERANCE
+	float DepthToleranceUnits;    // SHARED_MARCH_DEPTH_TOLERANCE_UNITS
+	float WarpPad0;
+	float WarpPad1;
+
+	//   EyeToShared 0   SharedToEye 64   TanHalfFov 128   ProjOffset 136   SharedTanHalfFov 144   SharedProjOffset 152
+	//   DepthTolerance 160   DepthToleranceUnits 164   WarpPad0 168   WarpPad1 172   -> block ends 176
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "EyeToShared", UniformType::Mat4, offsetof(SharedMarchWarpUniforms, EyeToShared) },
+			{ "SharedToEye", UniformType::Mat4, offsetof(SharedMarchWarpUniforms, SharedToEye) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SharedMarchWarpUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SharedMarchWarpUniforms, ProjOffset) },
+			{ "SharedTanHalfFov", UniformType::Vec2, offsetof(SharedMarchWarpUniforms, SharedTanHalfFov) },
+			{ "SharedProjOffset", UniformType::Vec2, offsetof(SharedMarchWarpUniforms, SharedProjOffset) },
+			{ "DepthTolerance", UniformType::Float, offsetof(SharedMarchWarpUniforms, DepthTolerance) },
+			{ "DepthToleranceUnits", UniformType::Float, offsetof(SharedMarchWarpUniforms, DepthToleranceUnits) },
+			{ "WarpPad0", UniformType::Float, offsetof(SharedMarchWarpUniforms, WarpPad0) },
+			{ "WarpPad1", UniformType::Float, offsetof(SharedMarchWarpUniforms, WarpPad1) },
+		};
+	}
+};
+
+static_assert(offsetof(SharedMarchWarpUniforms, SharedToEye) == 64, "SharedMarchWarpUniforms::SharedToEye must start at 64 for std140");
+static_assert(offsetof(SharedMarchWarpUniforms, TanHalfFov) == 128, "SharedMarchWarpUniforms::TanHalfFov must start at 128 for std140");
+static_assert(offsetof(SharedMarchWarpUniforms, DepthTolerance) == 160, "SharedMarchWarpUniforms::DepthTolerance must start at 160 for std140");
+static_assert(sizeof(SharedMarchWarpUniforms) == 176, "SharedMarchWarpUniforms must be 176 bytes; pad to a 16-byte row");
+
+// [SHAREDMARCH] E2: the carry, one draw. A caller hands it the packed shared march, its own eye's depth at the same size
+// and the two views, and reads the packed march in its own texels back out of GetTexture(). It owns nothing of the
+// caller's: a second caller makes a second instance and nothing else changes.
+class PPSharedMarchWarp
+{
+public:
+	void Render(PPRenderState *renderstate, const PPViewport &viewport, PPTexture *sharedMarch, PPTexture *eyeDepth, const SharedMarchWarpUniforms &uniforms);
+	PPTexture *GetTexture() { return &Texture; }
+
+private:
+	PPTexture Texture;		// RGBA32F: the packed march in this eye's texels, rewritten whole by every eye that carries
+	int lastWidth = 0;
+	int lastHeight = 0;
+
+	PPShader Shader = { "shaders/pp/sharedmarchwarp.fp", "", SharedMarchWarpUniforms::Desc() };
+};
+
+// [SHAREDMARCH] E2: the smoke's shared march and its per-eye fill (smokemarch.fp SMOKE_SHARED and SMOKE_SHARED_FILL).
+// SmokeMarchUniforms member for member at the same offsets (both draws copy it in whole), then the temporal march's own
+// turned jitter and this step's three: where the near shell ends, what a hole is marched at, and whether the fill writes
+// the temporal march's packed alpha or the plain transmittance.
+struct SmokeSharedMarchUniforms
+{
+	float ViewToWorld[16];
+	FVector2 TanHalfFov;
+	FVector2 ProjOffset;
+	FVector3 BoxMin;
+	float CellSize;
+	FVector3 GridSize;
+	float TicFrac;
+	FVector3 TileCount;
+	int StepCount;
+	FVector3 LightColor;
+	float Extinction;
+	float MinStep;
+	float SliceHeight;
+	int DebugSlice;
+	float MarchPad0;
+	float JitterOffset;      // as SmokeTemporalMarchUniforms; 0 with accumulation off, which is the march's fixed pattern
+	float NearSplit;         // map units along the ray: the shared march starts here, the fill's near shell ends here
+	int FillStepCount;       // the steps a hole is marched at (SharedMarchFillSteps)
+	int TemporalOut;         // the fill writes the temporal march's packed alpha (1) or the plain transmittance (0)
+
+	//   the march's 0..160, then JitterOffset 160   NearSplit 164   FillStepCount 168   TemporalOut 172   -> block ends 176
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "ViewToWorld", UniformType::Mat4, offsetof(SmokeSharedMarchUniforms, ViewToWorld) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(SmokeSharedMarchUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(SmokeSharedMarchUniforms, ProjOffset) },
+			{ "BoxMin", UniformType::Vec3, offsetof(SmokeSharedMarchUniforms, BoxMin) },
+			{ "CellSize", UniformType::Float, offsetof(SmokeSharedMarchUniforms, CellSize) },
+			{ "GridSize", UniformType::Vec3, offsetof(SmokeSharedMarchUniforms, GridSize) },
+			{ "TicFrac", UniformType::Float, offsetof(SmokeSharedMarchUniforms, TicFrac) },
+			{ "TileCount", UniformType::Vec3, offsetof(SmokeSharedMarchUniforms, TileCount) },
+			{ "StepCount", UniformType::Int, offsetof(SmokeSharedMarchUniforms, StepCount) },
+			{ "LightColor", UniformType::Vec3, offsetof(SmokeSharedMarchUniforms, LightColor) },
+			{ "Extinction", UniformType::Float, offsetof(SmokeSharedMarchUniforms, Extinction) },
+			{ "MinStep", UniformType::Float, offsetof(SmokeSharedMarchUniforms, MinStep) },
+			{ "SliceHeight", UniformType::Float, offsetof(SmokeSharedMarchUniforms, SliceHeight) },
+			{ "DebugSlice", UniformType::Int, offsetof(SmokeSharedMarchUniforms, DebugSlice) },
+			{ "MarchPad0", UniformType::Float, offsetof(SmokeSharedMarchUniforms, MarchPad0) },
+			{ "JitterOffset", UniformType::Float, offsetof(SmokeSharedMarchUniforms, JitterOffset) },
+			{ "NearSplit", UniformType::Float, offsetof(SmokeSharedMarchUniforms, NearSplit) },
+			{ "FillStepCount", UniformType::Int, offsetof(SmokeSharedMarchUniforms, FillStepCount) },
+			{ "TemporalOut", UniformType::Int, offsetof(SmokeSharedMarchUniforms, TemporalOut) },
+		};
+	}
+};
+
+static_assert(offsetof(SmokeSharedMarchUniforms, TanHalfFov) == offsetof(SmokeMarchUniforms, TanHalfFov) &&
+	offsetof(SmokeSharedMarchUniforms, BoxMin) == offsetof(SmokeMarchUniforms, BoxMin) &&
+	offsetof(SmokeSharedMarchUniforms, GridSize) == offsetof(SmokeMarchUniforms, GridSize) &&
+	offsetof(SmokeSharedMarchUniforms, TileCount) == offsetof(SmokeMarchUniforms, TileCount) &&
+	offsetof(SmokeSharedMarchUniforms, LightColor) == offsetof(SmokeMarchUniforms, LightColor) &&
+	offsetof(SmokeSharedMarchUniforms, MinStep) == offsetof(SmokeMarchUniforms, MinStep) &&
+	offsetof(SmokeSharedMarchUniforms, MarchPad0) == offsetof(SmokeMarchUniforms, MarchPad0),
+	"SmokeSharedMarchUniforms must start with SmokeMarchUniforms' layout");
+static_assert(offsetof(SmokeSharedMarchUniforms, JitterOffset) == offsetof(SmokeTemporalMarchUniforms, JitterOffset),
+	"SmokeSharedMarchUniforms::JitterOffset must sit where the temporal march's does");
+static_assert(sizeof(SmokeSharedMarchUniforms) == 176, "SmokeSharedMarchUniforms must be 176 bytes; pad to a 16-byte row");
+
 // SKIPPED, NOT ZERO. Render returns on its first line unless the renderer published a march for this
 // eye (SetupSmokeVolume, hw_drawinfo.cpp: Vulkan, r_smoke, the volume allocated, and the CPU side's bound
 // saying visible smoke may exist). With no smoke, or smoke off, the frame is exactly the frame without
@@ -1497,11 +1662,33 @@ class PPSmokeVolume
 public:
 	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
 
-	void ClearEyes() { eyeSets = 0; beams = PPSmokeBeamSettings(); }
+	void ClearEyes()
+	{
+		eyeSets = 0;
+		beams = PPSmokeBeamSettings();
+		// [SHAREDMARCH] E2: the shared view is published again by every eye, with the rest of the frame's state. What has
+		// already been drawn into SharedMarchTexture this frame is not cleared here -- the second eye carries from it.
+		centreValid[0] = false;
+		centreValid[1] = false;
+		nearSplit = 0.0f;
+	}
 	void SetEyeMarch(int eyeSet, const SmokeMarchUniforms &u)
 	{
 		if (eyeSet >= 0 && eyeSet < 2) marches[eyeSet] = u;
 	}
+	// [SHAREDMARCH] E2: the same march from the SHARED VIEW -- this eye's orientation and projection at the point between
+	// the two eyes (SetupSmokeVolume, hw_drawinfo.cpp). Published only in a stereo frame; without it this eye marches its
+	// own, exactly as before.
+	void SetEyeCentreMarch(int eyeSet, const SmokeMarchUniforms &u)
+	{
+		if (eyeSet >= 0 && eyeSet < 2)
+		{
+			centreMarches[eyeSet] = u;
+			centreValid[eyeSet] = true;
+		}
+	}
+	// [SHAREDMARCH] E2: how near the head a stretch of a ray must come to be marched per eye instead of carried, map units.
+	void SetNearSplit(float units) { nearSplit = units > 0.0f ? units : 0.0f; }
 	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
 	void SetEye(int eye) { currentEye = eye; }
 	// [13e] The frame's beams and switches (after SetEyeSets), and the beam count last published (the perf log's label).
@@ -1586,6 +1773,20 @@ private:
 	PPShader MarchTemporalShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_TEMPORAL\n", SmokeTemporalMarchUniforms::Desc() };
 	PPShader TemporalResolveShader = { "shaders/pp/smoketemporal.fp", "", SmokeTemporalResolveUniforms::Desc() };
 	PPShader TemporalKeepShader = { "shaders/pp/smoketemporal.fp", "#define SMOKE_TEMPORAL_KEEP\n", {} };
+
+	// [SHAREDMARCH] E2: one march for both eyes. The shared march is drawn once a frame, by whichever eye reaches Render
+	// first; the other eye finds it already drawn (the frame count) and only carries from it. The shared texture and the
+	// carry are made the first time it runs.
+	SmokeMarchUniforms centreMarches[2] = {};	// the shared view each eye set published
+	bool centreValid[2] = { false, false };
+	float nearSplit = 0.0f;						// map units, 0 = nothing published, so nothing is shared
+	SmokeMarchUniforms sharedView = {};			// the shared view SharedMarchTexture was actually drawn from
+	uint64_t sharedFrame = 0;					// the screen->FrameCount it was drawn in
+	bool sharedReady = false;
+	PPTexture SharedMarchTexture;				// RGBA32F: light, transmittance, front and back depth, depth and change
+	PPSharedMarchWarp Warp;
+	PPShader MarchSharedShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_SHARED\n", SmokeSharedMarchUniforms::Desc() };
+	PPShader MarchSharedFillShader = { "shaders/pp/smokemarch.fp", "#define SMOKE_SHARED_FILL\n", SmokeSharedMarchUniforms::Desc() };
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1730,7 +1931,31 @@ class PPEmissiveVolumes
 public:
 	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
 
-	void ClearEyes() { eyeSets = 0; settings = PPEmissiveVolumeSettings(); }
+	void ClearEyes()
+	{
+		eyeSets = 0;
+		settings = PPEmissiveVolumeSettings();
+		// [SHAREDMARCH] E2: as the smoke's -- published again by every eye; what is already drawn this frame stays.
+		sharedSplits[0] = false;
+		sharedSplits[1] = false;
+	}
+	// [SHAREDMARCH] E2: this eye set's split. The shared march (the FAR volumes, from the view between the eyes) and the
+	// two tile lists that carry the split: centreBounds are the far volumes' bounds in the SHARED view, nearBounds the near
+	// volumes' in THIS eye's, both in list order, with an empty bound for a volume the pass must not loop. Published only
+	// while the tile lists are on and something is far; otherwise this eye marches the whole list itself, as before.
+	void SetEyeSharedSplit(int eyeSet, const EmissiveVolumeUniforms &centre, const ScreenTexRect *centreBounds, const ScreenTexRect *nearBounds, int count)
+	{
+		if (eyeSet < 0 || eyeSet > 1 || centreBounds == nullptr || nearBounds == nullptr || count <= 0 || count > SCREEN_TILE_ITEMS_MAX)
+			return;
+		centreMarches[eyeSet] = centre;
+		for (int i = 0; i < count; i++)
+		{
+			centreTileBounds[eyeSet][i] = centreBounds[i];
+			nearTileBounds[eyeSet][i] = nearBounds[i];
+		}
+		sharedCounts[eyeSet] = count;
+		sharedSplits[eyeSet] = true;
+	}
 	void SetEyeMarch(int eyeSet, const EmissiveVolumeUniforms &u)
 	{
 		if (eyeSet >= 0 && eyeSet < 2) marches[eyeSet] = u;
@@ -1798,6 +2023,27 @@ private:
 	PPShader CompositeShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
 	PPShader MaskCarryShader = { "shaders/pp/smokecomposite.fp", "#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
 	PPShader MaskCarryShaderMS = { "shaders/pp/smokecomposite.fp", "#define MULTISAMPLE\n#define LIGHT_MASK_CARRY\n", SmokeDepthUniforms::Desc() };
+
+	// [SHAREDMARCH] E2: one march for both eyes, as PPSmokeVolume. Both new programs take EMISSIVE_TILES, because the tile
+	// mask IS the near/far split -- a volume left out of a mask is a volume that pass never loops -- so no new uniform, no
+	// second list and no change to the march's own loop were needed. The existing TileMask serves the fill's near list; the
+	// shared march has its own, at the shared view.
+	EmissiveVolumeUniforms centreMarches[2] = {};
+	ScreenTexRect centreTileBounds[2][SCREEN_TILE_ITEMS_MAX];	// the FAR volumes, in the shared view
+	ScreenTexRect nearTileBounds[2][SCREEN_TILE_ITEMS_MAX];		// the NEAR volumes, in this eye's
+	int sharedCounts[2] = { 0, 0 };
+	bool sharedSplits[2] = { false, false };
+	PPScreenTileMask CentreTileMask;
+	EmissiveVolumeUniforms sharedView = {};		// the shared view SharedMarchTexture was actually drawn from
+	uint64_t sharedFrame = 0;
+	bool sharedReady = false;
+	int lastSharedWidth = 0;
+	int lastSharedHeight = 0;
+	PPTexture SharedMarchTexture;				// RGBA32F, the packed march (shaders/pp/sharedmarchwarp.fp)
+	PPSharedMarchWarp Warp;
+	PPShader MarchSharedShader = { "shaders/pp/emissivevolume.fp", "#define EMISSIVE_TILES\n#define EMISSIVE_SHARED\n", EmissiveVolumeUniforms::Desc() };
+	PPShader MarchSharedFillShader = { "shaders/pp/emissivevolume.fp", "#define EMISSIVE_TILES\n#define EMISSIVE_SHARED_FILL\n", EmissiveVolumeUniforms::Desc() };
+	PPShader MarchSharedFillSmokeShader = { "shaders/pp/emissivevolume.fp", "#define SMOKE_TRANSMITTANCE\n#define EMISSIVE_TILES\n#define EMISSIVE_SHARED_FILL\n", EmissiveVolumeUniforms::Desc() };
 };
 
 

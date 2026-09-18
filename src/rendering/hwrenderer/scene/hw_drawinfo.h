@@ -170,6 +170,13 @@ struct HWDrawInfo
 	HWViewpointUniforms VPUniforms;	// per-viewpoint uniform state
 	HWViewpointUniforms MultiviewVPUniforms[2];
 	bool HasMultiviewViewpoints = false;
+	// [SHAREDMARCH] E2 ("Engine docs/SHARED_MARCH_E2_IMPL_NOTES.md"): THE HEAD, BEFORE THE EYE SHIFT -- the point the two
+	// eyes are placed either side of, in map coordinates, for this scene. Viewpoint.Pos is one EYE; this is the view both
+	// eyes share, which is what anything that wants one view to serve both of them has to start from. Set by the eye loop
+	// (hw_entrypoint.cpp) only when the frame really has two eyes; false otherwise, and every reader then does its own work
+	// per eye as it did before. General: it says nothing about any effect.
+	DVector3 CentreViewPos = DVector3(0, 0, 0);
+	bool HasCentreViewPos = false;
 	VSMatrix ProjectionMatrix2;
 	VSMatrix MultiviewProjectionMatrix2[2];
 	bool HasMultiviewProjectionMatrix2 = false;
