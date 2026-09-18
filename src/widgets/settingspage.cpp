@@ -195,7 +195,9 @@ void SettingsPage::SetValues(FStartupSelectionInfo& info) const
 	info.DefaultFullscreen = FullscreenCheckbox->GetChecked();
 	info.DefaultVsync = VsyncCheckbox->GetChecked();
 	info.DefaultQueryIWAD = !DontAskAgainCheckbox->GetChecked();
-	info.DefaultLanguage = languages[LangList->GetSelectedItem()].first.GetChars();
+	// RS FORK -- only a language the user picked; see languagePicked in settingspage.h.
+	if (languagePicked)
+		info.DefaultLanguage = languages[LangList->GetSelectedItem()].first.GetChars();
 
 	info.DefaultPreferredTheme = ThemeDropdown->GetSelectedItem();
 
@@ -330,6 +332,7 @@ void SettingsPage::UpdateUpdaterValues(bool autoUpdate, bool check, int interval
 
 void SettingsPage::OnLanguageChanged(int i)
 {
+	languagePicked = true;	// RS FORK -- see settingspage.h
 	GStrings.UpdateLanguage(languages[i].first.GetChars());
 	UpdateLanguage();
 	OnGeometryChanged();

@@ -2415,8 +2415,24 @@ public:
 		}
 		const float floorHeight = floorZ > -32768.0 ? (float)floorZ : GPUPARTICLE_NO_FLOOR;
 
+		// [GOVERNOR] E8: THE PARTICLE COUNT SCALE (hw_effectsgovernor.h). While the effects budget governor trims particles, a
+		// particle whose own hash -- stream 7 of the burst's seed and its index; streams 0-4 are its look -- falls past the scale
+		// writes a free slot (life 0, as a new ring's) where it would have gone. Its slot, the cursor and every seed after it are
+		// what they would have been, so a machine that draws fewer draws a subset of the same particles, and a particle kept at
+		// 1/2 is kept at 3/4. The first particle of a burst always draws. Presentation only, like the ring: the scale is this
+		// machine's frame time, no playsim RNG, nothing keyed on a player, and nothing in the simulation reads the ring. At 65536
+		// (the governor off or not trimming particles) this is the loop as it was.
+		extern uint32_t EffectsGovernorParticleKeep();	// hw_effectsgovernor.cpp
+		const uint32_t keep = EffectsGovernorParticleKeep();
+
 		for (int i = 0; i < count; i++)
 		{
+			if (keep < 65536u && i > 0 && GpuParticleRand(s, (uint32_t)i, 7) * 65536.0 >= (double)keep)
+			{
+				GpuParticles[(unsigned)(GpuParticleWritten % size)] = GpuParticleRecord();
+				GpuParticleWritten++;
+				continue;
+			}
 			const double u1 = GpuParticleRand(s, (uint32_t)i, 0);
 			const double u2 = GpuParticleRand(s, (uint32_t)i, 1);
 			const double u3 = GpuParticleRand(s, (uint32_t)i, 2);

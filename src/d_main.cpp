@@ -75,6 +75,7 @@
 #include "hu_stuff.h"
 #include "hw_clock.h"
 #include "hw_perflog.h"	// RS FORK -- r_perflog, sampled in End2DAndUpdate
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: EffectsGovernor::EndFrame, in End2DAndUpdate
 #include "hwrenderer/scene/hw_drawinfo.h"
 #include "i_interface.h"
 #include "i_sound.h"
@@ -1481,6 +1482,9 @@ static void End2DAndUpdate()
 	twod->End();
 	screen->Update();
 	CheckBench();
+	// [GOVERNOR] E8: the effects budget governor measures this frame and decides the next one's trims (hw_effectsgovernor.h),
+	// before the perf log, which records the decision.
+	EffectsGovernor::EndFrame();
 	// RS FORK -- r_perflog: beside CheckBench, after the frame's GPU timings
 	// were read back. While it is off this integer check is the whole cost.
 	if (*r_perflog > 0) PerfLogEndFrame();

@@ -23,6 +23,7 @@
 #include "hw_emissivevolumeframe.h"
 #include "hw_effectlights.h"
 #include "hw_perflog.h"
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the volumes drawn a frame
 #include "volumedefs.h"
 #include "g_levellocals.h"
 #include "d_player.h"
@@ -453,8 +454,11 @@ void EmissiveVolumes::PrepareFrame(FLevelLocals* Level, const DVector3& eye, Emi
 		if (ra != rb) return ra > rb;
 		return mPool[a].Source.Sequence < mPool[b].Source.Sequence;
 	});
-	if (mOrder.size() > (size_t)EMISSIVE_VOLUMES_DRAWN_MAX)
-		mOrder.resize(EMISSIVE_VOLUMES_DRAWN_MAX);
+	// [GOVERNOR] E8: the effects budget governor may draw fewer while it trims (EffectsGovernor::EmissiveDrawn: 24, then 16) -- still
+	// the best by rank. The rest stay alive and keep their lights, as any volume past the list does.
+	const size_t drawnMax = (size_t)EffectsGovernor::EmissiveDrawn(EMISSIVE_VOLUMES_DRAWN_MAX);
+	if (mOrder.size() > drawnMax)
+		mOrder.resize(drawnMax);
 	// Drawn far to near from the head centre, so each nearer volume composites over the farther ones.
 	std::sort(mOrder.begin(), mOrder.end(), [&](uint32_t a, uint32_t b)
 	{

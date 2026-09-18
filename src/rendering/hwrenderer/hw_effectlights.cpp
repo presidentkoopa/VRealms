@@ -23,6 +23,7 @@
 #include "hw_effectlightbuffer.h"
 #include "hw_shadowmap.h"
 #include "hw_perflog.h"
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the lights one bin lights with
 #include "g_levellocals.h"
 #include "doomdef.h"
 #include "c_cvars.h"
@@ -462,7 +463,9 @@ void EffectLights::PrepareFrame(FLevelLocals* Level, const DVector3& eye, double
 	for (size_t k = 0; k < count; k++)
 		mRanked[k] = mFrameLights[mOrder[k]];
 	const Grid grid = GridAround(eye.X, eye.Y, eye.Z, GridForQuality(*r_effectlights_quality));
-	mBuilder.Build(mRanked, grid, *r_effectlights_perbin, mResult);
+	// [GOVERNOR] E8: the lights one bin lights with, through the effects budget governor (hw_effectsgovernor.h): r_effectlights_perbin
+	// as it is unless the governor is trimming; the rest of a crowded bin blend into its glow, as always.
+	mBuilder.Build(mRanked, grid, EffectsGovernor::LightsPerBin(*r_effectlights_perbin), mResult);
 
 	buffer->Upload(mResult.Records.data(), (unsigned)mResult.Records.size(), mResult.Binned, mResult.Grid,
 		mResult.Bins.data(), (unsigned)mResult.Bins.size(), mResult.Indices.data(), (unsigned)mResult.Indices.size());

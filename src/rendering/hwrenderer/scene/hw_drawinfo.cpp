@@ -46,6 +46,7 @@
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] ResolveDrawnLineEnds is declared there
 #include "a_dynlight.h"	// [VIEWLIGHTS] FDynamicLight, walked to fill it
 #include "hw_perflog.h"	// RS FORK -- r_perflog scene/effects GPU groups
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the effects budget governor's smoke and flash detail
 #include "hw_smokevolume.h"	// [SMOKEVOLUME] SmokeVolume::GetDrawState, for SetupSmokeVolume
 #include "hwrenderer/postprocessing/hw_postprocess_cvars.h"	// [SMOKEVOLUME] r_smoke_steps, r_smoke_density_scale, r_smoke_debugslice
 #include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::GetDrawState, for SetupEmissiveVolumes
@@ -65,6 +66,8 @@ EXTERN_CVAR(Float, r_visibility)
 EXTERN_CVAR(Int, gl_max_portals);
 EXTERN_CVAR(Bool, r_visualstate_log)	// RS fork: defined in vmthunks.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] defined in hw_particledefbuffer.cpp
+EXTERN_CVAR(Bool, r_gpuparticles_cull)	// [PARTICLECULL] E11, defined in hw_cvars.cpp
+EXTERN_CVAR(Float, r_gpuparticles_light_lod_distance)	// [PARTICLECULL] E11, defined in hw_cvars.cpp
 CVAR(Bool, gl_bandedswlight, false, CVAR_ARCHIVE)
 CVAR(Bool, gl_sort_textures, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, gl_no_skyclear, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -951,7 +954,14 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 	const double cell = draw.Grid.CellSize;
 	// The grid's minimum corner in GL world axes (map x, map z, map y), as every beam upload.
 	const double cornerGL[3] = { draw.OriginCell[0] * cell, draw.OriginCell[2] * cell, draw.OriginCell[1] * cell };
-	const int steps = clamp((int)r_smoke_steps, 16, 128);
+	// [GOVERNOR] E8: the smoke volume's OWN march goes through the effects budget governor (hw_effectsgovernor.h): r_smoke_steps as
+	// it is unless the governor is trimming.
+	// PROTECTED LOOKS: ownerSteps is r_smoke_steps untouched. The passes that walk this same ray for another effect -- the
+	// transmittance curve and the beam scatter, which is what a beam (a grab laser, the Lance) scatters in the smoke -- march at
+	// ownerSteps at every rung, so no trim ever changes a beam's look (PPSmokeBeamSettings::ScatterStepCount, hw_postprocess.h,
+	// published just below and used by PPSmokeVolume::Render).
+	const int ownerSteps = clamp((int)r_smoke_steps, 16, 128);
+	const int steps = EffectsGovernor::SmokeSteps(ownerSteps);
 
 	const int eyeSets = di->HasMultiviewViewpoints ? 2 : 1;
 	for (int eye = 0; eye < eyeSets; eye++)
@@ -994,6 +1004,10 @@ static void SetupSmokeVolume(const HWDrawInfo *di, bool toscreen)
 	{
 		PPSmokeBeamSettings beams;
 		beams.BeamCount = std::clamp(status.BeamCount, 0, SMOKE_BEAMS_MAX);
+		// [GOVERNOR] E8, PROTECTED LOOKS: the step count the transmittance curve and the beam scatter march at -- the owner's own
+		// r_smoke_steps, never a trimmed one, so what a beam (a grab laser, the Lance) scatters in the smoke is drawn the same at
+		// every rung. Only the smoke volume's own march above is trimmed (hw_effectsgovernor.h).
+		beams.ScatterStepCount = ownerSteps;
 		beams.Scatter = r_smoke_beams;
 		beams.Depth = r_smoke_beams_depth;
 		beams.Cones = r_smoke_cones_depth;
@@ -1051,7 +1065,9 @@ static void SetupEmissiveVolumes(const HWDrawInfo *di, bool toscreen)
 
 	// The list's origin in GL world axes (map x, map z, map y).
 	const double originGL[3] = { draw.Origin[0], draw.Origin[2], draw.Origin[1] };
-	const int steps = clamp((int)r_emissivevolumes_steps, 8, 64);
+	// [GOVERNOR] E8: through the effects budget governor (hw_effectsgovernor.h): r_emissivevolumes_steps as it is unless the governor
+	// is trimming.
+	const int steps = EffectsGovernor::EmissiveSteps(clamp((int)r_emissivevolumes_steps, 8, 64));
 
 	const int eyeSets = di->HasMultiviewViewpoints ? 2 : 1;
 	for (int eye = 0; eye < eyeSets; eye++)
@@ -1083,6 +1099,29 @@ static void SetupEmissiveVolumes(const HWDrawInfo *di, bool toscreen)
 		double axisScale = 0.0;
 		for (int c = 0; c < 3; c++)
 			axisScale = std::max(axisScale, std::sqrt((double)vm[c * 4] * vm[c * 4] + (double)vm[c * 4 + 1] * vm[c * 4 + 1] + (double)vm[c * 4 + 2] * vm[c * 4 + 2]));
+
+		// [EMISSIVETILES] E5: the tile lists' bounds, while r_emissivevolumes_tiles is on (PPEmissiveVolumes cuts them into tiles at the
+		// march's size). Each volume on its own, by the same box as the rectangle below (ScreenRectOfSphere, hw_screentiles.h), but at
+		// ScreenTileReach -- its radius grown by what a float march can see past it -- and taken into view space by the matrix's
+		// largest stretch (ScreenViewStretch), which the rectangle's largest column length above only bounds from below.
+		// One that reaches the eye's plane takes every tile.
+		{
+			static_assert(EMISSIVE_VOLUMES_DRAWN_MAX <= SCREEN_TILE_ITEMS_MAX, "a tile mask lists at most SCREEN_TILE_ITEMS_MAX volumes");
+			ScreenTexRect tileBounds[SCREEN_TILE_ITEMS_MAX];
+			const bool tileLists = r_emissivevolumes_tiles;
+			const int tileCount = std::min(draw.Count, SCREEN_TILE_ITEMS_MAX);
+			if (tileLists)
+			{
+				const double tileScale = ScreenViewStretch(vm);
+				for (int i = 0; i < tileCount; i++)
+				{
+					const double wx = originGL[0] + draw.Centre[i][0], wy = originGL[1] + draw.Centre[i][1], wz = originGL[2] + draw.Centre[i][2];
+					const double reach = ScreenTileReach(draw.Radius[i], wx - inv[12], wy - inv[13], wz - inv[14]);
+					tileBounds[i] = ScreenRectOfSphere(vm, wx, wy, wz, reach * tileScale, tanX, tanY, proj[8], proj[9]);
+				}
+			}
+			pass.SetEyeTileBounds(eye, tileLists ? tileBounds : nullptr, tileCount);
+		}
 
 		double lo[2] = { 1.0, 1.0 }, hi[2] = { 0.0, 0.0 };
 		bool whole = false;
@@ -1581,9 +1620,17 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		// definition's generated `look` at ("Engine docs/GPU_PARTICLE_LOOKS_PLAN.md"); 0 draws
 		// every look as the plain round dot. Renderer-read every scene like the knobs above.
 		// (hw_viewpointuniforms.h still calls z spare; the comment is here so that header is not
-		// touched for a value.) w is still spare.
+		// touched for a value.)
 		const float gpuParticleLooks = (float)clamp((int)r_gpuparticles_looks, 0, 3);
-		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), gpuParticlesPremultiplied ? 1.f : 0.f, gpuParticleLooks, 0.f };
+		// [PARTICLECULL] E11: w packs gpuparticles.vp's two vertex-stage knobs ("Engine docs/PARTICLE_CULL_E11_IMPL_NOTES.md"), so
+		// neither needs a new member -- a new member would change every program's uniform block, the lasers' included. Its sign is
+		// r_gpuparticles_cull (above 0 on, below 0 off); its magnitude 1 + r_gpuparticles_light_lod_distance in map units (0 = off;
+		// a negative or NaN value counts as 0, and it is capped at 2^20, past any level). Renderer-read every scene like the knobs
+		// above. A viewpoint that never came through here holds w 0: both off, every particle's path from before E11.
+		const float particleLightLodDistance = (float)r_gpuparticles_light_lod_distance;
+		const float gpuParticleVertexKnobs = (r_gpuparticles_cull ? 1.f : -1.f) *
+			(1.f + (particleLightLodDistance > 0.f ? min(particleLightLodDistance, 1048576.f) : 0.f));
+		VPUniforms.mGpuParticleParams2 = { max((float)r_gpuparticles_soft, 0.f), gpuParticlesPremultiplied ? 1.f : 0.f, gpuParticleLooks, gpuParticleVertexKnobs };
 
 		// [BB] Sweep fill -- the pattern inside a band. Frame-global style;
 		// only the mode is per band, packed into the draw mode.

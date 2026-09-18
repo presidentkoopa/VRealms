@@ -47,6 +47,13 @@
 ** comes from (vParticleLightDir), summed inside ParticleViewLight's existing loop. With
 ** no look both outputs are zero and everything else is computed exactly as before.
 **
+** [PARTICLECULL] E11 CULL AND LOD ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E11, "Engine
+** docs/PARTICLE_CULL_E11_IMPL_NOTES.md"). While r_gpuparticles_cull is on, a particle or
+** debris billboard whose whole quad lies outside this view collapses before its lights,
+** flipbook and look (ParticleOutsideView); it had nothing to draw, so the image is the same.
+** Past r_gpuparticles_light_lod_distance, when that is set, a lit one skips the effect lights
+** (ParticleEffectLightShare). Both off, every particle takes the path it took before E11.
+**
 **---------------------------------------------------------------------------
 **
 ** Copyright 2026 UZDXREMA
@@ -184,6 +191,19 @@ vec3 EffectLightsAtParticle(vec3 p)
 	}
 	return total;
 }
+
+// [PARTICLECULL] E11 LIGHT LOD: how much of the effect lights a lit particle at p takes, by its distance from this view's camera.
+// r_gpuparticles_light_lod_distance (|uGpuParticleParams2.w| - 1, map units) at 0, the default, is off: 1 everywhere, and
+// ParticleViewLight reads the bin exactly as it did before E11. Above 0: 1 nearer than three quarters of it, 0 at it and beyond --
+// where ParticleViewLight does not read the bin at all -- and a smoothstep between, so a particle drifting out of range dims
+// rather than pops. The view lights and the sector light are not touched.
+float ParticleEffectLightShare(vec3 p)
+{
+	float lodDistance = abs(uGpuParticleParams2.w) - 1.0;
+	if (!(lodDistance > 0.0))
+		return 1.0;
+	return 1.0 - smoothstep(0.75 * lodDistance, lodDistance, distance(p, uCameraPos.xyz));
+}
 #endif
 
 const vec2 kParticleCorners[6] = vec2[6](
@@ -216,6 +236,77 @@ void CollapseParticle()
 	vParticleSoft = -1.0;
 	vParticleLife = vec4(0.0);
 	vParticleLightDir = vec4(0.0);
+}
+
+// [PARTICLECULL] E11: A PARTICLE OUTSIDE THE VIEW COLLAPSES BEFORE ITS EXPENSIVE WORK ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md"
+// E11, "Engine docs/PARTICLE_CULL_E11_IMPL_NOTES.md"). Every drawn particle used to run its whole vertex path -- a lit one's view
+// light and effect light loops included -- even when its quad lay wholly off to one side of the view or behind the eye, where the
+// clipper threw every triangle of it away. Now DrawDefinedParticle and DrawPooledParticle ask ParticleOutsideView once the drawn
+// centre and size are known (after collision, which moves the centre) and collapse such a particle as a dead slot is collapsed,
+// before its lights, flipbook and look. Per view: under multiview ProjectionMatrix and ViewMatrix are gl_ViewIndex's, and without
+// it each eye's pass has its own. Nothing such a particle could draw is lost, so the image is fragment for fragment the one
+// before E11 (the notes' draw harness). Legacy records are not culled: they have no light work.
+//
+// uGpuParticleParams2.w packs this stage's two renderer-read knobs (HWDrawInfo::StartScene); a viewpoint that never went through
+// StartScene holds 0, which is both off:
+//   sign     above 0: r_gpuparticles_cull on (the default); 0 or below: off, every particle takes its path from before E11
+//   |w| - 1  r_gpuparticles_light_lod_distance in map units, 0 = off (ParticleEffectLightShare)
+
+// sqrt(2), rounded up: a corner (+-1, +-1) of the quad, turned by any spin, lies this far from the centre in quad units.
+const float kParticleCullCornerReach = 1.41422;
+// How far past a face a particle must lie before it is culled, as a share of the magnitudes its test is made of -- the clip
+// coordinates, the quad's reach, and the world position and view translation the centre came from. Far above the rounding of the
+// vertex path in float32, fused or not; small beside the view (the notes give the numbers).
+const float kParticleCullMargin = 1.0e-5;
+
+// True when every point of this particle's quad lies outside one face of this view's clip volume, whatever its corner and spin, so
+// every triangle of it is clipped away; the answer is the same for all six vertices. pos is the drawn centre, vel the velocity a
+// streak follows, halfSize half the drawn size; orient and stretch as ParticleEyePosition takes them.
+//   orient 0, 1  the corners are offset in eye space, in the view plane: within reach x max(halfSize, |the streak's half length|)
+//                of the centre, along the clip-space axes ProjectionMatrix[0] and [1].
+//   orient 2     the corners are offset in the world: within reach x halfSize, along ProjectionMatrix x ViewMatrix[0], [1], [2].
+// The faces are the four side faces, w + x, w - x, w + y and w - y >= 0, and w >= 0, which those imply. Never the near or far face:
+// the scene draws with depth clamp on, which turns them off, so a particle nearer than the near plane still draws.
+bool ParticleOutsideView(vec3 pos, vec3 vel, float halfSize, int orient, float stretch)
+{
+	vec4 centre = ProjectionMatrix * (ViewMatrix * vec4(pos, 1.0));
+	vec4 axisX;
+	vec4 axisY;
+	vec4 axisZ;
+	float reach;
+	if (orient == 2)
+	{
+		axisX = ProjectionMatrix * ViewMatrix[0];
+		axisY = ProjectionMatrix * ViewMatrix[1];
+		axisZ = ProjectionMatrix * ViewMatrix[2];
+		reach = kParticleCullCornerReach * halfSize;
+	}
+	else
+	{
+		axisX = ProjectionMatrix[0];
+		axisY = ProjectionMatrix[1];
+		axisZ = vec4(0.0);
+		float halfLength = halfSize;
+		if (orient == 1)
+			halfLength = halfSize + length((mat3(ViewMatrix) * vel).xy) * stretch * uGpuParticleParams.z;
+		reach = kParticleCullCornerReach * max(halfSize, abs(halfLength));
+	}
+
+	// The side faces as (w + x, w - x, w + y, w - y): the centre's value, negative outside, and how far the quad can move it.
+	vec4 face = centre.wwww + vec4(centre.x, -centre.x, centre.y, -centre.y);
+	vec4 faceX = axisX.wwww + vec4(axisX.x, -axisX.x, axisX.y, -axisX.y);
+	vec4 faceY = axisY.wwww + vec4(axisY.x, -axisY.x, axisY.y, -axisY.y);
+	vec4 faceZ = axisZ.wwww + vec4(axisZ.x, -axisZ.x, axisZ.y, -axisZ.y);
+	vec4 faceReach = reach * sqrt(faceX * faceX + faceY * faceY + faceZ * faceZ);
+	float eyeReach = reach * length(vec3(axisX.w, axisY.w, axisZ.w));
+
+	// The margin. A NaN or an infinity anywhere makes the comparisons false, so such a particle is never culled.
+	float worldScale = dot(abs(pos), vec3(1.0)) + dot(abs(ViewMatrix[3].xyz), vec3(1.0));
+	float projectionScale = dot(abs(ProjectionMatrix[0]) + abs(ProjectionMatrix[1]) + abs(ProjectionMatrix[2]), vec4(1.0));
+	float magnitude = abs(centre.w) + abs(centre.x) + abs(centre.y) + projectionScale * worldScale;
+	if (any(lessThan(face + faceReach + kParticleCullMargin * (vec4(magnitude) + faceReach), vec4(0.0))))
+		return true;
+	return centre.w + eyeReach + kParticleCullMargin * (magnitude + eyeReach) < 0.0;
 }
 
 // Where one corner of the quad goes, in eye space.
@@ -398,7 +489,13 @@ vec3 ParticleViewLight(vec3 pos, float ambient, bool wantDirection, inout vec4 d
 #ifdef EFFECT_LIGHTS
 	// [PARTICLELIGHTS] And the effect lights of its bin, before the clamp, as a dynamic light adds. They do not join a dust look's
 	// light direction, which stays the view lights'.
-	light += EffectLightsAtParticle(pos);
+	// [PARTICLECULL] E11 LIGHT LOD: times ParticleEffectLightShare. At 1 -- every particle while the distance is 0 -- this is the
+	// statement from before E11; at 0 the bin is not read at all.
+	float effectLightShare = ParticleEffectLightShare(pos);
+	if (effectLightShare >= 1.0)
+		light += EffectLightsAtParticle(pos);
+	else if (effectLightShare > 0.0)
+		light += EffectLightsAtParticle(pos) * effectLightShare;
 #endif
 	return clamp(light, vec3(0.0), vec3(1.4));
 }
@@ -886,6 +983,13 @@ void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 		float sa = sin(angle);
 		offsetCorner = vec2(c.x * ca - c.y * sa, c.x * sa + c.y * ca);
 	}
+	// [PARTICLECULL] E11: wholly outside this view -- nothing of it could be drawn -- it collapses here, after the collision that
+	// placed it and before its lights, flipbook and look (ParticleOutsideView). With r_gpuparticles_cull off it goes on as before.
+	if (uGpuParticleParams2.w > 0.0 && ParticleOutsideView(pos, vel, halfSize, orient, particleDefinitions[defSlot].shape.y))
+	{
+		CollapseParticle();
+		return;
+	}
 	vec4 eyePos = ParticleEyePosition(pos, vel, part.b.xyz, offsetCorner, halfSize, orient, particleDefinitions[defSlot].shape.y);
 
 	// Flag 1: stage 1's fade over the last 40% of life. Every inline definition has
@@ -1070,6 +1174,12 @@ void DrawPooledParticle(uint slot, int corner)
 		float ca = cos(spinAngle);
 		float sa = sin(spinAngle);
 		offsetCorner = vec2(c.x * ca - c.y * sa, c.x * sa + c.y * ca);
+	}
+	// [PARTICLECULL] E11: DrawDefinedParticle's cull, at the pool's own drawn centre, before the lights, flipbook and look.
+	if (uGpuParticleParams2.w > 0.0 && ParticleOutsideView(pos, vel, halfSize, orient, particleDefinitions[defSlot].shape.y))
+	{
+		CollapseParticle();
+		return;
 	}
 	vec4 eyePos = ParticleEyePosition(pos, vel, part.b.xyz, offsetCorner, halfSize, orient, particleDefinitions[defSlot].shape.y);
 

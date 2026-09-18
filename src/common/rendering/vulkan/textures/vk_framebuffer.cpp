@@ -31,6 +31,8 @@
 #include "vulkan/renderer/vk_postprocess.h"
 #include "hw_cvars.h"
 #include "vk_framebuffer.h"
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the swapchain's acquire and present waits are pacing
+#include "i_time.h"
 
 CVAR(Bool, vk_hdr, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Bool, vk_exclusivefullscreen, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
@@ -75,7 +77,10 @@ void VkFramebufferManager::AcquireImage()
 		}
 	}
 
+	// [GOVERNOR] E8: a vsync swapchain holds its image until the display is ready: pacing, not the frame's work (hw_effectsgovernor.h).
+	const uint64_t governorWaitStartNs = I_nsTime();
 	PresentImageIndex = SwapChain->AcquireImage(SwapChainImageAvailableSemaphore.get());
+	EffectsGovernor::AddPacingWait(I_nsTime() - governorWaitStartNs);
 	if (PresentImageIndex != -1)
 	{
 		auto vrmode = VRMode::GetVRModeCached(true);
@@ -134,5 +139,10 @@ void VkFramebufferManager::AcquireImage()
 void VkFramebufferManager::QueuePresent()
 {
 	if (PresentImageIndex != -1)
+	{
+		// [GOVERNOR] E8: a present can wait for the display as well: pacing.
+		const uint64_t governorWaitStartNs = I_nsTime();
 		SwapChain->QueuePresent(PresentImageIndex, RenderFinishedSemaphores[PresentImageIndex].get());
+		EffectsGovernor::AddPacingWait(I_nsTime() - governorWaitStartNs);
+	}
 }

@@ -388,6 +388,21 @@ ParticleAtlasPolicy GpuParticleAtlasPolicy()
 // with the menu open. perflog.txt times the fill as fx.viewlights. Vulkan only.
 CVARD(Int, r_gpuparticles_lights, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "how many dynamic lights in view light lit GPU particles, nearest first, 0-32; 0 = sector light only (Vulkan only)")
 
+// [PARTICLECULL] E11: CULL AND LOD GPU PARTICLES IN THE VERTEX SHADER ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E11,
+// "Engine docs/PARTICLE_CULL_E11_IMPL_NOTES.md"). Both reach gpuparticles.vp through HWViewpointUniforms::mGpuParticleParams2.w,
+// packed by HWDrawInfo::StartScene every scene, so they respond with a menu open. Presentation only: each machine decides from its
+// own view. Vulkan only.
+//
+// r_gpuparticles_cull: a GPU particle or debris billboard whose whole quad lies outside the view collapses before its lights,
+// flipbook and look. It had nothing to draw, so the image is the same (the notes' draw harness): the perf log's A/B switch and a
+// way back, not a look. Default on, not saved.
+CVARD(Bool, r_gpuparticles_cull, true, CVAR_GLOBALCONFIG, "GPU particles wholly outside the view skip their vertex work -- the same image, less work (Vulkan; an A/B switch)")
+// r_gpuparticles_light_lod_distance: past this many map units from the eye, lit GPU particles and debris billboards (smoke, dust,
+// chips) stop taking the effect lights (sparks, embers, impacts, tracers) and skip that light loop, fading out of them over the
+// last quarter of the distance. The view lights and the sector light still light them. A LOOK CHANGE, so 0, off, until the owner
+// picks a value: exactly the look before E11.
+CVARD(Float, r_gpuparticles_light_lod_distance, 0.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "past this distance in map units lit GPU particles skip the effect lights, fading out over its last quarter; 0 = off (Vulkan only)")
+
 // The ring size, latched the first time anything asks. The CPU ring on
 // FLevelLocals and the GPU ring both size from this, so they can never
 // disagree within one run -- which is what "takes effect on restart" means.

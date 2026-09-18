@@ -164,6 +164,9 @@ FStartupSelectionInfo::FStartupSelectionInfo(const TArray<WadStuff>& wads, FArgs
 	bAutoUpdate = updater_auto_updates;
 	bCheckUpdate = updater_check_updates;
 #endif
+
+	// RS FORK -- everything above is what the launcher opens with; SaveInfo() compares against it (see Opened).
+	Opened = std::make_shared<const FStartupSelectionInfo>(*this);
 }
 
 // Return whatever IWAD the user selected.
@@ -178,48 +181,107 @@ int FStartupSelectionInfo::SaveInfo()
 	DefaultNetAddress.StripLeftRight();
 	DefaultNetSaveFile.StripLeftRight();
 
+	// RS FORK -- WRITE BACK ONLY WHAT THE LAUNCHER CHANGED.
+	//
+	// Every value below used to be written back unconditionally. That is harmless
+	// only while the launcher's copy still equals the cvar, and it does not always:
+	//  - defaultiwad / defaultnetiwad are stored as NAMES, but the launcher holds an
+	//    INDEX into the IWADs it was given, 0 when the stored name is not among them.
+	//    -iwad with -showlauncher (or a GAMEINFO IWAD with the query key held) gives
+	//    it just the one IWAD, and Play wrote that name over both remembered IWADs --
+	//    the multiplayer one without the Multiplayer tab ever being opened. With
+	//    "don't ask again" and two or more IWADs this runs with no window at all: a
+	//    remembered IWAD that is missing for one run (a drive not mounted) was
+	//    replaced by the first IWAD found and never came back.
+	//  - a language the settings page cannot show (settingspage.h, languagePicked).
+	//  - a cvar changed by anything else while the launcher is open was reverted.
+	//
+	// So each value is compared with what the launcher opened with (Opened), trimmed
+	// the same way, and written only where it differs. A value the launcher did not
+	// change stays exactly as the ini had it; a changed one is written as before. An
+	// empty remembered IWAD still learns the one played (nothing there to keep).
+	// Cvar callbacks are not enabled yet at this point of startup (D_InitGame does
+	// that), so a skipped identical write had no side effect to lose.
+	const FStartupSelectionInfo &opened = *Opened;
+	const auto changedString = [](const FString &now, const FString &was)
+	{
+		FString trimmed = was;
+		trimmed.StripLeftRight();
+		return now.Compare(trimmed) != 0;
+	};
+
 #ifdef HAS_UPDATER
 	if(IsCurlLoaded())
 	{
-		updater_update_interval = DefaultUpdateInterval;
-		updater_auto_updates = bAutoUpdate;
-		updater_check_updates = bCheckUpdate;
+		if (DefaultUpdateInterval != opened.DefaultUpdateInterval)
+			updater_update_interval = DefaultUpdateInterval;
+		if (bAutoUpdate != opened.bAutoUpdate)
+			updater_auto_updates = bAutoUpdate;
+		if (bCheckUpdate != opened.bCheckUpdate)
+			updater_check_updates = bCheckUpdate;
 	}
 #endif
 
-	queryiwad = DefaultQueryIWAD;
-	language = DefaultLanguage.GetChars();
-	vid_fullscreen = DefaultFullscreen;
-	vid_vsync = DefaultVsync;
-	r_dynlights = DefaultDynLights;
-	gl_light_shadowmap = DefaultShadowmaps;
-	ui_preferred_theme = DefaultPreferredTheme;
-	if (DefaultBackend != vid_preferbackend)
+	if (DefaultQueryIWAD != opened.DefaultQueryIWAD)
+		queryiwad = DefaultQueryIWAD;
+	if (changedString(DefaultLanguage, opened.DefaultLanguage))
+		language = DefaultLanguage.GetChars();
+	if (DefaultFullscreen != opened.DefaultFullscreen)
+		vid_fullscreen = DefaultFullscreen;
+	if (DefaultVsync != opened.DefaultVsync)
+		vid_vsync = DefaultVsync;
+	if (DefaultDynLights != opened.DefaultDynLights)
+		r_dynlights = DefaultDynLights;
+	if (DefaultShadowmaps != opened.DefaultShadowmaps)
+		gl_light_shadowmap = DefaultShadowmaps;
+	if (DefaultPreferredTheme != opened.DefaultPreferredTheme)
+		ui_preferred_theme = DefaultPreferredTheme;
+	if (DefaultBackend != opened.DefaultBackend && DefaultBackend != vid_preferbackend)
 		vid_preferbackend = DefaultBackend;
 
-	savenetfile = bSaveNetFile;
-	savenetargs = bSaveNetArgs;
+	if (bSaveNetFile != opened.bSaveNetFile)
+		savenetfile = bSaveNetFile;
+	if (bSaveNetArgs != opened.bSaveNetArgs)
+		savenetargs = bSaveNetArgs;
 
-	defaultnetiwad = (*Wads)[DefaultNetIWAD].Name.GetChars();
-	defaultnetpage = DefaultNetPage;
-	defaultnetsavefile = savenetfile ? DefaultNetSaveFile.GetChars() : "";
-	defaultnetargs = savenetargs ? DefaultNetArgs.GetChars() : "";
+	if (DefaultNetIWAD != opened.DefaultNetIWAD || defaultnetiwad[0] == '\0')
+		defaultnetiwad = (*Wads)[DefaultNetIWAD].Name.GetChars();
+	if (DefaultNetPage != opened.DefaultNetPage)
+		defaultnetpage = DefaultNetPage;
+	// The save file and the parameters are stored only while their "remember" box is ticked.
+	if (bSaveNetFile != opened.bSaveNetFile || changedString(DefaultNetSaveFile, opened.DefaultNetSaveFile))
+		defaultnetsavefile = bSaveNetFile ? DefaultNetSaveFile.GetChars() : "";
+	if (bSaveNetArgs != opened.bSaveNetArgs || changedString(DefaultNetArgs, opened.DefaultNetArgs))
+		defaultnetargs = bSaveNetArgs ? DefaultNetArgs.GetChars() : "";
 
-	defaultnetplayers = DefaultNetPlayers;
-	defaultnethostport = DefaultNetHostPort;
-	defaultnetticdup = DefaultNetTicDup;
-	defaultnetgamemode = DefaultNetGameMode;
-	defaultnetaltdm = DefaultNetAltDM;
-	defaultnethostteam = DefaultNetHostTeam;
-	defaultnetextratic = DefaultNetExtraTic;
+	if (DefaultNetPlayers != opened.DefaultNetPlayers)
+		defaultnetplayers = DefaultNetPlayers;
+	if (DefaultNetHostPort != opened.DefaultNetHostPort)
+		defaultnethostport = DefaultNetHostPort;
+	if (DefaultNetTicDup != opened.DefaultNetTicDup)
+		defaultnetticdup = DefaultNetTicDup;
+	if (DefaultNetGameMode != opened.DefaultNetGameMode)
+		defaultnetgamemode = DefaultNetGameMode;
+	if (DefaultNetAltDM != opened.DefaultNetAltDM)
+		defaultnetaltdm = DefaultNetAltDM;
+	if (DefaultNetHostTeam != opened.DefaultNetHostTeam)
+		defaultnethostteam = DefaultNetHostTeam;
+	if (DefaultNetExtraTic != opened.DefaultNetExtraTic)
+		defaultnetextratic = DefaultNetExtraTic;
 
-	defaultnetaddress = DefaultNetAddress.GetChars();
-	defaultnetjoinport = DefaultNetJoinPort;
-	defaultnetjointeam = DefaultNetJoinTeam;
+	if (changedString(DefaultNetAddress, opened.DefaultNetAddress))
+		defaultnetaddress = DefaultNetAddress.GetChars();
+	if (DefaultNetJoinPort != opened.DefaultNetJoinPort)
+		defaultnetjoinport = DefaultNetJoinPort;
+	if (DefaultNetJoinTeam != opened.DefaultNetJoinTeam)
+		defaultnetjointeam = DefaultNetJoinTeam;
 
-	defaultiwad = (*Wads)[DefaultIWAD].Name.GetChars();
-	saveargs = bSaveArgs;
-	defaultargs = saveargs ? DefaultArgs.GetChars() : "";
+	if (DefaultIWAD != opened.DefaultIWAD || defaultiwad[0] == '\0')
+		defaultiwad = (*Wads)[DefaultIWAD].Name.GetChars();
+	if (bSaveArgs != opened.bSaveArgs)
+		saveargs = bSaveArgs;
+	if (bSaveArgs != opened.bSaveArgs || changedString(DefaultArgs, opened.DefaultArgs))
+		defaultargs = bSaveArgs ? DefaultArgs.GetChars() : "";
 
 	if (bNetStart)
 	{

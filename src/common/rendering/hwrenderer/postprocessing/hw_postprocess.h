@@ -23,6 +23,7 @@
 #pragma once
 
 #include "hwrenderer/data/shaderuniforms.h"
+#include "hwrenderer/data/hw_screentiles.h"	// [SCREENTILES] E5: tile lists for passes that loop screen-space items (PPScreenTileMask)
 #include <memory>
 #include <map>
 #include "intrect.h"
@@ -1328,6 +1329,13 @@ struct PPSmokeBeamSettings
 	float ScrollSpeed = 0.f;    // FLevelLocals::BeamScrollSpeed
 	float ScrollDepth = 0.f;    // FLevelLocals::BeamScrollDepth
 	float Timer = 0.f;          // the beams' scroll clock, seconds (SyncDrawnLines hands the drawn-line path the same)
+	// [GOVERNOR] E8, PROTECTED LOOKS ("Engine docs/EFFECTS_GOVERNOR_E8_IMPL_NOTES.md"): the step count the transmittance curve
+	// (3a) and the beam scatter (3b) march at, whatever the smoke's own march (2) was given. SetupSmokeVolume publishes the
+	// owner's r_smoke_steps here, so the effects budget governor's smoke rungs trim the volume's own march and never what a beam
+	// -- a grab laser, the Lance -- scatters in the smoke. A general field: anything that trims the march leaves the passes that
+	// walk the same ray for another effect alone. 0 = nothing published: those passes keep the march's own StepCount, which is
+	// what every caller did before this field existed.
+	int ScatterStepCount = 0;
 };
 
 // [SMOKE_TEMPORAL] TEMPORAL ACCUMULATION FOR THE MARCH ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E3, "Engine docs/
@@ -1582,6 +1590,65 @@ private:
 
 /////////////////////////////////////////////////////////////////////////////
 
+// [SCREENTILES] SCREEN TILE MASKS ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E5; hw_screentiles.h; "Engine docs/
+// EMISSIVE_TILES_E5_IMPL_NOTES.md"), for any pass whose every texel loops a short list of screen-space items (up to
+// SCREEN_TILE_ITEMS_MAX). The pass cuts each item's bound into a rectangle of tiles at its target's size (ScreenTileRectPack) and
+// draws this helper before its own draw. The helper's texture then holds a texel a tile: the mask of the items whose rectangle
+// contains that tile (shaders/pp/screentilemask.fp). The pass reads it at texelFetch(gl_FragCoord.xy / SCREEN_TILE_TEXELS) and
+// loops the set bits. Emissive volumes are the first reader (PPEmissiveVolumes); another pass owns its own instance.
+//
+// The packed rectangles, four a row in list order: 128 bytes, inside every Vulkan device's push constants.
+struct ScreenTileMaskUniforms
+{
+	uint32_t TileRects0[4];
+	uint32_t TileRects1[4];
+	uint32_t TileRects2[4];
+	uint32_t TileRects3[4];
+	uint32_t TileRects4[4];
+	uint32_t TileRects5[4];
+	uint32_t TileRects6[4];
+	uint32_t TileRects7[4];
+
+	//   TileRects0 0   TileRects1 16   TileRects2 32   TileRects3 48   TileRects4 64   TileRects5 80   TileRects6 96   TileRects7 112
+	//   -> block ends 128
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "TileRects0", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects0) },
+			{ "TileRects1", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects1) },
+			{ "TileRects2", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects2) },
+			{ "TileRects3", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects3) },
+			{ "TileRects4", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects4) },
+			{ "TileRects5", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects5) },
+			{ "TileRects6", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects6) },
+			{ "TileRects7", UniformType::UVec4, offsetof(ScreenTileMaskUniforms, TileRects7) },
+		};
+	}
+};
+
+static_assert(offsetof(ScreenTileMaskUniforms, TileRects7) == 112, "ScreenTileMaskUniforms::TileRects7 must start at 112 for std140");
+static_assert(sizeof(ScreenTileMaskUniforms) == sizeof(uint32_t) * SCREEN_TILE_ITEMS_MAX, "ScreenTileMaskUniforms must be the packed rectangles in list order, 128 bytes");
+
+class PPScreenTileMask
+{
+public:
+	// Draws the mask of SCREEN_TILE_ITEMS_MAX packed rectangles (SCREEN_TILE_RECT_NONE for an unused item) for a target of width x
+	// height texels (ScreenTilesFit) into GetTexture(): ScreenTileCount(width) x ScreenTileCount(height), RGBA8, rewritten whole.
+	void Render(PPRenderState *renderstate, int width, int height, const uint32_t rects[SCREEN_TILE_ITEMS_MAX]);
+	PPTexture *GetTexture() { return &Texture; }
+
+private:
+	PPTexture Texture;
+	PPViewport Viewport;
+	int lastTilesX = 0;
+	int lastTilesY = 0;
+
+	PPShader Shader = { "shaders/pp/screentilemask.fp", "", ScreenTileMaskUniforms::Desc() };
+};
+
+/////////////////////////////////////////////////////////////////////////////
+
 // [EMISSIVEVOLUMES] EMISSIVE VOLUMES' DRAWING ("Engine docs/VOLUMETRIC_FLASH_15_PLAN.md" 2d; "Engine docs/
 // EMISSIVE_VOLUMES_15_IMPL_NOTES.md"): short-lived glowing gas volumes -- muzzle flashes, explosion cores -- raymarched per
 // eye from the list the renderer uploads each frame (hw_emissivevolumeframe.h; vk_emissivevolumes.h).
@@ -1671,6 +1738,18 @@ public:
 	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
 	void SetEye(int eye) { currentEye = eye; }
 	void SetSettings(const PPEmissiveVolumeSettings &s) { settings = s; }
+	// [EMISSIVETILES] E5: this eye set's tile bounds (SetupEmissiveVolumes): each listed volume's screen bound widened for the tile
+	// lists (ScreenRectOfSphere at ScreenTileReach), in list order. nullptr or 0 for none (r_emissivevolumes_tiles off). Render
+	// uses them only when their count is this frame's list's.
+	void SetEyeTileBounds(int eyeSet, const ScreenTexRect *bounds, int count)
+	{
+		if (eyeSet < 0 || eyeSet > 1)
+			return;
+		const int kept = (bounds != nullptr && count > 0) ? (count < SCREEN_TILE_ITEMS_MAX ? count : SCREEN_TILE_ITEMS_MAX) : 0;
+		for (int i = 0; i < kept; i++)
+			tileBounds[eyeSet][i] = bounds[i];
+		tileBoundCounts[eyeSet] = kept;
+	}
 
 	// Whether Render will draw this eye (its own skip test): the smoke pass asks, to draw the curve the march reads.
 	bool HasVolumes() const { return eyeSets > 0 && settings.Count > 0; }
@@ -1688,6 +1767,10 @@ private:
 	void UpdateTextures(int sceneWidth, int sceneHeight, int resolution);
 
 	EmissiveVolumeUniforms marches[2] = {};
+	// [EMISSIVETILES] E5: each eye set's tile bounds, and the tile mask the march reads (rewritten whole by every eye that uses it).
+	ScreenTexRect tileBounds[2][SCREEN_TILE_ITEMS_MAX];
+	int tileBoundCounts[2] = { 0, 0 };
+	PPScreenTileMask TileMask;
 	int eyeSets = 0;
 	int currentEye = 0;
 	PPEmissiveVolumeSettings settings;
@@ -1706,6 +1789,9 @@ private:
 	PPShader DepthShaderMS = { "shaders/pp/smokedepth.fp", "#define MULTISAMPLE\n", SmokeDepthUniforms::Desc() };
 	PPShader MarchShader = { "shaders/pp/emissivevolume.fp", "", EmissiveVolumeUniforms::Desc() };
 	PPShader MarchSmokeShader = { "shaders/pp/emissivevolume.fp", "#define SMOKE_TRANSMITTANCE\n", EmissiveVolumeUniforms::Desc() };
+	// [EMISSIVETILES] E5: the same march looping only its tile's list (r_emissivevolumes_tiles), the tile mask at binding 3, or 6 in smoke.
+	PPShader MarchTilesShader = { "shaders/pp/emissivevolume.fp", "#define EMISSIVE_TILES\n", EmissiveVolumeUniforms::Desc() };
+	PPShader MarchTilesSmokeShader = { "shaders/pp/emissivevolume.fp", "#define SMOKE_TRANSMITTANCE\n#define EMISSIVE_TILES\n", EmissiveVolumeUniforms::Desc() };
 	PPShader BlurHorizontal = { "shaders/pp/smokeblur.fp", "#define BLUR_HORIZONTAL\n", {} };
 	PPShader BlurVertical = { "shaders/pp/smokeblur.fp", "#define BLUR_VERTICAL\n", {} };
 	PPShader CompositeShader = { "shaders/pp/smokecomposite.fp", "", SmokeDepthUniforms::Desc() };

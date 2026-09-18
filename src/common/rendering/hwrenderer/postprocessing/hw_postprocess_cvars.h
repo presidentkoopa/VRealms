@@ -82,6 +82,7 @@ EXTERN_CVAR(Bool, r_smoke_beams_depth)	// [SMOKEVOLUME] 13e: haze behind a beam 
 EXTERN_CVAR(Bool, r_smoke_cones_depth)	// [SMOKEVOLUME] 13e: a flashlight cone is dimmed by the haze in front of it
 EXTERN_CVAR(Bool, r_smoke_temporal)	// [SMOKE_TEMPORAL] the smoke march's temporal accumulation
 EXTERN_CVAR(Int, r_emissivevolumes_steps)	// [EMISSIVEVOLUMES] the emissive volumes' drawing: steps across a volume
+EXTERN_CVAR(Bool, r_emissivevolumes_tiles)	// [EMISSIVETILES] E5: the march's tile lists (an A/B switch)
 EXTERN_CVAR(Int, r_emissivevolumes_resolution)	// [EMISSIVEVOLUMES] 2 half, 1 full
 EXTERN_CVAR(Float, gl_exposure_scale)
 EXTERN_CVAR(Float, gl_exposure_min)

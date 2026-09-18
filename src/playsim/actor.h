@@ -1617,6 +1617,35 @@ public:
 	int				FollowActorSlot = -1;
 	DVector3		FollowActorOfs;
 
+	// RS FORK -- OR A JOINT OF THE PARENT'S MODEL, AS DRAWN (Engine docs/MODEL_JOINT_DRIVE_PLAN.md piece E).
+	//
+	// FollowActorSlot rides a mesh SURFACE's motion; a rigged model (an IQM) keeps its parts on JOINTS. Name one here and
+	// the child rides that joint of model index FollowActorJointModel exactly as the parent's draw skinned it -- its
+	// animation, the joint draw poses, joint offsets and hand drives, reach chains and aims all in: a hand seat staying on
+	// the slide the other hand drags, a sight on tag_rail_attach, a wrist display on an animated gauntlet. While set it
+	// takes FollowActorSlot's place.
+	//
+	// THE MOTION is the joint's own, as a rigid part transform in the parent's model space, and the identity at the bind
+	// pose, so a child seated against the whole model sits the same against the joint. A FollowActorOfsInModel point is a
+	// point on the BIND-POSE mesh (the IQM file's vertex, (x, z, y)) and lands where a vertex skinned wholly to the joint
+	// is drawn. The joint's origin rides exactly and its rotation turns the child; its scale or a mirror never reaches
+	// the child, as the parent's never does (models.cpp, model_jointfollow.h).
+	//
+	// READ FROM WHAT WAS DRAWN, NEVER SOLVED FOR THE CHILD (the Body IK lane's condition 8): the parent's world-model draw
+	// publishes its finished palette and the child's draw reads it (model_reach.cpp). A child drawn after its parent rides
+	// this frame's; one drawn before rides the last frame's, one frame late. The choice is made once per frame for every
+	// child of that parent, so both eyes see the same one. Read only inside RenderModel: ModelPointToWorld,
+	// ModelFollowFrameToWorld, GetBonePosition and every other script query see the whole model's frame (FollowActorSlot
+	// is not consulted either), so nothing a playsim decision reads carries this machine's hands (netplay).
+	//
+	// FALLS BACK TO THE WHOLE MODEL, and says why once in the log ([FOLLOWJOINT]): no such joint, the parent not drawn with
+	// bones at that model index yet, or the joint drawn collapsed (hidden). On a +DECOUPLEDANIMATIONS or
+	// MODELSAREATTACHMENTS parent every model is skinned with the first model's bones, so the joint is taken from that one
+	// palette whatever FollowActorJointModel says. INERT UNTIL SET: NAME_None reads exactly as before, and while no child
+	// anywhere names a joint, nothing is published.
+	FName			FollowActorJoint = NAME_None;
+	int				FollowActorJointModel = 0;
+
 	// THE SEAT AS A POINT ON THE PARENT'S MESH.
 	//
 	// FollowActorOfs is normally a seat in the follow frame, and that frame

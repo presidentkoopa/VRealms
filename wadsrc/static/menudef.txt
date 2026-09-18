@@ -2185,6 +2185,11 @@ OptionMenu DeveloperOptionsMenu protected
 	// of GPU/CPU timings and effect load is appended to perflog.txt beside
 	// benchmarks.txt; the console names the full path at map start.
 	Slider "Performance log (seconds, 0 = off)", "r_perflog", 0, 30, 1, 0
+	// [GOVERNOR] E8: the effects budget governor beside the log that records it (a "governor" line each window), for a before and
+	// after; the same three rows as the VR Performance page.
+	Option "Effects budget governor", "r_effects_governor", "OnOff"
+	Option "Governor may trim down to", "r_effects_governor_floor", "EffectsGovernorFloors"
+	Slider "Governor target (% of frame time)", "r_effects_governor_target", 70, 100, 5, 0
 	// [2a] r_gpuparticles_soft -- soft GPU particles ("Engine docs/
 	// GPU_PARTICLES_STAGE2_PLAN.md" 2a): sparks fade over this many map units
 	// where they meet a wall instead of cutting into it. Beside the perf log
@@ -2236,6 +2241,13 @@ OptionMenu DeveloperOptionsMenu protected
 	// so smoke already in the air responds with this menu open; perflog.txt times the
 	// list fill as fx.viewlights. Vulkan only.
 	Slider "Particle lights (0 = sector light only)", "r_gpuparticles_lights", 0, 32, 1, 0
+	// [PARTICLECULL] E11 r_gpuparticles_light_lod_distance -- past this distance from you, lit particles and debris
+	// billboards (smoke, dust, chips) stop taking the effect lights (sparks, embers, impacts, tracers), fading out of
+	// them over its last quarter, and skip that light loop. The dynamic lights above and the sector light still light
+	// them. 0 = off, the default: exactly the look before E11 ("Engine docs/PARTICLE_CULL_E11_IMPL_NOTES.md"). A look
+	// change for the owner to judge. Renderer-read every scene, so smoke already in the air responds with this menu
+	// open. Vulkan only.
+	Slider "Far particles skip effect lights (map units, 0 = off)", "r_gpuparticles_light_lod_distance", 0, 4096, 128, 0
 	// [F5] r_gpuparticles_maxsize -- the world-unit cap on every GPU particle's drawn
 	// diameter ("Engine docs/FLAME_ENGINE_PLAN.md" F5). A flame body needs 16-40 unit
 	// puffs and smoke up to 64; the cap draws them at this size or less. A particle
@@ -2720,6 +2732,23 @@ OptionValue "Particles"
 
 // [DEBRISPOOL] r_debris_pool's sizes (Developer options, "Debris pieces"), with their memory on the GPU: 176 bytes a piece.
 // [EFFECTLIGHTS] r_effectlights_max
+// [GOVERNOR] E8: how far the effects budget governor may trim (r_effects_governor_floor; hw_effectsgovernor.h THE RUNGS). Each step
+// keeps the trims above it.
+OptionValue "EffectsGovernorFloors"
+{
+	0, "Never trim"
+	1, "Smoke detail 3/4"
+	2, "+ flash detail 3/4"
+	3, "+ 24 flashes drawn"
+	4, "+ particles 3/4"
+	5, "+ lights per box 3/4 (default)"
+	6, "+ smoke detail 1/2"
+	7, "+ flash detail 1/2"
+	8, "+ 16 flashes drawn"
+	9, "+ particles 1/2"
+	10, "+ lights per box 1/2"
+}
+
 OptionValue "EffectLightBudgets"
 {
 	128, "128"
@@ -4984,6 +5013,16 @@ OptionMenu VRPerfTweakMenu protected
 	StaticText ""
 	Option "$VRPREFMNU_SCENE_MULTITHREAD", "vr_scene_multithread", "OnOff"
 	StaticText "$VRPREFMNU_SCENE_MULTITHREAD_HELP", "Brown"
+	// [GOVERNOR] E8: THE EFFECTS BUDGET GOVERNOR (hw_effectsgovernor.h, "Engine docs/EFFECTS_GOVERNOR_E8_IMPL_NOTES.md"). While the
+	// slowest frames of the last second pass the target share of the headset's frame time, effect detail steps down one trim at a
+	// time -- smoke detail, flash detail, flashes drawn, particles, effect lights per box -- never past the floor, and back up a
+	// trim a second when there is room. It changes no setting: off is exactly your settings. Gameplay is never touched. All three
+	// rows are read by the renderer every frame, so they act with this menu open. Vulkan only.
+	StaticText ""
+	Option "Effects budget governor", "r_effects_governor", "OnOff"
+	Option "Governor may trim down to", "r_effects_governor_floor", "EffectsGovernorFloors"
+	Slider "Governor target (% of frame time)", "r_effects_governor_target", 70, 100, 5, 0
+	StaticText "Trims effect detail only while frames run late, never past the floor", "Brown"
 	ifOption(OpenVR, OpenXR)
 	{
 		StaticText ""

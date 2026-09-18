@@ -4,6 +4,7 @@
 
 #include "common/rendering/stereo3d/openxr/oxr_loader.h"
 #include "hw_clock.h"
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the frame wait and the swapchain wait are pacing
 #include "v_video.h"
 #include "hw_cvars.h"
 #include "vulkan/system/vk_renderdevice.h"
@@ -5051,7 +5052,13 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	}
 
 	XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
+	// [GOVERNOR] E8: the frame wait is the headset's pacing, not the frame's work, and its display period is the frame budget
+	// (hw_effectsgovernor.h).
+	const uint64_t governorWaitStartNs = I_nsTime();
 	XrResult xrResult = xrWaitFrame(xrSession, &waitInfo, &xrFrameState);
+	EffectsGovernor::AddPacingWait(I_nsTime() - governorWaitStartNs);
+	if (XR_SUCCEEDED(xrResult))
+		EffectsGovernor::NoteDisplayPeriod((int64_t)xrFrameState.predictedDisplayPeriod);
 	if (XR_FAILED(xrResult))
 		return false;
 
@@ -5146,7 +5153,9 @@ bool VKOpenXRDeviceMode::AcquireXRSwapchain() const
 	imageWaitInfo.timeout = 20 * 1000 * 1000; // 20 ms
 	{
 		Clocker submitWaitTimer(VRSubmitWait);
+		const uint64_t governorWaitStartNs = I_nsTime();	// [GOVERNOR] E8: the compositor holding the image is pacing
 		xrResult = xrWaitSwapchainImage(xrSwapchain, &imageWaitInfo);
+		EffectsGovernor::AddPacingWait(I_nsTime() - governorWaitStartNs);
 	}
 	if (xrResult == XR_TIMEOUT_EXPIRED)
 	{

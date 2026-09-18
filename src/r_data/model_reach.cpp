@@ -52,6 +52,7 @@
 #include "model_reach_math.h"
 #include "model_handdrive.h"	// RS fork -- pieces B/C: the hand drive on a joint
 #include "hw_vrmodes.h"		// RS fork -- piece C: the live controller
+#include "model_jointfollow.h"	// RS fork -- piece E: a child riding a joint as drawn
 #include "level_solid_query.h"
 #include "actor.h"
 #include "actorinlines.h"
@@ -71,6 +72,8 @@ using namespace ModelReach;
 
 int  ModelDrawPose_RegisteredCount = 0;
 bool ModelDrawPose_TestOn = false;
+int  ModelJointFollow_WantedCount = 0;			// RS fork -- piece E (model_reach.h)
+thread_local int ModelRender_WindowDepth = 0;	// RS fork -- piece E: FModelRenderWindow
 
 // ---- the test channel and the trace ----------------------------------------------
 //
@@ -1226,6 +1229,149 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 	posed.Resize(n);
 	if (!work.FinishInto(posed.Data())) return &bones;
 	return &posed;
+}
+
+// ---- piece E: a child riding a joint as drawn (AActor::FollowActorJoint) ---------------------------------------------
+//
+// Engine docs/MODEL_JOINT_DRIVE_PLAN.md piece E, section 11 condition 8. The pure half -- what a draw keeps, which drawn
+// frame a follower rides, the rigid motion and its carry -- is model_jointfollow.h.
+//
+// A TABLE OF ITS OWN, NOT AN FDrawPoseEntry. A parent that a child rides has asked for nothing itself: it gains no entry,
+// bumps no generation, counts in neither ModelDrawPose_RegisteredCount nor HasContent (conditions 2 and 3), and the
+// layer's order inside ModelDrawPose_ApplyOpen is untouched (condition 1) -- the palette is taken from what that
+// function hands back. Render-side and never saved. GC-safe the way Entries is: a marker function marks every parent
+// each collection, so a destroyed one is nulled before the sweep can free it, and the one assignment goes through
+// GC::WriteBarrier.
+//
+// WHO PUBLISHES: a parent some follower read in the last JOINT_FOLLOW_KEEP_MS. While there is one, the pose window opens
+// for every world-model draw and ModelDrawPose_Apply offers each finished palette here; nothing is kept for any other
+// actor. When there is none, ModelJointFollow_WantedCount is 0 and every draw is back on its old path.
+
+namespace
+{
+
+constexpr int      JOINT_FOLLOW_PARENTS = 32;
+constexpr uint64_t JOINT_FOLLOW_KEEP_MS = 2000;
+
+struct FJointFollowParent
+{
+	bool                    used = false;
+	TObjPtr<AActor*>        actor = MakeObjPtr<AActor*>(nullptr);
+	FJointFollowParentState state;
+};
+
+FJointFollowParent JointFollowParents[JOINT_FOLLOW_PARENTS];
+bool     JointFollowMarkerAdded = false;
+uint64_t JointFollowSweepFrame = 0;
+
+void MarkJointFollowTable()
+{
+	for (auto &p : JointFollowParents)
+		if (p.used) GC::Mark(p.actor);
+}
+
+// By identity against an actor the caller knows is live (the one being drawn, or a child's FollowActor), so the stored
+// pointer is compared, never dereferenced.
+FJointFollowParent *FindJointFollowParent(const AActor *a)
+{
+	if (a == nullptr) return nullptr;
+	for (auto &p : JointFollowParents)
+		if (p.used && p.actor.ForceGet() == a) return &p;
+	return nullptr;
+}
+
+void UpdateJointFollowCount()
+{
+	int n = 0;
+	for (const auto &p : JointFollowParents) n += p.used ? 1 : 0;
+	ModelJointFollow_WantedCount = n;
+}
+
+// Once a frame: joints no follower read lately are dropped, and a parent with none left -- or destroyed -- goes too.
+void SweepJointFollowTable(uint64_t frame, uint64_t nowMs)
+{
+	if (frame == JointFollowSweepFrame) return;
+	JointFollowSweepFrame = frame;
+	for (auto &p : JointFollowParents)
+	{
+		if (!p.used) continue;
+		p.state.DropStale(nowMs, JOINT_FOLLOW_KEEP_MS);
+		if (p.actor.Get() == nullptr || p.state.Count() == 0) p = FJointFollowParent();
+	}
+	UpdateJointFollowCount();
+}
+
+} // namespace
+
+void ModelJointFollow_Publish(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &palette)
+{
+	// Inside the window, for the actor it was opened for: a world model's own draw through RenderModel, never a psprite's
+	// or the base-pose fallback, which never reaches ModelDrawPose_Apply (condition 6).
+	const FScopeState &sc = Scope;
+	if (!sc.open || sc.actor != actor || actor == nullptr || model == nullptr) return;
+	const uint64_t frame = screen != nullptr ? screen->FrameCount : 0;
+	SweepJointFollowTable(frame, screen != nullptr ? screen->FrameTime : 0);
+	FJointFollowParent *p = FindJointFollowParent(actor);
+	if (p == nullptr) return;
+
+	// Only a rigged palette that matches its own skeleton, as the layer takes one.
+	const int n = model->NumJoints();
+	const TArray<VSMatrix> *base = model->GetBasePose();
+	if (n <= 0 || base == nullptr || (int)base->Size() != n || (int)palette.Size() != n) return;
+
+	p->state.PublishDraw(frame, modelIndex, palette.Data(), base->Data(), n,
+		[model](int joint) { return model->FindJoint(FName(ENamedName(joint))); },
+		[actor, model, modelIndex](const FJointFollowWant &w)
+		{
+			Printf(TEXTCOLOR_YELLOW "[FOLLOWJOINT] %s: joint '%s' that a follower rides is not on %s (model %d) -- that follower rides the whole model\n",
+				ActorName(actor), FName(ENamedName(w.joint)).GetChars(), model->mFileName.GetChars(), modelIndex);
+		});
+}
+
+int ModelJointFollow_Read(AActor *parent, int modelIndex, bool sharedPalette, FName joint, double motionOut[16])
+{
+	// CONDITION 8: never outside RenderModel. The same ObjectToWorldMatrix answers ModelPointToWorld, GetBonePosition and
+	// GetObjectToWorldMatrix for script; there a follower reads nothing and asks for nothing.
+	if (ModelRender_WindowDepth <= 0) return JFO_NOTRENDER;
+	if (parent == nullptr || joint == NAME_None) return JFO_NOTDRAWN;
+	if (modelIndex < 0) modelIndex = 0;
+
+	const uint64_t frame = screen != nullptr ? screen->FrameCount : 0;
+	const uint64_t nowMs = screen != nullptr ? screen->FrameTime : 0;
+	SweepJointFollowTable(frame, nowMs);
+
+	FJointFollowParent *p = FindJointFollowParent(parent);
+	if (p == nullptr)
+	{
+		for (auto &slot : JointFollowParents)
+		{
+			if (slot.used) continue;
+			if (!JointFollowMarkerAdded)
+			{
+				GC::AddMarkerFunc(MarkJointFollowTable);
+				JointFollowMarkerAdded = true;
+			}
+			slot = FJointFollowParent();
+			slot.used = true;
+			GC::WriteBarrier(parent);
+			slot.actor = parent;
+			p = &slot;
+			break;
+		}
+		UpdateJointFollowCount();
+		if (p == nullptr) return JFO_FULL;
+	}
+
+	const int key = joint.GetIndex();
+	FJointFollowWant *w = p->state.Find(modelIndex, sharedPalette, key);
+	if (w == nullptr) w = p->state.Add(modelIndex, sharedPalette, key, nowMs);
+	if (w == nullptr) return JFO_FULL;
+	w->readMs = nowMs;
+
+	const FJointFollowDrawn *d = p->state.Choose(*w, frame);
+	if (d == nullptr) return JFO_NOTDRAWN;
+	if (!d->found) return JFO_NOJOINT;
+	return JointFollowRigid(d->palette, d->bindOrigin, motionOut) ? JFO_RIDING : JFO_COLLAPSED;
 }
 
 // ---- the ZScript setters ------------------------------------------------------------------

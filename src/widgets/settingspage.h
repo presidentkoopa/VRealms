@@ -75,6 +75,12 @@ private:
 
 	TArray<std::pair<FString, FString>> languages;
 	bool hideLanguage = false;
+	// RS FORK -- set once the user picks a row in the language list. OnLanguageChanged is
+	// called only for a pick: the constructor selects the matching row before it attaches
+	// the handler. SetValues reports a language only then. A language the list does not
+	// offer (a mod's own code, set from the console) matches no row, so row 0 used to be
+	// reported and Play wrote "auto" over it; an empty list was indexed out of range.
+	bool languagePicked = false;
 
 	int ExtraWadFlags = 0;
 };

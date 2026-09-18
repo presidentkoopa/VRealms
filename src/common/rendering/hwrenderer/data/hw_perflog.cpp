@@ -9,6 +9,7 @@
 **   perflog map=MAP01 [label: x] r_gpuparticles=1 r_beams_drawn=0 vr_menu_keep_world=1 t=312.0s window=5.0s frames=450 fps=90.0 frame_ms avg=11.10 p95=11.90 max=14.20
 **   cpu_ms  Scene=3.10/3.60/4.02 Post=... (avg/p95/max)
 **   cpu_ms think=1.20/2.10/3.40 csthink=0.30/0.40/0.90 thinkers=1840 csthinkers=210 tics=175   ([PERFLOG] E9: per tic run)
+**   governor rung=0.40/0/2 changes=4 cost_ms=8.10/9.90/13.20 pacing_ms=3.00 budget_ms=11.11 source=xr overbudget=12 missed=3 frames=449   ([GOVERNOR] E8)
 **   gpu_ms  scene.opaque=2.10/2.40/2.60 ... (avg/p95/max)
 **   load    particles_spawned=250000 drawnlines_live=4 beams=6 stamps_live=11 disturb_live=3 dlights=38/52 sprites=140 walls=900 flats=410
 **
@@ -42,6 +43,7 @@
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightStats
 #include "hw_emissivevolumeframe.h"	// [EMISSIVEVOLUMES] EmissiveVolumeStats
 #include "hw_framecompute.h"	// [SMOKELIGHTCULL] E6: SmokeVolumeStatus, the smoke light grid's fill
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: EffectsGovernor::LastFrame
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
@@ -74,6 +76,8 @@ EXTERN_CVAR(Bool, r_effectlights_walls)
 EXTERN_CVAR(Int, r_effectlights_test)
 EXTERN_CVAR(Bool, r_particlelights_test)	// [PARTICLELIGHTS] hw_gpuparticlebuffer.cpp
 EXTERN_CVAR(Bool, r_gpuparticles_window)	// [PARTICLEWINDOW] E1 hw_gpuparticlebuffer.cpp
+EXTERN_CVAR(Bool, r_gpuparticles_cull)	// [PARTICLECULL] E11 hw_cvars.cpp
+EXTERN_CVAR(Float, r_gpuparticles_light_lod_distance)	// [PARTICLECULL] E11 hw_cvars.cpp
 EXTERN_CVAR(Bool, r_debris_sounds)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Float, r_debris_sounds_volume)	// [DEBRISSOUNDS] hw_debrislanding.cpp
 EXTERN_CVAR(Bool, r_damage)	// [SURFACEDAMAGE] hw_surfacedamage.cpp
@@ -94,6 +98,7 @@ EXTERN_CVAR(Float, r_emissivevolumes_brightness)
 EXTERN_CVAR(Int, r_emissivevolumes_test)
 EXTERN_CVAR(Int, r_emissivevolumes_steps)	// [EMISSIVEVOLUMES] hw_postprocess_cvars.cpp
 EXTERN_CVAR(Int, r_emissivevolumes_resolution)
+EXTERN_CVAR(Bool, r_emissivevolumes_tiles)	// [EMISSIVETILES] E5: hw_postprocess_cvars.cpp
 EXTERN_CVAR(Bool, r_exposureimpulse)	// [EXPOSUREIMPULSE] hw_exposureimpulse.cpp
 EXTERN_CVAR(Int, r_exposureimpulse_look)
 EXTERN_CVAR(Bool, r_exposureimpulse_comfort)
@@ -102,6 +107,9 @@ EXTERN_CVAR(Float, r_exposureimpulse_cap)
 EXTERN_CVAR(Float, r_exposureimpulse_recovery_scale)
 EXTERN_CVAR(Bool, r_exposureimpulse_holdbeams)
 EXTERN_CVAR(Int, r_exposureimpulse_test)
+EXTERN_CVAR(Bool, r_effects_governor)	// [GOVERNOR] E8 hw_effectsgovernor.cpp
+EXTERN_CVAR(Int, r_effects_governor_floor)
+EXTERN_CVAR(Int, r_effects_governor_target)
 
 // Set whenever r_perflog changes: the next EndFrame starts a new session
 // (fresh window, fresh header). Only a bool, so the cvar callback is safe to
@@ -222,6 +230,16 @@ namespace
 		// cells the fills dispatched beside the cells the whole fill covers, summed over those frames.
 		uint32_t SmokeLightFilled = 0, SmokeLightSkipped = 0;
 		uint64_t SmokeLightCells = 0, SmokeLightCellsUncut = 0;
+		// [GOVERNOR] E8: the effects budget governor (EffectsGovernor::LastFrame): the rung the readers used after each frame's decision
+		// (sum for the average, least, most) and its changes; of the frames it measured, their cost (the frame less its pacing waits),
+		// their pacing, and those whose cost passed one display period; the frames longer than one and a half periods (missed, hitches
+		// included); the last frame's budget and whether it was a headset's.
+		Stat GovernorCost;
+		int64_t GovernorRungSum = 0;
+		int GovernorRungMin = 0, GovernorRungMax = 0;
+		uint32_t GovernorRungFrames = 0, GovernorChanges = 0, GovernorOverBudget = 0, GovernorMissed = 0;
+		double GovernorPacingSum = 0.0, GovernorBudgetMs = 0.0;
+		bool GovernorXr = false;
 	};
 
 	Window W;
@@ -264,6 +282,11 @@ namespace
 		W.LinksAtStart = dynlights_links_total;
 		W.SmokeLightFilled = W.SmokeLightSkipped = 0;	// [SMOKELIGHTCULL] E6
 		W.SmokeLightCells = W.SmokeLightCellsUncut = 0;
+		W.GovernorCost.Clear();	// [GOVERNOR] E8
+		W.GovernorRungSum = 0;
+		W.GovernorRungMin = W.GovernorRungMax = 0;
+		W.GovernorRungFrames = W.GovernorChanges = W.GovernorOverBudget = W.GovernorMissed = 0;
+		W.GovernorPacingSum = 0.0;
 		W.StartNs = now;
 		if (restartClock) W.LastFrameNs = 0;
 	}
@@ -337,6 +360,14 @@ namespace
 				"each number's largest frame in the window: volumes alive, volumes in the frame's list (at most 32), and volumes refused "
 				"(the pool full, no definition on this machine, or a class \"Volumetric flashes\" does not draw); emissivelights the "
 				"effect lights they handed over.\n\n";
+			// [EMISSIVETILES] E5: the march's tile lists, on a legend line of their own.
+			out << "Legend (emissive tiles): with r_emissivevolumes_tiles on (and more than one volume drawn, or haze in front) the "
+				"emissive march cuts its target into 16x16-texel tiles, and each texel loops only the drawn volumes whose widened screen "
+				"bound touches its tile; pp.emissive then holds the tile mask's small draw too. The image is the same either way. load "
+				"emissivetiles=lit/inrect/all is, both eyes summed, the tiles listing at least one volume, the tiles the eyes' "
+				"rectangles touch (without tiles every texel there loops every drawn volume), and all their tiles; emissivetileentries "
+				"the volume-tile pairs listed (without tiles, inrect x drawn); emissivetileeyes the eyes that used tile lists. Each is "
+				"its largest frame in the window, counted only while the log runs.\n\n";
 		// [PARTICLEWINDOW] E1: the ring window, on a legend line of its own.
 		out << "Legend (particle window): load ringslots=avg/max of N is the GPU particle ring's slots the particle draws drew a frame "
 			"(both eyes summed), beside the ring's size: with r_gpuparticles_window on only the chunks a live record lies in, off the "
@@ -352,6 +383,15 @@ namespace
 				"smokelightcells=dispatched/whole is the light cells the fill's dispatches covered per such frame, beside the cells the "
 				"whole fill covers (every cell of the grid, each light's box, the effect lights' region). The light is the same either "
 				"way; fx.smokelight is its time.\n\n";
+			// [GOVERNOR] E8: the effects budget governor, on a legend line of its own.
+			out << "Legend (effects governor): the governor line is per frame over the window. rung=avg/least/most is the trim the effect "
+				"readers used (0 full; 1-5 smoke detail, flash detail, flashes drawn, particles and effect lights per box at 3/4; 6-10 the "
+				"same at 1/2; never past r_effects_governor_floor), changes how often it moved. cost_ms is what the governor judges, "
+				"avg/p95/max: each frame's time less its pacing -- the waits on the display (xrWaitFrame and the headset swapchain's wait, "
+				"a swapchain's acquire and present, the fps limiter) -- whose average is pacing_ms. budget_ms is one display period "
+				"(source xr: the headset's; desktop: 1/60 s, or the fps cap under 60). overbudget counts the measured frames whose cost "
+				"passed the budget, missed the frames longer than one and a half periods (hitches included). The block line names "
+				"r_effects_governor, r_effects_governor_floor and r_effects_governor_target.\n\n";
 			// [LIGHTSHADOWS] The light shadow names, on a legend line of their own.
 			out << "Legend (light shadows): gpu_ms shadowmap is the shadow map pass (once a frame, both eyes share it; only while it "
 				"runs). load shadowlights=rows/asked is the largest frame's shadow-map rows (effect light rows included) and, of them, "
@@ -414,6 +454,9 @@ namespace
 			FBaseCVar* lightCull = FindCVar("r_smoke_light_cull", nullptr);
 			out.AppendFormat(" r_smoke_light_cull=%s", lightCull != nullptr ? (lightCull->GetGenericRep(CVAR_Int).Int ? "1" : "0") : "n/a");
 		}
+		// [GOVERNOR] E8: and the effects budget governor, so a frame_ms / governor before/after labels itself.
+		out.AppendFormat(" r_effects_governor=%d r_effects_governor_floor=%d r_effects_governor_target=%d",
+			(int)*r_effects_governor, (int)*r_effects_governor_floor, (int)*r_effects_governor_target);
 		// [LEVELFIELD] And the particle collision switches, so a fx.levelfield before/after labels itself.
 		out.AppendFormat(" r_particlecollision=%d r_particlecollision_quality=%d r_particlecollision_test=%d",
 			(int)*r_particlecollision, (int)*r_particlecollision_quality, (int)*r_particlecollision_test);
@@ -434,11 +477,15 @@ namespace
 		out.AppendFormat(" r_particlelights_test=%d", (int)*r_particlelights_test);
 		// [PARTICLEWINDOW] E1: and the ring window, so a fx.gpuparticles before/after labels itself.
 		out.AppendFormat(" r_gpuparticles_window=%d", (int)*r_gpuparticles_window);
+		// [PARTICLECULL] E11: and the vertex cull and the effect light LOD, so a fx.gpuparticles before/after labels itself.
+		out.AppendFormat(" r_gpuparticles_cull=%d r_gpuparticles_light_lod_distance=%g", (int)*r_gpuparticles_cull, (double)(float)*r_gpuparticles_light_lod_distance);
 		// [EMISSIVEVOLUMES] And the emissive volume switches, so a pp.emissive / fx.emissive before/after labels itself.
 		out.AppendFormat(" r_emissivevolumes=%d r_emissivevolumes_length=%d r_emissivevolumes_motion=%d r_emissivevolumes_steps=%d r_emissivevolumes_resolution=%d r_emissivevolumes_max=%d r_emissivevolumes_light=%d r_emissivevolumes_brightness=%g r_emissivevolumes_test=%d",
 			(int)*r_emissivevolumes, (int)*r_emissivevolumes_length, (int)*r_emissivevolumes_motion, (int)*r_emissivevolumes_steps,
 			(int)*r_emissivevolumes_resolution, (int)*r_emissivevolumes_max, (int)*r_emissivevolumes_light,
 			(double)(float)*r_emissivevolumes_brightness, (int)*r_emissivevolumes_test);
+		// [EMISSIVETILES] E5: and the march's tile lists, so a pp.emissive before/after labels itself.
+		out.AppendFormat(" r_emissivevolumes_tiles=%d", (int)*r_emissivevolumes_tiles);
 		// [EXPOSUREIMPULSE] And the flash blindness switches, with whether a wash is live, so a pp.exposureimpulse /
 		// fx.exposureimpulse before/after labels itself.
 		out.AppendFormat(" r_exposureimpulse=%d r_exposureimpulse_look=%d r_exposureimpulse_comfort=%d r_exposureimpulse_strength=%g r_exposureimpulse_cap=%g r_exposureimpulse_recovery_scale=%g r_exposureimpulse_holdbeams=%d r_exposureimpulse_test=%d exposureimpulselive=%d",
@@ -470,6 +517,12 @@ namespace
 		out.AppendFormat("cpu_ms think=%.2f/%.2f/%.2f csthink=%.2f/%.2f/%.2f thinkers=%d csthinkers=%d tics=%u\n",
 			W.Think.Avg(), W.Think.P95(), W.Think.Max, W.CsThink.Avg(), W.CsThink.P95(), W.CsThink.Max,
 			W.ThinkersMax, W.CsThinkersMax, W.Think.Count);
+		// [GOVERNOR] E8: the effects budget governor, per frame over the window.
+		out.AppendFormat("governor rung=%.2f/%d/%d changes=%u cost_ms=%.2f/%.2f/%.2f pacing_ms=%.2f budget_ms=%.2f source=%s overbudget=%u missed=%u frames=%u\n",
+			W.GovernorRungFrames > 0 ? (double)W.GovernorRungSum / W.GovernorRungFrames : 0.0, W.GovernorRungMin, W.GovernorRungMax,
+			W.GovernorChanges, W.GovernorCost.Avg(), W.GovernorCost.P95(), W.GovernorCost.Max,
+			W.GovernorCost.Count > 0 ? W.GovernorPacingSum / W.GovernorCost.Count : 0.0, W.GovernorBudgetMs, W.GovernorXr ? "xr" : "desktop",
+			W.GovernorOverBudget, W.GovernorMissed, W.GovernorCost.Count);
 
 		out << "gpu_ms ";
 		bool anyGpu = false;
@@ -507,6 +560,9 @@ namespace
 		// [EMISSIVEVOLUMES] The emissive volume load, on the same line.
 		out.AppendFormat(" emissive=%d/%d/%d emissivelights=%d", W.EmissiveVolumesMax.Live, W.EmissiveVolumesMax.Drawn,
 			W.EmissiveVolumesMax.Refused, W.EmissiveVolumesMax.Lights);
+		// [EMISSIVETILES] E5: the march's tile lists, on the same line.
+		out.AppendFormat(" emissivetiles=%d/%d/%d emissivetileentries=%d emissivetileeyes=%d", W.EmissiveVolumesMax.TilesLit,
+			W.EmissiveVolumesMax.TilesInRect, W.EmissiveVolumesMax.Tiles, W.EmissiveVolumesMax.TileEntries, W.EmissiveVolumesMax.TileEyes);
 		// [SMOKELIGHTCULL] E6: the smoke light grid's fills, on the same line.
 		{
 			const uint32_t smokeFrames = W.SmokeLightFilled + W.SmokeLightSkipped;
@@ -792,6 +848,12 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		if (e.Drawn > m.Drawn) m.Drawn = e.Drawn;
 		if (e.Refused > m.Refused) m.Refused = e.Refused;
 		if (e.Lights > m.Lights) m.Lights = e.Lights;
+		// [EMISSIVETILES] E5
+		if (e.TileEyes > m.TileEyes) m.TileEyes = e.TileEyes;
+		if (e.Tiles > m.Tiles) m.Tiles = e.Tiles;
+		if (e.TilesInRect > m.TilesInRect) m.TilesInRect = e.TilesInRect;
+		if (e.TilesLit > m.TilesLit) m.TilesLit = e.TilesLit;
+		if (e.TileEntries > m.TileEntries) m.TileEntries = e.TileEntries;
 	}
 	// [LIGHTSHADOWS] This frame's shadow map, when the frame ran the pass (IShadowMap::UpdateSerial moved on; its counters keep
 	// the last pass's values otherwise).
@@ -816,6 +878,27 @@ void PerfLog::EndFrame(const SceneLoad& load)
 		{
 			W.SmokeLightCells += smoke.LightCells;
 			W.SmokeLightCellsUncut += smoke.LightCellsUncut;
+		}
+	}
+	// [GOVERNOR] E8: this frame's governor decision and measurement (EffectsGovernor::EndFrame ran just before, in End2DAndUpdate).
+	{
+		const EffectsGovernor::FrameInfo& g = EffectsGovernor::LastFrame();
+		if (W.GovernorRungFrames == 0 || g.Rung < W.GovernorRungMin) W.GovernorRungMin = g.Rung;
+		if (W.GovernorRungFrames == 0 || g.Rung > W.GovernorRungMax) W.GovernorRungMax = g.Rung;
+		W.GovernorRungSum += g.Rung;
+		W.GovernorRungFrames++;
+		if (g.Changed) W.GovernorChanges++;
+		if (g.Valid)
+		{
+			W.GovernorCost.Add(g.CostMs);
+			W.GovernorPacingSum += g.PacingMs;
+			if (g.CostMs > g.BudgetMs) W.GovernorOverBudget++;
+		}
+		if (g.BudgetMs > 0.0)
+		{
+			if (g.IntervalMs > g.BudgetMs * 1.5) W.GovernorMissed++;
+			W.GovernorBudgetMs = g.BudgetMs;
+			W.GovernorXr = g.Xr;
 		}
 	}
 

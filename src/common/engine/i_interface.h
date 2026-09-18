@@ -19,6 +19,7 @@
 #include "zstring.h"
 #include "intrect.h"
 #include "name.h"
+#include <memory>	// RS FORK -- std::shared_ptr for FStartupSelectionInfo::Opened
 
 struct event_t;
 class FRenderState;
@@ -140,6 +141,14 @@ struct FStartupSelectionInfo
 	FStartupSelectionInfo() = delete;
 	FStartupSelectionInfo(const TArray<WadStuff>& wads, FArgs& args, int startFlags);
 	int SaveInfo();
+
+	// RS FORK -- WHAT THE LAUNCHER OPENED WITH. The constructor fills this info from the
+	// cvars and keeps a copy of it here, before any launcher page has touched it.
+	// SaveInfo() writes a cvar back only where the launcher's value now differs from
+	// this copy, so a value the launcher did not change is never rewritten (SaveInfo
+	// lists the cases that used to overwrite one). Shared rather than owned so the
+	// struct stays copyable; nothing modifies it after the constructor.
+	std::shared_ptr<const FStartupSelectionInfo> Opened;
 };
 
 

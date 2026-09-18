@@ -466,6 +466,19 @@ class Actor : Thinker native
 	native int FollowActorSlot;
 	native Vector3 FollowActorOfs;
 
+	// RS FORK -- OR A JOINT OF THE PARENT'S MODEL, AS DRAWN (Engine docs/MODEL_JOINT_DRIVE_PLAN.md piece E). Name a joint
+	// and this rides it on the parent's model index FollowActorJointModel, in FollowActorSlot's place: its animation,
+	// joint poses, joint offsets and drives, reach chains and aims all in -- a hand seat on a slide the other hand drags,
+	// a sight on tag_rail_attach, a wrist display on an animated gauntlet. Rigid: the joint's origin and its rotation,
+	// never its scale. The identity at the bind pose, so a FollowActorOfsInModel point is a point on the BIND-POSE mesh
+	// (the IQM file's vertex, as (x, z, y)). Read from the parent's last draw: one frame late when this is drawn first,
+	// the same for both eyes. The picture only: ModelPointToWorld, ModelFollowFrameToWorld, GetBonePosition and every
+	// other script query see the whole model's frame. No such joint, a parent not drawn yet, or a hidden joint rides
+	// the whole model and says so ([FOLLOWJOINT]). On a DECOUPLEDANIMATIONS or MODELSAREATTACHMENTS parent the joint is
+	// taken from its one palette. 'None' (the default) is off. See actor.h.
+	native name FollowActorJoint;
+	native int FollowActorJointModel;
+
 	// Read FollowActorOfs as a POINT ON THE PARENT'S MESH instead of a seat in
 	// the follow frame. Give it the same (x, y, z) you would hand the parent's
 	// ModelPointToWorld: the renderer's model space, y up, so an MD3-file point

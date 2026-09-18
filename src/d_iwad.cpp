@@ -873,21 +873,47 @@ int FIWadManager::IdentifyVersion (std::vector<FileSys::ResourceName>&wadfiles, 
 			info.LauncherHeight = ui_launcher_height;
 		}
 
-		const bool pickRes = I_PickIWad(queryiwad || showlauncher || HoldingQueryKey(queryiwad_key), info);
+		// RS FORK -- the start flags, file loading and launcher size are written back only where the
+		// launcher changed them, like every value SaveInfo() writes (the reasons are there). These
+		// are what it opens with.
+		const int openedStartFlags = info.DefaultStartFlags;
+		const int openedFileLoadBehaviour = info.DefaultFileLoadBehaviour;
+		const unsigned openedLauncherWidth = info.LauncherWidth;
+		const unsigned openedLauncherHeight = info.LauncherHeight;
+		const bool showLauncherWindow = queryiwad || showlauncher || HoldingQueryKey(queryiwad_key);
+
+		const bool pickRes = I_PickIWad(showLauncherWindow, info);
 		pick = info.SaveInfo();
-		disableautoload = !!(info.DefaultStartFlags & 1);
-		autoloadlights = !!(info.DefaultStartFlags & 2);
-		autoloadbrightmaps = !!(info.DefaultStartFlags & 4);
-		autoloadwidescreen = !!(info.DefaultStartFlags & 8);
-		i_loadsupportwad = !!(info.DefaultStartFlags & 16);
-		i_exit_on_not_found = info.DefaultFileLoadBehaviour;
+		const int changedStartFlags = info.DefaultStartFlags ^ openedStartFlags;
+		if (changedStartFlags & 1)
+			disableautoload = !!(info.DefaultStartFlags & 1);
+		if (changedStartFlags & 2)
+			autoloadlights = !!(info.DefaultStartFlags & 2);
+		if (changedStartFlags & 4)
+			autoloadbrightmaps = !!(info.DefaultStartFlags & 4);
+		if (changedStartFlags & 8)
+			autoloadwidescreen = !!(info.DefaultStartFlags & 8);
+		if (changedStartFlags & 16)
+			i_loadsupportwad = !!(info.DefaultStartFlags & 16);
+		if (info.DefaultFileLoadBehaviour != openedFileLoadBehaviour)
+			i_exit_on_not_found = info.DefaultFileLoadBehaviour;
 		if (!info.notifyNewRelease)
 			i_display_new_release = 0; // don't change truthy values
-		if (ui_remember_size)
+		if (ui_remember_size && (info.LauncherWidth != openedLauncherWidth || info.LauncherHeight != openedLauncherHeight))
 		{
 			ui_launcher_width = info.LauncherWidth;
 			ui_launcher_height = info.LauncherHeight;
 		}
+
+		// RS FORK -- SAVE THE LAUNCHER'S CHOICES ONCE THEY ARE WRITTEN BACK.
+		// LauncherWindow::Start() saves the ini before handing control back "so a startup
+		// crash cannot lose" the selections, but it runs inside I_PickIWad, before SaveInfo()
+		// and the lines above have written any of them: it saved what the launcher opened
+		// with. The choices reached the ini only at the next save, normally the clean exit,
+		// so a hard crash during startup lost every one of them. Saved again here, on the
+		// same condition as Start(): the window was shown and Play was pressed.
+		if (pickRes && showLauncherWindow)
+			M_SaveDefaults(nullptr);
 
 		if (!pickRes)
 			return -1;

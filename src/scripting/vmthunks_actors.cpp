@@ -2333,6 +2333,8 @@ DEFINE_FIELD(AActor, FollowHandRot)
 DEFINE_FIELD(AActor, PlacementPrefix)
 DEFINE_FIELD(AActor, FollowActor)
 DEFINE_FIELD(AActor, FollowActorSlot)
+DEFINE_FIELD(AActor, FollowActorJoint)		// RS fork -- piece E
+DEFINE_FIELD(AActor, FollowActorJointModel)
 DEFINE_FIELD(AActor, FollowActorOfs)
 DEFINE_FIELD(AActor, FollowActorOfsInModel)
 DEFINE_FIELD(AActor, FollowActorOfsCVar)

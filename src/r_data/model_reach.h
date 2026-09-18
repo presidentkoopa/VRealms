@@ -48,6 +48,7 @@
 
 class AActor;
 class FModel;
+class FName;	// RS fork -- piece E: ModelJointFollow_Read
 
 // How many actors currently carry a pose or a chain. Zero keeps every model draw on
 // the old path. Maintained by the setters in model_reach.cpp.
@@ -55,6 +56,27 @@ extern int  ModelDrawPose_RegisteredCount;
 // r_jointpose_test is non-empty: the test channel bends that joint on every world
 // model drawn. Kept as a bool by the cvar's callback so a draw never reads a string.
 extern bool ModelDrawPose_TestOn;
+
+// RS FORK -- PIECE E, A CHILD RIDING A JOINT AS DRAWN (AActor::FollowActorJoint; Engine docs/MODEL_JOINT_DRIVE_PLAN.md,
+// section 11 condition 8; model_jointfollow.h). How many parents a joint follower has read lately. While it is above
+// zero the pose window below opens for every world-model draw, and ModelDrawPose_Apply publishes the finished palette
+// of those parents only. Zero keeps every draw on the path above. Maintained in model_reach.cpp.
+extern int ModelJointFollow_WantedCount;
+
+// THE RENDER WINDOW: the whole of one world-model draw, RenderModel from its first line to its return -- its
+// ObjectToWorldMatrix included, which the pose window below opens after. A joint follower reads its parent's drawn
+// joint only inside it (condition 8). The same ObjectToWorldMatrix answers ModelPointToWorld, ModelFollowFrameToWorld,
+// GetBonePosition and GetObjectToWorldMatrix for script, outside it, and there a FollowActorJoint child rides the whole
+// model: nothing the playsim reads can carry this machine's picture. thread_local like the pose window.
+extern thread_local int ModelRender_WindowDepth;
+class FModelRenderWindow
+{
+public:
+	FModelRenderWindow() { ModelRender_WindowDepth++; }
+	~FModelRenderWindow() { ModelRender_WindowDepth--; }
+	FModelRenderWindow(const FModelRenderWindow &) = delete;
+	FModelRenderWindow &operator=(const FModelRenderWindow &) = delete;
+};
 
 // The render-only window. Opened by RenderModel, around one world-model draw, for the
 // actor being drawn; closed when RenderModel returns. The palette is posed only inside
@@ -66,7 +88,7 @@ class FModelDrawPoseScope
 public:
 	FModelDrawPoseScope(const AActor *actor, const VSMatrix &objectToWorld, double ticFrac)
 	{
-		if (ModelDrawPose_RegisteredCount > 0 || ModelDrawPose_TestOn) Open(actor, objectToWorld, ticFrac);
+		if (ModelDrawPose_RegisteredCount > 0 || ModelDrawPose_TestOn || ModelJointFollow_WantedCount > 0) Open(actor, objectToWorld, ticFrac);
 	}
 	~FModelDrawPoseScope()
 	{
@@ -90,6 +112,11 @@ private:
 
 const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones);
 
+// RS FORK -- PIECE E: a finished palette offered to the joint followers' table (model_reach.cpp, model_jointfollow.h)
+// -- the palette this draw uploads. Kept only for a parent a FollowActorJoint child has asked for, only inside the window
+// above and for the actor it was opened for, and only when it matches its model's skeleton. Anything else: nothing.
+void ModelJointFollow_Publish(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &palette);
+
 // A finished bone palette for model index `modelIndex` of `actor`, as the model path
 // computed it -- animation and stock overrides already in. Returns `&bones` untouched
 // unless a window is open for this actor and something poses it; otherwise a posed
@@ -97,6 +124,36 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 // a palette.
 inline const TArray<VSMatrix> *ModelDrawPose_Apply(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones)
 {
-	if (ModelDrawPose_RegisteredCount <= 0 && !ModelDrawPose_TestOn) return &bones;
-	return ModelDrawPose_ApplyOpen(actor, model, modelIndex, bones);
+	if (ModelDrawPose_RegisteredCount <= 0 && !ModelDrawPose_TestOn)
+	{
+		// RS FORK -- piece E: nothing poses it, and a joint follower may ride it as it is.
+		if (ModelJointFollow_WantedCount > 0) ModelJointFollow_Publish(actor, model, modelIndex, bones);
+		return &bones;
+	}
+	const TArray<VSMatrix> *posed = ModelDrawPose_ApplyOpen(actor, model, modelIndex, bones);
+	// RS FORK -- piece E: what this draw uploads, published AFTER the draw poses, joint offsets and drives, reach chains,
+	// target aims and the test channel (section 11 condition 8). ModelDrawPose_ApplyOpen itself is untouched.
+	if (ModelJointFollow_WantedCount > 0) ModelJointFollow_Publish(actor, model, modelIndex, *posed);
+	return posed;
 }
+
+// RS FORK -- PIECE E: WHAT A FollowActorJoint CHILD RIDES (models.cpp, ModelFollowFrame).
+//
+// Joint `joint` of the parent's model index `modelIndex` -- or, with `sharedPalette` (a +DECOUPLEDANIMATIONS or
+// MODELSAREATTACHMENTS parent skins every model with the first one's bones), of that one palette -- as the parent's draw
+// last published it, the drawn frame chosen once per frame for all of this parent's followers (model_jointfollow.h). On
+// JFO_RIDING, `motionOut` is that joint's motion as a rigid part transform in the parent's model space
+// (JointFollowRigid), column-major. The first read also asks the parent's next draws to publish that joint; a joint no
+// follower reads for a couple of seconds is dropped again.
+//
+// ONLY INSIDE A FModelRenderWindow (condition 8). Anywhere else it answers JFO_NOTRENDER and reads and asks for nothing.
+enum EJointFollowOutcome
+{
+	JFO_RIDING = 0,		// motionOut holds the joint's drawn motion
+	JFO_NOTRENDER,		// not inside RenderModel: a script query, which never reads the picture
+	JFO_NOTDRAWN,		// the parent has not been drawn with bones at that model index since the joint was asked for
+	JFO_NOJOINT,		// no joint of that name on the model the parent drew
+	JFO_COLLAPSED,		// the joint is drawn collapsed (hidden) or sheared flat: no rotation to ride
+	JFO_FULL,			// the joint followers' table is full
+};
+int ModelJointFollow_Read(AActor *parent, int modelIndex, bool sharedPalette, FName joint, double motionOut[16]);

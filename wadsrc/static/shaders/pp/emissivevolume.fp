@@ -39,6 +39,28 @@ layout(binding=5) uniform sampler2D TransmittanceCurve;	// where each ray's opti
 // same reader volumetricbeam.fp uses. Haze behind the volume never dims it (this pass runs after the smoke composite).
 // ============================================================================
 
+// [EMISSIVETILES] E5 ("Engine docs/EFFECTS_OPTIMIZATION_PLAN.md" E5; "Engine docs/EMISSIVE_TILES_E5_IMPL_NOTES.md"): TILE LISTS.
+// With EMISSIVE_TILES each texel loops only the volumes its SCREEN_TILE_TEXELS x SCREEN_TILE_TEXELS tile lists -- bit i of the tile's
+// mask (PPScreenTileMask, screentilemask.fp) is the list's volume i, whose widened screen bound touches the tile -- still in the
+// list's order, and a tile that lists none is clear at once. Every volume a texel's ray can reach is listed (hw_screentiles.h), a
+// volume that is not reached adds nothing, and no volume's work depends on the others: the texel gets the same light and
+// transmittance as looping every volume. Without EMISSIVE_TILES this lump is the march it was.
+#if defined(EMISSIVE_TILES)
+#if defined(SMOKE_TRANSMITTANCE)
+layout(binding=6) uniform sampler2D EmissiveTileMask;	// PPScreenTileMask's texture: a texel a tile, the mask a byte a channel
+#else
+layout(binding=3) uniform sampler2D EmissiveTileMask;
+#endif
+const int SCREEN_TILE_TEXELS = 16;		// hw_screentiles.h
+
+// The mask of the tile holding this pass's texel: RGBA8 UNORM, byte 0 in r.
+uint EmissiveTileMaskAt(ivec2 texel)
+{
+	uvec4 channels = uvec4(texelFetch(EmissiveTileMask, texel / SCREEN_TILE_TEXELS, 0) * 255.0 + 0.5);
+	return channels.r | (channels.g << 8u) | (channels.b << 16u) | (channels.a << 24u);
+}
+#endif
+
 const int EMISSIVE_VOLUMES_DRAWN_MAX = 32;		// hw_emissivevolumeframe.h
 const int EVROW_BASE = 0;
 const int EVROW_AXIS = 1;
@@ -343,6 +365,13 @@ void main()
 	if (VolumeCount <= 0 || any(lessThan(TexCoord, RectMin)) || any(greaterThan(TexCoord, RectMax)))
 		return;
 
+#if defined(EMISSIVE_TILES)
+	// [EMISSIVETILES] E5: the volumes this texel's tile lists. None: clear, as a texel outside the rectangle is.
+	uint tileMask = EmissiveTileMaskAt(ivec2(gl_FragCoord.xy));
+	if (tileMask == 0u)
+		return;
+#endif
+
 	vec2 ndc = TexCoord * 2.0 - 1.0;
 	vec3 viewRay = vec3((ndc + ProjOffset) * TanHalfFov, -1.0);
 	vec3 worldRay = mat3(ViewToWorld) * viewRay;
@@ -354,10 +383,21 @@ void main()
 	float sceneT = linearDepth * stepLen;
 
 #if defined(SMOKE_TRANSMITTANCE)
+#if defined(EMISSIVE_TILES)
+	// [EMISSIVETILES] E5: the texel's smoke reads wait for the first volume whose chord the ray meets (in the loop), so a texel of a
+	// listed tile that no volume reaches reads no smoke. They are the same numbers whenever they are read, and only a volume's
+	// steps use them.
+	vec4 smokeKnots = vec4(0.0);
+	float smokeWholeT = 1.0;
+	bool smokeDims = false;
+	float smokeShareAtScene = 0.0;
+	bool smokeRead = false;
+#else
 	vec4 smokeKnots;
 	float smokeWholeT = SmokeWholeTransmittance(linearDepth, smokeKnots);
 	bool smokeDims = smokeWholeT < 1.0;
 	float smokeShareAtScene = SmokeDepthShare(smokeKnots, sceneT);
+#endif	// [EMISSIVETILES] E5: EMISSIVE_TILES
 #endif
 
 	float jitter = InterleavedGradientNoise(gl_FragCoord.xy);
@@ -366,6 +406,14 @@ void main()
 	int volumeCount = min(VolumeCount, EMISSIVE_VOLUMES_DRAWN_MAX);
 	for (int i = 0; i < volumeCount; i++)
 	{
+#if defined(EMISSIVE_TILES)
+		// [EMISSIVETILES] E5: only the volumes this tile lists, in the list's order; past its last listed volume there is nothing left.
+		uint tileRest = tileMask >> uint(i);
+		if (tileRest == 0u)
+			break;
+		if ((tileRest & 1u) == 0u)
+			continue;
+#endif
 		vec4 rowBase = texelFetch(EmissiveVolumeList, ivec2(i, EVROW_BASE), 0);
 		vec4 rowAxis = texelFetch(EmissiveVolumeList, ivec2(i, EVROW_AXIS), 0);
 		float bound = rowBase.w;
@@ -382,6 +430,16 @@ void main()
 		if (t1 <= t0)
 			continue;
 
+#if defined(EMISSIVE_TILES) && defined(SMOKE_TRANSMITTANCE)
+		// [EMISSIVETILES] E5: the smoke reads, at the first volume whose chord this ray meets.
+		if (!smokeRead)
+		{
+			smokeWholeT = SmokeWholeTransmittance(linearDepth, smokeKnots);
+			smokeDims = smokeWholeT < 1.0;
+			smokeShareAtScene = SmokeDepthShare(smokeKnots, sceneT);
+			smokeRead = true;
+		}
+#endif
 		EmissiveVolume v = LoadVolume(i, rowBase, rowAxis);
 		// StepCount across the whole diameter, fewer for a shorter chord; and at least one step for each unit of optical depth the gas
 		// can have along the chord (a sooty volume's front is where its light comes from), never more than 64.

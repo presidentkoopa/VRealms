@@ -33,6 +33,8 @@
 
 #include "stats.h"
 #include "printf.h"   // vol_beam diagnostics in PPVolumetricBeam::Render
+#include "hw_perflog.h"	// [EMISSIVETILES] E5: PerfLog::GroupsWanted, for the tile counts
+#include "hw_emissivevolumeframe.h"	// [EMISSIVETILES] E5: EmissiveVolumeStats, where the tile counts go
 
 Postprocess hw_postprocess;
 
@@ -652,6 +654,12 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 		//     cone to read it, only texels a listed beam's glow can reach (7, the beam list): its cost follows the beams.
 		SmokeBeamScatterUniforms curve = {};
 		memcpy(&curve, &marches[set], sizeof(SmokeMarchUniforms));
+		// [GOVERNOR] E8, PROTECTED LOOKS: the curve walks the same ray for the beams, the cones and the emissive volumes, so it
+		// marches at the step count SetupSmokeVolume published for them (the owner's own r_smoke_steps) even while the effects
+		// budget governor trims the smoke's march. Nothing else of the copied march block changes and no shader does: the curve
+		// and scatter programs read the StepCount they always read. 0 (nothing published) leaves the march's own, as before.
+		if (beams.ScatterStepCount > 0)
+			curve.StepCount = beams.ScatterStepCount;
 		curve.BeamCount = beams.BeamCount;
 		curve.NearBeamsOnly = conesHere ? 0.0f : 1.0f;
 
@@ -708,6 +716,10 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 		{
 			SmokeBeamScatterUniforms scatter = {};
 			memcpy(&scatter, &marches[set], sizeof(SmokeMarchUniforms));
+			// [GOVERNOR] E8, PROTECTED LOOKS: what a beam scatters in the smoke is marched at the owner's own step count at every
+			// rung (PPSmokeBeamSettings::ScatterStepCount), so no rung changes a grab laser's or the Lance's look.
+			if (beams.ScatterStepCount > 0)
+				scatter.StepCount = beams.ScatterStepCount;
 			scatter.BeamCount = beams.BeamCount;
 			scatter.BeamScatter = beams.Scatter ? clamp(beams.LookScatter, 0.0f, 1.0f) : 0.0f;
 
@@ -817,6 +829,38 @@ void PPSmokeVolume::Render(PPRenderState *renderstate, int sceneWidth, int scene
 
 /////////////////////////////////////////////////////////////////////////////
 
+// [SCREENTILES] E5: a pass's tile mask -- see PPScreenTileMask (hw_postprocess.h), hw_screentiles.h and shaders/pp/screentilemask.fp.
+
+void PPScreenTileMask::Render(PPRenderState *renderstate, int width, int height, const uint32_t rects[SCREEN_TILE_ITEMS_MAX])
+{
+	const int tilesX = ScreenTileCount(width);
+	const int tilesY = ScreenTileCount(height);
+	if (tilesX != lastTilesX || tilesY != lastTilesY)
+	{
+		Viewport.left = 0;
+		Viewport.top = 0;
+		Viewport.width = tilesX;
+		Viewport.height = tilesY;
+		Texture = { tilesX, tilesY, PixelFormat::Rgba8 };
+		lastTilesX = tilesX;
+		lastTilesY = tilesY;
+	}
+
+	ScreenTileMaskUniforms uniforms;
+	memcpy(&uniforms, rects, sizeof(uniforms));	// the rows are the rectangles in list order (hw_postprocess.h)
+
+	// One texel a tile over the whole texture, no blend: every texel is rewritten.
+	renderstate->Clear();
+	renderstate->Shader = &Shader;
+	renderstate->Uniforms.Set(uniforms);
+	renderstate->Viewport = Viewport;
+	renderstate->SetOutputTexture(&Texture);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
 // [EMISSIVEVOLUMES] The emissive volumes' drawing: see PPEmissiveVolumes (hw_postprocess.h) and shaders/pp/emissivevolume.fp.
 
 void PPEmissiveVolumes::UpdateTextures(int sceneWidth, int sceneHeight, int resolution)
@@ -854,6 +898,11 @@ void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int s
 	PPSmokeVolume &smoke = hw_postprocess.smokevolume;
 	const bool inSmoke = smoke.TransmittanceReady();
 	const bool sharedDepth = inSmoke && resolution == 2;
+	// [EMISSIVETILES] E5 (r_emissivevolumes_tiles): the march loops only its tile's list when this eye set published tile bounds for
+	// this frame's list and the march's target fits the packed tiles. Not for one volume out of haze: its rectangle already is its
+	// tile list, so the plain march does less there. The image is the same either way.
+	const bool tiled = r_emissivevolumes_tiles && settings.Count <= SCREEN_TILE_ITEMS_MAX && tileBoundCounts[set] == settings.Count &&
+		(settings.Count > 1 || inSmoke) && ScreenTilesFit(MarchViewport.width, MarchViewport.height);
 
 	// One line whenever the variant, the eye arrangement or the textures change, so a test log shows which ran.
 	{
@@ -896,9 +945,39 @@ void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int s
 		renderstate->Draw();
 	}
 
+	// 1b. [EMISSIVETILES] E5: the tile mask -- each listed volume's widened bound cut into tiles at the march's size.
+	if (tiled)
+	{
+		uint32_t rects[SCREEN_TILE_ITEMS_MAX];
+		for (int i = 0; i < SCREEN_TILE_ITEMS_MAX; i++)
+			rects[i] = i < settings.Count ? ScreenTileRectPack(tileBounds[set][i], MarchViewport.width, MarchViewport.height) : SCREEN_TILE_RECT_NONE;
+		TileMask.Render(renderstate, MarchViewport.width, MarchViewport.height, rects);
+
+		if (PerfLog::GroupsWanted())
+		{
+			// What the tiles list against what the rectangle would have looped (every texel in it, every drawn volume).
+			const int tilesX = ScreenTileCount(MarchViewport.width), tilesY = ScreenTileCount(MarchViewport.height);
+			const ScreenTileCoverage listed = ScreenTileCoverageOf(rects, settings.Count, tilesX, tilesY);
+			ScreenTexRect rectangle;
+			rectangle.Lo[0] = marches[set].RectMin.X;
+			rectangle.Lo[1] = marches[set].RectMin.Y;
+			rectangle.Hi[0] = marches[set].RectMax.X;
+			rectangle.Hi[1] = marches[set].RectMax.Y;
+			const uint32_t rectangleTiles = ScreenTileRectPack(rectangle, MarchViewport.width, MarchViewport.height);
+			EmissiveVolumeFrameStats &stats = EmissiveVolumeStats();
+			stats.TileEyes++;
+			stats.Tiles += listed.Tiles;
+			stats.TilesInRect += ScreenTileCoverageOf(&rectangleTiles, 1, tilesX, tilesY).Lit;
+			stats.TilesLit += listed.Lit;
+			stats.TileEntries += listed.Entries;
+		}
+	}
+
 	// 2. The march, reading the list and the noise the backend keeps (PPExternalImage), and in smoke the smoke's curve.
 	renderstate->Clear();
 	renderstate->Shader = inSmoke ? &MarchSmokeShader : &MarchShader;
+	if (tiled)	// [EMISSIVETILES] E5: the same march over its tile's list
+		renderstate->Shader = inSmoke ? &MarchTilesSmokeShader : &MarchTilesShader;
 	renderstate->Uniforms.Set(marches[set]);
 	renderstate->Viewport = MarchViewport;
 	renderstate->SetInputTexture(0, depthTexture);
@@ -910,6 +989,8 @@ void PPEmissiveVolumes::Render(PPRenderState *renderstate, int sceneWidth, int s
 		renderstate->SetInputTexture(4, smoke.GetDepthTexture());
 		renderstate->SetInputTexture(5, smoke.GetCurveTexture());
 	}
+	if (tiled)	// [EMISSIVETILES] E5: the tile mask, after the march's other inputs
+		renderstate->SetInputTexture(inSmoke ? 6 : 3, TileMask.GetTexture());
 	renderstate->SetOutputTexture(&MarchTexture);
 	renderstate->SetNoBlend();
 	renderstate->Draw();

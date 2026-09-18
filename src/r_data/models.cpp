@@ -41,6 +41,7 @@
 #include "hw_vrmodes.h"
 #include "model_reach.h"  // RS fork -- draw-time joint poses and reach chains (RenderModel, RenderModelFrame)
 #include "model_handdrive.h" // RS fork -- the hand drive (HandDrive_OwnerStep, HandDrive_PoseForFollower)
+#include "model_jointfollow.h" // RS fork -- piece E: a child riding a joint as drawn (JointFollowCarry)
 #include "c_dispatch.h"   // RS fork -- the modelsurfaces CCMD at the end of this file
 #include "v_text.h"       // RS fork -- TEXTCOLOR_* for the same
 
@@ -427,6 +428,11 @@ static bool ModelEyeFadeRange(const FSpriteModelFrame *smf, const AActor *actor,
 
 void RenderModel(FModelRenderer *renderer, float x, float y, float z, FSpriteModelFrame *smf, AActor *actor, double ticFrac)
 {
+	// RS FORK -- THE RENDER WINDOW (model_reach.h, FModelRenderWindow), around this whole draw and its ObjectToWorldMatrix
+	// below: the one place a FollowActorJoint child reads the joint it rides as its parent drew it (Engine docs/
+	// MODEL_JOINT_DRIVE_PLAN.md section 11 condition 8). Script asking the same matrix is outside it. One int.
+	FModelRenderWindow renderWindow;
+
 	int smf_flags = smf->getFlags(actor->modelData);
 	FTranslationID translation = NO_TRANSLATION;
 	if (!(smf_flags & MDL_IGNORETRANSLATION))
@@ -954,6 +960,97 @@ static bool FollowSeatFromModelPoint(AActor *child, AActor *parent, const VSMatr
 	return ok;
 }
 
+// AActor::FollowActorJoint -- A JOINT OF THE PARENT'S MODEL, AS DRAWN (Engine docs/MODEL_JOINT_DRIVE_PLAN.md piece E).
+//
+// Set when it names a joint. 'None' from ZScript is no joint, as PlacementPrefix's 'None' is no prefix
+// (ObjectToWorldMatrix): unset, a child takes the FollowActorSlot path exactly as before.
+static bool JointFollowSet(const AActor *child)
+{
+	return child->FollowActorJoint != NAME_None && stricmp(child->FollowActorJoint.GetChars(), "None") != 0;
+}
+
+// [FOLLOWJOINT] -- WHAT A JOINT FOLLOWER RIDES, SAID ONCE. The render path, once per eye, so never a line per draw: one
+// when a child's outcome, parent, joint or model index changes, at most twice a second per child and sixteen lines a
+// second in all. "Not drawn yet" waits half a second first: every new follower spends its first frame there, before its
+// parent's draw has published the joint it asked for. More than 32 live children churn the table, and a churned-in child
+// enters quietly, as FollowSeatFromModelPoint's trace does. thread_local like followDepth.
+static void JointFollowTrace(const AActor *child, const AActor *parent, int outcome, bool shared)
+{
+	struct JointTrace { const AActor *child; const AActor *parent; int joint, model, outcome, said; uint64_t seenMs, sinceMs, printMs; };
+	static thread_local JointTrace traces[32];
+	static thread_local uint64_t windowMs = 0;
+	static thread_local int windowLines = 0;
+
+	const uint64_t now = I_msTime();
+	const int joint = child->FollowActorJoint.GetIndex();
+	const int model = child->FollowActorJointModel;
+	JointTrace *t = nullptr;
+	for (auto &e : traces) if (e.child == child) { t = &e; break; }
+	if (t == nullptr)
+	{
+		t = &traces[0];
+		for (auto &e : traces) if (e.seenMs < t->seenMs) t = &e;
+		const bool churning = t->child != nullptr && now - t->seenMs < 1000;
+		memset(t, 0, sizeof(*t));
+		t->child = child;
+		t->parent = parent;
+		t->joint = joint;
+		t->model = model;
+		t->outcome = outcome;
+		t->sinceMs = now;
+		t->said = churning ? outcome : -1;
+		if (churning) t->printMs = now;
+	}
+	t->seenMs = now;
+	if (t->outcome != outcome || t->parent != parent || t->joint != joint || t->model != model)
+	{
+		t->parent = parent;
+		t->joint = joint;
+		t->model = model;
+		t->outcome = outcome;
+		t->sinceMs = now;
+		t->said = -1;
+	}
+	if (t->said == outcome) return;
+	if (outcome == JFO_NOTDRAWN && now - t->sinceMs < 500) return;
+	if (t->printMs != 0 && now - t->printMs < 500) return;
+	if (now - windowMs >= 1000) { windowMs = now; windowLines = 0; }
+	if (windowLines >= 16) return;
+	windowLines++;
+	t->said = outcome;
+	t->printMs = now;
+
+	const char *what = "";
+	switch (outcome)
+	{
+	case JFO_RIDING:    what = "riding it as drawn"; break;
+	case JFO_NOTDRAWN:  what = "the parent has not been drawn with bones at that model index since this was asked -- riding the whole model"; break;
+	case JFO_NOJOINT:   what = "no such joint on the model the parent drew (see its line) -- riding the whole model"; break;
+	case JFO_COLLAPSED: what = "the joint is drawn collapsed (hidden) or flat -- riding the whole model"; break;
+	case JFO_FULL:      what = "the joint followers' table is full -- riding the whole model"; break;
+	default: break;
+	}
+	Printf("[FOLLOWJOINT] %s on %s: joint '%s' of model %d%s: %s\n", child->GetClass()->TypeName.GetChars(),
+		parent->GetClass()->TypeName.GetChars(), child->FollowActorJoint.GetChars(), model,
+		shared ? " (the parent draws every model with one palette)" : "", what);
+}
+
+// The motion a child rides for its joint this frame: READ FROM WHAT THE PARENT'S DRAW PUBLISHED (model_reach.cpp,
+// ModelJointFollow_Read; model_jointfollow.h), never solved here -- the Body IK lane's condition 8. Rigid, in the
+// parent's model space, the identity at the bind pose. False when there is nothing to ride this frame, and the child
+// rides the whole model; the reason is said once. Outside RenderModel always false and silent: a script query of a
+// joint follower sees the whole model's frame, never the joint's (and FollowActorSlot is not consulted either).
+static bool JointFollowMotion(AActor *child, AActor *parent, FSpriteModelFrame *psmf, double motion[16])
+{
+	// +DECOUPLEDANIMATIONS or MODELSAREATTACHMENTS: every model of the parent is skinned with the first one's bones
+	// (RenderModelFrame's evaluatedSingle), so that one palette is the joint's, whatever model index is named.
+	const bool shared = !!(parent->flags9 & MF9_DECOUPLEDANIMATIONS) || !!(psmf->getFlags(parent->modelData) & MDL_MODELSAREATTACHMENTS);
+	const int outcome = ModelJointFollow_Read(parent, child->FollowActorJointModel, shared, child->FollowActorJoint, motion);
+	if (outcome == JFO_NOTRENDER) return false;
+	JointFollowTrace(child, parent, outcome, shared);
+	return outcome == JFO_RIDING;
+}
+
 // AActor::FollowActor -- the frame a child model rides.
 //
 // Built by the PARENT'S OWN ObjectToWorldMatrix, never reconstructed here: that
@@ -1005,7 +1102,16 @@ static bool ModelFollowFrame(AActor *child, double ticFrac, VSMatrix &out)
 
 	FVector3 partOfs;
 	FVector4 partRot;
-	if (child->FollowActorSlot >= 0
+	if (JointFollowSet(child))
+	{
+		// AActor::FollowActorJoint -- in FollowActorSlot's place, at the same point in the order: after a model-space seat
+		// is resolved against the un-carried frame, so a point on the mesh rides the joint as a slot's rides its part.
+		// Nothing to ride this frame (or a script query): the frame stays the whole model's.
+		double jointMotion[16];
+		if (JointFollowMotion(child, parent, psmf, jointMotion))
+			JointFollowCarry(parentMat, jointMotion, frame);
+	}
+	else if (child->FollowActorSlot >= 0
 		&& SurfaceSlotPoseForFollower(parent->modelData.ForceGet(), child->FollowActorSlot, parentMat, ticFrac, partOfs, partRot))
 	{
 		// Built exactly as models_md3.cpp builds a surface's transform.

@@ -358,6 +358,12 @@ CUSTOM_CVARD(Int, r_emissivevolumes_steps, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG,
 	if (self > 64) self = 64;
 }
 
+// [EMISSIVETILES] E5 r_emissivevolumes_tiles: TILE LISTS FOR THE MARCH ("Engine docs/EMISSIVE_TILES_E5_IMPL_NOTES.md"). Each texel
+// loops only the drawn volumes whose screen bound touches its 16x16-texel tile, and a tile no volume touches is skipped. The image is
+// the same (the E5 mirror), so this is the perf log's A/B switch and a way back, not a look. Renderer-read every frame
+// (SetupEmissiveVolumes and PPEmissiveVolumes::Render); not archived.
+CVARD(Bool, r_emissivevolumes_tiles, true, CVAR_GLOBALCONFIG, "the emissive volume march loops only each screen tile's volumes -- the same image, less GPU work (Vulkan; an A/B switch)")
+
 // r_emissivevolumes_resolution: the march at half the scene's resolution (2, the default) or full (1, about four times the cost).
 CUSTOM_CVARD(Int, r_emissivevolumes_resolution, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "emissive volume march resolution: 2 half, 1 full (Vulkan only)")
 {

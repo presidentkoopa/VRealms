@@ -40,6 +40,7 @@
 #include "flatvertices.h"
 #include "version.h"
 #include "hw_material.h"
+#include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the fps limiter's sleep is pacing
 
 #include <chrono>
 #include <thread>
@@ -247,6 +248,13 @@ void DFrameBuffer::FPSLimit()
 
 	if (vid_maxfps <= 0 || cl_capfps)
 		return;
+
+	// [GOVERNOR] E8: the limiter's sleep is pacing, not the frame's work (hw_effectsgovernor.h): handed in however the loop ends.
+	struct GovernorPacing
+	{
+		uint64_t StartNs;
+		~GovernorPacing() { EffectsGovernor::AddPacingWait(I_nsTime() - StartNs); }
+	} governorPacing{ I_nsTime() };
 
 	uint64_t targetWakeTime = fpsLimitTime + 1'000'000 / vid_maxfps;
 

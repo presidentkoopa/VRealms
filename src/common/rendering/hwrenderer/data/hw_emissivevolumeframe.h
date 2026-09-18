@@ -120,6 +120,14 @@ struct EmissiveVolumeFrameStats
 	int Drawn = 0;		// volumes in this frame's list
 	int Refused = 0;	// volumes evicted or refused because the pool was full, and spawns dropped (no definition, switched off)
 	int Lights = 0;		// effect lights the volumes handed over this frame
+	// [EMISSIVETILES] E5, both eyes summed, while the march uses its tile lists (PPEmissiveVolumes::Render, only while the perf log
+	// wants groups): the eyes that did; the tiles of their march targets; the tiles their rectangles touch, where every texel loops
+	// every drawn volume without tiles; the tiles listing at least one volume; and the volume-tile pairs listed.
+	int TileEyes = 0;
+	int Tiles = 0;
+	int TilesInRect = 0;
+	int TilesLit = 0;
+	int TileEntries = 0;
 };
 
 inline EmissiveVolumeFrameStats& EmissiveVolumeStats()
