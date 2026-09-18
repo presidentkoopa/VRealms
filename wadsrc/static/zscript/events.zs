@@ -246,7 +246,33 @@ class StaticEventHandler : Object native play version("2.4")
 class EventHandler : StaticEventHandler native version("2.4")
 {
 	clearscope static native StaticEventHandler Find(class<StaticEventHandler> type);
-	clearscope static native void SendNetworkEvent(String name, int arg1 = 0, int arg2 = 0, int arg3 = 0);
+	// RETURNS FALSE, HAVING SENT NOTHING, when gamestate is not GS_LEVEL or
+	// GS_TITLELEVEL. CHECK IT. The engine always returned this; the declaration
+	// used to say `void` and threw it away, so no mod could see a refusal even
+	// if it thought to look.
+	//
+	// WHERE THIS BITES, and it is not a corner case: A LEVEL EXIT IS EXACTLY WHEN
+	// GAMESTATE STOPS BEING GS_LEVEL, and a level exit is exactly when a mod
+	// releases what it was holding. A release sent from WorldUnloaded is refused
+	// silently -- so a held trigger, a suppressed button, a grabbed actor, a
+	// masked input stays held on every machine with nothing alive to clear it,
+	// and if that state is serialized it goes into the save.
+	//
+	// WHAT TO DO INSTEAD: teardown that MUST happen -- giving a trigger back,
+	// releasing a hold, clearing a mask -- is APPLIED DIRECTLY for every in-game
+	// player, not sent. Level change, death, respawn and disconnect are events
+	// every machine already sees, so each one reaches the same conclusion on its
+	// own and a command would be a second source of truth for something already
+	// agreed. Send the things that are DECISIONS; apply the things that are
+	// CONSEQUENCES of an event everyone saw.
+	//
+	// A send you cannot afford to lose is a send you must check:
+	//     if (!EventHandler.SendNetworkEvent("mymod_done", hand)) { ReleaseDirectly(); }
+	//
+	// Note the send is not the unreliable part -- it rides the same lockstep tic
+	// stream as every other command, so it cannot be dropped in transit. It can
+	// only be REFUSED, here, before it is written.
+	clearscope static native bool SendNetworkEvent(String name, int arg1 = 0, int arg2 = 0, int arg3 = 0);
 	version("4.12") clearscope static native vararg bool SendNetworkCommand(Name cmd, ...);
 	version("4.12") clearscope static native bool SendNetworkBuffer(Name cmd, NetworkBuffer buffer);
 	clearscope static native void SendInterfaceEvent(int playerNum, string name, int arg1 = 0, int arg2 = 0, int arg3 = 0);

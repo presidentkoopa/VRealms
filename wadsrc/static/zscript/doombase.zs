@@ -978,6 +978,23 @@ struct LevelLocals native
 	// had no way to also read which way it's being pushed. This is that way
 	// out: call it after SuppressVRInput(true) and it still reports the
 	// real value.
+	// THIS MACHINE'S OWN THUMBSTICK, read straight from the local VR input path
+	// and deliberately bypassing input suppression.
+	//
+	// LOCAL, LIKE A CONTROLLER POSE. It exists on the machine holding the
+	// controller and nowhere else -- on every other machine, and for a desktop
+	// player, it is whatever that machine's own stick says, which is a different
+	// number for the same player.
+	//
+	// SO NEVER LET IT DECIDE ANYTHING THE PLAYSIM CARES ABOUT. Reading it to draw
+	// something, to steer a menu, or to decide whether THIS machine should SEND a
+	// command is correct and is what it is for. Reading it inside a path that
+	// moves an actor, spends ammo, resolves a hit or changes weapon state makes
+	// two machines disagree about the same player on the same tic.
+	//
+	// It is callable from play scope because the legitimate use -- a handler
+	// deciding whether to send -- lives there. That is a loaded gun pointed at
+	// the right target; do not turn it around.
 	native Vector2 GetRawStickMove();
 
 	// Force the laser sight on for as long as a script-side menu is up. An
