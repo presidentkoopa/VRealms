@@ -30,6 +30,7 @@
 #include "d_eventbase.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "p_vrdemo.h"
 #include "d_netinf.h"
 #include "events.h"
 #include "g_game.h"
@@ -3159,6 +3160,11 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 		Net_PlayerReadiedUp(player);
 		break;
 
+	case DEM_VRFRAME:
+		// [VRDEMO] One tic of VR tracking from a demo (p_vrdemo.cpp).
+		VRDemo_ReadFrame(stream, player);
+		break;
+
 	case DEM_ZSC_CMD:
 		{
 			FName cmd = ReadStringConst(stream);
@@ -3321,6 +3327,11 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 		case DEM_ZSC_CMD:
 			skip = strlen((char*)(stream.Data())) + 1;
 			skip += (stream[skip] << 8) | (stream[skip + 1]) + 2;
+			break;
+
+		case DEM_VRFRAME:
+			// [VRDEMO] Word: payload size, then the payload.
+			skip = 2 + ((size_t(stream[0]) << 8) | size_t(stream[1]));
 			break;
 
 		case DEM_SUMMON2:

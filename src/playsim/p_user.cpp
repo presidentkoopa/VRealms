@@ -50,6 +50,7 @@
 #include "gi.h"
 #include "gstrings.h"
 #include "hw_vrmodes.h"
+#include "p_vrdemo.h"
 #include "i_net.h"
 #include "intermission/intermission.h"
 #include "m_random.h"
@@ -87,10 +88,19 @@ static void UpdateCanonicalMainHandPose(player_t *player)
 	}
 
 	const VRMode* vrMode = VRMode::GetVRModeCached(true);
-	const bool isLocalVr = !multiplayer && vrMode != nullptr && vrMode->IsVR();
+	// [VRDEMO] A replaying VR demo is local VR whether or not a headset is on: its hands
+	// come from the recording through GetWeaponTransform (p_vrdemo.h), and the override
+	// is the one the recording made, not this machine's puristmode.
+	const bool replayingVr = !multiplayer && VRDemo_IsReplaying();
+	const bool isLocalVr = !multiplayer && vrMode != nullptr && (vrMode->IsVR() || replayingVr);
+	bool recordedOverride = false;
 	if (multiplayer)
 	{
 		player->mo->OverrideAttackPosDir = true;
+	}
+	else if (replayingVr && VRDemo_ReplayAimOverride(&recordedOverride))
+	{
+		player->mo->OverrideAttackPosDir = recordedOverride;
 	}
 	else
 	{

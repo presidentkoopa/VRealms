@@ -2395,6 +2395,70 @@ static_assert(offsetof(PresentUniforms, Scale) % 8 == 0,
 static_assert(offsetof(PresentUniforms, Offset) % 8 == 0,
 	"PresentUniforms::Offset must be 8-byte aligned for std140 - add a padding float");
 
+// [SPECTATOR] The stabilized desktop view (vr_spectator, vk_openxrdevice.cpp). The pass is
+// present.fp with SPECTATOR_REPROJECT defined, so it keeps the present pass's gamma stage
+// exactly; this block is PresentUniforms member for member at the same offsets (asserted
+// below), then the reprojection:
+//
+//   SpecRot     turns a direction in the spectator camera's view space into the view space of
+//               the eye the frame was rendered with. Rotation only -- a pure rotation
+//               reprojects a perspective image exactly, so no depth is needed.
+//   SpecSrcTan  that eye's frustum as tangents (left, right, down, up), after the fov adjust.
+//   SpecDstTan  the spectator's frustum, the same way.
+//
+// 160 bytes, the same push constant size SmokeMarchUniforms already uses.
+struct SpectatorUniforms
+{
+	float InvGamma;
+	float Contrast;
+	float Brightness;
+	float Saturation;
+	float BlackPoint;
+	float WhitePoint;
+	float ColorScale;
+	int GrayFormula;
+	int WindowPositionParity;
+	float padding0;
+	FVector2 Scale;
+	FVector2 Offset;
+	int HdrMode;
+	float SpecPad0;
+	float SpecRot[16];	// column-major, as VSMatrix::get()
+	FVector4 SpecSrcTan;
+	FVector4 SpecDstTan;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "InvGamma", UniformType::Float, offsetof(SpectatorUniforms, InvGamma) },
+			{ "Contrast", UniformType::Float, offsetof(SpectatorUniforms, Contrast) },
+			{ "Brightness", UniformType::Float, offsetof(SpectatorUniforms, Brightness) },
+			{ "Saturation", UniformType::Float, offsetof(SpectatorUniforms, Saturation) },
+			{ "BlackPoint", UniformType::Float, offsetof(SpectatorUniforms, BlackPoint) },
+			{ "WhitePoint", UniformType::Float, offsetof(SpectatorUniforms, WhitePoint) },
+			{ "ColorScale", UniformType::Float, offsetof(SpectatorUniforms, ColorScale) },
+			{ "GrayFormula", UniformType::Int, offsetof(SpectatorUniforms, GrayFormula) },
+			{ "WindowPositionParity", UniformType::Int, offsetof(SpectatorUniforms, WindowPositionParity) },
+			{ "padding0", UniformType::Float, offsetof(SpectatorUniforms, padding0) },
+			{ "UVScale", UniformType::Vec2, offsetof(SpectatorUniforms, Scale) },
+			{ "UVOffset", UniformType::Vec2, offsetof(SpectatorUniforms, Offset) },
+			{ "HdrMode", UniformType::Int, offsetof(SpectatorUniforms, HdrMode) },
+			{ "SpecPad0", UniformType::Float, offsetof(SpectatorUniforms, SpecPad0) },
+			{ "SpecRot", UniformType::Mat4, offsetof(SpectatorUniforms, SpecRot) },
+			{ "SpecSrcTan", UniformType::Vec4, offsetof(SpectatorUniforms, SpecSrcTan) },
+			{ "SpecDstTan", UniformType::Vec4, offsetof(SpectatorUniforms, SpecDstTan) },
+		};
+	}
+};
+
+static_assert(offsetof(SpectatorUniforms, Scale) == offsetof(PresentUniforms, Scale), "SpectatorUniforms must start with PresentUniforms' layout");
+static_assert(offsetof(SpectatorUniforms, Offset) == offsetof(PresentUniforms, Offset), "SpectatorUniforms must start with PresentUniforms' layout");
+static_assert(offsetof(SpectatorUniforms, HdrMode) == offsetof(PresentUniforms, HdrMode), "SpectatorUniforms must start with PresentUniforms' layout");
+static_assert(offsetof(SpectatorUniforms, SpecRot) == 64, "SpectatorUniforms::SpecRot must start at 64 for std140");
+static_assert(offsetof(SpectatorUniforms, SpecSrcTan) == 128, "SpectatorUniforms::SpecSrcTan must start at 128 for std140");
+static_assert(sizeof(SpectatorUniforms) == 160, "SpectatorUniforms must be 160 bytes");
+
 class PPPresent
 {
 public:
@@ -2406,6 +2470,8 @@ public:
 	PPShader Checker3D = { "shaders/pp/present_checker3d.fp", "", PresentUniforms::Desc() };
 	PPShader Column3D = { "shaders/pp/present_column3d.fp", "", PresentUniforms::Desc() };
 	PPShader Row3D = { "shaders/pp/present_row3d.fp", "", PresentUniforms::Desc() };
+	// [SPECTATOR] vr_spectator's reprojection; see SpectatorUniforms.
+	PPShader Spectator = { "shaders/pp/present.fp", "#define SPECTATOR_REPROJECT\n", SpectatorUniforms::Desc() };
 };
 
 struct ShadowMapUniforms

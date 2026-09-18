@@ -48,6 +48,7 @@
 #include "r_data/r_interpolate.h"
 #include "r_sky.h"
 #include "r_utility.h"
+#include "p_vrdemo.h"
 #include "sbar.h"
 #include "serializer.h"
 #include "swrenderer/r_renderer.h"
@@ -746,6 +747,10 @@ void R_InterpolateView(FRenderViewpoint& viewPoint, const player_t* const player
 		viewPoint.Angles.Yaw = prevYaw + deltaangle(prevYaw, curYaw) * ticFrac;
 		viewPoint.Angles.Roll = iView->Old.Angles.Roll + deltaangle(iView->Old.Angles.Roll, iView->New.Angles.Roll) * ticFrac;
 	}
+
+	// [VRDEMO] Watching a VR demo on a monitor: the recorded head, steadied, instead of
+	// the pawn's body angles. Before the offsets so the chase camera orbits it.
+	VRDemo_AdjustReplayView(viewPoint, player);
 
 	// Now that the base position and angles are set, add offsets.
 

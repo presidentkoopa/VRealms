@@ -18,6 +18,7 @@
 #include "zvulkan/vulkancompatibledevice.h"
 #include "zvulkan/vulkanswapchain.h"
 #include "QzDoom/VrCommon.h"
+#include "p_vrdemo.h"
 #include "d_player.h"
 #include "g_game.h"
 #include "g_levellocals.h"
@@ -174,6 +175,8 @@ EXTERN_CVAR(Float, vr_automap_mount_scale);
 EXTERN_CVAR(Int, vr_automap_border);
 EXTERN_CVAR(Color, vr_automap_border_color);
 EXTERN_CVAR(Int, vr_desktop_view);
+EXTERN_CVAR(Int, vr_spectator);		// [SPECTATOR] p_vrdemo.cpp
+EXTERN_CVAR(Float, vr_spectator_fov);
 EXTERN_CVAR(Int, vr_mode);
 EXTERN_CVAR(Bool, vr_swap_eyes);
 EXTERN_CVAR(Bool, vr_automap_use_hud);
@@ -928,10 +931,11 @@ static void AngleVectors(const float angles[3], float* forward, float* right, fl
 	}
 }
 
-static VSMatrix BuildOpenXREyeProjection(const XrFovf& fov, float nearZ, float farZ, int eye)
+// The frustum an eye is actually rendered with: the runtime's, widened or narrowed by
+// vr_openxr_fov_adjust_deg. Shared with the [SPECTATOR] reprojection, which has to know
+// exactly what the eye image covers.
+static XrFovf AdjustOpenXREyeFov(const XrFovf& fov)
 {
-	(void)eye;
-
 	const float fovAdjust = DEG2RAD(clamp<float>(vr_openxr_fov_adjust_deg, -30.0f, 30.0f));
 	const XrFovf adjustedFov = {
 		std::max(fov.angleLeft - fovAdjust, (float)(-0.5 * M_PI + 0.001)),
@@ -939,6 +943,14 @@ static VSMatrix BuildOpenXREyeProjection(const XrFovf& fov, float nearZ, float f
 		std::min(fov.angleUp + fovAdjust, (float)(0.5 * M_PI - 0.001)),
 		std::max(fov.angleDown - fovAdjust, (float)(-0.5 * M_PI + 0.001))
 	};
+	return adjustedFov;
+}
+
+static VSMatrix BuildOpenXREyeProjection(const XrFovf& fov, float nearZ, float farZ, int eye)
+{
+	(void)eye;
+
+	const XrFovf adjustedFov = AdjustOpenXREyeFov(fov);
 
 	const float tanLeft = std::tan(adjustedFov.angleLeft);
 	const float tanRight = std::tan(adjustedFov.angleRight);
@@ -3030,6 +3042,9 @@ void VKOpenXRDeviceMode::DestroyOpenXR() const
 	xrMirrorPresentTextures.clear();
 	xrDeferredPresentTextures.clear();
 	xrDeferredMirrorPresentTextures.clear();
+	xrSpectatorTextures.clear();	// [SPECTATOR]
+	xrSpectatorFrameReady = false;
+	xrSpectatorStabilizer.Reset();
 	xrViewConfigs.clear();
 	xrViews.clear();
 	xrProjectionViews.clear();
@@ -4093,8 +4108,10 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		}
 
 		// Publish to ZScript so a mod can see what grip is doing rather than
-		// guessing from the raw button, same as the engine now does.
-		if (consolePawn)
+		// guessing from the raw button, same as the engine now does. Not while a VR
+		// demo replays: the recording publishes these (p_vrdemo.cpp).
+		const bool publishGrip = consolePawn != nullptr && !VRDemo_IsReplaying();
+		if (publishGrip)
 		{
 			consolePawn->GripContextMain = xrGripContext[mainHand];
 			consolePawn->GripContextOff  = xrGripContext[offHand];
@@ -4137,7 +4154,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		const int offSubject = xrGripSubject[offHand];
 		const bool twoHanded = (offSubject == GRIPSUBJ_Support
 			|| offSubject == GRIPSUBJ_Forend || offSubject == GRIPSUBJ_Foregrip);
-		if (consolePawn)
+		if (publishGrip)
 			consolePawn->TwoHandedHold = twoHanded;
 
 		// Moving the weapon is a separate, opt-in thing. Defaults off: your
@@ -4673,7 +4690,9 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 
 	emitGameplayHandButtons(0, true);
 	emitGameplayHandButtons(1, true);
-	if (gameplayMode)
+	// While a VR demo replays, the pawn's head, hands, crouch and between-tic moves come
+	// from the recording (p_vrdemo.cpp), not from the headset that happens to be on.
+	if (gameplayMode && !VRDemo_IsReplaying())
 	{
 		player_t* player = &players[consoleplayer];
 		if (player && player->mo)
@@ -4840,22 +4859,11 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 					}
 					else
 					{
-						auto vel = player->mo->Vel;
-						player->mo->Vel = DVector3(m_TeleportLocation.X - player->mo->X(),
-							m_TeleportLocation.Y - player->mo->Y(), 0);
-						bool wasOnGround = player->mo->Z() <= player->mo->floorz + 0.1;
-						double oldZ = player->mo->Z();
-						P_XYMovement(player->mo, DVector2(0, 0));
-
-						if (player->mo->Z() >= oldZ && wasOnGround)
-						{
-							player->mo->SetZ(player->mo->floorz);
-						}
-						else
-						{
-							player->mo->SetZ(oldZ);
-						}
-						player->mo->Vel = vel;
+						// The move itself lives in VR_ApplyRenderMove (p_vrdemo.cpp),
+						// unchanged, so a VR demo can record it and replay it exactly.
+						VR_ApplyRenderMove(player, VRMOVE_TELEPORT,
+							DVector2(m_TeleportLocation.X - player->mo->X(),
+								m_TeleportLocation.Y - player->mo->Y()));
 					}
 
 					m_TeleportTarget = TRACE_HitNone;
@@ -4869,21 +4877,10 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 			{
 				// Roomscale/HMD positional locomotion stays local to single-player until it has
 				// an explicit deterministic netplay contract.
-				auto vel = player->mo->Vel;
-				player->mo->Vel = DVector3((DVector2(positional_movementSideways, positional_movementForward) * vr_vunits_per_meter), 0);
-				bool wasOnGround = player->mo->Z() <= player->mo->floorz;
-				float oldZ = player->mo->Z();
-				P_XYMovement(player->mo, DVector2(0, 0));
-
-				if (player->mo->Z() >= oldZ && wasOnGround)
-				{
-					player->mo->SetZ(player->mo->floorz);
-				}
-				else
-				{
-					player->mo->SetZ(oldZ);
-				}
-				player->mo->Vel = vel;
+				// Every frame, as before; the move itself lives in VR_ApplyRenderMove
+				// (p_vrdemo.cpp) so a VR demo can record it and replay it exactly.
+				VR_ApplyRenderMove(player, VRMOVE_ROOMSCALE,
+					DVector2(positional_movementSideways, positional_movementForward) * vr_vunits_per_meter);
 			}
 
 		}
@@ -6129,6 +6126,8 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 	return true;
 }
 
+static int SpectatorEyeIndex();	// [SPECTATOR], below
+
 void VKOpenXRDeviceMode::FinalizeEyeImage(VulkanRenderDevice* vkfb, int eyeIndex) const
 {
 	if (!vkfb || eyeIndex < 0 || xrSession == XR_NULL_HANDLE || xrSwapchainFormat == VK_FORMAT_UNDEFINED)
@@ -6171,6 +6170,13 @@ void VKOpenXRDeviceMode::FinalizeEyeImage(VulkanRenderDevice* vkfb, int eyeIndex
 			false);
 	}
 
+	// [SPECTATOR] The stabilized desktop view, cut from the same finished eye.
+	if (vr_spectator > 0 && vr_desktop_view != -1 && eyeIndex == SpectatorEyeIndex())
+	{
+		xrSpectatorFrameReady = RenderSpectatorEye(vkfb, eyeIndex,
+			sourceRect.scaleX, sourceRect.scaleY, sourceRect.offsetX, sourceRect.offsetY);
+	}
+
 	// 2) XR-submitted image with OpenXR bias knobs applied.
 	Clocker finalPresentTimer(VRFinalPresent);
 	VRFinalPresentPasses++;
@@ -6188,6 +6194,242 @@ void VKOpenXRDeviceMode::FinalizeEyeImage(VulkanRenderDevice* vkfb, int eyeIndex
 		true);
 }
 
+// ---- [SPECTATOR] THE STABILIZED DESKTOP VIEW ----------------------------------
+//
+// A headset mirror is unwatchable because it moves exactly as the head does:
+// every micro-correction, every tilt, every quick glance. vr_spectator replaces
+// it with a calmer camera that follows the head at a distance.
+//
+// It is not a third render. The eye is already drawn, over a wider field than a
+// window needs, so the spectator view is CUT from it: each window pixel's ray is
+// built in a smoothed camera and turned into the eye's camera, and the eye image
+// is read where it lands (present.fp, SPECTATOR_REPROJECT). A pure rotation
+// reprojects a perspective image exactly, so this costs one fullscreen pass.
+//
+// The price is that the smoothed camera can only lag the head by as much margin
+// as the eye image has around the window's frustum. When it would fall outside,
+// it is pulled toward the head just far enough to fit -- a fast turn still pans,
+// just with the jitter taken out -- and a jump past vr_spectator_cutangle (snap
+// turn, teleport) is a cut. Position is not smoothed: moving the camera would
+// need depth.
+
+// The eye the plain mirror shows: vr_desktop_view 2 is the right eye, 1 and
+// side-by-side use the left, and vr_swap_eyes swaps them as it does for the mirror.
+static int SpectatorEyeIndex()
+{
+	const int eye = (vr_desktop_view == 2) ? 1 : 0;
+	return vr_swap_eyes ? 1 - eye : eye;
+}
+
+// The rotation part of HWDrawInfo::SetViewMatrix for these HWAngles (no mirror),
+// as a row-major 3x3: world (after SetViewMatrix's axis scale) -> view space.
+static void SpectatorViewRotation(double yaw, double pitch, double roll, double out[9])
+{
+	VSMatrix m(0);
+	m.rotate((FLOATTYPE)roll, 0.0f, 0.0f, 1.0f);
+	m.rotate((FLOATTYPE)pitch, 1.0f, 0.0f, 0.0f);
+	m.rotate((FLOATTYPE)yaw, 0.0f, 1.0f, 0.0f);
+	const FLOATTYPE* a = m.get();	// column-major
+	for (int r = 0; r < 3; ++r)
+		for (int c = 0; c < 3; ++c)
+			out[r * 3 + c] = (double)a[c * 4 + r];
+}
+
+// eyeView * transpose(specView): a spectator view-space direction -> eye view space.
+static void SpectatorRelativeRotation(const double eyeView[9], double yaw, double pitch, double roll, double out[9])
+{
+	double spec[9];
+	SpectatorViewRotation(yaw, pitch, roll, spec);
+	for (int r = 0; r < 3; ++r)
+		for (int c = 0; c < 3; ++c)
+			out[r * 3 + c] = eyeView[r * 3 + 0] * spec[c * 3 + 0]
+				+ eyeView[r * 3 + 1] * spec[c * 3 + 1]
+				+ eyeView[r * 3 + 2] * spec[c * 3 + 2];
+}
+
+// Does the spectator frustum (dst) land entirely inside the eye's (src)? The map
+// between the two tangent planes is projective, so it keeps straight edges straight
+// and the rectangle convex: the four corners decide.
+static bool SpectatorFrustumFits(const double rot[9], const double dst[4], const double src[4])
+{
+	const double insetX = 0.004 * (src[1] - src[0]);
+	const double insetY = 0.004 * (src[3] - src[2]);
+	for (int i = 0; i < 4; ++i)
+	{
+		const double x = (i & 1) ? dst[1] : dst[0];
+		const double y = (i & 2) ? dst[3] : dst[2];
+		const double ex = rot[0] * x + rot[1] * y - rot[2];
+		const double ey = rot[3] * x + rot[4] * y - rot[5];
+		const double ez = rot[6] * x + rot[7] * y - rot[8];
+		if (-ez < 1e-3)
+			return false;
+		const double tx = ex / -ez;
+		const double ty = ey / -ez;
+		if (tx < src[0] + insetX || tx > src[1] - insetX || ty < src[2] + insetY || ty > src[3] - insetY)
+			return false;
+	}
+	return true;
+}
+
+bool VKOpenXRDeviceMode::EnsureSpectatorTexture(VulkanRenderDevice* vkfb, int width, int height) const
+{
+	if (xrSpectatorTextures.size() == 1 && xrSpectatorTextures[0].Image != nullptr &&
+		(int)xrSpectatorTextures[0].Image->width == width &&
+		(int)xrSpectatorTextures[0].Image->height == height)
+		return true;
+
+	if (xrSpectatorTextures.empty())
+		xrSpectatorTextures.resize(1);
+	auto& texture = xrSpectatorTextures[0];
+	texture.Reset(vkfb);	// the old one, if any, goes through the draw delete list
+
+	const VkFormat format = (VkFormat)xrSwapchainFormat;
+	texture.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	texture.AspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	texture.Image = ImageBuilder()
+		.Format(format)
+		.Size(width, height)
+		.Usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+		.DebugName("OpenXRSpectatorTexture")
+		.Create(vkfb->device.get());
+	if (texture.Image == nullptr)
+		return false;
+	texture.View = ImageViewBuilder()
+		.Image(texture.Image.get(), format)
+		.DebugName("OpenXRSpectatorTextureView")
+		.Create(vkfb->device.get());
+	return texture.View != nullptr;
+}
+
+bool VKOpenXRDeviceMode::RenderSpectatorEye(VulkanRenderDevice* vkfb, int eyeIndex, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY) const
+{
+	// Only frames that show the world. The flat menu screen and the cinema layer
+	// keep the plain mirror, and the camera starts fresh when the world comes back.
+	auto* postprocess = vkfb ? vkfb->GetPostprocess() : nullptr;
+	if (postprocess == nullptr || mFrameRenderMode == FrameRenderMode::VirtualScreen ||
+		eyeIndex < 0 || (size_t)eyeIndex >= xrViews.size() || xrSwapchainFormat == VK_FORMAT_UNDEFINED)
+	{
+		xrSpectatorStabilizer.Reset();
+		return false;
+	}
+
+	const IntRect window = vkfb->mOutputLetterbox;
+	const int width = std::min(window.width, 4096);
+	const int height = std::min(window.height, 4096);
+	if (width < 16 || height < 16 || !EnsureSpectatorTexture(vkfb, width, height))
+		return false;
+
+	// The eye as it was drawn. Its frustum, after the fov adjust...
+	const XrFovf fov = AdjustOpenXREyeFov(xrViews[(size_t)eyeIndex].fov);
+	const double src[4] = { std::tan(fov.angleLeft), std::tan(fov.angleRight), std::tan(fov.angleDown), std::tan(fov.angleUp) };
+	if (!(src[1] > src[0] && src[3] > src[2]))
+		return false;
+
+	// ...and its view: the HWAngles SetViewMatrix builds it from. Yaw as
+	// FRenderViewpoint::SetViewAngle derives it from the heading updateHmdPose set;
+	// pitch and roll as updateHmdPose left them (both eyes share the centred head
+	// orientation -- VKOpenXRDeviceEyePose::AdjustViewpointUniforms).
+	const double eyeYaw = 270.0 - r_viewpoint.Angles.Yaw.Degrees();
+	const double eyePitch = r_viewpoint.HWAngles.Pitch.Degrees();
+	const double eyeRoll = r_viewpoint.HWAngles.Roll.Degrees();
+	double eyeView[9];
+	SpectatorViewRotation(eyeYaw, eyePitch, eyeRoll, eyeView);
+
+	// The window's frustum: the window's shape, never wider than the eye, and
+	// CENTRED IN THE EYE'S FRUSTUM rather than on its axis. A headset eye is
+	// asymmetric (a Quest 3 left eye runs about 52 degrees out and 43 in), so a
+	// window centred on the axis would have three times the room to lag on one
+	// side as on the other; centred in the frustum it has the same on both, which
+	// is what the smoothing spends. The view sits a few degrees toward that eye's
+	// outer side, which nobody watching can see.
+	const double aspect = (double)height / (double)width;
+	const double centreX = (src[0] + src[1]) * 0.5;
+	const double centreY = (src[2] + src[3]) * 0.5;
+	double tanH = std::tan(DEG2RAD(clamp<double>(vr_spectator_fov, 20.0, 150.0)) * 0.5);
+	const double maxH = (src[1] - src[0]) * 0.5 * 0.97;
+	const double maxV = (src[3] - src[2]) * 0.5 * 0.97;
+	tanH = std::min(tanH, maxH);
+	if (tanH * aspect > maxV)
+		tanH = maxV / aspect;
+	const double dst[4] = { centreX - tanH, centreX + tanH, centreY - tanH * aspect, centreY + tanH * aspect };
+
+	// Smooth, then make sure the smoothed view is still inside what the eye drew.
+	FVRViewStabilizer& stab = xrSpectatorStabilizer;
+	stab.Update(eyeYaw, eyePitch, eyeRoll, I_nsTime());
+
+	auto lerpYaw = [](double from, double to, double t)
+	{
+		double d = std::fmod(to - from, 360.0);
+		if (d > 180.0) d -= 360.0;
+		if (d < -180.0) d += 360.0;
+		return from + d * t;
+	};
+
+	double rot[9];
+	SpectatorRelativeRotation(eyeView, stab.Yaw, stab.Pitch, stab.Roll, rot);
+	if (!SpectatorFrustumFits(rot, dst, src))
+	{
+		double yaw = stab.Yaw, pitch = stab.Pitch, roll = stab.Roll;
+		SpectatorRelativeRotation(eyeView, eyeYaw, eyePitch, roll, rot);
+		if (SpectatorFrustumFits(rot, dst, src))
+		{
+			// Pull heading and pitch toward the head only as far as it takes.
+			double lo = 0.0, hi = 1.0;
+			for (int i = 0; i < 10; ++i)
+			{
+				const double t = (lo + hi) * 0.5;
+				SpectatorRelativeRotation(eyeView, lerpYaw(stab.Yaw, eyeYaw, t), stab.Pitch + (eyePitch - stab.Pitch) * t, roll, rot);
+				if (SpectatorFrustumFits(rot, dst, src)) hi = t; else lo = t;
+			}
+			yaw = lerpYaw(stab.Yaw, eyeYaw, hi);
+			pitch = stab.Pitch + (eyePitch - stab.Pitch) * hi;
+		}
+		else
+		{
+			// Even centred, the level horizon does not fit (a hard head tilt with a wide
+			// window): give back as much of the tilt as it takes.
+			yaw = eyeYaw;
+			pitch = eyePitch;
+			double lo = 0.0, hi = 1.0;
+			for (int i = 0; i < 10; ++i)
+			{
+				const double t = (lo + hi) * 0.5;
+				SpectatorRelativeRotation(eyeView, yaw, pitch, stab.Roll + (eyeRoll - stab.Roll) * t, rot);
+				if (SpectatorFrustumFits(rot, dst, src)) hi = t; else lo = t;
+			}
+			roll = stab.Roll + (eyeRoll - stab.Roll) * hi;
+		}
+		stab.Force(yaw, pitch, roll);
+		SpectatorRelativeRotation(eyeView, yaw, pitch, roll, rot);
+	}
+
+	// Row-major 3x3 -> column-major mat4 for the shader.
+	float specRot[16] = {};
+	for (int r = 0; r < 3; ++r)
+		for (int c = 0; c < 3; ++c)
+			specRot[c * 4 + r] = (float)rot[r * 3 + c];
+	specRot[15] = 1.0f;
+
+	IntRect box;
+	box.left = 0;
+	box.top = 0;
+	box.width = width;
+	box.height = height;
+	postprocess->DrawSpectatorToImage(
+		&xrSpectatorTextures[0],
+		(VkFormat)xrSwapchainFormat,
+		box,
+		specRot,
+		FVector4((float)src[0], (float)src[1], (float)src[2], (float)src[3]),
+		FVector4((float)dst[0], (float)dst[1], (float)dst[2], (float)dst[3]),
+		sourceScaleX,
+		sourceScaleY,
+		sourceOffsetX,
+		sourceOffsetY,
+		vkfb->GetCommands()->GetDrawCommands());
+	return true;
+}
+
 bool VKOpenXRDeviceMode::RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage* dstImage) const
 {
 	if (!fb || !dstImage || vr_desktop_view == -1)
@@ -6195,6 +6437,11 @@ bool VKOpenXRDeviceMode::RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage
 
 	auto* cmdbuffer = fb->GetCommands()->GetDrawCommands();
 	const bool sideBySide = vr_desktop_view != 1 && vr_desktop_view != 2;
+
+	// [SPECTATOR] Consumed here, so a frame that does not draw it falls back.
+	const bool spectatorReady = xrSpectatorFrameReady && vr_spectator > 0 &&
+		xrSpectatorTextures.size() == 1 && xrSpectatorTextures[0].Image != nullptr;
+	xrSpectatorFrameReady = false;
 	const int leftSourceIndex = vr_swap_eyes ? 1 : 0;
 	const int rightSourceIndex = vr_swap_eyes ? 0 : 1;
 	const bool useDedicatedMirrorTextures = ShouldUseDedicatedDesktopMirrorTextures(this);
@@ -6226,6 +6473,12 @@ bool VKOpenXRDeviceMode::RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage
 		auto& backdropSource = xrVirtualScreenBackdropTextures[xrVirtualScreenBackdropImageIndex];
 		VkImageTransition()
 			.AddImage(&backdropSource, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, false)
+			.Execute(cmdbuffer);
+	}
+	if (spectatorReady)
+	{
+		VkImageTransition()
+			.AddImage(&xrSpectatorTextures[0], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, false)
 			.Execute(cmdbuffer);
 	}
 
@@ -6286,7 +6539,14 @@ bool VKOpenXRDeviceMode::RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage
 			1, &blit, VK_FILTER_LINEAR);
 	};
 
-	if (vr_desktop_view == 1)
+	// [SPECTATOR] The stabilized view, when this frame drew one. Anything else --
+	// the flat menu screen, a frame that skipped it -- keeps the plain mirror.
+	const bool useSpectator = spectatorReady;
+	if (useSpectator)
+	{
+		blitImage(&xrSpectatorTextures[0], mirrorBox);
+	}
+	else if (vr_desktop_view == 1)
 	{
 		blitImage(leftEyeSource, mirrorBox);
 	}
@@ -6346,6 +6606,12 @@ bool VKOpenXRDeviceMode::RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage
 			.AddImage(rightEyeSource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false)
 			.Execute(cmdbuffer);
 	}
+	if (spectatorReady)
+	{
+		VkImageTransition()
+			.AddImage(&xrSpectatorTextures[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false)
+			.Execute(cmdbuffer);
+	}
 
 	return true;
 }
@@ -6365,25 +6631,17 @@ bool VKOpenXRDeviceMode::RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage
 // does not tip when you look down.
 bool VKOpenXRDeviceMode::GetHmdTransform(VSMatrix* mat, DVector3 bodyOfs, float* outBodyYaw, double yawOverride) const
 {
-	double pixelstretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
-	player_t* player = &players[consoleplayer];
-	if (!player)
+	// A VR demo answers first: while one replays, the recorded head; while one records,
+	// during a tic, the frame captured at the tic's start (p_vrdemo.cpp).
+	if (VRDemo_GetHmdTransform(mat, bodyOfs, outBodyYaw, yawOverride))
+		return true;
+
+	double pixelstretch = 1.2;
+	float rendererYawDeg = 0;
+	if (!GetHmdBaseTransform(mat, &pixelstretch, &rendererYawDeg))
 		return false;
 
-	mat->loadIdentity();
-	mat->translate((float)r_viewpoint.CenterEyePos.X, (float)r_viewpoint.CenterEyePos.Z - GetDoomPlayerHeightWithoutCrouch(player), (float)r_viewpoint.CenterEyePos.Y);
-	mat->scale((float)vr_vunits_per_meter, (float)vr_vunits_per_meter, (float)-vr_vunits_per_meter);
-
-	mat->translate(0.f, (hmdPosition[1] + (float)vr_height_adjust) / (float)pixelstretch, 0.f);
-	mat->scale(1, 1 / (float)pixelstretch, 1);
-
-	// The cinematic screen layer takes its heading from the viewpoint for the
-	// same reason the hand path does -- doomYaw is not the drawn heading there.
-	const float bodyYawDeg = !isnan(yawOverride)
-		? (float)yawOverride
-		: (VR_UseCinematicScreenLayer()
-			? (float)r_viewpoint.Angles.Yaw.Degrees()
-			: doomYaw);
+	const float bodyYawDeg = !isnan(yawOverride) ? (float)yawOverride : rendererYawDeg;
 
 	if (vr_body_debug)
 	{
@@ -6407,60 +6665,37 @@ bool VKOpenXRDeviceMode::GetHmdTransform(VSMatrix* mat, DVector3 bodyOfs, float*
 			calls = 0;
 		}
 	}
-	mat->rotate(-90 + bodyYawDeg, 0, 1, 0);
 
 	if (outBodyYaw)
 		*outBodyYaw = bodyYawDeg;
 
-	// THE SEAT, in map units on the body's axes. Three corrections, and every
-	// one of them was a separate live bug before this moved in here:
-	//
-	//   THE UNIT. Everything from the scale() above onward is stated in METRES.
-	//   VSMatrix::translate post-multiplies, so its arguments are scaled by the
-	//   basis columns already in the matrix. A map-unit offset pushed in raw is
-	//   multiplied by vr_vunits_per_meter -- 34 by default. A hip holster asked
-	//   for 9 units to the side arrived 306 units out and 600 below the floor,
-	//   outside any sector, and was culled rather than drawn.
-	//
-	//   THE VERTICAL IS NOT THE SAME SCALE AS THE OTHER TWO. The Y column
-	//   carries an extra 1/pixelstretch from the scale() two lines up, so it
-	//   needs pixelstretch multiplied back in on its own. Dividing all three
-	//   axes by vr_vunits_per_meter uniformly is the obvious fix and it is
-	//   wrong: a 21-unit hip drop still lands 3.6 units low.
-	//
-	//   THE AXIS ROLES. After the heading rotation the local axes are the body's
-	//   RIGHT, UP and BACKWARD -- not forward, up, right. Feeding (forward, up,
-	//   right) straight in turns the whole rig a quarter circle, which reads as
-	//   holsters on the wrong sides rather than as an obviously broken transform.
-	const double vu = vr_vunits_per_meter;
-	if (bodyOfs.X != 0. || bodyOfs.Y != 0. || bodyOfs.Z != 0.)
-	{
-		mat->translate((float)( bodyOfs.Y / vu),
-		               (float)( bodyOfs.Z * pixelstretch / vu),
-		               (float)(-bodyOfs.X / vu));
-	}
+	// The heading, THE SEAT and the hand-back to map units: VR_FinishHmdTransform
+	// (hw_vrmodes.cpp), which carries the notes on all three.
+	VR_FinishHmdTransform(mat, pixelstretch, bodyYawDeg, bodyOfs, vr_vunits_per_meter);
+	return true;
+}
 
-	// AND NOW HAND BACK A MAP-UNIT FRAME, because the caller draws a MODEL in it
-	// and a model's vertices are map units like every other world model's.
-	//
-	// Without this the metres scale above multiplies the MESH too, not just the
-	// seat: a weapon solved to a 4.4-unit radius is drawn with a 4.4-METRE one,
-	// which puts the camera inside it, and a mesh seen from the inside back-face
-	// culls to nothing. That is the "not drawn" half of the holster report, and
-	// it is not a distance or a culling problem at all.
-	//
-	// The alternative -- leaving the frame in metres and dividing in MODELDEF, as
-	// the hand-frame models do -- bakes vr_vunits_per_meter into content, so
-	// moving that slider would silently resize every worn thing. The hand path
-	// carries that debt already because its content depends on it; the body path
-	// is new and does not have to.
-	//
-	// The three factors are the exact inverses of the column lengths above: vu on
-	// X and Z, vu/pixelstretch on Y. Z stays POSITIVE so the negative-Z handedness
-	// of the frame is preserved -- flipping it here would silently invert triangle
-	// winding on everything worn.
-	mat->scale(1.f / (float)vu, (float)pixelstretch / (float)vu, 1.f / (float)vu);
+// The first half of GetHmdTransform: position and units, no heading, no seat.
+bool VKOpenXRDeviceMode::GetHmdBaseTransform(VSMatrix* mat, double* outPixelStretch, float* outBodyYaw) const
+{
+	double pixelstretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
+	player_t* player = &players[consoleplayer];
+	if (!player)
+		return false;
 
+	mat->loadIdentity();
+	mat->translate((float)r_viewpoint.CenterEyePos.X, (float)r_viewpoint.CenterEyePos.Z - GetDoomPlayerHeightWithoutCrouch(player), (float)r_viewpoint.CenterEyePos.Y);
+	mat->scale((float)vr_vunits_per_meter, (float)vr_vunits_per_meter, (float)-vr_vunits_per_meter);
+
+	mat->translate(0.f, (hmdPosition[1] + (float)vr_height_adjust) / (float)pixelstretch, 0.f);
+	mat->scale(1, 1 / (float)pixelstretch, 1);
+
+	// The cinematic screen layer takes its heading from the viewpoint for the
+	// same reason the hand path does -- doomYaw is not the drawn heading there.
+	*outBodyYaw = VR_UseCinematicScreenLayer()
+		? (float)r_viewpoint.Angles.Yaw.Degrees()
+		: doomYaw;
+	*outPixelStretch = pixelstretch;
 	return true;
 }
 

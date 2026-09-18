@@ -1677,6 +1677,13 @@ OptionValue "DesktopViewModes"
 	2, "$OPTVAL_VR_RIGHT_EYE"
 }
 
+// [SPECTATOR] vr_spectator
+OptionValue "VRSpectatorModes"
+{
+	0, "Raw eye (what the headset sees)"
+	1, "Stabilized (for viewers)"
+}
+
 OptionValue HitscanTracerMode
 {
 	0, "$OPTVAL_VR_DISABLED"
@@ -2023,6 +2030,37 @@ OptionMenu VRHitscanTracerOptions protected
 	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_hitscan_tracer vr_hitscan_ricochet vr_hitscan_ricochet_chance vr_hitscan_tracer_color vr_hitscan_tracer_alpha vr_hitscan_tracer_length vr_hitscan_tracer_width vr_hitscan_tracer_speed vr_hitscan_tracer_offset"
 }
 
+// [SPECTATOR] [VRDEMO] What the desktop window shows while you play, and how a
+// VR demo looks when you watch it back on a monitor.
+OptionMenu VRStreamingOptions protected
+{
+	Title "Streaming and Replays"
+
+	StaticText ""
+	StaticText "Desktop window while playing", gold
+	// vr_spectator -- the window shows a steadied cut of the eye instead of the raw eye.
+	Option "Desktop view",				"vr_spectator", "VRSpectatorModes"
+	// vr_spectator_smooth -- seconds; higher is calmer and lags more.
+	Slider "Smoothing (seconds)",		"vr_spectator_smooth", 0.0, 1.5, 0.05, 2
+	// vr_spectator_fov -- capped at what the eye image covers; narrower smooths more.
+	Slider "Field of view",				"vr_spectator_fov", 40, 110, 1, 0
+	// vr_spectator_rolllock -- 1 keeps the horizon level.
+	Slider "Level horizon",				"vr_spectator_rolllock", 0.0, 1.0, 0.05, 2
+	// vr_spectator_pitchfollow -- how much of looking up and down viewers see.
+	Slider "Follow look up/down",		"vr_spectator_pitchfollow", 0.0, 1.0, 0.05, 2
+	// vr_spectator_cutangle -- a jump bigger than this (snap turn, teleport) cuts instead of panning.
+	Slider "Cut on turns over (deg)",	"vr_spectator_cutangle", 5, 90, 1, 0
+	StaticText "Uses the eye chosen in Desktop View. Capture the game window in OBS.", 1
+	StaticText ""
+	StaticText "Watching VR demos on a monitor", gold
+	// vr_replay_camera -- follow the recorded head through the same smoothing.
+	Option "Steadied head camera",		"vr_replay_camera", "OnOff"
+	StaticText "record <name> to record; playdemo <name> to watch.", 1
+	StaticText "Type chase in the console during playback for third person.", 1
+	StaticText ""
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_spectator vr_spectator_smooth vr_spectator_fov vr_spectator_rolllock vr_spectator_pitchfollow vr_spectator_cutangle vr_replay_camera"
+}
+
 OptionMenu VROptionsMenu protected
 {
 	Title "$VRPREFMNU_TITLE"
@@ -2043,6 +2081,8 @@ OptionMenu VROptionsMenu protected
 	ifOption(OpenVR, OpenXR)
 	{
 		Option "$VRPREFMNU_DESKTOP",    "vr_desktop_view", "DesktopViewModes"
+		// [SPECTATOR] Stabilized desktop view and VR demo replay camera.
+		Submenu "Streaming and replays",	"VRStreamingOptions"
 	}
 	Slider "$VRPREFMNU_WORLDSCALE",     "vr_vunits_per_meter", 1, 60, 1, 0
 	Slider "$VRPREFMNU_HEIGHT_ADJUST",		        "vr_height_adjust", -0.5, 1.0, 0.01, 2

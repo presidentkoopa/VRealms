@@ -419,15 +419,10 @@ void VkPostprocess::DrawPresentTexture(const IntRect &box, bool applyGamma, bool
 	renderstate.Draw();
 }
 
-void VkPostprocess::DrawPresentTextureToImage(VkTextureImage *image, VkFormat outputFormat, const IntRect &box, bool applyGamma, bool screenshot, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY, VulkanCommandBuffer *cmdbuffer, bool applyOpenXrBias)
+// The XR present pass's uniforms: shared by DrawPresentTextureToImage and the [SPECTATOR]
+// pass below, so the stabilized desktop view gets exactly the mirror's gamma stage.
+static PresentUniforms MakeXrPresentUniforms(bool applyGamma, bool outputIsSrgb, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY, bool applyOpenXrBias)
 {
-	VkPPRenderState renderstate(fb);
-	const bool outputIsSrgb = outputFormat == VK_FORMAT_B8G8R8A8_SRGB || outputFormat == VK_FORMAT_R8G8B8A8_SRGB;
-	const PPFilterMode presentFilter = ViewportLinearScale() ? PPFilterMode::Linear : PPFilterMode::Nearest;
-
-	if (!screenshot)
-		hw_postprocess.customShaders.Run(&renderstate, "screen");
-
 	// Zero-init: not every member is assigned on every path (padding0 never is,
 	// and the two paths below set different subsets), and the whole struct is
 	// memcpy-ed into the uniform buffer.
@@ -487,11 +482,51 @@ void VkPostprocess::DrawPresentTextureToImage(VkTextureImage *image, VkFormat ou
 
 	uniforms.HdrMode = 0;
 
+	return uniforms;
+}
+
+void VkPostprocess::DrawPresentTextureToImage(VkTextureImage *image, VkFormat outputFormat, const IntRect &box, bool applyGamma, bool screenshot, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY, VulkanCommandBuffer *cmdbuffer, bool applyOpenXrBias)
+{
+	VkPPRenderState renderstate(fb);
+	const bool outputIsSrgb = outputFormat == VK_FORMAT_B8G8R8A8_SRGB || outputFormat == VK_FORMAT_R8G8B8A8_SRGB;
+	const PPFilterMode presentFilter = ViewportLinearScale() ? PPFilterMode::Linear : PPFilterMode::Nearest;
+
+	if (!screenshot)
+		hw_postprocess.customShaders.Run(&renderstate, "screen");
+
+	PresentUniforms uniforms = MakeXrPresentUniforms(applyGamma, outputIsSrgb, sourceScaleX, sourceScaleY, sourceOffsetX, sourceOffsetY, applyOpenXrBias);
+
 	renderstate.Clear();
 	renderstate.Shader = &hw_postprocess.present.Present;
 	renderstate.Uniforms.Set(uniforms);
 	renderstate.Viewport = box;
 	renderstate.SetInputCurrent(0, presentFilter);
+	renderstate.SetInputTexture(1, &hw_postprocess.present.Dither, PPFilterMode::Nearest, PPWrapMode::Repeat);
+	renderstate.SetNoBlend();
+	renderstate.DrawToImage(image, outputFormat, cmdbuffer);
+}
+
+// [SPECTATOR] vr_spectator: the current pipeline image (one finished eye) reprojected into
+// the smoothed spectator camera and written to 'image'. Same gamma as the plain mirror
+// (applyGamma on, no OpenXR headset bias); no custom "screen" shaders, which the mirror pass
+// has already run on this image.
+void VkPostprocess::DrawSpectatorToImage(VkTextureImage *image, VkFormat outputFormat, const IntRect &box, const float specRot[16], const FVector4 &srcTan, const FVector4 &dstTan, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY, VulkanCommandBuffer *cmdbuffer)
+{
+	VkPPRenderState renderstate(fb);
+	const bool outputIsSrgb = outputFormat == VK_FORMAT_B8G8R8A8_SRGB || outputFormat == VK_FORMAT_R8G8B8A8_SRGB;
+	const PresentUniforms present = MakeXrPresentUniforms(true, outputIsSrgb, sourceScaleX, sourceScaleY, sourceOffsetX, sourceOffsetY, false);
+
+	SpectatorUniforms uniforms = {};
+	memcpy(&uniforms, &present, sizeof(PresentUniforms));	// same layout, asserted in hw_postprocess.h
+	memcpy(uniforms.SpecRot, specRot, sizeof(uniforms.SpecRot));
+	uniforms.SpecSrcTan = srcTan;
+	uniforms.SpecDstTan = dstTan;
+
+	renderstate.Clear();
+	renderstate.Shader = &hw_postprocess.present.Spectator;
+	renderstate.Uniforms.Set(uniforms);
+	renderstate.Viewport = box;
+	renderstate.SetInputCurrent(0, PPFilterMode::Linear);
 	renderstate.SetInputTexture(1, &hw_postprocess.present.Dither, PPFilterMode::Nearest, PPWrapMode::Repeat);
 	renderstate.SetNoBlend();
 	renderstate.DrawToImage(image, outputFormat, cmdbuffer);

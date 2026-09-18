@@ -93,10 +93,44 @@ vec4 ApplyHdrMode(vec4 c)
 	return vec4(sRGBtoscRGBLinear(c.rgb), 1.0);
 }
 
+#ifdef SPECTATOR_REPROJECT
+// [SPECTATOR] vr_spectator: the stabilized desktop view (vk_openxrdevice.cpp).
+//
+// TexCoord runs over the spectator image. Each pixel's ray is built in the smoothed spectator
+// camera, turned into the camera the eye was rendered with (SpecRot), and the eye image is
+// read where that ray lands. A pure rotation reprojects a perspective image exactly, so no
+// depth is involved and nothing smears.
+//
+// Tangent rects are (left, right, down, up). TexCoord.y = 0 is the TOP row, which is the
+// convention the plain mirror's UVOffset/UVScale mapping already assumes -- so the eye's own
+// TexCoord is computed in that convention and handed to the same mapping.
+vec4 SpectatorSample()
+{
+	vec3 dirSpec = vec3(
+		mix(SpecDstTan.x, SpecDstTan.y, TexCoord.x),
+		mix(SpecDstTan.w, SpecDstTan.z, TexCoord.y),
+		-1.0);
+	vec3 dirEye = (SpecRot * vec4(dirSpec, 0.0)).xyz;
+	if (dirEye.z > -1e-4)
+		return vec4(0.0, 0.0, 0.0, 1.0);
+	vec2 tanEye = dirEye.xy / -dirEye.z;
+	vec2 eyeTC = vec2(
+		(tanEye.x - SpecSrcTan.x) / (SpecSrcTan.y - SpecSrcTan.x),
+		(SpecSrcTan.w - tanEye.y) / (SpecSrcTan.w - SpecSrcTan.z));
+	if (eyeTC.x < 0.0 || eyeTC.x > 1.0 || eyeTC.y < 0.0 || eyeTC.y > 1.0)
+		return vec4(0.0, 0.0, 0.0, 1.0);
+	return texture(InputTexture, UVOffset + eyeTC * UVScale);
+}
+#endif
+
 void main()
 {
 	vec4 color;
+#ifdef SPECTATOR_REPROJECT
+	color = SpectatorSample();
+#else
 	color = texture(InputTexture, UVOffset + TexCoord * UVScale);
+#endif
 	color = ApplyGamma(color);
 	color = ApplyHdrMode(color);
 	color = Dither(color);

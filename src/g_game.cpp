@@ -47,6 +47,7 @@
 #include "filesystem.h"
 #include "fs_findfile.h"
 #include "g_game.h"
+#include "p_vrdemo.h"
 #include "g_hub.h"
 #include "g_levellocals.h"
 #include "gi.h"
@@ -294,6 +295,8 @@ void CT_Stop();
 
 void G_ReadDemoTiccmd (usercmd_t *cmd, int player);
 void G_WriteDemoTiccmd (usercmd_t *cmd, int player, int buf);
+static void G_EnsureDemoSpace(size_t bytes);
+static void G_ReadDemoVRFrame();
 void G_PlayerReborn (int player);
 
 void G_DoAutoSave ();
@@ -1930,6 +1933,18 @@ void G_Ticker ()
 
 	C_TickQueuedInputs();
 
+	// [VRDEMO] THE TIC'S VR FRAME, BEFORE ANYTHING ELSE IN THE TIC.
+	//
+	// It carries what the VR backend did to the pawn since the last tic, and it has to
+	// land on the pawn that was there when it happened. The reborn loop below can replace
+	// that pawn, and the gameaction after it can load a whole level, so capturing (or
+	// replaying) any later would move a fresh pawn by a dead one's roomscale steps.
+	VRDemo_SetInTic(true);
+	if (demorecording)
+		VRDemo_BeginTic(consoleplayer);
+	else if (demoplayback)
+		G_ReadDemoVRFrame();
+
 	// do player reborns if needed
 	// TODO: These should really be moved to queues.
 	for (unsigned int i = 0; i < MAXPLAYERS; ++i)
@@ -2089,6 +2104,7 @@ void G_Ticker ()
 	default:
 		break;
 	}
+	VRDemo_SetInTic(false);
 }
 
 
@@ -3280,6 +3296,20 @@ void G_DoSaveGame (bool okForQuicksave, bool forceQuicksave, FString filename, c
 // DEMO RECORDING
 //
 
+// [VRDEMO] The tic's VR frame is the first thing G_WriteDemoTiccmd put in this tic's
+// slice of the BODY chunk, so it is read here, at the top of the tic, before the reborn
+// and gameaction handling that the recording also ran after it. Anything else in the
+// stream is left for G_ReadDemoTiccmd; a frame that somehow arrives later still works,
+// through Net_DoCommand.
+static void G_ReadDemoVRFrame()
+{
+	while (demoplayback && demo_p.Data() < zdembodyend && demo_p.Size() > 0 && demo_p[0] == DEM_VRFRAME)
+	{
+		AdvanceStream(demo_p, 1);
+		VRDemo_ReadFrame(demo_p, consoleplayer);
+	}
+}
+
 void G_ReadDemoTiccmd (usercmd_t *cmd, int player)
 {
 	int id = DEM_BAD;
@@ -3347,6 +3377,15 @@ void G_WriteDemoTiccmd (usercmd_t *cmd, int player, int buf)
 		return;
 	}
 
+	// [VRDEMO] The tic's VR frame goes first, ahead of the special commands, because the
+	// between-tic moves it carries happened before those commands ran. The buffer only
+	// ever grows after a write, with a 64-byte margin; a VR frame is bigger than that.
+	if (const size_t vrFrameSize = VRDemo_PendingFrameSize(player))
+	{
+		G_EnsureDemoSpace(vrFrameSize + 64);
+		VRDemo_WriteFrame(player, demo_p);
+	}
+
 	// [RH] Write any special "ticcmds" for this player to the demo
 	if ((specdata = ClientStates[player].Tics[buf % BACKUPTICS].Data.GetData (&speclen)) && !(gametic % TicDup))
 		WriteBytes(TArrayView(specdata, speclen), demo_p);
@@ -3355,13 +3394,18 @@ void G_WriteDemoTiccmd (usercmd_t *cmd, int player, int buf)
 	WriteUserCmdMessage (*cmd, &players[player].cmd, demo_p);
 
 	// [RH] Bigger safety margin
-	if (demo_p.Data() > demobuffer.Data() + demobuffer.Size() - 64)
+	G_EnsureDemoSpace(64);
+}
+
+// [RH] Allocate more space for the demo when fewer than 'bytes' remain.
+static void G_EnsureDemoSpace(size_t bytes)
+{
+	while (demo_p.Data() > demobuffer.Data() + demobuffer.Size() - bytes)
 	{
 		ptrdiff_t pos = demo_p.Data() - demobuffer.Data();
 		ptrdiff_t spot = streamPos - demobuffer.Data();
 		ptrdiff_t comp = democompspot - demobuffer.Data();
 		ptrdiff_t body = demobodyspot - demobuffer.Data();
-		// [RH] Allocate more space for the demo
 		maxdemosize += 0x20000;
 		demobuffer.Resize(maxdemosize);
 		demo_p = TArrayView(demobuffer.Data() + pos, demobuffer.Size() - pos);
@@ -3385,6 +3429,7 @@ void G_RecordDemo (const char* name)
 	maxdemosize = 0x20000;
 	demobuffer.Resize(maxdemosize);
 	demorecording = true;
+	VRDemo_Reset();
 }
 
 
@@ -3505,6 +3550,7 @@ UNSAFE_CCMD (timedemo)
 //      until a BODY chunk is entered.
 bool G_ProcessIFFDemo (FString &mapname)
 {
+	VRDemo_Reset();	// [VRDEMO] a new demo has no VR frames until it shows one
 	bool headerHit = false;
 	bool bodyHit = false;
 	int numPlayers = 0;
@@ -3778,6 +3824,7 @@ bool G_CheckDemoStatus (void)
 
 		C_RestoreCVars (); // [RH] Restore cvars demo might have changed
 		demobuffer.Reset();
+		VRDemo_Reset();
 
 		P_SetupWeapons_ntohton();
 		demoplayback = false;
@@ -3855,6 +3902,7 @@ bool G_CheckDemoStatus (void)
 		demobuffer.Reset();
 		demorecording = false;
 		stoprecording = false;
+		VRDemo_Reset();
 		if (saved)
 		{
 			Printf ("Demo %s recorded\n", demoname.GetChars());

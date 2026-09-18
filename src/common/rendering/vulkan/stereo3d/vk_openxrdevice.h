@@ -4,6 +4,7 @@
 #include "vulkan/system/vk_renderdevice.h"
 #include "common/rendering/stereo3d/openxr/oxr_loader.h"
 #include "zvulkan/vulkanobjects.h"
+#include "p_vrdemo.h"
 
 #include <vector>
 #include <memory>
@@ -185,6 +186,8 @@ public:
 	virtual bool RenderVirtualScreen() const override;
 	virtual void FinalizeEyeImage(VulkanRenderDevice* fb, int eyeIndex) const override;
 	virtual bool RenderDesktopMirror(VulkanRenderDevice* fb, VulkanImage* dstImage) const override;
+	bool RenderSpectatorEye(VulkanRenderDevice* fb, int eyeIndex, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY) const;	// [SPECTATOR]
+	bool EnsureSpectatorTexture(VulkanRenderDevice* fb, int width, int height) const;	// [SPECTATOR]
 	bool GetRecommendedRenderSize(int& outWidth, int& outHeight) const override;
 	virtual bool ShouldUseRecommendedRenderSizeThisFrame() const override;
 	virtual bool ShouldUseScreenLayerForCurrentFrame() const override;
@@ -193,6 +196,7 @@ public:
 	bool HasActiveInputSession() const;
 	
 	virtual bool GetHmdTransform(VSMatrix* out, DVector3 bodyOfs = DVector3(0, 0, 0), float* outBodyYaw = nullptr, double yawOverride = NAN) const override;
+	virtual bool GetHmdBaseTransform(VSMatrix* out, double* outPixelStretch, float* outBodyYaw) const override;
 	virtual bool GetHandTransform(int hand, VSMatrix* out) const override;
 	virtual bool RenderPlayerSpritesInScene() const { return true; }
 	virtual bool GetTeleportLocation(DVector3 &out) const override;
@@ -365,6 +369,11 @@ protected:
 	mutable std::vector<VkTextureImage> xrMirrorPresentTextures;
 	mutable std::vector<std::vector<VkTextureImage>> xrDeferredPresentTextures;
 	mutable std::vector<std::vector<VkTextureImage>> xrDeferredMirrorPresentTextures;
+	// [SPECTATOR] vr_spectator: the stabilized desktop view. At most one texture, the
+	// size of the window; FinalizeEyeImage draws it, RenderDesktopMirror shows it.
+	mutable std::vector<VkTextureImage> xrSpectatorTextures;
+	mutable bool xrSpectatorFrameReady = false;
+	mutable FVRViewStabilizer xrSpectatorStabilizer;
 	mutable std::vector<XrSwapchainImageVulkanKHR> xrVirtualScreenSwapchainImages;
 	mutable std::vector<XrSwapchainImageVulkanKHR> xrVirtualScreenBackdropSwapchainImages;
 	mutable std::vector<XrSwapchainImageVulkanKHR> xrMenuPointerBeamSwapchainImages;

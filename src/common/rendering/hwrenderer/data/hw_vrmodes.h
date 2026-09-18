@@ -241,7 +241,15 @@ struct VRMode
 	// that filters its heading cannot express anything in the renderer's basis,
 	// because that basis is not visible from script -- so it supplies the heading
 	// instead of trying to match it.
-	virtual bool GetHmdTransform(VSMatrix* out, DVector3 bodyOfs = DVector3(0, 0, 0), float* outBodyYaw = nullptr, double yawOverride = NAN) const { return false; }
+	//
+	// The base answers only while a VR demo is replaying (p_vrdemo.h); a headset
+	// backend answers live.
+	virtual bool GetHmdTransform(VSMatrix* out, DVector3 bodyOfs = DVector3(0, 0, 0), float* outBodyYaw = nullptr, double yawOverride = NAN) const;
+	// GetHmdTransform's frame BEFORE the heading and the seat: head position and
+	// units only. With the pixelstretch and the heading it would have used, that
+	// is everything VR_FinishHmdTransform needs -- which is how a VR demo records
+	// the frame once per tic and still answers any seat and any yaw override.
+	virtual bool GetHmdBaseTransform(VSMatrix* out, double* outPixelStretch, float* outBodyYaw) const { return false; }
 	// mirroredOut, when given, says whether the frame came back mirrored (the
 	// auto-reverse scale on controller 0) -- see AActor::FollowHandRot.
 	virtual bool GetWeaponTransform(VSMatrix* out, int hand = 0, bool allowAutoReverse = true, bool *mirroredOut = nullptr) const;
@@ -253,6 +261,11 @@ struct VRMode
 };
 
 void VR_HapticEvent(const char* event, int position, int intensity, float angle, float yHeight );
+
+// The second half of VRMode::GetHmdTransform: the heading, the seat and the hand-back to
+// map units, applied to a frame from GetHmdBaseTransform. One implementation for the
+// live backend and for VR demo playback, so the two cannot drift apart.
+void VR_FinishHmdTransform(VSMatrix* mat, double pixelstretch, float bodyYawDeg, const DVector3& bodyOfs, double unitsPerMeter);
 
 // [BB] Script-side VR input suppression.
 //

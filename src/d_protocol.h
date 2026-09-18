@@ -166,6 +166,11 @@ enum EDemoCommand
 	DEM_READIED,		// 77
 	DEM_WEAPSELECT,		// 78 Byte: Slot
 	DEM_USEFLECHETTE,	// 79
+
+	// [VRDEMO] UZDXREMA. Numbered well clear of upstream's list so a merge that adds
+	// commands does not renumber it. Word: payload size, then the payload -- one tic's
+	// VR frame (p_vrdemo.cpp). Only ever written to demos, never sent over the network.
+	DEM_VRFRAME = 200,	// 200
 };
 
 // The following are implemented by cht_DoCheat in m_cheat.cpp

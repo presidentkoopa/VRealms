@@ -963,6 +963,7 @@ set (PCH_SOURCES
 	playsim/p_things.cpp
 	p_tick.cpp
 	playsim/p_user.cpp
+	playsim/p_vrdemo.cpp
 	rendering/r_utility.cpp
 	rendering/r_levelray.cpp
 	rendering/r_sky.cpp

@@ -61,6 +61,7 @@ public:
 	void CopyCurrentToImage(VkTextureImage *image, VkImageLayout finallayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	void DrawPresentTexture(const IntRect &box, bool applyGamma, bool screenshot);
 	void DrawPresentTextureToImage(VkTextureImage *image, VkFormat outputFormat, const IntRect &box, bool applyGamma, bool screenshot, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY, VulkanCommandBuffer *cmdbuffer, bool applyOpenXrBias = true);
+	void DrawSpectatorToImage(VkTextureImage *image, VkFormat outputFormat, const IntRect &box, const float specRot[16], const FVector4 &srcTan, const FVector4 &dstTan, float sourceScaleX, float sourceScaleY, float sourceOffsetX, float sourceOffsetY, VulkanCommandBuffer *cmdbuffer);	// [SPECTATOR]
 
 	int GetCurrentPipelineImage() const { return mCurrentPipelineImage; }
 	int GetNextPipelineImage() const;

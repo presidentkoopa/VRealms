@@ -42,6 +42,7 @@
 #include "gl/stereo3d/gl_openxrdevice.h"
 #include "vulkan/stereo3d/vk_openxrdevice.h"
 #include <QzDoom/VrCommon.h>
+#include "p_vrdemo.h"
 
 #include "textures.h"
 #include "gametexture.h"
@@ -1410,14 +1411,19 @@ void VRMode::SetUp() const
 	player_t* player = &players[consoleplayer];
 	if (player && player->mo)
 	{
-		player->PlayInVR = IsVR();
+		// A replaying VR demo owns PlayInVR and the pose below (p_vrdemo.cpp restores
+		// them every tic); the renderer writing them here would overwrite the recording
+		// with whatever this machine's headset -- or lack of one -- says.
+		const bool replayingVrDemo = VRDemo_IsReplaying();
+		if (!replayingVrDemo)
+			player->PlayInVR = IsVR();
 		player->mo->AttackDir = MapAttackDir;
 		player->mo->OffhandDir = MapOffhandDir;
 
 		// Multiplayer reconstructs attack pose from synchronized input in playsim.
 		// In local VR, keep render-time attack pose aligned to the current controller
 		// transform instead of resetting to the generic head-height fallback.
-		if (!multiplayer)
+		if (!multiplayer && !replayingVrDemo)
 		{
 			player->mo->OverrideAttackPosDir = !puristmode && (IsVR() || vr_override_weap_pos);
 			if (player->mo->OverrideAttackPosDir && IsVR())
@@ -1486,6 +1492,69 @@ int VR_ControllerForHand(int hand)
 	return (hand == VR_OFFHAND) ? 1 - rightHanded : rightHanded;
 }
 
+bool VRMode::GetHmdTransform(VSMatrix* out, DVector3 bodyOfs, float* outBodyYaw, double yawOverride) const
+{
+	// No headset here. A replaying VR demo still has the recorded head (p_vrdemo.cpp).
+	return VRDemo_GetHmdTransform(out, bodyOfs, outBodyYaw, yawOverride);
+}
+
+// THE SECOND HALF OF THE BODY FRAME (see VKOpenXRDeviceMode::GetHmdTransform for the first).
+// Moved here unchanged so the live headset and a replaying VR demo finish the frame the
+// same way.
+void VR_FinishHmdTransform(VSMatrix* mat, double pixelstretch, float bodyYawDeg, const DVector3& bodyOfs, double unitsPerMeter)
+{
+	mat->rotate(-90 + bodyYawDeg, 0, 1, 0);
+
+	// THE SEAT, in map units on the body's axes. Three corrections, and every
+	// one of them was a separate live bug before this moved in here:
+	//
+	//   THE UNIT. Everything from the scale() above onward is stated in METRES.
+	//   VSMatrix::translate post-multiplies, so its arguments are scaled by the
+	//   basis columns already in the matrix. A map-unit offset pushed in raw is
+	//   multiplied by vr_vunits_per_meter -- 34 by default. A hip holster asked
+	//   for 9 units to the side arrived 306 units out and 600 below the floor,
+	//   outside any sector, and was culled rather than drawn.
+	//
+	//   THE VERTICAL IS NOT THE SAME SCALE AS THE OTHER TWO. The Y column
+	//   carries an extra 1/pixelstretch from the scale() two lines up, so it
+	//   needs pixelstretch multiplied back in on its own. Dividing all three
+	//   axes by vr_vunits_per_meter uniformly is the obvious fix and it is
+	//   wrong: a 21-unit hip drop still lands 3.6 units low.
+	//
+	//   THE AXIS ROLES. After the heading rotation the local axes are the body's
+	//   RIGHT, UP and BACKWARD -- not forward, up, right. Feeding (forward, up,
+	//   right) straight in turns the whole rig a quarter circle, which reads as
+	//   holsters on the wrong sides rather than as an obviously broken transform.
+	const double vu = unitsPerMeter;
+	if (bodyOfs.X != 0. || bodyOfs.Y != 0. || bodyOfs.Z != 0.)
+	{
+		mat->translate((float)( bodyOfs.Y / vu),
+		               (float)( bodyOfs.Z * pixelstretch / vu),
+		               (float)(-bodyOfs.X / vu));
+	}
+
+	// AND NOW HAND BACK A MAP-UNIT FRAME, because the caller draws a MODEL in it
+	// and a model's vertices are map units like every other world model's.
+	//
+	// Without this the metres scale above multiplies the MESH too, not just the
+	// seat: a weapon solved to a 4.4-unit radius is drawn with a 4.4-METRE one,
+	// which puts the camera inside it, and a mesh seen from the inside back-face
+	// culls to nothing. That is the "not drawn" half of the holster report, and
+	// it is not a distance or a culling problem at all.
+	//
+	// The alternative -- leaving the frame in metres and dividing in MODELDEF, as
+	// the hand-frame models do -- bakes vr_vunits_per_meter into content, so
+	// moving that slider would silently resize every worn thing. The hand path
+	// carries that debt already because its content depends on it; the body path
+	// is new and does not have to.
+	//
+	// The three factors are the exact inverses of the column lengths above: vu on
+	// X and Z, vu/pixelstretch on Y. Z stays POSITIVE so the negative-Z handedness
+	// of the frame is preserved -- flipping it here would silently invert triangle
+	// winding on everything worn.
+	mat->scale(1.f / (float)vu, (float)pixelstretch / (float)vu, 1.f / (float)vu);
+}
+
 bool VRMode::GetWeaponTransform(VSMatrix* out, int hand_weapon, bool allowAutoReverse, bool *mirroredOut) const
 {
 	player_t* player = &players[consoleplayer];
@@ -1497,19 +1566,33 @@ bool VRMode::GetWeaponTransform(VSMatrix* out, int hand_weapon, bool allowAutoRe
 	}
 	int hand = VR_ControllerForHand(hand_weapon);
 	if (mirroredOut) *mirroredOut = false;
-	if (GetHandTransform(hand, out))
+	// A VR DEMO ANSWERS FIRST, and only for the playsim: while one replays, the recorded
+	// hand; while one records, during a tic, the hand captured at the tic's start (the
+	// same frame the live call returns, and the one written to the demo).
+	//
+	// With the controller that hand was on when it was recorded, because the mirror
+	// below keys off the controller and the hand-to-controller map is a user setting --
+	// a left-handed viewer would otherwise mirror a right-handed recording. The
+	// auto-reverse itself still comes from the weapon held now, as it always has.
+	int recordedController = hand;
+	if (VRDemo_GetWeaponHandTransform(hand_weapon, out, &recordedController))
 	{
-		if (!hand && autoReverse)
-		{
-			out->scale(-1.0f, 1.0f, 1.0f);
-			// Reported rather than left for the caller to re-derive: GetHandTransform's
-			// own -Z world scale makes the determinant negative in BOTH hands, so the
-			// matrix alone cannot say whether this mirror went in.
-			if (mirroredOut) *mirroredOut = true;
-		}
-		return true;
+		hand = recordedController;
 	}
-	return false;
+	else if (!GetHandTransform(hand, out))
+	{
+		return false;
+	}
+
+	if (!hand && autoReverse)
+	{
+		out->scale(-1.0f, 1.0f, 1.0f);
+		// Reported rather than left for the caller to re-derive: GetHandTransform's
+		// own -Z world scale makes the determinant negative in BOTH hands, so the
+		// matrix alone cannot say whether this mirror went in.
+		if (mirroredOut) *mirroredOut = true;
+	}
+	return true;
 }
 
 float length(float x, float y)
