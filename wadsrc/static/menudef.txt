@@ -2712,6 +2712,10 @@ OptionValue "TonemapModes"
 	2, "$OPTVAL_HEJLDAWSON"
 	3, "$OPTVAL_REINHARD"
 	5, "$OPTVAL_PALETTE"
+	// [TONEMAP] The fork's own curve: highlights are rolled off instead of cut off, and a bright
+	// colour keeps its colour instead of walking to white.  Its four settings are the rows under
+	// this one.  Off is the picture this engine has always shown, to the bit.
+	6, "Filmic roll-off"
 }
 
 OptionValue "SSAOModes"
@@ -3188,6 +3192,23 @@ OptionMenu "PostProcessMenu" protected
 	Option "$GLPREFMNU_FXAA",            gl_fxaa,                     FXAAQuality
 	Option "$GLPREFMNU_DITHER",          gl_dither_bpc,               DitherModes
 	Option "$GLPREFMNU_TONEMAP",         gl_tonemap,                  TonemapModes
+	// [TONEMAP] The filmic roll-off's own settings ("Engine docs/TONEMAP_IMPL_NOTES.md").  They do nothing
+	// unless the row above is set to "Filmic roll-off".  All four are read by the renderer every frame, so
+	// each one moves the picture live with this menu open.
+	//
+	// KNEE: everything at or below this is passed through untouched and the roll-off starts here.  Lower
+	// gives the bright end more room and dims pure white more; higher keeps white brighter.
+	Slider "Roll-off knee (below this nothing changes)", gl_tonemap_knee,       0.30, 0.95, 0.01, 2
+	// WHITE: what an infinitely bright pixel lands on.  1.10 by default, because the headset and the desktop
+	// window encode the finished frame differently and the headset has room above 1.0 that the window does
+	// not -- at 1.00 the headset's brightest pixel caps at 243 of 255.  1.00 is "nothing clips anywhere".
+	Slider "Roll-off white point (1.00 never clips)",     gl_tonemap_white,      0.50, 1.50, 0.01, 2
+	// EXPOSURE: a fixed pre-scale before the curve, for a scene that is a touch dark or a touch hot.  It does
+	// not adapt -- nothing that breathes while you turn your head belongs in front of a headset.
+	Slider "Roll-off exposure (1.00 = no change)",       gl_tonemap_exposure,   0.25, 4.00, 0.05, 2
+	// DESATURATE: at 0 a bright colour keeps its colour exactly, however bright it gets.  Above 0 the very
+	// top of the range is allowed that far towards white, if you want a blown highlight to read as blinding.
+	Slider "Highlights towards white (0 = keep the colour)", gl_tonemap_desaturate, 0.00, 1.00, 0.05, 2
 	StaticText " "
 	Slider "$GLPREFMNU_PALTONEMAPPOWER", gl_paltonemap_powtable,      0.2, 3.0, 0.1, 1
 	Option "$GLPREFMNU_PALTONEMAPORDER", gl_paltonemap_reverselookup, LookupOrder
@@ -3197,7 +3218,7 @@ OptionMenu "PostProcessMenu" protected
 	Option "$GLPREFMNU_LITESHADER",				gl_lite_shader,					"ShaderQuality"
 	StaticText "$GLPREFMNU_CHANGING_THESE_OPTIONS_REQUIRES_A_RESTART", "Brown"
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar gl_bloom gl_lens gl_ssao gl_ssao_portals gl_fxaa gl_dither_bpc gl_tonemap gl_paltonemap_powtable gl_paltonemap_reverselookup gl_custompost gl_customshader gl_lite_shader"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar gl_bloom gl_lens gl_ssao gl_ssao_portals gl_fxaa gl_dither_bpc gl_tonemap gl_tonemap_knee gl_tonemap_white gl_tonemap_exposure gl_tonemap_desaturate gl_paltonemap_powtable gl_paltonemap_reverselookup gl_custompost gl_customshader gl_lite_shader"
 }
 
 OptionMenu "vkoptions"

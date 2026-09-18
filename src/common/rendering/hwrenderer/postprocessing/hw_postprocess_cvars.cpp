@@ -402,10 +402,71 @@ CVAR(Float, gl_exposure_min, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_base, 0.35f, CVAR_ARCHIVE)
 CVAR(Float, gl_exposure_speed, 0.05f, CVAR_ARCHIVE)
 
+// [TONEMAP] gl_tonemap: 0 off, 1 Uncharted2, 2 Hejl-Dawson, 3 Reinhard, 4 linear, 5 palette, and 6 the fork's own
+// FILMIC ROLL-OFF ("Engine docs/TONEMAP_IMPL_NOTES.md"; ETonemapMode in hw_postprocess.h, the curve in
+// shaders/pp/tonemapfilmic.fp).  The range grew by one; every existing number means what it always did, here and
+// in a saved ini and in MAPINFO.
+//
+// STILL 0 BY DEFAULT.  At 0 the pass returns before it draws and the frame is the frame this engine has always
+// presented, to the bit.  The roll-off touches EVERY pixel above its knee, the owner's grab lasers and the Lance
+// among them.  A beam on its own against a dark surface barely moves -- one or two levels on its own channel,
+// with the others still exactly 0, and none at all at gl_tonemap_knee 0.95 -- but a beam crossing a LIT wall
+// reads differently, because the wall under it stops being washed white by the clip.  That is an A/B for the
+// owner to approve in the headset, so the mode ships reachable and not chosen.
 CUSTOM_CVAR(Int, gl_tonemap, 0, CVAR_ARCHIVE)
 {
-	if (self < 0 || self > 5)
+	if (self < 0 || self > 6)
 		self = 0;
+}
+
+// [TONEMAP] THE ROLL-OFF'S FOUR SETTINGS.  Inert unless gl_tonemap is 6; read by the renderer every frame it
+// draws (PPTonemap::FilmicUniforms), so each one moves the picture live with this menu open.  All four are in
+// the units the owner sees on screen -- 0.85 means "the value that shows as 0.85" -- and the curve's own linear
+// light is the renderer's business, not the menu's.  The clamps here and the clamps in FilmicUniforms say the
+// same thing twice on purpose: a cvar can be set from the console or a hand-edited ini as well as from a row.
+
+// KNEE: everything at or below this is passed through UNTOUCHED, bit for bit, and the roll-off begins here.
+// Lower gives the overbright range more room and dims pure white further (0.80: white 1.0 shows as 231 of 255);
+// higher keeps white brighter and compresses the overbrights harder (0.90: 243).  0.85 shows white at 237.
+// AT 0.95 a beam on its own is bit-identical at eight bits and the flash and glow-preset fix is still complete;
+// that is where the owner's A/B starts.  It does not change what a beam does to a LIT wall it crosses -- see
+// section 5 of the notes, which is the case to look at in the headset.
+CUSTOM_CVARD(Float, gl_tonemap_knee, 0.85f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "filmic tone map: everything at or below this is untouched and the roll-off starts here")
+{
+	if (self < 0.30f) self = 0.30f;
+	if (self > 0.95f) self = 0.95f;
+}
+
+// WHITE: what an infinitely bright pixel lands on, in the units this image is carried in -- NOT in the units a
+// display shows.  How much of it a path can show is that path's present pass: the desktop window's saturates
+// around 0.95 and the headset eye's carries usable range past 1.2, because they encode differently
+// ("Engine docs/TONEMAP_IMPL_NOTES.md" section 5).  So 1.10 is the default: it costs the window nothing
+// measurable and it is what keeps the HEADSET able to reach full white with the curve on -- at 1.00 the
+// headset's brightest pixel caps at 243 of 255.  1.00 is the setting for "literally nothing clips anywhere";
+// above 1.20 the top of the range is given back to the clip.
+CUSTOM_CVARD(Float, gl_tonemap_white, 1.10f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "filmic tone map: what an infinitely bright pixel lands on (1.00 never clips; higher lets the headset reach full white)")
+{
+	if (self < 0.50f) self = 0.50f;
+	if (self > 1.50f) self = 1.50f;
+}
+
+// EXPOSURE: a plain pre-scale before the curve, for a scene that is a touch dark or a touch hot.  FIXED, not
+// adapting: this engine's auto-exposure (PPCameraExposure) feeds the bloom extract and the flash-blindness
+// meter and has never scaled the scene image, and nothing that breathes while you turn your head belongs in
+// front of a headset.  1.0 is no change, and is the only value at which the knee's pass-through applies.
+CUSTOM_CVARD(Float, gl_tonemap_exposure, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "filmic tone map: a fixed pre-scale before the curve (1.0 = no change)")
+{
+	if (self < 0.25f) self = 0.25f;
+	if (self > 4.0f) self = 4.0f;
+}
+
+// DESATURATE: the one dial allowed to move a colour.  At 0 hue and saturation are held exactly, however bright
+// the pixel; above 0 the deepest part of the shoulder is allowed that far towards white, for anyone who wants a
+// blown highlight to read as blinding.  It still cannot clip.
+CUSTOM_CVARD(Float, gl_tonemap_desaturate, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "filmic tone map: how far the brightest highlights may go towards white (0 = keep the colour exactly)")
+{
+	if (self < 0.0f) self = 0.0f;
+	if (self > 1.0f) self = 1.0f;
 }
 
 CVAR(Bool, gl_lens, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)

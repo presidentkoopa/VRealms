@@ -2378,6 +2378,59 @@ void PPTonemap::UpdateTextures()
 	}
 }
 
+// ============================================================================
+// [TONEMAP] THE FILMIC ROLL-OFF'S NUMBERS ("Engine docs/TONEMAP_IMPL_NOTES.md"; the curve itself is
+// shaders/pp/tonemapfilmic.fp).
+//
+// The cvars are in the units the owner sees on screen and the curve works in linear light, so the one pow each
+// way happens here, once a frame, rather than twice a pixel.  Everything is clamped here too, so a hand-edited
+// ini cannot hand the shader a knee above its white point or a negative exposure.
+//
+// PassThrough is the promise the mode makes: while the exposure is exactly 1, a pixel whose brightest channel is
+// at or below the knee leaves the pass as the bits it arrived with -- no gamma round trip, so the mid-range does
+// not move by even one level.  With any other exposure every pixel is scaled and there is nothing to pass
+// through, so it is set negative and the shader's test can never fire.
+// ============================================================================
+TonemapFilmicUniforms PPTonemap::FilmicUniforms()
+{
+	const float gamma = 2.2f;
+
+	float knee = (float)gl_tonemap_knee;
+	if (!(knee >= 0.30f)) knee = 0.30f;	// also catches NaN
+	if (knee > 0.95f) knee = 0.95f;
+
+	// WHITE may go ABOVE 1 on purpose.  It is the curve's asymptote in the units this image is carried in, and
+	// how much of that a display path can actually show is the PRESENT pass's business, not the curve's: the
+	// window's present saturates around 0.95 while the headset eye's carries usable range past 1.2 (present.fp
+	// plus each path's own InvGamma, see "Engine docs/TONEMAP_IMPL_NOTES.md").  Capping white at 1 would hand
+	// the headset an image that can never reach full white.
+	float white = (float)gl_tonemap_white;
+	if (!(white >= 0.50f)) white = 0.50f;
+	if (white > 1.50f) white = 1.50f;
+	if (white < knee + 0.01f) white = knee + 0.01f;	// the shoulder needs somewhere to go
+
+	float exposure = (float)gl_tonemap_exposure;
+	if (!(exposure >= 0.25f)) exposure = 0.25f;
+	if (exposure > 4.0f) exposure = 4.0f;
+	// SNAPPED TO EXACTLY 1 when it is within rounding of it.  A slider adds its step up in floats, so "1.00" on
+	// the row can arrive as 0.99999994, and the pass-through below asks for exactly 1.  Snapping the value
+	// itself rather than loosening that test keeps the scale and the pass-through agreeing about the same
+	// number, so there is no step at the knee.
+	if (exposure > 0.9999f && exposure < 1.0001f) exposure = 1.0f;
+
+	float desaturate = (float)gl_tonemap_desaturate;
+	if (!(desaturate >= 0.0f)) desaturate = 0.0f;
+	if (desaturate > 1.0f) desaturate = 1.0f;
+
+	TonemapFilmicUniforms uniforms = {};
+	uniforms.KneeLinear = std::pow(knee, gamma);
+	uniforms.WhiteLinear = std::pow(white, gamma);
+	uniforms.Exposure = exposure;
+	uniforms.Desaturate = desaturate;
+	uniforms.PassThrough = (exposure == 1.0f) ? knee : -1.0f;
+	return uniforms;
+}
+
 void PPTonemap::Render(PPRenderState *renderstate)
 {
 	ETonemapMode current_tonemap = (level_tonemap != ETonemapMode::None) ? level_tonemap : ETonemapMode((int)gl_tonemap);
@@ -2398,12 +2451,19 @@ void PPTonemap::Render(PPRenderState *renderstate)
 	case ETonemapMode::HejlDawson:	shader = &HejlDawsonShader; break;
 	case ETonemapMode::Uncharted2:	shader = &Uncharted2Shader; break;
 	case ETonemapMode::Palette:		shader = &PaletteShader; break;
+	// [TONEMAP] The roll-off.  Appended to the switch; every case above keeps its program.
+	case ETonemapMode::Filmic:		shader = &FilmicShader; break;
 	}
 
 	renderstate->PushGroup("tonemap");
 
 	renderstate->Clear();
 	renderstate->Shader = shader;
+	// [TONEMAP] Renderer-read: the settings are taken from the cvars HERE, in the frame being drawn, so a slider
+	// moves the picture while the menu that owns it is open.  Only this mode has uniforms; the others are
+	// handed the empty block they always were.
+	if (current_tonemap == ETonemapMode::Filmic)
+		renderstate->Uniforms.Set(FilmicUniforms());
 	renderstate->Viewport = screen->mScreenViewport;
 	renderstate->SetInputCurrent(0);
 	if (current_tonemap == ETonemapMode::Palette)

@@ -1713,6 +1713,12 @@ DEFINE_MAP_OPTION(lightblendmode, false)
 			{
 				info->tonemap = ETonemapMode::Reinhard;
 			}
+			// [TONEMAP] The fork's roll-off, reachable from a map the same way the stock modes are
+			// ("Engine docs/TONEMAP_IMPL_NOTES.md").  A map that does not name it is unaffected.
+			else if (parse.sc.Compare("Filmic"))
+			{
+				info->tonemap = ETonemapMode::Filmic;
+			}
 			else
 			{
 				parse.sc.ScriptMessage("Invalid tonemap %s", parse.sc.String);

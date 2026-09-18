@@ -101,6 +101,12 @@ EXTERN_CVAR(Float, gl_exposure_min)
 EXTERN_CVAR(Float, gl_exposure_base)
 EXTERN_CVAR(Float, gl_exposure_speed)
 EXTERN_CVAR(Int, gl_tonemap)
+// [TONEMAP] The filmic roll-off's four settings ("Engine docs/TONEMAP_IMPL_NOTES.md").  They do nothing unless
+// gl_tonemap names that mode, and they are read by the renderer every frame it draws (PPTonemap::FilmicUniforms).
+EXTERN_CVAR(Float, gl_tonemap_knee)		// where the roll-off starts, in screen units
+EXTERN_CVAR(Float, gl_tonemap_white)	// what an infinitely bright pixel lands on; may exceed 1, see the .cpp
+EXTERN_CVAR(Float, gl_tonemap_exposure)	// a plain pre-scale before the curve; 1.0 is no change
+EXTERN_CVAR(Float, gl_tonemap_desaturate)	// how far the top of the shoulder may go towards white; 0 holds the colour
 EXTERN_CVAR(Int, gl_bloom_kernel_size)
 EXTERN_CVAR(Bool, gl_lens)
 EXTERN_CVAR(Float, gl_lens_k)

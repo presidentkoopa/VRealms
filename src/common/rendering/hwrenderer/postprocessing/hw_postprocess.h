@@ -50,6 +50,10 @@ enum class ETonemapMode : uint8_t
 	Reinhard,
 	Linear,
 	Palette,
+	// [TONEMAP] A roll-off instead of a clip, with the colour kept ("Engine docs/TONEMAP_IMPL_NOTES.md";
+	// the curve is shaders/pp/tonemapfilmic.fp, its settings TonemapFilmicUniforms below).  APPENDED: a
+	// mode's number is written into level_info_t and into the owner's ini, so nothing above may move.
+	Filmic,
 	NumTonemapModes
 };
 
@@ -2413,12 +2417,60 @@ private:
 
 /////////////////////////////////////////////////////////////////////////////
 
+// ============================================================================
+// [TONEMAP] THE FILMIC ROLL-OFF'S SETTINGS (shaders/pp/tonemapfilmic.fp).
+//
+// Filled by PPTonemap::FilmicUniforms from the gl_tonemap_* cvars EVERY FRAME the mode draws, so a slider moves
+// the picture with the menu open -- the menu freezes the game, so a script-read slider would do nothing while
+// you looked at it.
+//
+// The two ends of the curve arrive ALREADY LINEARIZED.  The cvars are in the units the owner sees on screen
+// (0.85 means "the value that shows as 0.85"), and the shader works in linear light, so the one pow each way is
+// done here, once a frame, instead of twice a pixel.
+//
+// LAYOUT IS LOAD-BEARING.  UniformBlockDecl::Create emits these fields to GLSL in declaration order with no
+// explicit offsets, and the whole struct is pushed as one block (VkPPRenderState::RenderScreenQuad), so the
+// padding is declared rather than implied.  The static_asserts below are the guard rails.
+// ============================================================================
+struct TonemapFilmicUniforms
+{
+	float KneeLinear;	// where the roll-off starts, in linear light
+	float WhiteLinear;	// what an infinitely bright pixel lands on, in linear light; > KneeLinear
+	float Exposure;		// a plain pre-scale in linear light; 1.0 is no change
+	float Desaturate;	// how far the deepest part of the shoulder may go towards white; 0 holds the colour exactly
+	float PassThrough;	// the display-space value at or below which a pixel is copied through untouched; negative disables
+	float Padding0, Padding1, Padding2;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "KneeLinear", UniformType::Float, offsetof(TonemapFilmicUniforms, KneeLinear) },
+			{ "WhiteLinear", UniformType::Float, offsetof(TonemapFilmicUniforms, WhiteLinear) },
+			{ "Exposure", UniformType::Float, offsetof(TonemapFilmicUniforms, Exposure) },
+			{ "Desaturate", UniformType::Float, offsetof(TonemapFilmicUniforms, Desaturate) },
+			{ "PassThrough", UniformType::Float, offsetof(TonemapFilmicUniforms, PassThrough) },
+			{ "Padding0", UniformType::Float, offsetof(TonemapFilmicUniforms, Padding0) },
+			{ "Padding1", UniformType::Float, offsetof(TonemapFilmicUniforms, Padding1) },
+			{ "Padding2", UniformType::Float, offsetof(TonemapFilmicUniforms, Padding2) }
+		};
+	}
+};
+
+static_assert(offsetof(TonemapFilmicUniforms, PassThrough) == 16, "TonemapFilmicUniforms::PassThrough must start at 16");
+static_assert(sizeof(TonemapFilmicUniforms) == 32, "TonemapFilmicUniforms must be 32 bytes");
+
 class PPTonemap
 {
 public:
 	void SetTonemapMode(ETonemapMode tm) { level_tonemap = tm; }
 	void Render(PPRenderState *renderstate);
 	void ClearTonemapPalette() { PaletteTexture = {}; }
+
+	// [TONEMAP] The filmic mode's settings as the cvars stand right now, clamped and linearized.  Static and
+	// public: it is the one place the curve's numbers are decided, so anything else that ever wants the same
+	// roll-off -- a second pass, a debug view -- asks for them here rather than re-deriving them.
+	static TonemapFilmicUniforms FilmicUniforms();
 
 private:
 	void UpdateTextures();
@@ -2430,6 +2482,9 @@ private:
 	PPShader HejlDawsonShader = { "shaders/pp/tonemap.fp", "#define HEJLDAWSON\n", {} };
 	PPShader Uncharted2Shader = { "shaders/pp/tonemap.fp", "#define UNCHARTED2\n", {} };
 	PPShader PaletteShader = { "shaders/pp/tonemap.fp", "#define PALETTE\n", {} };
+	// [TONEMAP] Its own lump, not another #define on tonemap.fp: the five programs above then keep the exact
+	// source text they had, so with this mode unused they are byte for byte the programs this engine shipped.
+	PPShader FilmicShader = { "shaders/pp/tonemapfilmic.fp", "", TonemapFilmicUniforms::Desc() };
 	ETonemapMode level_tonemap = ETonemapMode::None;
 };
 
