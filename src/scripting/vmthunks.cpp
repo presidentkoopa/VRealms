@@ -1027,6 +1027,61 @@ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, SetXOffset, SetXOffset)
 	 ACTION_RETURN_INT(self->GetLightLevel());
  }
 
+ // RS FORK -- THE PER-SECTOR LIGHT TRIM ("Engine docs/LIGHT_TRIM_IMPL_NOTES.md").
+ //
+ // Being READABLE is half the point: `sec.lightlevel` and GetLightLevel() are the TRIMMED
+ // light, so a mod that reacts to how bright a room is sees the dimmed number instead of the
+ // one the map shipped with; GetLightTrimBase() is there for anything that wants the design
+ // value back. Play scope -- a trim is level state, saved with the level, and every machine
+ // must run the code that sets it.
+
+ static void SetLightTrim(sector_t *self, double dim, int offset)
+ {
+	 self->SetLightTrim(dim, offset);
+ }
+
+ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, SetLightTrim, SetLightTrim)
+ {
+	 PARAM_SELF_STRUCT_PROLOGUE(sector_t);
+	 PARAM_FLOAT(dim);
+	 PARAM_INT(offset);
+	 self->SetLightTrim(dim, offset);
+	 return 0;
+ }
+
+ static double GetLightTrimDim(sector_t *self)
+ {
+	 return self->GetLightTrimDim();
+ }
+
+ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, GetLightTrimDim, GetLightTrimDim)
+ {
+	 PARAM_SELF_STRUCT_PROLOGUE(sector_t);
+	 ACTION_RETURN_FLOAT(self->GetLightTrimDim());
+ }
+
+ static int GetLightTrimOffset(sector_t *self)
+ {
+	 return self->GetLightTrimOffset();
+ }
+
+ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, GetLightTrimOffset, GetLightTrimOffset)
+ {
+	 PARAM_SELF_STRUCT_PROLOGUE(sector_t);
+	 ACTION_RETURN_INT(self->GetLightTrimOffset());
+ }
+
+ static int GetLightTrimBase(sector_t *self)
+ {
+	 return self->GetLightTrimBase();
+ }
+
+ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, GetLightTrimBase, GetLightTrimBase)
+ {
+	 PARAM_SELF_STRUCT_PROLOGUE(sector_t);
+	 ACTION_RETURN_INT(self->GetLightTrimBase());
+ }
+
  static void SetPlaneReflectivity(sector_t* self, int pos, double val)
  {
 	 if (pos < 0 || pos > 1) ThrowAbortException(X_ARRAY_OUT_OF_BOUNDS, "pos must be either 0 or 1");

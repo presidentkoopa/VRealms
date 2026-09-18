@@ -373,6 +373,14 @@ FSerializer &Serialize(FSerializer &arc, const char *key, sector_t &p, sector_t 
 		arc("floorplane", p.floorplane, def->floorplane)
 			("ceilingplane", p.ceilingplane, def->ceilingplane)
 			("lightlevel", p.lightlevel, def->lightlevel)
+			// RS FORK -- the per-sector light trim, so a save keeps a dimmed room dimmed. `def` is
+			// the sector as the map loaded it, where all three are zero, so an untrimmed sector
+			// writes nothing and a savegame from before this existed reads back as zero -- which is
+			// no trim, i.e. exactly today's light. lightlevel above is already the trimmed value, so
+			// a loaded level is correct before any thinker has run.
+			("lighttrimdim", p.LightTrimDim256, def->LightTrimDim256)
+			("lighttrimoffset", p.LightTrimOffset, def->LightTrimOffset)
+			("lighttrimbase", p.LightTrimBase, def->LightTrimBase)
 			("special", p.special, def->special)
 			("seqtype", p.seqType, def->seqType)
 			("seqname", p.SeqName, def->SeqName)

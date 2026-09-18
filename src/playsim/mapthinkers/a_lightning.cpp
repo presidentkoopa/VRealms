@@ -118,7 +118,9 @@ void DLightningThinker::LightningFlash ()
 				// because it might have changed since the lightning flashed.
 				// Instead, change the light if this sector was effected by
 				// the last flash.
-				if (LightningLightLevels[j] < tempSec->lightlevel-4)
+				// RS FORK (light trim): the untrimmed level -- LightningLightLevels holds untrimmed
+				// levels, and ChangeLightLevel below is relative to the untrimmed level too.
+				if (LightningLightLevels[j] < tempSec->GetLightTrimBase()-4)
 				{
 					tempSec->ChangeLightLevel(-4);
 				}
@@ -152,20 +154,23 @@ void DLightningThinker::LightningFlash ()
 			|| special == Light_IndoorLightning2
 			|| special == Light_OutdoorLightning)
 		{
-			LightningLightLevels[j] = tempSec->lightlevel;
+			// RS FORK (light trim): the storm saves the room's level and puts it back when the flash
+			// ends, so it must save and compare the UNTRIMMED level -- saving the trimmed one would
+			// restore it as the new base and the room would lose light on every storm.
+			LightningLightLevels[j] = tempSec->GetLightTrimBase();
 			if (special == Light_IndoorLightning1)
 			{
-				tempSec->SetLightLevel(min<int> (tempSec->lightlevel+64, flashLight));
+				tempSec->SetLightLevel(min<int> (tempSec->GetLightTrimBase()+64, flashLight));
 			}
 			else if (special == Light_IndoorLightning2)
 			{
-				tempSec->SetLightLevel(min<int> (tempSec->lightlevel+32, flashLight));
+				tempSec->SetLightLevel(min<int> (tempSec->GetLightTrimBase()+32, flashLight));
 			}
 			else
 			{
 				tempSec->SetLightLevel(flashLight);
 			}
-			if (tempSec->lightlevel < LightningLightLevels[j])
+			if (tempSec->GetLightTrimBase() < LightningLightLevels[j])
 			{ // The lightning is darker than this sector already is, so no lightning here.
 				tempSec->SetLightLevel(LightningLightLevels[j]);
 				LightningLightLevels[j] = SHRT_MAX;

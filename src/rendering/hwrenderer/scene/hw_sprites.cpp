@@ -131,7 +131,9 @@ CUSTOM_CVAR(Int, gl_fuzztype, 8, CVAR_ARCHIVE)
 
 // [BB] Defined in hw_walls.cpp, which is where every other caller lives. It is
 // not in a header because until now nothing outside that file wanted it.
-void SetGlowPlanes(FRenderState &state, const secplane_t& top, const secplane_t& bottom);
+// [G6] Takes the SECTOR, because it sets that sector's glow seed with its planes
+// ("Engine docs/GLOW_SEAM_SEED_G6_IMPL_NOTES.md").
+void SetGlowPlanes(FRenderState &state, sector_t *sec);
 
 float FogScaleForSector(FLevelLocals *Level, sector_t *sec);
 
@@ -167,7 +169,7 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 		else if (particle != nullptr && particle->subsector != nullptr) fogsec = particle->subsector->sector;
 
 		if (fogsec != nullptr)
-			SetGlowPlanes(state, fogsec->ceilingplane, fogsec->floorplane);
+			SetGlowPlanes(state, fogsec);
 	}
 
 	if (translucent)

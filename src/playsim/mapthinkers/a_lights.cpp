@@ -39,6 +39,24 @@ static FCRandom pr_lightflash ("LightFlash");
 static FCRandom pr_strobeflash ("StrobeFlash");
 static FCRandom pr_fireflicker ("FireFlicker");
 
+// RS FORK -- PER-SECTOR LIGHT TRIM ("Engine docs/LIGHT_TRIM_IMPL_NOTES.md").
+//
+// A sector may carry a trim: a share of its light removed, applied AFTER the special below has
+// decided. sector->lightlevel is therefore the EFFECTIVE light, and the untrimmed number the
+// special itself last wrote is sector->GetLightTrimBase().
+//
+// Every special in this file therefore reads GetLightTrimBase() and not the raw field. The
+// reads are of two kinds and both need the base:
+//   - a state-machine test ("am I at m_MaxLight?", "how far is newlight from m_MinLight?").
+//     Against the trimmed number a dimmed strobe would sit permanently at one end and stop.
+//   - an endpoint search at spawn ("what is this room, or its darkest neighbour, lit at?").
+//     Against the trimmed number the trim would be baked into m_MaxLight/m_MinLight and then
+//     applied a second time on every write.
+// Writes stay as they are: SetLightLevel() is where the trim is applied.
+//
+// With no trim set GetLightTrimBase() returns sector->lightlevel unchanged, so every line below
+// is exactly the line it replaced.
+
 
 //-----------------------------------------------------------------------------
 //
@@ -80,7 +98,8 @@ void DFireFlicker::Tick ()
 		amount = (pr_fireflicker() & 3) << 4;
 
 		// [RH] Shouldn't this be (m_MaxLight - amount < m_MinLight)?
-		if (m_Sector->lightlevel - amount < m_MinLight)
+		// RS FORK (light trim): the untrimmed level -- this compares against m_MinLight.
+		if (m_Sector->GetLightTrimBase() - amount < m_MinLight)
 			m_Sector->SetLightLevel(m_MinLight);
 		else
 			m_Sector->SetLightLevel(m_MaxLight - amount);
@@ -98,8 +117,9 @@ void DFireFlicker::Tick ()
 void DFireFlicker::Construct(sector_t *sector)
 {
 	Super::Construct(sector);
-	m_MaxLight = sector->lightlevel;
-	m_MinLight = sector_t::ClampLight(FindMinSurroundingLight(sector, sector->lightlevel) + 16);
+	// RS FORK (light trim): endpoints come from the untrimmed light, see the note at the top.
+	m_MaxLight = sector->GetLightTrimBase();
+	m_MinLight = sector_t::ClampLight(FindMinSurroundingLight(sector, sector->GetLightTrimBase()) + 16);
 	m_Count = 4;
 }
 
@@ -139,7 +159,7 @@ void DFlicker::Tick ()
 	{
 		m_Count--;
 	}
-	else if (m_Sector->lightlevel == m_MaxLight)
+	else if (m_Sector->GetLightTrimBase() == m_MaxLight)	// RS FORK (light trim): untrimmed
 	{
 		m_Sector->SetLightLevel(m_MinLight);
 		m_Count = (pr_flicker()&7)+1;
@@ -162,7 +182,9 @@ void DFlicker::Construct(sector_t *sector, int upper, int lower)
 	Super::Construct(sector);
 	m_MaxLight = sector_t::ClampLight(upper);
 	m_MinLight = sector_t::ClampLight(lower);
-	sector->lightlevel = m_MaxLight;
+	// RS FORK (light trim): through the accessor, or this one special would write past the trim
+	// and leave lightlevel and LightTrimBase disagreeing.
+	sector->SetLightLevel(m_MaxLight);
 	m_Count = (pr_flicker()&64)+1;
 }
 
@@ -195,7 +217,7 @@ void DLightFlash::Tick ()
 {
 	if (--m_Count == 0)
 	{
-		if (m_Sector->lightlevel == m_MaxLight)
+		if (m_Sector->GetLightTrimBase() == m_MaxLight)	// RS FORK (light trim): untrimmed
 		{
 			m_Sector->SetLightLevel(m_MinLight);
 			m_Count = (pr_lightflash() & m_MinTime) + 1;
@@ -218,8 +240,9 @@ void DLightFlash::Construct(sector_t *sector)
 {
 	Super::Construct(sector);
 	// Find light levels like Doom.
-	m_MaxLight = sector->lightlevel;
-	m_MinLight = FindMinSurroundingLight (sector, sector->lightlevel);
+	// RS FORK (light trim): endpoints come from the untrimmed light.
+	m_MaxLight = sector->GetLightTrimBase();
+	m_MinLight = FindMinSurroundingLight (sector, sector->GetLightTrimBase());
 	m_MaxTime = 64;
 	m_MinTime = 7;
 	m_Count = (pr_lightflash() & m_MaxTime) + 1;
@@ -265,7 +288,8 @@ void DStrobe::Tick ()
 {
 	if (--m_Count == 0)
 	{
-		if (m_Sector->lightlevel == m_MinLight)
+		if (m_Sector->GetLightTrimBase() == m_MinLight)	// RS FORK (light trim): untrimmed, so a
+														// dimmed strobe keeps strobing
 		{
 			m_Sector->SetLightLevel(m_MaxLight);
 			m_Count = m_BrightTime;
@@ -306,8 +330,9 @@ void DStrobe::Construct(sector_t *sector, int utics, int ltics, bool inSync)
 	m_DarkTime = ltics;
 	m_BrightTime = utics;
 
-	m_MaxLight = sector->lightlevel;
-	m_MinLight = FindMinSurroundingLight (sector, sector->lightlevel);
+	// RS FORK (light trim): endpoints come from the untrimmed light.
+	m_MaxLight = sector->GetLightTrimBase();
+	m_MinLight = FindMinSurroundingLight (sector, sector->GetLightTrimBase());
 
 	if (m_MinLight == m_MaxLight)
 		m_MinLight = 0;
@@ -343,7 +368,8 @@ void DGlow::Serialize(FSerializer &arc)
 void DGlow::Tick ()
 {
 	const int GLOWSPEED = 8;
-	int newlight = m_Sector->lightlevel;
+	int newlight = m_Sector->GetLightTrimBase();	// RS FORK (light trim): untrimmed -- this walks
+												// between m_MinLight and m_MaxLight
 
 	switch (m_Direction)
 	{
@@ -379,8 +405,9 @@ void DGlow::Tick ()
 void DGlow::Construct(sector_t *sector)
 {
 	Super::Construct(sector);
-	m_MinLight = FindMinSurroundingLight (sector, sector->lightlevel);
-	m_MaxLight = sector->lightlevel;
+	// RS FORK (light trim): endpoints come from the untrimmed light.
+	m_MinLight = FindMinSurroundingLight (sector, sector->GetLightTrimBase());
+	m_MaxLight = sector->GetLightTrimBase();
 	m_Direction = -1;
 }
 
@@ -501,7 +528,8 @@ int DPhased::PhaseHelper (sector_t *sector, int index, int light, sector_t *prev
 	else
 	{
 		DPhased *l;
-		int baselevel = sector->lightlevel ? sector->lightlevel : light;
+		// RS FORK (light trim): the untrimmed light -- m_BaseLevel is an endpoint, not a reading.
+		int baselevel = sector->GetLightTrimBase() ? sector->GetLightTrimBase() : light;
 		sector->validcount = validcount;
 
 		if (index == 0)
@@ -610,15 +638,17 @@ void FLevelLocals::EV_TurnTagLightsOff(int tag)
 	while ((secnum = it.Next()) >= 0)
 	{
 		sector_t *sector = &sectors[secnum];
-		int min = sector->lightlevel;
+		// RS FORK (light trim): untrimmed on both sides -- the answer is written back with
+		// SetLightLevel(), which trims it again, so a trimmed neighbour must not be read here.
+		int min = sector->GetLightTrimBase();
 
 		for (auto ln : sector->Lines)
 		{
 			sector_t *tsec = getNextSector(ln, sector);
 			if (!tsec)
 				continue;
-			if (tsec->lightlevel < min)
-				min = tsec->lightlevel;
+			if (tsec->GetLightTrimBase() < min)
+				min = tsec->GetLightTrimBase();
 		}
 		sector->SetLightLevel(min);
 	}
@@ -653,8 +683,9 @@ void FLevelLocals::EV_LightTurnOn(int tag, int bright)
 				if (!temp)
 					continue;
 
-				if (temp->lightlevel > tbright)
-					tbright = temp->lightlevel;
+				// RS FORK (light trim): untrimmed, as EV_TurnTagLightsOff above.
+				if (temp->GetLightTrimBase() > tbright)
+					tbright = temp->GetLightTrimBase();
 			}
 		}
 		sector->SetLightLevel(tbright);
@@ -692,19 +723,21 @@ void FLevelLocals::EV_LightTurnOnPartway(int tag, double frac)
 	while ((secnum = it.Next()) >= 0)
 	{
 		sector_t *temp, *sector = &sectors[secnum];
-		int bright = 0, min = sector->lightlevel;
+		// RS FORK (light trim): untrimmed, as EV_TurnTagLightsOff above.
+		int bright = 0, min = sector->GetLightTrimBase();
 
 		for (auto ln : sector->Lines)
 		{
 			if ((temp = getNextSector(ln, sector)) != nullptr)
 			{
-				if (temp->lightlevel > bright)
+				const int templight = temp->GetLightTrimBase();
+				if (templight > bright)
 				{
-					bright = temp->lightlevel;
+					bright = templight;
 				}
-				if (temp->lightlevel < min)
+				if (templight < min)
 				{
-					min = temp->lightlevel;
+					min = templight;
 				}
 			}
 		}
@@ -727,7 +760,8 @@ void FLevelLocals::EV_LightChange(int tag, int value)
 	auto it = GetSectorTagIterator(tag);
 	while ((secnum = it.Next()) >= 0)
 	{
-		sectors[secnum].SetLightLevel(sectors[secnum].lightlevel + value);
+		// RS FORK (light trim): relative to the untrimmed light, or a trimmed room would drift.
+		sectors[secnum].SetLightLevel(sectors[secnum].GetLightTrimBase() + value);
 	}
 }
 
@@ -788,10 +822,12 @@ void FLevelLocals::EV_StartLightFading(int tag, int value, int tics)
 		else
 		{
 			// No need to fade if lightlevel is already at desired value.
-			if (sec->lightlevel == value)
+			// RS FORK (light trim): compared and started from the untrimmed light, since `value` is
+			// what the map/script asked for and the fade's writes are trimmed on the way out.
+			if (sec->GetLightTrimBase() == value)
 				continue;
 
-			CreateThinker<DGlow2>(sec, sec->lightlevel, value, tics, true);
+			CreateThinker<DGlow2>(sec, sec->GetLightTrimBase(), value, tics, true);
 		}
 	}
 }

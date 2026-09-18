@@ -1342,12 +1342,45 @@ float GlowWaveRaw(float phase, float seedOff)
 // PER-ROOM SCATTER. Without this the entire map undulates as one organism,
 // which reads as a filter over the game rather than as lighting in it. The
 // seed is taken from geometry that is already uploaded and already differs
-// per sector -- the glow plane's height for a wall, the first linedef
-// endpoint for a flat -- so every room gets its own moment for nothing.
+// per sector -- see GlowSectorSeedSrc below -- so every room gets its own
+// moment for nothing.
+//
+// Scatter 0 means off, and this returns 0 for every sector: with it off the
+// seed cannot reach a pixel at all, whatever it was taken from.
 float GlowWaveSeedOff(float src)
 {
 	if (uGlowWaveOrigin.w <= 0.0) return 0.0;
 	return fract(sin(src * 12.9898) * 43758.5453) * 6.2831853 * uGlowWaveOrigin.w;
+}
+
+// [G6] ONE SEED PER SECTOR, SHARED BY THE WALL AND THE FLAT IT MEETS.
+//
+// Every glow lane in a room hashes THIS number and no other. Each lane used
+// to pick its own source -- a wall hashed the glow PLANE'S HEIGHT, a flat
+// hashed its first linedef -- so the two sides of a corner sat at different
+// points of the same wave: one brightness stepped into another across the
+// join, and the grain restarted there. Same wave, same phase, same colour,
+// and still a visible line, because only the offset disagreed.
+//
+// The sector's first linedef start vertex is the source, because:
+//   - it is PER SECTOR, not per plane, so both flats and both walls of a
+//     room get one answer and a corner is continuous by construction;
+//   - it DOES NOT MOVE. A plane height does: a lift or a door re-rolled the
+//     wall's wave every tic while it travelled, which is exactly when the
+//     room is being looked at;
+//   - it is already uploaded for the flat glow's distance search, so this
+//     costs an add.
+//
+// The FOUR PHASES stay four separate inputs (uGlowWavePhase x/y/z/w). Only
+// the per-room offset is shared, so a preset can still climb a room.
+//
+// uFlatGlowLines[0] is that vertex on every draw that sets the glow planes,
+// flat glow on or not -- see FRenderState::SetGlowSeedLine and SetGlowPlanes
+// in hw_walls.cpp. Reading the one slot from all four lanes is the point:
+// a seed carried in two places can drift apart again, one slot cannot.
+float GlowSectorSeedSrc()
+{
+	return uFlatGlowLines[0].x + uFlatGlowLines[0].y;
 }
 
 //
@@ -3669,17 +3702,24 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	// reach moves the edge itself. The far-colour ramp rides atten, so the
 	// corner gradient stretches and squashes with the edge for free.
 	//
-	// Seeded from the glow plane's height, which is already here, already
-	// per sector, and already differs between rooms.
-	float wTop = GlowWaveRaw(uGlowWavePhase.x, GlowWaveSeedOff(uGlowTopPlane.w));
-	float wBot = GlowWaveRaw(uGlowWavePhase.y, GlowWaveSeedOff(uGlowBottomPlane.w));
+	// [G6] Seeded from THE SECTOR, not from the plane this lane grows out of.
+	// The ceiling face uses this same number and so does the floor face, so a
+	// wall and the flat it meets hold one brightness at the line they share.
+	// Seeding off the plane's height also re-rolled the wave under a moving
+	// lift or door; the sector's first linedef does not move.
+	// The two PHASES below are still the wall's own -- only the offset is shared.
+	float glowSeedOff = GlowWaveSeedOff(GlowSectorSeedSrc());
+	float wTop = GlowWaveRaw(uGlowWavePhase.x, glowSeedOff);
+	float wBot = GlowWaveRaw(uGlowWavePhase.y, glowSeedOff);
 
 	// [BB] And the texture INSIDE the glow, which is where a lane goes once
 	// its reach is high enough that the edge the wave moves is off screen.
 	// Applied to the finished contribution rather than to reach, so it can
 	// never move a band's shape -- the wave owns shape, this owns substance.
-	float gTexTop = GlowTextureAt(GlowWaveSeedOff(uGlowTopPlane.w));
-	float gTexBot = GlowTextureAt(GlowWaveSeedOff(uGlowBottomPlane.w));
+	// [G6] Same sector seed the flat lanes use, so the grain crossing a
+	// wall/floor join runs on rather than restarting at the corner.
+	float gTexTop = GlowTextureAt(glowSeedOff);
+	float gTexBot = GlowTextureAt(glowSeedOff);
 
 	float topReach = uGlowTopColor.a * (1.0 + uGlowWaveDepth.x * wTop);
 	if (uGlowTopColor.a > 0.0 && glowdist.x < topReach)
@@ -3776,11 +3816,12 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 		// Without it both flats would take the same phase and the wave could
 		// not climb a room.
 		//
-		// Seeded off the first linedef endpoint, which is per sector and
-		// already uploaded for the distance search above.
+		// [G6] The sector's seed, the same number the two wall lanes take --
+		// this is the arithmetic this lane always did, now named and shared
+		// rather than spelled out here (GlowSectorSeedSrc).
+		float flatSeedOff = GlowWaveSeedOff(GlowSectorSeedSrc());
 		float flatPhase = (uFlatGlowIsCeiling != 0) ? uGlowWavePhase.w : uGlowWavePhase.z;
-		float wFlat = GlowWaveRaw(flatPhase,
-			GlowWaveSeedOff(uFlatGlowLines[0].x + uFlatGlowLines[0].y));
+		float wFlat = GlowWaveRaw(flatPhase, flatSeedOff);
 
 		float reach = uFlatGlowColor.a * (1.0 + uGlowWaveDepth.x * wFlat);
 		if (minDist < reach)
@@ -3803,9 +3844,10 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 			gflat = mix(gflat, sweepTint, sweepTintW);
 			// Same texture the walls get, seeded the same way, so a pattern
 			// crossing a wall/floor join does not restart at the corner.
+			// [G6] And now that is true: the walls take this same offset.
 			color.rgb += desaturate(vec4(gflat * atten
 				* (1.0 + uGlowWaveDepth.y * wFlat)
-				* GlowTextureAt(GlowWaveSeedOff(uFlatGlowLines[0].x + uFlatGlowLines[0].y)),
+				* GlowTextureAt(flatSeedOff),
 				1.0)).rgb;
 		}
 	}

@@ -637,6 +637,38 @@ struct Sector native play
 	native void ChangeLightLevel(int newval);
 	native void SetLightLevel(int newval);
 	native clearscope int GetLightLevel() const;
+
+	// PER-SECTOR LIGHT TRIM ("Engine docs/LIGHT_TRIM_IMPL_NOTES.md").
+	//
+	// One value per sector, applied AFTER the sector's light special has decided. Doom's
+	// specials rewrite a sector's light every tic, so a level written with SetLightLevel is gone
+	// on the next tic and a flickering or strobing room cannot be dimmed at all. A trim can: the
+	// strobe keeps strobing and the room simply goes darker. A plain room takes the same call,
+	// so specialled and unspecialled rooms are no longer two different problems.
+	//
+	// Named for what it does, not for who asked -- a shot-out lamp, a power cut, a dimmer, an
+	// EMP and a boss phase are all "this room is running at less light than the map drew it at".
+	//
+	//   SetLightTrim(dim, offset)  dim is 0..1 of the room's OWN light to remove; offset is a
+	//                              flat amount added after that (negative darkens further,
+	//                              positive lifts, for emergency lighting). While a trim is live
+	//                              the result is clamped to a legal 0..255. SetLightTrim(0, 0)
+	//                              puts the room back exactly where the map left it.
+	//   lightlevel, GetLightLevel()   the TRIMMED light -- what the renderer, the smoke volume's
+	//                              ambient light and every other mod reading this room see. A
+	//                              mod reacting to room light needs no new call at all.
+	//   GetLightTrimBase()         the UNTRIMMED light: what the map or the special asked for.
+	//   GetLightTrimDim(), GetLightTrimOffset()   what is currently set.
+	//
+	// Playsim state, saved with the level and shared by every machine in a game. Set it from a
+	// path every machine runs -- never behind a cvar, a render frame or consoleplayer. A machine
+	// that never sets it has trim 0, which is exactly today's light. A trim does not survive a
+	// map change (sectors are rebuilt from the map); it does survive a save and a hub return.
+	native void SetLightTrim(double dim, int offset);
+	native clearscope double GetLightTrimDim() const;
+	native clearscope int GetLightTrimOffset() const;
+	native clearscope int GetLightTrimBase() const;
+
 	native void SetPlaneReflectivity(int pos, double val);
 	native clearscope double GetPlaneReflectivity(int pos);
 	native void AdjustFloorClip();

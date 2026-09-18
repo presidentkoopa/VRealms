@@ -280,6 +280,15 @@ struct StreamData
 	// company it keeps -- it sits here because this was uFlatGlowPad2, so it
 	// costs nothing and MAX_STREAM_DATA is unchanged. See SetDarknessExempt.
 	float uDarknessExempt;
+	// [G6] SLOT 0 IS ALSO THE SECTOR'S GLOW SEED ("Engine docs/GLOW_SEAM_SEED_G6_IMPL_NOTES.md").
+	//
+	// Every glow lane in main.fp -- both wall lanes and both flat lanes -- hashes
+	// uFlatGlowLines[0].x + .y for its per-room scatter (GlowSectorSeedSrc). The wall lanes used to
+	// hash the glow PLANE'S height instead, which is per plane rather than per sector and moves with a
+	// lift, so a wall and the flat it met stepped in brightness across the corner. SetGlowSeedLine
+	// below writes this slot on every draw that sets the glow planes, flat glow on or not, so the two
+	// sides of a join read the same bytes. A flat WITH glow writes the same value again as its first
+	// segment, because it is the same linedef.
 	FVector4 uFlatGlowLines[64];
 
 	FVector4 uGradientTopPlane;
@@ -854,6 +863,24 @@ public:
 	{
 		mStreamData.uGlowTopPlane = tp;
 		mStreamData.uGlowBottomPlane = bp;
+	}
+
+	// [G6] THIS DRAW'S SECTOR, as one number every glow lane can hash ("Engine docs/GLOW_SEAM_SEED_G6_IMPL_NOTES.md").
+	//
+	// firstLine is the sector's first linedef (v1 xy, v2 xy); main.fp's GlowSectorSeedSrc takes
+	// v1.x + v1.y from it. Per sector rather than per plane, so a wall and the flat it meets scatter
+	// their wave and their grain to the same offset and the corner holds one brightness -- and it does
+	// not move when a plane does, so a lift no longer re-rolls the wave of the wall beside it.
+	//
+	// It rides in uFlatGlowLines[0] (see the member) rather than in a slot of its own: one slot cannot
+	// drift from itself, and the shared shader prolog -- the uniform block EVERY program declares,
+	// the grab lasers and the Lance included -- stays exactly as it is.
+	//
+	// Call it wherever the glow planes are set; SetGlowPlanes(FRenderState&, sector_t*) in
+	// hw_walls.cpp does both at once so no scene path can set one and forget the other.
+	void SetGlowSeedLine(const FVector4 &firstLine)
+	{
+		mStreamData.uFlatGlowLines[0] = firstLine;
 	}
 
 	void SetGradientPlanes(const FVector4& tp, const FVector4& bp)

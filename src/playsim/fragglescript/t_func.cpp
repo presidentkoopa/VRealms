@@ -1768,10 +1768,13 @@ void DLightLevel::Serialize(FSerializer &arc)
 void DLightLevel::Tick()
 {
 	Super::Tick();
-	if(m_Sector->lightlevel < destlevel)
+	// RS FORK (light trim): the untrimmed level. destlevel is what the script asked for and the
+	// writes below are trimmed on the way out, so against the trimmed level this fade would
+	// never reach its target and would never Destroy() itself.
+	if(m_Sector->GetLightTrimBase() < destlevel)
 	{
 		// increase the lightlevel
-		if(m_Sector->lightlevel + speed >= destlevel)
+		if(m_Sector->GetLightTrimBase() + speed >= destlevel)
 		{
 			// stop changing light level
 			m_Sector->SetLightLevel(destlevel);    // set to dest lightlevel
@@ -1785,7 +1788,7 @@ void DLightLevel::Tick()
 	else
 	{
 		// decrease lightlevel
-		if(m_Sector->lightlevel - speed <= destlevel)
+		if(m_Sector->GetLightTrimBase() - speed <= destlevel)	// RS FORK (light trim): untrimmed
 		{
 			// stop changing light level
 			m_Sector->SetLightLevel(destlevel);    // set to dest lightlevel

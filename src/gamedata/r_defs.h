@@ -718,7 +718,26 @@ struct sector_t
 											//		the alpha mask is non-zero
 
 	bool transdoor;							// For transparent door hacks
-	short		lightlevel;
+	short		lightlevel;					// RS FORK: the EFFECTIVE light -- the special's number with the trim below already in it
+
+	// RS FORK -- PER-SECTOR LIGHT TRIM ("Engine docs/LIGHT_TRIM_IMPL_NOTES.md").
+	//
+	// Doom's light specials rewrite a sector's light every tic from their own endpoints, so
+	// anything a mod writes is gone on the next tic and a room that flickers cannot be dimmed
+	// at all. The trim is a second value applied AFTER the special has decided: the strobe keeps
+	// strobing and the room simply goes darker. A plain room takes the same call, so specialled
+	// and unspecialled rooms stop being two different problems.
+	//
+	// General on purpose -- a shot-out lamp, a power cut, a dimmer, an EMP and a boss phase are
+	// all "this room is running at less light than the map drew it at". Nothing here knows or
+	// cares which mod is asking.
+	//
+	// Playsim state, serialized with the level (src/p_saveg.cpp). Zero is inert, and zero is what
+	// a memset'd sector and an old savegame both give you -- so do NOT give these a non-zero
+	// in-class initialiser, the maploader's memset would wipe it. See ApplyLightTrim() below.
+	short		LightTrimDim256;			// share of the room's own light removed, in 1/256ths. 0 = none
+	short		LightTrimOffset;			// flat amount added after that. 0 = none; negative darkens further
+	short		LightTrimBase;				// the UNTRIMMED level; only meaningful while HasLightTrim()
 	uint16_t MoreFlags;						// [RH] Internal sector flags
 	uint32_t Flags;							// Sector flags
 
@@ -1050,19 +1069,86 @@ public:
 		return (short)clamp(level, SHRT_MIN, SHRT_MAX);
 	}
 
+	// RS FORK -- THE PER-SECTOR LIGHT TRIM. Why it exists: see the field block above.
+	//
+	//   lightlevel         the EFFECTIVE light: what the renderer, the smoke volume's ambient
+	//                      columns, the sector-linked dynamic lights, the automap, the bots,
+	//                      ACS and ZScript's `sec.lightlevel` all read. Trimmed already.
+	//   LightTrimBase      the UNTRIMMED light: the number a light special or a script last
+	//                      asked for. GetLightTrimBase() falls back to lightlevel when no trim
+	//                      is set, so an untrimmed sector needs no initialisation anywhere and
+	//                      a direct write to lightlevel (ZScript may still do that) stays the
+	//                      base until a trim is put on.
+	//
+	// A light special writes through SetLightLevel() and reads back through GetLightTrimBase(),
+	// so its state machine runs on its own endpoints and is not disturbed by the trim.
+
+	bool HasLightTrim() const
+	{
+		return LightTrimDim256 != 0 || LightTrimOffset != 0;
+	}
+
+	// An untrimmed level in, the level the room actually renders at out.
+	// Inert by construction: with no trim the argument comes back unchanged and UNCLAMPED, so a
+	// map sector outside 0..255 keeps whatever odd value it was given. While a trim IS live the
+	// result is clamped to 0..255, so whatever a mod sets, a legal light level comes out.
+	int ApplyLightTrim(int base) const
+	{
+		if (!HasLightTrim()) return base;
+		const int removed = (base * (int)LightTrimDim256 + 128) / 256;
+		return clamp(base - removed + (int)LightTrimOffset, 0, 255);
+	}
+
+	// The light this sector would have with no trim -- what a special's state machine, and any
+	// "how bright is my neighbour" search that picks endpoints, must see.
+	int GetLightTrimBase() const
+	{
+		return HasLightTrim() ? (int)LightTrimBase : (int)lightlevel;
+	}
+
+	double GetLightTrimDim() const
+	{
+		return LightTrimDim256 * (1. / 256.);
+	}
+
+	int GetLightTrimOffset() const
+	{
+		return LightTrimOffset;
+	}
+
+	// dim is 0..1 of the room's OWN light to remove; offset is a flat amount added after that
+	// (negative darkens further, positive lifts -- emergency lighting). SetLightTrim(0, 0) puts
+	// the room back exactly where the map, the special or the script last left it.
+	// Playsim: call this on a path every machine runs. It is serialized with the level.
+	void SetLightTrim(double dim, int offset)
+	{
+		if (!(dim > 0)) dim = 0;		// written this way so a NaN lands on 0 too
+		if (dim > 1) dim = 1;
+		const short newdim = (short)(int)(dim * 256. + 0.5);
+		const short newoffset = ClampLight(offset);
+		if (!HasLightTrim()) LightTrimBase = lightlevel;	// capture what we are trimming FROM
+		LightTrimDim256 = newdim;
+		LightTrimOffset = newoffset;
+		lightlevel = HasLightTrim() ? (short)ApplyLightTrim(LightTrimBase) : LightTrimBase;
+	}
+
 	void ChangeLightLevel(int newval)
 	{
-		lightlevel = ClampLight(lightlevel + newval);
+		// RS FORK: relative to the UNTRIMMED level, or a trimmed room would sink a little further
+		// on every call. With no trim GetLightTrimBase() is lightlevel, i.e. exactly as before.
+		SetLightLevel(GetLightTrimBase() + newval);
 	}
 
 	void SetLightLevel(int newval)
 	{
-		lightlevel = ClampLight(newval);
+		// RS FORK: newval is what the special/script asked for; lightlevel is what the room gets.
+		LightTrimBase = ClampLight(newval);
+		lightlevel = HasLightTrim() ? (short)ApplyLightTrim(LightTrimBase) : LightTrimBase;
 	}
 
 	int GetLightLevel() const
 	{
-		return lightlevel;
+		return lightlevel;		// RS FORK: the TRIMMED light, on purpose -- see the block above
 	}
 
 	secplane_t &GetSecPlane(int pos)

@@ -134,8 +134,38 @@ float FogScaleForSector(FLevelLocals *Level, sector_t *sec)
 	return (float)(outdoor ? Level->FogOutdoorScale : Level->FogIndoorScale);
 }
 
-void SetGlowPlanes(FRenderState &state, const secplane_t& top, const secplane_t& bottom)
+// [G6] THE SECTOR'S GLOW SEED ("Engine docs/GLOW_SEAM_SEED_G6_IMPL_NOTES.md").
+//
+// The glow wave and the grain inside the glow are scattered per room, or the whole map
+// undulates as one organism. Each lane in main.fp used to pick its own source for that
+// scatter -- a wall hashed the glow PLANE'S height, a flat hashed its first linedef -- so a
+// wall and the floor it met sat at different points of the same wave and their brightness
+// stepped across the corner, and a lift re-rolled the wave of the wall beside it every tic.
+//
+// One source instead, for all four lanes: the sector's first linedef. Per sector rather than
+// per plane, already loaded, and it does not move when a floor or a ceiling does. A sector
+// with no linedefs -- which a real map does not have -- seeds from zero like any other
+// sector that would.
+FVector4 GlowSeedLineForSector(sector_t *sec)
 {
+	if (sec == nullptr || sec->Lines.Size() == 0) return FVector4(0.f, 0.f, 0.f, 0.f);
+	auto ln = sec->Lines[0];
+	return FVector4((float)ln->v1->fX(), (float)ln->v1->fY(), (float)ln->v2->fX(), (float)ln->v2->fY());
+}
+
+// [G6] The planes and the seed go together, in the one helper the wall, flat and sprite paths
+// all call -- both have always come from the same sector, and now no call site can set one and
+// forget the other. Takes the sector rather than two planes for exactly that reason.
+void SetGlowPlanes(FRenderState &state, sector_t *sec)
+{
+	state.SetGlowSeedLine(GlowSeedLineForSector(sec));
+	if (sec == nullptr)
+	{
+		state.SetGlowPlanes(FVector4(0.f, 0.f, 0.f, 0.f), FVector4(0.f, 0.f, 0.f, 0.f));
+		return;
+	}
+	const secplane_t& top = sec->ceilingplane;
+	const secplane_t& bottom = sec->floorplane;
 	auto& tn = top.Normal();
 	auto& bn = bottom.Normal();
 	FVector4 tp = { (float)tn.X, (float)tn.Y, (float)top.negiC, (float)top.fD() };
@@ -331,7 +361,10 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	// draws that previously skipped them, and buys a fog surface that does not
 	// vanish the moment a wall happens to have no glow on it.
 	state.SetFogDensityScale(FogScaleForSector(di->Level, frontsector));
-	SetGlowPlanes(state, frontsector->ceilingplane, frontsector->floorplane);
+	// [G6] ...and with them this sector's glow seed, which both wall lanes now hash instead of the
+	// plane heights above. Two-sided walls keep the side they draw: this is the same sector whose
+	// planes this draw uploads.
+	SetGlowPlanes(state, frontsector);
 
 	// [SURFACEDAMAGE] This wall part's lasting damage ("Engine docs/SURFACE_DAMAGE_17_IMPL_NOTES.md"): its record slot + 1, or 0
 	// when it holds no damage tiles. Set only when non-zero and put back to 0 at the end, so every other draw -- and every wall

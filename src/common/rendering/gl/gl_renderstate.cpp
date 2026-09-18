@@ -187,9 +187,17 @@ bool FGLRenderState::ApplyShader()
 	activeShader->muOutlineColorB.Set(&mStreamData.uOutlineColorB.X);
 	activeShader->muOutlineParms.Set(&mStreamData.uOutlineParms.X);
 	activeShader->muFlatGlowLineCount.Set(mStreamData.uFlatGlowLineCount);
-	if (mStreamData.uFlatGlowLineCount > 0 && activeShader->muFlatGlowLinesLoc >= 0)
+	// [G6] AT LEAST THE FIRST LINE, ALWAYS. Slot 0 is this sector's glow seed as well as the flat
+	// glow's first segment (FRenderState::SetGlowSeedLine), and the WALL lanes read it now -- a wall
+	// draw carries no flat glow, so gating the upload on the line count left GL's walls hashing
+	// whatever sector was uploaded last. Vulkan uploads the whole StreamData and never had the gap.
+	// The count the shader loops over is still uFlatGlowLineCount, so this uploads a slot nothing
+	// but the seed reads.
+	if (activeShader->muFlatGlowLinesLoc >= 0)
 	{
-		glUniform4fv(activeShader->muFlatGlowLinesLoc, mStreamData.uFlatGlowLineCount, &mStreamData.uFlatGlowLines[0].X);
+		glUniform4fv(activeShader->muFlatGlowLinesLoc,
+			mStreamData.uFlatGlowLineCount > 0 ? mStreamData.uFlatGlowLineCount : 1,
+			&mStreamData.uFlatGlowLines[0].X);
 	}
 
 	if (mGradientEnabled || activeShader->currentgradientstate)

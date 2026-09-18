@@ -396,6 +396,9 @@ void HWFlat::DrawFloodPlanes(HWDrawInfo *di, FRenderState &state)
 //
 //==========================================================================
 float FogScaleForSector(FLevelLocals *Level, sector_t *sec);
+// [G6] Also hw_walls.cpp's, where the rest of the per-sector scene inputs live. Sets this draw's
+// glow planes AND its glow seed ("Engine docs/GLOW_SEAM_SEED_G6_IMPL_NOTES.md").
+void SetGlowPlanes(FRenderState &state, sector_t *sec);
 
 void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 {
@@ -430,13 +433,10 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 	// on a flat; wrong the moment the fog surface started sitting a fixed
 	// height above the floor, because looking down at the mist is exactly
 	// where a stale plane shows.
-	{
-		auto tp = sector->ceilingplane;
-		auto bp = sector->floorplane;
-		state.SetGlowPlanes(
-			FVector4(tp.Normal().X, tp.Normal().Y, tp.negiC, tp.fD()),
-			FVector4(bp.Normal().X, bp.Normal().Y, bp.negiC, bp.fD()));
-	}
+	//
+	// [G6] Through the shared helper now, which sets the same two planes from the same sector and
+	// this sector's glow seed with them -- the number the wall beside this flat hashes too.
+	SetGlowPlanes(state, sector);
 
 	state.SetNormal(plane.plane.Normal().X, plane.plane.Normal().Z, plane.plane.Normal().Y);
 	double zshift = (plane.plane.Normal().Z > 0.0 ? 0.01f : -0.01f); // The HWPlaneMirrorPortal::DrawPortalStencil() z-fights with flats

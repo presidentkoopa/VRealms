@@ -659,10 +659,14 @@ int FindMinSurroundingLight (const sector_t *sector, int min)
 
 	for (auto line : sector->Lines)
 	{
+		// RS FORK (light trim): the neighbour's UNTRIMMED light. This search picks the endpoints a
+		// light special will animate between, and those endpoints are then themselves trimmed --
+		// so reading a dimmed neighbour here would bake the trim in and apply it twice. With no
+		// trim anywhere GetLightTrimBase() is the raw field, so this is the same search as before.
 		if (NULL != (check = getNextSector (line, sector)) &&
-			check->lightlevel < min)
+			check->GetLightTrimBase() < min)
 		{
-			min = check->lightlevel;
+			min = check->GetLightTrimBase();
 		}
 	}
 	return min;
@@ -873,10 +877,15 @@ int GetFloorLight(const sector_t *sector)
 {
 	if (sector->GetFlags(sector_t::floor) & PLANEF_ABSLIGHTING)
 	{
-		return sector->GetPlaneLight(sector_t::floor);
+		// RS FORK (light trim): an absolute plane light bypasses the sector light entirely, so the
+		// trim has to be applied to it directly or a dimmed room would keep a bright floor -- the
+		// "half the rooms are exempt" problem again, one level down. ApplyLightTrim is the
+		// identity when nothing is trimmed.
+		return sector->ApplyLightTrim(sector->GetPlaneLight(sector_t::floor));
 	}
 	else
 	{
+		// lightlevel is the already-trimmed light, so this branch needs nothing.
 		return sector->ClampLight(sector->lightlevel + sector->GetPlaneLight(sector_t::floor));
 	}
 }
@@ -890,10 +899,13 @@ int GetCeilingLight(const sector_t *sector)
 {
 	if (sector->GetFlags(sector_t::ceiling) & PLANEF_ABSLIGHTING)
 	{
-		return sector->GetPlaneLight(sector_t::ceiling);
+		// RS FORK (light trim): as GetFloorLight above -- an absolute plane light is not reached by
+		// the sector light, so it is trimmed here. Identity when nothing is trimmed.
+		return sector->ApplyLightTrim(sector->GetPlaneLight(sector_t::ceiling));
 	}
 	else
 	{
+		// lightlevel is the already-trimmed light, so this branch needs nothing.
 		return sector->ClampLight(sector->lightlevel + sector->GetPlaneLight(sector_t::ceiling));
 	}
 }
