@@ -775,6 +775,83 @@ DEFINE_ACTION_FUNCTION(DPSprite, SetState)
 	return 0;
 }
 
+// RS FORK -- MOVE AND TURN ONE SURFACE OF A HUD MODEL.
+//
+// The psprite twin of AActor::SetModelSurfaceOffset (actor.zs:1823), with the
+// same name, the same arguments and the same meanings, so a caller that knows
+// one knows the other.
+//
+// WHY IT HAS TO EXIST AT ALL: everything else the psprite surface table can do
+// is FRAME selection, and a frame is a BAKED POSE. Frames can only put a
+// magazine where the artist put it -- a hand that stops it halfway out and holds
+// it there cannot be expressed by choosing frames, however many there are. That
+// is the difference between playing an animation and manipulating a model, and
+// a VR reload is the second one.
+//
+// Everything downstream of here already existed: DPSprite carries SurfOvHasXf /
+// SurfOvOfs / SurfOvRot and their Prev copies, NewTick already shifts them for
+// interpolation, and models.cpp's psprite branch already reads and blends them.
+// Only the writer was missing, so script could see the whole pipeline and had no
+// way to feed it.
+//
+// A FUNCTION RATHER THAN EXPORTED FIELDS, deliberately: ZScript's Vector3 is
+// three doubles and FVector3 is three floats, and exporting that mismatch as a
+// field drops it silently and kills startup with no error at all.
+//
+// The offset is in the MODEL's own axes, so it stays right however the weapon is
+// held, and it is ADDITIVE with the frame rather than instead of it -- the frame
+// still chooses the pose, this moves it from there.
+DEFINE_ACTION_FUNCTION(DPSprite, SetModelSurfaceOffset)
+{
+	PARAM_SELF_PROLOGUE(DPSprite);
+	PARAM_INT(slot);
+	PARAM_INT(modelindex);
+	PARAM_INT(surface);
+	PARAM_FLOAT(ofsx);
+	PARAM_FLOAT(ofsy);
+	PARAM_FLOAT(ofsz);
+	PARAM_FLOAT(rotx);
+	PARAM_FLOAT(roty);
+	PARAM_FLOAT(rotz);
+	PARAM_FLOAT(rotw);
+
+	if (slot < 0 || slot >= DPSprite::RS_SURF_SLOTS)
+	{
+		ACTION_RETURN_BOOL(false);
+	}
+
+	self->SurfOvModel[slot]   = modelindex;
+	self->SurfOvSurface[slot] = surface;
+	self->SurfOvHasXf[slot]   = true;
+	self->SurfOvOfs[slot]     = FVector3((float)ofsx, (float)ofsy, (float)ofsz);
+	self->SurfOvRot[slot]     = FVector4((float)rotx, (float)roty, (float)rotz, (float)rotw);
+	ACTION_RETURN_BOOL(true);
+}
+
+// Stop transforming this slot's surface, leaving whatever frame it is on alone.
+// Separate from writing a zero offset so "no transform" costs the renderer
+// nothing rather than an identity matrix multiply on every draw.
+DEFINE_ACTION_FUNCTION(DPSprite, ClearModelSurfaceOffset)
+{
+	PARAM_SELF_PROLOGUE(DPSprite);
+	PARAM_INT(slot);
+
+	if (slot < 0 || slot >= DPSprite::RS_SURF_SLOTS)
+	{
+		ACTION_RETURN_BOOL(false);
+	}
+
+	self->SurfOvHasXf[slot]   = false;
+	self->SurfOvOfs[slot]     = FVector3(0.f, 0.f, 0.f);
+	self->SurfOvRot[slot]     = FVector4(0.f, 0.f, 0.f, 1.f);
+	// The history too, or the next Set on this slot interpolates from wherever
+	// the part was when it was released -- sliding in from a stale position
+	// instead of appearing where it was put.
+	self->SurfOvOfsPrev[slot] = FVector3(0.f, 0.f, 0.f);
+	self->SurfOvRotPrev[slot] = FVector4(0.f, 0.f, 0.f, 1.f);
+	ACTION_RETURN_BOOL(true);
+}
+
 //---------------------------------------------------------------------------
 //
 // PROC P_BringUpWeapon

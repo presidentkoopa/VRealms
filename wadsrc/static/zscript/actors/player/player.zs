@@ -3324,6 +3324,23 @@ class PSprite : Object native play
 		}
 	}
 
+	// MOVE AND TURN ONE SURFACE, on top of whatever frame it is on. The psprite
+	// twin of Actor.SetModelSurfaceOffset -- same name, same arguments, same
+	// meanings.
+	//
+	// Everything else here picks a FRAME, and a frame is a baked pose: it can
+	// only put a part where the artist put it. This is what lets a hand stop a
+	// magazine halfway out and hold it there, which is a position no frame
+	// exists for.
+	//
+	// The offset is in the MODEL's own axes, so it stays right however the
+	// weapon is held, and it is ADDITIVE with the frame rather than instead of
+	// it. rot is a quaternion; identity is (0,0,0,1). Use FindModelSurfaceSlot
+	// to pick the slot, as with the frame calls. ClearModelSurfaceOffset stops
+	// transforming a slot and costs the renderer nothing thereafter.
+	native bool SetModelSurfaceOffset(int slot, int modelindex, int surface, Vector3 ofs, Quat rot);
+	native bool ClearModelSurfaceOffset(int slot);
+
 	// Hide this layer without touching the weapon behind it. The weapon keeps
 	// its states, damage and slot; only the drawing stops.
 	native bool NoDraw;

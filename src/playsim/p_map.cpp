@@ -5299,10 +5299,17 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 		tempos += DVector3(
 			offsetforward * direction.Angle().Cos() * direction.Pitch().Cos(),
 			offsetforward * direction.Angle().Sin() * direction.Pitch().Cos(),
+		// !multiplayer, like the three sibling reads (P_LineAttack's TRF_USEWEAPON
+		// path, the rail path, and P_SpawnPlayerMissile) -- this one was missed.
+		// use_action_spawn_yzoffset is CVAR_ARCHIVE|CVAR_GLOBALCONFIG, so it is
+		// per-machine, and UpdateCanonicalMainHandPose forces OverrideAttackPosDir
+		// on for every player in multiplayer, which makes this the LIVE branch in
+		// co-op. Two peers holding different values computed a different trace
+		// origin for the same shot: different linetarget, different damage.
 			offsetforward * -direction.Pitch().Sin()
 		);
 
-		if (!use_action_spawn_yzoffset)
+		if (!multiplayer && !use_action_spawn_yzoffset)
 			offsetside = sz = 0;
 
 		tempos += DVector3(

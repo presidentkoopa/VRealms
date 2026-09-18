@@ -216,7 +216,15 @@ EXTERN_CVAR(String, bb_sdffont)
 
 // Named, so it shows up in the RNG list like every other consumer rather
 // than being an anonymous source of nondeterminism.
-static FRandom pr_sdfroster("SDFFontRoster");
+//
+// FCRandom, NOT FRandom, and that is the whole point: an FRandom is PLAYSIM RNG
+// -- it sits on RNGList and is serialized with the game -- while this roster is
+// rolled LAZILY off a DRAW path (FSDFFontRoster::Slot, from hw_sprites.cpp). A
+// machine that never draws an SDF billboard never rolled it and one that did
+// rolled it at a frame-dependent moment, so two peers' serialized RNG state
+// drifted apart over something purely cosmetic. Every other rendering-side RNG
+// in this tree is already FCRandom; this was the one exception.
+static FCRandom pr_sdfroster("SDFFontRoster");
 
 // Names only. The fonts themselves stay in FSDFFont::Get's cache, which
 // already dedupes and already survives across rolls -- a re-roll reorders

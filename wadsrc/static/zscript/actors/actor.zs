@@ -740,9 +740,29 @@ class Actor : Thinker native
 	native readonly int GripSubjectOff;
 
 	// True while the off hand is actually ON the main hand's weapon -- its grip,
-	// forend or foregrip -- rather than merely near it. Read it to tighten a
-	// weapon's spread: that is what a second hand buys. It does not move the
+	// forend or foregrip -- rather than merely near it. It does not move the
 	// weapon, deliberately.
+	//
+	// LOCAL, NOT PLAYSIM. This is written by the VR backend from controller
+	// proximity, for the console player's own pawn, on the machine that has the
+	// headset. On every other machine it is FALSE for that same pawn, and for a
+	// desktop player it is false always.
+	//
+	// SO DO NOT DECIDE A SHOT WITH IT. This comment used to say "read it to
+	// tighten a weapon's spread", and that was wrong: spread is a hit decision
+	// and it draws from the playsim RNG, so a weapon following that advice
+	// disagreed with its own peers on the first shot and left the RNG stream out
+	// of phase for the rest of the session.
+	//
+	// To make a second hand on the weapon actually buy something, send the
+	// DECISION and apply it everywhere:
+	//
+	//   local side:  EventHandler.SendNetworkEvent("mymod_grip", hand, held);
+	//   play side:   override void NetworkProcess(ConsoleEvent e)
+	//                { /* set replicated state on players[e.Player]'s weapon */ }
+	//
+	// Reading it to DRAW something -- a pose, a hand, a HUD cue -- is fine and is
+	// what it is for.
 	native readonly bool TwoHandedHold;
 
 	// Accumulated CONTROLLER-driven yaw (snap + stick turn), degrees. HmdYaw is

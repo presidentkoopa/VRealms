@@ -1415,8 +1415,21 @@ void VRMode::SetUp() const
 		// them every tic); the renderer writing them here would overwrite the recording
 		// with whatever this machine's headset -- or lack of one -- says.
 		const bool replayingVrDemo = VRDemo_IsReplaying();
+		// NOT IN MULTIPLAYER, and the playsim already said so: P_SpawnPlayer sets
+		// `p->PlayInVR = !multiplayer && vr_mode != VR_MONO` (p_mobj.cpp) precisely
+		// so VR and flatscreen peers do not simulate different player logic. This
+		// line overwrote that on the next rendered frame, which made that guard dead
+		// from the moment it was written.
+		//
+		// What it cost: PlayInVR is read on gameplay paths -- player.zs's
+		// bJustAttacked auto-forward, and the melee weapons' `angle =
+		// t.angleFromSource` (weaponfist.zs, weaponchainsaw.zs, weapongauntlets.zs
+		// and five more). In co-op the desktop peer forced forwardmove and snapped
+		// the attacker's angle to its target while the VR machine did neither, for
+		// the SAME player on the SAME tic, and bJustAttacked then cleared on one
+		// side only so it repeated.
 		if (!replayingVrDemo)
-			player->PlayInVR = IsVR();
+			player->PlayInVR = !multiplayer && IsVR();
 		player->mo->AttackDir = MapAttackDir;
 		player->mo->OffhandDir = MapOffhandDir;
 
