@@ -636,6 +636,23 @@ void player_t::CopyFrom(player_t &p)
 	cmd = p.cmd;
 	original_cmd = p.original_cmd;
 	original_oldbuttons = p.original_oldbuttons;
+	// Buttons a script asked for are playsim input like any other, so they are saved and
+	// restored across prediction exactly as cmd is -- THIS FUNCTION IS the prediction
+	// backup (P_PredictPlayer) and the prediction restore (P_UnPredictPlayer), and
+	// nothing else.
+	//
+	// Without these two lines the client destroys its own injected press: prediction runs
+	// P_PlayerThink for the local player ahead of the authoritative tic, the one-shot is
+	// OR'd in and cleared there, nothing puts it back, and the tic that actually counts
+	// sees zero -- so the press happens on no machine at all. It does not even fire early,
+	// because player.zs calls TickPSprites() (CheckWeaponFire / CheckWeaponButtons, the
+	// code that reads the button) only when CF_PREDICTING is clear. Prediction is gated on
+	// `netgame`, which is why this is invisible in single player and fatal in a netgame.
+	//
+	// The mask is here for the other direction: a script that sets or drops it inside a
+	// predicted think must not have that survive the unwind.
+	ButtonInject = p.ButtonInject;
+	ButtonMask = p.ButtonMask;
 	// Intentionally not copying userinfo!
 	cls = p.cls;
 	DesiredFOV = p.DesiredFOV;
@@ -1734,6 +1751,27 @@ void P_PlayerThink (player_t *player)
 		I_Error ("No player %td start\n", player - players + 1);
 	}
 
+	// RS FORK -- SCRIPT-DRIVEN BUTTONS (player_t::ButtonInject / ButtonMask).
+	//
+	// THIS POSITION IS LOAD BEARING. It has to be at the TOP of P_PlayerThink, before
+	// anything reads cmd->buttons, because the weapon's own button handling runs INSIDE
+	// the PlayerThink virtual further down. There is no equivalent place: WorldTick is a
+	// whole tic too late, and the command is refilled from input before the next one. A
+	// future session tidying this into somewhere that looks the same will silently break
+	// every mod that presses a button it does not own.
+	//
+	// Inject is a ONE-SHOT: OR'd in, then cleared, so one set bit is exactly one press.
+	// Mask is PERSISTENT: held out until a script drops it, which is how a trigger stays
+	// dead while a gun is apart.
+	//
+	// Both are zero by default, so a build with no mod using them behaves identically.
+	if (player->ButtonInject != 0)
+	{
+		cmd->buttons |= player->ButtonInject;
+		player->ButtonInject = 0;
+	}
+	cmd->buttons &= ~player->ButtonMask;
+
     static int previous_health = 0;
 
     if (previous_health != player->health)
@@ -2154,6 +2192,17 @@ void player_t::Serialize(FSerializer &arc)
 		("crouchviewdelta", crouchviewdelta)
 		("original_cmd", original_cmd)
 		("original_oldbuttons", original_oldbuttons)
+		// ButtonMask persists until a script drops it, so it is real saved state: a game
+		// saved with a trigger held dead must load with it still dead, or the gun fires in
+		// the middle of a reload. ButtonInject is deliberately NOT saved -- it is a
+		// one-shot consumed on the tic it is set, and a saved one would fire a press the
+		// player never asked for on load.
+		//
+		// WHOEVER SETS THE MASK MUST SURVIVE THE SAVE TOO. A mask saved without the state
+		// that clears it loads as a permanently dead trigger inside a save file, which is
+		// the worst failure in this area because it is invisible and unrecoverable. If a
+		// mod's releaser does not serialize, that mod must clear the mask on load.
+		("buttonmask", ButtonMask)
 		("poisontype", poisontype)
 		("poisonpaintype", poisonpaintype)
 		("timefreezer", timefreezer)
@@ -2204,6 +2253,8 @@ bool P_IsPlayerTotallyFrozen(const player_t *player)
 DEFINE_FIELD_X(PlayerInfo, player_t, mo)
 DEFINE_FIELD_X(PlayerInfo, player_t, playerstate)
 DEFINE_FIELD_X(PlayerInfo, player_t, original_oldbuttons)
+DEFINE_FIELD_X(PlayerInfo, player_t, ButtonInject)   // RS fork
+DEFINE_FIELD_X(PlayerInfo, player_t, ButtonMask)     // RS fork
 DEFINE_FIELD_X(PlayerInfo, player_t, cls)
 DEFINE_FIELD_X(PlayerInfo, player_t, DesiredFOV)
 DEFINE_FIELD_X(PlayerInfo, player_t, FOV)

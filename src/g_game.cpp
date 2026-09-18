@@ -526,6 +526,21 @@ size_t          maxdemosize;
 uint8_t         *zdemformend; // end of FORM ZDEM chunk
 uint8_t         *zdembodyend; // end of ZDEM BODY chunk
 
+// RS FORK -- THE DEMO STREAM'S OWN DELTA BASIS, per player, untouched by the playsim.
+//
+// A usercmd is written and read as a DELTA, and the basis used to be players[i].cmd --
+// a LIVE buffer that P_PlayerThink writes to every tic now that a script can press and
+// mask buttons (player_t::ButtonInject / ButtonMask). A field equal to its basis is not
+// written at all, so the deltas were taken against a number that depended on local
+// script state no replay could reconstruct, and one wrong field stayed wrong for the
+// rest of the stream.
+//
+// Keeping the basis here means the encoding depends on the RECORDED STREAM and nothing
+// else: whatever any mod does to the live command, the demo holds exactly the commands
+// that were actually sent. Zeroed when a recording starts and when a playback starts, so
+// both sides begin from the same value.
+static usercmd_t DemoCmdBasis[MAXPLAYERS] = {};
+
 FIntCVarRef     *angleturn[4] = {&turnspeedwalkfast, &turnspeedsprintfast, &turnspeedwalkslow, &turnspeedsprintslow};
 int             flyspeed[2] = {1*256, 3*256};
 int             lookspeed[2] = {450, 512};
@@ -3334,11 +3349,20 @@ void G_ReadDemoTiccmd (usercmd_t *cmd, int player)
 			break;
 
 		case DEM_USERCMD:
-			UnpackUserCmd (*cmd, cmd, demo_p);
+			// RS fork -- the reader's basis has to be the same number the writer used, and
+			// the live command is not it: playback runs P_PlayerThink too, so a mod injects
+			// into this command on this side as well, and whether it injects the same bits
+			// depends on that mod's own state, its cvars and local input. Decode against
+			// the stream. See DemoCmdBasis above.
+			UnpackUserCmd (DemoCmdBasis[player], &DemoCmdBasis[player], demo_p);
+			*cmd = DemoCmdBasis[player];
 			break;
 
 		case DEM_EMPTYUSERCMD:
-			// leave cmd->ucmd unchanged
+			// RS fork -- identical to the basis. That used to be spelled "leave cmd
+			// unchanged", which was the same thing only for as long as nothing else wrote
+			// to it.
+			*cmd = DemoCmdBasis[player];
 			break;
 
 		case DEM_DROPPLAYER:
@@ -3402,7 +3426,12 @@ void G_WriteDemoTiccmd (usercmd_t *cmd, int player, int buf)
 		WriteBytes(TArrayView(specdata, speclen), demo_p);
 
 	// [RH] Now write out a "normal" ticcmd.
-	WriteUserCmdMessage (*cmd, &players[player].cmd, demo_p);
+	// RS fork -- basis is DemoCmdBasis, NOT players[player].cmd. This is called from
+	// G_Ticker BEFORE the new command is copied in, so the live buffer still holds LAST
+	// tic's command with last tic's script injection already written into it. See
+	// DemoCmdBasis above.
+	WriteUserCmdMessage (*cmd, &DemoCmdBasis[player], demo_p);
+	DemoCmdBasis[player] = *cmd;
 
 	// [RH] Bigger safety margin
 	G_EnsureDemoSpace(64);

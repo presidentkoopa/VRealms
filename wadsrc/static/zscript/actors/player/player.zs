@@ -3520,6 +3520,39 @@ struct PlayerInfo native play	// self is what internally is known as player_t
 	native uint8 playerstate;
 	native readonly uint buttons;
 	native uint original_oldbuttons;
+
+	// SCRIPT-DRIVEN BUTTONS. For a mod layered on weapons it does not own: there is no
+	// other way to reach another mod's weapon input, because that weapon's button handling
+	// runs inside the PlayerThink virtual and no script hook runs in front of it.
+	//
+	//   ButtonInject   set a bit, it is pressed ONCE, and it clears itself.
+	//                  "start this weapon's own reload now, however that mod does it."
+	//   ButtonMask     bits held DOWN for as long as it is set.
+	//                  "the trigger is dead until the magazine is back in."
+	//
+	// NETPLAY -- READ THIS BEFORE USING THEM. These are PLAYSIM INPUT, and playsim input
+	// has to be the same on every machine. The engine makes them behave: they survive
+	// prediction, and they stay out of the demo's delta basis. It CANNOT make a value that
+	// only one machine set appear on the others.
+	//
+	// So NEVER set them straight from something only this machine can see -- a controller
+	// pose, a keypress, a cvar, a menu, anything in ui scope. Send the DECISION, and set
+	// the bit in the handler that every machine runs:
+	//
+	//   local side:  EventHandler.SendNetworkEvent("mymod_reload", hand);
+	//   play side:   override void NetworkProcess(ConsoleEvent e)
+	//                { players[e.Player].ButtonInject |= BT_RELOAD; }
+	//
+	// That path is delivered to every peer on the same tic and is recorded into demos, so
+	// the press replays. Set straight from local state it desyncs the game on the tic it
+	// fires and silently vanishes from any recording.
+	//
+	// ButtonMask is SAVED with the player; ButtonInject is not (a saved one-shot would fire
+	// a press nobody asked for on load). Whatever clears your mask must survive the save
+	// too, or clear the mask yourself on load -- a mask with no living releaser is a
+	// permanently dead trigger inside a save file.
+	native uint ButtonInject;
+	native uint ButtonMask;
 	native Class<PlayerPawn> cls;
 	native float DesiredFOV;
 	native float FOV;

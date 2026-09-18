@@ -367,6 +367,22 @@ public:
 	usercmd_t	original_cmd = {};
 	uint32_t		original_oldbuttons = 0;
 
+	// RS FORK -- SCRIPT-DRIVEN BUTTONS. A general way for a mod to press, and to hold
+	// down, a player's buttons, for mods layered on weapons they do not own.
+	//
+	//   ButtonInject   bits pressed ONCE, then cleared by the engine
+	//   ButtonMask     bits held DOWN for as long as this is set
+	//
+	// Applied at the top of P_PlayerThink, before anything reads the command. Zero is
+	// inert, so every existing caller is untouched.
+	//
+	// PLAYSIM INPUT, so both are carried by CopyFrom (prediction) and kept out of the
+	// demo's delta basis. See the contract comment on PlayerInfo.ButtonInject in
+	// player.zs: the engine makes these behave, but it cannot make a value only one
+	// machine set appear on the others -- the DECISION has to travel.
+	uint32_t	ButtonInject = 0;
+	uint32_t	ButtonMask = 0;
+
 	userinfo_t	userinfo;				// [RH] who is this?
 
 	PClassActor *cls = nullptr;				// class of associated PlayerPawn
