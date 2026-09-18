@@ -161,6 +161,7 @@ DEFINE_FIELD(DPSprite, processPending)
 DEFINE_FIELD(DPSprite, Tint)             // RS fork
 DEFINE_FIELD(DPSprite, Glow)             // RS fork
 DEFINE_FIELD(DPSprite, NoDraw)           // RS fork
+DEFINE_FIELD(DPSprite, HandOverride)     // RS fork
 DEFINE_FIELD(DPSprite, BodyOfs)          // RS fork
 DEFINE_FIELD(DPSprite, BodyYaw)          // RS fork
 DEFINE_FIELD(DPSprite, AnchorLayer)      // RS fork
@@ -1534,6 +1535,7 @@ void DPSprite::Serialize(FSerializer &arc)
 		("modelframenext", ModelFrameNext)  // RS fork
 		("modelframelerp", ModelFrameLerp)  // RS fork
 		("nodraw", NoDraw)                  // RS fork
+		("handoverride", HandOverride)      // RS fork
 		("pivot", pivot)
 		("scale", scale)
 		("rotation", rotation)

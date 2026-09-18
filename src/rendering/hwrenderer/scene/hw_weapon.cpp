@@ -1543,8 +1543,18 @@ void HWDrawInfo::DrawPlayerSprites(bool hudModelStep, FRenderState &state)
 		// 1000000, and the chain is kept sorted and unique. The one case the id
 		// cannot answer is PSP_FLASH (1000), which both hands share -- for that
 		// the caller is checked, by pointer identity rather than by class.
+		//
+		// RS fork -- an explicit per-layer hand wins over both channels below.
+		// Neither of them can put a layer at the MAIN hand while its caller is
+		// the off-hand weapon, which is what a magazine carried over to a gun
+		// held in the off hand needs. See DPSprite::HandOverride (p_pspr.h);
+		// <0 is "not set" and leaves the id/caller logic untouched.
 		int spriteHand = VR_MAINHAND;
-		if (hudsprite.weapon != nullptr)
+		if (hudsprite.weapon != nullptr && hudsprite.weapon->HandOverride >= 0)
+		{
+			spriteHand = (hudsprite.weapon->HandOverride == VR_OFFHAND) ? VR_OFFHAND : VR_MAINHAND;
+		}
+		else if (hudsprite.weapon != nullptr)
 		{
 			if (hudsprite.weapon->GetID() >= PSP_OFFHANDWEAPON)
 			{

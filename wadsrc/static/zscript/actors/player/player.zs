@@ -3328,6 +3328,16 @@ class PSprite : Object native play
 	// its states, damage and slot; only the drawing stops.
 	native bool NoDraw;
 
+	// Which hand to draw this layer at, overriding the layer id and the
+	// caller. -1 (default) = the engine decides as it always has; 0 = main
+	// hand; 1 = off hand. Render only -- it changes nothing the playsim sees,
+	// so it is safe to set from a local, per-machine decision.
+	//
+	// The case that needs it: a gun held in the OFF hand cannot otherwise draw
+	// anything at the MAIN hand, because a layer whose caller is the off-hand
+	// weapon is always sent to the off hand.
+	native int HandOverride;
+
 	// Draw this layer at a bone of another layer's model. AnchorLayer is the
 	// layer id to follow, AnchorBone the bone name on it; this layer's own
 	// offsets then apply relative to that bone. The anchored layer must have a

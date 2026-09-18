@@ -469,6 +469,31 @@ public:
 	// savegame constructor runs no constructor body.
 	bool  NoDraw         = false;
 
+	// RS FORK -- PER-LAYER HAND SELECTION.
+	//
+	// Which hand this layer is drawn at. <0 keeps today's behaviour exactly:
+	// hw_weapon.cpp picks the hand from the layer id (at or above
+	// PSP_OFFHANDWEAPON means the off hand) and otherwise from whether the
+	// layer's caller IS player->OffhandWeapon. 0 = main hand, 1 = off hand,
+	// matching VR_MAINHAND / VR_OFFHAND.
+	//
+	// Both of those channels are indirect, and one direction cannot be
+	// expressed by either: a layer whose caller is the off-hand weapon is
+	// ALWAYS drawn at the off hand, and a low id cannot even be created when
+	// ReadyWeapon is null (GetPSprite defaults the caller to ReadyWeapon and
+	// gives up when that is null). So a gun held in the off hand could draw
+	// nothing at the main hand at all -- no magazine carried over to it, no
+	// shell, no free hand on the forend.
+	//
+	// RENDER ONLY, and that is the whole point. A psprite is drawn on one
+	// machine and seen by nobody else, so this feeds no playsim decision and
+	// cannot desync. It is serialised so a save resumes looking as it looked.
+	//
+	// In-class initialiser for the same reason as every field above: the
+	// private savegame constructor runs no constructor body, and a garbage
+	// value here would fling a layer to the wrong hand on an old save.
+	int   HandOverride   = -1;
+
 	// RS FORK -- HUD BONE ANCHORING.
 	//
 	// Draw this layer at a BONE of another layer's model: AnchorLayer names the
