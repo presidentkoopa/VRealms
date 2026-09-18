@@ -31,6 +31,7 @@
 #include "d_main.h"
 #include "d_net.h"
 #include "p_vrdemo.h"
+#include "g_perfbench.h"	// RS FORK -- the bench header and the per-tic state hash a demo carries
 #include "d_netinf.h"
 #include "events.h"
 #include "g_game.h"
@@ -42,6 +43,7 @@
 #include "i_net.h"
 #include "i_system.h"
 #include "i_time.h"
+#include "common/rendering/hwrenderer/data/hw_perftrack.h"	// RS FORK -- perf_track: tics run this frame, and the GC's own time
 #include "m_argv.h"
 #include "m_cheat.h"
 #include "menu.h"
@@ -2203,7 +2205,12 @@ static void CalculateNetStabilityBuffer(int diff)
 //
 void TryRunTics()
 {
-	GC::CheckGC();
+	// RS FORK -- perf_track: the collector is one of the reasons a frame goes over budget, so it is timed where
+	// it runs. Off, PerfTrack::Scope reads no clock: its whole cost is one integer test.
+	{
+		PerfTrack::Scope gcScope(PerfTrack::REASON_GC);
+		GC::CheckGC();
+	}
 
 	if (ToggleFullscreen)
 	{
@@ -2344,6 +2351,9 @@ void TryRunTics()
 		G_Ticker();
 		MakeConsistencies();
 		++gametic;
+		// RS FORK -- perf_track: one playsim tic ran in this frame. Read-only bookkeeping on the local machine:
+		// nothing here is netplay state and nothing is keyed on a player.
+		if (PerfTrack::Active()) PerfTrack::NoteTic();
 
 		if (stabilize)
 			TicStabilityEnd();
@@ -3165,6 +3175,16 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 		VRDemo_ReadFrame(stream, player);
 		break;
 
+	case DEM_BENCHHEADER:
+		// RS FORK -- the run header this recording was made under (g_perfbench.cpp).
+		PerfBench::ReadHeader(stream);
+		break;
+
+	case DEM_BENCHHASH:
+		// RS FORK -- one tic's playsim state hash, compared against this run's (g_perfbench.cpp).
+		PerfBench::ReadHash(stream);
+		break;
+
 	case DEM_ZSC_CMD:
 		{
 			FName cmd = ReadStringConst(stream);
@@ -3330,7 +3350,9 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 			break;
 
 		case DEM_VRFRAME:
-			// [VRDEMO] Word: payload size, then the payload.
+		case DEM_BENCHHEADER:
+		case DEM_BENCHHASH:
+			// [VRDEMO] Word: payload size, then the payload. RS FORK -- the bench commands are framed the same.
 			skip = 2 + ((size_t(stream[0]) << 8) | size_t(stream[1]));
 			break;
 

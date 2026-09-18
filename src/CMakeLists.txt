@@ -964,6 +964,8 @@ set (PCH_SOURCES
 	p_tick.cpp
 	playsim/p_user.cpp
 	playsim/p_vrdemo.cpp
+	g_perfbench.cpp
+	g_benchdemo.cpp
 	rendering/r_utility.cpp
 	rendering/r_levelray.cpp
 	rendering/r_sky.cpp
@@ -1290,6 +1292,7 @@ set (PCH_SOURCES
 	common/rendering/hwrenderer/data/hw_clock.cpp
 	common/rendering/hwrenderer/data/hw_perflog.cpp
 	common/rendering/hwrenderer/data/hw_effectsgovernor.cpp
+	common/rendering/hwrenderer/data/hw_perftrack.cpp
 	common/rendering/hwrenderer/data/hw_skydome.cpp
 	common/rendering/hwrenderer/data/flatvertices.cpp
 	common/rendering/hwrenderer/data/hw_viewpointbuffer.cpp

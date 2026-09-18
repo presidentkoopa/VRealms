@@ -44,6 +44,7 @@
 #include "hw_emissivevolumeframe.h"	// [EMISSIVEVOLUMES] EmissiveVolumeStats
 #include "hw_framecompute.h"	// [SMOKELIGHTCULL] E6: SmokeVolumeStatus, the smoke light grid's fill
 #include "hw_effectsgovernor.h"	// [GOVERNOR] E8: EffectsGovernor::LastFrame
+#include "hw_perftrack.h"	// RS FORK -- perf_track: the same samples, forwarded to the per-frame record
 
 extern bool keepGpuStatActive;	// hw_postprocess.cpp
 EXTERN_CVAR(Int, r_gpuparticles_looks)	// [LOOKS] hw_particledefbuffer.cpp
@@ -637,6 +638,9 @@ static bool AddEachRun(std::vector<Stat>& list, const char* name, double ms)
 
 void PerfLog::AddGpuSample(const char* name, double ms)
 {
+	// RS FORK -- perf_track: the per-frame record keeps this sample under its own name for the frame it fell in.
+	// Before every early return below, so a CountEachRun name reaches it too.
+	if (PerfTrack::Active()) PerfTrack::NoteGpuGroup(name, ms);
 	// [COMPUTE] A CountEachRun name: per run, not per frame.
 	if (AddEachRun(W.Gpu, name, ms))
 		return;
@@ -659,6 +663,8 @@ void PerfLog::AddGpuSample(const char* name, double ms)
 
 void PerfLog::AddCpuSample(const char* name, double ms)
 {
+	// RS FORK -- perf_track: as AddGpuSample, on the CPU side's own table.
+	if (PerfTrack::Active()) PerfTrack::NoteCpuGroup(name, ms);
 	// [COMPUTE] A CountEachRun name: per run, not per frame.
 	if (AddEachRun(W.CpuFx, name, ms))
 		return;
@@ -683,6 +689,8 @@ void PerfLog::AddCpuSample(const char* name, double ms)
 // [PERFLOG] E9: see the header. One sample per run; the thinker count is the run's own.
 void PerfLog::AddThinkSample(bool clientSide, double ms, int thinkers)
 {
+	// RS FORK -- perf_track: the same tic run, summed into the frame it fell in.
+	if (PerfTrack::Active()) PerfTrack::NoteThink(clientSide, ms, thinkers);
 	if (clientSide)
 	{
 		W.CsThink.Add(ms);

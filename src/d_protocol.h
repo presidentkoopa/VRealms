@@ -171,6 +171,12 @@ enum EDemoCommand
 	// commands does not renumber it. Word: payload size, then the payload -- one tic's
 	// VR frame (p_vrdemo.cpp). Only ever written to demos, never sent over the network.
 	DEM_VRFRAME = 200,	// 200
+
+	// RS FORK -- the benchmark's own two, framed exactly as DEM_VRFRAME is (Word: payload size, then the
+	// payload) and numbered after it. Only ever written to demos, never sent over the network, and never
+	// written in multiplayer (g_perfbench.cpp).
+	DEM_BENCHHEADER = 201,	// 201 Once, at the start: the build, the load order and the cvars that differ
+	DEM_BENCHHASH = 202,	// 202 Every tic: the playsim's state as field-group hashes (the DESYNC detector)
 };
 
 // The following are implemented by cht_DoCheat in m_cheat.cpp

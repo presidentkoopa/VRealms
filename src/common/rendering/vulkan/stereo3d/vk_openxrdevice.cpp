@@ -5,6 +5,7 @@
 #include "common/rendering/stereo3d/openxr/oxr_loader.h"
 #include "hw_clock.h"
 #include "hw_effectsgovernor.h"	// [GOVERNOR] E8: the frame wait and the swapchain wait are pacing
+#include "hwrenderer/data/hw_perftrack.h"	// RS FORK -- perf_track: the headset runtime's share of the frame
 #include "v_video.h"
 #include "hw_cvars.h"
 #include "vulkan/system/vk_renderdevice.h"
@@ -304,6 +305,188 @@ static const std::vector<XrExtensionProperties>& GetOpenXRExtensions()
 
 	return cachedExtensions;
 }
+
+// RS FORK -- perf_track: THE HEADSET RUNTIME'S SHARE ("Engine docs/TELEMETRY_AND_BENCH_PLAN.md" section 2,
+// hw_perftrack.h). The question this answers is "how much of a late frame was ours and how much was the
+// runtime's" -- the one thing a headset-free replay can never measure.
+//
+// ONLY OPENXR. Nothing here hooks, injects into or reads another vendor's process. Three sources, in order of
+// how much they are trusted:
+//   1. OUR OWN CLOCK around the frame calls: xrWaitFrame, the swapchain acquire and wait, xrEndFrame. Always
+//      available; the same waits the effects governor already counts as pacing, timed again here per call so the
+//      record can say WHICH call held the frame.
+//   2. XR_KHR_win32_convert_performance_counter_time: the runtime's predicted display time converted into our
+//      own QPC clock, so "how far ahead is the frame we are drawing" is MEASURED, not inferred from an assumed
+//      pipeline depth.
+//   3. XR_META_performance_metrics, when the runtime advertises it: the runtime's own view of our GPU time, the
+//      compositor's CPU and GPU time, its frame rate, and the frames it dropped or reprojected. The counter
+//      PATHS are enumerated and matched by what their names contain, never hard-coded, so a runtime that spells
+//      them differently or offers a subset still gives us what it has and the rest stay zero.
+// Every one of these degrades to zero when the runtime does not offer it. None of it changes a frame.
+namespace XrPerfTrack
+{
+	static bool HasCounterTime = false;
+	static bool HasMetrics = false;
+	static bool MetricsEnabled = false;
+	static bool MetricsPathsRead = false;
+
+	static PFN_xrConvertTimeToWin32PerformanceCounterKHR ConvertTimeToCounter = nullptr;
+	static PFN_xrEnumeratePerformanceMetricsCounterPathsMETA EnumerateMetricPaths = nullptr;
+	static PFN_xrSetPerformanceMetricsStateMETA SetMetricsState = nullptr;
+	static PFN_xrQueryPerformanceMetricsCounterMETA QueryMetric = nullptr;
+
+	// The counters we keep, matched against whatever the runtime enumerates.
+	enum EMetric
+	{
+		MET_APP_GPU, MET_COMP_GPU, MET_COMP_CPU, MET_COMP_FPS,
+		MET_APP_DROPPED, MET_COMP_DROPPED, MET_STALE, MET_COUNT
+	};
+	static XrPath MetricPath[MET_COUNT] = {};
+
+	// This frame's numbers, filled as the frame calls run and handed over once at the end.
+	static PerfTrack::XrFrameInfo Frame;
+
+	static void Reset() { Frame = PerfTrack::XrFrameInfo(); }
+
+	// Instance-level entry points, loaded once after xrCreateInstance. A runtime that advertised an extension but
+	// hands back no entry point is treated as not having it.
+	static void LoadProcs(XrInstance instance)
+	{
+		auto load = [&](const char* name, PFN_xrVoidFunction* out) -> bool
+		{
+			*out = nullptr;
+			return XR_SUCCEEDED(xrGetInstanceProcAddr(instance, name, out)) && *out != nullptr;
+		};
+		if (HasCounterTime)
+		{
+			if (!load("xrConvertTimeToWin32PerformanceCounterKHR", reinterpret_cast<PFN_xrVoidFunction*>(&ConvertTimeToCounter)))
+				HasCounterTime = false;
+		}
+		if (HasMetrics)
+		{
+			const bool ok =
+				load("xrEnumeratePerformanceMetricsCounterPathsMETA", reinterpret_cast<PFN_xrVoidFunction*>(&EnumerateMetricPaths)) &&
+				load("xrSetPerformanceMetricsStateMETA", reinterpret_cast<PFN_xrVoidFunction*>(&SetMetricsState)) &&
+				load("xrQueryPerformanceMetricsCounterMETA", reinterpret_cast<PFN_xrVoidFunction*>(&QueryMetric));
+			if (!ok)
+				HasMetrics = false;
+		}
+		Printf("perf_track: OpenXR shared clock %s, performance metrics %s\n",
+			HasCounterTime ? "available" : "not offered", HasMetrics ? "available" : "not offered");
+	}
+
+	// Enumerate the counter paths the runtime offers and keep the ones we can name. Matched on what the path
+	// string CONTAINS, so the exact spelling stays the runtime's business and a subset still gives what it has.
+	static void ReadMetricPaths(XrInstance instance)
+	{
+		if (MetricsPathsRead || !HasMetrics || EnumerateMetricPaths == nullptr)
+			return;
+		MetricsPathsRead = true;
+
+		uint32_t count = 0;
+		if (XR_FAILED(EnumerateMetricPaths(instance, 0, &count, nullptr)) || count == 0)
+			return;
+		std::vector<XrPath> paths(count);
+		if (XR_FAILED(EnumerateMetricPaths(instance, count, &count, paths.data())))
+			return;
+
+		for (uint32_t i = 0; i < count && i < paths.size(); i++)
+		{
+			char buffer[XR_MAX_PATH_LENGTH] = {};
+			uint32_t written = 0;
+			if (XR_FAILED(xrPathToString(instance, paths[i], (uint32_t)sizeof(buffer), &written, buffer)))
+				continue;
+			const std::string name(buffer);
+			const bool app = name.find("/app/") != std::string::npos;
+			const bool comp = name.find("/compositor/") != std::string::npos;
+			const bool gpu = name.find("gpu") != std::string::npos;
+			const bool cpu = name.find("cpu") != std::string::npos;
+			const bool dropped = name.find("dropped") != std::string::npos;
+			const bool rate = name.find("frame_rate") != std::string::npos || name.find("fps") != std::string::npos;
+			const bool stale = name.find("stale") != std::string::npos || name.find("spacewarp") != std::string::npos;
+			// The frame TIME counters only: a utilization percentage is not a time.
+			const bool frametime = name.find("frametime") != std::string::npos || name.find("frame_time") != std::string::npos
+				|| name.find("gpu_time") != std::string::npos || name.find("cpu_time") != std::string::npos;
+
+			if (app && gpu && frametime) MetricPath[MET_APP_GPU] = paths[i];
+			else if (comp && gpu && frametime) MetricPath[MET_COMP_GPU] = paths[i];
+			else if (comp && cpu && frametime) MetricPath[MET_COMP_CPU] = paths[i];
+			else if (comp && rate) MetricPath[MET_COMP_FPS] = paths[i];
+			else if (app && dropped) MetricPath[MET_APP_DROPPED] = paths[i];
+			else if (comp && dropped) MetricPath[MET_COMP_DROPPED] = paths[i];
+			else if (stale) MetricPath[MET_STALE] = paths[i];
+		}
+	}
+
+	// Metrics collection is off in the runtime until it is asked for, and it is only ever asked for while
+	// perf_track is on: an unmeasured run costs the runtime nothing.
+	static void SetMetrics(XrSession session, bool on)
+	{
+		if (!HasMetrics || SetMetricsState == nullptr || session == XR_NULL_HANDLE || MetricsEnabled == on)
+			return;
+		XrPerformanceMetricsStateMETA state{ XR_TYPE_PERFORMANCE_METRICS_STATE_META };
+		state.enabled = on ? XR_TRUE : XR_FALSE;
+		if (XR_SUCCEEDED(SetMetricsState(session, &state)))
+			MetricsEnabled = on;
+	}
+
+	static bool QueryFloat(XrSession session, EMetric which, float& out)
+	{
+		if (QueryMetric == nullptr || MetricPath[which] == XR_NULL_PATH)
+			return false;
+		XrPerformanceMetricsCounterMETA counter{ XR_TYPE_PERFORMANCE_METRICS_COUNTER_META };
+		if (XR_FAILED(QueryMetric(session, MetricPath[which], &counter)))
+			return false;
+		if ((counter.counterFlags & XR_PERFORMANCE_METRICS_COUNTER_FLOAT_VALUE_VALID_BIT_META) != 0)
+		{
+			out = counter.floatValue;
+			return true;
+		}
+		if ((counter.counterFlags & XR_PERFORMANCE_METRICS_COUNTER_UINT_VALUE_VALID_BIT_META) != 0)
+		{
+			out = (float)counter.uintValue;
+			return true;
+		}
+		return false;
+	}
+
+	// Once a frame, just before the record takes the frame.
+	static void ReadMetrics(XrSession session)
+	{
+		if (!MetricsEnabled)
+			return;
+		float v = 0.0f;
+		bool any = false;
+		if (QueryFloat(session, MET_APP_GPU, v)) { Frame.AppGpuMs = v; any = true; }
+		if (QueryFloat(session, MET_COMP_GPU, v)) { Frame.CompositorGpuMs = v; any = true; }
+		if (QueryFloat(session, MET_COMP_CPU, v)) { Frame.CompositorCpuMs = v; any = true; }
+		if (QueryFloat(session, MET_COMP_FPS, v)) { Frame.CompositorFps = v; any = true; }
+		if (QueryFloat(session, MET_APP_DROPPED, v)) { Frame.AppDropped = (int)v; any = true; }
+		if (QueryFloat(session, MET_COMP_DROPPED, v)) { Frame.CompositorDropped = (int)v; any = true; }
+		if (QueryFloat(session, MET_STALE, v)) { Frame.StaleFrames = (int)v; any = true; }
+		Frame.HaveMetrics = any;
+	}
+
+	// How far ahead of our clock the frame we are about to draw will be displayed, on ONE clock: the runtime's
+	// predicted display time converted into the QPC ticks our own timers count. Without the extension this stays
+	// zero rather than being guessed at.
+	static void NoteDisplayAhead(XrInstance instance, XrTime predictedDisplayTime, double periodMs)
+	{
+		Frame.PeriodMs = periodMs;
+		if (!HasCounterTime || ConvertTimeToCounter == nullptr || instance == XR_NULL_HANDLE)
+			return;
+		LARGE_INTEGER displayCounter{};
+		if (XR_FAILED(ConvertTimeToCounter(instance, predictedDisplayTime, &displayCounter)))
+			return;
+		LARGE_INTEGER now{}, freq{};
+		if (!QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&freq) || freq.QuadPart == 0)
+			return;
+		Frame.HaveSharedClock = true;
+		Frame.AheadMs = (double)(displayCounter.QuadPart - now.QuadPart) * 1000.0 / (double)freq.QuadPart;
+		Frame.PeriodsAhead = periodMs > 0.0 ? (int)std::lround(Frame.AheadMs / periodMs) : 0;
+	}
+}
+
 
 static bool IsGameplaySceneActive()
 {
@@ -1975,6 +2158,19 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 		extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
 	}
 #endif
+	// RS FORK -- perf_track: the two measurement extensions, asked for only when the runtime advertises them
+	// and harmless when it does not. Neither changes a frame: one converts a time, the other reads counters
+	// the runtime already keeps. A runtime offering neither leaves those columns at zero.
+	XrPerfTrack::HasCounterTime = bootstrapHasExtension(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+	if (XrPerfTrack::HasCounterTime)
+	{
+		extensions.push_back(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+	}
+	XrPerfTrack::HasMetrics = bootstrapHasExtension(XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
+	if (XrPerfTrack::HasMetrics)
+	{
+		extensions.push_back(XR_META_PERFORMANCE_METRICS_EXTENSION_NAME);
+	}
 	XrApplicationInfo appInfo{};
 	appInfo.apiVersion = XR_API_VERSION_1_0;
 	appInfo.applicationVersion = 1;
@@ -2017,6 +2213,9 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 		}
 	}
 #endif
+	// RS FORK -- perf_track: the measurement extensions' entry points, and the counter paths this runtime offers.
+	XrPerfTrack::LoadProcs(xrInstance);
+	XrPerfTrack::ReadMetricPaths(xrInstance);
 
 	XrSystemGetInfo systemInfo{ XR_TYPE_SYSTEM_GET_INFO };
 	systemInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -5034,6 +5233,8 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 		{
 			isSessionRunning = true;
 			ApplyRefreshRate();
+			// RS FORK -- perf_track: ask the runtime for its counters only while the record is on.
+			XrPerfTrack::SetMetrics(xrSession, PerfTrack::Active());
 		}
 		else
 			return false;
@@ -5053,9 +5254,25 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	// (hw_effectsgovernor.h).
 	const uint64_t governorWaitStartNs = I_nsTime();
 	XrResult xrResult = xrWaitFrame(xrSession, &waitInfo, &xrFrameState);
-	EffectsGovernor::AddPacingWait(I_nsTime() - governorWaitStartNs);
+	const uint64_t waitEndNs = I_nsTime();
+	EffectsGovernor::AddPacingWait(waitEndNs - governorWaitStartNs);
 	if (XR_SUCCEEDED(xrResult))
 		EffectsGovernor::NoteDisplayPeriod((int64_t)xrFrameState.predictedDisplayPeriod);
+	// RS FORK -- perf_track: the frame starts here. The wait is the runtime saying the downstream -- encode,
+	// network, decode, compositor -- is busy; how long we were held in it is the runtime's share of the frame.
+	// The governor's pacing total is unchanged: one interval, read once, used by both.
+	if (PerfTrack::Active())
+	{
+		XrPerfTrack::SetMetrics(xrSession, true);
+		XrPerfTrack::Reset();
+		XrPerfTrack::Frame.WaitMs = (waitEndNs - governorWaitStartNs) / 1e6;
+		if (XR_SUCCEEDED(xrResult))
+			XrPerfTrack::NoteDisplayAhead(xrInstance, xrFrameState.predictedDisplayTime, xrFrameState.predictedDisplayPeriod / 1e6);
+	}
+	else
+	{
+		XrPerfTrack::SetMetrics(xrSession, false);
+	}
 	if (XR_FAILED(xrResult))
 		return false;
 
@@ -5133,7 +5350,12 @@ bool VKOpenXRDeviceMode::AcquireXRSwapchain() const
 
 	XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 	uint32_t imageIndex = 0;
+	// RS FORK -- perf_track: the acquire is swapchain backpressure -- the compositor still holding every image.
+	const bool trackXr = PerfTrack::Active();
+	const uint64_t acquireStartNs = trackXr ? I_nsTime() : 0;
 	XrResult xrResult = xrAcquireSwapchainImage(xrSwapchain, &acquireInfo, &imageIndex);
+	if (trackXr)
+		XrPerfTrack::Frame.AcquireMs = (I_nsTime() - acquireStartNs) / 1e6;
 	if (XR_FAILED(xrResult))
 	{
 		XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
@@ -5152,7 +5374,12 @@ bool VKOpenXRDeviceMode::AcquireXRSwapchain() const
 		Clocker submitWaitTimer(VRSubmitWait);
 		const uint64_t governorWaitStartNs = I_nsTime();	// [GOVERNOR] E8: the compositor holding the image is pacing
 		xrResult = xrWaitSwapchainImage(xrSwapchain, &imageWaitInfo);
-		EffectsGovernor::AddPacingWait(I_nsTime() - governorWaitStartNs);
+		const uint64_t imageWaitEndNs = I_nsTime();
+		EffectsGovernor::AddPacingWait(imageWaitEndNs - governorWaitStartNs);
+		// RS FORK -- perf_track: the same interval, kept apart from the frame wait so backpressure on the
+		// swapchain can be told from the runtime holding the frame.
+		if (trackXr)
+			XrPerfTrack::Frame.ImageWaitMs = (imageWaitEndNs - governorWaitStartNs) / 1e6;
 	}
 	if (xrResult == XR_TIMEOUT_EXPIRED)
 	{
@@ -5409,7 +5636,17 @@ bool VKOpenXRDeviceMode::AcquireXRSwapchain() const
 	endInfo.environmentBlendMode = environmentBlendMode;
 	endInfo.layerCount = layerIndex;
 	endInfo.layers = layers;
+	// RS FORK -- perf_track: our submit. This is the only xrEndFrame that submits a DRAWN frame; the error
+	// paths above end an empty one and are not measured, so a frame that was never drawn never reads as slow.
+	const bool trackEnd = PerfTrack::Active();
+	const uint64_t endStartNs = trackEnd ? I_nsTime() : 0;
 	XrResult endResult = xrEndFrame(xrSession, &endInfo);
+	if (trackEnd)
+	{
+		XrPerfTrack::Frame.EndMs = (I_nsTime() - endStartNs) / 1e6;
+		XrPerfTrack::ReadMetrics(xrSession);
+		PerfTrack::NoteXrFrame(XrPerfTrack::Frame);
+	}
 	xrFrameInProgress = false;
 	return XR_SUCCEEDED(endResult);
 }

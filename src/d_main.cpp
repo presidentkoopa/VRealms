@@ -76,6 +76,8 @@
 #include "hw_clock.h"
 #include "hw_perflog.h"	// RS FORK -- r_perflog, sampled in End2DAndUpdate
 #include "hw_effectsgovernor.h"	// [GOVERNOR] E8: EffectsGovernor::EndFrame, in End2DAndUpdate
+#include "hw_perftrack.h"	// RS FORK -- perf_track: the per-frame telemetry record, in End2DAndUpdate
+#include "g_perfbench.h"	// RS FORK -- -benchdemo: BenchDemo::Begin, where -playdemo is handled
 #include "hwrenderer/scene/hw_drawinfo.h"
 #include "i_interface.h"
 #include "i_sound.h"
@@ -188,6 +190,16 @@ FARG(iwad, "Configuration", "Specifies primary game file", "iwadfile[.wad]",
 	" will look for the IWAD in the current directory, in the same directory as " GAMENAMELOWERCASE
 	".exe, in the directory set in the DOOMWADDIR environment variable, and in the directory set"
 	" in the HOME environment variable. (Verification needed)");
+// RS FORK -- -benchdemo: replay a demo unattended and write the per-frame record and the summary
+// ("Engine docs/TELEMETRY_AND_BENCH_PLAN.md" section 4). The demo is an ordinary one, VR frames and all;
+// -benchmode picks what is measured: "locked" keeps the frame rate cap and vsync (hitch shape),
+// "unlocked" removes them (throughput). Neither changes the playsim: the same fight runs over the same
+// wall clock either way.
+FARG(benchdemo, "Debugging", "Replays a demo with the per-frame telemetry record on, then quits.", "demo",
+	"Writes a per-frame CSV, a summary and the two run headers. A demo recorded with perf_bench_hash on is\n"
+	"also checked tic by tic against its own state hashes, and says DESYNC if the playsim has changed.");
+FARG(benchmode, "Debugging", "How -benchdemo paces the replay: locked (default) or unlocked.", "locked|unlocked",
+	"locked keeps the frame rate cap and vsync, for hitch shape; unlocked removes them, for throughput.");
 FARG(savedir, "Configuration", "Sets an alternate directory for saving game files.", "path",
 	"Specifies an alternate directory to use for saved files. If this is not specified, " GAMENAME
 	" stores them in the directory indicated by the save_dir CVAR.");
@@ -1477,6 +1489,41 @@ static void PerfLogEndFrame()
 	PerfLog::EndFrame(load);
 }
 
+// RS FORK -- perf_track: this frame's scene shape for the per-frame telemetry record (hw_perftrack.cpp),
+// which cannot see FLevelLocals or the viewpoint. Read-only, render-side and local, exactly like
+// PerfLogEndFrame above: no playsim state is touched and nothing is keyed on a player.
+static void PerfTrackEndFrame()
+{
+	PerfTrack::SceneShape shape;
+	if (primaryLevel != nullptr)
+	{
+		FLevelLocals* level = primaryLevel;
+		shape.MapName = level->MapName.GetChars();
+		shape.Tic = level->maptime;
+		shape.GpuParticlesWritten = level->GpuParticleWritten;
+		for (int i = 0; i < FLevelLocals::MAX_BEAMS; i++)
+			if (level->BeamSlotLive(i)) shape.BeamsLive++;
+		for (int i = 0; i < FLevelLocals::MAX_SURFACE_STAMPS; i++)
+			if (level->StampLife[i] > 0) shape.StampsLive++;
+		const double now = level->maptime / (double)TICRATE;
+		for (int i = 0; i < FLevelLocals::MAX_FOG_DISTURB; i++)
+		{
+			const double life = level->FogDisturbLife[i];
+			const double age = now - level->FogDisturbBirth[i];
+			if (life > 0.0 && age >= 0.0 && age <= life) shape.DisturbLive++;
+		}
+	}
+	{
+		const FRenderViewpoint& vp = r_viewpoint;
+		shape.X = vp.Pos.X;
+		shape.Y = vp.Pos.Y;
+		shape.Z = vp.Pos.Z;
+		shape.Angle = vp.Angles.Yaw.Degrees();
+		shape.Pitch = vp.Angles.Pitch.Degrees();
+	}
+	PerfTrack::EndFrame(shape);
+}
+
 static void End2DAndUpdate()
 {
 	twod->End();
@@ -1488,6 +1535,9 @@ static void End2DAndUpdate()
 	// RS FORK -- r_perflog: beside CheckBench, after the frame's GPU timings
 	// were read back. While it is off this integer check is the whole cost.
 	if (*r_perflog > 0) PerfLogEndFrame();
+	// RS FORK -- perf_track: the per-frame record, beside the perf log and fed by the same measurements.
+	// While it is off this integer check is the whole cost.
+	if (PerfTrack::Active()) PerfTrackEndFrame();
 	twod->OnFrameDone();
 }
 
@@ -4620,8 +4670,15 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 			G_LoadGame(file.GetChars());
 		}
 
-		v = Args->CheckValue(FArg_playdemo);
-		if (v != NULL)
+		// RS FORK -- -benchdemo: the same demo playback -playdemo starts, with the per-frame record on and a
+		// summary written when it ends. It stands here so it takes the run over exactly as -playdemo does.
+		const char* benchDemoFile = Args->CheckValue(FArg_benchdemo);
+		if (benchDemoFile != nullptr)
+		{
+			singledemo = true;				// quit after the one demo, as -playdemo does
+			BenchDemo::Begin(benchDemoFile, Args->CheckValue(FArg_benchmode));
+		}
+		else if ((v = Args->CheckValue(FArg_playdemo)) != NULL)
 		{
 			singledemo = true;				// quit after one demo
 			G_DeferedPlayDemo (v);

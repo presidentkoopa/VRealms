@@ -48,6 +48,7 @@
 #include "fs_findfile.h"
 #include "g_game.h"
 #include "p_vrdemo.h"
+#include "g_perfbench.h"	// RS FORK -- the bench header and the per-tic state hash a demo carries
 #include "g_hub.h"
 #include "g_levellocals.h"
 #include "gi.h"
@@ -3386,6 +3387,16 @@ void G_WriteDemoTiccmd (usercmd_t *cmd, int player, int buf)
 		VRDemo_WriteFrame(player, demo_p);
 	}
 
+	// RS FORK -- the run header (once) and this tic's playsim state hash, framed and sized exactly as the
+	// VR frame above. THE TOP OF THE TIC is deliberate: G_ReadDemoTiccmd reads it at the same point on
+	// playback, so both sides hash the state the PREVIOUS tic produced and the two are symmetric by
+	// construction. Nothing is written in multiplayer and nothing is sent over the network.
+	if (const size_t benchSize = PerfBench::PendingSize())
+	{
+		G_EnsureDemoSpace(benchSize + 64);
+		PerfBench::Write(demo_p);
+	}
+
 	// [RH] Write any special "ticcmds" for this player to the demo
 	if ((specdata = ClientStates[player].Tics[buf % BACKUPTICS].Data.GetData (&speclen)) && !(gametic % TicDup))
 		WriteBytes(TArrayView(specdata, speclen), demo_p);
@@ -3430,6 +3441,7 @@ void G_RecordDemo (const char* name)
 	demobuffer.Resize(maxdemosize);
 	demorecording = true;
 	VRDemo_Reset();
+	PerfBench::Reset();	// RS FORK -- a new recording writes its own header on its first tic
 }
 
 
@@ -3551,6 +3563,7 @@ UNSAFE_CCMD (timedemo)
 bool G_ProcessIFFDemo (FString &mapname)
 {
 	VRDemo_Reset();	// [VRDEMO] a new demo has no VR frames until it shows one
+	PerfBench::Reset();	// RS FORK -- and no bench header or hashes until it shows them
 	bool headerHit = false;
 	bool bodyHit = false;
 	int numPlayers = 0;
@@ -3825,6 +3838,12 @@ bool G_CheckDemoStatus (void)
 		C_RestoreCVars (); // [RH] Restore cvars demo might have changed
 		demobuffer.Reset();
 		VRDemo_Reset();
+		// RS FORK -- THE OWNER WATCHES, THE LANE READS THE SAME RUN. While perf_track is on, ANY playback
+		// ends by writing the per-frame CSV, the summary with this playback's verdict, and the two run
+		// headers -- a demo watched in the headset exactly as much as an unattended -benchdemo. One
+		// recording therefore serves both. Before Reset, which clears what the demo carried.
+		PerfBench::EndPlayback();
+		PerfBench::Reset();
 
 		P_SetupWeapons_ntohton();
 		demoplayback = false;
@@ -3853,6 +3872,10 @@ bool G_CheckDemoStatus (void)
 			{
 				Printf ("Demo ended.\n");
 			}
+			// RS FORK -- -benchdemo: the run is over. Writes the per-frame CSV, the summary with its verdict
+			// and the two headers, then quits. A demo a person is watching goes to the console as before.
+			if (BenchDemo::Active())
+				BenchDemo::Finish();
 			gameaction = ga_fullconsole;
 			timingdemo = false;
 			return false;
@@ -3903,6 +3926,7 @@ bool G_CheckDemoStatus (void)
 		demorecording = false;
 		stoprecording = false;
 		VRDemo_Reset();
+		PerfBench::Reset();	// RS FORK
 		if (saved)
 		{
 			Printf ("Demo %s recorded\n", demoname.GetChars());

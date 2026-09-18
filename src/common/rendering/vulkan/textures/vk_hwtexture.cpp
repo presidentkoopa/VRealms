@@ -38,6 +38,7 @@
 #include "vk_hwtexture.h"
 #include "filesystem.h"	// [DDS] VkCompressedPixels::Read
 #include "image.h"
+#include "hwrenderer/data/hw_perftrack.h"	// RS FORK -- perf_track: a texture upload is a hitch reason
 #include <algorithm>
 
 VkHardwareTexture::VkHardwareTexture(VulkanRenderDevice* fb, int numchannels) : fb(fb)
@@ -221,6 +222,9 @@ void VkHardwareTexture::BackgroundCreateTexture(VkCommandBufferManager* bufManag
 
 void VkHardwareTexture::CreateTexture(VkCommandBufferManager *bufManager, VkTextureImage *img, int w, int h, int pixelsize, VkFormat format, const void *pixels, int mipmap, bool generateMipmaps, int totalSize)
 {
+	// RS FORK -- perf_track: every texture and material upload, on the main thread and on the texture thread
+	// alike (NoteReason is atomic), so a frame held by an upload can say so (REASON_TEXTURE). Off, no clock.
+	PerfTrack::Scope uploadScope(PerfTrack::REASON_TEXTURE);
 	if (w <= 0 || h <= 0)
 		throw CVulkanError("Trying to create zero size texture");
 

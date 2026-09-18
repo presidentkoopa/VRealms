@@ -32,6 +32,10 @@
 #include "c_cvars.h"
 
 EXTERN_CVAR(Int, r_perflog)
+// RS FORK -- perf_track (hw_perftrack.h): the per-frame telemetry record wants the same named GPU and CPU
+// groups and the same think clocks this log does, so the two switches are tested together, here, and nothing
+// is measured twice. Off, this is one more integer test in a function that already made one.
+EXTERN_CVAR(Int, perf_track)
 
 // Defined in hw_postprocess.cpp: true for the frame while "stat gpu" (or
 // r_perflog) keeps GPU timestamps on.
@@ -54,7 +58,7 @@ namespace PerfLog
 	// true while "stat gpu" is shown, as the post-process groups already are.
 	// Callers read this ONCE per function and use the same value at Push and at
 	// Pop -- an unbalanced group corrupts the timestamp indices.
-	inline bool GroupsWanted() { return *r_perflog > 0 || gpuStatActive; }
+	inline bool GroupsWanted() { return *r_perflog > 0 || gpuStatActive || *perf_track > 0; }
 
 	// One finished GPU group for the frame just completed. Same-name groups in
 	// one frame (stereo eyes) are summed into that frame's value.
@@ -76,7 +80,7 @@ namespace PerfLog
 	// RunThinkers (clientSide false) and RunClientSideThinkers (true), the numbers "stat think" shows -- while ThinkWanted(). Each
 	// window writes them per run, not per frame, on a second "cpu_ms" line: think and csthink avg/p95/max, the most thinkers one run
 	// ticked, and the runs. Off (r_perflog 0) the caller's cost is this one integer test a tic.
-	inline bool ThinkWanted() { return *r_perflog > 0; }
+	inline bool ThinkWanted() { return *r_perflog > 0 || *perf_track > 0; }
 	void AddThinkSample(bool clientSide, double ms, int thinkers);
 
 	// Once per frame, after screen->Update(). Only call while r_perflog > 0.

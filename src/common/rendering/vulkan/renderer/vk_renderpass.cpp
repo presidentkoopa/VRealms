@@ -37,6 +37,7 @@
 #include "i_specialpaths.h"
 #include "cmdlib.h"
 #include "printf.h"
+#include "hwrenderer/data/hw_perftrack.h"	// RS FORK -- perf_track: a pipeline compiled mid-frame is a hitch reason
 #include <cstdio>
 
 VkRenderPassManager::VkRenderPassManager(VulkanRenderDevice* fb) : fb(fb)
@@ -326,7 +327,12 @@ VulkanPipeline *VkRenderPassSetup::GetPipeline(const VkPipelineKey &key)
 {
 	auto &item = Pipelines[key];
 	if (!item)
+	{
+		// RS FORK -- perf_track: a cache miss here compiles a graphics pipeline inside the frame, which is the
+		// classic mid-fight stutter. Timed so the record can name it (REASON_PIPELINE); off, no clock is read.
+		PerfTrack::Scope pipelineScope(PerfTrack::REASON_PIPELINE);
 		item = CreatePipeline(key);
+	}
 	return item.get();
 }
 
