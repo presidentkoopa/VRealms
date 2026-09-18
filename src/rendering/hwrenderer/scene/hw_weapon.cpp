@@ -406,10 +406,14 @@ void HWDrawInfo::DrawHudQuad(FRenderState& state, FGameTexture* texture, float w
 	state.ResetFadeColor();
 	state.EnableTextureMatrix(false);
 	state.EnableBrightmap(false);
-	// Mounted HUD is a world-space quad. Keep the portable-HUD premultiplied alpha fix but preserve
-	// depth behavior so it does not turn into an unconditional fullscreen-style overlay in OpenVR.
-	state.EnableDepthTest(true);
-	state.SetDepthMask(depthMask);
+	// Mounted HUD is a world-space quad, and it is UI: it reads as broken when a wall or a monster
+	// clips through your own wrist panel. It draws on top, like every other HUD element (Ermac's
+	// DoomXR c48d266, "fixed render order of portable HUD and weapon/item wheel to be top most like
+	// regular UI"; the draw order that makes this safe -- after the tracers and the laser -- is
+	// already ours). `depthMask` is kept in the signature for callers that still pass it; nothing
+	// writes depth here, because an overlay that wrote depth would punch a hole in the scene behind it.
+	state.EnableDepthTest(false);
+	state.SetDepthMask(false);
 	state.SetMaterial(texture, UF_Sprite, CTF_Expand, CLAMP_XY_NOMIP, 0, -1);
 
 	screen->mVertexData->Map();

@@ -1665,8 +1665,12 @@ namespace
 		state.SetDynLight(0, 0, 0);
 		state.ResetFadeColor();
 		state.EnableTextureMatrix(false);
-		state.EnableDepthTest(true);
-		state.SetDepthMask(true);
+		// The wheel is UI, so it draws on top of the world like the rest of the HUD instead of being
+		// clipped by whatever you happen to be standing next to (Ermac's DoomXR c48d266). Its own
+		// panels and icons already rely on draw order rather than depth, so this only removes the
+		// clipping against the scene; nothing writes depth, so the wheel leaves no hole behind it.
+		state.EnableDepthTest(false);
+		state.SetDepthMask(false);
 		state.EnableBrightmap(true);
 		state.SetCulling(Cull_None);
 		state.ClearDepthBias();
