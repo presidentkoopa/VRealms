@@ -2691,6 +2691,82 @@ DEFINE_ACTION_FUNCTION(FLevelLocals, PlayerNum)
 	ACTION_RETURN_INT(self->PlayerNum(player));
 }
 
+//==========================================================================
+//
+// RS FORK -- THE WORLD CLOCK, script side ("Engine docs/SLOWMO_PLAN.md").
+//
+// SetTimeScale is PLAY, and that is the whole netplay contract: it writes playsim
+// state, so it must be called where every machine calls it -- a handler's
+// NetworkProcess, or an ease run from WorldTick off a target that itself arrived by
+// network event. Called from a local-only path (a cvar read in UI code, a key handler,
+// anything keyed on consoleplayer) it would slow one machine's world and not another's.
+//
+// The double is snapped to the fixed-point grid here and clamped to [0, 1]. The
+// rounding is IEEE-exact, so the same double gives the same integer everywhere; what
+// the caller must guarantee is that the double itself is the same everywhere.
+//
+// The readers are clearscope: they read playsim integers and change nothing, so UI
+// and effect code can ask what time it is without a play context.
+//
+//==========================================================================
+
+EXTERN_CVAR(Bool, worldclock_log)
+
+static void Level_SetTimeScale(FLevelLocals *self, double scale)
+{
+	const double c = scale <= 0.0 ? 0.0 : (scale >= 1.0 ? 1.0 : scale);
+	const int fixedScale = (int)floor(c * FLevelLocals::WORLDCLOCK_ONE + 0.5);
+	if (fixedScale == self->TimeScale) return;
+	if (worldclock_log)
+	{
+		Printf("worldclock: %s scale %.4f -> %.4f (world tic %d, real tic %d, %d world step%s in the last second, %d real-time actor%s last tic)\n",
+			self->MapName.GetChars(), self->GetTimeScale(), fixedScale / (double)FLevelLocals::WORLDCLOCK_ONE,
+			self->maptime, self->realtime,
+			self->WorldStepsLastSecond, self->WorldStepsLastSecond == 1 ? "" : "s",
+			self->RealTimeActorsLastTic, self->RealTimeActorsLastTic == 1 ? "" : "s");
+	}
+	self->SetTimeScaleFixed(fixedScale);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetTimeScale, Level_SetTimeScale)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(scale);
+	Level_SetTimeScale(self, scale);
+	return 0;
+}
+
+static double Level_GetTimeScale(FLevelLocals *self) { return self->GetTimeScale(); }
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, GetTimeScale, Level_GetTimeScale)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ACTION_RETURN_FLOAT(Level_GetTimeScale(self));
+}
+
+static int Level_IsWorldSlowed(FLevelLocals *self) { return self->IsWorldSlowed(); }
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, IsWorldSlowed, Level_IsWorldSlowed)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ACTION_RETURN_BOOL(Level_IsWorldSlowed(self));
+}
+
+// World seconds: maptime / TICRATE. Playsim resolution -- the draw fraction belongs to
+// the renderer, which has its own WorldSeconds(TicFrac).
+static double Level_WorldTime(FLevelLocals *self) { return self->maptime / (double)TICRATE; }
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, WorldSeconds, Level_WorldTime)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ACTION_RETURN_FLOAT(Level_WorldTime(self));
+}
+
+// Real seconds: realtime / TICRATE. What a PLAYER action is timed by.
+static double Level_RealTime(FLevelLocals *self) { return self->realtime / (double)TICRATE; }
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, RealSeconds, Level_RealTime)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	ACTION_RETURN_FLOAT(Level_RealTime(self));
+}
+
 DEFINE_ACTION_FUNCTION(FLevelLocals, GetChecksum)
 {
 	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
@@ -8552,6 +8628,7 @@ DEFINE_FIELD(FLevelLocals, linePortals)
 DEFINE_FIELD(FLevelLocals, sectorPortals)
 DEFINE_FIELD(FLevelLocals, time)
 DEFINE_FIELD(FLevelLocals, maptime)
+DEFINE_FIELD(FLevelLocals, realtime)	// RS FORK -- WORLD CLOCK, the real-time twin of maptime
 DEFINE_FIELD(FLevelLocals, totaltime)
 DEFINE_FIELD(FLevelLocals, starttime)
 DEFINE_FIELD(FLevelLocals, partime)

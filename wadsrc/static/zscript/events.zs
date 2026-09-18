@@ -194,6 +194,11 @@ class StaticEventHandler : Object native play version("2.4")
 	virtual void WorldLineDamaged(WorldEvent e) {}
 	virtual void WorldLightning(WorldEvent e) {} // for the sake of completeness.
 	virtual void WorldTick() {}
+	// RS FORK -- WORLD CLOCK ("Engine docs/SLOWMO_PLAN.md"). Once per WORLD step, after
+	// it. WorldTick still fires every REAL tic at today's rate, so nothing that exists
+	// changes; override this one when your handler should slow with the world. With no
+	// slow motion the two fire on the same tic.
+	virtual void WorldStep() {}
 
 	//
 	//virtual ui void RenderFrame(RenderEvent e) {}

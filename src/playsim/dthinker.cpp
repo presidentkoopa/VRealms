@@ -291,7 +291,7 @@ static void RecreateDynamicLights(AActor* mobj, bool dolights, bool frozen)
 	}
 }
 
-void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
+void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level, bool worldStep)
 {
 	int i, count;
 
@@ -333,7 +333,9 @@ void FThinkerCollection::RunClientSideThinkers(FLevelLocals* Level)
 	};
 
 	// Tick every thinker left from last time
-	if (!paused)
+	// RS FORK -- WORLD CLOCK: only on a world step (worldStep is true every tic at full
+	// speed). The timers above and the lights below still run every call.
+	if (!paused && worldStep)
 	{
 		// [SLEEP] As in RunThinkers, for client-side sleepers (their own collection, local by design).
 		RunSleepCycle();

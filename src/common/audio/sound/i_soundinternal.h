@@ -58,6 +58,10 @@ enum EChanFlag
 	CHANF_SINGULAR = 0x20000,		// Only start if no sound of this name is already playing.
 	CHANF_RUMBLE = 0x40000,		// Hint to rumble trigger rumble from sound
 	CHANF_NORUMBLE = 0x80000,		// Disable rumble even if it would normally happen
+	// RS FORK -- WORLD CLOCK: this sound ignores the world pitch, whatever its source.
+	// For a sound that belongs to the player's own body rather than to the world.
+	// UI and NOPAUSE channels are exempt already, without needing this.
+	CHANF_REALTIME = 0x100000,
 };
 
 typedef TFlags<EChanFlag> EChanFlags;

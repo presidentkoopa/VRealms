@@ -255,6 +255,8 @@ protected:
 	TArray<FRandomSoundList> S_rnd;
 	bool blockNewSounds = false;
 	int LastSoundHandle = 0;	// [SOUNDHANDLES] the last id IssueSoundHandle handed out; never reset (FSoundHandle)
+	// RS FORK -- WORLD CLOCK: the world pitch. See SetWorldPitch below.
+	float WorldPitch = 1.f;
 
 private:
 	void LinkChannel(FSoundChan* chan, FSoundChan** head);
@@ -325,6 +327,34 @@ public:
 
 	void StopAllChannels(void);
 	void SetPitch(FSoundChan* chan, float dpitch);
+
+	// RS FORK -- WORLD CLOCK: THE WORLD PITCH ("Engine docs/SLOWMO_PLAN.md").
+	//
+	// A multiplier the driver is given on top of a channel's own pitch. FSoundChan::Pitch
+	// stays the pitch the sound was ASKED to play at, so SetPitch, a restart after an
+	// eviction and a savegame all keep meaning what they meant -- and changing the world
+	// pitch re-pitches what is already playing instead of waiting for the next sound.
+	//
+	// PRESENTATION ONLY and local: no playsim state is read or written, and two machines
+	// with different world pitches play the same sounds at different pitches and nothing
+	// else. 1.0 is off, and the whole path short-circuits there.
+	//
+	// Exempt: UI and NOPAUSE channels (menus), CHANF_REALTIME channels, and whatever the
+	// client says keeps real time (DoomSoundEngine exempts +REALTIME actors and the
+	// player's own body).
+	void SetWorldPitch(float pitch);
+	float GetWorldPitch() const { return WorldPitch; }
+	virtual bool SourceUsesWorldPitch(int sourcetype, const void* source) const { return true; }
+	float WorldPitchFor(EChanFlags chanflags, int sourcetype, const void* source) const
+	{
+		if (WorldPitch == 1.f) return 1.f;
+		if (chanflags & (CHANF_UI | CHANF_NOPAUSE | CHANF_REALTIME)) return 1.f;
+		return SourceUsesWorldPitch(sourcetype, source) ? WorldPitch : 1.f;
+	}
+	float WorldPitchFor(const FSoundChan* chan) const
+	{
+		return WorldPitchFor(chan->ChanFlags, chan->SourceType, chan->Source);
+	}
 	void SetVolume(FSoundChan* chan, float vol);
 
 	// [SOUNDHANDLES] Handles (FSoundHandle above; s_sound.cpp). IssueSoundHandle hands out the next id. The rest reach the

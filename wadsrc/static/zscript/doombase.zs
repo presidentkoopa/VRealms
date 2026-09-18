@@ -214,6 +214,15 @@ extend class Object
 	native static void S_PauseSound (bool notmusic, bool notsfx);
 	native static void S_ResumeSound (bool notsfx);
 	native static void S_SoundPitch(int channel, float pitch = 1.0);
+	// RS FORK -- WORLD CLOCK: one multiplier over every WORLD sound, the ones already
+	// playing included, so a slide into slow motion drags sounds that are mid-flight
+	// down with it. 1.0 is off. Menu sounds, CHANF_REALTIME sounds and sounds from an
+	// actor that keeps real time (the player's pawn, what it carries, +REALTIME actors)
+	// are exempt, so your own gun still cracks while the world groans.
+	// Presentation only and local: it reads and writes no playsim state, so a look
+	// slider may set it directly. "Engine docs/SLOWMO_PLAN.md".
+	native static void S_SetWorldPitch(double pitch);
+	native static double S_GetWorldPitch();
 	native static bool S_ChangeMusic(String music_name, int order = 0, bool looping = true, bool force = false);
 	native static float S_GetLength(Sound sound_id);
 	native static void MarkSound(Sound snd);
@@ -560,8 +569,22 @@ struct LevelLocals native
 	native readonly Array<@LinePortal> LinePortals;
 	native internal readonly Array<@SectorPortal> SectorPortals;
 
+	// RS FORK -- THE WORLD CLOCK ("Engine docs/SLOWMO_PLAN.md").
+	//
+	// maptime, time and totaltime are the WORLD clock: they advance once per world
+	// step, so everything already written against maptime -- ACS delays, door timers,
+	// effect births, hashes seeded by the tic -- slows with the world for free and
+	// stays identical on every machine.
+	//
+	// realtime is the REAL clock: one per engine tic, always, whatever the world is
+	// doing. Time a PLAYER action by it -- recoil recovery, barrel heat and cooling,
+	// anything that should keep the pace of the gun rather than the pace of the world.
+	// It is playsim state like maptime, so it is just as netplay-safe.
+	//
+	// With no slow motion running, realtime == maptime.
 	native readonly int time;
 	native readonly int maptime;
+	native readonly int realtime;
 	native readonly int totaltime;
 	native readonly int starttime;
 	native readonly int partime;
@@ -1670,6 +1693,25 @@ struct LevelLocals native
 	// same reason the glow setters on Sector are.
 	native clearscope void SpawnSurfaceStamp(int shape, Vector3 pos, double radius, color col, int life, Vector3 axis, int tex = 0, double texStr = 0.0);
 	native clearscope void ClearSurfaceStamps();
+
+	// RS FORK -- THE WORLD CLOCK ("Engine docs/SLOWMO_PLAN.md").
+	//
+	// SetTimeScale(1.0) is normal speed, 0.0 is a full freeze. The world then takes one
+	// ORDINARY Doom tic every 1/scale real tics -- nothing inside a step is rewritten,
+	// so physics, AI, doors, lifts and scripts are correct at any depth.
+	//
+	// PLAY, and it must be called from a path every machine takes: a handler's
+	// NetworkProcess, or an ease run from WorldTick off a target that arrived by network
+	// event. Never from UI code, a key handler, or anything keyed on consoleplayer --
+	// that would slow one machine's world and not another's.
+	//
+	// WorldSeconds() and RealSeconds() are seconds (maptime / realtime divided by TICRATE).
+	// Both read playsim integers and change nothing, so any scope may ask.
+	native play void SetTimeScale(double scale);
+	native clearscope double GetTimeScale();
+	native clearscope bool IsWorldSlowed();
+	native clearscope double WorldSeconds();
+	native clearscope double RealSeconds();
 
 	// [GPUPARTICLES] Stateless GPU-drawn particles: sparks, embers, ejecta.
 	// Fire and forget, and it NEVER refuses -- the oldest records are

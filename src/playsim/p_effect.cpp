@@ -1239,11 +1239,20 @@ int DVisualThinker::GetLightLevel(sector_t* rendersector) const
 	return lightlevel;
 }
 
+// RS FORK -- WORLD CLOCK: a visual thinker is a world effect, so it is drawn on the
+// world fraction like the actors around it. Its Prev is taken on the tic it moved in.
+// At full speed WorldFrac returns its argument unchanged.
+double DVisualThinker::DrawFrac(double ticFrac) const
+{
+	return Level == nullptr ? ticFrac : Level->WorldFrac(ticFrac);
+}
+
 FVector3 DVisualThinker::InterpolatedPosition(double ticFrac) const
 {
 	if (flags & VTF_DontInterpolate) return FVector3(PT.Pos);
 
-	DVector3 proc = Prev + (ticFrac * (PT.Pos - Prev));
+	const double f = DrawFrac(ticFrac);
+	DVector3 proc = Prev + (f * (PT.Pos - Prev));
 	return FVector3(proc);
 
 }
@@ -1252,7 +1261,7 @@ float DVisualThinker::InterpolatedRoll(double ticFrac) const
 {
 	if (flags & VTF_DontInterpolate) return PT.Roll;
 
-	return float(PrevRoll + (PT.Roll - PrevRoll) * ticFrac);
+	return float(PrevRoll + (PT.Roll - PrevRoll) * DrawFrac(ticFrac));
 }
 
 

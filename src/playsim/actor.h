@@ -442,6 +442,13 @@ enum ActorFlag9
 	MF9_FORCESECTORDAMAGE		= 0x00000080,	// [inkoalawetrust] Actor ALWAYS takes hurt floor damage if there's any. Even if the floor doesn't have SECMF_HURTMONSTERS.
 	MF9_NOAUTOOFFSKULLFLY		= 0x00000100,	// Don't automatically disable MF_SKULLFLY if velocity is 0.
 	MF9_PRECACHEALWAYS			= 0x00000200,	// [Selaco] Load this class's graphics at every level start, placed or not (p_setup.cpp PrecacheLevel, hw_precache.cpp)
+	// RS FORK -- WORLD CLOCK ("Engine docs/SLOWMO_PLAN.md"). +REALTIME keeps this actor
+	// on the REAL clock: it ticks every real tic and is drawn on the real fraction, even
+	// when the world is slowed. It is for things that follow the player's body -- VR
+	// hands, held gun props and markers, weapon-wheel parts, the Lance's anchor -- and
+	// each owning mod sets it on its own actors. OFF by default; with the world at full
+	// speed nothing ever asks.
+	MF9_REALTIME				= 0x00000400,
 	// GZSelaco flags whose MF8 bits are taken here, so they live in MF9's top bits (scripts only use the flag names).
 	MF9_HITSCANTHRU				= 0x20000000,	// [HITCALLBACKS] hitscans hurt this actor and carry on through it (c7527eead1)
 	MF9_ABSDAMAGE				= 0x40000000,	// [ABSDAMAGE] missile/puff damage is DamageVal exactly, no dice roll (96096c0228)
@@ -2163,17 +2170,42 @@ public:
 		// fixme: This still needs portal handling
 		return{ float(X()), float(Z()), float(Y()) };
 	}
+	// RS FORK -- WORLD CLOCK: which clock this actor lives on.
+	//
+	// The player's pawn, and anything a mod marked +REALTIME. Two loads and a test:
+	// the tic pass asks it of every actor, and at full speed it is never asked at all.
+	//
+	// What an actor CARRIES is not decided here. An item's owner lives in ZScript
+	// (inventory.zs), not in AActor, so the carried-item rule belongs where the
+	// carrier is known: p_tick.cpp walks a real-time actor's Inventory chain, which
+	// is what keeps the player's weapons and ammo cycling at full speed.
+	bool IsRealTimeActor() const
+	{
+		return player != nullptr || (flags9 & MF9_REALTIME);
+	}
+
+	// RS FORK -- WORLD CLOCK: the fraction this actor is DRAWN at. p_mobj.cpp.
+	//
+	// THE ONE PLACE a draw fraction is chosen, so every interpolator below and every
+	// caller that passes vp.TicFrac gets the right one without knowing the clock
+	// exists. A world actor's Prev spans a whole world step, so it is drawn on the
+	// world fraction; a real-time actor's Prev spans one real tic, so it keeps
+	// TicFrac. At full speed both are TicFrac, the same double, unchanged.
+	double DrawFrac(double ticFrac) const;
+
 	DVector3 InterpolatedPosition(double ticFrac) const
 	{
 		if (renderflags & RF_DONTINTERPOLATE) return Pos();
-		else return Prev * (1.0 - ticFrac) + Pos() * ticFrac;
+		const double f = DrawFrac(ticFrac);
+		return Prev * (1.0 - f) + Pos() * f;
 	}
 	DRotator InterpolatedAngles(double ticFrac) const
 	{
+		const double f = DrawFrac(ticFrac);
 		DRotator result;
-		result.Yaw = PrevAngles.Yaw + deltaangle(PrevAngles.Yaw, Angles.Yaw) * ticFrac;
-		result.Pitch = PrevAngles.Pitch + deltaangle(PrevAngles.Pitch, Angles.Pitch) * ticFrac;
-		result.Roll = PrevAngles.Roll + deltaangle(PrevAngles.Roll, Angles.Roll) * ticFrac;
+		result.Yaw = PrevAngles.Yaw + deltaangle(PrevAngles.Yaw, Angles.Yaw) * f;
+		result.Pitch = PrevAngles.Pitch + deltaangle(PrevAngles.Pitch, Angles.Pitch) * f;
+		result.Roll = PrevAngles.Roll + deltaangle(PrevAngles.Roll, Angles.Roll) * f;
 		return result;
 	}
 	// RS FORK -- FollowBodyYaw as the renderer draws it (see FollowBodyYawInterp):
@@ -2192,11 +2224,15 @@ public:
 	}
 	DVector2 InterpolatedScale(double ticFrac) const
 	{
-		return (renderflags2 & RF2_INTERPOLATESCALE) ? PrevScale * (1.0 - ticFrac) + Scale * ticFrac : Scale;
+		if (!(renderflags2 & RF2_INTERPOLATESCALE)) return Scale;
+		const double f = DrawFrac(ticFrac);	// RS FORK -- WORLD CLOCK
+		return PrevScale * (1.0 - f) + Scale * f;
 	}
 	double InterpolatedAlpha(double ticFrac) const
 	{
-		return (renderflags2 & RF2_INTERPOLATEALPHA) ? PrevAlpha * (1.0 - ticFrac) + Alpha * ticFrac : Alpha;
+		if (!(renderflags2 & RF2_INTERPOLATEALPHA)) return Alpha;
+		const double f = DrawFrac(ticFrac);	// RS FORK -- WORLD CLOCK
+		return PrevAlpha * (1.0 - f) + Alpha * f;
 	}
 	float GetSpriteOffset(bool y) const
 	{

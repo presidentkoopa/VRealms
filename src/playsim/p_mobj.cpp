@@ -4257,6 +4257,27 @@ void AActor::SetViewAngle(DAngle ang, int fflags)
 
 }
 
+//==========================================================================
+//
+// RS FORK -- WORLD CLOCK: AActor::DrawFrac
+//
+// The fraction this actor is drawn at, and the ONLY place that choice is made.
+// See actor.h's IsRealTimeActor and g_levellocals.h's world clock.
+//
+// Out of line because actor.h cannot see FLevelLocals. Two integer comparisons in
+// the common case, and the FIRST of them is the default-off test: with the world at
+// full speed this returns the caller's own double, bit for bit, and nothing else in
+// the function runs.
+//
+//==========================================================================
+
+double AActor::DrawFrac(double ticFrac) const
+{
+	if (Level == nullptr || !Level->IsWorldSlowed()) return ticFrac;
+	if (IsRealTimeActor()) return ticFrac;
+	return Level->WorldFrac(ticFrac);
+}
+
 double AActor::GetFOV(double ticFrac)
 {
 	double fov;

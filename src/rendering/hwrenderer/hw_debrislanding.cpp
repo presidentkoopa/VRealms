@@ -353,7 +353,10 @@ void DebrisLandingSounds::Update(FLevelLocals* Level, int maptime, double ticFra
 	{
 		// The draw's level clock (hw_drawinfo.cpp's mLevelTime), never going back within a map: while the game is paused
 		// TicFrac is held at 1, and after it the clock waits for level time to pass that.
-		const double now = (maptime + std::clamp(ticFrac, 0.0, 1.0)) / (double)TICRATE;
+		// RS FORK -- WORLD CLOCK: the shared value. Debris is a world effect, so a landing
+		// is scheduled on world time and lands when the world says it does.
+		const double now = Level->WorldSeconds(std::clamp(ticFrac, 0.0, 1.0));
+		(void)maptime;	// the clock now comes from the level, not the caller's copy
 		if (!mClockValid || now > mClock)
 		{
 			mClock = now;

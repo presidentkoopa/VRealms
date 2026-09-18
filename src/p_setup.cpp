@@ -393,6 +393,12 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 	// volume, the sector plane poll -- that the level they built their state for is gone.
 	ClearEffectQueues();
 	ResetSmokeState();
+
+	// RS FORK -- WORLD CLOCK: nor does a time scale survive a map change or a savegame
+	// load. maptime restarts at 0 and so does the real clock beside it; a scale is a
+	// mod's live decision, and a new map inheriting a half-frozen world from the last
+	// one is a bug nobody would find. The load path writes the saved values back after.
+	ResetWorldClock();
 	LevelDataSerial = NewLevelDataSerial();
 
 	// [RS fork] NOR DOES THE REST OF THE LEVEL'S VISUAL STATE.

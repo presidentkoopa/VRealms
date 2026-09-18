@@ -498,8 +498,13 @@ struct HWViewpointUniforms
 
 	// [GPUPARTICLES] THE CLOCK AND THE PARTICLE KNOBS.
 	//
-	//   mLevelTime          x level seconds at render rate,
-	//                         (maptime + TicFrac) / TICRATE; yzw spare
+	//   mLevelTime          x WORLD seconds at render rate, FLevelLocals::WorldSeconds
+	//                       y REAL seconds at render rate, FLevelLocals::RealSeconds
+	//                         zw spare
+	// RS FORK -- WORLD CLOCK: x was (maptime + TicFrac) / TICRATE and still is that
+	// exact number with no slow motion running. When the world is slowed, x stretches
+	// with it and y does not, so an effect that follows the player's body has a clock
+	// to age on. "Engine docs/SLOWMO_PLAN.md".
 	//   mGpuParticleParams  x size scale, y max size (map units),
 	//                       z stretch scale, w intensity scale
 	//

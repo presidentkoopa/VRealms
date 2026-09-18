@@ -90,6 +90,14 @@ class DoomSoundEngine : public SoundEngine
 		if (sourcetype != SOURCE_Actor) actor = nullptr; //ZDoom did this.
 		return SoundEngine::CheckSoundLimit(sfx, pos, near_limit, limit_range, sourcetype, actor, channel, attenuation);
 	}
+	// RS FORK -- WORLD CLOCK: an actor that keeps real time keeps its own pitch. That is
+	// the player's pawn and what it carries, and anything a mod marked +REALTIME -- so
+	// your gun still cracks while the world groans. Every other source is the world's.
+	bool SourceUsesWorldPitch(int sourcetype, const void* source) const override
+	{
+		if (sourcetype != SOURCE_Actor || source == nullptr) return true;
+		return !((const AActor*)source)->IsRealTimeActor();
+	}
 
 public:
 	DoomSoundEngine() = default;
@@ -432,6 +440,30 @@ DEFINE_ACTION_FUNCTION(DObject, S_SoundPitch)
 	PARAM_FLOAT(pitch);
 	soundEngine->ChangeSoundPitch(SOURCE_None, nullptr, channel, pitch);
 	return 0;
+}
+
+//==========================================================================
+//
+// RS FORK -- WORLD CLOCK: the world pitch (s_soundinternal.h SetWorldPitch).
+//
+// One multiplier over every world sound, playing ones included. PRESENTATION ONLY and
+// local -- it reads and writes no playsim state, so a mod may set it from anywhere,
+// including a look slider that only this machine has.
+//
+//==========================================================================
+
+DEFINE_ACTION_FUNCTION(DObject, S_SetWorldPitch)
+{
+	PARAM_PROLOGUE;
+	PARAM_FLOAT(pitch);
+	soundEngine->SetWorldPitch((float)pitch);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(DObject, S_GetWorldPitch)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_FLOAT(soundEngine->GetWorldPitch());
 }
 
 //==========================================================================

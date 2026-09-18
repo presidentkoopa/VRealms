@@ -1076,6 +1076,7 @@ void EventManager::NewGame()
 DEFINE_EVENT_LOOPER(RenderFrame, false)
 DEFINE_EVENT_LOOPER(WorldLightning, true)
 DEFINE_EVENT_LOOPER(WorldTick, true)
+DEFINE_EVENT_LOOPER(WorldStep, true)	// RS FORK -- WORLD CLOCK
 DEFINE_EVENT_LOOPER(UiTick, false)
 DEFINE_EVENT_LOOPER(PostUiTick, false)
 
@@ -2097,6 +2098,18 @@ void DStaticEventHandler::WorldTick()
 	IFVIRTUAL(DStaticEventHandler, WorldTick)
 	{
 		// don't create excessive DObjects if not going to be processed anyway
+		if (isEmpty(func)) return;
+		VMValue params[1] = { (DStaticEventHandler*)this };
+		VMCall(func, params, 1, nullptr, 0);
+	}
+}
+
+// RS FORK -- WORLD CLOCK: the world-time twin of WorldTick. Same shape, same cost when
+// nobody overrides it (an empty virtual returns before any DObject is made).
+void DStaticEventHandler::WorldStep()
+{
+	IFVIRTUAL(DStaticEventHandler, WorldStep)
+	{
 		if (isEmpty(func)) return;
 		VMValue params[1] = { (DStaticEventHandler*)this };
 		VMCall(func, params, 1, nullptr, 0);

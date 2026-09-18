@@ -46,6 +46,103 @@ void D_RunCutscene();
 
 //==========================================================================
 //
+// RS FORK -- THE WORLD CLOCK: WHO KEEPS REAL TIME
+//
+// "Engine docs/SLOWMO_PLAN.md". On a real tic where the world does NOT step, the
+// actors that keep real time still take their tic: the player's pawn and what it
+// carries, and anything a mod has marked +REALTIME (VR hands, held gun props and
+// markers, weapon-wheel parts, the Lance's anchor). Everything else waits for the
+// world step, which is an ordinary unmodified Doom tic.
+//
+// WHAT IT CARRIES comes along. An item's owner pointer lives in ZScript and not in
+// AActor, so the chain is walked from the carrier instead: AActor::Inventory is the
+// head of what this actor holds and each item's Inventory is the next. That is what
+// keeps the player's weapons and ammo cycling at full speed without a mod having to
+// flag each of them. The walk is bounded, because a broken chain would hang the tic.
+//
+// COLLECTED FIRST, then ticked. A Tick can spawn or destroy actors, and walking the
+// thinker list while that happens is the one thing this pass must not do. The list is
+// walked in the iterator's order, which is the same order on every machine, and each
+// actor is re-checked for destruction before it is ticked (the collector does not run
+// inside a tic -- see FThinkerCollection's note on tempWakers).
+//
+// An actor spawned during this pass sits in the fresh list and takes its first tic on
+// the next world step, exactly as a thinker spawned late in RunThinkers would.
+//
+// Returns how many were ticked, for the log.
+//
+//==========================================================================
+
+CVAR(Bool, worldclock_log, false, 0)	// RS FORK -- off by default; one line per scale change
+
+static int P_TickRealTimeActors(FLevelLocals *Level, bool clientSide)
+{
+	static TArray<AActor *> wanted;	// reused; P_Ticker is not re-entrant
+	wanted.Clear();
+
+	auto take = [](AActor *ac)
+	{
+		if (!ac->IsRealTimeActor() || ac->IsSleeping()) return;
+		wanted.Push(ac);
+		// ... and what it carries, bounded so a damaged chain cannot hang the tic.
+		AActor *item = ac->Inventory;
+		for (int guard = 0; item != nullptr && guard < 1024; guard++)
+		{
+			if (!item->IsSleeping() && !item->IsRealTimeActor()) wanted.Push(item);	// it brings itself
+			item = item->Inventory;
+		}
+	};
+
+	if (clientSide)
+	{
+		auto it = Level->GetClientSideThinkerIterator<AActor>();
+		AActor *ac;
+		while ((ac = it.Next()) != nullptr) take(ac);
+	}
+	else
+	{
+		auto it = Level->GetThinkerIterator<AActor>();
+		AActor *ac;
+		while ((ac = it.Next()) != nullptr) take(ac);
+	}
+
+	int ticked = 0;
+	for (unsigned i = 0; i < wanted.Size(); i++)
+	{
+		AActor *ac = wanted[i];
+		if (ac->ObjectFlags & OF_EuthanizeMe) continue;	// destroyed by an earlier Tick in this pass
+		ac->CallTick();
+		ticked++;
+	}
+	wanted.Clear();	// do not hold actors alive between tics
+	return ticked;
+}
+
+//==========================================================================
+//
+// RS FORK -- `worldclock`: what the clock is doing, printed, changing nothing.
+//
+// THE SCALE IS NOT SETTABLE FROM HERE, deliberately. A console command that wrote it
+// would write it on one machine only, which is the one thing the design forbids: the
+// scale is playsim state and reaches the playsim through a network event that every
+// machine processes (`netevent` -> a handler's NetworkProcess -> Level.SetTimeScale).
+//
+//==========================================================================
+
+CCMD(worldclock)
+{
+	for (auto Level : AllLevels())
+	{
+		Printf("%s: scale %.4f, world tic %d, real tic %d, accum %d/%d, %d world step%s in the last second, %d real-time actor%s last tic\n",
+			Level->MapName.GetChars(), Level->GetTimeScale(), Level->maptime, Level->realtime,
+			Level->WorldAccum, FLevelLocals::WORLDCLOCK_ONE,
+			Level->WorldStepsLastSecond, Level->WorldStepsLastSecond == 1 ? "" : "s",
+			Level->RealTimeActorsLastTic, Level->RealTimeActorsLastTic == 1 ? "" : "s");
+	}
+}
+
+//==========================================================================
+//
 // P_RunClientsideLogic
 //
 // Handles all logic that should be ran every tick including while
@@ -75,15 +172,33 @@ void P_RunClientSideLogic()
 
 		for (auto level : AllLevels())
 		{
+			// RS FORK -- WORLD CLOCK, CLIENT SIDE. Client-side thinkers are where nearly
+			// every effect actor lives now (flashes, casings, hotspots, trail lines,
+			// barrel glow, impact lights, sprite smoke), and they tick on real client
+			// tics. Without this gate every one of them would run at full speed inside
+			// slow motion: casings tumbling and flashes fading while the world crawls.
+			//
+			// Its own accumulator, and presentation only: this function runs a different
+			// number of times than P_Ticker (prediction, catch-up), and nothing in the
+			// playsim reads the result. The SCALE is the shared playsim one, so a
+			// client-side effect keeps pace with the world actors it was spawned beside.
+			const bool worldStep = level->AdvanceClientWorldClock();
+
 			auto it = level->GetClientSideThinkerIterator<AActor>();
 			AActor* ac = nullptr;
 			while ((ac = it.Next()) != nullptr)
 			{
+				// A world actor's Prev is taken on the step it moves in, so the renderer
+				// glides it across the whole stretched interval (AActor::DrawFrac).
+				if (!worldStep && !ac->IsRealTimeActor()) continue;
 				ac->ClearInterpolation();
 				ac->ClearFOVInterpolation();
 			}
 
-			level->ClientSideThinkers.RunClientSideThinkers(level);
+			level->ClientSideThinkers.RunClientSideThinkers(level, worldStep);
+
+			// The client-side actors that keep real time still take their tic.
+			if (!worldStep) P_TickRealTimeActors(level, true);
 		}
 
 		StatusBar->CallTick();
@@ -456,12 +571,24 @@ void P_Ticker (void)
 	// Reset all actor interpolations on all levels before the current thinking turn so that indirect actor movement gets properly interpolated.
 	for (auto Level : AllLevels())
 	{
+		// RS FORK -- THE WORLD CLOCK. One real tic of the accumulator, decided ONCE here
+		// and used by everything below, so a tic cannot be half a world step. At full
+		// speed this is true every tic and the rest of P_Ticker is today's sequence,
+		// line for line. See "Engine docs/SLOWMO_PLAN.md" and g_levellocals.h.
+		const bool worldStep = Level->AdvanceWorldClock();
+
 		// todo: set up a sandbox for secondary levels here.
 		auto it = Level->GetThinkerIterator<AActor>();
 		AActor *ac;
 
 		while ((ac = it.Next()))
 		{
+			// RS FORK -- an actor's Prev is taken on the tic ITS clock runs, not on every
+			// real tic: a world actor's Prev then spans the whole world step and the
+			// renderer glides it across the stretch (AActor::DrawFrac), instead of
+			// snapping once and holding. Real-time actors are unchanged.
+			if (!worldStep && !ac->IsRealTimeActor()) continue;
+
 			ac->ClearInterpolation();
 			ac->ClearFOVInterpolation();
 
@@ -483,7 +610,8 @@ void P_Ticker (void)
 			if (ac->modelData) ac->modelData->ShiftSurfacePositions();
 		}
 
-		P_ThinkParticles(Level);	// [RH] make the particles think
+		// RS FORK -- WORLD CLOCK: particles are world effects, so they step with it.
+		if (worldStep) P_ThinkParticles(Level);	// [RH] make the particles think
 
 		Level->TickBillboards();	// [BB] follow attachments, expire transients
 
@@ -502,7 +630,10 @@ void P_Ticker (void)
 			// and forget it -- the original made every publisher re-push its
 			// stamp every tic and compute its own animation phase, which meant
 			// a script that missed a tic dropped its effect mid-bloom.
-			for (int st = 0; st < FLevelLocals::MAX_SURFACE_STAMPS; st++)
+			// RS FORK -- WORLD CLOCK: a stamp's life is in world tics, so it ages on the
+			// world step. `worldStep &&` rather than a wrapping if, so the body below is
+			// the same lines at the same indent it has always had.
+			for (int st = 0; worldStep && st < FLevelLocals::MAX_SURFACE_STAMPS; st++)
 			{
 				if (Level->StampLife[st] <= 0) continue;
 				if (++Level->StampAge[st] >= Level->StampLife[st])
@@ -570,19 +701,51 @@ void P_Ticker (void)
 				P_PlayerThink(Level->Players[i]);
 
 		// [ZZ] call the WorldTick hook
+		// RS FORK -- every REAL tic, unchanged: existing handlers keep today's rate.
+		// A handler that wants world time overrides WorldStep instead (events.zs).
 		Level->localEventManager->WorldTick();
-		Level->Tick();			// [RH] let the level tick
-		Level->Thinkers.RunThinkers(Level);
 
-		//if added by MC: Freeze mode.
-		if (!Level->isFrozen())
+		// RS FORK -- THE WORLD STEP: one ordinary, unmodified Doom tic. Nothing in here
+		// is rewritten or scaled -- that is the whole design, and it is why physics, AI,
+		// doors, lifts and scripts are correct at any depth and identical on every
+		// machine. At full speed this runs every tic, in this order, as it always has.
+		if (worldStep)
 		{
-			P_UpdateSpecials(Level);
+			Level->Tick();			// [RH] let the level tick
+			Level->Thinkers.RunThinkers(Level);
+
+			//if added by MC: Freeze mode.
+			if (!Level->isFrozen())
+			{
+				P_UpdateSpecials(Level);
+			}
+
+			// for par times
+			Level->time++;
+			Level->maptime++;
+			Level->totaltime++;
+
+			// RS FORK -- handlers that want world time. After the step, so a handler sees
+			// the world it has just moved and the clock that names it.
+			Level->localEventManager->WorldStep();
+		}
+		else
+		{
+			// RS FORK -- the world is between steps; the actors that keep real time still
+			// take their tic, so you move, turn and cycle the gun at full speed.
+			Level->RealTimeActorsLastTic = P_TickRealTimeActors(Level, false);
 		}
 
-		// for par times
-		Level->time++;
-		Level->maptime++;
-		Level->totaltime++;
+		// RS FORK -- the real clock, every real tic. This is what a mod times a PLAYER
+		// action by (recoil recovery, barrel heat): playsim state, the same count on
+		// every machine, and it does not slow with the world.
+		Level->realtime++;
+		if (Level->realtime - Level->WorldSecondMark >= TICRATE)
+		{
+			// Log only: world steps taken in the last second of real time.
+			Level->WorldStepsLastSecond = Level->maptime - Level->WorldSecondMarkMaptime;
+			Level->WorldSecondMark = Level->realtime;
+			Level->WorldSecondMarkMaptime = Level->maptime;
+		}
 	}
 }

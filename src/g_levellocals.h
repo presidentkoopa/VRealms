@@ -520,17 +520,25 @@ struct FEffectTicQueue
 	T        Items[2][N];
 	int      Count[2] = { 0, 0 };
 	int      Tic[2] = { 0, 0 };        // Level->maptime while that generation was written
+	// RS FORK -- WORLD CLOCK. A generation is opened every REAL tic (see BeginEffectTic)
+	// and stamped with both clocks, so a reader picks the one its effect ages on: Tic is
+	// world time (maptime), RealTic is real time. Moving the generation into the world
+	// step instead would pile the player's full-speed writes into one generation and drop
+	// everything past N -- which is exactly what a full-speed gun in slow motion produces.
+	int      RealTic[2] = { 0, 0 };    // Level->realtime while that generation was written
 	uint64_t Serial[2] = { 0, 0 };     // 0 = never written; otherwise rises by one per generation
 	int      Current = 0;
 	uint64_t NextSerial = 1;           // never reset, so a serial is never reused in a process
 	bool     FullLogged = false;       // the writer's "more than N this tic" line, once per map
 
 	// A new generation for the tic about to run. The older of the two is overwritten.
-	void BeginTic(int maptime)
+	// RS FORK -- realTic defaults to worldTic, so a caller that does not care is unchanged.
+	void BeginTic(int worldTic, int realTic = -1)
 	{
 		Current ^= 1;
 		Count[Current] = 0;
-		Tic[Current] = maptime;
+		Tic[Current] = worldTic;
+		RealTic[Current] = realTic < 0 ? worldTic : realTic;
 		Serial[Current] = NextSerial++;
 	}
 
@@ -543,12 +551,14 @@ struct FEffectTicQueue
 
 	// Map change and savegame load: both generations emptied, a fresh one open, so
 	// events written before the new map's first tic are kept for it.
-	void Reset(int maptime)
+	void Reset(int worldTic, int realTic = -1)
 	{
 		Count[0] = Count[1] = 0;
 		Serial[0] = Serial[1] = 0;
 		Current = 0;
-		Tic[0] = maptime;
+		Tic[0] = worldTic;
+		Tic[1] = worldTic;
+		RealTic[0] = RealTic[1] = realTic < 0 ? worldTic : realTic;
 		Serial[0] = NextSerial++;
 		FullLogged = false;
 	}
@@ -1168,9 +1178,116 @@ public:
 
 	uint8_t		md5[16];			// for savegame validation. If the MD5 does not match the savegame won't be loaded.
 	int			time;			// time in the hub
-	int			maptime;			// time in the map
+	int			maptime;			// time in the map -- RS FORK: the WORLD clock, see below
 	int			totaltime;		// time in the game
 	int			starttime;
+
+	// RS FORK -- THE WORLD CLOCK ("Engine docs/SLOWMO_PLAN.md").
+	//
+	// The world runs less often and is drawn smoothly in between. TimeScale is a
+	// fixed-point fraction (WORLDCLOCK_ONE = 1.0) added to WorldAccum once per real
+	// tic; each time WorldAccum crosses a whole tic the world takes ONE ORDINARY DOOM
+	// TIC. Nothing inside that step is modified, which is the whole design: physics,
+	// AI, doors, lifts and scripts behave exactly as they always did, only less often.
+	//
+	// GENERAL, not slow-mo-specific. A world clock is a world clock: anything that
+	// wants to age with the world asks WorldSeconds(), anything that follows the
+	// player's body asks RealSeconds(), and the two are the same number until
+	// something sets a scale below 1.
+	//
+	// WHICH CLOCK IS WHICH
+	//   maptime, time, totaltime  world tics -- they advance on a world step
+	//   realtime                  real tics -- it advances every P_Ticker tic
+	// maptime staying the world clock is plan decision 1: ACS delays, door timers,
+	// monster scripts and every effect birth already written against it slow with the
+	// world for free. A mod that times a PLAYER action (recoil recovery, barrel heat)
+	// moves to realtime, which is playsim state too and just as netplay-safe.
+	//
+	// NETPLAY. Integers, playsim state, serialized with the level, written only by
+	// P_Ticker and by the play-scoped SetTimeScale native. The crossing test is exact,
+	// so no float drift can make one machine step where another does not, and a
+	// machine that renders more frames sees more draw fractions and not one more step.
+	//
+	// DEFAULT OFF. TimeScale is WORLDCLOCK_ONE until a script lowers it; at
+	// WORLDCLOCK_ONE AdvanceWorldClock() is true every tic and WorldFrac() returns its
+	// argument unchanged, so every caller sees exactly today's values.
+	static constexpr int WORLDCLOCK_ONE = 65536;	// 16.16 fixed point; 1.0 = normal speed
+	int			realtime = 0;					// real tics since the map started
+	int			TimeScale = WORLDCLOCK_ONE;		// 0 (frozen) .. WORLDCLOCK_ONE (normal)
+	int			WorldAccum = 0;					// 0 .. WORLDCLOCK_ONE-1, the fraction of a world tic carried
+	// Presentation only (see AdvanceClientWorldClock): the client-side thinker gate.
+	// It cannot share WorldAccum because P_RunClientSideLogic runs a different number
+	// of times than P_Ticker (prediction, catch-up), and nothing in the playsim reads it.
+	int			ClientWorldAccum = 0;
+	int			ClientWorldTimer = 0;
+	// Log only (the `worldclock` ccmd and the once-per-change line in p_tick.cpp).
+	int			WorldStepsLastSecond = TICRATE;
+	int			WorldSecondMark = 0;				// realtime at the last window roll
+	int			WorldSecondMarkMaptime = 0;		// maptime at the last window roll
+	int			RealTimeActorsLastTic = 0;
+
+	double GetTimeScale() const { return TimeScale / (double)WORLDCLOCK_ONE; }
+	void SetTimeScaleFixed(int fixedScale)
+	{
+		TimeScale = fixedScale < 0 ? 0 : (fixedScale > WORLDCLOCK_ONE ? WORLDCLOCK_ONE : fixedScale);
+	}
+	bool IsWorldSlowed() const { return TimeScale < WORLDCLOCK_ONE; }
+
+	// One real tic of the accumulator. True when the world takes a step this tic.
+	// At full speed the accumulator is held at 0 so that returning to 1.0 never leaves
+	// a stale part-step behind to shift a later draw fraction.
+	bool AdvanceWorldClock()
+	{
+		if (TimeScale >= WORLDCLOCK_ONE) { WorldAccum = 0; return true; }
+		WorldAccum += TimeScale;
+		if (WorldAccum >= WORLDCLOCK_ONE) { WorldAccum -= WORLDCLOCK_ONE; return true; }
+		return false;
+	}
+
+	// The same gate for client-side thinkers, which are presentation by definition
+	// (p_tick.cpp P_RunClientSideLogic) and tick on their own schedule. Same scale, so
+	// a client-side effect keeps pace with the world actors it was spawned beside.
+	bool AdvanceClientWorldClock()
+	{
+		if (TimeScale >= WORLDCLOCK_ONE) { ClientWorldAccum = 0; ClientWorldTimer++; return true; }
+		ClientWorldAccum += TimeScale;
+		if (ClientWorldAccum >= WORLDCLOCK_ONE) { ClientWorldAccum -= WORLDCLOCK_ONE; ClientWorldTimer++; return true; }
+		return false;
+	}
+
+	// THE ONE SHARED FRAME VALUE (plan 4a). Every effect that used to write
+	// (Level->maptime + TicFrac) / TICRATE for itself calls WorldSeconds(TicFrac)
+	// instead, so they all agree on what "now" is when time is stretched. Body-
+	// following effects call RealSeconds(TicFrac).
+	//
+	// WorldFrac is how far the CURRENT world step has got: the whole tics already
+	// carried in the accumulator, plus this frame's share of the tic being run. Held
+	// below 1 so a caller can always treat it as a lerp weight. At full speed it
+	// returns its argument unchanged -- the same double, not a value near it.
+	double WorldFrac(double ticFrac) const
+	{
+		if (TimeScale >= WORLDCLOCK_ONE) return ticFrac;
+		const double f = WorldAccum / (double)WORLDCLOCK_ONE
+			+ ticFrac * (TimeScale / (double)WORLDCLOCK_ONE);
+		return f <= 0.0 ? 0.0 : (f >= 1.0 ? 0.99999999 : f);
+	}
+	double WorldSeconds(double ticFrac) const { return (maptime + WorldFrac(ticFrac)) / (double)TICRATE; }
+	double RealSeconds(double ticFrac) const { return (realtime + ticFrac) / (double)TICRATE; }
+
+	// Map change and savegame load. maptime restarts at 0 and so does everything here;
+	// a scale is a mod's live decision and is never inherited across a map.
+	void ResetWorldClock()
+	{
+		realtime = 0;
+		TimeScale = WORLDCLOCK_ONE;
+		WorldAccum = 0;
+		ClientWorldAccum = 0;
+		ClientWorldTimer = 0;
+		WorldStepsLastSecond = TICRATE;
+		WorldSecondMark = 0;
+		WorldSecondMarkMaptime = 0;
+		RealTimeActorsLastTic = 0;
+	}
 	int			partime;
 	int			sucktime;
 	uint32_t	spawnindex;
@@ -1698,17 +1815,18 @@ public:
 	FEffectTicQueue<FEmissiveVolumeEvent, MAX_EMISSIVE_VOLUMES_PER_TIC> EmissiveVolumeSpawns;	// [EMISSIVEVOLUMES] written by SpawnEmissiveVolume
 
 	// P_Ticker, at the top of this level's tic, before any writer runs.
+	// RS FORK -- WORLD CLOCK: every REAL tic, stamped with both clocks. See FEffectTicQueue.
 	void BeginEffectTic()
 	{
-		SmokeEmits.BeginTic(maptime);
-		SmokeCarves.BeginTic(maptime);
-		EffectImpulses.BeginTic(maptime);
-		DebrisBursts.BeginTic(maptime);
-		SurfaceDamagePaints.BeginTic(maptime);	// [SURFACEDAMAGE]
-		EffectLightSpawns.BeginTic(maptime);	// [EFFECTLIGHTS]
-		EmissiveVolumeSpawns.BeginTic(maptime);	// [EMISSIVEVOLUMES]
-		ExposureImpulses.BeginTic(maptime);	// [SENSORYIMPULSES]
-		HearingImpulses.BeginTic(maptime);	// [SENSORYIMPULSES]
+		SmokeEmits.BeginTic(maptime, realtime);
+		SmokeCarves.BeginTic(maptime, realtime);
+		EffectImpulses.BeginTic(maptime, realtime);
+		DebrisBursts.BeginTic(maptime, realtime);
+		SurfaceDamagePaints.BeginTic(maptime, realtime);	// [SURFACEDAMAGE]
+		EffectLightSpawns.BeginTic(maptime, realtime);	// [EFFECTLIGHTS]
+		EmissiveVolumeSpawns.BeginTic(maptime, realtime);	// [EMISSIVEVOLUMES]
+		ExposureImpulses.BeginTic(maptime, realtime);	// [SENSORYIMPULSES]
+		HearingImpulses.BeginTic(maptime, realtime);	// [SENSORYIMPULSES]
 	}
 
 	// ClearLevelData. maptime restarts at 0 on the new map.

@@ -339,6 +339,7 @@ public:
 	int WorldLineDamaged(line_t* line, AActor* source, int damage, FName damagetype, int side, DVector3 position, bool isradius);
 	void WorldLightning();
 	void WorldTick();
+	void WorldStep();	// RS FORK -- WORLD CLOCK
 
 	//
 	void RenderFrame();
@@ -530,6 +531,11 @@ struct EventManager
 	void WorldLightning();
 	// this executes on every tick, before everything, only when in valid level and not paused
 	void WorldTick();
+	// RS FORK -- WORLD CLOCK: once per WORLD step, after it. WorldTick keeps real time
+	// and today's rate; a handler that should slow with the world overrides this instead.
+	// At full speed the two fire on the same tic, WorldTick before the step and
+	// WorldStep after it. "Engine docs/SLOWMO_PLAN.md".
+	void WorldStep();
 	// this executes on every tick on UI side, always
 	void UiTick();
 	// this executes on every tick on UI side, always AND immediately after everything else

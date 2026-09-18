@@ -77,6 +77,7 @@ public:
 	bool ValidTexture();
 	int GetParticleType() const;
 	int GetLightLevel(sector_t *rendersector) const;
+	double DrawFrac(double ticFrac) const;	// RS FORK -- WORLD CLOCK (p_effect.cpp)
 	FVector3 InterpolatedPosition(double ticFrac) const;
 	float InterpolatedRoll(double ticFrac) const;
 

@@ -589,13 +589,16 @@ FSoundChan *SoundEngine::StartSound(int type, const void *source,
 				? (sfxlength > 0 ? fmodf(startTime, sfxlength) : 0.f)
 				: clamp(startTime, 0.f, sfxlength);
 
+		// RS FORK -- WORLD CLOCK: a sound started while the world is slowed starts at the
+		// world pitch. chan->Pitch below stays the pitch it was asked for. 1.0 when off.
+		const float worldPitch = WorldPitchFor(chanflags, type, source);
 		if (attenuation > 0 && type != SOURCE_None)
 		{
-			chan = (FSoundChan*)GSnd->StartSound3D (sfx->data, &listener, float(volume), rolloff, float(attenuation), pitch, basepriority, pos, vel, channel, startflags, NULL, startTime);
+			chan = (FSoundChan*)GSnd->StartSound3D (sfx->data, &listener, float(volume), rolloff, float(attenuation), pitch * worldPitch, basepriority, pos, vel, channel, startflags, NULL, startTime);
 		}
 		else
 		{
-			chan = (FSoundChan*)GSnd->StartSound (sfx->data, float(volume), pitch, startflags, NULL, startTime);
+			chan = (FSoundChan*)GSnd->StartSound (sfx->data, float(volume), pitch * worldPitch, startflags, NULL, startTime);
 		}
 	}
 	if (chan == NULL && (chanflags & CHANF_LOOP))
@@ -702,13 +705,14 @@ void SoundEngine::RestartChannel(FSoundChan *chan)
 		}
 
 		chan->ChanFlags &= ~(CHANF_EVICTED|CHANF_ABSTIME);
-		ochan = (FSoundChan*)GSnd->StartSound3D(sfx->data, &listener, chan->Volume, &chan->Rolloff, chan->DistanceScale, chan->Pitch,
+		// RS FORK -- WORLD CLOCK: the world pitch again, because chan->Pitch is the base.
+		ochan = (FSoundChan*)GSnd->StartSound3D(sfx->data, &listener, chan->Volume, &chan->Rolloff, chan->DistanceScale, chan->Pitch * WorldPitchFor(chan),
 			chan->Priority, pos, vel, chan->EntChannel, startflags, chan);
 	}
 	else
 	{
 		chan->ChanFlags &= ~(CHANF_EVICTED|CHANF_ABSTIME);
-		ochan = (FSoundChan*)GSnd->StartSound(sfx->data, chan->Volume, chan->Pitch, startflags, chan);
+		ochan = (FSoundChan*)GSnd->StartSound(sfx->data, chan->Volume, chan->Pitch * WorldPitchFor(chan), startflags, chan);
 	}
 	assert(ochan == NULL || ochan == chan);
 	if (ochan == NULL)
@@ -1083,8 +1087,33 @@ void SoundEngine::ChangeSoundPitch(int sourcetype, const void *source, int chann
 void SoundEngine::SetPitch(FSoundChan *chan, float pitch)
 {
 	assert(chan != nullptr);
-	GSnd->ChannelPitch(chan, max(0.0001f, pitch));
+	// RS FORK -- WORLD CLOCK: the driver is told pitch x the world pitch; chan->Pitch
+	// keeps the pitch that was asked for, so a later world-pitch change is still right.
+	GSnd->ChannelPitch(chan, max(0.0001f, pitch * WorldPitchFor(chan)));
 	chan->Pitch = pitch;
+}
+
+//==========================================================================
+//
+// RS FORK -- WORLD CLOCK: SoundEngine::SetWorldPitch
+//
+// See s_soundinternal.h. Presentation only. Sounds already playing are re-pitched
+// here, so a slide into slow motion drags the sounds that are mid-flight down with
+// it rather than only affecting the next one to start.
+//
+//==========================================================================
+
+void SoundEngine::SetWorldPitch(float pitch)
+{
+	pitch = pitch < 0.05f ? 0.05f : (pitch > 4.f ? 4.f : pitch);
+	if (pitch == WorldPitch) return;
+	WorldPitch = pitch;
+	if (GSnd == nullptr) return;
+	for (FSoundChan *chan = Channels; chan != NULL; chan = chan->NextChan)
+	{
+		if (chan->SysChannel == NULL || (chan->ChanFlags & CHANF_EVICTED)) continue;
+		GSnd->ChannelPitch(chan, max(0.0001f, chan->Pitch * WorldPitchFor(chan)));
+	}
 }
 
 //==========================================================================

@@ -184,7 +184,9 @@ bool EffectLights::BeginFrame(FLevelLocals* Level, const DVector3& eye, double y
 	}
 
 	// The draw's level clock, exactly as StartScene builds mLevelTime: it stops while the game is paused.
-	mNow = (Level->maptime + ticFrac) / (double)TICRATE;
+	// RS FORK -- WORLD CLOCK: the shared value (FLevelLocals::WorldSeconds), which with
+	// no slow motion IS (maptime + ticFrac) / TICRATE.
+	mNow = Level->WorldSeconds(ticFrac);
 	const double dt = mLastNow >= 0.0 ? std::max(mNow - mLastNow, 0.0) : 0.0;
 	mLastNow = mNow;
 	mEye = eye;

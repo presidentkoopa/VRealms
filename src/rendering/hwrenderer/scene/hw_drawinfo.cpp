@@ -699,7 +699,9 @@ static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
 
 	// This frame's clock in tics, as StartScene builds mLevelTime: it pauses with the
 	// game, so a fade and the rising noise stop in a menu.
-	const double nowTics = Level->maptime + di->Viewpoint.TicFrac;
+	// RS FORK -- WORLD CLOCK: the world fraction, so a fade and the rising noise stretch
+	// with the world instead of saw-toothing once per real tic. Unchanged when off.
+	const double nowTics = Level->maptime + Level->WorldFrac(di->Viewpoint.TicFrac);
 	const double scale = clamp<double>(r_heatrefraction_scale, 0.0, 4.0);
 
 	HeatSourceFrame frames[PPHeatRefraction::MAX_SOURCES];
@@ -1592,8 +1594,13 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		// as particle birth (maptime / TICRATE), so pausing freezes particles
 		// the way it freezes actors. mLevelTime is general; nothing about it is
 		// particle-specific, and stamps or disturbances could age by it too.
+		// RS FORK -- WORLD CLOCK: THE ONE SHARED FRAME VALUE. x is world seconds, y real
+		// seconds; both come from the level so every system agrees on what "now" is
+		// when time is stretched, instead of each computing its own (maptime + TicFrac).
+		// With no slow motion WorldSeconds(TicFrac) IS (maptime + TicFrac) / TICRATE.
 		VPUniforms.mLevelTime = {
-			(float)((Level->maptime + Viewpoint.TicFrac) / (double)TICRATE), 0.f, 0.f, 0.f };
+			(float)Level->WorldSeconds(Viewpoint.TicFrac),
+			(float)Level->RealSeconds(Viewpoint.TicFrac), 0.f, 0.f };
 		// Live-tuning cvars, renderer-read every frame so they respond in a menu.
 		VPUniforms.mGpuParticleParams = {
 			(float)r_gpuparticles_sizescale, (float)r_gpuparticles_maxsize,
@@ -1819,7 +1826,8 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 			// tic at a time, and a small fast ripple showed exactly the
 			// staircase the comment warns about. Same treatment the beam block
 			// above already gets from Viewpoint.TicFrac.
-			double now = (Level->maptime + Viewpoint.TicFrac) / (double)TICRATE;
+			// RS FORK -- WORLD CLOCK: the shared value, not a private copy of the formula.
+			double now = Level->WorldSeconds(Viewpoint.TicFrac);
 
 			for (int i = 0; i < FLevelLocals::MAX_FOG_DISTURB; i++)
 			{
@@ -1913,7 +1921,8 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		// render rate and was reading plain maptime, so growth and the seam
 		// stepped at 35Hz regardless.
 		{
-			double now = (Level->maptime + Viewpoint.TicFrac) / (double)TICRATE;
+			// RS FORK -- WORLD CLOCK: the shared value, not a private copy of the formula.
+			double now = Level->WorldSeconds(Viewpoint.TicFrac);
 
 			// THE HIGH-WATER MARK, and it is why a 128-slot array is
 			// affordable. The shader loops to this rather than to the cap, so

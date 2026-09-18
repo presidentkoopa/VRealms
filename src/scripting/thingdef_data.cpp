@@ -343,6 +343,7 @@ static FFlagDef ActorFlagDefs[]=
 	DEFINE_FLAG(MF9, FORCESECTORDAMAGE, AActor, flags9),
 	DEFINE_FLAG(MF9, NOAUTOOFFSKULLFLY, AActor, flags9),
 	DEFINE_FLAG(MF9, PRECACHEALWAYS, AActor, flags9),	// [Selaco] +PRECACHEALWAYS / bPRECACHEALWAYS: precache on every map
+	DEFINE_FLAG(MF9, REALTIME, AActor, flags9),	// RS FORK -- WORLD CLOCK: +REALTIME / bREALTIME, this actor keeps real time
 	DEFINE_FLAG(MF9, HITSCANTHRU, AActor, flags9),	// [HITCALLBACKS] GZSelaco
 	DEFINE_FLAG(MF9, ABSDAMAGE, AActor, flags9),		// [ABSDAMAGE] GZSelaco
 	DEFINE_FLAG(MF9, BLOCKLOS, AActor, flags9),		// [LOFBLOCKERS] GZSelaco

@@ -74,7 +74,12 @@ struct FThinkerCollection
 	}
 
 	void RunThinkers(FLevelLocals *Level);	// The level is needed to tick the lights
-	void RunClientSideThinkers(FLevelLocals* Level);
+	// RS FORK -- WORLD CLOCK: worldStep false means the world is between steps, so the
+	// client-side thinkers do not tick this time. The timers, the dynamic-light
+	// recreation and the light ticks still run every call, because the sound update and
+	// the renderer read them every client tic. Defaulted, so an existing caller is
+	// unchanged. p_tick.cpp ticks the real-time client-side actors on the skipped tics.
+	void RunClientSideThinkers(FLevelLocals* Level, bool worldStep = true);
 	void DestroyAllThinkers(bool fullgc = true);
 	void CleanUpTravellers(bool saveGame);
 	void SerializeThinkers(FSerializer &arc, bool keepPlayers);

@@ -1060,6 +1060,14 @@ void FLevelLocals::Serialize(FSerializer &arc, bool hubload)
 		("aircontrol", aircontrol)
 		("teamdamage", teamdamage)
 		("maptime", maptime)
+		// RS FORK -- WORLD CLOCK. Playsim state, so it is saved with the rest of it: a
+		// save made mid-slow-motion loads mid-slow-motion, with the accumulator's part
+		// step intact, and every machine loading that save gets the same integers. A
+		// save from before this existed has none of these keys and keeps the values
+		// ResetWorldClock left, which is full speed.
+		("realtime", realtime)
+		("timescale", TimeScale)
+		("worldaccum", WorldAccum)
 		("totaltime", i)
 		("skytexture1", skytexture1)
 		("skytexture2", skytexture2)
