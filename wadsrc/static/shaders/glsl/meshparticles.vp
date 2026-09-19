@@ -157,7 +157,9 @@ vec3 EffectLightsAtParticle(vec3 p)
 // (288 bytes each), the instance slots at 73,744 (4 bytes each) -- the C++ asserts the same.
 struct MeshParticleDefinition
 {
-	ParticleDefinitionData definition;	// the prolog's struct: the CPU table's 256 bytes
+	ParticleDefinitionData definition;	// the prolog's struct: the CPU table's 384 bytes
+										// ([RAMPS] 384 since key2 added the ramped look
+										// channels; nothing checks this copy at build time)
 	vec4 boundsMin;						// xyz the drawn frame's bounds min (model axes, y up)  w diameter (0 = not a mesh)
 	vec4 boundsMax;						// xyz bounds max  w 0
 };

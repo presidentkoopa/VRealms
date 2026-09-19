@@ -75,6 +75,25 @@ struct ParticleDefinitionGpu
 	//   [0]  x kind (EParticleLook)  y roughness 0..1  z churn, noise cells a second  w detail, octaves 1..4
 	//   [1]  x heat start 0..1  y heat end 0..1  z prongs, min * 32 + max  w rise, map units a second
 	float spare[2][4];
+	// [RAMPS] LOOK CHANNELS THAT CHANGE ACROSS A PARTICLE'S LIFE, on the SAME eight time
+	// keys as `key` above -- key[i].x is the life fraction for these too, and motion.w is
+	// still the count. Every value is a MULTIPLIER of what the definition already sets, so
+	// 1.0 is "unchanged" and a flat ramp is eight 1.0s. That gives ONE code path: there is
+	// no "is this ramped" branch anywhere, because a definition that ramps nothing simply
+	// carries ones.
+	//
+	//   x roughness   how torn the edge is, over life
+	//   y churn       how fast the shape turns over
+	//   z gravity     the particle's own gravity, scaled over life -- hot smoke rises while
+	//                 it is hot and stops as it cools, which ours could not express
+	//   w drag
+	//
+	// WHY PER DEFINITION AND NOT PER LOOK KIND: "fire" is at least two behaviours. A
+	// dissipating fireball does almost nothing for 92% of its life and then triples its
+	// roughness; a big rolling fire cloud never tears at all and just churns. A per-kind
+	// curve would hand every burning cloud a death spike it does not have, with no way to
+	// say otherwise. The kind's curve is the DEFAULT; the definition may override it.
+	float key2[8][4];
 };
 
 enum
@@ -101,6 +120,26 @@ enum
 // reads or writes the flags today sees any difference at all.
 static constexpr int PDF_POSTMASK_SHIFT = 16;
 static constexpr int PDF_POSTMASK_MASK = 0xff << PDF_POSTMASK_SHIFT;
+
+// [RAMPS] The default curves for key2, measured by the ballistics lane from authored sprite
+// sequences (boundary length over sqrt(area), per frame, normalised so 1.0 is the definition's
+// own value). A definition that states no ramp gets its kind's curve.
+//
+//   FIRE   1.00 @0.00, 1.38 @0.48, 1.23 @0.84, 1.46 @0.92, 1.97 @0.96, 3.23 @1.00
+//          Flat through life, then everything happens in the last eight percent.
+//   SMOKE  1.00 @0.00, 1.25 @0.25, 1.40 @0.50, 1.40 @0.85, 1.25 @1.00
+//          Roughens EARLY while still billowing, plateaus, eases as it thins. No death spike.
+//   DUST   borrows SMOKE's, and says so -- there was no authored dust sequence to measure
+//          (the one in RS_Main is a lump with no alpha) and nobody invented numbers for it.
+//
+// THESE COME FROM SILHOUETTES, NOT VOLUMES. A flipbook frame's edge is where the artist
+// stopped drawing; a raymarched cloud's edge is where density crosses a threshold. THE SHAPES
+// ARE THE FINDING -- flat-then-spike for a dissipating fireball, early-rise-then-plateau for
+// smoke. The multipliers are a starting point and will want tuning in a headset. If 3.23x
+// reads as confetti rather than tearing, the shape is still right and the NUMBER is what moves.
+//
+// explosions/RSE1 is deliberately excluded from the fire curve: it measures 0.0 at the end
+// because the sprite is GONE, not smooth, and the metric divides into nothing.
 
 // [LOOKS] What spare[0][0] holds: the shape gpuparticles.fp generates for the particle
 // instead of the round dot or a flipbook frame. The numbers are the plan's order and never

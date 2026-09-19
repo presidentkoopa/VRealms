@@ -80,7 +80,12 @@ public:
 	// One definition: sixteen vec4s, std430, no padding. Must equal
 	// sizeof(ParticleDefinitionGpu) in particledefs.h and the ParticleDefinitionData
 	// struct in vk_shader.cpp's prolog (both assert it).
-	static const unsigned RECORD_BYTES = 256;
+	// [RAMPS] 384, not 256: key2 added eight vec4s of ramped look channels (roughness,
+	// churn, gravity, drag) riding the same eight time keys as `key`. particledefs.cpp
+	// static_asserts both this size and every member offset against ParticleDefinitionGpu,
+	// and ParticleDefinitionData in vk_shader.cpp must match the struct too -- nothing
+	// checks THAT copy at build time, so a drift there reads garbage and reports nothing.
+	static const unsigned RECORD_BYTES = 384;
 
 	// Slots 0..255 hold named definitions (PARTICLEDEFS lumps), 256..511 the
 	// inline cache that SpawnGpuParticles' parameter tuples fill. Separate ranges,

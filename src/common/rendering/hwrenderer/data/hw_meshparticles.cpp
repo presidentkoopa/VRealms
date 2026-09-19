@@ -48,7 +48,9 @@ static_assert(MeshParticleBuffer::DEFINITION_SLOTS == ParticleDefinitionBuffer::
 	"mesh particle definition records are indexed by the named definition slot");
 static_assert(MeshParticleBuffer::DEFINITION_BYTES == ParticleDefinitionBuffer::RECORD_BYTES + 32,
 	"a mesh particle definition record is a particle definition and two vec4s of bounds -- see MeshParticleDefinition in meshparticles.vp");
-static_assert(MeshParticleBuffer::INSTANCES_OFFSET == 73744,
+// [RAMPS] 106,512 now, not 73,744: 16 header bytes + 256 records of 416. The number is
+// spelled out rather than computed so that a layout change has to be acknowledged HERE too.
+static_assert(MeshParticleBuffer::INSTANCES_OFFSET == 106512,
 	"the instance list starts after the header and 256 definition records -- see MeshParticleSSO in meshparticles.vp");
 
 namespace

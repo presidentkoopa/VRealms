@@ -230,9 +230,14 @@
 
 static_assert(sizeof(ParticleDefinitionGpu) == ParticleDefinitionBuffer::RECORD_BYTES,
 	"ParticleDefinitionGpu must be sixteen vec4s -- see ParticleDefinitionData in vk_shader.cpp");
+// [RAMPS] key2 lands at 256 and the record is 320 bytes. These asserts are the only thing
+// that catches vk_shader.cpp's ParticleDefinitionData drifting from this struct -- a mismatch
+// there reads garbage on the GPU and reports nothing -- so they are kept EXACT rather than
+// loosened when the layout changes.
 static_assert(offsetof(ParticleDefinitionGpu, keyColor) == 128 && offsetof(ParticleDefinitionGpu, motion) == 160 &&
 	offsetof(ParticleDefinitionGpu, shape) == 176 && offsetof(ParticleDefinitionGpu, look) == 192 &&
-	offsetof(ParticleDefinitionGpu, flipbook) == 208 && offsetof(ParticleDefinitionGpu, spare) == 224,
+	offsetof(ParticleDefinitionGpu, flipbook) == 208 && offsetof(ParticleDefinitionGpu, spare) == 224 &&
+	offsetof(ParticleDefinitionGpu, key2) == 256,
 	"ParticleDefinitionGpu offsets must match the std430 layout of ParticleDefinitionData in vk_shader.cpp");
 // [2d] The bytes ParticleDefinitionBuffer reads to tell what a definition's particles need
 // from the draw -- the premultiplied blend, the view lights, the read-only depth pass

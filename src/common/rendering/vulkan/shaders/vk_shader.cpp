@@ -879,6 +879,13 @@ static const char *shaderBindings = R"(
 		vec4 look;
 		vec4 flipbook;
 		vec4 spare[2];
+		// [RAMPS] MUST MATCH ParticleDefinitionGpu in particledefs.h, which static_asserts
+		// its own offsets. Nothing checks THIS copy at build time -- a drift here reads
+		// garbage on the GPU and reports no error at all -- so the C++ struct is the
+		// authority and this follows it exactly.
+		//   key2[i] rides key[i].x, the same life fraction, with motion.w keys in use:
+		//   x roughness multiplier  y churn  z gravity  w drag. 1.0 is unchanged.
+		vec4 key2[8];
 	};
 	layout(set = 1, binding = 7, std430) buffer readonly ParticleDefinitionSSO
 	{

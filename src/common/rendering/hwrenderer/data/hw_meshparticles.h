@@ -86,7 +86,13 @@ public:
 	//           max (xyz, w 0)
 	//   INSTANCES_OFFSET  uint ring slots, one per live instance, grouped by definition
 	static const unsigned HEADER_BYTES = 16;
-	static const unsigned DEFINITION_BYTES = 288;
+	// [RAMPS] 416, not 288: the particle definition record grew from 256 to 384 when key2
+	// added eight vec4s of ramped look channels (particledefs.h), and this is that record
+	// plus two vec4s of bounds. THREE places mirror that layout -- this, ParticleDefinitionData
+	// in vk_shader.cpp, and MeshParticleDefinition in meshparticles.vp -- and only the two
+	// static_asserts in hw_meshparticles.cpp and particledefs.cpp catch a drift. The shader
+	// copies are checked by nothing at all and read garbage silently if they fall behind.
+	static const unsigned DEFINITION_BYTES = 416;
 	static const unsigned DEFINITION_SLOTS = 256;	// ParticleDefinitionBuffer::NAMED_SLOTS: only named definitions have meshes
 	static const unsigned INSTANCES_OFFSET = HEADER_BYTES + DEFINITION_SLOTS * DEFINITION_BYTES;	// 73,744
 	static const unsigned INSTANCE_BYTES = 4;
