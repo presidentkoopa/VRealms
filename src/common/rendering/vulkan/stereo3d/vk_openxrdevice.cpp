@@ -190,6 +190,7 @@ EXTERN_CVAR(Int, vr_overlayscreen_bg);
 EXTERN_CVAR(Int, vr_control_scheme);
 EXTERN_CVAR(Bool, vr_two_handed_weapons);
 EXTERN_CVAR(Bool, vr_stabilize_requires_grab);
+EXTERN_CVAR(Int, vr_eye_colorspace);
 EXTERN_CVAR(Float, vr_stabilize_distance_inches);
 EXTERN_CVAR(Bool, vr_holster_use_grip);
 CVAR(Bool, vr_menu_pointer, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
@@ -2713,8 +2714,21 @@ bool VKOpenXRDeviceMode::CreateSwapchain() const
 		runtimeFormats.resize(formatCount);
 		xrEnumerateSwapchainFormats(xrSession, formatCount, &formatCount, runtimeFormats.data());
 	}
-	xrSwapchainFormat = SelectSwapchainFormat(runtimeFormats, preferredFormat);
+	// THE EYES AND THE FLAT VIEW MUST AGREE, or the same frame gets two different gamma
+	// treatments and the headset reads brighter than the window -- which is exactly what
+	// the owner reported. SelectFlatSwapchainFormat prefers UNORM (the desktop window's
+	// own space, which is what preferredFormat carries and what has always looked right);
+	// SelectSwapchainFormat prefers sRGB, which adds a hardware transfer function on write
+	// that the flat path never gets. See vr_eye_colorspace in hw_vrmodes.cpp for the full
+	// reasoning and the numbers.
+	//
+	// vr_eye_colorspace 1 restores the old sRGB-first preference so the two can be compared
+	// in the headset. Either way the preference list falls through, so a runtime offering
+	// only one colour space is unaffected.
 	xrVirtualScreenSwapchainFormat = SelectFlatSwapchainFormat(runtimeFormats, preferredFormat);
+	xrSwapchainFormat = (vr_eye_colorspace == 1)
+		? SelectSwapchainFormat(runtimeFormats, preferredFormat)
+		: xrVirtualScreenSwapchainFormat;
 
 	XrSwapchainCreateInfo swapchainInfo{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	swapchainInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;

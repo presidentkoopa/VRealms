@@ -670,6 +670,28 @@ CUSTOM_CVAR(Int, vr_joy_mode, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITC
 {
 	Printf("Changing the control mode requires a restart for " GAMENAME ".\n");
 }
+// WHICH COLOUR SPACE THE EYES ASK THE RUNTIME FOR.
+//
+//   0  MATCH THE DESKTOP (default) -- the eye swapchain prefers the same colour space the
+//      flat/mirror swapchain does, so both take the identical gamma branch in the present
+//      pass and the headset and the window agree.
+//   1  PREFER sRGB -- what this build did before. Kept so the difference can be A/B'd in
+//      the headset, and as a way back if a runtime behaves unexpectedly.
+//
+// WHY THIS EXISTS: the eyes preferred sRGB while the flat view preferred UNORM, from the
+// SAME rendered frame and the SAME preferredFormat. An sRGB image gets the sRGB transfer
+// function applied IN HARDWARE on write and a UNORM one does not, so one path carried an
+// extra ~^(1/2.2) the other never saw. The present shader tried to absorb it with
+// `InvGamma = 1/sqrt(gamma)` instead of `1/gamma` (vk_postprocess.cpp), which is a fitted
+// correction rather than an identity -- halving an exponent cannot undo a different curve
+// except at one value of vid_gamma, so the two views could never actually match. Measured:
+// mid grey 0.50 read 134/255 in the window and 160 in the headset.
+//
+// A CHANGE ONLY WHERE THE RUNTIME GIVES US A CHOICE. The preference list still falls
+// through to sRGB, so a runtime offering only sRGB formats lands exactly where it does
+// today. Presentation only -- nothing here is visible to another machine.
+CVAR(Int, vr_eye_colorspace, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
 CVAR(Bool, vr_move_use_offhand, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, vr_teleport, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Float, vr_weaponRotate, -30.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
