@@ -387,6 +387,9 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 	// fade counts from the old map's clock.
 	ClearHeatSources();
 
+	// [SHOCKWAVE] Nor does a blast ripple, for the same two reasons.
+	ClearShockwaves();
+
 	// [EFFECTQUEUES] + [SMOKEVOLUME] Nor does a queued effect event (its position is the
 	// old map's), nor the smoke look and wind a mod set (it re-applies them on
 	// WorldLoaded). The new level-data serial tells renderer-side effects -- the smoke

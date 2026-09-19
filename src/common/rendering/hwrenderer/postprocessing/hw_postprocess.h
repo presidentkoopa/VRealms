@@ -970,6 +970,103 @@ struct HeatWarpUniforms
 static_assert(offsetof(HeatWarpUniforms, LinearizeDepthA) == 16, "HeatWarpUniforms::LinearizeDepthA must start at 16 for std140");
 static_assert(sizeof(HeatWarpUniforms) == 32, "HeatWarpUniforms must be 32 bytes");
 
+// [SHOCKWAVE] BLAST RIPPLES ("Engine docs/BLAST_RIPPLE_PLAN.md" 3d): the heat shimmer pass's second kind of source, an
+// expanding shell of bent air (shaders/pp/shockwaveoffset.fp; the maths hw_shockwavecore.h). One ripple for one eye: Centre is
+// RELATIVE TO THAT EYE in world axes (GL: y up) and map units, and ViewToWorld is that eye's, as HeatOffsetUniforms. Filled by
+// SetupShockwaves (hw_drawinfo.cpp); SceneScale/SceneOffset and this draw's rectangle (RectScale/RectOffset) are set in
+// Render. The same 160 bytes as the heat block.
+struct ShockwaveUniforms
+{
+	FVector3 Centre;
+	float CrestRadius;
+	float HalfThickness;
+	float Bend;               // radians per unit of the profile integral: strength, curve, look, scale, comfort, SHOCK_BEND
+	float Trough;             // the thin air behind the crest, against the crest's 1 (the look)
+	float ShockPad0;
+	FVector2 TanHalfFov;      // 1 / projection m[0], m[5], as the heat pass
+	FVector2 ProjOffset;      // projection m[8], m[9]: an asymmetric (headset) eye
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+	FVector2 RectScale;       // this draw's viewport in the offset texture, as scene UV: TexCoord x RectScale + RectOffset
+	FVector2 RectOffset;
+	float LinearizeDepthA;
+	float LinearizeDepthB;
+	float ShockPad1;
+	float ShockPad2;
+	float ViewToWorld[16];    // plain floats: VSMatrix is not visible in this header
+
+	//   Centre 0  CrestRadius 12  HalfThickness 16  Bend 20  Trough 24  ShockPad0 28
+	//   TanHalfFov 32  ProjOffset 40  SceneScale 48  SceneOffset 56  RectScale 64  RectOffset 72
+	//   LinearizeDepthA 80  LinearizeDepthB 84  ShockPad1 88  ShockPad2 92  ViewToWorld 96 -> block ends 160
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "Centre", UniformType::Vec3, offsetof(ShockwaveUniforms, Centre) },
+			{ "CrestRadius", UniformType::Float, offsetof(ShockwaveUniforms, CrestRadius) },
+			{ "HalfThickness", UniformType::Float, offsetof(ShockwaveUniforms, HalfThickness) },
+			{ "Bend", UniformType::Float, offsetof(ShockwaveUniforms, Bend) },
+			{ "Trough", UniformType::Float, offsetof(ShockwaveUniforms, Trough) },
+			{ "ShockPad0", UniformType::Float, offsetof(ShockwaveUniforms, ShockPad0) },
+			{ "TanHalfFov", UniformType::Vec2, offsetof(ShockwaveUniforms, TanHalfFov) },
+			{ "ProjOffset", UniformType::Vec2, offsetof(ShockwaveUniforms, ProjOffset) },
+			{ "SceneScale", UniformType::Vec2, offsetof(ShockwaveUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(ShockwaveUniforms, SceneOffset) },
+			{ "RectScale", UniformType::Vec2, offsetof(ShockwaveUniforms, RectScale) },
+			{ "RectOffset", UniformType::Vec2, offsetof(ShockwaveUniforms, RectOffset) },
+			{ "LinearizeDepthA", UniformType::Float, offsetof(ShockwaveUniforms, LinearizeDepthA) },
+			{ "LinearizeDepthB", UniformType::Float, offsetof(ShockwaveUniforms, LinearizeDepthB) },
+			{ "ShockPad1", UniformType::Float, offsetof(ShockwaveUniforms, ShockPad1) },
+			{ "ShockPad2", UniformType::Float, offsetof(ShockwaveUniforms, ShockPad2) },
+			{ "ViewToWorld", UniformType::Mat4, offsetof(ShockwaveUniforms, ViewToWorld) },
+		};
+	}
+};
+
+static_assert(offsetof(ShockwaveUniforms, HalfThickness) == 16, "ShockwaveUniforms::HalfThickness must start at 16 for std140");
+static_assert(offsetof(ShockwaveUniforms, TanHalfFov) == 32, "ShockwaveUniforms::TanHalfFov must start at 32 for std140");
+static_assert(offsetof(ShockwaveUniforms, RectScale) == 64, "ShockwaveUniforms::RectScale must start at 64 for std140");
+static_assert(offsetof(ShockwaveUniforms, LinearizeDepthA) == 80, "ShockwaveUniforms::LinearizeDepthA must start at 80 for std140");
+static_assert(offsetof(ShockwaveUniforms, ViewToWorld) == 96, "ShockwaveUniforms::ViewToWorld must start at 96 for std140");
+static_assert(sizeof(ShockwaveUniforms) == 160, "ShockwaveUniforms must be 160 bytes; pad to a 16-byte row");
+
+// [SHOCKWAVE] The bend with a colour fringe (heatwarp.fp's CHROMATIC programs): HeatWarpUniforms, then Chroma -- how far red
+// goes past the bend and blue short of it, as a share of the shift. A struct of its own, so the plain HeatWarpUniforms block,
+// and with it the plain bend program that every heat shimmer frame runs, stays byte-identical.
+struct HeatWarpChromaUniforms
+{
+	FVector2 SceneScale;
+	FVector2 SceneOffset;
+	float LinearizeDepthA;
+	float LinearizeDepthB;
+	float MaxShift;           // scene UV units
+	float DepthMargin;        // map units
+	float Chroma;             // 0..ShockwaveCore::CHROMA_MAX
+	float ChromaPad0;
+	float ChromaPad1;
+	float ChromaPad2;
+
+	static std::vector<UniformFieldDesc> Desc()
+	{
+		return
+		{
+			{ "SceneScale", UniformType::Vec2, offsetof(HeatWarpChromaUniforms, SceneScale) },
+			{ "SceneOffset", UniformType::Vec2, offsetof(HeatWarpChromaUniforms, SceneOffset) },
+			{ "LinearizeDepthA", UniformType::Float, offsetof(HeatWarpChromaUniforms, LinearizeDepthA) },
+			{ "LinearizeDepthB", UniformType::Float, offsetof(HeatWarpChromaUniforms, LinearizeDepthB) },
+			{ "MaxShift", UniformType::Float, offsetof(HeatWarpChromaUniforms, MaxShift) },
+			{ "DepthMargin", UniformType::Float, offsetof(HeatWarpChromaUniforms, DepthMargin) },
+			{ "Chroma", UniformType::Float, offsetof(HeatWarpChromaUniforms, Chroma) },
+			{ "ChromaPad0", UniformType::Float, offsetof(HeatWarpChromaUniforms, ChromaPad0) },
+			{ "ChromaPad1", UniformType::Float, offsetof(HeatWarpChromaUniforms, ChromaPad1) },
+			{ "ChromaPad2", UniformType::Float, offsetof(HeatWarpChromaUniforms, ChromaPad2) },
+		};
+	}
+};
+
+static_assert(offsetof(HeatWarpChromaUniforms, Chroma) == 32, "HeatWarpChromaUniforms::Chroma must start at 32 for std140");
+static_assert(sizeof(HeatWarpChromaUniforms) == 48, "HeatWarpChromaUniforms must be 48 bytes");
+
 // Pass1 runs it after the volumetric beam and the heatmap, where the smoke volume
 // (#13) will also go, and before bloom: the HDR image bends before it glows, so the
 // glows bend with it.
@@ -991,12 +1088,20 @@ static_assert(sizeof(HeatWarpUniforms) == 32, "HeatWarpUniforms must be 32 bytes
 // one pair of pipeline images between the eyes, so both must run exactly the same
 // passes: a source visible to either eye is published to both sets
 // (SetupHeatSources), and the two sets always have equal counts.
+//
+// [SHOCKWAVE] BLAST RIPPLES are the pass's second kind of source (ShockwaveUniforms above). SetupShockwaves publishes them
+// right after the heat sources, with the same eye sets and the same both-eyes rule, and they draw while r_shockwave is on:
+// into the same offset texture after the heat sources, each over its own screen rectangle, and the one bend moves the image
+// by the sum. With no ripple published the pass is exactly the heat pass; with neither kind it returns on its first line. A
+// frame whose ripples ask for a colour fringe bends with the CHROMATIC program -- one value for the frame, so both eyes run
+// the same program -- and the light mask always moves with the plain one, since it holds amounts, not colours.
 class PPHeatRefraction
 {
 public:
 	void Render(PPRenderState *renderstate, int sceneWidth, int sceneHeight);
 
-	void ClearSources() { counts[0] = counts[1] = 0; eyeSets = 0; }
+	// [SHOCKWAVE] Clears the blast ripples too: SetupHeatSources runs first for every view and clears both kinds.
+	void ClearSources() { counts[0] = counts[1] = 0; eyeSets = 0; shockCounts[0] = shockCounts[1] = 0; shockChroma = 0.0f; }
 	void SetEyeSets(int sets) { eyeSets = sets < 0 ? 0 : (sets > 2 ? 2 : sets); }
 	bool AddSource(int eyeSet, const HeatOffsetUniforms &u)
 	{
@@ -1004,6 +1109,17 @@ public:
 		sources[eyeSet][counts[eyeSet]++] = u;
 		return true;
 	}
+	// [SHOCKWAVE] One blast ripple for one eye set, with that eye's scene-UV rectangle { u0, v0, u1, v1 } (all zero: this eye
+	// does not see it, and still draws, so both eyes draw alike); and the frame's colour fringe, 0 for the plain bend.
+	bool AddShockwave(int eyeSet, const ShockwaveUniforms &u, const float rect[4])
+	{
+		if (eyeSet < 0 || eyeSet > 1 || shockCounts[eyeSet] >= MAX_SHOCKWAVE_DRAWS) return false;
+		shockwaves[eyeSet][shockCounts[eyeSet]] = u;
+		for (int k = 0; k < 4; k++) shockRects[eyeSet][shockCounts[eyeSet]][k] = rect[k];
+		shockCounts[eyeSet]++;
+		return true;
+	}
+	void SetShockwaveChroma(float chroma) { shockChroma = chroma > 0.0f ? chroma : 0.0f; }
 	void SetEye(int eye) { currentEye = eye; }
 
 	// FLevelLocals::MAX_HEAT_SOURCES level slots plus the r_heatrefraction_test source.
@@ -1020,6 +1136,10 @@ public:
 	static constexpr float MAX_SHIFT = 0.03f;
 	static constexpr float DEPTH_MARGIN = 2.0f;
 
+	// [SHOCKWAVE] FLevelLocals::MAX_SHOCKWAVES level ripples plus the r_shockwave_test ripple (hw_drawinfo.cpp static_asserts
+	// the relation, as it does MAX_SOURCES').
+	static const int MAX_SHOCKWAVE_DRAWS = 33;
+
 private:
 	void UpdateTexture(int sceneWidth, int sceneHeight);
 
@@ -1027,6 +1147,12 @@ private:
 	int counts[2] = {};
 	int eyeSets = 0;
 	int currentEye = 0;
+
+	// [SHOCKWAVE] The blast ripples per eye set, each with its scene-UV rectangle; the frame's colour fringe.
+	ShockwaveUniforms shockwaves[2][MAX_SHOCKWAVE_DRAWS] = {};
+	float shockRects[2][MAX_SHOCKWAVE_DRAWS][4] = {};
+	int shockCounts[2] = {};
+	float shockChroma = 0.0f;
 
 	// Half the scene's size, like bloom's first level: the bend is smooth, and the
 	// bend pass's full-resolution depth tests keep the edges.
@@ -1039,6 +1165,12 @@ private:
 	PPShader OffsetShaderMS = { "shaders/pp/heatoffset.fp", "#define MULTISAMPLE\n", HeatOffsetUniforms::Desc() };
 	PPShader WarpShader = { "shaders/pp/heatwarp.fp", "", HeatWarpUniforms::Desc() };
 	PPShader WarpShaderMS = { "shaders/pp/heatwarp.fp", "#define MULTISAMPLE\n", HeatWarpUniforms::Desc() };
+	// [SHOCKWAVE] The blast ripple offsets, and the bend with a colour fringe. Compiled on first use, like every PPShader, so a
+	// session with no ripple never builds them.
+	PPShader ShockwaveShader = { "shaders/pp/shockwaveoffset.fp", "", ShockwaveUniforms::Desc() };
+	PPShader ShockwaveShaderMS = { "shaders/pp/shockwaveoffset.fp", "#define MULTISAMPLE\n", ShockwaveUniforms::Desc() };
+	PPShader WarpChromaShader = { "shaders/pp/heatwarp.fp", "#define CHROMATIC\n", HeatWarpChromaUniforms::Desc() };
+	PPShader WarpChromaShaderMS = { "shaders/pp/heatwarp.fp", "#define MULTISAMPLE\n#define CHROMATIC\n", HeatWarpChromaUniforms::Desc() };
 };
 
 /////////////////////////////////////////////////////////////////////////////

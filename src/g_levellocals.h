@@ -1778,6 +1778,100 @@ public:
 		for (int i = 0; i < MAX_HEAT_SOURCES; i++) HeatSources[i] = HeatSource();
 	}
 
+	// [SHOCKWAVE] BLAST RIPPLES -- a ring of bent air racing out from a blast ("Engine docs/BLAST_RIPPLE_PLAN.md" with its
+	// owner answers; "Engine docs/BLAST_RIPPLE_IMPL_NOTES.md"). Beside the heat sources because it is the same kind of thing:
+	// render-only air that bends the image behind it, drawn by the same pass.
+	//
+	// FIRE AND FORGET. A mod calls SpawnShockwave once; the engine owns the slots and animates the ripple every frame from its
+	// Birth (hw_shockwavecore.h, CurveAt): the crest grows to Radius over Tics, hits hard early and fades. There are no mod slot
+	// ranges, nothing to clear and nothing read back. A spawn takes a free slot, else the live ripple with the least life left,
+	// so no mod can wipe another's blasts, and a 33rd blast at once costs the ripple nearest its end.
+	//
+	// The anchor MOVES the ripple with a hand, as a heat source's does: AnchorBase is where that hand was at the spawn
+	// (vmthunks.cpp records it) and the renderer adds how far the hand has moved since, so a muzzle ripple stays at the muzzle.
+	// Player by number, as HeatSource::AnchorPlayer, so nothing dangles.
+	//
+	// Drawn by PPHeatRefraction (hw_postprocess.h) from SetupShockwaves (hw_drawinfo.cpp) while r_shockwave is on (default on).
+	// Not serialized: cleared on map change and savegame load (p_setup.cpp), like every render slot. Setters only: nothing
+	// hands a ripple back to script, so gameplay cannot branch on one.
+	static const int MAX_SHOCKWAVES = 32;
+
+	struct Shockwave
+	{
+		DVector3 Pos{ 0., 0., 0. };
+		double   Radius = 0.;             // the crest's radius at the end of its life, map units
+		double   Thickness = 0.;          // the ring's full thickness at the end; 0 = auto (hw_shockwavecore.h)
+		double   Strength = 0.;
+		double   Chroma = 0.;             // 0..1: how much this blast may split colour (the player's setting decides)
+		int      Tics = 0;                // life
+		int      Birth = 0;               // maptime at the spawn (see ShockwaveLifeLeft)
+		int      Anchor = 0;              // 0 world, 1 main hand, 2 off hand
+		int      AnchorPlayer = -1;       // whose hand; -1 the console player
+		DVector3 AnchorBase{ 0., 0., 0. };// that hand's position at the spawn
+		bool     AnchorBaseValid = false; // the hand could be read then; if not, the ripple does not move
+		bool     Live = false;
+		unsigned Serial = 0;              // which spawn this is: the renderer's memory of a ripple (the wobble cap) keys on it
+	};
+
+	Shockwave Shockwaves[MAX_SHOCKWAVES];
+	unsigned ShockwaveSerial = 0;         // counts every spawn and is never reset, so no serial repeats in a session
+
+	// Tics of life left; 0 = the slot is free. Thinkers run before maptime counts up (P_Ticker), so a ripple spawned in tic M
+	// is first drawn at maptime M + 1 with age 0 (age = maptime + TicFrac - (Birth + 1)) and is gone once maptime reaches
+	// Birth + 1 + Tics.
+	int ShockwaveLifeLeft(int slot) const
+	{
+		if (slot < 0 || slot >= MAX_SHOCKWAVES || !Shockwaves[slot].Live) return 0;
+		const Shockwave &w = Shockwaves[slot];
+		const int left = w.Birth + 1 + w.Tics - maptime;
+		return left > 0 ? left : 0;
+	}
+
+	// Clamps, NaN-safe as SetHeatSource's (!(x >= lo) catches NaN): radius 4..4096, strength 0..16, thickness 0 (auto) or
+	// 2..1024, chroma 0..1, tics 1..175 (5 s), anchor 0..2 (anything else is 0). A position that is not finite, or no
+	// strength, spawns nothing and takes no slot from a live ripple. Returns the slot taken, or -1.
+	int SpawnShockwave(const DVector3 &pos, double radius, double strength, int tics, double thickness, double chroma,
+		int anchor, int anchorPlayer, const DVector3 &anchorBase, bool anchorBaseValid)
+	{
+		if (!std::isfinite(pos.X) || !std::isfinite(pos.Y) || !std::isfinite(pos.Z)) return -1;
+		const double s = !(strength >= 0.) ? 0. : (strength > 16. ? 16. : strength);
+		if (s <= 0.) return -1;
+
+		// A free slot, else the live ripple with the least life left (the lowest slot on a tie).
+		int slot = 0;
+		int leastLeft = 1 << 30;
+		for (int i = 0; i < MAX_SHOCKWAVES; i++)
+		{
+			const int left = ShockwaveLifeLeft(i);
+			if (left <= 0) { slot = i; break; }
+			if (left < leastLeft) { leastLeft = left; slot = i; }
+		}
+
+		Shockwave &w = Shockwaves[slot];
+		w = Shockwave();
+		w.Pos = pos;
+		w.Radius = !(radius >= 4.) ? 4. : (radius > 4096. ? 4096. : radius);
+		w.Thickness = !(thickness > 0.) ? 0. : clamp(thickness, 2., 1024.);
+		w.Strength = s;
+		w.Chroma = !(chroma >= 0.) ? 0. : (chroma > 1. ? 1. : chroma);
+		w.Tics = clamp(tics, 1, 175);
+		w.Birth = maptime;
+		w.Anchor = (anchor == 1 || anchor == 2) ? anchor : 0;
+		w.AnchorPlayer = (w.Anchor != 0 && anchorPlayer >= 0 && anchorPlayer < MAXPLAYERS) ? anchorPlayer : -1;
+		w.AnchorBase = anchorBase;
+		w.AnchorBaseValid = w.Anchor != 0 && anchorBaseValid;
+		w.Live = true;
+		w.Serial = ++ShockwaveSerial;
+		if (w.Serial == 0) w.Serial = ++ShockwaveSerial;	// 0 is "no ripple" to the renderer's memory
+		return slot;
+	}
+
+	// Also the map-change and savegame-load reset (ClearLevelData). The serial keeps counting.
+	void ClearShockwaves()
+	{
+		for (int i = 0; i < MAX_SHOCKWAVES; i++) Shockwaves[i] = Shockwave();
+	}
+
 	// [EFFECTQUEUES] THE PER-TIC EFFECT QUEUES (FEffectTicQueue above; SH3, SH4). All of
 	// FLevelLocals' queue members live here, in one place, because every edit to this
 	// header rebuilds nearly the whole engine: debris spawns (#9) and surface damage

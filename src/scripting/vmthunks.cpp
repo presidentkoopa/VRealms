@@ -4092,6 +4092,49 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HeatSourceCapacity, HeatSourceCapaci
 
 //==========================================================================
 //
+// [SHOCKWAVE] BLAST RIPPLES -- see FLevelLocals::Shockwave (g_levellocals.h) and
+// "Engine docs/BLAST_RIPPLE_PLAN.md".
+//
+// One fire-and-forget setter on render-only level state. Nothing reads a ripple
+// back, so gameplay cannot branch on one, and there is no RNG: the profile is
+// deterministic and the curve runs on level time. Client-side callers may put a
+// ripple in a different slot on each machine; nothing depends on the slot.
+//
+//==========================================================================
+
+// 11 VM arguments (self, a Vector3, four numbers, tics, anchor, owner): under the
+// JIT's direct-call cap of 16, so the plain _NATIVE macro is safe (see SetHeatSource).
+// The anchor takes the owner's player number, as SetHeatSourceAnchor does; the
+// renderer falls back to the console player only when there is no owner.
+static void SpawnShockwave(FLevelLocals *self, double x, double y, double z, double radius, double strength, int tics,
+	double thickness, double chroma, int anchor, AActor *owner)
+{
+	const int mode = (anchor == 1 || anchor == 2) ? anchor : 0;
+	const int playerNum = (owner != nullptr && owner->player != nullptr) ? int(owner->player - players) : -1;
+	DVector3 hand(0., 0., 0.);
+	// Where that hand is now, the base the renderer measures its movement from. Unreadable
+	// (no pawn yet): recorded as invalid, and the ripple stays where it was spawned.
+	const bool read = mode != 0 && HeatSourceHandPos(self, mode, playerNum, hand);
+	self->SpawnShockwave(DVector3(x, y, z), radius, strength, tics, thickness, chroma, mode, playerNum, hand, read);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SpawnShockwave, SpawnShockwave)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_FLOAT(x); PARAM_FLOAT(y); PARAM_FLOAT(z);
+	PARAM_FLOAT(radius);
+	PARAM_FLOAT(strength);
+	PARAM_INT(tics);
+	PARAM_FLOAT(thickness);
+	PARAM_FLOAT(chroma);
+	PARAM_INT(anchor);
+	PARAM_OBJECT(owner, AActor);
+	SpawnShockwave(self, x, y, z, radius, strength, tics, thickness, chroma, anchor, owner);
+	return 0;
+}
+
+//==========================================================================
+//
 // [SMOKEVOLUME] + [EFFECTQUEUES] THE SMOKE VOLUME'S API AND THE ONE BLAST CALL --
 // EmitSmoke, CarveSmoke, SetSmokeLook, SetSmokeWind, ClearSmoke, PushEffectImpulse.
 // See FEffectTicQueue and FLevelLocals::SmokeLook (g_levellocals.h), and

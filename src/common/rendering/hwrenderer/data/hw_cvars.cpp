@@ -483,6 +483,34 @@ CVARD(Float, r_heatrefraction_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "he
 // Not archived: it is for an A/B, and it should not be waiting in the next session.
 CVARD(Bool, r_heatrefraction_test, false, CVAR_GLOBALCONFIG, "a test heat source ahead of where you look when switched on (heat shimmer A/B, Vulkan only)")
 
+// [SHOCKWAVE] BLAST RIPPLES ("Engine docs/BLAST_RIPPLE_PLAN.md", owner answers 2026-09-15): a ring of bent air racing out
+// from a blast (LevelLocals.SpawnShockwave), resolved per eye in hw_drawinfo.cpp (SetupShockwaves) and drawn by the heat
+// shimmer pass (PPHeatRefraction); the maths is hw_shockwavecore.h. Every one of these is renderer-read every frame, so it
+// responds with a menu open. Vulkan only: GL and GLES skip the effect.
+//
+// ON BY DEFAULT (owner: effects on). With no ripple live nothing is published, and the pass runs exactly as it did before
+// ripples existed; Off means SKIPPED: the frame is exactly the frame without them. Independent of r_heatrefraction: either
+// switch alone draws its own kind. A ripple bends everything behind it, the grab lasers and the Lance included, for the
+// instant it passes (owner answer 4), exactly as heat shimmer does.
+CVARD(Bool, r_shockwave, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "blast ripples: rings of bent air racing out from blasts; off = never drawn (Vulkan only)")
+// Multiplies every ripple's bend; clamped to 0..2 where it is read.
+CVARD(Float, r_shockwave_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "blast ripple strength multiplier, 0-2 (Vulkan only)")
+// The look: 0 Clear ring (default), 1 Subtle, 2 Heavy lens -- the gain, the dip behind the crest and the thickness
+// (ShockwaveCore::LookFor). Anything else reads as 0.
+CVARD(Int, r_shockwave_look, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "blast ripple look: 0 clear ring, 1 subtle, 2 heavy lens (Vulkan only)")
+// Near the eyes: 0 a ripple fades before it reaches you and the whole view never warps (default), 1 one brief capped wobble
+// as it passes, 2 a stronger one; at most two wobbles a second (ShockwaveCore::NearFade). Anything else reads as 0.
+CVARD(Int, r_shockwave_near, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "blast ripples near your eyes: 0 fade before they reach you, 1 feel it pass, 2 feel it pass strongly (Vulkan only)")
+// The colour fringe: 0 none, 1 faint where the blast asks for it -- the biggest blasts (default), 2 strong on every ripple
+// (ShockwaveCore::ChromaFor). Anything else reads as 1.
+CVARD(Int, r_shockwave_chroma, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "blast ripple colour fringe: 0 none, 1 faint on the big blasts, 2 strong on every ripple (Vulkan only)")
+// The visible budget: the strongest ripples by bend x apparent size, this many at most; clamped to 4..32 where it is read.
+CVARD(Int, r_shockwave_max, 16, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "most blast ripples drawn at once, 4-32 (Vulkan only)")
+// Test ripples that need no mod, made by the renderer (no level slot, nothing in the playsim sees them): 1 a ripple every
+// 2 s, 192 map units ahead of where you look; 2 the near-eye test, 24 units ahead. Real time, so they run with the menu open.
+// Not archived: an A/B tool, which should not be waiting in the next session.
+CVARD(Int, r_shockwave_test, 0, CVAR_GLOBALCONFIG, "blast ripple test: 0 off, 1 a ripple every 2 s ahead of you, 2 the near-eye test (Vulkan only)")
+
 // [SMOKEVOLUME] THE SMOKE VOLUME ("Engine docs/SMOKE_VOLUME_PLAN.md" #13): a world-aligned
 // 3D grid around the eye that gunsmoke fills, walls stop and blasts clear. 13a is the
 // compute foundation, 13b the simulation and the mod API (EmitSmoke, CarveSmoke,

@@ -160,6 +160,15 @@ EXTERN_CVAR(Bool, r_heatrefraction)
 EXTERN_CVAR(Float, r_heatrefraction_scale)
 EXTERN_CVAR(Bool, r_heatrefraction_test)
 
+// [SHOCKWAVE] blast ripples, see hw_cvars.cpp
+EXTERN_CVAR(Bool, r_shockwave)
+EXTERN_CVAR(Float, r_shockwave_scale)
+EXTERN_CVAR(Int, r_shockwave_look)
+EXTERN_CVAR(Int, r_shockwave_near)
+EXTERN_CVAR(Int, r_shockwave_chroma)
+EXTERN_CVAR(Int, r_shockwave_max)
+EXTERN_CVAR(Int, r_shockwave_test)
+
 // [SMOKEVOLUME] the smoke volume, see hw_cvars.cpp
 EXTERN_CVAR(Bool, r_smoke)
 EXTERN_CVAR(Int, r_smoke_quality)

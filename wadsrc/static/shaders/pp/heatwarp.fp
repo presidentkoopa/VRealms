@@ -69,5 +69,17 @@ void main()
 	vec2 bentUV = clamp(TexCoord + shift * SceneScale, SceneOffset, SceneOffset + SceneScale);
 	if (LinearDepthAt(bentUV) < entryDepth - DepthMargin) return;
 
+#if defined(CHROMATIC)
+	// [SHOCKWAVE] THE COLOUR FRINGE -- the WarpChroma programs (hw_postprocess.h), run only on a frame whose blast ripples ask
+	// for one. Red comes from further along the bend and blue from less far, by Chroma of the shift; the depth tests above
+	// used this green tap. A red or blue tap that lands on something nearer than the air keeps the green tap's colour, so a
+	// hand's edge never leaks one colour into the air beside it.
 	FragColor = texture(InputTexture, bentUV);
+	vec2 redUV = clamp(TexCoord + shift * (1.0 + Chroma) * SceneScale, SceneOffset, SceneOffset + SceneScale);
+	vec2 blueUV = clamp(TexCoord + shift * (1.0 - Chroma) * SceneScale, SceneOffset, SceneOffset + SceneScale);
+	if (LinearDepthAt(redUV) >= entryDepth - DepthMargin) FragColor.r = texture(InputTexture, redUV).r;
+	if (LinearDepthAt(blueUV) >= entryDepth - DepthMargin) FragColor.b = texture(InputTexture, blueUV).b;
+#else
+	FragColor = texture(InputTexture, bentUV);
+#endif
 }

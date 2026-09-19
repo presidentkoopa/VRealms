@@ -212,6 +212,29 @@ void PPHeatmap::Render(PPRenderState *renderstate, int sceneWidth, int sceneHeig
 // [HEATREFRACTION] Heat shimmer -- see PPHeatRefraction (hw_postprocess.h) and
 // shaders/pp/heatoffset.fp, heatwarp.fp.
 
+// [SHOCKWAVE] The offset texture's texels that a blast ripple's scene-UV rectangle { u0, v0, u1, v1 } needs (hw_shockwavecore.h,
+// ProjectBall): one texel of margin on every side, for the texel centres at its edge and the bend pass's linear filter; never
+// empty, because a draw needs at least one texel (an eye that does not see the ripple draws one texel of zeros). TexCoord runs
+// from the viewport's first row, so the rectangle's scene UV is its texel origin and size over the texture's.
+static PPViewport ShockwaveViewport(const float *rect, int width, int height)
+{
+	const auto span = [](float a, float b, int size, int &first, int &count)
+	{
+		const double lo = std::floor((a < 0.0f ? 0.0 : (a > 1.0f ? 1.0 : (double)a)) * size) - 1.0;
+		const double hi = std::ceil((b < 0.0f ? 0.0 : (b > 1.0f ? 1.0 : (double)b)) * size) + 1.0;
+		const double lastFirst = size > 1 ? (double)(size - 1) : 0.0;
+		const double firstD = lo < 0.0 ? 0.0 : (lo > lastFirst ? lastFirst : lo);
+		const double end = size > 1 ? (double)size : 1.0;
+		const double lastD = hi < firstD + 1.0 ? firstD + 1.0 : (hi > end ? end : hi);
+		first = (int)firstD;
+		count = (int)lastD - first;
+	};
+	PPViewport viewport;
+	span(rect[0], rect[2], width, viewport.left, viewport.width);
+	span(rect[1], rect[3], height, viewport.top, viewport.height);
+	return viewport;
+}
+
 void PPHeatRefraction::UpdateTexture(int sceneWidth, int sceneHeight)
 {
 	if (sceneWidth == lastWidth && sceneHeight == lastHeight)
@@ -233,8 +256,12 @@ void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	// SKIPPED, NOT ZERO STRENGTH: nothing published for this eye means no group, no
 	// texture and no draw, so the frame is the frame without this pass. Set 1 only
 	// exists for the second eye of a multiview scene.
+	// [SHOCKWAVE] Heat sources draw while r_heatrefraction is on and blast ripples while r_shockwave is; with neither for this
+	// eye it returns here, and with no ripple published every draw below is exactly the heat pass's.
 	const int set = (eyeSets >= 2 && currentEye == 1) ? 1 : 0;
-	if (eyeSets <= 0 || counts[set] <= 0 || !r_heatrefraction || sceneWidth <= 0 || sceneHeight <= 0)
+	const bool heatDraws = counts[set] > 0 && r_heatrefraction;
+	const bool shockDraws = shockCounts[set] > 0 && r_shockwave;
+	if (eyeSets <= 0 || (!heatDraws && !shockDraws) || sceneWidth <= 0 || sceneHeight <= 0)
 		return;
 
 	const bool multisampled = gl_multisample > 1;
@@ -264,26 +291,62 @@ void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	// Pass 1: each source adds its shift. The first draws with no blend: every texel of
 	// the viewport is written (0 off the source), which clears what the last eye or
 	// frame left -- post-process attachments are loaded, never cleared.
-	renderstate->PushGroup("pp.heatoffset");
-	for (int i = 0; i < counts[set]; i++)
+	if (heatDraws)
 	{
-		HeatOffsetUniforms u = sources[set][i];
-		u.SceneScale = sceneScale;
-		u.SceneOffset = sceneOffset;
+		renderstate->PushGroup("pp.heatoffset");
+		for (int i = 0; i < counts[set]; i++)
+		{
+			HeatOffsetUniforms u = sources[set][i];
+			u.SceneScale = sceneScale;
+			u.SceneOffset = sceneOffset;
 
-		renderstate->Clear();
-		renderstate->Shader = multisampled ? &OffsetShaderMS : &OffsetShader;
-		renderstate->Uniforms.Set(u);
-		renderstate->Viewport = OffsetViewport;
-		renderstate->SetInputSceneDepth(0);
-		renderstate->SetOutputTexture(&OffsetTexture);
-		if (i == 0)
-			renderstate->SetNoBlend();
-		else
-			renderstate->SetAdditiveBlend();
-		renderstate->Draw();
+			renderstate->Clear();
+			renderstate->Shader = multisampled ? &OffsetShaderMS : &OffsetShader;
+			renderstate->Uniforms.Set(u);
+			renderstate->Viewport = OffsetViewport;
+			renderstate->SetInputSceneDepth(0);
+			renderstate->SetOutputTexture(&OffsetTexture);
+			if (i == 0)
+				renderstate->SetNoBlend();
+			else
+				renderstate->SetAdditiveBlend();
+			renderstate->Draw();
+		}
+		renderstate->PopGroup();
 	}
-	renderstate->PopGroup();
+
+	// [SHOCKWAVE] Pass 1b: each blast ripple adds its shift, after the heat sources, over its own rectangle (ShockwaveViewport
+	// above). When no heat source drew, the first ripple is this eye's first draw: it covers the whole viewport with no blend,
+	// which is the clear. Both eyes of a multiview scene hold the same ripples (SetupShockwaves), so they draw the same number
+	// of times; only the rectangles differ.
+	if (shockDraws)
+	{
+		renderstate->PushGroup("pp.shockwave");
+		for (int i = 0; i < shockCounts[set]; i++)
+		{
+			const bool first = !heatDraws && i == 0;
+			const PPViewport viewport = first ? OffsetViewport : ShockwaveViewport(shockRects[set][i], OffsetViewport.width, OffsetViewport.height);
+
+			ShockwaveUniforms u = shockwaves[set][i];
+			u.SceneScale = sceneScale;
+			u.SceneOffset = sceneOffset;
+			u.RectScale = FVector2((float)viewport.width / (float)OffsetViewport.width, (float)viewport.height / (float)OffsetViewport.height);
+			u.RectOffset = FVector2((float)viewport.left / (float)OffsetViewport.width, (float)viewport.top / (float)OffsetViewport.height);
+
+			renderstate->Clear();
+			renderstate->Shader = multisampled ? &ShockwaveShaderMS : &ShockwaveShader;
+			renderstate->Uniforms.Set(u);
+			renderstate->Viewport = viewport;
+			renderstate->SetInputSceneDepth(0);
+			renderstate->SetOutputTexture(&OffsetTexture);
+			if (first)
+				renderstate->SetNoBlend();
+			else
+				renderstate->SetAdditiveBlend();
+			renderstate->Draw();
+		}
+		renderstate->PopGroup();
+	}
 
 	// Pass 2: bend the image. Over the whole screen viewport, as the lens pass, because
 	// the next pipeline image starts undefined.
@@ -295,10 +358,29 @@ void PPHeatRefraction::Render(PPRenderState *renderstate, int sceneWidth, int sc
 	w.MaxShift = MAX_SHIFT;
 	w.DepthMargin = DEPTH_MARGIN;
 
+	// [SHOCKWAVE] A frame whose blast ripples ask for a colour fringe bends with the CHROMATIC program: one value for the frame
+	// (SetupShockwaves), so both eyes run the same program. Every other frame takes the plain program with HEAD's uniforms.
+	const bool chromatic = shockDraws && shockChroma > 0.0f;
 	renderstate->PushGroup("pp.heatwarp");
 	renderstate->Clear();
-	renderstate->Shader = multisampled ? &WarpShaderMS : &WarpShader;
-	renderstate->Uniforms.Set(w);
+	if (chromatic)
+	{
+		HeatWarpChromaUniforms wc = {};
+		wc.SceneScale = w.SceneScale;
+		wc.SceneOffset = w.SceneOffset;
+		wc.LinearizeDepthA = w.LinearizeDepthA;
+		wc.LinearizeDepthB = w.LinearizeDepthB;
+		wc.MaxShift = w.MaxShift;
+		wc.DepthMargin = w.DepthMargin;
+		wc.Chroma = shockChroma;
+		renderstate->Shader = multisampled ? &WarpChromaShaderMS : &WarpChromaShader;
+		renderstate->Uniforms.Set(wc);
+	}
+	else
+	{
+		renderstate->Shader = multisampled ? &WarpShaderMS : &WarpShader;
+		renderstate->Uniforms.Set(w);
+	}
 	renderstate->Viewport = screen->mScreenViewport;
 	renderstate->SetInputCurrent(0, PPFilterMode::Linear);
 	renderstate->SetInputTexture(1, &OffsetTexture, PPFilterMode::Linear);

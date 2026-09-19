@@ -310,8 +310,10 @@ namespace
 				"(both stereo eyes) are summed; fx.* groups are nested inside scene.translucent. load: particles_spawned is "
 				"the window total, dlights (walls+flats) is avg/max, sprites/walls/flats are avg, the rest are max. "
 				"cpu_fx_ms, when present, is named CPU work of effects (fx.viewlights: the view light fill; fx.heatsources: "
-				"the heat source fill), avg/p95/max per frame with same-name samples summed. pp.heatoffset and pp.heatwarp "
-				"are the heat shimmer passes (r_heatrefraction); pp.lightmaskcarry moves the light mask with them, and "
+				"the heat source fill; fx.shockwaves: the blast ripple fill), avg/p95/max per frame with same-name samples "
+				"summed. pp.heatoffset and pp.heatwarp are the heat shimmer passes (r_heatrefraction); pp.shockwave is the "
+				"blast ripples' offsets (r_shockwave), bent by the same pp.heatwarp; pp.lightmaskcarry moves the light mask "
+				"with them, and "
 				"pp.lightmaskdebug is the light mask's debug view (r_lightmask_debug), drawn in place of bloom. "
 				"bloom.pinned is pinned bloom's second chain for beam light and exposure.pinned the pinned look's "
 				"exposure (gl_bloom_pin_beams); bloomplan is the last eye's plan: A today's bloom, B one chain "
@@ -438,6 +440,10 @@ namespace
 		// [HEATREFRACTION] And the heat shimmer switch, so a pp.heatoffset / pp.heatwarp
 		// before/after labels itself.
 		out.AppendFormat(" r_heatrefraction=%d", (int)*r_heatrefraction);
+		// [SHOCKWAVE] And the blast ripple settings, so a pp.shockwave / fx.shockwaves before/after labels itself.
+		out.AppendFormat(" r_shockwave=%d r_shockwave_scale=%g r_shockwave_look=%d r_shockwave_near=%d r_shockwave_chroma=%d r_shockwave_max=%d",
+			(int)*r_shockwave, (double)(float)*r_shockwave_scale, (int)*r_shockwave_look, (int)*r_shockwave_near,
+			(int)*r_shockwave_chroma, (int)*r_shockwave_max);
 		// [SMOKEVOLUME] And the smoke switches, so a fx.compute / fx.smokesim / fx.smokemask / pp.smoke
 		// before/after labels itself.
 		out.AppendFormat(" r_smoke=%d r_smoke_quality=%d r_smoke_computetest=%d r_smoke_dissipation_scale=%g r_smoke_steps=%d r_smoke_density_scale=%g r_smoke_debugslice=%d r_smoke_light_quality=%d",

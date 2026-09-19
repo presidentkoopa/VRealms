@@ -1238,7 +1238,7 @@ struct LevelLocals native
 	// [HEATREFRACTION] HEAT SOURCES -- hot air that bends the image behind it (heat
 	// shimmer), per eye and depth-aware: a hand held in front stays sharp. Drawn only
 	// while the player's "Heat shimmer" switch (r_heatrefraction, Developer options)
-	// is on; it is off by default. 64 slots, caller-managed like the beam slots.
+	// is on; it is on by default. 64 slots, caller-managed like the beam slots.
 	//
 	// A source is the hull of two spheres, (start, radiusStart) and (end, radiusEnd):
 	// start == end is a ball, equal radii a capsule, a wider end a plume that spreads.
@@ -1261,6 +1261,26 @@ struct LevelLocals native
 	native clearscope void ClearHeatSource(int slot);
 	// A fixed engine number (64), the same on every machine.
 	native clearscope int HeatSourceCapacity();
+
+	// [SHOCKWAVE] BLAST RIPPLES -- a ring of bent air racing out from pos: the crest grows
+	// to `radius` map units over `tics`, hits hard in the first moments and fades. What is
+	// behind it bends as it passes, per eye and depth-aware -- walls, monsters, the grab
+	// lasers and the Lance -- and a hand in front stays sharp (the heat shimmer pass draws
+	// it). FIRE AND FORGET: the engine owns 32 at once (a 33rd replaces the one nearest
+	// its end); there is nothing to clear and nothing to read back.
+	//   strength   1 is a clear ring; 0..16.
+	//   tics       its life, 1..175.
+	//   thickness  0 = auto (0.3 x radius, 8..256), else the ring's full thickness at the
+	//              end of its life, 2..1024.
+	//   chroma     0..1, how much this blast may split colour. The player's "Blast ripple
+	//              colour fringe" decides: by default a faint fringe where chroma asks.
+	//   anchor     0 world, 1 main hand, 2 off hand: the ripple moves with owner's hand (a
+	//              muzzle blast). owner is a player's pawn; without one, the local
+	//              player's hand -- wrong in netplay for someone else's blast.
+	// Drawn while the player's "Blast ripples" switch (r_shockwave) is on, which it is by
+	// default; the look, strength, fringe and near-eye feel are the player's settings.
+	// CLEARSCOPE: look-only render state. Cleared on map change and load. Vulkan only.
+	native clearscope void SpawnShockwave(Vector3 pos, double radius, double strength = 1.0, int tics = 12, double thickness = 0.0, double chroma = 0.0, int anchor = 0, Actor owner = null);
 
 	// [SMOKEVOLUME] THE SMOKE VOLUME -- gunsmoke and blast smoke that fill the air around
 	// the player, drift through open doorways, stop at walls and closed doors, rise with

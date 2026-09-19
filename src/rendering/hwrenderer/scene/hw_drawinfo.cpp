@@ -50,6 +50,7 @@
 #include "hw_smokevolume.h"	// [SMOKEVOLUME] SmokeVolume::GetDrawState, for SetupSmokeVolume
 #include "hwrenderer/postprocessing/hw_postprocess_cvars.h"	// [SMOKEVOLUME] r_smoke_steps, r_smoke_density_scale, r_smoke_debugslice
 #include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::GetDrawState, for SetupEmissiveVolumes
+#include "hw_shockwavecore.h"	// [SHOCKWAVE] the blast ripple maths, for SetupShockwaves
 #include "hw_vrmodes.h"
 #include "hw_vrwheel.h"
 #include "hw_clipper.h"
@@ -882,6 +883,256 @@ static void SetupHeatSources(const HWDrawInfo *di, bool toscreen)
 	pass.SetEyeSets(eyeSets);
 
 	PerfLog::AddCpuSample("fx.heatsources", (double)(I_nsTime() - startNs) / 1e6);
+}
+
+//==========================================================================
+//
+// [SHOCKWAVE] This scene's blast ripples, animated and resolved for each eye, for
+// the heat shimmer pass (PPHeatRefraction::AddShockwave; "Engine docs/
+// BLAST_RIPPLE_PLAN.md" 3e). The maths is hw_shockwavecore.h; this is the plumbing:
+// the level's ripples and the test ripple in, per-eye uniforms and rectangles out.
+//
+// Called right after SetupHeatSources, which cleared both kinds. MAIN VIEW ONLY,
+// Vulkan only, and nothing at all unless r_shockwave is on: with the switch off, or
+// no ripple live, nothing is published and the pass is exactly the heat pass.
+//
+// ONE STRENGTH FOR BOTH EYES. A ripple's curve, near fade, coverage guard, fringe and
+// rank are evaluated once, from the HEAD centre -- the mean of this scene's eye
+// positions -- and the same list goes to both eye sets. A scene drawn for one eye at
+// a time only has that eye's position: half an interpupillary distance, about a map
+// unit, against fades 72 units wide.
+//
+// VISIBLE TO ANY EYE GOES TO EVERY EYE, and the visible budget (r_shockwave_max) is
+// taken over the ripples either eye sees, strongest first -- the heat sources' rule:
+// layered post-processing shares one pair of pipeline images, so both eyes must
+// draw the same number of times. Only each eye's rectangle differs.
+//
+// CLOCKS. A level ripple's age is level time (maptime + TicFrac), so it freezes with
+// the game, as heat shimmer does. The wobble cap and the test ripples run on the
+// frame clock (screen->FrameTime), so a test runs with a menu open.
+//
+//==========================================================================
+
+static_assert(PPHeatRefraction::MAX_SHOCKWAVE_DRAWS >= FLevelLocals::MAX_SHOCKWAVES + 1,
+	"PPHeatRefraction::MAX_SHOCKWAVE_DRAWS must hold every blast ripple slot plus the r_shockwave_test ripple");
+
+// The renderer's memory of each level ripple (its wobble decision), keyed by the
+// slot's spawn serial; the test ripple's own; the wobble cap; the test schedule.
+static ShockwaveCore::NearState ShockwaveNear[FLevelLocals::MAX_SHOCKWAVES];
+static ShockwaveCore::NearState ShockwaveTestNear;
+static ShockwaveCore::WobbleCap ShockwaveWobbles;
+static ShockwaveCore::TestSchedule ShockwaveTest;
+static int ShockwaveTestLogged = 0;
+
+static void SetupShockwaves(const HWDrawInfo *di, bool toscreen)
+{
+	PPHeatRefraction &pass = hw_postprocess.heatrefraction;
+	FLevelLocals *Level = di->Level;
+	if (!toscreen || !r_shockwave || Level == nullptr || !screen->IsVulkan())
+		return;
+
+	const uint64_t startNs = I_nsTime();
+	const double nowMs = (double)screen->FrameTime;
+	const double nowTics = Level->maptime + di->Viewpoint.TicFrac;
+	const ShockwaveCore::Settings settings = ShockwaveCore::SettingsFrom(r_shockwave_look, r_shockwave_near,
+		r_shockwave_chroma, r_shockwave_scale);
+
+	// Each eye's matrices and ray terms (as SetupHeatSources), and the head: the eyes' mean
+	// position and summed view direction, in GL world axes.
+	struct ShockEyeView
+	{
+		VSMatrix view;
+		VSMatrix viewToWorld;
+		float tanX, tanY, offX, offY;
+	};
+	const int eyeSets = di->HasMultiviewViewpoints ? 2 : 1;
+	ShockEyeView eyes[2];
+	double head[3] = { 0.0, 0.0, 0.0 };
+	double forward[3] = { 0.0, 0.0, 0.0 };
+	for (int eye = 0; eye < eyeSets; eye++)
+	{
+		const HWViewpointUniforms &vpu = di->HasMultiviewViewpoints ? di->MultiviewVPUniforms[eye] : di->VPUniforms;
+		ShockEyeView &ev = eyes[eye];
+		ev.view = vpu.mViewMatrix;
+		VSMatrix projection = vpu.mProjectionMatrix;
+		if (!ev.view.inverseMatrix(ev.viewToWorld))
+			ev.viewToWorld.loadIdentity();
+		const float *inv = ev.viewToWorld.get();
+		const float *proj = projection.get();
+		ev.tanX = (proj[0] != 0.0f) ? 1.0f / proj[0] : 1.0f;
+		ev.tanY = (proj[5] != 0.0f) ? 1.0f / proj[5] : 1.0f;
+		ev.offX = proj[8];
+		ev.offY = proj[9];
+		for (int k = 0; k < 3; k++)
+		{
+			head[k] += inv[12 + k] / eyeSets;
+			forward[k] -= inv[8 + k];	// the view looks down its -z axis
+		}
+	}
+
+	struct ShockCandidate
+	{
+		ShockwaveCore::Output out;
+		double centre[3];
+		int order;
+		float rects[2][4];
+	};
+	ShockCandidate candidates[PPHeatRefraction::MAX_SHOCKWAVE_DRAWS];
+	int count = 0;
+	bool anyLive = false;
+
+	for (int i = 0; i < FLevelLocals::MAX_SHOCKWAVES; i++)
+	{
+		const FLevelLocals::Shockwave &w = Level->Shockwaves[i];
+		if (!w.Live || w.Strength <= 0.0)
+			continue;
+		ShockwaveCore::Input in;
+		// P_Ticker runs thinkers before maptime counts up, so a ripple spawned in tic M is
+		// first seen at maptime M + 1 with age 0. One set outside a tic starts at the next.
+		in.Age = std::max(nowTics - (w.Birth + 1), 0.0);
+		in.Tics = w.Tics;
+		if (in.Age >= in.Tics)
+			continue;
+		anyLive = true;
+
+		DVector3 pos = w.Pos;
+		// Only with a hand recorded at the spawn, and only while the owning player is still in
+		// the game: ResolveLineAnchor falls back to the console player, whose hand was never the
+		// base (SetupHeatSources' rule).
+		if (w.Anchor != 0 && w.AnchorBaseValid && (w.AnchorPlayer < 0 || Level->PlayerInGame(w.AnchorPlayer)))
+		{
+			DVector3 handNow = w.AnchorBase;
+			ResolveLineAnchor(Level, w.Anchor, handNow, w.AnchorPlayer);
+			pos += handNow - w.AnchorBase;
+		}
+		// Game (x, y, z) -> GL world (x, z, y), as every beam and stamp upload.
+		in.Centre[0] = pos.X;
+		in.Centre[1] = pos.Z;
+		in.Centre[2] = pos.Y;
+		in.Radius = w.Radius;
+		in.Thickness = w.Thickness;
+		in.Strength = w.Strength;
+		in.Chroma = w.Chroma;
+
+		ShockwaveCore::NearState &state = ShockwaveCore::Remember(ShockwaveNear[i], w.Serial);
+		const ShockwaveCore::Output o = ShockwaveCore::Evaluate(in, settings, head, nowMs, state, ShockwaveWobbles);
+		if (!o.Draw)
+			continue;
+		ShockCandidate &c = candidates[count++];
+		c.out = o;
+		for (int k = 0; k < 3; k++) c.centre[k] = in.Centre[k];
+		c.order = i;
+	}
+
+	// r_shockwave_test: a ripple every 2 s ahead of the head (1), or the near-eye test (2).
+	const int testMode = r_shockwave_test;
+	if (ShockwaveCore::TestAdvance(ShockwaveTest, testMode, nowMs))
+	{
+		const double len = sqrt(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
+		const double distance = ShockwaveCore::TestDistance(testMode);
+		for (int k = 0; k < 3; k++)
+			ShockwaveTest.Pos[k] = head[k] + (len > 1e-9 ? forward[k] / len : (k == 0 ? 1.0 : 0.0)) * distance;
+	}
+	if (ShockwaveTestLogged != ShockwaveTest.Mode)
+	{
+		ShockwaveTestLogged = ShockwaveTest.Mode;
+		if (ShockwaveTest.Mode != 0)
+			Printf("blast_ripple: test ripples on (%s), every %.0f s\n", ShockwaveTest.Mode == 2 ? "the near-eye test, 24 units ahead" :
+				"192 units ahead", ShockwaveCore::TEST_PERIOD_MS / 1000.0);
+	}
+	if (ShockwaveTest.Mode != 0)
+	{
+		ShockwaveCore::Input in;
+		for (int k = 0; k < 3; k++) in.Centre[k] = ShockwaveTest.Pos[k];
+		in.Radius = ShockwaveCore::TEST_RADIUS;
+		in.Strength = ShockwaveCore::TEST_STRENGTH;
+		in.Chroma = ShockwaveCore::TEST_CHROMA;
+		in.Tics = ShockwaveCore::TEST_TICS;
+		in.Age = ShockwaveCore::TestAge(ShockwaveTest, nowMs);
+		if (in.Age < in.Tics)
+		{
+			anyLive = true;
+			ShockwaveCore::NearState &state = ShockwaveCore::Remember(ShockwaveTestNear, (unsigned)(ShockwaveTest.Period + 1));
+			const ShockwaveCore::Output o = ShockwaveCore::Evaluate(in, settings, head, nowMs, state, ShockwaveWobbles);
+			if (o.Draw)
+			{
+				ShockCandidate &c = candidates[count++];
+				c.out = o;
+				for (int k = 0; k < 3; k++) c.centre[k] = in.Centre[k];
+				c.order = FLevelLocals::MAX_SHOCKWAVES;
+			}
+		}
+	}
+
+	// The cull and each eye's rectangle (hw_shockwavecore.h, ProjectBall): a ripple any eye
+	// sees is kept, with an all-zero rectangle for an eye that does not see it.
+	ShockCandidate *visible[PPHeatRefraction::MAX_SHOCKWAVE_DRAWS];
+	int visibleCount = 0;
+	for (int n = 0; n < count; n++)
+	{
+		ShockCandidate &c = candidates[n];
+		bool seen = false;
+		for (int eye = 0; eye < eyeSets; eye++)
+		{
+			const ShockEyeView &ev = eyes[eye];
+			double rect[4] = { 0.0, 0.0, 0.0, 0.0 };
+			const ShockwaveCore::BallView view = ShockwaveCore::ProjectBall(ev.view.get(), ev.tanX, ev.tanY, ev.offX, ev.offY,
+				c.centre[0], c.centre[1], c.centre[2], c.out.OuterRadius, rect);
+			for (int k = 0; k < 4; k++)
+				c.rects[eye][k] = view == ShockwaveCore::BallView::Hidden ? 0.0f : (float)rect[k];
+			seen = seen || view != ShockwaveCore::BallView::Hidden;
+		}
+		if (seen)
+			visible[visibleCount++] = &c;
+	}
+
+	// The visible budget: the strongest by bend x apparent size, the lower slot first on a tie.
+	std::sort(visible, visible + visibleCount, [](const ShockCandidate *a, const ShockCandidate *b)
+	{
+		return a->out.Rank != b->out.Rank ? a->out.Rank > b->out.Rank : a->order < b->order;
+	});
+	const int budget = clamp<int>(r_shockwave_max, 4, FLevelLocals::MAX_SHOCKWAVES);
+	const int drawn = std::min(visibleCount, budget);
+
+	if (drawn > 0)
+	{
+		// One colour fringe for the frame: the largest drawn ripple's.
+		double chroma = 0.0;
+		for (int n = 0; n < drawn; n++)
+			chroma = std::max(chroma, visible[n]->out.Chroma);
+		chroma = std::min(chroma, ShockwaveCore::CHROMA_MAX);
+		if (chroma < ShockwaveCore::CHROMA_MIN)
+			chroma = 0.0;
+
+		const float linearizeA = 1.0f / screen->GetZFar() - 1.0f / screen->GetZNear();
+		const float linearizeB = max(1.0f / screen->GetZNear(), 1.e-8f);
+		for (int n = 0; n < drawn; n++)
+		{
+			const ShockCandidate &c = *visible[n];
+			for (int eye = 0; eye < eyeSets; eye++)
+			{
+				const ShockEyeView &ev = eyes[eye];
+				const float *inv = ev.viewToWorld.get();
+				ShockwaveUniforms u = {};
+				u.Centre = FVector3((float)(c.centre[0] - inv[12]), (float)(c.centre[1] - inv[13]), (float)(c.centre[2] - inv[14]));
+				u.CrestRadius = (float)c.out.Crest;
+				u.HalfThickness = (float)c.out.HalfThickness;
+				u.Bend = (float)c.out.Bend;
+				u.Trough = (float)c.out.Trough;
+				u.TanHalfFov = FVector2(ev.tanX, ev.tanY);
+				u.ProjOffset = FVector2(ev.offX, ev.offY);
+				u.LinearizeDepthA = linearizeA;
+				u.LinearizeDepthB = linearizeB;
+				memcpy(u.ViewToWorld, inv, sizeof(float) * 16);
+				pass.AddShockwave(eye, u, c.rects[eye]);
+			}
+		}
+		pass.SetShockwaveChroma((float)chroma);
+		pass.SetEyeSets(eyeSets);
+	}
+
+	if (anyLive)
+		PerfLog::AddCpuSample("fx.shockwaves", (double)(I_nsTime() - startNs) / 1e6);
 }
 
 //==========================================================================
@@ -4079,6 +4330,10 @@ void HWDrawInfo::ProcessScene(bool toscreen)
 	// [HEATREFRACTION] This view's heat sources, per eye, for the heat shimmer pass --
 	// before DrawScene, so no portal view reaches them. Cleared when not toscreen.
 	SetupHeatSources(this, toscreen);
+
+	// [SHOCKWAVE] And this view's blast ripples, into the same pass, after the heat sources
+	// (whose setup cleared both kinds). Main view only, as the heat sources.
+	SetupShockwaves(this, toscreen);
 
 	// [SMOKEVOLUME] This view's smoke volume march, per eye, for the smoke pass -- before
 	// DrawScene, as the heat sources. Cleared when not toscreen.
