@@ -225,6 +225,10 @@ struct FReachChain
 	bool            solveRegionsCapped = false;
 	float           solveClearRadius = 0.f;
 
+	// [SILENTFAIL] The outcome this chain last reported, so it can speak up when that
+	// CHANGES and stay quiet otherwise. -1 is "has not run yet". See ReportOutcome.
+	int             lastOutcome = -1;
+
 	// The previous frame's smoothed values: the time smoothing only.
 	bool     histValid = false;
 	float    histPhi = 0.f, histTwist = 0.f, histClearOfs = 0.f;
@@ -657,6 +661,29 @@ const char *const ReachOutcomeText[REACH_COUNT] =
 	"a joint's drawn local transform is undefined",
 };
 
+// [SILENTFAIL] A CHAIN THAT STOPS SOLVING SAYS SO, ONCE.
+//
+// Setup failures have always printed unconditionally -- ResolveChain's yellow [REACH] lines
+// below say outright that a chain will not solve. Runtime failures printed only under
+// r_reachchain_debug, so the ordinary way to meet one was a limb that ignored its target
+// every frame in complete silence, with nothing wrong on the calling side and no string to
+// search the log for. That is an expensive way to learn something the renderer knew on the
+// first frame, and it is the same class of message either way: the chain is not running.
+//
+// Printed on a CHANGE of outcome only, never per frame -- once when a chain starts failing
+// and once when it comes back. A chain that is failing steadily costs one integer compare.
+void ReportOutcome(FReachChain &c, int ci, const AActor *actor, int outcome)
+{
+	if (outcome == c.lastOutcome || outcome < 0 || outcome >= REACH_COUNT) return;
+	const int prev = c.lastOutcome;
+	c.lastOutcome = outcome;
+	if (outcome != REACH_SOLVED)
+		Printf(TEXTCOLOR_YELLOW "[REACH] %s chain %d is NOT SOLVING: %s\n",
+			ActorName(actor), ci, ReachOutcomeText[outcome]);
+	else if (prev >= 0)
+		Printf("[REACH] %s chain %d is solving again\n", ActorName(actor), ci);
+}
+
 bool ResolveChain(FDrawPoseEntry &e, int ci, FModel *model, const AActor *actor, const TArray<int> &parents)
 {
 	FReachChain &c = e.chains[ci];
@@ -717,13 +744,45 @@ bool ResolveChain(FDrawPoseEntry &e, int ci, FModel *model, const AActor *actor,
 	return true;
 }
 
+// A MARKER'S matrix: where a modelless actor is and which way it faces, in the renderer's axis
+// order, with nothing else in it. No scale, no rotation centre, no MODELDEF offsets -- there is
+// no MODELDEF to read. Kept deliberately minimal: a marker is a place and a facing, and anything
+// more would be a transform the caller never asked for and cannot see in order to correct.
+//
+// The rotation order and signs are the ones ObjectToWorldMatrix uses (models.cpp), so a marker
+// and a real model describe the same orientation the same way.
+static void MarkerMatrix(AActor *t, double ticFrac, VSMatrix &out)
+{
+	const DVector3 pos = t->InterpolatedPosition(ticFrac)
+		+ DVector3(t->WorldOffset.X, t->WorldOffset.Y, t->WorldOffset.Z);
+	out.loadIdentity();
+	out.translate((float)pos.X, (float)pos.Z, (float)pos.Y);	// map (x,y,z) -> render (x,height,y)
+	out.rotate(-(float)t->Angles.Yaw.Degrees(), 0, 1, 0);
+	out.rotate( (float)t->Angles.Pitch.Degrees(), 0, 0, 1);
+	out.rotate(-(float)t->Angles.Roll.Degrees(), 1, 0, 0);
+}
+
 // An actor's model matrix exactly as its own draw builds it. The position the sprite pass hands
 // RenderModel, as ModelFollowFrame builds a followed parent's (models.cpp); a model riding a
 // controller or another model never reads it (ObjectToWorldMatrix skips the world translate).
+//
+// [MARKERTARGET] AN ACTOR WITH NO MODEL IS A VALID TARGET. This used to be a hard failure: no
+// model frame, no matrix, and the chain returned REACH_TARGETNOMODEL *before writing anything* --
+// so the limb silently stayed in its drawn pose and the whole feature read as "the reach does
+// nothing at all". That is an expensive thing to diagnose, because nothing is wrong on the
+// ZScript side and nothing is printed.
+//
+// A target does not have to be drawable to be a PLACE. Aiming a chain at a plain invisible actor
+// is the obvious way to say "put the hand here", and for anything the caller positions itself it
+// is the only way -- including a target that IS drawn but rides a controller or a parent joint,
+// since per the note above those never read this matrix and a chain aimed straight at one
+// resolves to its holder's origin instead.
+//
+// Additive: an actor that has a model frame takes exactly the path it always did.
 bool TargetMatrix(AActor *t, double ticFrac, VSMatrix &out)
 {
 	FSpriteModelFrame *smf = FindModelFrame(t, t->sprite, t->frame, false);
-	if (smf == nullptr) return false;
+	if (smf == nullptr) { MarkerMatrix(t, ticFrac, out); return true; }
 	DVector3 pos = t->InterpolatedPosition(ticFrac)
 		+ DVector3(t->WorldOffset.X, t->WorldOffset.Y, t->WorldOffset.Z);
 	if ((t->renderflags & RF_SPRITETYPEMASK) == RF_FACESPRITE) pos.Z -= t->Floorclip;
@@ -1216,6 +1275,7 @@ const TArray<VSMatrix> *ModelDrawPose_ApplyOpen(const AActor *actor, FModel *mod
 				if (!c.used || c.modelIndex != modelIndex) continue;
 				FReachTrace tr;
 				const int outcome = SolveChain(e, ci, work, model, actor, parents, sc, frame, tr);
+				ReportOutcome(c, ci, actor, outcome);
 				if (r_reachchain_debug) TraceChain(c, ci, actor, outcome, tr);
 			}
 			if (aimed) ApplyAims(actor, model, modelIndex, work, *base, sc, frame);

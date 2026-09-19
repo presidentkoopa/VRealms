@@ -371,7 +371,13 @@ public:
 	// down, a player's buttons, for mods layered on weapons they do not own.
 	//
 	//   ButtonInject   bits pressed ONCE, then cleared by the engine
-	//   ButtonMask     bits held DOWN for as long as this is set
+	//   ButtonMask     bits held OUT -- SUPPRESSED -- for as long as this is set
+	//
+	// MASK SUPPRESSES, IT DOES NOT HOLD. `cmd->buttons &= ~ButtonMask` (p_user.cpp). This
+	// summary said "held DOWN" until 2026-09-19 and a lane wired a held trigger from it, which
+	// would have shipped a test that silently suppressed the shot it was trying to prove. The
+	// longer comment at the code site always said it correctly; only this line was inverted.
+	// To HOLD a button down, set ButtonInject every tic -- that is what Inject is for.
 	//
 	// Applied at the top of P_PlayerThink, before anything reads the command. Zero is
 	// inert, so every existing caller is untouched.
