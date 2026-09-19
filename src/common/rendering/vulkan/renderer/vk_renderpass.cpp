@@ -233,7 +233,10 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 	// [LIGHTMASK] The light mask attachment (VkRenderPassKey::LightMask), after the draw buffers
 	// and before depth, loaded, stored and cleared with the colour (a colour clear clears it to 0).
 	// Without the mask, colorAttachments is DrawBuffers and nothing below changes.
-	const int colorAttachments = PassKey.DrawBuffers + (PassKey.LightMask ? 1 : 0);
+	// [SCENEMASK] And the tag attachment after it (VkRenderPassKey::PostMask), same rules: loaded, stored
+	// and cleared with the colour, so a colour clear clears the whole frame's tags to 0 -- "nothing
+	// special" -- before anything draws. With neither, colorAttachments is DrawBuffers as it always was.
+	const int colorAttachments = PassKey.DrawBuffers + (PassKey.LightMask ? 1 : 0) + (PassKey.PostMask ? 1 : 0);
 	if (PassKey.LightMask)
 	{
 		builder.AddAttachment(
@@ -249,7 +252,30 @@ std::unique_ptr<VulkanRenderPass> VkRenderPassSetup::CreateRenderPass(int clearT
 			loggedLayouts |= layoutBit;
 			Printf("LightMask: scene pass with the light mask -- colour attachments: target%s, mask (VkFormat %d) at %d; depth %s%d; %d blend attachments; %d samples; view mask %u\n",
 				PassKey.DrawBuffers > 2 ? ", fog, normal" : (PassKey.DrawBuffers > 1 ? ", fog" : ""),
-				(int)buffers->LightMaskFormat, colorAttachments - 1,
+				(int)buffers->LightMaskFormat, PassKey.DrawBuffers,	// [SCENEMASK] its own index: the tag may follow it
+				PassKey.DepthStencil ? "at " : "none, would be ", colorAttachments,
+				colorAttachments, PassKey.Samples, (unsigned)PassKey.ViewMask);
+		}
+	}
+	// [SCENEMASK] The scene mask attachment, after the light mask and before depth. R8 (or whatever the
+	// device probe settled on), cleared with the colour, stored so post-processing can read it.
+	if (PassKey.PostMask)
+	{
+		builder.AddAttachment(
+			buffers->PostMaskFormat, (VkSampleCountFlagBits)PassKey.Samples,
+			(clearTargets & CT_Color) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+		// One line per pass layout per session, so a log shows what the tag pass really holds.
+		static unsigned loggedMaskLayouts = 0;
+		const unsigned layoutBit = 1u << ((PassKey.DrawBuffers > 1 ? 1 : 0) | (PassKey.Samples > 1 ? 2 : 0) | (PassKey.ViewMask != 0 ? 4 : 0) | (PassKey.LightMask ? 8 : 0));
+		if (!(loggedMaskLayouts & layoutBit))
+		{
+			loggedMaskLayouts |= layoutBit;
+			Printf("SceneMask: scene pass with the tag -- colour attachments: target%s%s, tag (VkFormat %d) at %d; depth %s%d; %d blend attachments; %d samples; view mask %u\n",
+				PassKey.DrawBuffers > 2 ? ", fog, normal" : (PassKey.DrawBuffers > 1 ? ", fog" : ""),
+				PassKey.LightMask ? ", light mask" : "",
+				(int)buffers->PostMaskFormat, PassKey.DrawBuffers + (PassKey.LightMask ? 1 : 0),
 				PassKey.DepthStencil ? "at " : "none, would be ", colorAttachments,
 				colorAttachments, PassKey.Samples, (unsigned)PassKey.ViewMask);
 		}
@@ -352,25 +378,29 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	// [LIGHTMASK] In a pass with the light mask, the mask variant of the fragment shader this
 	// pipeline would draw with -- of the scene-depth variant when that is the one. Null in every
 	// other pass, and then the choice below is exactly what it was.
-	VulkanShader *lightMaskFrag = nullptr;
+	// [SCENEMASK] The same, generalised: which extra attachments this pass carries decides which variant
+	// of the fragment shader writes them. 0 -- every pass that carries neither -- takes the ordinary
+	// program and this whole branch does nothing, exactly as before.
+	VulkanShader *sceneExtraFrag = nullptr;
+	const int sceneExtras = (PassKey.LightMask ? VkShaderManager::SCENE_EXTRA_LIGHT_MASK : 0) | (PassKey.PostMask ? VkShaderManager::SCENE_EXTRA_POST_MASK : 0);
 	if (key.SpecialEffect != EFF_NONE)
 	{
 		program = fb->GetShaderManager()->GetEffect(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
 		if (PassKey.DepthReadOnly)
 			sceneDepthFrag = fb->GetShaderManager()->GetSceneDepthEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, PassKey.Samples > 1, PassKey.ViewMask != 0);
-		if (PassKey.LightMask)
-			lightMaskFrag = sceneDepthFrag
-				? fb->GetShaderManager()->GetLightMaskSceneDepthEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, PassKey.Samples > 1, PassKey.ViewMask != 0)
-				: fb->GetShaderManager()->GetLightMaskEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
+		if (sceneExtras != 0)
+			sceneExtraFrag = sceneDepthFrag
+				? fb->GetShaderManager()->GetSceneExtraSceneDepthEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, PassKey.Samples > 1, PassKey.ViewMask != 0, sceneExtras)
+				: fb->GetShaderManager()->GetSceneExtraEffectFrag(key.SpecialEffect, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, sceneExtras);
 	}
 	else
 	{
 		program = fb->GetShaderManager()->Get(key.EffectState, key.AlphaTest, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
-		if (PassKey.LightMask)
-			lightMaskFrag = fb->GetShaderManager()->GetLightMaskFrag(key.EffectState, key.AlphaTest, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS);
+		if (sceneExtras != 0)
+			sceneExtraFrag = fb->GetShaderManager()->GetSceneExtraFrag(key.EffectState, key.AlphaTest, PassKey.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS, sceneExtras);
 	}
 	builder.AddVertexShader(program->vert.get());
-	builder.AddFragmentShader(lightMaskFrag ? lightMaskFrag : (sceneDepthFrag ? sceneDepthFrag : program->frag.get()));
+	builder.AddFragmentShader(sceneExtraFrag ? sceneExtraFrag : (sceneDepthFrag ? sceneDepthFrag : program->frag.get()));
 
 	const VkVertexFormat &vfmt = *fb->GetRenderPassManager()->GetVertexFormat(key.VertexFormat);
 
@@ -454,6 +484,25 @@ std::unique_ptr<VulkanPipeline> VkRenderPassSetup::CreatePipeline(const VkPipeli
 	// blended with its colour's own factors, which is what keeps its amounts in step with it.
 	for (int i = 0; i < PassKey.DrawBuffers + (PassKey.LightMask ? 1 : 0); i++)
 		builder.AddColorBlendAttachment(blendbuilder.Create());
+
+	// [SCENEMASK] THE TAG DOES NOT BLEND. Vulkan sets blend state per attachment, so the colour keeps
+	// the render style's blend while this one writes the fragment's own byte straight in. That is the
+	// whole reason the tag can live in the same pass as the translucent draws: a blended tag over an
+	// untagged wall would be an in-between number nothing drew. Unblended, under the depth test the
+	// pass already applies, the last fragment to write a pixel owns its tag -- which is the same
+	// fragment that most recently owned its colour.
+	//
+	// Red only: the tag is one byte and the other channels are not there to write.
+	//
+	// A draw that writes no colour at all -- a portal stencil, FRenderState::SetColorMask(false), which
+	// is also what SF_ColorMaskOff gives the stencil effect -- writes no tag either, so what it covers
+	// keeps the tag it had. That is general: it asks whether the draw paints, not who the draw is.
+	if (PassKey.PostMask)
+	{
+		ColorBlendAttachmentBuilder maskblend;
+		maskblend.ColorWriteMask((key.ColorMask & 0x7) != 0 ? (VkColorComponentFlags)VK_COLOR_COMPONENT_R_BIT : (VkColorComponentFlags)0);
+		builder.AddColorBlendAttachment(maskblend.Create());
+	}
 
 	builder.RasterizationSamples((VkSampleCountFlagBits)PassKey.Samples);
 

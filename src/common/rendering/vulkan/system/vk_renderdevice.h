@@ -146,6 +146,8 @@ public:
 	// [LIGHTMASK] The scene being drawn carries the light mask: this frame draws it, the active
 	// buffers are the screen's (never a save picture's) and its images exist.
 	bool SceneHasLightMask() const;
+	// [SCENEMASK] The same question for the per-pixel tag attachment (hw_postprocess.h, PPSceneMask).
+	bool SceneHasPostMask() const;
 	FRenderState* RenderState() override;
 
 	unsigned int GetLightBufferBlockSize() const;
@@ -219,6 +221,7 @@ private:
 	void CopyScreenToBuffer(int w, int h, uint8_t *data) override;
 	void UploadLoadedTextures(bool flush = false);
 	void UpdateLightMask();	// [LIGHTMASK] the frame's light mask decision, from BeginFrame
+	void UpdateSceneMask();	// [SCENEMASK] the frame's scene mask decision, from BeginFrame, after the light mask's
 
 	struct QueuedPatch
 	{
@@ -257,6 +260,12 @@ private:
 	// cannot carry it (InitializeState); and last frame's decision, for the on/off log line.
 	VkFormat mLightMaskFormat = VK_FORMAT_UNDEFINED;
 	bool mLightMaskWasActive = false;
+	// [SCENEMASK] The tag's format on this device, VK_FORMAT_UNDEFINED when the device cannot carry it;
+	// whether it can also carry it BESIDE the light mask (one more colour attachment than Vulkan's
+	// guaranteed minimum); and last frame's decision, for the on/off log line.
+	VkFormat mPostMaskFormat = VK_FORMAT_UNDEFINED;
+	bool mPostMaskWithLightMask = false;
+	bool mPostMaskWasActive = false;
 	// [ATLASBC7] SupportsBC7TextureArrays' answer once asked (-1 not yet): it never changes for a device.
 	int mSupportsBC7TextureArrays = -1;
 	TSQueue<VkTexLoadIn> primaryTexQueue;

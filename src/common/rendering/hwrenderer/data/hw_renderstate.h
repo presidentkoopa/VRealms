@@ -312,6 +312,10 @@ struct StreamData
 	// and the shader's view of it silently disagree from here down.
 	// [EFFECTLIGHTS] padding2's VALUE is the per-draw effect-light mode (FRenderState::SetEffectLightMode); the slot and its
 	// name stay, because the Vulkan prolog declares them.
+	// [SCENEMASK] padding1's VALUE is this draw's scene tag, 0..255 (FRenderState::SetPostMask, "Engine docs/
+	// SCENE_MASK_PLAN.md"): what a post-process shader is told the pixel came from. The slot and its name stay for the same
+	// reason padding2's do -- the prolog declares them for every shader, and only the mask programs name it (as uPostMask).
+	// It has always been uploaded as 0 and 0 means "nothing special", so every draw that never sets it is byte-identical.
 	int padding1;
 	int padding2;
 	int padding3;
@@ -480,6 +484,9 @@ public:
 		mStreamData.uOutlineColorA = { 0.f, 0.f, 0.f, 0.f };
 		mStreamData.uOutlineColorB = { 0.f, 0.f, 0.f, 0.f };
 		mStreamData.uOutlineParms = { 0.f, 0.f, 0.f, 0.f };
+		// [SCENEMASK] No tag. Every draw that is not tagged lands here, and the value it uploads is the 0
+		// this slot has always held -- so with no mask attachment the whole stream is HEAD's bytes.
+		mStreamData.padding1 = 0;
 		mStreamData.uFogDensityScale = 1.f;
 		mStreamData.uEyeFadeNear = mStreamData.uEyeFadeFar = 0.f;
 		mStreamData.uFlatGlowLineCount = 0;
@@ -785,6 +792,23 @@ public:
 	void ClearSpriteOutline()
 	{
 		mStreamData.uOutlineParms = { 0.f, 0.f, 0.f, 0.f };
+	}
+
+	// [SCENEMASK] TAG THIS DRAW ("Engine docs/SCENE_MASK_PLAN.md").
+	//
+	// Every pixel this draw writes stamps `mask` into the scene mask attachment, where a post-process
+	// shader that declared the mask can read it. 0 is "nothing special"; what 1..255 mean belongs to the
+	// content, never to the engine, so two mods may use different numbers and a third may read both.
+	//
+	// Per draw, like the sprite outline, so one corpse can be tagged without every monster being tagged
+	// with it. Reset() puts it back to 0 for everything else in the frame. Costs nothing while no loaded
+	// post-process shader declares the mask: the attachment does not exist and no program writes it.
+	//
+	// A draw that writes no colour at all (a portal stencil: FRenderState::SetColorMask(false)) never
+	// touches the tag, whatever is set here -- see VkRenderPassSetup::CreatePipeline.
+	void SetPostMask(int mask)
+	{
+		mStreamData.padding1 = mask < 0 ? 0 : (mask > 255 ? 255 : mask);
 	}
 
 	// [BB] See uFogDensityScale. 1 is the slab as configured.

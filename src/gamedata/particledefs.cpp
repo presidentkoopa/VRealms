@@ -1442,6 +1442,8 @@ namespace
 		double lit = 0.0, gravity = 0.0, drag = 0.0, maxsize = 0.0, soft = -1.0, stretch = 0.0;
 		double spinMin = 0.0, spinMax = 0.0;
 		int orient = 0, collide = 0, fade = 0, mode = 0;
+		// [SCENEMASK] The definition's scene tag, 0 (nothing special) unless the block says otherwise.
+		double postMask = 0.0;
 		FString texture;
 		int textureLine = 0;	// [2c]
 		double frames = 0.0, fps = 0.0;
@@ -1499,6 +1501,13 @@ namespace
 			else if (e.Key.CompareNoCase("orient") == 0) ok = ReadChoice(e, kOrientNames, 3, orient, error, errorLine);
 			else if (e.Key.CompareNoCase("collide") == 0) ok = ReadChoice(e, kCollideNames, 3, collide, error, errorLine);
 			else if (e.Key.CompareNoCase("fade") == 0) ok = ReadChoice(e, kFadeNames, 2, fade, error, errorLine);
+			// [SCENEMASK] What this definition's pixels ARE, for a post-process shader that asks (particledefs.h).
+			else if (e.Key.CompareNoCase("postmask") == 0)
+			{
+				ok = ReadNumber(e, 0.0, 255.0, postMask, error, errorLine);
+				if (ok && postMask != std::floor(postMask))
+					return Fail(error, errorLine, e.Line, "'postmask' = %g must be a whole tag, 0 .. 255", postMask);
+			}
 			// [LOOKS] The generated look and its keys.
 			else if (e.Key.CompareNoCase("look") == 0) { ok = ReadChoice(e, kLookNames, PDL_COUNT, look, error, errorLine); lookLine = e.Line; }
 			else if (e.Key.CompareNoCase("roughness") == 0) { ok = ReadNumber(e, 0.0, 1.0, roughness, error, errorLine); roughnessLine = e.Line; }
@@ -1901,7 +1910,9 @@ namespace
 		gpu.look[0] = (float)lit;
 		gpu.look[1] = (float)soft;
 		gpu.look[2] = (float)collide;
-		gpu.look[3] = (float)(fade ? PDF_FADE_SMOOTH : 0);
+		// [SCENEMASK] The scene tag rides above the PDF_ flags (particledefs.h). 0 -- every definition that
+		// leaves `postmask` off -- writes exactly the word this line always wrote.
+		gpu.look[3] = (float)((fade ? PDF_FADE_SMOOTH : 0) | (((int)postMask & 0xff) << PDF_POSTMASK_SHIFT));
 
 		gpu.flipbook[0] = -1.f;	// [2c] no atlas layer until AssignAtlasLayers, once every lump has loaded
 		gpu.flipbook[1] = (float)frames;

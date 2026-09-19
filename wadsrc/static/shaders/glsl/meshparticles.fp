@@ -40,6 +40,11 @@ layout(location = 2) out vec4 FragNormal;
 // rule, emissive 0) writes 0. Alpha 1, as the colour's.
 layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
 #endif
+#ifdef SCENE_POST_MASK
+// [SCENEMASK] The scene tag (main.fp's block says what this is): the draw's.
+#define uPostMask data[uDataIndex].padding1
+layout(location = POST_MASK_LOCATION) out vec4 FragPostMask;
+#endif
 
 void main()
 {
@@ -47,6 +52,9 @@ void main()
 	FragColor = vec4(skinTexel.rgb * (vMeshBody.rgb + vMeshGlow.rgb), 1.0);
 #ifdef SCENE_LIGHT_MASK
 	FragLightMask = vec4(dot(skinTexel.rgb, vMeshGlow.rgb), 0.0, 0.0, 1.0);
+#endif
+#ifdef SCENE_POST_MASK
+	FragPostMask = vec4(float(uPostMask) * (1.0 / 255.0), 0.0, 0.0, 1.0);	// [SCENEMASK]
 #endif
 
 #ifdef GBUFFER_PASS

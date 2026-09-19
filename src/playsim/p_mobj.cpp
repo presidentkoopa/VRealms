@@ -444,6 +444,7 @@ void AActor::Serialize(FSerializer &arc)
 			A("OutlineGlow", OutlineGlow)
 			A("OutlinePulse", OutlinePulse)
 			A("OutlineMode", OutlineMode)
+			A("PostMask", PostMask)			// [SCENEMASK] presentation only; 0 in every save written before it existed
 			A("VisibleCVar", VisibleCVar)
 			A("AlphaCVar", AlphaCVar)
 			A("ScaleCVar", ScaleCVar)

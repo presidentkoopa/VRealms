@@ -278,6 +278,7 @@ void VkRenderBuffers::CreateScene(int width, int height, VkSampleCountFlagBits s
 	SceneNormal.Reset(fb);
 	SceneFog.Reset(fb);
 	SceneLightMask.Reset(fb);	// [LIGHTMASK]
+	ScenePostMask.Reset(fb);	// [SCENEMASK]
 
 	CreateSceneColor(width, height, samples, layers);
 	CreateSceneDepthStencil(width, height, samples, layers);
@@ -294,6 +295,10 @@ void VkRenderBuffers::CreateScene(int width, int height, VkSampleCountFlagBits s
 	// [LIGHTMASK] The light mask attachment follows the scene images once something has asked for it.
 	if (mLightMaskWanted && !mLightMaskRefused)
 		CreateSceneLightMask(width, height, samples, layers);
+
+	// [SCENEMASK] And the tag attachment, the same way.
+	if (mPostMaskWanted && !mPostMaskRefused)
+		CreateScenePostMask(width, height, samples, layers);
 }
 
 void VkRenderBuffers::CreateSceneColor(int width, int height, VkSampleCountFlagBits samples, int layers)
@@ -503,6 +508,75 @@ void VkRenderBuffers::CreateSceneLightMask(int width, int height, VkSampleCountF
 
 	const long long texelBytes = LightMaskFormat == VK_FORMAT_R16G16_SFLOAT ? 4 : 8;
 	Printf("LightMask: scene mask attachment -- %d x %d, %d samples, %d layers, %lld bytes\n",
+		width, height, (int)samples, layers, (long long)width * height * (int)samples * layers * texelBytes);
+}
+
+//==========================================================================
+//
+// [SCENEMASK] The scene mask image (vk_renderbuffers.h; hw_postprocess.h, PPSceneMask).
+//
+// Made when a frame first wants the tag, at the sizes the buffers have then; re-made with the scene
+// images from then on (CreateScene); never freed on its own, so a mod switching its own shader off
+// and on again costs no re-create hitch. A failure -- an unsupported sample count or layer count, or
+// no memory -- logs one red line and refuses the mask for the session: the frame's decision then
+// keeps it off, so nothing draws into or reads a missing image.
+//
+// TRANSFER_SRC is not asked for: unlike the light mask there is no blit to a carry image. Post-
+// processing samples this image directly (PPTextureType::SceneMask), as it samples the scene depth.
+//
+//==========================================================================
+
+bool VkRenderBuffers::CreatePostMask(VkFormat format)
+{
+	if (format == VK_FORMAT_UNDEFINED || mPostMaskRefused)
+		return false;
+	PostMaskFormat = format;
+	mPostMaskWanted = true;
+	if (!ScenePostMask.Image && mSceneWidth > 0 && mSceneHeight > 0)
+		CreateScenePostMask(mSceneWidth, mSceneHeight, mSamples, mSceneLayers);
+	return !mPostMaskRefused && HasPostMask();
+}
+
+void VkRenderBuffers::RefusePostMask(const char *what)
+{
+	if (!mPostMaskRefused)
+		Printf(TEXTCOLOR_RED "SceneMask: refused for this session -- %s. The scene mask stays off.\n", what);
+	mPostMaskRefused = true;
+}
+
+void VkRenderBuffers::CreateScenePostMask(int width, int height, VkSampleCountFlagBits samples, int layers)
+{
+	ImageBuilder builder;
+	builder.Size(width, height, 1, layers);
+	builder.Samples(samples);
+	builder.Format(PostMaskFormat);
+	builder.Usage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+	if (!builder.IsFormatSupported(fb->device.get()))
+	{
+		RefusePostMask("the device cannot make the scene mask attachment at this sample count and layer count");
+		return;
+	}
+	builder.DebugName("VkRenderBuffers.ScenePostMask");
+	try
+	{
+		ScenePostMask.Image = builder.Create(fb->device.get());
+		CreateColorTargetViews(fb, ScenePostMask, PostMaskFormat,
+			"VkRenderBuffers.ScenePostMaskView",
+			"VkRenderBuffers.ScenePostMaskFramebufferView");
+	}
+	catch (const std::exception &err)
+	{
+		ScenePostMask.Reset(fb);
+		RefusePostMask(err.what());
+		return;
+	}
+
+	VkImageTransition()
+		.AddImage(&ScenePostMask, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true)
+		.Execute(fb->GetCommands()->GetDrawCommands());
+
+	const long long texelBytes = PostMaskFormat == VK_FORMAT_R8_UNORM ? 1 : 4;
+	Printf("SceneMask: scene tag attachment -- %d x %d, %d samples, %d layers, %lld bytes\n",
 		width, height, (int)samples, layers, (long long)width * height * (int)samples * layers * texelBytes);
 }
 

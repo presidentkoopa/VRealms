@@ -1726,6 +1726,23 @@ public:
 	double			OutlinePulse;		// A-to-B crossfade speed; 0 holds on A
 	int				OutlineMode;		// 0 off, 1 edge, 2 wire, 3 ghost
 
+	// [SCENEMASK] WHAT THIS PIXEL CAME FROM ("Engine docs/SCENE_MASK_PLAN.md").
+	//
+	// One unsigned byte the scene pass stamps into a post-process-readable attachment for
+	// every pixel this actor draws. A post-process shader that declares the scene mask then
+	// knows which pixels came from this actor and can treat them differently: keep blood red
+	// while the world greys out, outline the wheel's current selection, show only the warm
+	// things, keep a marker legible through a grade.
+	//
+	// THE ENGINE NEVER LEARNS WHAT A NUMBER MEANS. 0 is "nothing special" and is the default,
+	// so every actor in every existing mod is untouched and costs nothing. 1..255 belong to
+	// the content: two mods may use different numbers and a third may read both. Nothing in
+	// the engine ever writes a non-zero value here and nothing branches on it outside the
+	// renderer, so this is presentation only and cannot move the playsim.
+	//
+	// Read in HWSprite::DrawSprite, which covers this actor's sprite AND its model.
+	uint8_t			PostMask;
+
 	// RS FORK -- DRAWN ONLY WHILE A SETTING SAYS SO.
 	//
 	// Names a cvar; the renderer draws this actor only while that cvar is above

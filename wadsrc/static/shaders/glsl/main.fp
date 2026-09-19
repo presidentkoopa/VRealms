@@ -34,6 +34,20 @@ layout(location=0) out vec4 FragColor;
 layout(location=1) out vec4 FragFog;
 layout(location=2) out vec4 FragNormal;
 #endif
+#ifdef SCENE_POST_MASK
+//
+// [SCENEMASK] WHAT THIS PIXEL CAME FROM ("Engine docs/SCENE_MASK_PLAN.md"; the C++ is
+// PPSceneMask in hw_postprocess.h). Only the Vulkan mask programs define SCENE_POST_MASK
+// (and POST_MASK_LOCATION), so every other program of this lump is exactly what it was.
+//
+// One unsigned byte, carried as 0..1 in the red channel of an R8 attachment. The value is
+// the DRAW's tag (FRenderState::SetPostMask, which rides in StreamData's padding1 slot);
+// the engine never learns what a number means. The attachment does not blend, so the last
+// fragment to pass the depth test owns the pixel -- the same fragment that owns the colour.
+//
+#define uPostMask data[uDataIndex].padding1
+layout(location = POST_MASK_LOCATION) out vec4 FragPostMask;
+#endif
 #ifdef SCENE_LIGHT_MASK
 //
 // [LIGHTMASK] THE LIGHT MASK ("Engine docs/EMISSIVE_BLOOM_PLAN.md" 2c-2d; the C++ is
@@ -4583,6 +4597,10 @@ void main()
 #ifdef SCENE_LIGHT_MASK
 	// [LIGHTMASK] With the colour's own alpha: the blend state is shared by every attachment.
 	FragLightMask = vec4(gMaskEmissive, gMaskPinned, 0.0, FragColor.a);
+#endif
+#ifdef SCENE_POST_MASK
+	// [SCENEMASK] After every discard above, so a pixel that was thrown away never stamps.
+	FragPostMask = vec4(float(uPostMask) * (1.0 / 255.0), 0.0, 0.0, 1.0);
 #endif
 #ifdef GBUFFER_PASS
 	FragFog = vec4(AmbientOcclusionColor(), 1.0);

@@ -212,6 +212,16 @@ layout(location = 2) out vec4 FragNormal;
 // premultiplied), so the blend treats the amount exactly as it treats the colour it came from.
 layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
 #endif
+#ifdef SCENE_POST_MASK
+// [SCENEMASK] The scene tag (main.fp's block says what this is). Particles of many definitions
+// are drawn in ONE draw, so a per-draw tag cannot tell them apart: the tag comes from the
+// particle's DEFINITION (`postmask` in PARTICLEDEFS, carried above the PDF_ flags in look.w --
+// particledefs.h says why it lives there), and only a definition that sets none falls back to
+// the draw's tag. Same rule either way: 0 is nothing special.
+#define uPostMask data[uDataIndex].padding1
+#define ParticleDefinitionPostMask(slot) (int(particleDefinitions[slot].look.w + 0.5) >> 16)
+layout(location = POST_MASK_LOCATION) out vec4 FragPostMask;
+#endif
 
 void main()
 {
@@ -322,6 +332,15 @@ void main()
 #endif
 	}
 
+#ifdef SCENE_POST_MASK
+	// [SCENEMASK] One stamp for both branches above.
+	{
+		int maskSlot = clamp(int(vParticleFlipbook.w + 0.5), 0, kParticleDefinitionSlots - 1);
+		int maskTag = ParticleDefinitionPostMask(maskSlot);
+		if (maskTag == 0) maskTag = uPostMask;
+		FragPostMask = vec4(float(clamp(maskTag, 0, 255)) * (1.0 / 255.0), 0.0, 0.0, 1.0);
+	}
+#endif
 #ifdef GBUFFER_PASS
 	// Zero with zero alpha: under additive blending this adds nothing to the fog
 	// and normal attachments, and [2d] under premultiplied blending (dst x (1 - 0))

@@ -78,7 +78,9 @@ public:
 	void BeginFrame();
 	// [LIGHTMASK] lightMask: this target is the main view's scene and carries the light mask
 	// attachment (VulkanRenderDevice::SetSceneRenderTarget). Default false for every other target.
-	void SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat Format, VkSampleCountFlagBits samples, int layers = 1, uint32_t viewMask = 0, int layerIndex = 0, bool lightMask = false);
+	// [SCENEMASK] postMask: the same for the per-pixel tag attachment. Independent of lightMask --
+	// either, both or neither. Default false, so every existing caller sets exactly the target it did.
+	void SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat Format, VkSampleCountFlagBits samples, int layers = 1, uint32_t viewMask = 0, int layerIndex = 0, bool lightMask = false, bool postMask = false);
 	void Bind(int bindingpoint, uint32_t offset);
 	void EndRenderPass();
 	// [CANVASCLEAR] Forgets a clear that Clear() queued and no render pass has carried out yet. Clear()
@@ -169,6 +171,7 @@ protected:
 		uint32_t ViewMask = 0;
 		int LayerIndex = 0;
 		bool LightMask = false;	// [LIGHTMASK] see SetRenderTarget
+		bool PostMask = false;	// [SCENEMASK] see SetRenderTarget
 	} mRenderTarget;
 };
 

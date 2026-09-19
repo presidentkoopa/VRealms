@@ -89,6 +89,19 @@ enum
 	PDF_ATLAS_COMPRESSED = 2,
 };
 
+// [SCENEMASK] A definition's scene tag ("Engine docs/SCENE_MASK_PLAN.md"): the byte gpuparticles.fp
+// stamps into the scene mask attachment for every pixel this definition's particles draw, so a
+// post-process shader can tell blood from smoke. `postmask` in a PARTICLEDEFS block, 0..255, 0 (the
+// default, and every definition that leaves the key off) meaning "nothing special".
+//
+// It lives in the HIGH BITS of look[3], the PDF_ flags word, because ParticleDefinitionGpu's layout
+// is shared by every Vulkan shader's prolog and cannot grow -- see the note on `spare` above, which
+// is the same constraint. Every reader of the flags takes them with `&` against PDF_FADE_SMOOTH or
+// PDF_ATLAS_COMPRESSED, and AssignAtlasLayers rewrites the word as `flags | / & ~`, so nothing that
+// reads or writes the flags today sees any difference at all.
+static constexpr int PDF_POSTMASK_SHIFT = 16;
+static constexpr int PDF_POSTMASK_MASK = 0xff << PDF_POSTMASK_SHIFT;
+
 // [LOOKS] What spare[0][0] holds: the shape gpuparticles.fp generates for the particle
 // instead of the round dot or a flipbook frame. The numbers are the plan's order and never
 // change -- a later build adds a look by implementing its number, not by renumbering. Named

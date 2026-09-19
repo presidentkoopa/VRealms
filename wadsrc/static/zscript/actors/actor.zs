@@ -516,6 +516,27 @@ class Actor : Thinker native
 	native double OutlineGlow;
 	native double OutlinePulse;
 	native int OutlineMode;
+
+	// [SCENEMASK] What this actor's pixels ARE, for a post-process shader that asks.
+	//
+	// The scene pass stamps this byte into a post-process-readable attachment for every
+	// pixel this actor draws (its sprite or its model). A shader that declares the scene
+	// mask -- a GLDEFS postprocess block with `Texture SceneMask "SceneMask"` -- then reads
+	// it per pixel and decides: keep these in colour while the rest greys out, outline
+	// those, show only the warm ones, keep this marker legible through a grade.
+	//
+	// 0 is "nothing special" and is the default, so nothing changes for anything that does
+	// not opt in. What 1..255 mean is up to the mod: the engine never learns, so two mods
+	// may use different numbers and a third may read both. Agree the numbers between the
+	// mod that sets them and the shader that reads them.
+	//
+	// Presentation only: nothing in the playsim reads it, so setting it on one machine and
+	// not another cannot desync anything. It is saved with the actor.
+	//
+	// Vulkan only, and only while some loaded post-process shader declares the mask --
+	// otherwise setting it costs nothing at all.
+	native uint8 PostMask;
+
 	// Draw this actor only while the named cvar is above zero. The RENDERER
 	// reads it every frame, so it answers even while a menu has the playsim
 	// frozen: a tuning page lights what it is editing by setting one cvar from

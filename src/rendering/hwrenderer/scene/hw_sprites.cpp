@@ -285,6 +285,12 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 		state.ClearSpriteOutline();
 	}
 
+	// [SCENEMASK] What these pixels came from ("Engine docs/SCENE_MASK_PLAN.md"). Per draw, as the outline
+	// above, and this covers the model too -- a model is drawn from here. 0 (every actor that does not set
+	// it) is what FRenderState::Reset already leaves, so an untagged actor uploads exactly what it did.
+	if (actor != nullptr && actor->PostMask != 0)
+		state.SetPostMask(actor->PostMask);
+
 	// [EFFECTLIGHTS] Effect lights on this sprite or model ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"), on what takes dynamic
 	// light today, whether or not the level has dynamic lights: never a fuzz shadow, a fullbright thing or a fullbright scene. A
 	// model lit per pixel (PutSprite's test) takes mode 1, with N.L. A sprite, a particle, a voxel or a model without per-pixel
@@ -531,6 +537,7 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 	state.EnableTexture(true);
 	state.SetDynLight(0, 0, 0);
 	state.SetDarknessExempt(0.f);
+	state.SetPostMask(0);	// [SCENEMASK] never leave a tag on for the next thing drawn
 	if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
 }
 

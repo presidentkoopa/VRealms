@@ -171,6 +171,13 @@ VkTextureImage* VkTextureManager::GetTexture(const PPTextureType& type, PPTextur
 	{
 		return &fb->GetBuffers()->SceneDepthStencil;
 	}
+	else if (type == PPTextureType::SceneMask)
+	{
+		// [SCENEMASK] The scene's per-pixel tag attachment, read the way the scene depth is: the scene's
+		// own image, at the scene's size and samples. Its Image is null until a loaded post-process shader
+		// declares the mask, and PPSceneMask::PostInputValid() is what tells a pass whether to read it.
+		return &fb->GetBuffers()->ScenePostMask;
+	}
 	else if (type == PPTextureType::ShadowMap)
 	{
 		return &Shadowmap;

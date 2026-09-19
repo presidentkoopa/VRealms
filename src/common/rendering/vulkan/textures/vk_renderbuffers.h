@@ -81,12 +81,31 @@ public:
 	bool CreateLightMaskCarry();
 	bool HasLightMask() const { return SceneLightMask.Image && LightMaskImage[0].Image; }
 
+	// [SCENEMASK] The scene mask (hw_postprocess.h, PPSceneMask): the scene pass's per-pixel tag
+	// attachment, at the scene's size, samples and layers -- so in VR it is per eye like every other
+	// scene texture. There is no carry pair: post-processing reads THIS image through
+	// PPTextureType::SceneMask, the way it reads the scene depth, and PPCustomShaders resolves it once
+	// per eye into a screen-sized texture for the shaders that asked. Null until a loaded post-process
+	// shader declares the mask; from then on it follows every re-creation of the scene images and is
+	// never freed on its own. Screen buffers only -- a save picture never gets one.
+	VkTextureImage ScenePostMask;
+	VkFormat PostMaskFormat = VK_FORMAT_UNDEFINED;
+
+	bool CreatePostMask(VkFormat format);
+	bool HasPostMask() const { return ScenePostMask.Image != nullptr; }
+
 private:
 	void CreateSceneLightMask(int width, int height, VkSampleCountFlagBits samples, int layers);
 	void CreateLightMaskImage(int index, int width, int height, int layers);
 	void RefuseLightMask(const char *what);
 	bool mLightMaskWanted = false;
 	bool mLightMaskRefused = false;
+
+	// [SCENEMASK] The same shape, for the tag attachment.
+	void CreateScenePostMask(int width, int height, VkSampleCountFlagBits samples, int layers);
+	void RefusePostMask(const char *what);
+	bool mPostMaskWanted = false;
+	bool mPostMaskRefused = false;
 
 	void CreatePipelineDepthStencil(int width, int height, int layers);
 	void CreatePipeline(int width, int height, int layers);

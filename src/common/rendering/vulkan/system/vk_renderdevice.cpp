@@ -520,6 +520,46 @@ void VulkanRenderDevice::InitializeState()
 			mLightMaskFormat == VK_FORMAT_UNDEFINED ? " (the light mask is unavailable on this device)" : "");
 	}
 
+	// [SCENEMASK] And the same question for the per-pixel tag (hw_postprocess.h, PPSceneMask). A G-buffer
+	// pass with the tag has 4 colour attachments -- exactly Vulkan's guaranteed minimum -- and with the
+	// light mask as well it has 5, which is why the two are probed separately: a device at the minimum
+	// can have either, and says so rather than failing a pass. maxFragmentCombinedOutputResources counts
+	// the outputs together with the fragment stage's 3 storage buffers (set 1 bindings 3, 7 and 12).
+	// The format needs no blending -- the tag is written unblended by design -- and no blit: post-
+	// processing samples the attachment itself. Decided and logged once; nothing is created here.
+	{
+		const auto &limits = device->PhysicalDevice.Properties.Properties.limits;
+		const VkFormatFeatureFlags wanted = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+		auto formatOk = [&](VkFormat format)
+		{
+			VkFormatProperties properties = {};
+			vkGetPhysicalDeviceFormatProperties(device->PhysicalDevice.Device, format, &properties);
+			return (properties.optimalTilingFeatures & wanted) == wanted;
+		};
+		auto limitsFor = [&](unsigned attachments)
+		{
+			return limits.maxColorAttachments >= attachments && limits.maxFragmentOutputAttachments >= attachments &&
+				limits.maxFragmentCombinedOutputResources >= attachments + 3;
+		};
+		const char *formatName = "none";
+		mPostMaskFormat = VK_FORMAT_UNDEFINED;
+		mPostMaskWithLightMask = false;
+		if (limitsFor(4) && formatOk(VK_FORMAT_R8_UNORM))
+		{
+			mPostMaskFormat = VK_FORMAT_R8_UNORM;
+			formatName = "R8_UNORM";
+		}
+		else if (limitsFor(4) && formatOk(VK_FORMAT_R8G8B8A8_UNORM))
+		{
+			mPostMaskFormat = VK_FORMAT_R8G8B8A8_UNORM;
+			formatName = "R8G8B8A8_UNORM (R8_UNORM lacks a feature the tag needs)";
+		}
+		mPostMaskWithLightMask = mPostMaskFormat != VK_FORMAT_UNDEFINED && limitsFor(5);
+		Printf("SceneMask: tag format %s%s%s\n", formatName,
+			mPostMaskFormat == VK_FORMAT_UNDEFINED ? " (the scene mask is unavailable on this device)" : "",
+			(mPostMaskFormat != VK_FORMAT_UNDEFINED && !mPostMaskWithLightMask) ? " -- not alongside the light mask on this device" : "");
+	}
+
 	mPostprocess.reset(new VkPostprocess(this));
 	mDescriptorSetManager.reset(new VkDescriptorSetManager(this));
 	mRenderPassManager.reset(new VkRenderPassManager(this));
@@ -1345,6 +1385,7 @@ void VulkanRenderDevice::BeginFrame()
 	const VkSampleCountFlagBits sceneSamples = mScreenBuffers->GetSceneSamples();
 	mSaveBuffers->BeginFrame(SAVEPICWIDTH, SAVEPICHEIGHT, SAVEPICWIDTH, SAVEPICHEIGHT, 1, 1);
 	UpdateLightMask();	// [LIGHTMASK] after the buffers have this frame's sizes, before anything renders
+	UpdateSceneMask();	// [SCENEMASK] after it, because whether the tag shares the pass with the light mask decides which programs it needs
 	mRenderState->BeginFrame();
 	mDescriptorSetManager->BeginFrame();
 }
@@ -1482,6 +1523,7 @@ void VulkanRenderDevice::SetSceneRenderTarget(bool useSSAO)
 	// gameplay-eye frames the two sizes are equal and nothing changes.
 	const auto vrmode = VRMode::GetVRModeCached(true);
 	const bool lightMask = SceneHasLightMask();	// [LIGHTMASK]
+	const bool postMask = SceneHasPostMask();	// [SCENEMASK]
 	if (vrmode != nullptr && vrmode->IsVR() && vrmode->ShouldUseMultiviewThisFrame() && GetBuffers()->GetSceneLayers() > 1)
 	{
 		mRenderState->SetRenderTarget(
@@ -1494,12 +1536,13 @@ void VulkanRenderDevice::SetSceneRenderTarget(bool useSSAO)
 			std::max(1, vrmode->GetMultiviewLayerCount()),
 			vrmode->GetMultiviewViewMask(),
 			0,
-			lightMask);
+			lightMask,
+			postMask);	// [SCENEMASK] layered like the colour, so each eye's layer holds its own tags
 		return;
 	}
 
 	const int layerIndex = GetBuffers()->GetSceneLayers() > 1 ? GetCurrentEyeLayer() : 0;
-	mRenderState->SetRenderTarget(&GetBuffers()->SceneColor, GetBuffers()->SceneDepthStencil.GetLayerView(layerIndex), GetBuffers()->GetSceneWidth(), GetBuffers()->GetSceneHeight(), VK_FORMAT_R16G16B16A16_SFLOAT, GetBuffers()->GetSceneSamples(), 1, 0, layerIndex, lightMask);
+	mRenderState->SetRenderTarget(&GetBuffers()->SceneColor, GetBuffers()->SceneDepthStencil.GetLayerView(layerIndex), GetBuffers()->GetSceneWidth(), GetBuffers()->GetSceneHeight(), VK_FORMAT_R16G16B16A16_SFLOAT, GetBuffers()->GetSceneSamples(), 1, 0, layerIndex, lightMask, postMask);
 }
 
 // [ATLASBC7] The texture array questions (v_video.h). A BC7 array needs what a compressed DDS texture needs -- the format enabled,
@@ -1541,6 +1584,7 @@ bool VulkanRenderDevice::ShouldUseCurrentEyeLayer(const PPTextureType& type, con
 	case PPTextureType::SceneDepth:
 	case PPTextureType::LightMaskCurrent:	// [LIGHTMASK] layered like the pipeline images
 	case PPTextureType::LightMaskNext:
+	case PPTextureType::SceneMask:	// [SCENEMASK] layered like the other scene images -- per eye
 		return true;
 	default:
 		return false;
@@ -1563,7 +1607,10 @@ void VulkanRenderDevice::UpdateLightMask()
 	{
 		// The pass hw_entrypoint.cpp picks for the main view (useSSAO).
 		const EPassType passType = gl_ssao != 0 ? GBUFFER_PASS : NORMAL_PASS;
-		active = mShaderManager->CompileLightMaskPrograms(passType) && mScreenBuffers->CreateLightMask(mLightMaskFormat);
+		// [SCENEMASK] The light-mask-only set, by its name in the generalised program sets. When the tag is
+		// on as well, UpdateSceneMask compiles the combined set and BeginRenderPass prefers it; this one
+		// then stands as the fallback that keeps the light mask working if the combined set ever fails.
+		active = mShaderManager->CompileSceneExtraPrograms(passType, VkShaderManager::SCENE_EXTRA_LIGHT_MASK) && mScreenBuffers->CreateLightMask(mLightMaskFormat);
 	}
 	if (active != mLightMaskWasActive)
 	{
@@ -1577,4 +1624,55 @@ void VulkanRenderDevice::UpdateLightMask()
 bool VulkanRenderDevice::SceneHasLightMask() const
 {
 	return hw_postprocess.lightmask.Active() && mActiveRenderBuffers == mScreenBuffers.get() && mScreenBuffers->HasLightMask();
+}
+
+//==========================================================================
+//
+// [SCENEMASK] The frame's scene mask decision (hw_postprocess.h, PPSceneMask). Once per displayed
+// frame, right after the light mask's and in the same place in the frame, so everything reads one
+// answer -- and after it, because whether the tag shares the pass with the light mask decides which
+// program set it needs.
+//
+// NOTHING IN THE ENGINE EVER ASKS FOR THIS. It is wanted only while some loaded post-process shader
+// names a texture "SceneMask" (PPSceneMask::WantedByShaders), so with no such shader `active` is
+// false on every frame, no program is compiled, no image is made, and VkRenderPassKey::PostMask is 0
+// on every pass -- which is what makes the whole feature free when it is off.
+//
+//==========================================================================
+
+void VulkanRenderDevice::UpdateSceneMask()
+{
+	bool active = false;
+	if (mPostMaskFormat != VK_FORMAT_UNDEFINED && PPSceneMask::WantedByShaders() && mShaderManager && mShaderManager->IsCompileDone())
+	{
+		// The pass hw_entrypoint.cpp picks for the main view (useSSAO), and whether the light mask is
+		// sharing it -- the programs are keyed by the combination.
+		const EPassType passType = gl_ssao != 0 ? GBUFFER_PASS : NORMAL_PASS;
+		const bool withLightMask = hw_postprocess.lightmask.Active();
+		if (withLightMask && !mPostMaskWithLightMask)
+		{
+			static bool saidSo = false;
+			if (!saidSo)
+			{
+				saidSo = true;
+				Printf(TEXTCOLOR_RED "SceneMask: this device cannot carry the scene mask and the light mask in one pass -- the scene mask is off while the light mask is on (logged once)\n");
+			}
+		}
+		else
+		{
+			const int extras = VkShaderManager::SCENE_EXTRA_POST_MASK | (withLightMask ? VkShaderManager::SCENE_EXTRA_LIGHT_MASK : 0);
+			active = mShaderManager->CompileSceneExtraPrograms(passType, extras) && mScreenBuffers->CreatePostMask(mPostMaskFormat);
+		}
+	}
+	if (active != mPostMaskWasActive)
+	{
+		mPostMaskWasActive = active;
+		Printf("SceneMask: %s\n", active ? "on -- the scene stamps its per-pixel tag" : "off");
+	}
+	hw_postprocess.scenemask.BeginFrame(active);
+}
+
+bool VulkanRenderDevice::SceneHasPostMask() const
+{
+	return hw_postprocess.scenemask.Active() && mActiveRenderBuffers == mScreenBuffers.get() && mScreenBuffers->HasPostMask();
 }

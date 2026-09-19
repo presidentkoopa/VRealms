@@ -205,6 +205,11 @@ void VkPostprocess::BlitSceneToPostprocess()
 	// operation over the same layers into the first image of its pair, so the resolve averages
 	// the amounts exactly as it averages the colour and the nearest blit copies them. Only when
 	// this scene drew the mask; otherwise post-processing is told this eye has none.
+	// [SCENEMASK] The tag needs no transfer of its own: post-processing samples the scene attachment
+	// directly (PPTextureType::SceneMask), so all this eye has to say is whether ITS scene drew one. A
+	// save picture or a camera texture says no, and the resolve then hands every shader 0.
+	hw_postprocess.scenemask.SetPostInput(fb->SceneHasPostMask());
+
 	const bool lightMask = fb->SceneHasLightMask();
 	hw_postprocess.lightmask.SetPostInput(lightMask);
 	mCurrentLightMaskImage = 0;
@@ -276,6 +281,15 @@ void VkPostprocess::ImageTransitionScene(bool undefinedSrcLayout)
 	{
 		VkImageTransition()
 			.AddImage(&buffers->SceneLightMask, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, undefinedSrcLayout)
+			.Execute(fb->GetCommands()->GetDrawCommands());
+	}
+
+	// [SCENEMASK] And the tag attachment. Post-processing reads it as a sampled image and this puts it
+	// back to a colour attachment for the next scene, exactly as the light mask's line does.
+	if (buffers->ScenePostMask.Image)
+	{
+		VkImageTransition()
+			.AddImage(&buffers->ScenePostMask, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, undefinedSrcLayout)
 			.Execute(fb->GetCommands()->GetDrawCommands());
 	}
 }

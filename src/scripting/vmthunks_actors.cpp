@@ -2347,6 +2347,7 @@ DEFINE_FIELD(AActor, OutlineThreshold)
 DEFINE_FIELD(AActor, OutlineGlow)
 DEFINE_FIELD(AActor, OutlinePulse)
 DEFINE_FIELD(AActor, OutlineMode)
+DEFINE_FIELD(AActor, PostMask)          // [SCENEMASK] the per-pixel tag this actor stamps (actor.h)
 DEFINE_FIELD(AActor, VisibleCVar)       // RS fork
 DEFINE_FIELD(AActor, AlphaCVar)         // RS fork
 DEFINE_FIELD(AActor, ScaleCVar)         // RS fork

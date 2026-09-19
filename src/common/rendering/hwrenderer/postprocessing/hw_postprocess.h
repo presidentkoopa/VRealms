@@ -67,7 +67,10 @@ enum class PPWrapMode { Clamp, Repeat };
 // [SMOKEVOLUME] ExternalImage: an image a backend owns for work of its own (the smoke volume's 3D
 // density, say), read by a pass as an input. PPExternalImage below says which. Appended after the
 // light mask's pair ("Engine docs/SMOKE_VOLUME_PLAN.md" 13c, review S4).
-enum class PPTextureType { CurrentPipelineTexture, NextPipelineTexture, PPTexture, SceneColor, SceneFog, SceneNormal, SceneDepth, SwapChain, ShadowMap, LightMaskCurrent, LightMaskNext, ExternalImage };
+// [SCENEMASK] SceneMask: the scene's per-pixel tag attachment (PPSceneMask below, "Engine docs/
+// SCENE_MASK_PLAN.md"), read the way SceneNormal and SceneDepth are -- the scene's own image, at the
+// scene's size, samples and layers. Appended, so no existing value moves.
+enum class PPTextureType { CurrentPipelineTexture, NextPipelineTexture, PPTexture, SceneColor, SceneFog, SceneNormal, SceneDepth, SwapChain, ShadowMap, LightMaskCurrent, LightMaskNext, ExternalImage, SceneMask };
 
 // [SMOKEVOLUME] THE BACKEND-OWNED IMAGES A PASS MAY READ (PPTextureType::ExternalImage).
 //
@@ -207,6 +210,15 @@ public:
 	void SetInputSceneDepth(int index, PPFilterMode filter = PPFilterMode::Nearest, PPWrapMode wrap = PPWrapMode::Clamp)
 	{
 		SetInputSpecialType(index, PPTextureType::SceneDepth, filter, wrap);
+	}
+
+	// [SCENEMASK] The scene's per-pixel tag attachment (PPSceneMask). Nearest by default and it should
+	// stay nearest: a tag is a name, not a quantity, so anything that averages two of them invents a
+	// third that nothing drew. Only valid while PPSceneMask::PostInputValid() -- otherwise the image
+	// does not exist and the backend's binding is meaningless.
+	void SetInputSceneMask(int index, PPFilterMode filter = PPFilterMode::Nearest, PPWrapMode wrap = PPWrapMode::Clamp)
+	{
+		SetInputSpecialType(index, PPTextureType::SceneMask, filter, wrap);
 	}
 
 	// [LIGHTMASK] The light mask as carried so far this eye (PPLightMask).
@@ -2967,10 +2979,16 @@ struct CustomDepthUniforms
 class PPCustomShaderInstance
 {
 public:
-	PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture, PPTexture *resolvedDepth = nullptr);
+	// [SCENEMASK] resolvedMask: the per-eye resolved scene mask PPCustomShaders owns, bound for a shader
+	// that names a texture "SceneMask" -- the same shape as resolvedDepth.
+	PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture, PPTexture *resolvedDepth = nullptr, PPTexture *resolvedMask = nullptr);
 
 	// [CUSTOMDEPTH] Whether the definition names a texture "SceneDepth".
 	bool UsesSceneDepth() const { return NeedsSceneDepth; }
+
+	// [SCENEMASK] Whether the definition names a texture "SceneMask" -- which is also what makes the
+	// engine allocate the attachment at all (PPSceneMask::WantedByShaders).
+	bool UsesSceneMask() const { return NeedsSceneMask; }
 
 	void Run(PPRenderState *renderstate);
 
@@ -2993,6 +3011,8 @@ private:
 
 	PPTexture *ResolvedDepth = nullptr;	// [CUSTOMDEPTH] owned by PPCustomShaders
 	bool NeedsSceneDepth = false;
+	PPTexture *ResolvedMask = nullptr;	// [SCENEMASK] owned by PPCustomShaders
+	bool NeedsSceneMask = false;
 };
 
 class PPCustomShaders
@@ -3022,6 +3042,7 @@ public:
 private:
 	void CreateShaders();
 	void ResolveSceneDepth(PPRenderState *renderstate);	// [CUSTOMDEPTH]
+	void ResolveSceneMask(PPRenderState *renderstate);	// [SCENEMASK]
 
 	std::vector<std::unique_ptr<PPCustomShaderInstance>> mShaders;
 	std::unique_ptr<PPPersistentBuffer> mLastInputTexture;
@@ -3032,6 +3053,16 @@ private:
 	int mDepthHeight = 0;
 	PPShader mDepthShader = { "shaders/pp/customdepth.fp", "", CustomDepthUniforms::Desc() };
 	PPShader mDepthShaderMS = { "shaders/pp/customdepth.fp", "#define MULTISAMPLE\n", CustomDepthUniforms::Desc() };
+	// [SCENEMASK] The resolved scene mask, the screen viewport's size, and its three variants: the
+	// plain one, the multisampled one (which takes SAMPLE 0 -- nearest, never an average), and the
+	// "this eye has no mask" one, which writes 0 everywhere so a shader always reads a valid tag.
+	// The same uniforms as the depth resolve: it is the same remap from the scene's viewport.
+	PPTexture mResolvedMask;
+	int mMaskWidth = 0;
+	int mMaskHeight = 0;
+	PPShader mMaskShader = { "shaders/pp/scenemask.fp", "", CustomDepthUniforms::Desc() };
+	PPShader mMaskShaderMS = { "shaders/pp/scenemask.fp", "#define MULTISAMPLE\n", CustomDepthUniforms::Desc() };
+	PPShader mMaskShaderNone = { "shaders/pp/scenemask.fp", "#define NO_SCENE_MASK\n", CustomDepthUniforms::Desc() };
 	int mLastWidth = 0;
 	int mLastHeight = 0;
 };
@@ -3099,6 +3130,46 @@ struct LightMaskDebugUniforms
 
 static_assert(offsetof(LightMaskDebugUniforms, Padding2) == 12, "LightMaskDebugUniforms::Padding2 must start at 12 for std140");
 static_assert(sizeof(LightMaskDebugUniforms) == 16, "LightMaskDebugUniforms must be 16 bytes");
+
+//
+// [SCENEMASK] THE SCENE MASK -- the frame's decision about the per-pixel tag attachment
+// ("Engine docs/SCENE_MASK_PLAN.md"; the lumps' side is `#ifdef SCENE_POST_MASK`).
+//
+// WANTED only while some LOADED post-process shader declares it -- a GLDEFS postprocess block with
+// `Texture <name> "SceneMask"`, the same way a shader asks for "SceneDepth". No such shader: nothing
+// is allocated, no mask program is compiled, the scene pass is the pass it always was, and every
+// existing post-process program is untouched. This is the same gate shape the light mask uses, with
+// content asking instead of a cvar -- because a tag is only ever useful to a shader that reads it.
+//
+// Deliberately keyed on LOADED and not on Enabled: a mod can switch its own shader on and off from
+// a menu without the attachment being freed and re-made under it.
+//
+// ACTIVE is that, plus the backend's own conditions -- the format, the device limits, the programs
+// and the attachment -- taken ONCE per displayed frame before anything renders, so every eye and
+// every pass in the frame reads one answer (VulkanRenderDevice::UpdateSceneMask).
+//
+class PPSceneMask
+{
+public:
+	// Does any LOADED post-process shader name a texture "SceneMask"? Nothing else ever asks for it.
+	static bool WantedByShaders();
+
+	// Once per displayed frame, before anything renders; `active` = this frame's scene pass carries
+	// the mask (VulkanRenderDevice::BeginFrame).
+	void BeginFrame(bool active);
+	bool Active() const { return FrameActive; }
+
+	// Set by the backend for the eye being post-processed: this eye's scene drew the mask, so the
+	// attachment holds this eye's tags and SetInputSceneMask is meaningful. False for a scene without
+	// it -- a save picture, a camera texture, the software renderer's scene -- and then the resolve
+	// writes 0 everywhere rather than reading an image that holds someone else's pixels.
+	void SetPostInput(bool valid) { PostInput = FrameActive && valid; }
+	bool PostInputValid() const { return PostInput; }
+
+private:
+	bool FrameActive = false;
+	bool PostInput = false;
+};
 
 class PPLightMask
 {
@@ -3284,6 +3355,7 @@ public:
 	PPSmokeVolume smokevolume;	// [SMOKEVOLUME] the smoke volume's drawing (13c)
 	PPEmissiveVolumes emissivevolumes;	// [EMISSIVEVOLUMES] the emissive volumes' drawing (#15)
 	PPLightMask lightmask;	// [LIGHTMASK] the frame's light mask decision and its debug view
+	PPSceneMask scenemask;	// [SCENEMASK] the frame's scene mask decision (the per-pixel tag attachment)
 	PPExposureImpulse exposureimpulse;	// [EXPOSUREIMPULSE] flash blindness's wash, last in Pass1 (hw_exposureimpulse.cpp publishes its frame)
 	PPLensDistort lens;
 	PPFXAA fxaa;

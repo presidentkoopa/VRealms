@@ -835,6 +835,21 @@ DEFINE_PROPERTY(stencilcolor, C, Actor)
 
 //==========================================================================
 //
+// [SCENEMASK] PostMask -- the per-pixel tag this actor's pixels carry into post-processing
+// (actor.h, "Engine docs/SCENE_MASK_PLAN.md"). 0 is "nothing special" and is the default;
+// the meaning of 1..255 belongs to the content, never to the engine. Out-of-range values are
+// clamped rather than refused, so a definition cannot make a map fail to load over a tag.
+//
+//==========================================================================
+DEFINE_PROPERTY(postmask, I, Actor)
+{
+	PROP_INT_PARM(i, 0);
+
+	defaults->PostMask = (uint8_t)(i < 0 ? 0 : (i > 255 ? 255 : i));
+}
+
+//==========================================================================
+//
 //==========================================================================
 DEFINE_PROPERTY(bloodcolor, C, Actor)
 {

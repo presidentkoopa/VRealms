@@ -659,7 +659,7 @@ void VkRenderState::EnableDrawBuffers(int count, bool apply)
 	}
 }
 
-void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat format, VkSampleCountFlagBits samples, int layers, uint32_t viewMask, int layerIndex, bool lightMask)
+void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *depthStencilView, int width, int height, VkFormat format, VkSampleCountFlagBits samples, int layers, uint32_t viewMask, int layerIndex, bool lightMask, bool postMask)
 {
 	EndRenderPass();
 	mSceneDepthReadOnly = false;	// [2a] a new target never inherits a read-only depth pass
@@ -674,6 +674,7 @@ void VkRenderState::SetRenderTarget(VkTextureImage *image, VulkanImageView *dept
 	mRenderTarget.ViewMask = viewMask;
 	mRenderTarget.LayerIndex = layerIndex;
 	mRenderTarget.LightMask = lightMask;	// [LIGHTMASK] every other target sets it back to false
+	mRenderTarget.PostMask = postMask;	// [SCENEMASK] likewise
 }
 
 void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
@@ -692,7 +693,23 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 	// [LIGHTMASK] Only the main view's scene target, and only while the mask programs exist for
 	// the pass these draw buffers make -- which the frame's decision already ensured for the pass
 	// the view uses (VulkanRenderDevice::BeginFrame). Zero for every other pass.
-	key.LightMask = (mRenderTarget.LightMask && fb->GetShaderManager()->LightMaskProgramsReady(key.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS)) ? 1 : 0;
+	// [SCENEMASK] The programs are keyed by the COMBINATION -- the set for "light mask + tag" is a third
+	// set, not the two put together -- so the two flags are decided together, and a pass may only carry
+	// what it has programs for. Both if that set is ready; otherwise whichever of them is, so one
+	// feature failing to compile never takes the other down with it; otherwise neither, and the pass is
+	// exactly the one HEAD builds. A pass never carries an attachment no program writes.
+	const EPassType keyPass = key.DrawBuffers > 1 ? GBUFFER_PASS : NORMAL_PASS;
+	const int wantExtras = (mRenderTarget.LightMask ? VkShaderManager::SCENE_EXTRA_LIGHT_MASK : 0) | (mRenderTarget.PostMask ? VkShaderManager::SCENE_EXTRA_POST_MASK : 0);
+	int haveExtras = 0;
+	if (wantExtras != 0)
+	{
+		auto *shaders = fb->GetShaderManager();
+		if (shaders->SceneExtraProgramsReady(keyPass, wantExtras)) haveExtras = wantExtras;
+		else if ((wantExtras & VkShaderManager::SCENE_EXTRA_LIGHT_MASK) && shaders->SceneExtraProgramsReady(keyPass, VkShaderManager::SCENE_EXTRA_LIGHT_MASK)) haveExtras = VkShaderManager::SCENE_EXTRA_LIGHT_MASK;
+		else if ((wantExtras & VkShaderManager::SCENE_EXTRA_POST_MASK) && shaders->SceneExtraProgramsReady(keyPass, VkShaderManager::SCENE_EXTRA_POST_MASK)) haveExtras = VkShaderManager::SCENE_EXTRA_POST_MASK;
+	}
+	key.LightMask = (haveExtras & VkShaderManager::SCENE_EXTRA_LIGHT_MASK) ? 1 : 0;
+	key.PostMask = (haveExtras & VkShaderManager::SCENE_EXTRA_POST_MASK) ? 1 : 0;
 
 	mPassSetup = fb->GetRenderPassManager()->GetRenderPass(key);
 
@@ -715,6 +732,8 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 			builder.AddAttachment(useLayerView ? buffers->SceneNormal.GetLayerView(mRenderTarget.LayerIndex) : buffers->SceneNormal.GetFramebufferView());
 		if (key.LightMask)	// [LIGHTMASK] after the draw buffers, before depth (VkRenderPassSetup::CreateRenderPass)
 			builder.AddAttachment(useLayerView ? buffers->SceneLightMask.GetLayerView(mRenderTarget.LayerIndex) : buffers->SceneLightMask.GetFramebufferView());
+		if (key.PostMask)	// [SCENEMASK] and the tag after that, in the render pass's order
+			builder.AddAttachment(useLayerView ? buffers->ScenePostMask.GetLayerView(mRenderTarget.LayerIndex) : buffers->ScenePostMask.GetFramebufferView());
 		if (key.DepthStencil)
 			builder.AddAttachment(mRenderTarget.DepthStencil);
 		builder.DebugName("VkRenderPassSetup.Framebuffer");
@@ -735,6 +754,8 @@ void VkRenderState::BeginRenderPass(VulkanCommandBuffer *cmdbuffer)
 	if (key.DrawBuffers > 2)
 		beginInfo.AddClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	if (key.LightMask)	// [LIGHTMASK] no light of either class
+		beginInfo.AddClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	if (key.PostMask)	// [SCENEMASK] tag 0 -- nothing special -- everywhere nothing draws
 		beginInfo.AddClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	beginInfo.AddClearDepthStencil(1.0f, 0);
 	beginInfo.Execute(cmdbuffer);

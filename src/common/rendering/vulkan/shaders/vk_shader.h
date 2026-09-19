@@ -104,20 +104,33 @@ public:
 	VkShaderProgram *Get(unsigned int eff, bool alphateston, EPassType passType);
 	bool CompileNextShader();
 
-	// [LIGHTMASK] THE LIGHT MASK PROGRAMS (hw_postprocess.h, PPLightMask): every scene fragment
-	// program -- materials, NAT materials, user shaders, effects and their scene-depth variants
-	// -- once more with SCENE_LIGHT_MASK, which adds the mask output at LIGHT_MASK_LOCATION.
-	// Fragment only: each draws with its ordinary program's vertex shader. Compiled for ONE
-	// pass type, synchronously, the first time a frame wants the mask with that pass
-	// (VulkanRenderDevice::BeginFrame): a one-time pause at the switch-on, never while it stays
-	// on. Any failure leaves that pass not ready for the session, with one red line, and the
-	// mask stays off. The Get* return null for a pass that is not ready.
+	// [LIGHTMASK] [SCENEMASK] THE SCENE-EXTRA PROGRAMS: every scene fragment program -- materials,
+	// NAT materials, user shaders, effects and their scene-depth variants -- once more for a scene
+	// pass that carries an extra colour attachment. SCENE_LIGHT_MASK adds the light mask output at
+	// LIGHT_MASK_LOCATION (hw_postprocess.h, PPLightMask); SCENE_POST_MASK adds the per-pixel tag at
+	// POST_MASK_LOCATION (PPSceneMask, "Engine docs/SCENE_MASK_PLAN.md").
+	//
+	// Keyed by WHICH extras the pass carries, not one set per feature, because the two are not
+	// independent: with both on, the tag's location is one further along. `extras` is the
+	// SCENE_EXTRA_* bits and is 1, 2 or 3; 0 is the ordinary program and is never compiled here.
+	//
+	// Fragment only: each draws with its ordinary program's vertex shader. Compiled for ONE pass
+	// type and ONE combination, synchronously, the first time a frame wants it
+	// (VulkanRenderDevice::BeginFrame): a one-time pause at the switch-on, never while it stays on.
+	// Any failure leaves that pass and that combination not ready for the session, with one red
+	// line, and the frame's decision keeps it off. The Get* return null for anything not ready.
+	enum
+	{
+		SCENE_EXTRA_LIGHT_MASK = 1,
+		SCENE_EXTRA_POST_MASK = 2,
+		SCENE_EXTRA_SETS = 4,	// index by the bits, so 0 (unused) .. 3
+	};
 	bool IsCompileDone() const { return compileIndex == -1; }
-	bool CompileLightMaskPrograms(EPassType passType);
-	bool LightMaskProgramsReady(EPassType passType) const;
-	VulkanShader *GetLightMaskFrag(unsigned int eff, bool alphateston, EPassType passType);
-	VulkanShader *GetLightMaskEffectFrag(int effect, EPassType passType);
-	VulkanShader *GetLightMaskSceneDepthEffectFrag(int effect, EPassType passType, bool multisample, bool layered);
+	bool CompileSceneExtraPrograms(EPassType passType, int extras);
+	bool SceneExtraProgramsReady(EPassType passType, int extras) const;
+	VulkanShader *GetSceneExtraFrag(unsigned int eff, bool alphateston, EPassType passType, int extras);
+	VulkanShader *GetSceneExtraEffectFrag(int effect, EPassType passType, int extras);
+	VulkanShader *GetSceneExtraSceneDepthEffectFrag(int effect, EPassType passType, bool multisample, bool layered, int extras);
 
 	VkPPShader* GetVkShader(PPShader* shader);
 
@@ -129,9 +142,11 @@ private:
 	// [2a] sceneDepth adds the effect-scoped scene depth declaration (binding 3 of
 	// the fixed set) after the shared prolog; the caller's defines pick the variant.
 	// Default false, so every existing caller compiles exactly what it did.
-	// [LIGHTMASK] lightMask adds SCENE_LIGHT_MASK and LIGHT_MASK_LOCATION (CompileLightMaskPrograms).
-	// Default false, so every existing caller compiles exactly what it did.
-	std::unique_ptr<VulkanShader> LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth = false, bool lightMask = false);
+	// [LIGHTMASK] lightMask adds SCENE_LIGHT_MASK and LIGHT_MASK_LOCATION (CompileSceneExtraPrograms).
+	// [SCENEMASK] postMask adds SCENE_POST_MASK and POST_MASK_LOCATION, which is one further along when
+	// lightMask is on too -- that is the whole reason the program sets are keyed by the combination.
+	// Both default false, so every existing caller compiles exactly what it did.
+	std::unique_ptr<VulkanShader> LoadFragShader(FString shadername, const char *frag_lump, const char *material_lump, const char *light_lump, const char *defines, bool alphatest, bool gbufferpass, bool sceneDepth = false, bool lightMask = false, bool postMask = false);
 
 	FString GetTargetGlslVersion();
 	FString LoadPublicShaderLump(const char *lumpname);
@@ -150,14 +165,16 @@ private:
 	// Fragment only: the variant draws with the effect's own vertex shader.
 	static constexpr int SCENE_DEPTH_VARIANTS = 4;
 	std::unique_ptr<VulkanShader> mSceneDepthEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS][SCENE_DEPTH_VARIANTS];
-	// [LIGHTMASK] The mask variants of the fragment shaders above, in the same order and
-	// indexing (see CompileLightMaskPrograms). Empty / null until a pass is compiled.
-	std::vector<std::unique_ptr<VulkanShader>> mLightMaskMaterialFrag[MAX_PASS_TYPES];
-	std::vector<std::unique_ptr<VulkanShader>> mLightMaskMaterialFragNAT[MAX_PASS_TYPES];
-	std::unique_ptr<VulkanShader> mLightMaskEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS];
-	std::unique_ptr<VulkanShader> mLightMaskSceneDepthEffectFrag[MAX_PASS_TYPES][MAX_EFFECTS][SCENE_DEPTH_VARIANTS];
-	enum { LIGHTMASK_NOT_COMPILED, LIGHTMASK_READY, LIGHTMASK_FAILED };
-	int mLightMaskState[MAX_PASS_TYPES] = {};
+	// [LIGHTMASK] [SCENEMASK] The scene-extra variants of the fragment shaders above, in the same order
+	// and indexing (see CompileSceneExtraPrograms), one set per pass type per SCENE_EXTRA_* combination.
+	// Empty / null until that pass and that combination are compiled, which only ever happens when a
+	// frame asks for it: with neither mask wanted, not one of these is ever filled.
+	std::vector<std::unique_ptr<VulkanShader>> mSceneExtraMaterialFrag[MAX_PASS_TYPES][SCENE_EXTRA_SETS];
+	std::vector<std::unique_ptr<VulkanShader>> mSceneExtraMaterialFragNAT[MAX_PASS_TYPES][SCENE_EXTRA_SETS];
+	std::unique_ptr<VulkanShader> mSceneExtraEffectFrag[MAX_PASS_TYPES][SCENE_EXTRA_SETS][MAX_EFFECTS];
+	std::unique_ptr<VulkanShader> mSceneExtraSceneDepthEffectFrag[MAX_PASS_TYPES][SCENE_EXTRA_SETS][MAX_EFFECTS][SCENE_DEPTH_VARIANTS];
+	enum { SCENE_EXTRA_NOT_COMPILED, SCENE_EXTRA_READY, SCENE_EXTRA_FAILED };
+	int mSceneExtraState[MAX_PASS_TYPES][SCENE_EXTRA_SETS] = {};
 	uint8_t compilePass = 0, compileState = 0;
 	int compileIndex = 0;
 

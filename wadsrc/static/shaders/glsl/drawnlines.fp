@@ -126,6 +126,12 @@ layout(location = 2) out vec4 FragNormal;
 // as the colour's. Nothing above reads the mark: lineLook's int(w + 0.5) drops the quarter.
 layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
 #endif
+#ifdef SCENE_POST_MASK
+// [SCENEMASK] The scene tag (main.fp's block says what this is). A drawn line is one draw, so
+// its tag is the draw's.
+#define uPostMask data[uDataIndex].padding1
+layout(location = POST_MASK_LOCATION) out vec4 FragPostMask;
+#endif
 
 // [F1] hash13 / valueNoise, for the turbulence look.
 #include "shaders/glsl/valuenoise.glsl"
@@ -271,6 +277,9 @@ void main()
 	// [LIGHTMASK] The mark is the quarter above the look flags (hw_drawnlinebuffer.h).
 	float glowAmount = glow.r + glow.g + glow.b;
 	FragLightMask = (fract(vLineTurbulence.w) > 0.125) ? vec4(0.0, glowAmount, 0.0, 1.0) : vec4(glowAmount, 0.0, 0.0, 1.0);
+#endif
+#ifdef SCENE_POST_MASK
+	FragPostMask = vec4(float(uPostMask) * (1.0 / 255.0), 0.0, 0.0, 1.0);	// [SCENEMASK]
 #endif
 #ifdef GBUFFER_PASS
 	// Zero with zero alpha: under additive blending this adds nothing to the

@@ -26,6 +26,11 @@ layout(location=2) out vec4 FragNormal;
 // with the colour's alpha, so the fog in front of a beam takes the beam's share down with its colour.
 layout(location = LIGHT_MASK_LOCATION) out vec4 FragLightMask;
 #endif
+#ifdef SCENE_POST_MASK
+// [SCENEMASK] The scene tag (main.fp's block says what this is): the draw's.
+#define uPostMask data[uDataIndex].padding1
+layout(location = POST_MASK_LOCATION) out vec4 FragPostMask;
+#endif
 
 //===========================================================================
 //
@@ -53,6 +58,9 @@ void main()
 	FragColor = vec4(uFogColor.rgb, 1.0 - fogfactor);
 #ifdef SCENE_LIGHT_MASK
 	FragLightMask = vec4(0.0, 0.0, 0.0, FragColor.a);
+#endif
+#ifdef SCENE_POST_MASK
+	FragPostMask = vec4(float(uPostMask) * (1.0 / 255.0), 0.0, 0.0, 1.0);	// [SCENEMASK]
 #endif
 #ifdef GBUFFER_PASS
 	FragFog = vec4(0.0, 0.0, 0.0, 1.0);

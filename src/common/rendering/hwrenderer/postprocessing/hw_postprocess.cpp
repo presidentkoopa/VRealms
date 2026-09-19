@@ -2884,6 +2884,38 @@ bool PP_GetViewFocalY(double &focalY)
 	return true;
 }
 
+/////////////////////////////////////////////////////////////////////////////
+
+// [SCENEMASK] The only thing in the engine that ever asks for the scene mask: a loaded post-process
+// shader that names a texture "SceneMask" (hw_postprocess.h, PPSceneMask). PostProcessShaders holds
+// one entry per GLDEFS postprocess block, so this walks a handful of small maps once a frame.
+//
+// Not gated on Enabled: a mod may switch its own shader on and off from a menu, and the attachment
+// should not be freed and re-made under it. Not gated on gl_custompost either -- that switches the
+// DRAWS off, and a frame that draws no custom shader simply never reads what the scene wrote.
+bool PPSceneMask::WantedByShaders()
+{
+	for (unsigned int i = 0; i < PostProcessShaders.Size(); i++)
+	{
+		TMap<FString, FString>::Iterator it(PostProcessShaders[i].Textures);
+		TMap<FString, FString>::Pair *pair;
+		while (it.NextPair(pair))
+		{
+			if (!pair->Value.CompareNoCase("SceneMask"))
+				return true;
+		}
+	}
+	return false;
+}
+
+void PPSceneMask::BeginFrame(bool active)
+{
+	FrameActive = active;
+	PostInput = false;	// each eye's scene transfer says whether ITS scene drew the mask
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
 void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 {
 	if (!gl_custompost)
@@ -2901,6 +2933,7 @@ void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 	}
 
 	bool depthResolved = false;	// [CUSTOMDEPTH] once per call, i.e. once per eye
+	bool maskResolved = false;	// [SCENEMASK] the same, and for the same reason
 	for (auto &shader : mShaders)
 	{
 		if (shader->Desc->Target == target && shader->Desc->Enabled)
@@ -2910,9 +2943,62 @@ void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 				ResolveSceneDepth(renderstate);
 				depthResolved = true;
 			}
+			if (shader->UsesSceneMask() && !maskResolved)
+			{
+				ResolveSceneMask(renderstate);
+				maskResolved = true;
+			}
 			shader->Run(renderstate);
 		}
 	}
+}
+
+// [SCENEMASK] The scene mask as a custom shader samples it: the per-pixel tag in the red channel of a
+// single-sample texture over the screen viewport, so TexCoord reads the same pixel as InputTexture,
+// with or without MSAA (shaders/pp/scenemask.fp). Every texel is written with no blend, which clears
+// what the last eye or frame left.
+//
+// NEAREST, ALWAYS. With MSAA the shader takes SAMPLE 0 -- it never averages the samples and never takes
+// their maximum. A tag is a name: the average of 3 and 9 is 6, which nothing drew, and the max is 9,
+// which nothing drew there either. Sample 0 is a tag some fragment really wrote at that pixel.
+//
+// When this eye's scene drew no mask (a save picture, a camera texture, or any frame where the mask is
+// not active) the NO_SCENE_MASK variant writes 0 everywhere, so a shader always reads a defined tag and
+// never someone else's image.
+void PPCustomShaders::ResolveSceneMask(PPRenderState *renderstate)
+{
+	const int width = screen->mScreenViewport.width;
+	const int height = screen->mScreenViewport.height;
+	if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+		return;
+
+	if (width != mMaskWidth || height != mMaskHeight)
+	{
+		mResolvedMask = { width, height, PixelFormat::Rgba8 };
+		mMaskWidth = width;
+		mMaskHeight = height;
+	}
+
+	const bool haveMask = hw_postprocess.scenemask.PostInputValid();
+
+	CustomDepthUniforms u = {};
+	u.SceneScale = screen->SceneScale();
+	u.SceneOffset = screen->SceneOffset();
+
+	renderstate->PushGroup("pp.scenemask");
+	renderstate->Clear();
+	renderstate->Shader = !haveMask ? &mMaskShaderNone : (gl_multisample > 1 ? &mMaskShaderMS : &mMaskShader);
+	renderstate->Uniforms.Set(u);
+	renderstate->Viewport.left = 0;
+	renderstate->Viewport.top = 0;
+	renderstate->Viewport.width = width;
+	renderstate->Viewport.height = height;
+	if (haveMask) renderstate->SetInputSceneMask(0);
+	else renderstate->SetInputCurrent(0, PPFilterMode::Nearest);	// a valid binding the variant ignores
+	renderstate->SetOutputTexture(&mResolvedMask);
+	renderstate->SetNoBlend();
+	renderstate->Draw();
+	renderstate->PopGroup();
 }
 
 // [CUSTOMDEPTH] The scene depth as a custom shader samples it: raw [0,1] window depth in a single-sample R32F texture over
@@ -2980,15 +3066,17 @@ void PPCustomShaders::CreateShaders()
 
 	for (unsigned int i = 0; i < PostProcessShaders.Size(); i++)
 	{
-		mShaders.push_back(std::make_unique<PPCustomShaderInstance>(&PostProcessShaders[i], &mLastInputTexture, &mResolvedDepth));
+		mShaders.push_back(std::make_unique<PPCustomShaderInstance>(&PostProcessShaders[i], &mLastInputTexture, &mResolvedDepth, &mResolvedMask));
 	}
 }
 
 /////////////////////////////////////////////////////////////////////////////
 
-PPCustomShaderInstance::PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture, PPTexture *resolvedDepth) : Desc(desc), LastInputTexture(lastInputTexture), ResolvedDepth(resolvedDepth)
+PPCustomShaderInstance::PPCustomShaderInstance(PostProcessShader *desc, std::unique_ptr<PPPersistentBuffer> *lastInputTexture, PPTexture *resolvedDepth, PPTexture *resolvedMask) : Desc(desc), LastInputTexture(lastInputTexture), ResolvedDepth(resolvedDepth), ResolvedMask(resolvedMask)
 {
 	// [CUSTOMDEPTH] PPCustomShaders::Run resolves the scene depth before this shader runs when it names one.
+	// [SCENEMASK] And the scene mask, the same way -- naming it here is also what makes the engine allocate
+	// the attachment at all (PPSceneMask::WantedByShaders reads the same descriptions).
 	{
 		TMap<FString, FString>::Iterator itDepth(Desc->Textures);
 		TMap<FString, FString>::Pair *pairDepth;
@@ -2996,6 +3084,8 @@ PPCustomShaderInstance::PPCustomShaderInstance(PostProcessShader *desc, std::uni
 		{
 			if (!pairDepth->Value.CompareNoCase("SceneDepth"))
 				NeedsSceneDepth = true;
+			if (!pairDepth->Value.CompareNoCase("SceneMask"))
+				NeedsSceneMask = true;
 		}
 	}
 
@@ -3095,6 +3185,17 @@ void PPCustomShaderInstance::SetTextures(PPRenderState *renderstate)
 			if (ResolvedDepth != nullptr) renderstate->SetInputTexture(textureIndex, ResolvedDepth, PPFilterMode::Nearest);
 			else if (gl_multisample > 1) renderstate->SetInputCurrent(textureIndex, PPFilterMode::Nearest);
 			else renderstate->SetInputSceneDepth(textureIndex);
+			textureIndex++;
+			continue;
+		}
+		if (!name.CompareNoCase("SceneMask"))
+		{
+			// [SCENEMASK] The scene's per-pixel tag: this eye's mask, resolved by PPCustomShaders::Run into a
+			// single-sample texture over the screen viewport, so the prolog's sampler2D reads it at TexCoord
+			// with or without MSAA, and NEAREST so the shader is handed a tag and not a blend of two.
+			// `texture(SceneMask, TexCoord).r * 255.0` is the byte the content wrote. 0 means nothing special.
+			if (ResolvedMask != nullptr) renderstate->SetInputTexture(textureIndex, ResolvedMask, PPFilterMode::Nearest);
+			else renderstate->SetInputCurrent(textureIndex, PPFilterMode::Nearest);
 			textureIndex++;
 			continue;
 		}
