@@ -2573,11 +2573,30 @@ public:
 	// forend, its foregrip -- as opposed to merely near it. Engine-owned,
 	// derived from the subject above.
 	//
-	// This is what a second hand should buy: weapons read it and tighten their
-	// spread. It deliberately does NOT move the weapon. The old stabilize did,
-	// and that was the half of it worth removing -- a gun that repositions
-	// itself because two controllers came close is a gun that is not where your
-	// hands are.
+	// It deliberately does NOT move the weapon. The old stabilize did, and that
+	// was the half of it worth removing -- a gun that repositions itself because
+	// two controllers came close is a gun that is not where your hands are.
+	//
+	// *** LOCAL ONLY. NOT REPLICATED. DO NOT LET IT REACH THE PLAYSIM. ***
+	//
+	// vk_openxrdevice.cpp writes this on consolePawn ALONE, from this machine's
+	// OpenXR devices. Nothing carries it to anyone else, so on every other
+	// machine a remote player's copy is permanently false.
+	//
+	// The comment here used to say "weapons read it and tighten their spread".
+	// THAT WOULD HAVE BEEN A DESYNC: spread decides where a bullet goes, so a
+	// two-handed shot would have been tight on the shooter's screen and wide on
+	// everybody else's, with no error anywhere. Corrected 2026-09-19, before the
+	// first reader existed -- which is the only reason it was cheap.
+	//
+	// SAFE: anything this machine merely DRAWS -- a pose, a hand, a HUD.
+	// NOT SAFE: spread, damage, recoil that moves a round, or any decision the
+	// playsim makes. If a two-handed hold must affect a shot, it has to travel
+	// as playsim state or in the usercmd, the way every other gameplay input
+	// does. See Engine docs/CROSSPLATFORM_COOP_RULE.md.
+	//
+	// It is listed in p_vrdemo.cpp's X() set, so a DEMO replays it correctly for
+	// the recording player. That is not replication and does not make it safe.
 	bool TwoHandedHold;
 
 	// Capacitive finger contact, FINGERTOUCH_* bits. Contact is not a press:

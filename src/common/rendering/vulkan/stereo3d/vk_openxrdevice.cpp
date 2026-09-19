@@ -4362,8 +4362,12 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		// A real two-handed hold: the off hand is ON the weapon, at the grip or
 		// the forend, because script said so. This is the thing worth knowing,
 		// and it is published rather than acted on -- weapons read it to
-		// tighten their spread, which is the benefit a second hand should
-		// actually buy.
+		// LOCAL ONLY, AND IT MUST STAY THAT WAY. This is written on consolePawn
+		// from THIS machine's devices and is never carried to anyone else, so a
+		// remote player's copy is permanently false everywhere but their own
+		// screen. Safe for anything this machine draws; NOT safe for spread,
+		// damage or anything else the playsim decides -- see actor.h, where the
+		// full reasoning lives beside the field.
 		const int offSubject = xrGripSubject[offHand];
 		const bool twoHanded = (offSubject == GRIPSUBJ_Support
 			|| offSubject == GRIPSUBJ_Forend || offSubject == GRIPSUBJ_Foregrip);
