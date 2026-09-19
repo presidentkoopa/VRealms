@@ -192,6 +192,10 @@ struct FReachChain
 	// the TARGET's model space, this is in the chain's own, which is the whole reason it had to be
 	// a separate field rather than more of `point`. Zero = the end bone's origin, as before.
 	FVector3 endOfs = FVector3(0, 0, 0);
+	// [STRETCHMODE] 0 = capped (today), 1 = absolute: the end joint lands ON the target and the
+	// bones scale to suit. For a VR body the hand must be AT the controller, and a stretched arm
+	// is a far smaller lie than a detached hand.
+	int      stretchMode = 0;
 	FName    follow = NAME_None;
 
 	// ---- the target joint aim (idea 1): a joint of the TARGET's model turned along this chain ----
@@ -754,7 +758,7 @@ void BeginChainFrame(FReachChain &c, uint64_t frame)
 // The clearance regions around a chain, in its joint space (idea 6): a read-only level query in map
 // units around everything the chain can reach this frame, each plane carried through the chain's own
 // drawn matrix. Returns the regions' count; `capped` when the query cut its answer short.
-int GatherClearance(const AActor *actor, const FReachChainPose &pose, const VSMatrix &o2w, float radiusJ, float stretchMax,
+int GatherClearance(const AActor *actor, const FReachChainPose &pose, const VSMatrix &o2w, float radiusJ, float stretchMax, bool absolute,
 	std::vector<FReachSolidRegion> &regions, bool &capped)
 {
 	regions.clear();
@@ -763,7 +767,11 @@ int GatherClearance(const AActor *actor, const FReachChainPose &pose, const VSMa
 
 	// Everything the chain can reach, joint units: both bones at the stretch cap, the radius, and how far a
 	// follow can carry the shoulder. The world scale is the largest of the matrix's three axes.
-	const float cap = Clampf(std::isfinite(stretchMax) ? stretchMax : 1.f, 1.f, 2.5f);
+	// [STRETCHMODE] An absolute chain can reach further than any cap, so the region it gathers has
+	// to grow with it -- otherwise the arm sweeps through geometry that was never collected and
+	// pushes off nothing. A finite bound is still needed here (this sizes a query, not a pose), so
+	// absolute mode uses the widest sane one rather than infinity.
+	const float cap = absolute ? 8.0f : Clampf(std::isfinite(stretchMax) ? stretchMax : 1.f, 1.f, 2.5f);
 	const FVector3 centreJ = pose.hasFollow ? pose.followPos : pose.shoulder;
 	const float reachJ = ((float)(pose.elbow - pose.shoulder).Length() + (float)(pose.wrist - pose.elbow).Length()) * cap
 		+ radiusJ + (pose.hasFollow ? (float)(pose.shoulder - pose.followPos).Length() : 0.f);
@@ -848,6 +856,7 @@ int ComputeChainSolve(FDrawPoseEntry &e, int ci, const AActor *actor, const FRea
 	// [ENDOFS] In the CHAIN's model space already -- the same space f.target has just been
 	// brought into -- so it needs no transform of its own. That is the point of the field.
 	f.endOfs = c.endOfs;
+	f.t.stretchAbsolute = (c.stretchMode == 1);
 	if (!Finite3(f.target)) return REACH_DEGENERATE;
 	tr.target = f.target;
 	tr.shoulder = pose.shoulder;
@@ -874,7 +883,7 @@ int ComputeChainSolve(FDrawPoseEntry &e, int ci, const AActor *actor, const FRea
 	bool capped = false;
 	if (clearRadius > 0.f)
 	{
-		GatherClearance(actor, pose, o2w, clearRadius, f.t.stretchMax, regions, capped);
+		GatherClearance(actor, pose, o2w, clearRadius, f.t.stretchMax, f.t.stretchAbsolute, regions, capped);
 		f.clear.regions = regions.data();
 		f.clear.count = (int)regions.size();
 		f.clear.radius = clearRadius;
@@ -1951,6 +1960,31 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachTarget)
 // every caller learn how some other model was authored.
 //
 // (0,0,0) is the default and takes the single-pass solve, so existing chains are untouched.
+// [STRETCHMODE] HOW HARD A CHAIN TRIES. 0 = capped, the reference behaviour, where the arm
+// stops short once the target is further than stretchMax allows. 1 = ABSOLUTE: the cap is not
+// consulted and the bones scale so the end joint lands exactly on the target.
+//
+// This exists because BOTH TUNING LEVERS WERE CLOSED: stretchMax is hard clamped to 2.5 in the
+// solve, so no cvar value could ever make an arm reach unconditionally -- it was an engine
+// limit wearing a tuning knob's clothes.
+DEFINE_ACTION_FUNCTION(AActor, SetModelReachStretchMode)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(chain);
+	PARAM_INT(mode);
+
+	if (!ChainIndexOk(chain) || mode < 0 || mode > 1) ACTION_RETURN_BOOL(false);
+	FDrawPoseEntry *e = EntryFor(self, false);
+	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
+	FReachChain &c = e->chains[chain];
+	// It changes the solve, so it takes part in the same "did anything change" comparison the
+	// other setters use -- a stale cache would freeze the mode at whatever it was first given.
+	if (c.stretchMode == mode) ACTION_RETURN_BOOL(true);
+	c.stretchMode = mode;
+	Changed(*e);
+	ACTION_RETURN_BOOL(true);
+}
+
 DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndOfs)
 {
 	PARAM_SELF_PROLOGUE(AActor);

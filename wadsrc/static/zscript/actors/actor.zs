@@ -2433,6 +2433,15 @@ class Actor : Thinker native
 	// (reachTarget's model space) is the target's index-finger side. A null reachTarget
 	// stands the chain down: the model is drawn as animated.
 	native bool SetModelReachTarget(int chain, Actor reachTarget, Vector3 point, Vector3 fingerDir = (0,0,0), Vector3 twistRef = (0,0,0), Name pointCVar = 'None');
+	// HOW HARD THIS CHAIN TRIES TO REACH. 0 = capped (the default, and the reference): the arm
+	// stops short once the target is further away than <tuning>_stretch_max allows, which is
+	// itself clamped in the solve. 1 = ABSOLUTE: the cap is not consulted and the bones scale so
+	// the end joint lands EXACTLY on the target.
+	//
+	// Mode 1 is for VR, where the hand must be AT the controller and the player's real hand is
+	// ground truth: a stretched arm looks wrong, a DETACHED HAND looks broken. A desktop caller
+	// wants the opposite and should stay on 0.
+	native bool SetModelReachStretchMode(int chain, int mode);
 	// A bind-pose point ON THE END BONE, in THIS model's own units, that the solve lands on the
 	// target instead of the bone's origin. An arm chain ends at the WRIST, so reaching a hand
 	// puts the wrist on the target and the hand carries past it by its own wrist-to-palm length;

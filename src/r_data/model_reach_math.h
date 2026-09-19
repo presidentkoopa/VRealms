@@ -241,6 +241,15 @@ inline float SmoothToward(float cur, float want, float rate, float dt)
 // from the chain's renderer-read cvars.
 struct FReachTuning
 {
+	// [STRETCHMODE] ABSOLUTE REACH: ignore stretchMax entirely and let the bones scale to span
+	// whatever distance the target is at, so the end joint lands ON it rather than stopping
+	// short. False is today's behaviour exactly.
+	//
+	// WHY A MODE AND NOT A BIGGER CAP: in VR the hand must be AT the controller, always. An
+	// over-long arm looks wrong; a DETACHED HAND LOOKS BROKEN; and the player's real hand is
+	// ground truth. A desktop game would make the opposite trade, which is why this is a choice
+	// the caller makes rather than a new default.
+	bool  stretchAbsolute = false;
 	float stretchMax    = 1.25f;	// STRETCH_MAX
 	float softStart     = 0.90f;	// SOFT_START, fraction of the natural length
 	float align         = 1.0f;		// w
@@ -255,6 +264,20 @@ struct FReachTuning
 	float twistConfSpan = 0.30f;
 	float twistOfs      = 0.0f;		// degrees added to the raw twist (a calibration trim; 0 = the reference)
 };
+
+// [STRETCHMODE] HOW FAR A CHAIN MAY STRETCH ITS BONES -- asked by both solve sites and by the
+// clearance gather, so the three cannot drift apart. A chain that reaches further than the
+// geometry somebody collected for it is a bug nobody would find by looking.
+//
+// Absolute mode returns INFINITY rather than a large number: std::min against it is always the
+// other operand, so no caller needs a branch and there is no magic ceiling to discover later.
+// INFINITY comes from <cmath>, which this header already includes -- deliberately not
+// std::numeric_limits, which would need an include added for one line.
+inline float ReachStretchCap(const FReachTuning &t)
+{
+	if (t.stretchAbsolute) return INFINITY;    // <cmath>, already included here
+	return Clampf(std::isfinite(t.stretchMax) ? t.stretchMax : 1.f, 1.f, 2.5f);
+}
 
 struct FReachArmIn
 {
@@ -306,7 +329,10 @@ inline bool ReachSolveCircle(const FReachArmIn &in, const FReachTuning &t, FReac
 		c.soft = c.raw;
 		c.stretch = 1.f;
 	}
-	const float cap = Clampf(std::isfinite(t.stretchMax) ? t.stretchMax : 1.f, 1.f, 2.5f);
+	// [STRETCHMODE] ONE function decides this, used at both solve sites and by the clearance
+	// gather, so the three cannot drift apart -- a chain that reaches further than the geometry
+	// somebody collected for it is a bug nobody would find by looking.
+	const float cap = ReachStretchCap(t);
 	c.sc = std::min(c.stretch, cap);
 	c.Lu = c.upperLen0 * c.sc;
 	c.Ll = c.lowerLen0 * c.sc;
@@ -381,7 +407,10 @@ inline void ReachPlaceElbow(const FReachArmIn &in, const FReachCircle &c, float 
 	const FVector3 toW = in.target - p.elbow;
 	const float lw = (float)toW.Length();
 	p.lowerDir = lw > 1.e-6f ? toW / lw : c.lowerDir0;
-	const float cap = Clampf(std::isfinite(t.stretchMax) ? t.stretchMax : 1.f, 1.f, 2.5f);
+	// [STRETCHMODE] Absolute mode returns infinity here, so lowerLenDrawn becomes lw exactly --
+	// the forearm spans to the target instead of stopping at its own capped length, which is the
+	// difference between a hand ON the controller and a hand hanging near it.
+	const float cap = ReachStretchCap(t);
 	p.lowerLenDrawn = std::min(lw, c.lowerLen0 * cap);
 	p.wristSolved = p.elbow + p.lowerDir * p.lowerLenDrawn;
 	p.swingU = QuatFromTo(c.upperDir0, p.upperDir);
