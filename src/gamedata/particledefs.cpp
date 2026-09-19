@@ -230,7 +230,7 @@
 
 static_assert(sizeof(ParticleDefinitionGpu) == ParticleDefinitionBuffer::RECORD_BYTES,
 	"ParticleDefinitionGpu must be sixteen vec4s -- see ParticleDefinitionData in vk_shader.cpp");
-// [RAMPS] key2 lands at 256 and the record is 320 bytes. These asserts are the only thing
+// [RAMPS] key2 lands at 256 and the record is 384 bytes. These asserts are the only thing
 // that catches vk_shader.cpp's ParticleDefinitionData drifting from this struct -- a mismatch
 // there reads garbage on the GPU and reports nothing -- so they are kept EXACT rather than
 // loosened when the layout changes.
@@ -274,6 +274,43 @@ namespace
 
 	// [LOOKS] Defaults for a look's keys when a definition leaves them off.
 	const double kLookRoughness = 0.6;
+
+	// [RAMPS] THE MEASURED DEFAULT CURVES, as (life fraction, multiplier) pairs. 1.0 is "the
+	// roughness this definition already sets" -- the ballistics lane sent them normalised on
+	// purpose, because their measure is boundary pixels over sqrt(area) and a raw number would
+	// have meant nothing in this record.
+	//
+	// FIRE and SMOKE are different in KIND, not degree: fire does almost nothing for 92% of its
+	// life and then triples, smoke roughens EARLY while it is still billowing and then eases as
+	// it thins, with no death spike at all. Neither curve can stand in for the other.
+	// Named LookRampKey, not RampKey: this file ALREADY has a RampKey further
+	// down (T and a V[3]) for the size/alpha/colour ramp. Same concept, different shape,
+	// and the collision is a compile error rather than a silent shadow only because they
+	// share a scope.
+	struct LookRampKey { double t, v; };
+	const LookRampKey kFireRoughRamp[] =
+		{ {0.00,1.00}, {0.48,1.38}, {0.84,1.23}, {0.92,1.46}, {0.96,1.97}, {1.00,3.23} };
+	const LookRampKey kSmokeRoughRamp[] =
+		{ {0.00,1.00}, {0.25,1.25}, {0.50,1.40}, {0.85,1.40}, {1.00,1.25} };
+
+	// A curve sampled at an arbitrary time, linearly between its own keys and clamped at both
+	// ends. The definition's key TIMES are fixed by its size/alpha/colour ramp, so the look
+	// curve is resampled onto those rather than adding times of its own -- which is what lets
+	// key2 ride key[i].x and cost no extra keys.
+	auto SampleRamp = [](const LookRampKey *keys, int count, double t) -> double
+	{
+		if (count <= 0) return 1.0;
+		if (t <= keys[0].t) return keys[0].v;
+		if (t >= keys[count - 1].t) return keys[count - 1].v;
+		for (int i = 1; i < count; i++)
+		{
+			if (t > keys[i].t) continue;
+			const double span = keys[i].t - keys[i - 1].t;
+			const double f = (span > 0.0) ? (t - keys[i - 1].t) / span : 0.0;
+			return keys[i - 1].v + (keys[i].v - keys[i - 1].v) * f;
+		}
+		return keys[count - 1].v;
+	};
 	const double kDustChurn = 0.6;
 	const double kFireChurn = 1.5;
 	const double kLookDetail = 3.0;
@@ -1937,6 +1974,40 @@ namespace
 			gpu.spare[1][1] = (float)(heatLine != 0 ? heat[1] : (fire ? kFireHeatEnd : 0.0));
 			gpu.spare[1][2] = (float)(prongsLine != 0 ? prongs[0] * 32.0 + prongs[1] : 0.0);
 			gpu.spare[1][3] = (float)(riseLine != 0 ? rise : (fire ? kFireRise : 0.0));
+
+			// [RAMPS] key2 rides key[i].x -- the SAME time keys as size, alpha and colour --
+			// so the kind's curve is resampled onto whatever times this definition already
+			// has rather than adding any of its own.
+			//
+			// EVERY CHANNEL DEFAULTS TO 1.0, NOT 0.0. The record is memset to zero, and a zero
+			// multiplier is worse than an uninitialised one: it looks deliberate. 1.0 is
+			// "unchanged", which is the convention the header documents, and it is what makes
+			// a definition that ramps nothing cost no branch anywhere.
+			const LookRampKey *roughRamp = fire ? kFireRoughRamp : kSmokeRoughRamp;
+			const int roughCount = fire ? 6 : 5;
+			const int keyCount = clamp((int)gpu.motion[3], 1, 8);
+			for (int k = 0; k < 8; k++)
+			{
+				const double t = (k < keyCount) ? gpu.key[k][0] : 1.0;
+				gpu.key2[k][0] = (float)SampleRamp(roughRamp, roughCount, t);	// roughness
+				gpu.key2[k][1] = 1.0f;											// churn, flat for now
+				// z gravity, w drag: RESERVED AND DELIBERATELY FLAT. gpuparticles.vp evaluates
+				// a CLOSED-FORM trajectory -- part.a + part.b * ((1-exp(-k*age))/k) - gravity *
+				// 0.5 * age^2 -- which is the exact integral of CONSTANT gravity with linear
+				// drag, and is the whole reason a particle needs no per-frame state. A gravity
+				// that varies over life is not that integral. Ramping it needs a closed form
+				// for the ramp's own shape, or numerical integration at the cost of
+				// statelessness, and that is the owner's call rather than a quiet choice here.
+				gpu.key2[k][2] = 1.0f;
+				gpu.key2[k][3] = 1.0f;
+			}
+		}
+		else
+		{
+			// [RAMPS] No look, so nothing ramps -- but the channels still have to read as
+			// "unchanged" rather than as zero, for the same reason as above.
+			for (int k = 0; k < 8; k++)
+				gpu.key2[k][0] = gpu.key2[k][1] = gpu.key2[k][2] = gpu.key2[k][3] = 1.0f;
 		}
 
 		info.Name = b.Name;

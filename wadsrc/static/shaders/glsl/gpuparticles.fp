@@ -71,6 +71,41 @@ layout(set = 0, binding = 10) uniform sampler2DArray ParticleAtlasCompressed;
 //   ParticleLookHeat   x heat start  y heat end  z prongs (min * 32 + max)  w rise, map units a second
 #define ParticleLookShape(slot) particleDefinitions[slot].spare[0]
 #define ParticleLookHeat(slot) particleDefinitions[slot].spare[1]
+
+// [RAMPS] The ramped look channels, on the SAME time keys as size and colour:
+//   x roughness multiplier  y churn  z gravity (reserved)  w drag (reserved)
+// Every channel is 1.0 where nothing ramps, so this is always safe to multiply by and there
+// is no "is this ramped" branch. z and w are filled with 1.0 and NOT sampled -- gravity lives
+// in a closed-form trajectory in the vertex shader and cannot take a time-varying value
+// without giving up the statelessness that makes it closed-form.
+#define ParticleKey2(slot, i) particleDefinitions[slot].key2[i]
+
+// Sample a key2 channel at a life fraction, walking the shared time keys in key[i].x.
+// Clamped at both ends, linear between. Returns 1.0 when there are no keys, so a definition
+// with nothing to say multiplies by one.
+float ParticleRampAt(int slot, int channel, float t)
+{
+	int count = int(particleDefinitions[slot].motion.w + 0.5);
+	if (count <= 1) return ParticleKey2(slot, 0)[channel];
+	count = min(count, 8);
+	float prevT = particleDefinitions[slot].key[0].x;
+	float prevV = ParticleKey2(slot, 0)[channel];
+	if (t <= prevT) return prevV;
+	for (int i = 1; i < count; i++)
+	{
+		float kT = particleDefinitions[slot].key[i].x;
+		float kV = ParticleKey2(slot, i)[channel];
+		if (t <= kT)
+		{
+			float span = kT - prevT;
+			float f = (span > 0.0) ? (t - prevT) / span : 0.0;
+			return mix(prevV, kV, f);
+		}
+		prevT = kT;
+		prevV = kV;
+	}
+	return prevV;
+}
 const int kParticleDefinitionSlots = 512;	// ParticleDefinitionBuffer::SLOTS
 const int kLookFire = 3;
 
@@ -144,8 +179,19 @@ void ParticleLook(out float falloff, out vec3 bodyShade, out float coverage, out
 	vec4 lookShape = ParticleLookShape(slot);
 	vec4 lookHeat = ParticleLookHeat(slot);
 	int kind = int(lookShape.x + 0.5);
-	float roughness = clamp(lookShape.y, 0.0, 1.0);
-	float churn = lookShape.z;
+	// [RAMPS] The life fraction is read HERE rather than below, because roughness and churn
+	// now depend on it. It was previously first used a few lines down.
+	float rampT = clamp(vParticleLife.x, 0.0, 1.0);
+	// Multiplied by the ramp, which is 1.0 wherever a definition ramps nothing -- so a
+	// definition without a curve is bit-identical to before this existed.
+	//
+	// Fire is flat for most of its life and then triples in its last eight percent; smoke
+	// roughens early while it billows, plateaus, and eases as it thins. Those measured shapes
+	// are what makes a fireball shred and smoke merely thin, and one number could express
+	// neither. Still CLAMPED to 0..1 after the multiply: the curve peaks above 3x and the
+	// field maths below assumes a normalised roughness.
+	float roughness = clamp(lookShape.y * ParticleRampAt(slot, 0, rampT), 0.0, 1.0);
+	float churn = lookShape.z * ParticleRampAt(slot, 1, rampT);
 	int quality = clamp(int(uGpuParticleParams2.z + 0.5), 0, 3);
 	int octaves = clamp(int(lookShape.w + 0.5) + quality - 2, 1, 4);
 
