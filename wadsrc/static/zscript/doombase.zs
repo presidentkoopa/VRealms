@@ -806,6 +806,17 @@ struct LevelLocals native
 		// instead of a lit panel. Use it whenever something is supposed to
 		// come OUT of the seam, or it reads as standing in front of a light.
 		BBFL_VOID        = 64,
+		// Welded to a hand: pos is an offset in that hand's frame -- X along
+		// the aim, Y right, Z up -- and the hand's yaw, pitch and roll are
+		// added to the billboard's own. A readout on the gun.
+		//
+		// Resolved in the renderer, not here, for the reason view-lock is:
+		// script runs at 35Hz and a hand swings faster than a head, so a
+		// panel placed from script swims on every movement. With BBF_FIXED
+		// it stays pinned and cants with the wrist; with BBF_CAMERAYAW it
+		// keeps its place on the gun but turns its face to the viewer.
+		BBFL_HANDMAIN    = 128,
+		BBFL_HANDOFF     = 256,
 	}
 
 	// [BB] Billboards -- world-anchored oriented quads, the native backing

@@ -3009,7 +3009,10 @@ EXTERN_CVAR(Float, bb_tiltbias)
 // Before a billboard's first frame drawPos is still zero, so fall back.
 static inline DVector3 BillboardWorldPos(FLevelLocals *self, const FBillboard &bb)
 {
-	if ((bb.flags & BBFL_VIEWLOCKED) && !bb.drawPos.isZero()) return bb.drawPos;
+	// Hand-locked billboards are the same case: their pos is an offset from a
+	// hand, resolved by the renderer, so the last drawn position is the only
+	// world point they have.
+	if ((bb.flags & (BBFL_VIEWLOCKED | BBFL_HANDANY)) && !bb.drawPos.isZero()) return bb.drawPos;
 
 	// [BB] A group scales its members ABOUT ITS ORIGIN, and the renderer moves
 	// the centre as well as the extent (hw_drawinfo.cpp, "lpos = gorigin +

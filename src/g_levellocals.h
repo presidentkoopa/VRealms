@@ -224,7 +224,24 @@ enum EBillboardFlags
 	// stepping out of it reads as standing in front of a light rather than
 	// emerging from somewhere.
 	BBFL_VOID       = 64,
+
+	// [BB] HAND-LOCKED: pos is an offset from a HAND, not a world point --
+	// X along the aim, Y right, Z up -- and the hand's own yaw, pitch and
+	// roll are added to the billboard's. A readout welded to the gun.
+	//
+	// This is BBFL_VIEWLOCKED's argument with a shorter lever. That flag is
+	// resolved in the renderer because script runs at 35Hz and the view does
+	// not; a hand swings several times faster than a head, so a panel on a
+	// gun repositioned from script does not merely lag, it swims visibly on
+	// every movement. Same fix, same place.
+	//
+	// The two are mutually exclusive, and view-lock wins if both are set.
+	BBFL_HANDMAIN   = 128,
+	BBFL_HANDOFF    = 256,
 };
+
+// [BB] Every flag that makes pos an offset rather than a world point.
+constexpr int BBFL_HANDANY = BBFL_HANDMAIN | BBFL_HANDOFF;
 
 // [BB] A world-anchored quad: real depth-tested geometry, not a HUD overlay
 // and not a surface-shader term. Extent is per-axis (width/height) rather
@@ -412,6 +429,68 @@ struct FBillboardGroup
 // every element's angle RELATIVE to every other, so a flat panel stays flat, a
 // hinge stays hinged, and the whole assembly turns with the head as one rigid
 // object -- which is what view-locked was always supposed to mean.
+// [BB] HAND-LOCKED: the frame a billboard welded to a hand rides in, in world
+// terms -- where the hand is, which way it points, and how the wrist is turned.
+//
+// It reads the pawn's PUBLISHED hand pose rather than re-deriving the VR basis
+// from VRMode::GetWeaponTransform. Those fields exist for exactly this (see
+// AActor::MainHandRoll: "Read it for presentation -- anything welded to the
+// held weapon"), they are written every rendered frame by the VR backend, they
+// are already world-space map units, and a replaying VR demo restores them --
+// so a demo shows the readout where it was. The note on MDL_FOLLOWMAINHAND in
+// models.cpp records what re-deriving that basis by hand cost the last two
+// times someone tried, and this header cannot reach the VR mode anyway.
+//
+// Angles come back in WORLD terms: yaw is the direction the hand points, pitch
+// is positive UP, roll is the wrist's own spin. The stored fields use the
+// playsim's attack convention -- yaw less 90 degrees, pitch negated -- and
+// converting once, here, keeps that convention out of every caller.
+//
+// ROLL comes from MainHandRoll, not AttackRoll: the playsim zeroes AttackRoll
+// every tic to keep peers deterministic, which is the entire reason
+// MainHandRoll exists.
+//
+// False when the billboard is not hand-locked, or there is no pawn to ask --
+// during a level change, for instance. A caller that gets false leaves the
+// billboard where it was authored.
+inline bool BillboardHandFrame(const FBillboard &bb, DVector3 &origin, double &yaw, double &pitch, double &roll)
+{
+	if (!(bb.flags & BBFL_HANDANY) || (bb.flags & BBFL_VIEWLOCKED)) return false;
+	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS) return false;
+	AActor *const mo = players[consoleplayer].mo;
+	if (mo == nullptr) return false;
+
+	const bool offhand = (bb.flags & BBFL_HANDOFF) != 0;
+	origin = offhand ? mo->OffhandPos : mo->AttackPos;
+	yaw    = (offhand ? mo->OffhandAngle : mo->AttackAngle).Degrees() + 90.0;
+	pitch  = -(offhand ? mo->OffhandPitch : mo->AttackPitch).Degrees();
+	roll   = (offhand ? mo->OffhandRoll : mo->MainHandRoll).Degrees();
+	return true;
+}
+
+// [BB] The hand's axes, for placing an offset in that frame: X along the aim,
+// Y to the right of it, Z up from it -- the same three the offset means, and
+// the same order BBFL_VIEWLOCKED uses against the view.
+//
+// Roll turns right and up about the aim, so a card pinned to a canted gun
+// cants with it. Yaw and pitch alone would leave the card level while the
+// weapon rolled out from under it.
+inline void BillboardHandAxes(double yaw, double pitch, double roll,
+	DVector3 &forward, DVector3 &right, DVector3 &up)
+{
+	const double DEG2RAD = 0.01745329251994329576923690768489;
+	const double cy = cos(yaw * DEG2RAD), sy = sin(yaw * DEG2RAD);
+	const double cp = cos(pitch * DEG2RAD), sp = sin(pitch * DEG2RAD);
+
+	forward = DVector3(cy * cp, sy * cp, sp);
+	const DVector3 flatRight(sy, -cy, 0.0);
+	const DVector3 levelUp = flatRight ^ forward;
+
+	const double cr = cos(roll * DEG2RAD), sr = sin(roll * DEG2RAD);
+	right = flatRight * cr + levelUp * sr;
+	up    = levelUp * cr - flatRight * sr;
+}
+
 inline void BillboardBasis(const FBillboard &bb, const DVector3 &bpos, const DVector3 &eye,
 	double tiltBias, double scale,
 	DVector3 &right, DVector3 &up, DVector3 &normal, double &halfw, double &halfh,
@@ -422,6 +501,41 @@ inline void BillboardBasis(const FBillboard &bb, const DVector3 &bpos, const DVe
 
 	double useYaw = bb.yaw + yawBias;
 	double useTilt = bb.tilt;
+	double useRoll = bb.roll;
+
+	// [BB] HAND-LOCKED orientation, resolved HERE rather than by the caller so
+	// that the renderer and the three queries cannot disagree about where a
+	// gun-mounted panel is pointing -- the same reason the rest of this
+	// expression was moved into this function.
+	//
+	// +180 for the same reason view-lock needs it: yaw is WHICH WAY THE FACE
+	// POINTS, and a card sitting on the gun is read from behind the gun. Biased
+	// by the aim alone it would face down-range and show the player its back.
+	//
+	// Pitch and roll are added only for BBF_FIXED. A card the mod asked to face
+	// the camera has already said it wants to be readable rather than welded,
+	// and rolling it with the wrist after that would undo the request.
+	DVector3 handOrigin;
+	double handYaw = 0.0, handPitch = 0.0, handRoll = 0.0;
+	if (BillboardHandFrame(bb, handOrigin, handYaw, handPitch, handRoll))
+	{
+		useYaw += handYaw + 180.0;
+		if (bb.facing == BBF_FIXED)
+		{
+			// MINUS the hand's pitch, not plus. Tilt is measured on the FACE,
+			// and the face looks back down the aim: a gun raised 30 degrees
+			// points its card 30 degrees DOWN at the player. Adding it instead
+			// tips the card the wrong way and by double the error, which on a
+			// gun held low reads as the number lying flat.
+			//
+			// The same relation falls out of BillboardHandAxes: its levelUp
+			// equals this function's up only for useTilt = -handPitch, and the
+			// two must agree or the card's face stops matching the plane its
+			// offset was measured in.
+			useTilt -= handPitch;
+			useRoll += handRoll;
+		}
+	}
 
 	// An attached billboard can hold its yaw relative to the actor it rides,
 	// so a thing that turns takes its faces with it instead of sliding around
@@ -467,9 +581,9 @@ inline void BillboardBasis(const FBillboard &bb, const DVector3 &bpos, const DVe
 	// same class of bug as the group transform in section 22.
 	//
 	// A rotation about the normal leaves the normal alone, so it is untouched.
-	if (bb.roll != 0.0)
+	if (useRoll != 0.0)
 	{
-		const double rollRad = bb.roll * DEG2RAD;
+		const double rollRad = useRoll * DEG2RAD;
 		const double cr = cos(rollRad), sr = sin(rollRad);
 		const DVector3 r0 = right, u0 = up;
 		right = r0 * cr + u0 * sr;

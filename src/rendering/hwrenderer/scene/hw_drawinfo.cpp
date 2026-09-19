@@ -3231,7 +3231,7 @@ void HWDrawInfo::DispatchBillboards()
 		unsigned n = 0;
 		for (auto &bb : Level->Billboards)
 		{
-			DVector3 probe = (bb.flags & BBFL_VIEWLOCKED) ? vp.Pos : bb.pos;
+			DVector3 probe = (bb.flags & (BBFL_VIEWLOCKED | BBFL_HANDANY)) ? vp.Pos : bb.pos;
 			dists[n++] = (probe - vp.Pos).LengthSquared();
 		}
 		TArray<double> sorted = dists;
@@ -3279,6 +3279,27 @@ void HWDrawInfo::DispatchBillboards()
 				+ DVector3(-sy, cy, 0.0) * lpos.Y		// right
 				+ DVector3(0.0, 0.0, 1.0) * lpos.Z;		// up
 		}
+		else if (bb.flags & BBFL_HANDANY)
+		{
+			// [BB] Welded to a hand: pos is an offset in the hand's own frame,
+			// X along the aim, Y right, Z up -- view-lock's arrangement, one
+			// joint further out. Resolved here for view-lock's reason and more
+			// so: a hand swings several times faster than a head, and a panel
+			// on a gun placed from script at 35Hz swims on every movement.
+			//
+			// The frame comes from the pawn's published hand pose, which the
+			// VR backend rewrites every rendered frame (BillboardHandFrame).
+			// With no pawn to ask -- a level change, say -- the billboard
+			// stays where it was authored rather than snapping to the origin.
+			DVector3 handOrigin;
+			double handYaw, handPitch, handRoll;
+			if (BillboardHandFrame(bb, handOrigin, handYaw, handPitch, handRoll))
+			{
+				DVector3 forward, right, up;
+				BillboardHandAxes(handYaw, handPitch, handRoll, forward, right, up);
+				bpos = handOrigin + forward * lpos.X + right * lpos.Y + up * lpos.Z;
+			}
+		}
 		else if ((bb.flags & BBFL_ATTACHED) && bb.attachedTo != nullptr)
 		{
 			bpos = bb.attachedTo->InterpolatedPosition(Viewpoint.TicFrac) + lattach;
@@ -3288,10 +3309,11 @@ void HWDrawInfo::DispatchBillboards()
 		// what was actually drawn.
 		bb.drawPos = bpos;
 
-		// View-locked panels are never culled: they are welded to the eye, so
-		// distance to them is meaningless and losing one to a budget would
-		// read as the UI vanishing.
-		if (!(bb.flags & BBFL_VIEWLOCKED))
+		// View-locked and hand-locked panels are never culled: they are welded
+		// to the eye or to the gun in front of it, so distance to them is
+		// meaningless and losing one to a budget would read as the UI
+		// vanishing.
+		if (!(bb.flags & (BBFL_VIEWLOCKED | BBFL_HANDANY)))
 		{
 			double d2 = (bpos - vp.Pos).LengthSquared();
 			if (cullR2 > 0.0 && d2 > cullR2) continue;

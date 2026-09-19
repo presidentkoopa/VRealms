@@ -56,6 +56,9 @@ handed and never computes a hinge itself.
 8   view-locked   pos becomes an offset from the viewer: X ahead, Y right, Z up
 16  follow angle  attached only: yaw is measured from the actor's facing
 32  no hit        drawn, but invisible to aim, touch and sweep
+64  void          BB_SEAM only: the opening is a hole, not a lit panel
+128 hand (main)   pos becomes an offset in the WEAPON hand's frame
+256 hand (off)    the same, in the off hand's frame
 ```
 
 `4` is what a HUD-locked panel needs — welded to the view, it would otherwise
@@ -77,6 +80,13 @@ face is permanently masked by the text written on it. A pointer aimed at a row
 comes back holding the handle of a letter, which no caller can map to anything.
 Flag the decoration and the one quad that means something is the one that
 answers. Anything a player can point at, touch or shoot leaves it off.
+
+`128` and `256` are view-lock one joint further out: the offset is measured in
+the hand's own frame -- X along the aim, Y across it, Z up from it -- and the
+hand's angles bias the billboard's. A readout on the gun. They have to be
+native for view-lock's reason and more so: a hand swings several times faster
+than a head, so a panel placed from script at 35Hz swims on every movement.
+Set one or the other, never both.
 
 ## Payloads
 
@@ -218,6 +228,46 @@ the view yaw alone aims its face the same way the viewer is looking, i.e.
 straight away from them. Applied in the renderer and in all three of
 `AimBillboard` / `TouchBillboard` / `SweepBillboard`, so the clickable region
 cannot drift away from the picture.
+
+## Hand-locked position and orientation
+
+`BBFL_HANDMAIN` / `BBFL_HANDOFF` are the same idea as view-lock, applied to a
+hand, and they resolve **both** halves for the same reason it does.
+
+The frame comes from the pawn's **published hand pose** -- `AttackPos`,
+`AttackAngle`, `AttackPitch` and `MainHandRoll`, or the `Offhand*` set -- which
+the VR backend rewrites every rendered frame from `VRMode::GetWeaponTransform`.
+It is deliberately not re-derived: those fields exist for exactly this, they
+are already world-space map units, and a replaying VR demo restores them, so a
+demo shows the readout where it was. The note on `MDL_FOLLOWMAINHAND` in
+`models.cpp` records what re-deriving that basis by hand cost the last two
+times someone tried.
+
+Roll comes from `MainHandRoll` and **not** from `AttackRoll`: the playsim zeroes
+`AttackRoll` every tic to keep peers deterministic, which is the whole reason
+`MainHandRoll` exists.
+
+The yaw bias is `hand yaw + 180`, view-lock's `+180` for view-lock's reason --
+yaw is which way the face points, and a card sitting on the gun is read from
+behind the gun. Biased by the aim alone it faces down-range and shows the
+player its back.
+
+Pitch and roll are added **only for `BBF_FIXED`**. A card that asked to face the
+camera has already said it wants to be readable rather than welded, and canting
+it with the wrist afterwards would undo the request. So `BBF_FIXED` is a decal
+on the weapon and `BBF_CAMERAYAW` is a tag that rides it and keeps facing you.
+
+The pitch bias is **minus** the hand's pitch. Tilt is measured on the face and
+the face looks back down the aim, so a gun raised 30 degrees points its card 30
+degrees down at the player; adding it instead tips the card the wrong way and
+by double the error. The same relation falls out of `BillboardHandAxes`, whose
+`levelUp` equals `BillboardBasis`'s `up` only at `tilt = -pitch` -- and the two
+**must** agree, or the card's face stops matching the plane its offset was
+measured in.
+
+Hand-locked billboards are never distance-culled, for view-lock's reason: they
+are welded to the gun in front of the eye, so distance to them is meaningless
+and losing one to a budget reads as the UI vanishing.
 
 ## Pointing at one
 
