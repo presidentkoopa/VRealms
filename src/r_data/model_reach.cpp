@@ -187,6 +187,11 @@ struct FReachChain
 	FVector3 fingerDir = FVector3(0, 0, 0);		// target model space: from point toward the fingers. Zero = no swivel alignment
 	FVector3 targetTwistRef = FVector3(0, 0, 0);	// target model space: the target's index side. Zero = no twist
 	FName    pointCVar = NAME_None;				// <pointCVar>_ofs_x/_y/_z added to point, target MODEL units
+	// [ENDOFS] A bind-pose point on the END BONE, in THIS chain's model units -- the solve lands
+	// that point on the target instead of the bone's origin. Note the space: `point` above is in
+	// the TARGET's model space, this is in the chain's own, which is the whole reason it had to be
+	// a separate field rather than more of `point`. Zero = the end bone's origin, as before.
+	FVector3 endOfs = FVector3(0, 0, 0);
 	FName    follow = NAME_None;
 
 	// ---- the target joint aim (idea 1): a joint of the TARGET's model turned along this chain ----
@@ -840,6 +845,9 @@ int ComputeChainSolve(FDrawPoseEntry &e, int ci, const AActor *actor, const FRea
 		pointM.Z += TuningCVar(c.pointCVar, "_ofs_z", 0.f);
 	}
 	f.target = MatPoint(Finv, MatPoint(handM, pointM));
+	// [ENDOFS] In the CHAIN's model space already -- the same space f.target has just been
+	// brought into -- so it needs no transform of its own. That is the point of the field.
+	f.endOfs = c.endOfs;
 	if (!Finite3(f.target)) return REACH_DEGENERATE;
 	tr.target = f.target;
 	tr.shoulder = pose.shoulder;
@@ -1925,6 +1933,40 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachTarget)
 	c.fingerDir = f;
 	c.targetTwistRef = t;
 	c.pointCVar = pointCVar;
+	Changed(*e);
+	ACTION_RETURN_BOOL(true);
+}
+
+// [ENDOFS] LAND A POINT ON THE END BONE INSTEAD OF THE BONE'S ORIGIN, in THIS chain's model
+// units. An arm chain ends at the WRIST, so a body reaching a hand puts its wrist on the target
+// and the hand overshoots by its own wrist-to-palm length; this states that length once, on the
+// side that knows it.
+//
+// NOT "the palm fix". A spine chain placing the base of a skull rather than a neck joint, or a
+// leg chain placing the ball of the foot rather than the ankle, is the same field.
+//
+// WHY IT IS HERE AND NOT PART OF `point`: `point` is in the TARGET's model space and is scaled by
+// the target's draw transform. This quantity lives in the CHAIN's model space. Converting between
+// them needs the target model's model-to-world scale, which ZScript cannot see -- and would make
+// every caller learn how some other model was authored.
+//
+// (0,0,0) is the default and takes the single-pass solve, so existing chains are untouched.
+DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndOfs)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(chain);
+	PARAM_FLOAT(x); PARAM_FLOAT(y); PARAM_FLOAT(z);
+
+	if (!ChainIndexOk(chain) || !FiniteVec(x, y, z)) ACTION_RETURN_BOOL(false);
+	FDrawPoseEntry *e = EntryFor(self, false);
+	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
+	FReachChain &c = e->chains[chain];
+	const FVector3 v((float)x, (float)y, (float)z);
+	// THE EARLY-OUT IS ALSO THE CACHE KEY. This value changes the SOLVE, so it has to take part in
+	// the same "did anything change" comparison the other setters use -- without it a stale cache
+	// would freeze the correction at whatever it was first given.
+	if (c.endOfs == v) ACTION_RETURN_BOOL(true);
+	c.endOfs = v;
 	Changed(*e);
 	ACTION_RETURN_BOOL(true);
 }

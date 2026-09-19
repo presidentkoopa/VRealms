@@ -2433,6 +2433,14 @@ class Actor : Thinker native
 	// (reachTarget's model space) is the target's index-finger side. A null reachTarget
 	// stands the chain down: the model is drawn as animated.
 	native bool SetModelReachTarget(int chain, Actor reachTarget, Vector3 point, Vector3 fingerDir = (0,0,0), Vector3 twistRef = (0,0,0), Name pointCVar = 'None');
+	// A bind-pose point ON THE END BONE, in THIS model's own units, that the solve lands on the
+	// target instead of the bone's origin. An arm chain ends at the WRIST, so reaching a hand
+	// puts the wrist on the target and the hand carries past it by its own wrist-to-palm length;
+	// state that length here, once, on the side that actually knows it. Note the space: this is
+	// the CHAIN's model units, where SetModelReachTarget's `point` is the TARGET's. (0,0,0) is
+	// the end bone's origin, exactly as before. Not a palm fix -- a spine chain placing the base
+	// of a skull, or a leg chain placing the ball of a foot, is the same field.
+	native bool SetModelReachEndOfs(int chain, double x, double y, double z);
 	// An ancestor of the root that leans a little toward the target first (a clavicle):
 	// _follow of the swing, capped at _follow_max degrees. 'None' turns it off.
 	native bool SetModelReachFollowJoint(int chain, Name joint);

@@ -926,6 +926,11 @@ struct FReachFrameIn
 	float    histPhi = 0.f, histTwist = 0.f, histClearOfs = 0.f;
 	float    dt = 0.f;				// seconds since that frame
 	FReachClearance clear;
+	// [ENDOFS] A bind-pose point ON THE END BONE, in the chain model's own units, that the solve
+	// lands on the target instead of the bone's origin. Zero takes the single-pass path and is
+	// bit-identical to before this existed. It is rigidly attached to the bone, so it ROTATES
+	// with it -- which is why ReachSolveChain below cannot just subtract it once.
+	FVector3 endOfs = FVector3(0, 0, 0);
 };
 
 struct FReachSolveOut
@@ -945,7 +950,9 @@ struct FReachSolveOut
 	float         penBefore = 0.f, penAfter = 0.f;
 };
 
-inline bool ReachSolveChain(const FReachChainPose &pose, const FReachFrameIn &f, FReachSolveOut &o)
+// [ENDOFS] The solve itself, unchanged. ReachSolveChain below wraps it and is what callers use:
+// this one aims the end bone's ORIGIN at f.target and knows nothing about an offset.
+inline bool ReachSolveChainOnce(const FReachChainPose &pose, const FReachFrameIn &f, FReachSolveOut &o)
 {
 	o = FReachSolveOut();
 	FVector3 S0 = pose.shoulder, E0 = pose.elbow, W0 = pose.wrist;
@@ -1012,6 +1019,46 @@ inline bool ReachSolveChain(const FReachChainPose &pose, const FReachFrameIn &f,
 		o.twist = ReachForearmTwist(o.pose, toPre * f.twistRef, f.targetTwistRef, f.t);
 		o.twistDeg = f.histValid ? SmoothToward(f.histTwist, o.twist.twistDeg, f.twistRate, f.dt) : o.twist.twistDeg;
 	}
+	return true;
+}
+
+// [ENDOFS] LAND A POINT ON THE END BONE RATHER THAN THE BONE'S ORIGIN.
+//
+// WHY THIS IS NOT `target -= ofs`. The offset is rigidly attached to the end bone, so it rotates
+// with it -- and the bone's final rotation is an OUTPUT of the solve (ReachSolveCircle places the
+// wrist, then the swivel and twist steps decide how it is turned). Target and orientation are
+// coupled. Subtracting a fixed vector gives a small ORIENTATION-DEPENDENT error that WANDERS as
+// the target moves, which is the worst kind: it looks like tracking noise rather than like a bug.
+//
+// It is a fixed point and it converges immediately at these magnitudes:
+//   pass 1  solve with the PRE-solve endRot orienting the offset (pose.endRot, already in hand);
+//   pass 2  take the SOLVED endRot, rotate the offset by it, subtract, solve again.
+//
+// TWO PASSES IS THE ANSWER, NOT A COMPROMISE. The offset is about 1.9 units against a ~20-unit
+// arm, so pass two moves the result by a fraction of a millimetre and a third would be waste.
+// DO NOT "SIMPLIFY" THIS BACK TO ONE PASS -- that reintroduces the wandering error above, and it
+// is invisible in a still frame and untraceable in motion.
+//
+// A zero offset never enters any of this: it takes the single-pass path and is bit-identical to
+// the behaviour before this existed.
+inline bool ReachSolveChain(const FReachChainPose &pose, const FReachFrameIn &f, FReachSolveOut &o)
+{
+	if (!ReachNonZero(f.endOfs)) return ReachSolveChainOnce(pose, f, o);
+
+	FReachFrameIn pass = f;
+
+	// Pass one: the best orientation we have before solving is the bone's current one.
+	pass.target = f.target - (pose.endRot * f.endOfs);
+	if (!ReachSolveChainOnce(pose, pass, o)) return false;
+
+	// Pass two: re-aim using the orientation the solve actually produced. endRot0 is the end
+	// joint's rotation after the follow, which is what the offset is attached to.
+	const FVector3 corrected = f.target - (o.endRot0 * f.endOfs);
+	if (!Finite3(corrected)) return true;		// keep pass one rather than fail outright
+	pass.target = corrected;
+	FReachSolveOut second;
+	if (!ReachSolveChainOnce(pose, pass, second)) return true;	// pass one stands
+	o = second;
 	return true;
 }
 
