@@ -2003,7 +2003,10 @@ public:
 	//
 	// Up to eight bands travel at once, so a train of them can chase each
 	// other with their own colours and spacing.
-	static const int MAX_SWEEP_BANDS = 8;
+	// [PORTABILITY] constexpr, not const: an in-class `static const int` has no definition to
+	// link against when it is odr-used, which it is in p_setup.cpp. MSVC lets it pass; other
+	// toolchains fail to link. constexpr is implicitly inline and needs no out-of-class definition.
+	static constexpr int MAX_SWEEP_BANDS = 8;
 	// The shared shape, and each band's own SweepBandMode below:
 	//   0 off, 1 ring (cylinder from origin), 2 bar along X (both sides),
 	//   3 bar along Y (both sides), 4 sphere from origin, 5 rise (signed, Z),

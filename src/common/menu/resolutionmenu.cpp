@@ -23,7 +23,7 @@
 
 #include "c_dispatch.h"
 #include "c_cvars.h"
-#include "hwrenderer\data\hw_vrmodes.h"
+#include "hwrenderer/data/hw_vrmodes.h"	// [PORTABILITY] forward slashes: backslashes are not path separators outside Windows
 #include "v_video.h"
 #include "menu.h"
 #include "printf.h"
