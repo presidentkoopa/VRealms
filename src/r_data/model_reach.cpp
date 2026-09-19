@@ -229,6 +229,11 @@ struct FReachChain
 	// CHANGES and stay quiet otherwise. -1 is "has not run yet". See ReportOutcome.
 	int             lastOutcome = -1;
 
+	// [ENDAIM] Does the end bone take the TARGET'S FACING as well as its position?
+	// 0 = no, the default and the old behaviour exactly. 1 = yes. INERT UNTIL SET.
+	int             endAimMode = 0;
+	float           endAimWeight = 1.f;
+
 	// The previous frame's smoothed values: the time smoothing only.
 	bool     histValid = false;
 	float    histPhi = 0.f, histTwist = 0.f, histClearOfs = 0.f;
@@ -1038,6 +1043,26 @@ int SolveChain(FDrawPoseEntry &e, int ci, FJointPoseWork &w, FModel *model, cons
 	// by where it sits (LENGTHEN, never scale); along the mid bone the twist turns a joint
 	// in proportion. The end joint takes the whole twist; everything under it rides it.
 	ReachWriteSegments(w, seg, c.jEnd, s.endRot0, s.in, s.circle, s.pose, s.twistDeg);
+
+	// [ENDAIM] AND FINALLY THE END BONE'S FACING, if this chain asked for it.
+	//
+	// Last, deliberately: it turns the joint the write above has just placed, about that
+	// joint, so the position the solve worked so hard for is untouched and only the
+	// orientation changes. Children come with it -- a hand's fingers ride its wrist, which
+	// is what anyone turning a wrist means.
+	//
+	// Everything it needs is already in the chain's joint space from the solve, so there is
+	// no conversion here and no chance of one being done differently than the solve did it.
+	if (c.endAimMode == 1)
+	{
+		FQuaternion turn;
+		if (ReachEndAimRotation(s.pose.lowerDir, s.twistRefJ, s.fingerDirJ, s.targetTwistRefJ,
+			Clampf(c.endAimWeight, 0.f, 1.f), turn))
+		{
+			const VSMatrix gEnd = w.GlobalPosed(c.jEnd);
+			w.SetGlobal(c.jEnd, MatTranslation(gEnd), (turn * MatRotation(gEnd)).Unit());
+		}
+	}
 	return REACH_SOLVED;
 }
 
@@ -2027,6 +2052,27 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachTarget)
 // This exists because BOTH TUNING LEVERS WERE CLOSED: stretchMax is hard clamped to 2.5 in the
 // solve, so no cvar value could ever make an arm reach unconditionally -- it was an engine
 // limit wearing a tuning knob's clothes.
+// [ENDAIM] Does the end bone take the target's FACING as well as its position? See the note
+// beside the apply, in SolveChain. Off by default, so no existing chain changes behaviour.
+DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndAim)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(chain);
+	PARAM_INT(mode);
+	PARAM_FLOAT(weight);
+
+	if (!ChainIndexOk(chain) || mode < 0 || mode > 1) ACTION_RETURN_BOOL(false);
+	FDrawPoseEntry *e = EntryFor(self, false);
+	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
+	FReachChain &c = e->chains[chain];
+	const float wf = Clampf((float)weight, 0.f, 1.f);
+	if (c.endAimMode == mode && c.endAimWeight == wf) ACTION_RETURN_BOOL(true);
+	c.endAimMode = mode;
+	c.endAimWeight = wf;
+	Changed(*e);
+	ACTION_RETURN_BOOL(true);
+}
+
 DEFINE_ACTION_FUNCTION(AActor, SetModelReachStretchMode)
 {
 	PARAM_SELF_PROLOGUE(AActor);

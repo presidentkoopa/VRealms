@@ -977,6 +977,11 @@ struct FReachSolveOut
 	float         phi = 0.f;			// the swivel the elbow is placed at, degrees
 	float         twistDeg = 0.f;		// after the twist smoothing
 	float         penBefore = 0.f, penAfter = 0.f;
+	// [ENDAIM] The three direction references, AS THE SOLVE RECEIVED THEM -- already in the
+	// chain's joint space. Carried out rather than re-derived so a caller that wants to orient
+	// the end bone uses the EXACT vectors the solve used: re-converting them at the call site is
+	// how two places come to disagree about the same direction.
+	FVector3      twistRefJ, fingerDirJ, targetTwistRefJ;
 };
 
 // [ENDOFS] The solve itself, unchanged. ReachSolveChain below wraps it and is what callers use:
@@ -984,6 +989,10 @@ struct FReachSolveOut
 inline bool ReachSolveChainOnce(const FReachChainPose &pose, const FReachFrameIn &f, FReachSolveOut &o)
 {
 	o = FReachSolveOut();
+	// [ENDAIM] Kept for a caller that wants to orient the end bone after the solve.
+	o.twistRefJ = f.twistRef;
+	o.fingerDirJ = f.fingerDir;
+	o.targetTwistRefJ = f.targetTwistRef;
 	FVector3 S0 = pose.shoulder, E0 = pose.elbow, W0 = pose.wrist;
 	FQuaternion midRot = pose.midRot, endRot = pose.endRot;
 
@@ -1109,6 +1118,57 @@ inline FVector3 ReachAimToward(const VSMatrix &chainO2W, const FVector3 &lowerDi
 	VSMatrix m = targetO2W;
 	if (!m.inverseMatrix(inv)) return FVector3(0, 0, 0);
 	return UnitOr(SwapYZ(MatDir(inv, -world)), FVector3(0, 0, 0));
+}
+
+// [ENDAIM] AN ORTHONORMAL FRAME FROM A FORWARD DIRECTION AND A ROLL REFERENCE, as a rotation.
+// Gram-Schmidt: `fwd` is kept exactly, `roll` is squared up against it, the third axis is their
+// cross. False when the two are parallel or either is zero -- there is no frame in that case and
+// a caller must leave the joint alone rather than invent one.
+//
+// The roll reference only has to be roughly right: any vector off the forward axis pins the roll,
+// which is why a rig can declare "the index-finger side" by eye and still get an exact frame.
+inline bool ReachFrameQuat(const FVector3 &fwd, const FVector3 &roll, FQuaternion &out)
+{
+	FVector3 f = fwd;
+	if (!(f.LengthSquared() > 1.e-12f)) return false;
+	f.MakeUnit();
+	FVector3 r = roll - f * (roll | f);
+	if (!(r.LengthSquared() > 1.e-12f)) return false;
+	r.MakeUnit();
+	const FVector3 u = f ^ r;
+	const FLOATTYPE m[16] = {
+		f.X, f.Y, f.Z, 0.f,
+		r.X, r.Y, r.Z, 0.f,
+		u.X, u.Y, u.Z, 0.f,
+		0.f, 0.f, 0.f, 1.f };
+	VSMatrix b;
+	b.loadMatrix(m);
+	out = MatRotation(b);
+	return true;
+}
+
+// [ENDAIM] THE TURN THAT CARRIES THE END BONE'S FACING ONTO THE TARGET'S.
+//
+// The chain solve places the end joint and never orients it: `align` swivels the ELBOW and
+// `twist` rolls the FOREARM, so on a hand the wrist simply never bends and the hand never
+// rotates however the controller is held. This is the missing piece, and it needs no new
+// numbers from anyone -- both frames are already declared:
+//
+//   the end bone: its solved bone axis (mid -> end) and the rig's own `twistRef`
+//   the target:   `fingerDir` and `targetTwistRef`, handed to SetModelReachTarget
+//
+// Both have already been brought into the chain's joint space by the solve, so the turn is just
+// one frame onto the other. Weight scales it so a caller can blend the wrist in rather than
+// snapping it. Identity (and false) when either frame is degenerate.
+inline bool ReachEndAimRotation(const FVector3 &boneDir, const FVector3 &boneRoll,
+	const FVector3 &targetDir, const FVector3 &targetRoll, float weight, FQuaternion &out)
+{
+	FQuaternion a, b;
+	if (!ReachFrameQuat(boneDir, boneRoll, a)) return false;
+	if (!ReachFrameQuat(targetDir, targetRoll, b)) return false;
+	const FQuaternion turn = (b * a.Inverse()).Unit();
+	out = (weight >= 0.999f) ? turn : QuatFraction(turn, weight);
+	return true;
 }
 
 struct FReachAim

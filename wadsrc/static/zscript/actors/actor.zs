@@ -2442,6 +2442,21 @@ class Actor : Thinker native
 	// ground truth: a stretched arm looks wrong, a DETACHED HAND looks broken. A desktop caller
 	// wants the opposite and should stay on 0.
 	native bool SetModelReachStretchMode(int chain, int mode);
+	// DOES THE END BONE TAKE THE TARGET'S FACING, as well as its position? 0 = no (the default,
+	// and what every chain did before this existed): the solve places the end joint and leaves
+	// its orientation to the animation. 1 = yes: the end bone turns so its own frame lands on
+	// the target's, about the point the solve just placed, so the position is untouched.
+	//
+	// On an arm this is THE WRIST. Without it the hand arrives at the controller and then
+	// ignores how the controller is HELD -- the wrist never bends and the hand never rotates --
+	// because align swivels the elbow and twist rolls the forearm, and neither is the end bone.
+	// A foot taking a slope, or a head taking a look direction, is the same field.
+	//
+	// It needs no new numbers: the frames are the ones already declared, the rig's twistRef
+	// from SetModelReachFrame against fingerDir and twistRef from SetModelReachTarget. Give
+	// those honestly and the wrist is right; leave either zero and this does nothing rather
+	// than guessing. weight blends the turn in, 1.0 for the full match.
+	native bool SetModelReachEndAim(int chain, int mode, double weight = 1.0);
 	// A bind-pose point ON THE END BONE, in THIS model's own units, that the solve lands on the
 	// target instead of the bone's origin. An arm chain ends at the WRIST, so reaching a hand
 	// puts the wrist on the target and the hand carries past it by its own wrist-to-palm length;
