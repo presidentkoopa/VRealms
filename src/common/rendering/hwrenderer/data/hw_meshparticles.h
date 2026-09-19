@@ -92,7 +92,12 @@ public:
 	// in vk_shader.cpp, and MeshParticleDefinition in meshparticles.vp -- and only the two
 	// static_asserts in hw_meshparticles.cpp and particledefs.cpp catch a drift. The shader
 	// copies are checked by nothing at all and read garbage silently if they fall behind.
-	static const unsigned DEFINITION_BYTES = 416;
+	// [BUOYANCY] 432, not 416: the particle definition record grew to 400 bytes when it gained
+	// buoyancy, and this is always that record plus two vec4s of bounds. hw_meshparticles.cpp
+	// static_asserts BOTH this relationship and the resulting INSTANCES_OFFSET, which is the
+	// only thing connecting this file to particledefs.h -- get it wrong and the GPU reads
+	// garbage with no error at all.
+	static const unsigned DEFINITION_BYTES = 432;
 	static const unsigned DEFINITION_SLOTS = 256;	// ParticleDefinitionBuffer::NAMED_SLOTS: only named definitions have meshes
 	static const unsigned INSTANCES_OFFSET = HEADER_BYTES + DEFINITION_SLOTS * DEFINITION_BYTES;	// 73,744
 	static const unsigned INSTANCE_BYTES = 4;

@@ -50,7 +50,12 @@ static_assert(MeshParticleBuffer::DEFINITION_BYTES == ParticleDefinitionBuffer::
 	"a mesh particle definition record is a particle definition and two vec4s of bounds -- see MeshParticleDefinition in meshparticles.vp");
 // [RAMPS] 106,512 now, not 73,744: 16 header bytes + 256 records of 416. The number is
 // spelled out rather than computed so that a layout change has to be acknowledged HERE too.
-static_assert(MeshParticleBuffer::INSTANCES_OFFSET == 106512,
+// [BUOYANCY] 110608, not 106512. This offset is DEFINITION_SLOTS * DEFINITION_BYTES + 16, so
+// growing the particle definition record moves it: 256 * 416 + 16 became 256 * 432 + 16. This
+// is the SECOND mirror of the record's size and it is easy to miss, because nothing outside
+// these asserts connects it to particledefs.h -- get it wrong and the GPU reads garbage and
+// reports nothing at all.
+static_assert(MeshParticleBuffer::INSTANCES_OFFSET == 110608,
 	"the instance list starts after the header and 256 definition records -- see MeshParticleSSO in meshparticles.vp");
 
 namespace

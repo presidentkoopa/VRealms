@@ -85,7 +85,10 @@ public:
 	// static_asserts both this size and every member offset against ParticleDefinitionGpu,
 	// and ParticleDefinitionData in vk_shader.cpp must match the struct too -- nothing
 	// checks THAT copy at build time, so a drift there reads garbage and reports nothing.
-	static const unsigned RECORD_BYTES = 384;
+	// [BUOYANCY] 400, not 384: one vec4 of buoyancy (B, cooling lambda, two spare) so a
+	// particle can rise while it is hot and STOP as it cools, instead of taking a negative
+	// gravity and rising forever faster and faster.
+	static const unsigned RECORD_BYTES = 400;
 
 	// Slots 0..255 hold named definitions (PARTICLEDEFS lumps), 256..511 the
 	// inline cache that SpawnGpuParticles' parameter tuples fill. Separate ranges,

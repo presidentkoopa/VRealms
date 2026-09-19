@@ -691,6 +691,46 @@ bool LevelFieldNormal(int level, vec3 doomPosition, out vec3 normal)
 }
 
 // The closed-form path (DrawDefinedParticle's formulas) at `age`, shader space.
+// [BUOYANCY] THE RISE THAT STOPS, as a closed form, so a particle still needs no per-frame state.
+//
+// Buoyancy feeds through the SAME drag as the initial velocity, because hot air stops rising
+// when drag eats the velocity the buoyancy gave it -- not when the buoyancy goes away. A
+// buoyancy that merely fades leaves the velocity tending to B/lambda, which is "rises forever
+// at a constant speed": the same bug one derivative up from the negative gravity this replaces.
+//
+//     dv/dt = -k*v + B*exp(-lambda*t)
+//     x(t) += B/(k - lambda) * ( (1 - exp(-lambda*t))/lambda - (1 - exp(-k*t))/k )
+//
+// and v(t) -> 0, so the particle rises, slows and stops at a finite height.
+//
+// k == lambda is a removable singularity (0/0, true limit B*(1 - exp(-k*t)*(1 + k*t))/k^2). We
+// CLAMP the denominator away from zero rather than branch: visually indistinguishable, cheaper
+// per particle per frame, and a clamp cannot be mis-edited the way a branch can.
+//
+// B = 0 returns exactly 0.0 here, so every definition that does not ask for buoyancy is
+// bit-identical to before this existed.
+float BuoyancyRiseAt(int defSlot, float age, float k)
+{
+	float B = particleDefinitions[defSlot].buoyancy.x;
+	if (B == 0.0) return 0.0;
+	float lambda = max(particleDefinitions[defSlot].buoyancy.y, 1e-4);
+	float gap = k - lambda;
+	gap = (abs(gap) < 1e-3) ? (gap < 0.0 ? -1e-3 : 1e-3) : gap;
+	return (B / gap) * ((1.0 - exp(-lambda * age)) / lambda - (1.0 - exp(-k * age)) / k);
+}
+
+// [BUOYANCY] and its derivative, the velocity it contributes -- needed because velocity orients
+// a streak and decides which way a collision pushes.
+float BuoyancyVelocityAt(int defSlot, float age, float k)
+{
+	float B = particleDefinitions[defSlot].buoyancy.x;
+	if (B == 0.0) return 0.0;
+	float lambda = max(particleDefinitions[defSlot].buoyancy.y, 1e-4);
+	float gap = k - lambda;
+	gap = (abs(gap) < 1e-3) ? (gap < 0.0 ? -1e-3 : 1e-3) : gap;
+	return (B / gap) * (exp(-lambda * age) - exp(-k * age));
+}
+
 vec3 LevelFieldPathAt(GpuParticle part, float age, float gravity, float k)
 {
 	return part.a.xyz + part.b.xyz * ((1.0 - exp(-k * age)) / k) - vec3(0.0, gravity * 0.5 * age * age, 0.0);
@@ -931,6 +971,11 @@ void DrawDefinedParticle(GpuParticle part, int corner, float age, float life)
 	vec3 up = vec3(0.0, 1.0, 0.0);
 	vec3 pos = part.a.xyz + part.b.xyz * ((1.0 - decay) / k) - up * (gravity * 0.5 * age * age);
 	vec3 vel = part.b.xyz * decay - up * (gravity * age);
+	// [BUOYANCY] Rising that stops, added on top of the fall rather than replacing it, so a
+	// definition can be buoyant AND have weight -- an ember that lifts on the heat and then
+	// falls is both. Zero buoyancy adds exactly zero and costs one compare.
+	pos += up * BuoyancyRiseAt(defSlot, age, k);
+	vel += up * BuoyancyVelocityAt(defSlot, age, k);
 
 	// COLLISION (FLAME_ENGINE_PLAN F4), only for `collide = plane` definitions.
 	// The emission's plane: closer than the particle's radius, it is pushed out

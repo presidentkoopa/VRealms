@@ -886,6 +886,9 @@ static const char *shaderBindings = R"(
 		//   key2[i] rides key[i].x, the same life fraction, with motion.w keys in use:
 		//   x roughness multiplier  y churn  z gravity  w drag. 1.0 is unchanged.
 		vec4 key2[8];
+		// [BUOYANCY] x buoyancy u/s^2, y cooling 1/s, z and w spare. MUST MATCH
+		// ParticleDefinitionGpu; nothing checks this copy at build time.
+		vec4 buoyancy;
 	};
 	layout(set = 1, binding = 7, std430) buffer readonly ParticleDefinitionSSO
 	{

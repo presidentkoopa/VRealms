@@ -94,6 +94,21 @@ struct ParticleDefinitionGpu
 	// curve would hand every burning cloud a death spike it does not have, with no way to
 	// say otherwise. The kind's curve is the DEFAULT; the definition may override it.
 	float key2[8][4];
+	// [BUOYANCY] RISING THAT STOPS. x buoyancy B (initial upward acceleration, u/s^2),
+	// y cooling lambda (1/s, how fast that buoyancy fades), z and w spare.
+	//
+	// WHY THIS IS NOT JUST A NEGATIVE GRAVITY, which is what it replaces: `motion.x` with a
+	// negative sign gives CONSTANT upward acceleration, so smoke rises forever and faster and
+	// faster. And a buoyancy that merely FADES is not enough either -- integrate B*exp(-l*t)
+	// twice and the velocity tends to B/l rather than to zero, so it stops accelerating and
+	// then rises forever at a constant speed. Hot air stops rising because DRAG EATS THE
+	// VELOCITY THE BUOYANCY GAVE IT, so buoyancy feeds through the same drag as everything
+	// else: dv/dt = -k*v + B*exp(-l*t), which still solves in closed form (see gpuparticles.vp)
+	// and still costs a particle no per-frame state.
+	//
+	// B = 0 IS OFF AND IS BIT-IDENTICAL TO BEFORE THIS EXISTED. B < 0 settles instead of
+	// rising -- dust in still air, fog that pools -- so this is not a smoke feature.
+	float buoyancy[4];
 };
 
 enum
@@ -140,6 +155,12 @@ static constexpr int PDF_POSTMASK_MASK = 0xff << PDF_POSTMASK_SHIFT;
 //
 // explosions/RSE1 is deliberately excluded from the fire curve: it measures 0.0 at the end
 // because the sprite is GONE, not smooth, and the metric divides into nothing.
+
+// [BUOYANCY] `buoyancy` u/s^2 and `cooling` 1/s on a definition. Default 0 and 1.0: buoyancy
+// zero means the feature is off and the particle moves exactly as it did before. Cooling 1.0
+// is a starting point from our own definitions -- muzzle smoke lives about 2.6 s and should
+// have stopped climbing by roughly halfway -- and wants measuring off authored frames with
+// fx_curves, the way the roughness and churn ramps got their numbers.
 
 // [LOOKS] What spare[0][0] holds: the shape gpuparticles.fp generates for the particle
 // instead of the round dot or a flipbook frame. The numbers are the plan's order and never
