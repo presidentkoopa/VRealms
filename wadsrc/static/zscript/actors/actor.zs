@@ -2456,7 +2456,15 @@ class Actor : Thinker native
 	// from SetModelReachFrame against fingerDir and twistRef from SetModelReachTarget. Give
 	// those honestly and the wrist is right; leave either zero and this does nothing rather
 	// than guessing. weight blends the turn in, 1.0 for the full match.
-	native bool SetModelReachEndAim(int chain, int mode, double weight = 1.0);
+	// midRollShare: how much of the aim's ROLL the MID bone takes instead of the end one.
+	// 0 (the default) is the old behaviour. Rolling only the end bone shears the skin
+	// between it and its parent into the candy-wrapper pinch -- on a wrist that is a hand
+	// collapsing to a point at large rolls, because a linear blend has nothing in between
+	// to spread the turn over. Rigs with a forearm twist bone do not need this; rigs whose
+	// forearm parents the hand directly very much do. Only the ROLL is shared, never the
+	// bend, so the end joint does not move at all -- a twist about the bone's own axis
+	// moves nothing lying on that axis. Around 0.5 to 0.7 looks right on a human arm.
+	native bool SetModelReachEndAim(int chain, int mode, double weight = 1.0, double midRollShare = 0.0);
 	// A bind-pose point ON THE END BONE, in THIS model's own units, that the solve lands on the
 	// target instead of the bone's origin. An arm chain ends at the WRIST, so reaching a hand
 	// puts the wrist on the target and the hand carries past it by its own wrist-to-palm length;

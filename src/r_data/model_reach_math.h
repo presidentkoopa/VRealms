@@ -1147,6 +1147,30 @@ inline bool ReachFrameQuat(const FVector3 &fwd, const FVector3 &roll, FQuaternio
 	return true;
 }
 
+// [ENDAIM] THE PART OF A TURN THAT IS ROLL ABOUT A GIVEN AXIS -- the twist half of the
+// standard swing/twist split. The quaternion's vector part is projected onto the axis and
+// renormalised; what is left over is the swing, which this does not return because no
+// caller has wanted it yet.
+//
+// WHY IT IS NEEDED. Rolling a limb's END bone alone shears the skin between it and its
+// parent into the classic candy-wrapper pinch, because a linear blend has nothing between
+// them to spread the rotation over. A real forearm does not do that -- pronation runs
+// along its whole length. Splitting the roll needs the roll ON ITS OWN, and only the roll:
+// a twist about the bone's own axis moves no joint that lies ON that axis, so sharing it
+// with the parent bone costs nothing in position. Sharing the swing would move the hand.
+inline FQuaternion QuatTwistAbout(const FQuaternion &q, const FVector3 &axis)
+{
+	FVector3 a = axis;
+	if (!(a.LengthSquared() > 1.e-12f)) return FQuaternion(0.f, 0.f, 0.f, 1.f);
+	a.MakeUnit();
+	const FVector3 v(q.X, q.Y, q.Z);
+	const FVector3 proj = a * (v | a);
+	FQuaternion t(proj.X, proj.Y, proj.Z, q.W);
+	const float n = t.X * t.X + t.Y * t.Y + t.Z * t.Z + t.W * t.W;
+	if (!(n > 1.e-12f)) return FQuaternion(0.f, 0.f, 0.f, 1.f);	// exactly 180 off the axis
+	return t.Unit();
+}
+
 // [ENDAIM] THE TURN THAT CARRIES THE END BONE'S FACING ONTO THE TARGET'S.
 //
 // The chain solve places the end joint and never orients it: `align` swivels the ELBOW and

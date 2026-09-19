@@ -233,6 +233,9 @@ struct FReachChain
 	// 0 = no, the default and the old behaviour exactly. 1 = yes. INERT UNTIL SET.
 	int             endAimMode = 0;
 	float           endAimWeight = 1.f;
+	// [ENDAIM] How much of the end aim's ROLL the MID bone takes instead of the end one.
+	// 0 = none, the old behaviour exactly. See the note at the apply for why this exists.
+	float           endAimMidShare = 0.f;
 
 	// The previous frame's smoothed values: the time smoothing only.
 	bool     histValid = false;
@@ -760,11 +763,19 @@ static void MarkerMatrix(AActor *t, double ticFrac, VSMatrix &out)
 {
 	const DVector3 pos = t->InterpolatedPosition(ticFrac)
 		+ DVector3(t->WorldOffset.X, t->WorldOffset.Y, t->WorldOffset.Z);
+	// [MARKERSMOOTH] THE ANGLES ARE INTERPOLATED TOO, and they must be. A marker is
+	// moved by script, so it changes 35 times a second while the headset draws three
+	// times as often. Interpolating the position and NOT the facing gives a target that
+	// glides smoothly and snaps in rotation -- which on an arm chain is a hand that
+	// arrives in exactly the right place with a wrist that judders, every frame it is
+	// looked at. Same frac as the position, so the two can never disagree about when
+	// this marker is.
+	const DRotator ang = t->InterpolatedAngles(ticFrac);
 	out.loadIdentity();
 	out.translate((float)pos.X, (float)pos.Z, (float)pos.Y);	// map (x,y,z) -> render (x,height,y)
-	out.rotate(-(float)t->Angles.Yaw.Degrees(), 0, 1, 0);
-	out.rotate( (float)t->Angles.Pitch.Degrees(), 0, 0, 1);
-	out.rotate(-(float)t->Angles.Roll.Degrees(), 1, 0, 0);
+	out.rotate(-(float)ang.Yaw.Degrees(), 0, 1, 0);
+	out.rotate( (float)ang.Pitch.Degrees(), 0, 0, 1);
+	out.rotate(-(float)ang.Roll.Degrees(), 1, 0, 0);
 }
 
 // An actor's model matrix exactly as its own draw builds it. The position the sprite pass hands
@@ -1059,8 +1070,34 @@ int SolveChain(FDrawPoseEntry &e, int ci, FJointPoseWork &w, FModel *model, cons
 		if (ReachEndAimRotation(s.pose.lowerDir, s.twistRefJ, s.fingerDirJ, s.targetTwistRefJ,
 			Clampf(c.endAimWeight, 0.f, 1.f), turn))
 		{
-			const VSMatrix gEnd = w.GlobalPosed(c.jEnd);
-			w.SetGlobal(c.jEnd, MatTranslation(gEnd), (turn * MatRotation(gEnd)).Unit());
+			// Where the end must finish, captured BEFORE anything below moves it. The end
+			// is then set to exactly this, so sharing the roll cannot cost it accuracy.
+			const VSMatrix gEnd0 = w.GlobalPosed(c.jEnd);
+			const FVector3    endPos  = MatTranslation(gEnd0);
+			const FQuaternion endWant = (turn * MatRotation(gEnd0)).Unit();
+
+			// [ROLLSHARE] THE MID BONE TAKES A SHARE OF THE ROLL, and this is not a nicety.
+			//
+			// Rolling only the end bone shears the skin between it and its parent into the
+			// classic candy-wrapper PINCH -- a linear blend has nothing in between to spread
+			// the rotation over. Rendered off this very rig, a 180 degree wrist roll on the
+			// end bone alone collapses the wrist to a point; the same roll split with the
+			// forearm is clean. A real forearm pronates along its whole length, and rigs
+			// that do this properly carry a twist bone. This one does not: lowerArm parents
+			// hand directly, so every degree lands on one joint.
+			//
+			// ONLY THE ROLL IS SHARED, never the bend. A twist about the bone's own axis
+			// moves nothing that lies ON that axis, and the end joint does -- so the hand
+			// does not shift by a thousandth. Sharing the swing would move it, which is
+			// forbidden: the player's real hand is ground truth.
+			const float share = Clampf(c.endAimMidShare, 0.f, 1.f);
+			if (share > 0.f)
+			{
+				const FQuaternion roll = QuatFraction(QuatTwistAbout(turn, s.pose.lowerDir), share);
+				const VSMatrix gMid = w.GlobalPosed(c.jMid);
+				w.SetGlobal(c.jMid, MatTranslation(gMid), (roll * MatRotation(gMid)).Unit());
+			}
+			w.SetGlobal(c.jEnd, endPos, endWant);
 		}
 	}
 	return REACH_SOLVED;
@@ -2060,15 +2097,18 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndAim)
 	PARAM_INT(chain);
 	PARAM_INT(mode);
 	PARAM_FLOAT(weight);
+	PARAM_FLOAT(midRollShare);
 
 	if (!ChainIndexOk(chain) || mode < 0 || mode > 1) ACTION_RETURN_BOOL(false);
 	FDrawPoseEntry *e = EntryFor(self, false);
 	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
 	FReachChain &c = e->chains[chain];
 	const float wf = Clampf((float)weight, 0.f, 1.f);
-	if (c.endAimMode == mode && c.endAimWeight == wf) ACTION_RETURN_BOOL(true);
+	const float sf = Clampf((float)midRollShare, 0.f, 1.f);
+	if (c.endAimMode == mode && c.endAimWeight == wf && c.endAimMidShare == sf) ACTION_RETURN_BOOL(true);
 	c.endAimMode = mode;
 	c.endAimWeight = wf;
+	c.endAimMidShare = sf;
 	Changed(*e);
 	ACTION_RETURN_BOOL(true);
 }
