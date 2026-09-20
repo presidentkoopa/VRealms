@@ -75,20 +75,40 @@ static const uint64_t kFenceWaitNs = 5ull * 1000ull * 1000ull * 1000ull;	// 5 s
 static bool RS_WaitFencesPolled(VulkanDevice* device, uint32_t count, const VkFence* fences, uint64_t timeoutNs, const char*& outWhy)
 {
 	outWhy = nullptr;
+	// WHICH fences were still unsignalled when we gave up, as a bitmask. A STACK CANNOT ANSWER
+	// THIS -- it only says we are sleeping inside the poll. The index is the whole question when
+	// a submit is orphaned across a level reset, and this is the only place that knows it.
+	uint32_t stillWaiting = 0;
 	const uint64_t deadline = I_nsTime() + timeoutNs;
 	for (;;)
 	{
 		uint32_t signalled = 0;
+		stillWaiting = 0;
 		for (uint32_t i = 0; i < count; i++)
 		{
 			VkResult st = vkGetFenceStatus(device->device, fences[i]);
 			if (st == VK_SUCCESS) { signalled++; continue; }
-			if (st == VK_NOT_READY) continue;
+			if (st == VK_NOT_READY) { stillWaiting |= (1u << i); continue; }
 			outWhy = (st == VK_ERROR_DEVICE_LOST) ? "the device was LOST" : "a fence query failed";
 			return false;
 		}
 		if (signalled == count) return true;
-		if (I_nsTime() >= deadline) { outWhy = "they never signalled"; return false; }
+		if (I_nsTime() >= deadline)
+		{
+			// Name the actual fences, once, the first few times. "A fence did not signal" sends
+			// the next person looking at all of them; "slot 2 of 3" sends them at one submit.
+			static int named = 0;
+			if (++named <= 4)
+			{
+				FString which;
+				for (uint32_t i = 0; i < count; i++)
+					if (stillWaiting & (1u << i)) which.AppendFormat("%s%u", which.IsEmpty() ? "" : ", ", i);
+				Printf(TEXTCOLOR_RED "  unsignalled fence slot(s): %s  (of %u)\n",
+					which.IsEmpty() ? "none -- they signalled between the last poll and the deadline" : which.GetChars(), count);
+			}
+			outWhy = "they never signalled";
+			return false;
+		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 }
