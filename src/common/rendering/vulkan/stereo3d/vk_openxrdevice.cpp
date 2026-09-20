@@ -189,6 +189,11 @@ EXTERN_CVAR(Float, vr_overlayscreen_vpos);
 EXTERN_CVAR(Int, vr_overlayscreen_bg);
 EXTERN_CVAR(Int, vr_control_scheme);
 EXTERN_CVAR(Bool, vr_two_handed_weapons);
+EXTERN_CVAR(Float, vr_support_cone_enter);
+EXTERN_CVAR(Float, vr_support_cone_exit);
+EXTERN_CVAR(Float, vr_support_dist_min);
+EXTERN_CVAR(Float, vr_support_dist_max);
+EXTERN_CVAR(Int, vr_support_mode);
 EXTERN_CVAR(Bool, vr_stabilize_requires_grab);
 EXTERN_CVAR(Int, vr_eye_colorspace);
 EXTERN_CVAR(Float, vr_stabilize_distance_inches);
@@ -589,6 +594,26 @@ static bool HasMismatchedRecommendedViewExtents(const std::vector<XrViewConfigur
 	}
 	return false;
 }
+
+// ============================================================================
+// [SUPPORT] THE SUPPORT HOLD'S LATCH -- taken, held, let go.
+//
+// State rather than a per-frame answer, because a hold is a thing you DO and
+// then are DOING. The old code recomputed "are you two-handed" every frame from
+// geometry alone, which is why it engaged and released on its own: there was
+// nothing to take and nothing to release.
+//
+// rearmRequired is mode 2's half: after a button release the hand must leave the
+// WIDER exit cone before it can be taken again, or letting go inside the cone
+// re-grabs on the next frame and the button appears not to work.
+// ============================================================================
+struct RS_SupportLatch
+{
+	bool engaged = false;
+	bool rearmRequired = false;   // mode 2: left the exit cone since the release?
+	bool gripWas = false;         // grip last frame, so a press is an edge
+};
+static RS_SupportLatch RS_Support;
 
 static XrVector3f RotateVector(const XrQuaternionf& q, const XrVector3f& v)
 {
@@ -4369,8 +4394,85 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		// damage or anything else the playsim decides -- see actor.h, where the
 		// full reasoning lives beside the field.
 		const int offSubject = xrGripSubject[offHand];
-		const bool twoHanded = (offSubject == GRIPSUBJ_Support
+		const bool scriptSaysOnGun = (offSubject == GRIPSUBJ_Support
 			|| offSubject == GRIPSUBJ_Forend || offSubject == GRIPSUBJ_Foregrip);
+
+		// ================================================================
+		// [SUPPORT] IS THE OFF HAND ALONG THE BARREL, and has it been TAKEN.
+		//
+		// Two separate questions, and conflating them is what broke this
+		// before. Geometry says whether a hold is POSSIBLE; the latch says
+		// whether one is HAPPENING. A hold you never took is a hold you
+		// cannot let go of, which is exactly how the old proximity version
+		// felt.
+		//
+		// The cone is about the weapon's own forward axis, taken from the
+		// main hand's pose -- the gun rides that hand, so its forward IS
+		// the barrel. -Z is forward in OpenXR's grip space.
+		// ================================================================
+		const XrVector3f barrel = RotateVector(xrHandPoses[mainHand].orientation, { 0.0f, 0.0f, -1.0f });
+		const float toOffX = xrHandPoses[offHand].position.x - xrHandPoses[mainHand].position.x;
+		const float toOffY = xrHandPoses[offHand].position.y - xrHandPoses[mainHand].position.y;
+		const float toOffZ = xrHandPoses[offHand].position.z - xrHandPoses[mainHand].position.z;
+		const float toOffLen = std::sqrt(toOffX * toOffX + toOffY * toOffY + toOffZ * toOffZ);
+
+		float alongBarrel = -1.0f;	// cosine; -1 until there is a direction to measure
+		if (toOffLen > 0.0001f)
+		{
+			alongBarrel = (barrel.x * toOffX + barrel.y * toOffY + barrel.z * toOffZ) / toOffLen;
+		}
+
+		// THE DISTANCE BAND, and the MINIMUM is the important half. A reload
+		// brings the hands together; a support hold never does. The old code
+		// had only a maximum, which is why it fired through every reload.
+		const bool bandOk = (toOffLen >= vr_support_dist_min && toOffLen <= vr_support_dist_max);
+		// WIDER TO KEEP THAN TO TAKE, so a hold at the edge does not chatter.
+		const bool inEnterCone = bandOk && alongBarrel >= vr_support_cone_enter;
+		const bool inExitCone  = bandOk && alongBarrel >= vr_support_cone_exit;
+
+		const int  mode      = clamp((int)vr_support_mode, 0, 4);
+		const bool gripNow   = handInput[offHand].grip;
+		const bool gripEdge  = gripNow && !RS_Support.gripWas;	// a press, not a hold
+		RS_Support.gripWas   = gripNow;
+
+		if (mode == 0 || !vr_two_handed_weapons)
+		{
+			RS_Support.engaged = false;
+			RS_Support.rearmRequired = false;
+		}
+		else if (RS_Support.engaged)
+		{
+			// LET GO. Leaving the exit cone always ends it, whatever the mode:
+			// the hand is no longer on the weapon and no button should be able
+			// to claim otherwise.
+			if (!inExitCone)                       RS_Support.engaged = false;
+			else if (mode == 3 && !gripNow)        RS_Support.engaged = false;	// hold: release grip
+			else if (mode == 4 && gripEdge)        RS_Support.engaged = false;	// toggle: press again
+			else if (mode == 2 && gripEdge)      { RS_Support.engaged = false; RS_Support.rearmRequired = true; }
+		}
+		else
+		{
+			// MODE 2 RE-ARM: after a button release the hand must leave the
+			// wider cone before it can be taken again, or it re-grabs on the
+			// next frame and the button looks broken.
+			if (RS_Support.rearmRequired && !inExitCone) RS_Support.rearmRequired = false;
+
+			const bool mayTake = inEnterCone && !RS_Support.rearmRequired;
+			if (mayTake)
+			{
+				if (mode == 1 || mode == 2)      RS_Support.engaged = true;	// auto
+				else if (mode == 3 && gripNow)   RS_Support.engaged = true;	// hold
+				else if (mode == 4 && gripEdge)  RS_Support.engaged = true;	// toggle
+			}
+		}
+
+		// SCRIPT CAN STILL SAY SO. A card that declares a real support part and
+		// a hand that actually took it is a hold by any measure, and it must not
+		// be overruled by a cone -- the geometry is a way of ANSWERING the
+		// question without authored data, never a way of refusing an answer we
+		// already have.
+		const bool twoHanded = RS_Support.engaged || scriptSaysOnGun;
+
 		if (publishGrip)
 			consolePawn->TwoHandedHold = twoHanded;
 

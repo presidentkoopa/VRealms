@@ -976,6 +976,50 @@ CVAR(Bool, vr_secondary_button_mappings, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // and being two-handed makes you shoot straighter rather than making the gun
 // move by itself.
 CVAR(Bool, vr_two_handed_weapons, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// ============================================================================
+// SUPPORTING A WEAPON WITH THE OTHER HAND -- how it is taken and let go.
+//
+// WHAT THE OLD PROXIMITY TEST GOT WRONG, and it was one thing, not the thing
+// everyone assumed. The version this fork inherited (QuestZDoom VrInputDefault)
+// engaged on a GRIP PRESS and checked the hands were within half a metre AT THAT
+// MOMENT -- a sanity check so you could not grab a gun across the room. It was
+// never re-tested while you held it. This fork dropped the button and kept the
+// distance, which turned a deliberate act into something that happened TO you
+// whenever your hands drifted near each other. Reloading brings the hands
+// together, so it fired constantly during exactly the gesture that least wanted
+// it, and that is what made it unusable rather than the distance itself.
+//
+// WHAT REPLACES IT is the test FRIK (Fallout 4 VR Body, GPL-3) settled on: the
+// off hand must lie ALONG THE BARREL, not merely near the other hand. A cone
+// about the weapon's own forward axis, with a wider release angle than grab
+// angle so an engaged hold cannot flicker at the edge, and a MINIMUM hand
+// separation -- which is the part that kills the reload false-fire, because a
+// reload brings the hands together and a support hold never does.
+//
+// Angles are stated as COSINES, which is what the test actually compares: the
+// dot product of the barrel direction and the direction to the off hand. 1.0 is
+// exactly along the barrel, 0.0 is square to it.
+CVAR(Float, vr_support_cone_enter, 0.955f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// ~17 degrees
+CVAR(Float, vr_support_cone_exit,  0.900f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// ~26 degrees
+// Hand separation, in metres. Below the minimum the hands are on top of each
+// other, which is a reload and not a hold; above the maximum they are not on the
+// same weapon.
+CVAR(Float, vr_support_dist_min, 0.15f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Float, vr_support_dist_max, 0.90f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// HOW THE HOLD IS TAKEN AND LET GO. FRIK ships four and exposes them in the
+// headset, because which one feels right is a preference and not a fact:
+//   0  off          -- no support hold at all
+//   1  auto         -- taken whenever the hand is in the cone, let go by moving
+//                      the hand sharply away from the weapon
+//   2  auto, button -- taken in the cone, released with the grip button, and not
+//                      retaken until the hand has left the wider exit cone
+//   3  hold         -- hold grip to support, release grip to let go
+//   4  toggle       -- press grip to take, press again to let go
+// 3 is the default because it is what the stock option did and what the owner
+// asked to have back: a deliberate act with an obvious end.
+CVAR(Int, vr_support_mode, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // Fallback two-hand stabilize reach in real-world inches, used by any weapon
 // that does not set Weapon.StabilizeDistance (0, the ZScript default).
 CVAR(Float, vr_stabilize_distance_inches, 8.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
