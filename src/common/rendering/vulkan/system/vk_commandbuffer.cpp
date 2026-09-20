@@ -41,6 +41,17 @@ extern FString gpuStatOutput;
 
 #include "c_cvars.h"
 
+// RS FORK -- HOW LONG ANY GPU FENCE MAY BE WAITED ON.
+//
+// Every wait in this file was UINT64_MAX -- wait forever. A fence that never
+// signals then froze the main thread with no error, no dump and nothing in the
+// log: the long-parked "crash on death / respawn / level change", which is a
+// HANG and is this. Five seconds is far beyond any legitimate frame; a GPU that
+// has not finished in five seconds is never going to.
+//
+// One constant so the two waits cannot drift apart, and so raising it is one edit.
+static const uint64_t kFenceWaitNs = 5ull * 1000ull * 1000ull * 1000ull;	// 5 s
+
 // RS FORK -- GPU CHECKPOINTS (vk_gpu_checkpoints, defined in vk_renderdevice.cpp).
 //
 // Every PushGroup/PopGroup -- the names the renderer already gives its passes
@@ -167,7 +178,27 @@ void VkCommandBufferManager::FlushCommands(VulkanCommandBuffer** commands, size_
 	{
 		// RS FORK -- checked. A loss here used to be ignored and reported one
 		// submit later, further from whatever caused it.
-		CheckVulkanError(vkWaitForFences(fb->device->device, 1, &mSubmitFence[currentIndex]->fence, VK_TRUE, std::numeric_limits<uint64_t>::max()), "vkWaitForFences failed");
+		//
+		// AND BOUNDED, for the same reason as WaitForCommands below: an
+		// unbounded wait on a fence that never signals is a silent freeze with
+		// nothing in the log. This one is the RECYCLE wait -- we are about to
+		// reuse a submit slot and are waiting for its previous frame to finish
+		// -- so it is reachable on any frame, not only across a teardown.
+		VkResult recycleWait = vkWaitForFences(fb->device->device, 1, &mSubmitFence[currentIndex]->fence, VK_TRUE, kFenceWaitNs);
+		if (recycleWait == VK_TIMEOUT)
+		{
+			static int recycleTimeouts = 0;
+			if (++recycleTimeouts <= 8)
+			{
+				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT (submit slot %d): the previous frame in this slot "
+					"never finished.\n" TEXTCOLOR_NORMAL "  See Engine docs/LEVEL_CHANGE_HANG.md. Continuing "
+					"so you can quit cleanly and keep the log.\n", currentIndex);
+			}
+		}
+		else
+		{
+			CheckVulkanError(recycleWait, "vkWaitForFences failed");
+		}
 		vkResetFences(fb->device->device, 1, &mSubmitFence[currentIndex]->fence);
 	}
 
@@ -249,8 +280,49 @@ void VkCommandBufferManager::WaitForCommands(bool finish, bool uploadOnly, bool 
 
 	if (numWaitFences > 0)
 	{
-		// RS FORK -- checked, as above.
-		CheckVulkanError(vkWaitForFences(fb->device->device, numWaitFences, mSubmitWaitFences, VK_TRUE, std::numeric_limits<uint64_t>::max()), "vkWaitForFences failed");
+		// RS FORK -- A BOUNDED WAIT, BECAUSE AN UNBOUNDED ONE IS A SILENT HANG.
+		//
+		// This was UINT64_MAX: wait forever. A fence that never signals froze the
+		// main thread with no error, no dump and nothing in the log -- the game
+		// simply stopped, one thread spinning in the driver, and the last line
+		// written was whatever happened before the frame. That is the
+		// long-parked "crash on death / respawn / level change", which is none
+		// of those things and is this line. Captured live off a hung process:
+		//
+		//   NtWaitForMultipleObjects -> WaitForMultipleObjects -> (driver)
+		//   VkCommandBufferManager::WaitForCommands   here
+		//   VulkanRenderDevice::Update                vk_renderdevice.cpp
+		//   End2DAndUpdate / D_Display / D_DoomLoop   d_main.cpp
+		//
+		// THIS DOES NOT FIX THE ROOT CAUSE and is not pretending to. Something
+		// loses or orphans a submit across a level teardown and its fence never
+		// signals; finding which submit is the real work. What this does is turn
+		// a PERMANENT SILENT HANG into a LOUD, DIAGNOSABLE FAILURE -- which is
+		// the difference between a bug that survives being parked for months and
+		// one somebody can act on.
+		//
+		// Five seconds is far beyond any legitimate frame: a GPU that has not
+		// finished a frame in five seconds is not busy, it is never going to
+		// finish. On timeout we say so, name the fence count, and carry on
+		// rather than calling CheckVulkanError -- a hard error here would abort
+		// the process on what may be a recoverable stall, and the whole point is
+		// to leave the player somewhere they can quit cleanly and send a log.
+		VkResult waitResult = vkWaitForFences(fb->device->device, numWaitFences, mSubmitWaitFences, VK_TRUE, kFenceWaitNs);
+		if (waitResult == VK_TIMEOUT)
+		{
+			static int timeouts = 0;
+			if (++timeouts <= 8)
+			{
+				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT: %d submit fence(s) did not signal in 5 s.\n"
+					TEXTCOLOR_NORMAL "  The renderer is waiting on work the GPU never finished. This is the "
+					"level-change / respawn hang;\n  see Engine docs/LEVEL_CHANGE_HANG.md. The game is "
+					"continuing so you can quit cleanly and keep the log.\n", numWaitFences);
+			}
+		}
+		else
+		{
+			CheckVulkanError(waitResult, "vkWaitForFences failed");
+		}
 		vkResetFences(fb->device->device, numWaitFences, mSubmitWaitFences);
 	}
 
