@@ -31,6 +31,9 @@
 #include "hw_perflog.h"	// RS FORK -- r_perflog: UpdateGpuStats feeds it
 #include "v_video.h"
 #include "doomtype.h" // Printf
+#include "i_time.h"		// RS FORK -- I_nsTime, for the polled fence wait below
+#include <thread>
+#include <chrono>
 
 extern int rendered_commandbuffers;
 int current_rendered_commandbuffers;
@@ -51,6 +54,44 @@ extern FString gpuStatOutput;
 //
 // One constant so the two waits cannot drift apart, and so raising it is one edit.
 static const uint64_t kFenceWaitNs = 5ull * 1000ull * 1000ull * 1000ull;	// 5 s
+
+// RS FORK -- WAIT ON FENCES WITHOUT HANDING CONTROL TO THE DRIVER.
+//
+// vkWaitForFences TAKES A TIMEOUT AND DOES NOT ALWAYS HONOUR IT. Captured live off
+// a hung process: the driver sits in WaitForMultipleObjects on a kernel event with
+// no deadline of its own, so a finite timeout handed to Vulkan never comes back.
+//
+// THIS IS NOT A GUESS. Bounding the Vulkan call was tried first, and the respawn
+// hang reproduced with the timeout in place and no message printed -- the driver
+// swallowed the deadline. That negative result is what produced this function.
+//
+// So POLL. vkGetFenceStatus never blocks, so the deadline is OURS. It costs one
+// call per fence per millisecond while stalled and nothing on a healthy frame,
+// because the first poll succeeds.
+//
+// outWhy names WHICH failure happened: a LOST DEVICE reads very differently from
+// work that simply never finished, and a log that cannot tell them apart sends
+// the next person down the wrong path.
+static bool RS_WaitFencesPolled(VulkanDevice* device, uint32_t count, const VkFence* fences, uint64_t timeoutNs, const char*& outWhy)
+{
+	outWhy = nullptr;
+	const uint64_t deadline = I_nsTime() + timeoutNs;
+	for (;;)
+	{
+		uint32_t signalled = 0;
+		for (uint32_t i = 0; i < count; i++)
+		{
+			VkResult st = vkGetFenceStatus(device->device, fences[i]);
+			if (st == VK_SUCCESS) { signalled++; continue; }
+			if (st == VK_NOT_READY) continue;
+			outWhy = (st == VK_ERROR_DEVICE_LOST) ? "the device was LOST" : "a fence query failed";
+			return false;
+		}
+		if (signalled == count) return true;
+		if (I_nsTime() >= deadline) { outWhy = "they never signalled"; return false; }
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+}
 
 // RS FORK -- GPU CHECKPOINTS (vk_gpu_checkpoints, defined in vk_renderdevice.cpp).
 //
@@ -184,20 +225,16 @@ void VkCommandBufferManager::FlushCommands(VulkanCommandBuffer** commands, size_
 		// nothing in the log. This one is the RECYCLE wait -- we are about to
 		// reuse a submit slot and are waiting for its previous frame to finish
 		// -- so it is reachable on any frame, not only across a teardown.
-		VkResult recycleWait = vkWaitForFences(fb->device->device, 1, &mSubmitFence[currentIndex]->fence, VK_TRUE, kFenceWaitNs);
-		if (recycleWait == VK_TIMEOUT)
+		const char* recycleWhy = nullptr;
+		if (!RS_WaitFencesPolled(fb->device.get(), 1, &mSubmitFence[currentIndex]->fence, kFenceWaitNs, recycleWhy))
 		{
 			static int recycleTimeouts = 0;
 			if (++recycleTimeouts <= 8)
 			{
-				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT (submit slot %d): the previous frame in this slot "
-					"never finished.\n" TEXTCOLOR_NORMAL "  See Engine docs/LEVEL_CHANGE_HANG.md. Continuing "
-					"so you can quit cleanly and keep the log.\n", currentIndex);
+				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT (submit slot %d): the previous frame in this slot -- %s.\n"
+					TEXTCOLOR_NORMAL "  See Engine docs/LEVEL_CHANGE_HANG.md. Continuing so you can quit "
+					"cleanly and keep the log.\n", currentIndex, recycleWhy ? recycleWhy : "unknown");
 			}
-		}
-		else
-		{
-			CheckVulkanError(recycleWait, "vkWaitForFences failed");
 		}
 		vkResetFences(fb->device->device, 1, &mSubmitFence[currentIndex]->fence);
 	}
@@ -307,21 +344,17 @@ void VkCommandBufferManager::WaitForCommands(bool finish, bool uploadOnly, bool 
 		// rather than calling CheckVulkanError -- a hard error here would abort
 		// the process on what may be a recoverable stall, and the whole point is
 		// to leave the player somewhere they can quit cleanly and send a log.
-		VkResult waitResult = vkWaitForFences(fb->device->device, numWaitFences, mSubmitWaitFences, VK_TRUE, kFenceWaitNs);
-		if (waitResult == VK_TIMEOUT)
+		const char* why = nullptr;
+		if (!RS_WaitFencesPolled(fb->device.get(), (uint32_t)numWaitFences, mSubmitWaitFences, kFenceWaitNs, why))
 		{
 			static int timeouts = 0;
 			if (++timeouts <= 8)
 			{
-				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT: %d submit fence(s) did not signal in 5 s.\n"
+				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT: %d submit fence(s) -- %s.\n"
 					TEXTCOLOR_NORMAL "  The renderer is waiting on work the GPU never finished. This is the "
-					"level-change / respawn hang;\n  see Engine docs/LEVEL_CHANGE_HANG.md. The game is "
-					"continuing so you can quit cleanly and keep the log.\n", numWaitFences);
+					"level-change / respawn hang;\n  see Engine docs/LEVEL_CHANGE_HANG.md. Continuing so you "
+					"can quit cleanly and keep the log.\n", numWaitFences, why ? why : "unknown");
 			}
-		}
-		else
-		{
-			CheckVulkanError(waitResult, "vkWaitForFences failed");
 		}
 		vkResetFences(fb->device->device, numWaitFences, mSubmitWaitFences);
 	}

@@ -31,6 +31,8 @@
 #include "v_draw.h"
 #include "s_soundinternal.h"
 #include "i_time.h"
+#include <chrono>	// RS FORK -- the wipe deadline uses REAL time, not the scalable clock
+#include "printf.h"	// RS FORK -- Printf / TEXTCOLOR_*, for the abandoned-wipe report
 
 EXTERN_CVAR(Bool, cl_capfps)
 
@@ -523,8 +525,37 @@ void PerformWipe(FTexture* startimg, FTexture* endimg, int wipe_type, bool stops
 
 	wipestart = I_msTime();
 
+	// RS FORK -- A WIPE CANNOT RUN FOREVER.
+	//
+	// This loop exits only when the wiper reports done, and the wiper advances by
+	// diff_frac, which comes from I_msTime(). THAT CLOCK IS SCALED BY TimeScale
+	// (GetClockTimeNS, i_time.cpp) -- our own world-clock addition. Scale it far
+	// enough down and diff_frac rounds to nothing, the wiper never advances, and
+	// this loop spins forever with the game frozen and NOTHING IN THE LOG.
+	//
+	// That is the long-parked "crash on death / respawn / level change". It is not
+	// a crash: it is here. A screen wipe is a quarter-second of cosmetics and it
+	// must never be able to cost the player their session.
+	//
+	// The deadline is steady_clock -- REAL time, deliberately not I_msTime, because
+	// the clock we are protecting against is the one that can stop. Three seconds is
+	// roughly ten times the longest legitimate wipe.
+	const auto wipeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+
 	do
 	{
+		if (std::chrono::steady_clock::now() > wipeDeadline)
+		{
+			static int complained = 0;
+			if (++complained <= 4)
+			{
+				Printf(TEXTCOLOR_RED "WIPE ABANDONED after 3 s -- it was not advancing.\n"
+					TEXTCOLOR_NORMAL "  The wipe clock is scaled by the world time scale; at a small enough "
+					"scale a wipe cannot finish.\n  See Engine docs/LEVEL_CHANGE_HANG.md. Carrying on to the "
+					"new level.\n");
+			}
+			break;
+		}
 		if (wiper->Interpolatable() && !cl_capfps)
 		{
 			nowtime = I_msTime();
