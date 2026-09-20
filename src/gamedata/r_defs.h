@@ -665,6 +665,24 @@ struct sector_t
 		PalEntry GlowColor;
 		float GlowHeight;
 		int GlowFalloff;      // 0 linear, 1 quadratic, 2 sqrt, 3 exponential -- see FlatGlowFalloff below
+		// [GLOWINSET] HOW FAR FROM THE PLANE THE GLOW STARTS.
+		//
+		// Every glow in this family is brightest AT the plane and dies away from
+		// it, which paints the glow ON the seam: a lit floor meeting an unlit wall
+		// puts full brightness hard against nothing, and the junction reads as a
+		// cut rather than as light. The owner, of the bioluminescent preset:
+		// "can we have it fade OUT before it hits the seams".
+		//
+		// Inset is the distance over which it ramps UP first. Inside it the glow
+		// climbs from dark at the seam to full at the inset; beyond it the usual
+		// falloff runs over what reach is left. A surface then glows in its middle
+		// and goes dark into its corners, which reads as the SURFACE being the
+		// light rather than the join.
+		//
+		// 0 IS EXACTLY TODAY'S CURVE, and that is the contract: every existing map,
+		// caller and preset draws identical pixels, and at 0 the glow shaders come
+		// out byte-identical rather than merely similar.
+		float GlowInset;
 		float GlowIntensity;  // multiplier, 0.0-2.0+ -- see FlatGlowIntensity below
 
 		// [BB] The colour the wall glow fades TOWARD. GlowColor is what it
@@ -679,6 +697,7 @@ struct sector_t
 		// missing: a floor or ceiling that visibly glows on its own face.
 		PalEntry FlatGlowColor;
 		float FlatGlowHeight;      // reach inward from the nearest edge, in map units
+		float FlatGlowInset;       // [GLOWINSET] ramp-up distance from the edge; 0 = today
 		int FlatGlowFalloff;       // 0 linear, 1 quadratic, 2 sqrt, 3 exponential
 		float FlatGlowIntensity;   // multiplier on the COLOUR, 0.0-2.0+, same
 		                           // quantity the wall glow's intensity is
@@ -1021,6 +1040,11 @@ public:
 	PalEntry GetFlatGlowColor(int pos) { return planes[pos].FlatGlowColor; }
 	void SetFlatGlowHeight(int pos, float height) { planes[pos].FlatGlowHeight = height; }
 	float GetFlatGlowHeight(int pos) { return planes[pos].FlatGlowHeight; }
+	// [GLOWINSET] see the field. 0 = the glow is brightest at the plane, as it always was.
+	void SetGlowInset(int pos, float d) { planes[pos].GlowInset = d; }
+	float GetGlowInset(int pos) { return planes[pos].GlowInset; }
+	void SetFlatGlowInset(int pos, float d) { planes[pos].FlatGlowInset = d; }
+	float GetFlatGlowInset(int pos) { return planes[pos].FlatGlowInset; }
 	void SetFlatGlowFalloff(int pos, int falloff) { planes[pos].FlatGlowFalloff = falloff; }
 	int GetFlatGlowFalloff(int pos) { return planes[pos].FlatGlowFalloff; }
 	void SetFlatGlowIntensity(int pos, float inten) { planes[pos].FlatGlowIntensity = inten; }

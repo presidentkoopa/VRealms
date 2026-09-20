@@ -632,6 +632,36 @@ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, SetXOffset, SetXOffset)
 	 return 0;
  }
 
+ // [GLOWINSET] How far from the plane / the flat's edge the glow ramps up before
+ // it starts falling off. 0 is the old curve exactly. See sector_t's fields.
+ static void SetGlowInset(sector_t *self, int pos, double o)
+ {
+	 self->SetGlowInset(pos, float(o));
+ }
+
+ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, SetGlowInset, SetGlowInset)
+ {
+	 PARAM_SELF_STRUCT_PROLOGUE(sector_t);
+	 PARAM_INT(pos);
+	 PARAM_FLOAT(o);
+	 self->SetGlowInset(pos, float(o));
+	 return 0;
+ }
+
+ static void SetFlatGlowInset(sector_t *self, int pos, double o)
+ {
+	 self->SetFlatGlowInset(pos, float(o));
+ }
+
+ DEFINE_ACTION_FUNCTION_NATIVE(_Sector, SetFlatGlowInset, SetFlatGlowInset)
+ {
+	 PARAM_SELF_STRUCT_PROLOGUE(sector_t);
+	 PARAM_INT(pos);
+	 PARAM_FLOAT(o);
+	 self->SetFlatGlowInset(pos, float(o));
+	 return 0;
+ }
+
  static void SetFlatGlowFalloff(sector_t *self, int pos, int o)
  {
 	 self->SetFlatGlowFalloff(pos, o);

@@ -3738,12 +3738,23 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	float topReach = uGlowTopColor.a * (1.0 + uGlowWaveDepth.x * wTop);
 	if (uGlowTopColor.a > 0.0 && glowdist.x < topReach)
 	{
-		float topfrac = glowdist.x / topReach;
+	// [GLOWINSET] The glow ramps UP over the first `inset` units, then falls off
+	// over what reach is left. At inset 0 the else-branch is the old expression
+	// term for term and the if-branch is unreachable, so nothing changes.
+		float topInset = min(uGlowInset.x, topReach);
 		float topatten;
+		if (glowdist.x < topInset)
+		{
+			topatten = glowdist.x / max(topInset, 0.0001);
+		}
+		else
+		{
+		float topfrac = (glowdist.x - topInset) / max(topReach - topInset, 0.0001);
 		if (uGlowTopFalloff == 0)      topatten = 1.0 - topfrac;
 		else if (uGlowTopFalloff == 1) topatten = 1.0 - topfrac * topfrac;
 		else if (uGlowTopFalloff == 2) topatten = 1.0 - sqrt(topfrac);
 		else                            topatten = exp(-topfrac * 3.0);
+		}
 		vec3 gtop = uGlowTopColor.rgb;
 		// Colour depth slides the near/far boundary without touching the
 		// shape -- the band stands still and the colour moves through it.
@@ -3756,12 +3767,23 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 	float botReach = uGlowBottomColor.a * (1.0 + uGlowWaveDepth.x * wBot);
 	if (uGlowBottomColor.a > 0.0 && glowdist.y < botReach)
 	{
-		float botfrac = glowdist.y / botReach;
+	// [GLOWINSET] The glow ramps UP over the first `inset` units, then falls off
+	// over what reach is left. At inset 0 the else-branch is the old expression
+	// term for term and the if-branch is unreachable, so nothing changes.
+		float botInset = min(uGlowInset.y, botReach);
 		float botatten;
+		if (glowdist.y < botInset)
+		{
+			botatten = glowdist.y / max(botInset, 0.0001);
+		}
+		else
+		{
+		float botfrac = (glowdist.y - botInset) / max(botReach - botInset, 0.0001);
 		if (uGlowBottomFalloff == 0)      botatten = 1.0 - botfrac;
 		else if (uGlowBottomFalloff == 1) botatten = 1.0 - botfrac * botfrac;
 		else if (uGlowBottomFalloff == 2) botatten = 1.0 - sqrt(botfrac);
 		else                                botatten = exp(-botfrac * 3.0);
+		}
 		vec3 gbot = uGlowBottomColor.rgb;
 		if (uGlowBottomFar.a > 0.0)
 			gbot = mix(uGlowBottomFar.rgb, gbot, clamp(botatten + uGlowWaveDepth.z * wBot, 0.0, 1.0));
@@ -3840,12 +3862,26 @@ vec4 getLightColor(Material material, float fogdist, float fogfactor)
 		float reach = uFlatGlowColor.a * (1.0 + uGlowWaveDepth.x * wFlat);
 		if (minDist < reach)
 		{
-			float frac = minDist / reach;
+			// [GLOWINSET] THE ONE THE OWNER ASKED FOR: "can we have it fade OUT
+			// before it hits the seams". Inside the inset the flat's glow climbs
+			// from dark at its edge to full; past it the usual falloff runs over
+			// what reach is left. A floor then glows in its middle and goes dark
+			// into the corners instead of meeting an unlit wall at full brightness.
+			// At inset 0 this is the old expression term for term.
+			float flatInset = min(uGlowInset.z, reach);
 			float atten;
+			if (minDist < flatInset)
+			{
+				atten = minDist / max(flatInset, 0.0001);
+			}
+			else
+			{
+			float frac = (minDist - flatInset) / max(reach - flatInset, 0.0001);
 			if (uFlatGlowFalloff == 0)      atten = 1.0 - frac;
 			else if (uFlatGlowFalloff == 1) atten = 1.0 - frac * frac;
 			else if (uFlatGlowFalloff == 2) atten = 1.0 - sqrt(frac);
 			else                             atten = exp(-frac * 3.0);
+			}
 
 			vec3 gflat = uFlatGlowColor.rgb;
 			if (uFlatGlowFar.a > 0.0)

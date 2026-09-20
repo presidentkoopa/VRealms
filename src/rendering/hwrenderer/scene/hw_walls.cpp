@@ -346,6 +346,12 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 			frontsector->GetGlowIntensity(sector_t::ceiling) > 0.f ? frontsector->GetGlowIntensity(sector_t::ceiling) : 1.0f,
 			frontsector->GetGlowFalloff(sector_t::floor),
 			frontsector->GetGlowIntensity(sector_t::floor) > 0.f ? frontsector->GetGlowIntensity(sector_t::floor) : 1.0f);
+		// [GLOWINSET] How far from each plane the glow starts. The flat lane sets
+		// its own z in hw_flats; a wall draw never lights a flat, so 0 here.
+		state.SetGlowInset(
+			frontsector->GetGlowInset(sector_t::ceiling),
+			frontsector->GetGlowInset(sector_t::floor),
+			0.0f);
 	}
 
 	// [BB] ALWAYS, not only when this wall glows.

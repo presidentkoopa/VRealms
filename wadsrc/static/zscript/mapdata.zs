@@ -621,6 +621,12 @@ struct Sector native play
 	native clearscope void SetFlatGlowColor(int pos, color color);
 	native clearscope void SetFlatGlowColorFar(int pos, color color);
 	native clearscope void SetFlatGlowHeight(int pos, double height);
+	// [GLOWINSET] The glow ramps UP over this distance before it starts to fade,
+	// so a surface glows in its middle and goes dark into its seams. 0 = the old
+	// curve: brightest at the plane. SetGlowInset is the wall lanes',
+	// SetFlatGlowInset the flat's own face.
+	native clearscope void SetGlowInset(int pos, double dist);
+	native clearscope void SetFlatGlowInset(int pos, double dist);
 	native clearscope void SetFlatGlowFalloff(int pos, int falloff);
 	native clearscope void SetFlatGlowIntensity(int pos, double intensity);
 	native clearscope color GetFlatGlowColor(int pos) const;

@@ -764,6 +764,7 @@ static const char *shaderBindings = R"(
 		vec4 uGlowBottomColor;
 		vec4 uGlowTopFar;
 		vec4 uGlowBottomFar;
+		vec4 uGlowInset;
 		int uGlowTopFalloff;
 		int uGlowBottomFalloff;
 		float uGlowTopIntensity;
@@ -977,6 +978,7 @@ static const char *shaderBindings = R"(
 	#define uGlowBottomColor data[uDataIndex].uGlowBottomColor
 	#define uGlowTopFar data[uDataIndex].uGlowTopFar
 	#define uGlowBottomFar data[uDataIndex].uGlowBottomFar
+	#define uGlowInset data[uDataIndex].uGlowInset
 	#define uGlowTopFalloff data[uDataIndex].uGlowTopFalloff
 	#define uGlowBottomFalloff data[uDataIndex].uGlowBottomFalloff
 	#define uGlowTopIntensity data[uDataIndex].uGlowTopIntensity

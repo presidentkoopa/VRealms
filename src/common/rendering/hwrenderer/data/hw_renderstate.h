@@ -238,6 +238,20 @@ struct StreamData
 	FVector4 uGlowTopFar;
 	FVector4 uGlowBottomFar;
 
+	// [GLOWINSET] HOW FAR FROM THE PLANE EACH GLOW STARTS: x top wall, y bottom
+	// wall, z the flat's own face. w unused.
+	//
+	// Every glow here is brightest AT the plane and dies away from it, which
+	// paints the light ON the seam: a lit floor meeting an unlit wall puts full
+	// brightness hard against nothing and the junction reads as a cut. Inset is
+	// the distance the glow ramps UP over first, so a surface glows in its middle
+	// and goes dark into its corners -- the surface being the light, rather than
+	// the join.
+	//
+	// 0 IS EXACTLY THE OLD CURVE, term for term, and that is the contract: every
+	// existing map, caller and preset draws identical pixels.
+	FVector4 uGlowInset;
+
 	// [BB] Falloff shape and intensity for wall glow, matching flat-edge
 	// glow below.
 	int uGlowTopFalloff;
@@ -463,6 +477,7 @@ public:
 		mStreamData.uGlowBottomColor = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGlowTopFar = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGlowBottomFar = { 0.0f, 0.0f, 0.0f, 0.0f };
+		mStreamData.uGlowInset = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGlowTopFalloff = 0;
 		mStreamData.uGlowBottomFalloff = 0;
 		mStreamData.uGlowTopIntensity = 1.0f;
@@ -622,6 +637,7 @@ public:
 			mStreamData.uGlowBottomColor = { 0.0f, 0.0f, 0.0f, 0.0f };
 			mStreamData.uGlowTopFar = { 0.0f, 0.0f, 0.0f, 0.0f };
 			mStreamData.uGlowBottomFar = { 0.0f, 0.0f, 0.0f, 0.0f };
+			mStreamData.uGlowInset = { 0.0f, 0.0f, 0.0f, 0.0f };
 		}
 		mGlowEnabled = on;
 	}
@@ -668,6 +684,14 @@ public:
 	{
 		mStreamData.uGlowTopFar = t;
 		mStreamData.uGlowBottomFar = b;
+	}
+
+	// [GLOWINSET] Ramp-up distance for each lane; 0 leaves that lane exactly as
+	// it was. Its own setter rather than widening SetGlowParams, so no existing
+	// caller changes -- the same reason SetGlowFalloffIntensity is separate.
+	void SetGlowInset(float topInset, float bottomInset, float flatInset)
+	{
+		mStreamData.uGlowInset = { topInset, bottomInset, flatInset, 0.0f };
 	}
 
 	// [BB] Falloff shape and intensity for wall glow. Kept separate from

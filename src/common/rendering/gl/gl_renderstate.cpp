@@ -149,6 +149,7 @@ bool FGLRenderState::ApplyShader()
 		activeShader->muGlowBottomColor.Set(&mStreamData.uGlowBottomColor.X);
 		activeShader->muGlowTopFar.Set(&mStreamData.uGlowTopFar.X);
 		activeShader->muGlowBottomFar.Set(&mStreamData.uGlowBottomFar.X);
+		activeShader->muGlowInset.Set(&mStreamData.uGlowInset.X);
 		activeShader->muGlowTopPlane.Set(&mStreamData.uGlowTopPlane.X);
 		activeShader->muGlowBottomPlane.Set(&mStreamData.uGlowBottomPlane.X);
 		activeShader->muGlowTopFalloff.Set(mStreamData.uGlowTopFalloff);

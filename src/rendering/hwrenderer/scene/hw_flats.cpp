@@ -485,6 +485,9 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 				             (float)ln->v2->fX(), (float)ln->v2->fY() };
 			}
 			state.SetFlatGlowParams(r, g, b, reach, farColor, sp.FlatGlowFalloff, count, lines, ceiling ? 1 : 0);
+			// [GLOWINSET] The flat's own ramp-up from its edges. The two wall
+			// lanes are not this draw's business, so they stay 0.
+			state.SetGlowInset(0.0f, 0.0f, sp.FlatGlowInset);
 		}
 		else
 		{

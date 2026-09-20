@@ -471,6 +471,7 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 		uniform vec4 uGlowBottomColor;
 		uniform vec4 uGlowTopFar;
 		uniform vec4 uGlowBottomFar;
+		uniform vec4 uGlowInset;
 		uniform int uGlowTopFalloff;
 		uniform int uGlowBottomFalloff;
 		uniform float uGlowTopIntensity;
@@ -918,6 +919,7 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 	muGlowTopColor.Init(hShader, "uGlowTopColor");
 	muGlowBottomFar.Init(hShader, "uGlowBottomFar");
 	muGlowTopFar.Init(hShader, "uGlowTopFar");
+	muGlowInset.Init(hShader, "uGlowInset");
 	muGlowBottomPlane.Init(hShader, "uGlowBottomPlane");
 	muGlowTopPlane.Init(hShader, "uGlowTopPlane");
 	muGlowTopFalloff.Init(hShader, "uGlowTopFalloff");
