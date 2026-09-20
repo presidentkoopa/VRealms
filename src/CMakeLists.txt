@@ -382,6 +382,7 @@ set( PLAT_WIN32_SOURCES
 	common/platform/win32/i_main.cpp
 	common/platform/win32/i_mainwindow.cpp
 	common/platform/win32/i_system.cpp
+	common/platform/win32/i_hangwatch.cpp
 	common/platform/win32/i_specialpaths.cpp
 	common/platform/win32/st_start.cpp
 	common/platform/win32/gl_sysfb.cpp

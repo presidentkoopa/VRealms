@@ -72,6 +72,103 @@ static const uint64_t kFenceWaitNs = 5ull * 1000ull * 1000ull * 1000ull;	// 5 s
 // outWhy names WHICH failure happened: a LOST DEVICE reads very differently from
 // work that simply never finished, and a log that cannot tell them apart sends
 // the next person down the wrong path.
+// ============================================================================
+// RS FORK -- THE SUBMIT JOURNAL: what was handed to the GPU, and what came back.
+//
+// THE BUG THIS EXISTS FOR: after a level reset the renderer can wait on a submit
+// fence that never signals. The wait is now bounded, so the game degrades instead
+// of freezing -- but bounding it says only THAT one never came back, never WHICH
+// submit it was or what was in it. A stack cannot tell you either: it only shows
+// that we are sleeping in the poll.
+//
+// So every submit records itself, and every completion records itself, and when a
+// wait gives up the whole recent history is written out. The orphan is then the
+// entry with no completion.
+//
+// WRITTEN STRAIGHT TO A FILE AND FLUSHED, NOT THROUGH Printf. This is the second
+// thing that cost time: the harness kills a stuck process, and buffered console
+// output dies with it -- diagnostics fired and never reached disk, which reads
+// exactly like diagnostics that never fired. A file closed on the spot survives a
+// kill.
+// ============================================================================
+struct RS_SubmitRecord
+{
+	uint64_t serial = 0;		// submit number since startup, never reused
+	int      slot = -1;			// the fence slot it occupies
+	uint64_t atMs = 0;			// WHEN, in real milliseconds. gametic is game code and this file is
+								// common/ -- but a gap in this column still shows a stall or a reset.
+	uint32_t buffers = 0;		// how many command buffers went in
+	bool     finish = false;	// this submit ends a frame (it presents)
+	bool     lastsubmit = false;
+	bool     uploadOnly = false;
+	bool     presented = false;	// it waited on the swapchain image
+	bool     completed = false;	// its fence was later seen signalled
+};
+
+static const int RS_JOURNAL_SIZE = 64;
+static RS_SubmitRecord RS_Journal[RS_JOURNAL_SIZE];
+static uint64_t RS_JournalNext = 0;
+static uint64_t RS_SubmitSerial = 0;
+
+static void RS_JournalSubmit(int slot, uint32_t buffers, bool finish, bool lastsubmit, bool uploadOnly, bool presented)
+{
+	RS_SubmitRecord &r = RS_Journal[RS_JournalNext % RS_JOURNAL_SIZE];
+	r = RS_SubmitRecord();
+	r.serial = ++RS_SubmitSerial;
+	r.slot = slot;
+	r.atMs = I_msTime();
+	r.buffers = buffers;
+	r.finish = finish;
+	r.lastsubmit = lastsubmit;
+	r.uploadOnly = uploadOnly;
+	r.presented = presented;
+	RS_JournalNext++;
+}
+
+// Mark every journal entry on this slot as completed. A slot is reused, so only the
+// MOST RECENT entry for it is the one that just finished -- older ones on the same
+// slot were completed earlier and are already marked.
+static void RS_JournalCompleted(int slot)
+{
+	for (int back = 1; back <= RS_JOURNAL_SIZE; back++)
+	{
+		if (RS_JournalNext < (uint64_t)back) break;
+		RS_SubmitRecord &r = RS_Journal[(RS_JournalNext - back) % RS_JOURNAL_SIZE];
+		if (r.slot == slot) { r.completed = true; return; }
+	}
+}
+
+// Dump it. Called once per stall, from whichever wait gave up.
+static void RS_JournalDump(const char *where, int slot, uint32_t stillWaiting, uint32_t count)
+{
+	FILE *f = fopen("gpu_stall.txt", "at");
+	if (f == nullptr) return;
+	fprintf(f, "\n==== GPU STALL at %s, t=%llu ms ====\n", where, (unsigned long long)I_msTime());
+	fprintf(f, "waited on %u fence(s); still unsignalled mask 0x%X", count, stillWaiting);
+	if (slot >= 0) fprintf(f, " (recycle slot %d)", slot);
+	fprintf(f, "\n\nthe last %d submits, newest first:\n", RS_JOURNAL_SIZE);
+	fprintf(f, "  %-8s %-5s %-8s %-4s %-7s %-5s %-7s %-6s %s\n",
+		"serial", "slot", "at ms", "bufs", "finish", "last", "upload", "presnt", "COMPLETED");
+	for (int back = 1; back <= RS_JOURNAL_SIZE; back++)
+	{
+		if (RS_JournalNext < (uint64_t)back) break;
+		const RS_SubmitRecord &r = RS_Journal[(RS_JournalNext - back) % RS_JOURNAL_SIZE];
+		if (r.serial == 0) continue;
+		fprintf(f, "  %-8llu %-5d %-8d %-4u %-7s %-5s %-7s %-6s %s\n",
+			(unsigned long long)r.serial, r.slot, (unsigned long long)r.atMs, r.buffers,
+			r.finish ? "yes" : "-", r.lastsubmit ? "yes" : "-",
+			r.uploadOnly ? "yes" : "-", r.presented ? "yes" : "-",
+			r.completed ? "done" : ">>> NEVER COMPLETED <<<");
+	}
+	fprintf(f, "\nTHE ORPHAN IS THE OLDEST ENTRY MARKED NEVER COMPLETED.\n"
+		"Its timestamp says whether it straddles a stall or a reset; finish/presnt say whether it was\n"
+		"a presenting frame; upload says whether it was a transfer-only submit.\n");
+	fclose(f);		// closed on the spot: a killed process must not lose this
+}
+
+// The unsignalled mask from the most recent give-up, so the journal dump can name the slots.
+static uint32_t RS_LastStillWaiting = 0;
+
 static bool RS_WaitFencesPolled(VulkanDevice* device, uint32_t count, const VkFence* fences, uint64_t timeoutNs, const char*& outWhy)
 {
 	outWhy = nullptr;
@@ -106,6 +203,7 @@ static bool RS_WaitFencesPolled(VulkanDevice* device, uint32_t count, const VkFe
 				Printf(TEXTCOLOR_RED "  unsignalled fence slot(s): %s  (of %u)\n",
 					which.IsEmpty() ? "none -- they signalled between the last poll and the deadline" : which.GetChars(), count);
 			}
+			RS_LastStillWaiting = stillWaiting;
 			outWhy = "they never signalled";
 			return false;
 		}
@@ -246,9 +344,14 @@ void VkCommandBufferManager::FlushCommands(VulkanCommandBuffer** commands, size_
 		// reuse a submit slot and are waiting for its previous frame to finish
 		// -- so it is reachable on any frame, not only across a teardown.
 		const char* recycleWhy = nullptr;
-		if (!RS_WaitFencesPolled(fb->device.get(), 1, &mSubmitFence[currentIndex]->fence, kFenceWaitNs, recycleWhy))
+		if (RS_WaitFencesPolled(fb->device.get(), 1, &mSubmitFence[currentIndex]->fence, kFenceWaitNs, recycleWhy))
+		{
+			RS_JournalCompleted(currentIndex);
+		}
+		else
 		{
 			static int recycleTimeouts = 0;
+			if (recycleTimeouts == 0) RS_JournalDump("FlushCommands recycle", currentIndex, 1u, 1u);
 			if (++recycleTimeouts <= 8)
 			{
 				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT (submit slot %d): the previous frame in this slot -- %s.\n"
@@ -277,6 +380,10 @@ void VkCommandBufferManager::FlushCommands(VulkanCommandBuffer** commands, size_
 	if (!lastsubmit)
 		submit.AddSignal(mSubmitSemaphore[currentIndex].get());
 
+	// [JOURNAL] Recorded BEFORE Execute: if the submit itself throws, the attempt is still
+	// on record, and an attempt with no completion is exactly what we are hunting.
+	RS_JournalSubmit(currentIndex, (uint32_t)count, finish, lastsubmit, mIsUploadOnly,
+		finish && framebuffers->PresentImageIndex != -1);
 	submit.Execute(fb->device.get(), *queue, mSubmitFence[currentIndex].get());
 	mNextSubmit++;
 }
@@ -365,9 +472,15 @@ void VkCommandBufferManager::WaitForCommands(bool finish, bool uploadOnly, bool 
 		// the process on what may be a recoverable stall, and the whole point is
 		// to leave the player somewhere they can quit cleanly and send a log.
 		const char* why = nullptr;
-		if (!RS_WaitFencesPolled(fb->device.get(), (uint32_t)numWaitFences, mSubmitWaitFences, kFenceWaitNs, why))
+		if (RS_WaitFencesPolled(fb->device.get(), (uint32_t)numWaitFences, mSubmitWaitFences, kFenceWaitNs, why))
+		{
+			// Every slot we were waiting on has now finished.
+			for (int i = 0; i < numWaitFences; i++) RS_JournalCompleted(i);
+		}
+		else
 		{
 			static int timeouts = 0;
+			if (timeouts == 0) RS_JournalDump("WaitForCommands", -1, RS_LastStillWaiting, (uint32_t)numWaitFences);
 			if (++timeouts <= 8)
 			{
 				Printf(TEXTCOLOR_RED "GPU FENCE TIMEOUT: %d submit fence(s) -- %s.\n"

@@ -476,6 +476,59 @@ void FMDLModel::LoadGeometry(FileSys::FileData* lumpData)
 
 //===========================================================================
 //
+// FMDLModel::UnloadGeometry
+//
+// FREE ONLY WHAT LoadGeometry MADE. This exists because the base class's
+// version freed things this format never rebuilds, and that was a crash.
+//
+// WHAT WENT WRONG, because the shape of it will recur. FDMDModel's vertex
+// buffer builder is LoadGeometry -> fill -> UnloadGeometry, and for MD2 and DMD
+// that round trip is symmetric: LoadGeometry makes the frame vertices, the
+// texcoords AND the triangle lists, so UnloadGeometry is right to free all
+// three. MDL is not symmetric. Its texcoords and triangles are derived once, in
+// Load(), out of the seam-expansion pass -- they cannot be rebuilt from the
+// lump alone without redoing it, and LoadGeometry does not try. So the
+// inherited UnloadGeometry was freeing permanent data as though it were
+// scratch.
+//
+// The first draw was always fine. The SECOND build -- which is what a level
+// reload, a respawn or a new game triggers -- called LoadGeometry, got its
+// frame vertices back, and then walked a texCoords array that had been deleted
+// and never remade. An access violation inside the render pass, a crash dialog
+// opening behind the VR view, and from the player's side the game simply froze
+// on respawn. It cost days.
+//
+// THE RULE THIS SETTLES: UnloadGeometry drops exactly what the matching
+// LoadGeometry can put back, and nothing else. Any future format whose loader
+// precomputes something at Load time overrides this the same way.
+//
+//===========================================================================
+
+void FMDLModel::UnloadGeometry()
+{
+	// The frame vertices, and only those: FMDLModel::LoadGeometry rebuilds them
+	// from the lump every time it is asked, so they are safe to drop.
+	if (framevtx != NULL)
+	{
+		for (int i = 0; i < info.numFrames; i++)
+		{
+			if (framevtx[i].vertices != NULL) delete[] framevtx[i].vertices;
+			if (framevtx[i].normals != NULL) delete[] framevtx[i].normals;
+			framevtx[i].vertices = NULL;
+			framevtx[i].normals = NULL;
+		}
+		delete[] framevtx;
+		framevtx = NULL;
+	}
+
+	// texCoords and lods[].triangles are deliberately LEFT ALONE. They belong to
+	// Load(), they last as long as the model does, and ~FDMDModel still frees
+	// them: a destructor dispatches to its own class's version, so teardown goes
+	// through the base and nothing leaks.
+}
+
+//===========================================================================
+//
 // FMDLModel::AddSkins
 //
 // The skin is ours -- built from the embedded pixels in Load -- so it is

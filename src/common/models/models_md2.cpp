@@ -319,6 +319,63 @@ void FDMDModel::BuildVertexBuffer(FModelRenderer *renderer)
 	{
 		LoadGeometry();
 
+		// ====================================================================
+		// THE GEOMETRY MUST ACTUALLY BE HERE.
+		//
+		// This loop walks four separate heap arrays by index and dereferences
+		// every one of them without ever asking whether they exist. When one of
+		// them is null the result is an access violation deep inside the render
+		// pass -- which is exactly how the respawn crash presented: the engine
+		// died at `texCoords[ti]` reading address 6, the crash dialog opened
+		// behind the VR view, and from the outside the game had simply frozen.
+		//
+		// LoadGeometry() returns EARLY when framevtx is already set, on the
+		// assumption that everything else it allocates is set too. UnloadGeometry()
+		// frees all of them together, so that assumption holds for one caller and
+		// says nothing at all about two. Rather than guess at which caller, this
+		// refuses to draw and SAYS WHICH POINTER AND WHICH MODEL -- a named model
+		// in a report beats a faulting address in a dialog nobody can read.
+		//
+		// Refusing costs one model one frame. The crash cost the session.
+		// ====================================================================
+		const char *missing = nullptr;
+		if (framevtx == nullptr)            missing = "framevtx (the vertex frames)";
+		else if (texCoords == nullptr)      missing = "texCoords (the UVs)";
+		else if (lods[0].triangles == nullptr) missing = "lods[0].triangles";
+		else
+		{
+			for (int i = 0; i < info.numFrames && missing == nullptr; i++)
+			{
+				if (framevtx[i].vertices == nullptr) missing = "framevtx[].vertices";
+				else if (framevtx[i].normals == nullptr) missing = "framevtx[].normals";
+			}
+		}
+		if (missing != nullptr)
+		{
+			// ONCE PER MODEL. A refused model is retried every single frame, and the
+			// first run of this guard wrote ten megabytes of the same four lines --
+			// which buries the one thing the report exists to say.
+			if (reportedMissingGeometry)
+			{
+				return;
+			}
+			reportedMissingGeometry = true;
+
+			// fopen, not Printf: this fires in the render pass, and if it turns out
+			// to be fatal after all, buffered console output dies with the process.
+			if (FILE *f = fopen("model_fault.txt", "at"))
+			{
+				fprintf(f, "FDMDModel::BuildVertexBuffer refused to draw -- %s is null\n"
+				           "  model: %s  (lump %d, %d frames, %d LODs)\n"
+				           "  This would have been an access violation inside the render pass.\n",
+					missing, mFileName.GetChars(), mLumpNum, info.numFrames, info.numLODs);
+				fclose(f);
+			}
+			Printf(TEXTCOLOR_RED "model %s: geometry missing (%s) -- not drawn this frame\n",
+				mFileName.GetChars(), missing);
+			return;
+		}
+
 		int VertexBufferSize = info.numFrames * lodInfo[0].numTriangles * 3;
 		unsigned int vindex = 0;
 

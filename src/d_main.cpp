@@ -25,6 +25,7 @@
 
 #include "c_cvars.h"
 #include "i_net.h"
+#include "i_hangwatch.h"
 #include "i_soundinternal.h"
 
 #ifdef _WIN32
@@ -1966,10 +1967,18 @@ void D_DoomLoop ()
 
 	vid_cursor->Callback();
 
+	// [HANGWATCH] THE LOOP SAYS IT IS ALIVE, AND SAYS WHERE IT IS.
+	// A hang leaves no crash report, no window and no exit code; without this the
+	// only honest answer to "where did it stop" is that nobody can tell. The beats
+	// below cost an atomic increment each and are the difference between a named
+	// function and a week of bisecting. See common/engine/i_hangwatch.h.
+	I_HangWatchStart();
+
 	for (;;)
 	{
 		try
 		{
+			I_HangWatchBeat("top of the main loop");
 			GStrings.SetDefaultGender(players[consoleplayer].userinfo.GetGender()); // cannot be done when the CVAR changes because we don't know if it's for the consoleplayer.
 
 			// frame syncronous IO operations
@@ -1980,12 +1989,16 @@ void D_DoomLoop ()
 			}
 			I_SetFrameTime();
 
+			I_HangWatchBeat("TryRunTics -- running the playsim");
 			TryRunTics (); // will run at least one tic
 
 			// Update display, next frame, with current state.
+			I_HangWatchBeat("I_StartTic / D_ProcessEvents -- input");
 			I_StartTic ();
 			D_ProcessEvents();
+			I_HangWatchBeat("D_Display -- drawing the frame");
 			D_Display ();
+			I_HangWatchBeat("S_UpdateMusic");
 			S_UpdateMusic();
 
 			if (gameloop_abort)

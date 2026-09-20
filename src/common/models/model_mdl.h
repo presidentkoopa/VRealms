@@ -47,6 +47,8 @@ public:
 	virtual void LoadGeometry() override;
 	virtual void LoadGeometry(FileSys::FileData* lumpData) override;
 	virtual void AddSkins(uint8_t *hitlist, const FTextureID* surfaceskinids) override;
+	// Frees ONLY what LoadGeometry made. See models_mdl.cpp.
+	virtual void UnloadGeometry() override;
 
 private:
 	// Filled by Load(), consumed by LoadGeometry(). MDL's sections are laid out

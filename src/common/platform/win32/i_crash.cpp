@@ -207,6 +207,7 @@ struct MiniDumpThreadData
 
 static void AddFile (HANDLE file, const char *filename);
 static void CloseTarFiles ();
+static void AutoSaveCrashReport ();
 static HANDLE MakeZip ();
 static void AddZipFile (HANDLE ziphandle, TarFile *whichfile, short dosdate, short dostime);
 static HANDLE CreateTempFile ();
@@ -1327,6 +1328,97 @@ static void AddFile (HANDLE file, const char *filename)
 
 //==========================================================================
 //
+// AutoSaveCrashReport
+//
+// WRITE THE REPORT BEFORE ANYONE IS ASKED ANYTHING.
+//
+// Until this existed, a crash report only reached disk if a human clicked
+// "Save report" in the crash dialog and then drove a Save As box. That is a
+// fine design for a windowed game on a desk, and it is useless everywhere this
+// engine actually runs:
+//
+//   IN THE HEADSET, the dialog opens behind the VR view. The player sees the
+//   world stop and nothing else. It reads as a freeze, not as a crash, which is
+//   exactly how the respawn crash stayed unexplained -- the engine knew what
+//   had happened the whole time and had no way to say so.
+//
+//   IN THE BOOT TEST, there is nobody at all: the process runs on a hidden
+//   desktop, the dialog waits on a click that can never arrive, and the harness
+//   eventually kills it. Every byte of the report dies with the process.
+//
+// So the report is written first, unconditionally, and the dialog is offered
+// afterwards for whoever is there to see it. Costs a few megabytes on a crash
+// that already ended the session; buys the difference between "it froze" and a
+// faulting address with a symbolized stack.
+//
+// Into the working directory, beside the other post-mortem files this fork
+// writes (hang_stack.txt, gpu_stall.txt), because that is where a run's wreckage
+// is already collected and the boot harness already gives every run its own.
+//
+//==========================================================================
+
+static void AutoSaveCrashReport ()
+{
+	if (NumFiles == 0)
+	{
+		return;
+	}
+
+	SYSTEMTIME st;
+	GetLocalTime (&st);
+	char dir[64];
+	mysnprintf (dir, countof(dir), "crash_%04u%02u%02u-%02u%02u%02u",
+		st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+	if (!CreateDirectoryA (dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
+	{
+		return;
+	}
+
+	for (int i = 0; i < NumFiles; ++i)
+	{
+		// The names come from AddFile and are plain ("report.txt", "minidump.mdmp"),
+		// but a separator would escape the folder, so it never gets the chance.
+		char name[MAX_PATH];
+		mysnprintf (name, countof(name), "%s\\%s", dir, TarFiles[i].Filename ? TarFiles[i].Filename : "part");
+		for (char *c = name + strlen(dir) + 1; *c != 0; ++c)
+		{
+			if (*c == '/' || *c == '\\') *c = '_';
+		}
+
+		HANDLE out = CreateFileA (name, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+		if (out == INVALID_HANDLE_VALUE)
+		{
+			continue;
+		}
+
+		// From the beginning: these handles have been written through and are
+		// sitting at the end. MakeZip is deliberately not involved -- it rewrites
+		// the bookkeeping in TarFiles, and this must not disturb the dialog that
+		// may still zip the very same handles afterwards.
+		SetFilePointer (TarFiles[i].File, 0, NULL, FILE_BEGIN);
+		char xfer[16384];
+		for (;;)
+		{
+			DWORD didread = 0, didwrite = 0;
+			if (!ReadFile (TarFiles[i].File, xfer, sizeof(xfer), &didread, NULL) || didread == 0)
+			{
+				break;
+			}
+			WriteFile (out, xfer, didread, &didwrite, NULL);
+		}
+		CloseHandle (out);
+		SetFilePointer (TarFiles[i].File, 0, NULL, FILE_END);
+	}
+
+	// Say where it went, on the one channel that survives: the same console the
+	// crash text goes to, and stderr for a harness reading a pipe.
+	fprintf (stderr, "\n" GAMENAME " CRASHED. The full report was written to .\\%s\\ before this dialog.\n", dir);
+	fflush (stderr);
+}
+
+//==========================================================================
+//
 // CloseTarFiles
 //
 // Close all files that were previously registerd with AddFile(). They
@@ -2259,6 +2351,9 @@ void DisplayCrashLog ()
 	}
 	else
 	{
+		// FIRST, TO DISK. Nobody may be here to click anything -- see AutoSaveCrashReport.
+		AutoSaveCrashReport ();
+
 		HMODULE uxtheme = LoadLibraryA ("uxtheme.dll");
 		if (uxtheme != NULL)
 		{

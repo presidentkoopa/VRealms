@@ -151,7 +151,16 @@ public:
 	virtual void LoadGeometry(FileSys::FileData* lumpData) override;
 	virtual void AddSkins(uint8_t *hitlist, const FTextureID* surfaceskinids) override;
 
-	void UnloadGeometry();
+	// VIRTUAL, because what "no longer needed after building the vertex buffer"
+	// means is the SUBCLASS'S to say. This base frees texCoords and the triangle
+	// lists along with the frame vertices, which is right for MD2/DMD, where
+	// LoadGeometry rebuilds all three. A format whose loader builds any of them
+	// ONCE (FMDLModel does) must be able to keep them, or the second build after
+	// a level reload finds a null pointer and faults inside the render pass.
+	// Said once, not once a frame: see BuildVertexBuffer's geometry guard.
+	bool reportedMissingGeometry = false;
+
+	virtual void UnloadGeometry();
 	void BuildVertexBuffer(FModelRenderer *renderer);
 	bool GetLocalExtent(float* outMaxAbsX, float* outMaxAbsY, float* outMaxAbsZ) override;
 
