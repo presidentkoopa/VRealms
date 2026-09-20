@@ -27,6 +27,7 @@
 #include <assert.h>
 #include "i_time.h"
 #include "vm.h"
+#include "printf.h"	// RS FORK -- the frozen-clock report below
 
 //==========================================================================
 //
@@ -53,6 +54,11 @@ void I_InitTime()
 {
 	StartupTimeNS = GetTimePoint();
 }
+
+// RS FORK -- how long time has been continuously frozen, for the report in
+// CheckFrameTime below. File scope so the non-frozen path can clear it.
+static uint64_t frozenSince = 0;
+static bool frozenComplained = false;
 
 static uint64_t GetClockTimeNS()
 {
@@ -95,6 +101,38 @@ void I_SetFrameTime()
 		if (FirstFrameStartTime == 0)
 			FirstFrameStartTime = CurrentFrameStartTime;
 	}
+	else
+	{
+		// RS FORK -- TIME THAT STAYS FROZEN IS A HANG, AND IT LOOKS LIKE NOTHING.
+		//
+		// While FreezeTime is set this function does not advance
+		// CurrentFrameStartTime, so I_GetTime returns the same tic forever, so
+		// TryRunTics finds no tics to run, forever. The game is then alive,
+		// drawing, and completely stuck -- with no error and nothing in the log.
+		// That is the shape of the long-parked respawn / level-change hang.
+		//
+		// Every freeze is supposed to be paired with a thaw (a wipe, a movie, a
+		// save with cl_waitforsave). If one is not -- an early return, an
+		// abandoned wipe, a second freeze overwriting the first -- nothing
+		// anywhere says so, because a frozen clock is a legitimate state.
+		//
+		// So: say it. Once, after five real seconds, naming the one thing a
+		// reader needs to know. Real time deliberately: the clock being reported
+		// on is the one that has stopped.
+		const uint64_t nowReal = GetTimePoint();
+		if (frozenSince == 0) frozenSince = nowReal;
+		else if (!frozenComplained && nowReal - frozenSince > 5'000'000'000ull)
+		{
+			frozenComplained = true;
+			Printf(TEXTCOLOR_RED "TIME HAS BEEN FROZEN FOR 5 SECONDS.\n" TEXTCOLOR_NORMAL
+				"  I_FreezeTime was not paired with a thaw, so no game tic can run and the game is "
+				"stuck.\n  See Engine docs/LEVEL_CHANGE_HANG.md.\n");
+		}
+		return;
+	}
+	// Not frozen: reset the watch, so only a CONTINUOUS freeze is ever reported.
+	frozenSince = 0;
+	frozenComplained = false;
 }
 
 void I_WaitVBL(int count)
