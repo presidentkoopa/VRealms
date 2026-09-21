@@ -47,6 +47,10 @@ class FHWModelRenderer : public FModelRenderer
 
 	// RS fork -- SetEyeFade set EFF_EYEFADE for this model's draw and must take it off again.
 	bool     eyeFadeOn = false;
+	// RS fork -- what BeginSurfaceBlend borrowed, for EndSurfaceBlend to put back.
+	FRenderStyle blendSavedStyle;
+	FVector4     blendSavedColor;
+	int          blendSavedDesat = 0;
 public:
 	FHWModelRenderer(HWDrawInfo *d, FRenderState &st, int mli) : modellightindex(mli), di(d), state(st)
 	{}
@@ -65,5 +69,7 @@ public:
 	void SetSurfaceTransform(const VSMatrix* localTransform) override;
 	bool GetModelToWorldMatrix(VSMatrix* out) const override;
 	void SetEyeFade(float nearDist, float farDist) override;
+	void BeginSurfaceBlend(FGameTexture *skin, float amount, FTranslationID translation) override;
+	void EndSurfaceBlend() override;
 
 };

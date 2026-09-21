@@ -536,11 +536,8 @@ void IQMModel::RenderFrame(FModelRenderer* renderer, FGameTexture* skin, int fra
 		// RS FORK -- A HIDDEN SURFACE (model.h FModelSurfaceOverride, Actor.SetModelSurfaceHidden) is a mesh not drawn at all:
 		// a rig's own arms, an attachment switched off. Only `hidden` is read here; a skinned mesh's pose and place are its
 		// bones', so the frame and transform fields of an override mean nothing to it. No override list: drawn as before.
-		if (surfov != nullptr)
-		{
-			const FModelSurfaceOverride* ov = surfov->Find((int)i);
-			if (ov != nullptr && ov->hidden) continue;
-		}
+		const FModelSurfaceOverride* ov = (surfov != nullptr) ? surfov->Find((int)i) : nullptr;
+		if (ov != nullptr && ov->hidden) continue;
 
 		FGameTexture* meshSkin = skin;
 
@@ -568,6 +565,20 @@ void IQMModel::RenderFrame(FModelRenderer* renderer, FGameTexture* skin, int fra
 				lastSkin = meshSkin;
 			}
 			renderer->DrawElements(Meshes[i].NumTriangles * 3, Meshes[i].FirstTriangle * 3 * sizeof(unsigned int));
+
+			// RS FORK -- A BLENDED SURFACE: the same mesh again, toward its blend texture
+			// (model.h FModelSurfaceOverride::blendSkin). Same bones, same depth.
+			if (ov != nullptr && ov->blendAmount > 0.f && ov->blendSkin.isValid())
+			{
+				FGameTexture* blendTex = TexMan.GetGameTexture(ov->blendSkin, true);
+				if (blendTex && blendTex->isValid())
+				{
+					renderer->BeginSurfaceBlend(blendTex, ov->blendAmount, translation);
+					renderer->DrawElements(Meshes[i].NumTriangles * 3, Meshes[i].FirstTriangle * 3 * sizeof(unsigned int));
+					renderer->EndSurfaceBlend();
+					lastSkin = nullptr;	// the material changed under the cache
+				}
+			}
 		}
 	}
 }

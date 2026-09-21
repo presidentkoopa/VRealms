@@ -2978,6 +2978,8 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 	const int   *ovModel = nullptr, *ovSurface = nullptr, *ovFrame = nullptr, *ovNext = nullptr;
 	const float *ovLerp = nullptr, *ovPos = nullptr, *ovPosPrev = nullptr;
 	const bool  *ovHidden = nullptr;
+	const int   *ovBlendTex = nullptr;	// RS fork -- actor model data only; a HUD sprite has none
+	const float *ovBlend    = nullptr;
 	// RS fork -- the live-transform half of the same table. See
 	// FModelSurfaceOverride in model.h.
 	const bool     *ovHasXf  = nullptr;
@@ -3004,6 +3006,7 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 		ovModel = modelData->SurfOvModel; ovSurface = modelData->SurfOvSurface;
 		ovFrame = modelData->SurfOvFrame; ovNext    = modelData->SurfOvNext;
 		ovLerp  = modelData->SurfOvLerp;  ovHidden  = modelData->SurfOvHidden;
+		ovBlendTex = modelData->SurfOvBlendTex; ovBlend = modelData->SurfOvBlend;
 		ovPos   = modelData->SurfOvPos;   ovPosPrev = modelData->SurfOvPosPrev;
 		ovHasXf = modelData->SurfOvHasXf; ovOfs     = modelData->SurfOvOfs;   ovRot = modelData->SurfOvRot;
 		ovOfsPrev = modelData->SurfOvOfsPrev; ovRotPrev = modelData->SurfOvRotPrev;
@@ -3021,6 +3024,11 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			o.frameNext = ovNext[s];
 			o.lerp      = ovLerp[s];
 			o.hidden    = ovHidden[s];
+			if (ovBlendTex && ovBlend && ovBlend[s] > 0.f && ovBlendTex[s] > 0)
+			{
+				o.blendSkin   = FSetTextureID(ovBlendTex[s]);
+				o.blendAmount = ovBlend[s] > 1.f ? 1.f : ovBlend[s];
+			}
 
 			// The live transform, if this slot has one. An all-zero
 			// quaternion means "never written" and is read as identity, so a

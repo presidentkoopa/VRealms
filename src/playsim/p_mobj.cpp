@@ -1991,7 +1991,10 @@ void DActorModelData::Serialize(FSerializer& arc)
 	   .Array("SurfOvLerp",    SurfOvLerp,    RS_SURF_SLOTS)
 	   .Array("SurfOvHidden",  SurfOvHidden,  RS_SURF_SLOTS)
 	   .Array("SurfOvPos",     SurfOvPos,     RS_SURF_SLOTS)
-	   .Array("SurfOvPosPrev", SurfOvPosPrev, RS_SURF_SLOTS);
+	   .Array("SurfOvPosPrev", SurfOvPosPrev, RS_SURF_SLOTS)
+	   // A blended look is part of what the surface shows, so a save keeps it.
+	   .Array("SurfOvBlendTex", SurfOvBlendTex, RS_SURF_SLOTS)
+	   .Array("SurfOvBlend",    SurfOvBlend,    RS_SURF_SLOTS);
 
 	// AND THE LIVE TRANSFORM, which was missing here entirely.
 	//

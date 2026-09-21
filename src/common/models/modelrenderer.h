@@ -76,4 +76,9 @@ public:
 	// them by nearDist (map units). farDist <= nearDist turns it off again. A renderer that
 	// does not implement it draws the model whole, which is what it did before this existed.
 	virtual void SetEyeFade(float nearDist, float farDist) {}
+	// RS FORK -- the second pass of a blended surface (FModelSurfaceOverride::blendSkin).
+	// Between Begin and End the model issues its own draw call again. Default does
+	// nothing, so a renderer that does not implement it draws the plain surface only.
+	virtual void BeginSurfaceBlend(FGameTexture *skin, float amount, FTranslationID translation) {}
+	virtual void EndSurfaceBlend() {}
 };

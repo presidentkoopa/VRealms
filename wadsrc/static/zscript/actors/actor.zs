@@ -1843,6 +1843,9 @@ class Actor : Thinker native
 	// Needs A_ChangeModel to have run on this actor first.
 	native bool SetModelSurfacePos(int slot, int modelindex, int surface, double pos);
 	native bool SetModelSurfaceHidden(int slot, int modelindex, int surface, bool hidden);
+	// Show a surface partway toward a second texture: amount 0 is the surface as it
+	// is, 1 is fully `skin`. Same slots as SetModelSurfaceHidden. Render-only.
+	native bool SetModelSurfaceBlend(int slot, int modelindex, int surface, TextureID skin, double amount);
 
 	// A LIVE TRANSFORM ON TOP OF THE FRAME.
 	//

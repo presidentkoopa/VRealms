@@ -219,6 +219,21 @@ struct FModelSurfaceOverride
 	bool     hasTransform = false;
 	FVector3 offset       = { 0.f, 0.f, 0.f };   // model-space translation
 	FVector4 rotation     = { 0.f, 0.f, 0.f, 1.f }; // quaternion, xyzw, identity = no rotation
+
+	// RS FORK -- SHOW THIS SURFACE PARTWAY TOWARD A SECOND TEXTURE.
+	//
+	// A surface could be hidden, re-skinned, moved or re-framed, but never
+	// shown BETWEEN two looks. The only fade available was a second copy of the
+	// whole actor at an alpha -- which for a skinned body brought its own arms
+	// with no reach chain, hanging at its sides over the real ones.
+	//
+	// The surface is drawn once as normal, then again on the identical geometry
+	// with blendSkin at blendAmount. Same vertices, same bones, same depth: the
+	// second pass lands exactly on the first. 0 is inert and costs nothing.
+	// Armour going red at low health, a gun wearing toward a worn texture, heat,
+	// scorch -- any state a surface reports through its look.
+	FTextureID blendSkin;
+	float      blendAmount = 0.f;
 };
 
 // Passed as one pointer so adding this to the RenderFrame virtual costs every

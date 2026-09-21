@@ -501,6 +501,20 @@ void FMD3Model::RenderFrame(FModelRenderer *renderer, FGameTexture * skin, int f
 		renderer->SetupFrame(this, surf->vindex + sFrame * surf->numVertices, surf->vindex + sFrameNext * surf->numVertices, surf->numVertices, -1);
 		renderer->DrawElements(surf->numTriangles * 3, surf->iindex * sizeof(unsigned int));
 
+		// RS FORK -- A BLENDED SURFACE: the same frame again toward its blend texture
+		// (model.h FModelSurfaceOverride::blendSkin), before the transform is undone
+		// so the second pass lands exactly on the first.
+		if (ov && ov->blendAmount > 0.f && ov->blendSkin.isValid())
+		{
+			FGameTexture* blendTex = TexMan.GetGameTexture(ov->blendSkin, true);
+			if (blendTex && blendTex->isValid())
+			{
+				renderer->BeginSurfaceBlend(blendTex, ov->blendAmount, translation);
+				renderer->DrawElements(surf->numTriangles * 3, surf->iindex * sizeof(unsigned int));
+				renderer->EndSurfaceBlend();
+			}
+		}
+
 		if (transformed) renderer->SetSurfaceTransform(nullptr);
 	}
 	renderer->SetInterpolation(0.f);

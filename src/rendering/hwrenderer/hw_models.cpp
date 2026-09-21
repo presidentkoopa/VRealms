@@ -153,6 +153,38 @@ void FHWModelRenderer::SetMaterial(FGameTexture *skin, bool clampNoFilter, FTran
 	state.SetLightIndex(modellightindex);
 }
 
+//===========================================================================
+//
+// RS FORK -- THE SECOND PASS OF A BLENDED SURFACE.
+//
+// The surface has just been drawn normally; the model now draws it again on
+// the identical geometry with the blend texture, translucent, at the blend
+// amount. Same vertices and bones give the same depth, so it passes the
+// LEqual test already set and lands exactly on the first pass -- no depth
+// bias, no z-fighting. Depth writes are left as they are: writing the same
+// depth twice changes nothing.
+//
+// The amount rides the vertex colour's alpha, multiplied into whatever alpha
+// the actor already had, so a half-faded actor blends half as much.
+//
+//===========================================================================
+
+void FHWModelRenderer::BeginSurfaceBlend(FGameTexture *skin, float amount, FTranslationID translation)
+{
+	blendSavedStyle = state.GetRenderStyle();
+	blendSavedColor = state.GetVertexColor();
+	blendSavedDesat = state.GetDesaturation();
+	SetMaterial(skin, false, translation);
+	state.SetRenderStyle(STYLE_Translucent);
+	state.SetColor(blendSavedColor.X, blendSavedColor.Y, blendSavedColor.Z, blendSavedColor.W * amount, blendSavedDesat);
+}
+
+void FHWModelRenderer::EndSurfaceBlend()
+{
+	state.SetRenderStyle(blendSavedStyle);
+	state.SetColor(blendSavedColor.X, blendSavedColor.Y, blendSavedColor.Z, blendSavedColor.W, blendSavedDesat);
+}
+
 void FHWModelRenderer::DrawArrays(int start, int count)
 {
 	state.Draw(DT_Triangles, start, count);

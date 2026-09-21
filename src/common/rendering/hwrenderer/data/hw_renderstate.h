@@ -1045,6 +1045,12 @@ public:
 		mBoneIndexBase = index;
 	}
 
+	// RS FORK -- read back, so a pass that borrows the style and colour for one
+	// draw (FHWModelRenderer::BeginSurfaceBlend) can put them back exactly.
+	FRenderStyle GetRenderStyle() const { return mRenderStyle; }
+	FVector4 GetVertexColor() const { return mStreamData.uVertexColor; }
+	int GetDesaturation() const { return int(mStreamData.uDesaturationFactor * 255.0f + 0.5f); }
+
 	void SetRenderStyle(FRenderStyle rs)
 	{
 		mRenderStyle = rs;

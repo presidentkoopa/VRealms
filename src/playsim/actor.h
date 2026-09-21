@@ -810,6 +810,11 @@ public:
 	float SurfOvLerp   [RS_SURF_SLOTS] =
 		{ -1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f };
 	bool  SurfOvHidden [RS_SURF_SLOTS] = {};
+	// RS FORK -- the surface shown partway toward a second texture (model.h
+	// FModelSurfaceOverride::blendSkin). The texture is stored as its index, 0 =
+	// none, so a zero-initialised slot is inert. SetModelSurfaceBlend writes both.
+	int   SurfOvBlendTex[RS_SURF_SLOTS] = {};
+	float SurfOvBlend   [RS_SURF_SLOTS] = {};
 	float SurfOvPos    [RS_SURF_SLOTS] =
 		{ -1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f,-1.f };
 	float SurfOvPosPrev[RS_SURF_SLOTS] =

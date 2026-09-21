@@ -7910,6 +7910,39 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceHidden)
 	ACTION_RETURN_BOOL(true);
 }
 
+//===========================================================================
+//
+// RS FORK -- SHOW A SURFACE PARTWAY TOWARD A SECOND TEXTURE.
+//
+// amount 0..1: 0 is the surface as it is, 1 is fully the blend texture. The
+// same slot addressing as SetModelSurfaceHidden, so one slot can hide, frame,
+// move and blend the same surface. Render-only: nothing in the playsim reads it.
+//
+// Named for what it does. The first caller fades a body's armour toward a red
+// set at low health; a gun wearing toward a worn texture is the same call.
+//
+//===========================================================================
+
+DEFINE_ACTION_FUNCTION(AActor, SetModelSurfaceBlend)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(slot);
+	PARAM_INT(modelindex);
+	PARAM_INT(surface);
+	PARAM_INT(tex);
+	PARAM_FLOAT(amount);
+
+	if (self->modelData == nullptr || slot < 0 || slot >= DActorModelData::RS_SURF_SLOTS)
+	{
+		ACTION_RETURN_BOOL(false);
+	}
+	self->modelData->SurfOvModel[slot]    = modelindex;
+	self->modelData->SurfOvSurface[slot]  = surface;
+	self->modelData->SurfOvBlendTex[slot] = tex;
+	self->modelData->SurfOvBlend[slot]    = (float)clamp(amount, 0.0, 1.0);
+	ACTION_RETURN_BOOL(true);
+}
+
 DEFINE_ACTION_FUNCTION(AActor, ClearModelSurfaces)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -7923,6 +7956,8 @@ DEFINE_ACTION_FUNCTION(AActor, ClearModelSurfaces)
 			self->modelData->SurfOvNext[i]    = -1;
 			self->modelData->SurfOvLerp[i]    = -1.f;
 			self->modelData->SurfOvHidden[i]  = false;
+			self->modelData->SurfOvBlendTex[i] = 0;
+			self->modelData->SurfOvBlend[i]    = 0.f;
 			self->modelData->SurfOvPos[i]     = -1.f;
 			self->modelData->SurfOvPosPrev[i] = -1.f;
 
