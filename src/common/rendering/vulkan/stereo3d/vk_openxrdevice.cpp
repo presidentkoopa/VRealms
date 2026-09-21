@@ -4449,10 +4449,13 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		}
 		else if (RS_Support.engaged)
 		{
-			// LET GO. Leaving the exit cone always ends it, whatever the mode:
-			// the hand is no longer on the weapon and no button should be able
-			// to claim otherwise.
-			if (!inExitCone)                       RS_Support.engaged = false;
+			// LET GO. In the BUTTON modes (3 hold, 4 toggle) only the button lets
+			// go: the owner holds onto the gun and it must not drop because the
+			// hands drifted apart or the wrist turned (owner 2026-09-21, "it needs
+			// to not detach when my hands go too far"). The band and cone only
+			// decide where a hold can START. The AUTO modes (1, 2) have no button
+			// to hold, so there leaving the exit cone is still what ends it.
+			if ((mode == 1 || mode == 2) && !inExitCone) RS_Support.engaged = false;
 			else if (mode == 3 && !gripNow)        RS_Support.engaged = false;	// hold: release grip
 			else if (mode == 4 && gripEdge)        RS_Support.engaged = false;	// toggle: press again
 			else if (mode == 2 && gripEdge)      { RS_Support.engaged = false; RS_Support.rearmRequired = true; }
