@@ -1020,6 +1020,12 @@ CVAR(Float, vr_support_dist_max, 0.90f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // 3 is the default because it is what the stock option did and what the owner
 // asked to have back: a deliberate act with an obvious end.
 CVAR(Int, vr_support_mode, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+// HOW FAR THE HAND MUST PULL BEFORE A PUMP SLIDES, in metres. While a support
+// hold is taken the drawn off hand is pinned to the gun (vk_openxrdevice.cpp,
+// [SUPPORT PIN]); on a gun whose script allows a slide (AActor.SupportSlideLength)
+// it follows your real hand back along the barrel only past this much, so a
+// steadying hand that drifts does not work the action.
+CVAR(Float, vr_support_slide_deadband, 0.02f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // Fallback two-hand stabilize reach in real-world inches, used by any weapon
 // that does not set Weapon.StabilizeDistance (0, the ZScript default).
 CVAR(Float, vr_stabilize_distance_inches, 8.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)

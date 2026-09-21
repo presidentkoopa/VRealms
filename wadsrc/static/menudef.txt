@@ -2150,8 +2150,9 @@ OptionMenu VROptionsMenu protected
 	// switch plus a "Stabilize Distance" slider; on this renderer the switch no
 	// longer gates anything and the slider was wired to nothing at all.
 	Option "Support gun with other hand",			"vr_support_mode", "VRSupportModes"
+	Slider "Pump pull before it slides (m)",		"vr_support_slide_deadband", 0.0, 0.06, 0.005, 3
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_control_scheme vr_switch_sticks vr_mouse_in_menu vr_menu_keep_world vr_menu_pointer_color vr_secondary_button_mappings vr_support_mode"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_control_scheme vr_switch_sticks vr_mouse_in_menu vr_menu_keep_world vr_menu_pointer_color vr_secondary_button_mappings vr_support_mode vr_support_slide_deadband"
 
 	StaticText ""
 	StaticText "$VRPREFMNU_LOCOMOTION", gold

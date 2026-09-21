@@ -194,6 +194,7 @@ EXTERN_CVAR(Float, vr_support_cone_exit);
 EXTERN_CVAR(Float, vr_support_dist_min);
 EXTERN_CVAR(Float, vr_support_dist_max);
 EXTERN_CVAR(Int, vr_support_mode);
+EXTERN_CVAR(Float, vr_support_slide_deadband);
 EXTERN_CVAR(Bool, vr_stabilize_requires_grab);
 EXTERN_CVAR(Int, vr_eye_colorspace);
 EXTERN_CVAR(Float, vr_stabilize_distance_inches);
@@ -612,13 +613,14 @@ struct RS_SupportLatch
 	bool engaged = false;
 	bool rearmRequired = false;   // mode 2: left the exit cone since the release?
 	bool gripWas = false;         // grip last frame, so a press is an edge
-	// THE HAND STAYS WHERE YOU TOOK IT. How far from the gun hand the off hand
-	// was at the moment of taking, in map units; while held, the published off
-	// hand sits that far along the line to the real controller. So the gun still
-	// aims wherever your hand points it, but the drawn hand does not slide up and
-	// down the barrel as your real hands drift apart and together.
-	double lockDist = 0.0;
-	bool   lockValid = false;
+	// THE HAND DOES NOT MOVE ON THE GUN ([SUPPORT PIN]). Where the off hand was,
+	// and how it was turned, in the GUN HAND'S frame at the moment of taking.
+	// While held, the off hand's pose is rebuilt from the gun's every frame, so
+	// the gun still aims wherever your real hand steers it but the drawn hand
+	// stays on the spot it took -- position and rotation both.
+	bool   pinValid = false;
+	double pinPos[3] = { 0, 0, 0 };     // metres, gun-hand local
+	double pinRot[9] = { 1,0,0, 0,1,0, 0,0,1 };  // gun-hand local, row-major
 };
 static RS_SupportLatch RS_Support;
 
@@ -4492,7 +4494,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		// no longer a separate opt-in: a hold that does not steer the gun is not a
 		// hold, it is a hand glued to a gun that ignores it.
 		weaponStabilised = twoHanded && mode != 0;
-		if (!RS_Support.engaged) RS_Support.lockValid = false;
+		if (!RS_Support.engaged) RS_Support.pinValid = false;
 
 		if (weaponStabilised)
 		{
@@ -4516,6 +4518,97 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 	else
 	{
 		weaponStabilised = false;
+	}
+
+	// ================================================================
+	// [SUPPORT PIN] THE SUPPORT HAND DOES NOT MOVE ON THE GUN.
+	//
+	// The owner, 2026-09-21: "i'd like the hand to not move while it is
+	// supporting / guiding the barrel of the guns, and only move if it is on a
+	// pump for a slide." The aim above still steers from the REAL off hand
+	// (xrHandPoses, untouched here); what is rewritten is the off hand's
+	// published pose, offhandoffset/offhandangles, which everything that draws
+	// or reads the hand uses -- GetHandTransform, OffhandPos, joint drives.
+	//
+	// Worked in the space GetHandTransform builds: a hand is at
+	// V = (-offset[0], offset[1], offset[2]) (metres; the shared head height
+	// and pixel stretch cancel between two hands) turned by
+	// R = Ry(base + angles[1]) * Rx(-angles[0] [- view pitch]) * Rz(-angles[2]).
+	// Taking: L = Rg^T (Vo - Vg), Q = Rg^T Ro. Held: Vo = Vg + Rg L, Ro = Rg Q.
+	//
+	// A PUMP SLIDES. When script sets SupportSlideLength on the pawn, the hand
+	// follows the real one BACK along the barrel (the direction of L, which is
+	// the barrel: the gun was aiming at the hand when it was taken), up to that
+	// far, and only past vr_support_slide_deadband so a steadying hand that
+	// drifts does not work the action. Never forward of where it took hold.
+	// ================================================================
+	if (weaponStabilised && RS_Support.engaged)
+	{
+		const bool cinematic = VR_UseCinematicScreenLayer();
+		const double yawBase = -90.0 + (cinematic ? r_viewpoint.Angles.Yaw.Degrees() : (double)doomYaw) - hmdorientation[YAW];
+		const double pitchBase = cinematic ? -r_viewpoint.Angles.Pitch.Degrees() : 0.0;
+		constexpr double D2R = M_PI / 180.0, R2D = 180.0 / M_PI;
+
+		// R = Ry(a) Rx(b) Rz(c), row-major, the rotation VSMatrix::rotate builds.
+		auto handRot = [&](const float *ang, double *R)
+		{
+			const double a = (yawBase + ang[YAW]) * D2R, b = (pitchBase - ang[PITCH]) * D2R, c = -ang[ROLL] * D2R;
+			const double ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b), cc = cos(c), sc = sin(c);
+			R[0] = ca*cc + sa*sb*sc;  R[1] = -ca*sc + sa*sb*cc; R[2] = sa*cb;
+			R[3] = cb*sc;             R[4] = cb*cc;             R[5] = -sb;
+			R[6] = -sa*cc + ca*sb*sc; R[7] = sa*sc + ca*sb*cc;  R[8] = ca*cb;
+		};
+		auto handPos = [](const float *ofs, double *V) { V[0] = -ofs[0]; V[1] = ofs[1]; V[2] = ofs[2]; };
+
+		double Rg[9], Ro[9], Vg[3], Vo[3];
+		handRot(weaponangles, Rg);
+		handRot(offhandangles, Ro);
+		handPos(weaponoffset, Vg);
+		handPos(offhandoffset, Vo);
+		const double d[3] = { Vo[0] - Vg[0], Vo[1] - Vg[1], Vo[2] - Vg[2] };
+		double Lreal[3];	// the REAL off hand, in the gun hand's frame: Rg^T d
+		for (int i = 0; i < 3; i++) Lreal[i] = Rg[0*3+i]*d[0] + Rg[1*3+i]*d[1] + Rg[2*3+i]*d[2];
+
+		if (!RS_Support.pinValid)
+		{
+			for (int i = 0; i < 3; i++) RS_Support.pinPos[i] = Lreal[i];
+			for (int r = 0; r < 3; r++)
+				for (int c = 0; c < 3; c++)
+					RS_Support.pinRot[r*3+c] = Rg[0*3+r]*Ro[0*3+c] + Rg[1*3+r]*Ro[1*3+c] + Rg[2*3+r]*Ro[2*3+c];
+			RS_Support.pinValid = true;
+		}
+
+		double L[3] = { RS_Support.pinPos[0], RS_Support.pinPos[1], RS_Support.pinPos[2] };
+		const double pinLen = sqrt(L[0]*L[0] + L[1]*L[1] + L[2]*L[2]);
+		AActor *pinPawn = players[consoleplayer].mo;
+		const double slideMax = (pinPawn && vr_vunits_per_meter > 0) ? pinPawn->SupportSlideLength / vr_vunits_per_meter : 0.0;
+		if (slideMax > 0.0 && pinLen > 1e-4)
+		{
+			const double ax[3] = { L[0] / pinLen, L[1] / pinLen, L[2] / pinLen };
+			const double along = Lreal[0]*ax[0] + Lreal[1]*ax[1] + Lreal[2]*ax[2] - pinLen;	// < 0 = pulled back
+			const double db = std::max(0.0, (double)vr_support_slide_deadband);
+			const double slide = along < -db ? std::max(along + db, -slideMax) : 0.0;
+			for (int i = 0; i < 3; i++) L[i] += ax[i] * slide;
+		}
+
+		// Vo = Vg + Rg L
+		for (int i = 0; i < 3; i++) Vo[i] = Vg[i] + Rg[i*3+0]*L[0] + Rg[i*3+1]*L[1] + Rg[i*3+2]*L[2];
+		offhandoffset[0] = (float)-Vo[0];
+		offhandoffset[1] = (float)Vo[1];
+		offhandoffset[2] = (float)Vo[2];
+
+		// Ro = Rg Q, back to angles: R12 = -sin b, R02 = sin a cos b, R22 = cos a cos b,
+		// R10 = cos b sin c, R11 = cos b cos c.
+		double N[9];
+		for (int r = 0; r < 3; r++)
+			for (int c = 0; c < 3; c++)
+				N[r*3+c] = Rg[r*3+0]*RS_Support.pinRot[0*3+c] + Rg[r*3+1]*RS_Support.pinRot[1*3+c] + Rg[r*3+2]*RS_Support.pinRot[2*3+c];
+		const double b = asin(std::clamp(-N[5], -1.0, 1.0));
+		const double a = atan2(N[2], N[8]);
+		const double c = atan2(N[3], N[4]);
+		offhandangles[YAW]   = (float)(a * R2D - yawBase);
+		offhandangles[PITCH] = (float)(pitchBase - b * R2D);
+		offhandangles[ROLL]  = (float)(-c * R2D);
 	}
 
 	if (menuModeChanged)
@@ -5138,22 +5231,6 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				player->mo->OffhandPos.Y = matOffhand[3][2];
 				player->mo->OffhandPos.Z = matOffhand[3][1];
 
-				// [SUPPORT] KEEP THE HAND WHERE IT WAS TAKEN. The gun aims along the
-				// line from the gun hand to the real off hand; the drawn off hand is
-				// put back on that same line at the distance it had when the hold
-				// began. Direction follows you, distance does not -- so the hand
-				// stays on the same spot of the barrel instead of sliding along it.
-				if (weaponStabilised && RS_Support.engaged)
-				{
-					const DVector3 gunAt = player->mo->AttackPos;
-					DVector3 toOff = player->mo->OffhandPos - gunAt;
-					const double d = toOff.Length();
-					if (d > 0.001)
-					{
-						if (!RS_Support.lockValid) { RS_Support.lockDist = d; RS_Support.lockValid = true; }
-						player->mo->OffhandPos = gunAt + toOff * (RS_Support.lockDist / d);
-					}
-				}
 				player->mo->OffhandPitch = DAngle::fromDeg(VR_UseCinematicScreenLayer()
 					? -offhandangles[PITCH] - r_viewpoint.Angles.Pitch.Degrees()
 					: -offhandangles[PITCH]);
