@@ -10,6 +10,8 @@
 #include "info.h"
 #include "actor.h"
 #include "vm.h"
+#include "g_levellocals.h"
+#include "d_player.h"
 
 TArray<ModelDefBlockSource> ModelDefBlockSources;
 
@@ -194,6 +196,57 @@ CCMD(modelfit_nudge)
 	int changed = ModelFit_SetOffset(cls, n);
 	Printf("modelfit_nudge: %s Offset %.4f %.4f %.4f -> %.4f %.4f %.4f (%d frames)\n",
 		cls->TypeName.GetChars(), cur.X, cur.Y, cur.Z, n.X, n.Y, n.Z, changed);
+}
+
+// Every actor of a class that is following a hand. Test commands only.
+template<class F> static void ModelFit_ForEachHeld(const PClass *cls, F fn)
+{
+	auto it = TThinkerIterator<AActor>(primaryLevel);
+	AActor *a;
+	while ((a = it.Next()) != nullptr)
+		if (a->GetClass() == cls && a->FollowHandMode > 0) fn(a);
+}
+
+// modelfit_freeze <class> -- toggles the freeze on every held actor of that
+// class. The stage 2 gate: the frozen gun hangs exactly where it was.
+CCMD(modelfit_freeze)
+{
+	if (argv.argc() < 2) { Printf("usage: modelfit_freeze <class>   (toggles; the held model hangs where it is)\n"); return; }
+	auto cls = PClass::FindActor(argv[1]);
+	if (cls == nullptr) { Printf("modelfit_freeze: no actor class '%s'\n", argv[1]); return; }
+	int n = 0;
+	ModelFit_ForEachHeld(cls, [&](AActor *a) {
+		const bool on = !a->FollowHandFrozen;
+		ModelFit_FreezeFollowHand(a, on);
+		Printf("modelfit_freeze: %s %s (hand %d)\n", cls->TypeName.GetChars(), on ? "FROZEN" : "released", a->FollowHandMode);
+		n++;
+	});
+	if (n == 0) Printf("modelfit_freeze: no %s is following a hand right now\n", cls->TypeName.GetChars());
+}
+
+// modelfit_probe <class> -- where the OFF hand is, relative to each held actor
+// of that class: as a MODELDEF Offset in its hand frame, and in its mesh
+// coordinates. The stage 2 gate: touch the muzzle, compare with the card's.
+CCMD(modelfit_probe)
+{
+	if (argv.argc() < 2) { Printf("usage: modelfit_probe <class>   (the off hand, in the model's hand frame and mesh space)\n"); return; }
+	auto cls = PClass::FindActor(argv[1]);
+	if (cls == nullptr) { Printf("modelfit_probe: no actor class '%s'\n", argv[1]); return; }
+	auto pmo = players[consoleplayer].mo;
+	if (pmo == nullptr) return;
+	const DVector3 h = pmo->OffhandPos;
+	int n = 0;
+	ModelFit_ForEachHeld(cls, [&](AActor *a) {
+		DVector3 loc, mesh;
+		const bool okL = ModelFit_FollowHandLocal(a, h, loc);
+		const bool okM = ModelFit_WorldToModelPoint(a, h, mesh);
+		Printf("modelfit_probe: %s%s  off hand at map (%.2f %.2f %.2f)\n", cls->TypeName.GetChars(),
+			a->FollowHandFrozen ? " [frozen]" : "", h.X, h.Y, h.Z);
+		Printf("   as Offset (hand frame): %s%.3f %.3f %.3f\n", okL ? "" : "FAILED ", loc.X, loc.Y, loc.Z);
+		Printf("   in mesh coordinates:    %s%.3f %.3f %.3f\n", okM ? "" : "FAILED ", mesh.X, mesh.Y, mesh.Z);
+		n++;
+	});
+	if (n == 0) Printf("modelfit_probe: no %s is following a hand right now\n", cls->TypeName.GetChars());
 }
 
 // modelfit_list [class] -- with a class, every block it was read from: the

@@ -1843,6 +1843,16 @@ class Actor : Thinker native
 	// Needs A_ChangeModel to have run on this actor first.
 	native bool SetModelSurfacePos(int slot, int modelindex, int surface, double pos);
 	native bool SetModelSurfaceHidden(int slot, int modelindex, int surface, bool hidden);
+	// GUN FIT MODE (src/r_data/models.cpp). A model following a hand can be frozen
+	// where it is -- drawn from a snapshot of that moment's hand transform, so it
+	// hangs in the air exactly as it was held. Draw side only; not saved.
+	native void FreezeFollowHand(bool on);
+	// The MODELDEF Offset that would put this model's origin on worldPos, in the
+	// frame it is drawn in (the frozen snapshot while frozen), in Offset units and
+	// axis order. The off-hand mirror is handled inside; never in script.
+	native Vector3 FollowHandLocal(Vector3 worldPos);
+	// World to this model's mesh coordinates: the inverse of ModelPointToWorld.
+	native Vector3 WorldToModelPoint(Vector3 worldPos);
 	// Show a surface partway toward a second texture: amount 0 is the surface as it
 	// is, 1 is fully `skin`. Same slots as SetModelSurfaceHidden. Render-only.
 	native bool SetModelSurfaceBlend(int slot, int modelindex, int surface, TextureID skin, double amount);

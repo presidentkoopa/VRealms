@@ -1556,6 +1556,19 @@ public:
 	// 35 Hz on a 90 Hz headset. Script-owned animation: no slider writes it; the
 	// player's seat rotation is the placement prefix below.
 	DVector3		FollowHandRot;
+
+	// RS FORK -- GUN FIT MODE: A FOLLOW-HAND MODEL FROZEN WHERE IT WAS.
+	//
+	// While FollowHandFrozen is set the draw path stops reading the controller
+	// and draws from a snapshot of the controller transform it was using at the
+	// moment of freezing -- same maths, same angle -- so the gun hangs in the air
+	// exactly as it was held. Draw side only. NOT SAVED: a save taken mid-fit
+	// comes back unfrozen, and fit mode cancels on a map change anyway.
+	// Set by Actor.FreezeFollowHand (r_data/models.cpp).
+	bool			FollowHandFrozen;
+	bool			FollowHandFrozenHave;	// the snapshot has been taken
+	bool			FollowHandFrozenMirror;	// the snapshot's hand frame was mirrored
+	float			FollowHandFrozenMat[16];
 	DVector3		PrevFollowHandRot;
 
 	// AND WHERE ITS TUNING NUMBERS COME FROM.

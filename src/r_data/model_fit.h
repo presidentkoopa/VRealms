@@ -61,3 +61,13 @@ int  ModelFit_GetOffset(const PClass *cls, FVector3 &out);
 // class is touched, its original Offset is kept for RestoreOffset.
 int  ModelFit_SetOffset(const PClass *cls, const FVector3 &ofs);
 void ModelFit_RestoreOffset(const PClass *cls);
+
+// ---- STAGE 2 (implemented in models.cpp, beside ModelPointToWorld) ----------
+class AActor;
+// Freeze a follow-hand model where it is (draw side only), or release it.
+void ModelFit_FreezeFollowHand(AActor *self, bool on);
+// The MODELDEF Offset that would put the model's origin on worldPos, in the
+// frame it is drawn in (the frozen snapshot while frozen). Mirror included.
+bool ModelFit_FollowHandLocal(AActor *self, const DVector3 &worldPos, DVector3 &out);
+// World to mesh coordinates: the inverse of ModelPointToWorld.
+bool ModelFit_WorldToModelPoint(AActor *self, const DVector3 &worldPos, DVector3 &out);

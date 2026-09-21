@@ -554,6 +554,132 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, ModelPointToWorld, ModelWorldTransform)
 	return numret;
 }
 
+//===========================================================================
+//
+// [FIT] GUN FIT MODE, STAGE 2: freezing a held model, and turning a world point
+// back into the two spaces a fit writes -- MODELDEF Offset, and mesh space.
+//
+// Both inverses are computed FROM THE DRAW PATH ITSELF rather than by
+// re-deriving it. The draw path has a unit conversion, a mirror, a y/z swap, a
+// division by scale, placement scale and a pixel stretch in it; a hand-written
+// inverse would have to repeat every one exactly, and the first one it got
+// wrong would put a fitted grip in the wrong place with nothing to say why.
+//
+//===========================================================================
+
+#include "model_fit.h"
+
+// Solve a 3x3 system  [c0 c1 c2] * x = b  by Cramer's rule. False when singular.
+static bool ModelFit_Solve3(const DVector3 &c0, const DVector3 &c1, const DVector3 &c2, const DVector3 &b, DVector3 &x)
+{
+	const double det = c0 | (c1 ^ c2);
+	if (fabs(det) < 1e-12) return false;
+	x.X = (b  | (c1 ^ c2)) / det;
+	x.Y = (c0 | (b  ^ c2)) / det;
+	x.Z = (c0 | (c1 ^ b )) / det;
+	return true;
+}
+
+void ModelFit_FreezeFollowHand(AActor *self, bool on)
+{
+	if (self == nullptr) return;
+	if (!on)
+	{
+		self->FollowHandFrozen = false;
+		self->FollowHandFrozenHave = false;
+		return;
+	}
+	self->FollowHandFrozen = true;
+	self->FollowHandFrozenHave = false;
+	// TAKE THE SNAPSHOT NOW, through the same call the draw makes, so the gun
+	// freezes at the pose of this moment rather than of the next frame drawn --
+	// and so a FollowHandLocal asked straight after already reads the frozen frame.
+	DVector3 p, f, u;
+	ModelWorldTransform(self, 0, 0, 0, p, f, u);
+}
+
+// WHERE WOULD MODELDEF OFFSET HAVE TO BE FOR THE MODEL'S ORIGIN TO LAND ON worldPos?
+//
+// That is what "a world point in this actor's hand frame, in Offset units and
+// axis order" means in practice. The model origin moves LINEARLY with Offset,
+// so three probes -- Offset plus one unit on each axis -- give the exact map
+// from Offset to world through whatever the draw path does, mirror included,
+// and solving it gives the answer. The Offset is put back before returning; the
+// renderer never draws the probed values.
+bool ModelFit_FollowHandLocal(AActor *self, const DVector3 &worldPos, DVector3 &out)
+{
+	out = DVector3(0, 0, 0);
+	if (self == nullptr) return false;
+	FSpriteModelFrame *smf = FindModelFrame(self, self->sprite, self->frame, false);
+	if (smf == nullptr) return false;
+
+	const float ox = smf->xoffset, oy = smf->yoffset, oz = smf->zoffset;
+	auto originAt = [&](float x, float y, float z) {
+		smf->xoffset = x; smf->yoffset = y; smf->zoffset = z;
+		DVector3 p, f, u;
+		ModelWorldTransform(self, 0, 0, 0, p, f, u);
+		return p;
+	};
+	const DVector3 o  = originAt(ox, oy, oz);
+	const DVector3 ex = originAt(ox + 1.f, oy, oz) - o;
+	const DVector3 ey = originAt(ox, oy + 1.f, oz) - o;
+	const DVector3 ez = originAt(ox, oy, oz + 1.f) - o;
+	smf->xoffset = ox; smf->yoffset = oy; smf->zoffset = oz;
+
+	DVector3 d;
+	if (!ModelFit_Solve3(ex, ey, ez, worldPos - o, d)) return false;
+	out = DVector3(ox + d.X, oy + d.Y, oz + d.Z);
+	return true;
+}
+
+// THE INVERSE OF ModelPointToWorld: a world point in the model's own mesh
+// coordinates, through the whole draw transform. Card grab points are in mesh
+// coordinates, so support and reload points are captured through this.
+bool ModelFit_WorldToModelPoint(AActor *self, const DVector3 &worldPos, DVector3 &out)
+{
+	out = DVector3(0, 0, 0);
+	if (self == nullptr) return false;
+	FSpriteModelFrame *smf = FindModelFrame(self, self->sprite, self->frame, false);
+	if (smf == nullptr) return false;
+	VSMatrix m = smf->ObjectToWorldMatrix(self, (float)self->X(), (float)self->Y(), (float)self->Z(), I_GetTimeFrac());
+	const FLOATTYPE *v = m.get();
+	// The matrix works in the renderer's order (x, HEIGHT, y); map order in and
+	// out, the same swap ModelWorldTransform makes.
+	const DVector3 g(worldPos.X, worldPos.Z, worldPos.Y);
+	const DVector3 c0(v[0], v[1], v[2]), c1(v[4], v[5], v[6]), c2(v[8], v[9], v[10]), t(v[12], v[13], v[14]);
+	return ModelFit_Solve3(c0, c1, c2, g - t, out);
+}
+
+DEFINE_ACTION_FUNCTION(AActor, FreezeFollowHand)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_BOOL(on);
+	ModelFit_FreezeFollowHand(self, on);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(AActor, FollowHandLocal)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_FLOAT(x);
+	PARAM_FLOAT(y);
+	PARAM_FLOAT(z);
+	DVector3 out;
+	ModelFit_FollowHandLocal(self, DVector3(x, y, z), out);
+	ACTION_RETURN_VEC3(out);
+}
+
+DEFINE_ACTION_FUNCTION(AActor, WorldToModelPoint)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_FLOAT(x);
+	PARAM_FLOAT(y);
+	PARAM_FLOAT(z);
+	DVector3 out;
+	ModelFit_WorldToModelPoint(self, DVector3(x, y, z), out);
+	ACTION_RETURN_VEC3(out);
+}
+
 // RS FORK -- WHERE A CHILD OF THIS ACTOR IS DRAWN (AActor::FollowActor).
 //
 // A child seated in this actor's frame is drawn in the frame ObjectToWorldMatrix
@@ -1326,10 +1452,10 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(AActor * actor, float x, float y
 	// unless the actor opts in to draw-rate interpolation (DrawFollowBodyYaw, actor.h).
 	// AActor::FollowHandRot is always drawn interpolated (DrawFollowHandRot, actor.h).
 	return ObjectToWorldMatrix(actor->Level, DVector3(x, y, z), DRotator(DAngle::fromDeg(pitch), DAngle::fromDeg(angle), DAngle::fromDeg(roll)), drawScale, smf_flags, tic, bodyPivotZ, actor->FollowBodyMode, actor->FollowBodyOfs, actor->DrawFollowBodyYaw(ticFrac), actor->FollowHandMode, actor->FollowHandOfs, actor->PlacementPrefix,
-		following ? &followFrame : nullptr, followFrameOut, actor->ScaleAxes, actor->DrawFollowHandRot(ticFrac));
+		following ? &followFrame : nullptr, followFrameOut, actor->ScaleAxes, actor->DrawFollowHandRot(ticFrac), actor);
 }
 
-VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 translation, DRotator rotation, DVector2 scaling, unsigned int flags, double tic, float bodyPivotZ, int followBodyMode, DVector3 followBodyOfs, double followBodyYaw, int followHandMode, DVector3 followHandOfs, FName placementPrefix, const VSMatrix *followFrameIn, VSMatrix *followFrameOut, DVector3 scaleAxes, DVector3 followHandRot)
+VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 translation, DRotator rotation, DVector2 scaling, unsigned int flags, double tic, float bodyPivotZ, int followBodyMode, DVector3 followBodyOfs, double followBodyYaw, int followHandMode, DVector3 followHandOfs, FName placementPrefix, const VSMatrix *followFrameIn, VSMatrix *followFrameOut, DVector3 scaleAxes, DVector3 followHandRot, AActor *handFreezeActor)
 {
 	double rotateOffset = 0;
 
@@ -1452,8 +1578,33 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 	{
 		auto vrmode = VRMode::GetVRModeCached(true);
 		bool handMirrored = false;	// AActor::FollowHandRot, below
-		if (vrmode != nullptr && vrmode->IsVR() &&
-			vrmode->GetWeaponTransform(&objectToWorldMatrix, followHand, !(flags & MDL_NOAUTOREVERSE), &handMirrored))
+
+		// [FIT] A FROZEN HAND DRAWS FROM ITS SNAPSHOT (AActor::FollowHandFrozen).
+		// The snapshot is the very matrix GetWeaponTransform returned when the
+		// freeze began, so everything after this line -- the unit conversion,
+		// FollowHandRot, the whole seat -- is the same maths as when it was held.
+		// It is a WORLD transform, so the gun stays where it was in the room while
+		// the player moves: it hangs in the air, which is the point.
+		bool gotHand = false;
+		if (handFreezeActor != nullptr && handFreezeActor->FollowHandFrozen && handFreezeActor->FollowHandFrozenHave)
+		{
+			objectToWorldMatrix.loadMatrix(handFreezeActor->FollowHandFrozenMat);
+			handMirrored = handFreezeActor->FollowHandFrozenMirror;
+			gotHand = (vrmode != nullptr && vrmode->IsVR());
+		}
+		else
+		{
+			gotHand = vrmode != nullptr && vrmode->IsVR() &&
+				vrmode->GetWeaponTransform(&objectToWorldMatrix, followHand, !(flags & MDL_NOAUTOREVERSE), &handMirrored);
+			if (gotHand && handFreezeActor != nullptr && handFreezeActor->FollowHandFrozen)
+			{
+				const FLOATTYPE *src = objectToWorldMatrix.get();
+				for (int k = 0; k < 16; k++) handFreezeActor->FollowHandFrozenMat[k] = (float)src[k];
+				handFreezeActor->FollowHandFrozenMirror = handMirrored;
+				handFreezeActor->FollowHandFrozenHave = true;
+			}
+		}
+		if (gotHand)
 		{
 			fitMirrorX = (followHand == VR_OFFHAND && !handMirrored);
 			// THE MODEL-UNIT CONVERSION, WHICH THIS BRANCH WAS MISSING.
