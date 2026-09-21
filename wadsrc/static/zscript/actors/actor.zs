@@ -786,11 +786,6 @@ class Actor : Thinker native
 	// what it is for.
 	native readonly bool TwoHandedHold;
 
-	// How far the support hand may slide back along the barrel while a support
-	// hold is taken, map units. 0 = the hand is pinned to the gun. Set it for a
-	// pump (the stroke length) while that gun is held; local presentation only.
-	native double SupportSlideLength;
-
 	// Accumulated CONTROLLER-driven yaw (snap + stick turn), degrees. HmdYaw is
 	// physical head yaw PLUS this. Body-relative anchors must follow this part
 	// 1:1 -- it rotates the whole virtual body -- while only the physical

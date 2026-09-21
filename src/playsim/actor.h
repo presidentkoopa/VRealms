@@ -2617,15 +2617,6 @@ public:
 	// the recording player. That is not replication and does not make it safe.
 	bool TwoHandedHold;
 
-	// HOW FAR THE SUPPORT HAND MAY SLIDE BACK ALONG THE BARREL, map units. 0 (the
-	// default) = while a support hold is taken, the drawn off hand is pinned to
-	// the gun where it took hold and does not move on it at all. A script sets
-	// this for a gun whose forend moves under the hand -- a pump -- and the hand
-	// then follows the real one back along the barrel, up to this far, past
-	// vr_support_slide_deadband. Read by vk_openxrdevice.cpp on consolePawn only;
-	// presentation, never playsim, not saved. Same LOCAL ONLY rule as above.
-	double SupportSlideLength;
-
 	// Capacitive finger contact, FINGERTOUCH_* bits. Contact is not a press:
 	// this says where a finger RESTS, which is what a hand pose needs.
 	int FingerTouchMain;

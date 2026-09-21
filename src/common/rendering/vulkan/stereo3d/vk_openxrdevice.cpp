@@ -29,6 +29,7 @@
 #include "d_gui.h"
 #include "menu.h"
 #include "i_time.h"
+#include "model_handdrive.h"  // [SUPPORT PIN] the off hand's slide travel
 #include "p_trace.h"
 #include "p_linetracedata.h"
 #include "p_local.h"
@@ -4536,11 +4537,14 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 	// R = Ry(base + angles[1]) * Rx(-angles[0] [- view pitch]) * Rz(-angles[2]).
 	// Taking: L = Rg^T (Vo - Vg), Q = Rg^T Ro. Held: Vo = Vg + Rg L, Ro = Rg Q.
 	//
-	// A PUMP SLIDES. When script sets SupportSlideLength on the pawn, the hand
-	// follows the real one BACK along the barrel (the direction of L, which is
-	// the barrel: the gun was aiming at the hand when it was taken), up to that
-	// far, and only past vr_support_slide_deadband so a steadying hand that
-	// drifts does not work the action. Never forward of where it took hold.
+	// A PUMP SLIDES. While the off hand is working a part that slides -- a
+	// pump's forend, a live off-hand drive (HandDrive_OffhandSlideTravel,
+	// model_handdrive.h) -- the hand follows the real one BACK along the barrel
+	// (the direction of L, which is the barrel: the gun was aiming at the hand
+	// when it was taken), up to the part's own travel, and only past
+	// vr_support_slide_deadband so a steadying hand that drifts does not work
+	// the action. Never forward of where it took hold. No script flag: the
+	// drive already says the hand is on a slide and how far it goes.
 	// ================================================================
 	if (weaponStabilised && RS_Support.engaged)
 	{
@@ -4580,8 +4584,8 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 
 		double L[3] = { RS_Support.pinPos[0], RS_Support.pinPos[1], RS_Support.pinPos[2] };
 		const double pinLen = sqrt(L[0]*L[0] + L[1]*L[1] + L[2]*L[2]);
-		AActor *pinPawn = players[consoleplayer].mo;
-		const double slideMax = (pinPawn && vr_vunits_per_meter > 0) ? pinPawn->SupportSlideLength / vr_vunits_per_meter : 0.0;
+		const bool offSliding = HandDrive_OffhandSlideMs != 0 && I_msTime() - HandDrive_OffhandSlideMs < 200;
+		const double slideMax = (offSliding && vr_vunits_per_meter > 0) ? HandDrive_OffhandSlideTravel / vr_vunits_per_meter : 0.0;
 		if (slideMax > 0.0 && pinLen > 1e-4)
 		{
 			const double ax[3] = { L[0] / pinLen, L[1] / pinLen, L[2] / pinLen };

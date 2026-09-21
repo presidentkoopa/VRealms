@@ -2305,7 +2305,6 @@ DEFINE_FIELD(AActor, ThumbPosOff)       // RS fork
 DEFINE_FIELD(AActor, GripSubjectMain)
 DEFINE_FIELD(AActor, GripSubjectOff)
 DEFINE_FIELD(AActor, TwoHandedHold)
-DEFINE_FIELD(AActor, SupportSlideLength)
 DEFINE_FIELD(AActor, VRTurnYaw)
 DEFINE_FIELD(AActor, LaserTraceTargetMain)
 DEFINE_FIELD(AActor, LaserTraceTargetOff)

@@ -167,5 +167,12 @@ void HandDrive_PoseForFollower(const FHandDrive &d, const VSMatrix &handMat, con
 
 // THE OWNER'S DRAW OF A DRIVEN PART: arm if not armed, solve, publish the drawn value into d.value, and pose the part.
 // frame 0 solves every call; a frame number replays a second call on the same frame (see FHandDrive::stampFrame).
+// THE OFF HAND IS WORKING A SLIDE, AND HOW FAR IT GOES. Written by every owner's draw of a live off-hand drive
+// that slides (not a pure hinge): the full travel in map units, and when. The support pin (vk_openxrdevice.cpp,
+// [SUPPORT PIN]) reads it to let a hand pinned to the gun follow the real one back along the barrel -- on a pump's
+// forend, and nowhere else -- by exactly as far as the part itself can go. Stale after 200 ms: the drive stopped.
+extern double   HandDrive_OffhandSlideTravel;
+extern uint64_t HandDrive_OffhandSlideMs;
+
 void HandDrive_OwnerStep(FHandDrive &d, const VSMatrix &handMat, const VSMatrix &modelToWorld,
 	FVector3 &offset, FVector4 &rotation, FHandDriveStep &step, uint64_t frame = 0);

@@ -11,6 +11,10 @@
 
 #include "model_handdrive.h"
 #include "matrix.h"
+#include "i_time.h"
+
+double   HandDrive_OffhandSlideTravel = 0.0;
+uint64_t HandDrive_OffhandSlideMs = 0;
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -548,6 +552,24 @@ void HandDrive_OwnerStep(FHandDrive &d, const VSMatrix &handMat, const VSMatrix 
 {
 	step = FHandDriveStep();
 	step.staged = HandDrive_IsStaged(d);
+
+	// PUBLISH THE OFF HAND'S SLIDE (HandDrive_OffhandSlideTravel): the travel along the drive axis, and any second
+	// stage that also slides, carried through modelToWorld's own scale into map units.
+	if (d.on && d.hand == 1 && !d.hinge)
+	{
+		const float *m = modelToWorld.get();
+		auto worldLen = [m](const FVector3 &v, float amount)
+		{
+			const double x = (m[0] * v.X + m[4] * v.Y + m[8]  * v.Z) * amount;
+			const double y = (m[1] * v.X + m[5] * v.Y + m[9]  * v.Z) * amount;
+			const double z = (m[2] * v.X + m[6] * v.Y + m[10] * v.Z) * amount;
+			return sqrt(x * x + y * y + z * z);
+		};
+		double travel = worldLen(d.axis, d.dist);
+		if (d.stage2Kind == HANDDRIVE_Slide) travel += worldLen(d.stage2Axis, d.stage2Amount);
+		HandDrive_OffhandSlideTravel = travel;
+		HandDrive_OffhandSlideMs = I_msTime();
+	}
 
 	// A SECOND CALL ON A STAMPED FRAME replays what the first drew (FHandDrive::stampFrame).
 	if (frame != 0 && d.stampFrame == frame)
