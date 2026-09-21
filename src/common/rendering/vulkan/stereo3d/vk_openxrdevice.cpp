@@ -612,6 +612,13 @@ struct RS_SupportLatch
 	bool engaged = false;
 	bool rearmRequired = false;   // mode 2: left the exit cone since the release?
 	bool gripWas = false;         // grip last frame, so a press is an edge
+	// THE HAND STAYS WHERE YOU TOOK IT. How far from the gun hand the off hand
+	// was at the moment of taking, in map units; while held, the published off
+	// hand sits that far along the line to the real controller. So the gun still
+	// aims wherever your hand points it, but the drawn hand does not slide up and
+	// down the barrel as your real hands drift apart and together.
+	double lockDist = 0.0;
+	bool   lockValid = false;
 };
 static RS_SupportLatch RS_Support;
 
@@ -4393,9 +4400,6 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		// screen. Safe for anything this machine draws; NOT safe for spread,
 		// damage or anything else the playsim decides -- see actor.h, where the
 		// full reasoning lives beside the field.
-		const int offSubject = xrGripSubject[offHand];
-		const bool scriptSaysOnGun = (offSubject == GRIPSUBJ_Support
-			|| offSubject == GRIPSUBJ_Forend || offSubject == GRIPSUBJ_Foregrip);
 
 		// ================================================================
 		// [SUPPORT] IS THE OFF HAND ALONG THE BARREL, and has it been TAKEN.
@@ -4435,7 +4439,10 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		const bool gripEdge  = gripNow && !RS_Support.gripWas;	// a press, not a hold
 		RS_Support.gripWas   = gripNow;
 
-		if (mode == 0 || !vr_two_handed_weapons)
+		// ONE SWITCH. vr_support_mode 0 is off. There used to be a second one,
+		// vr_two_handed_weapons, which gated the aim separately: with it false
+		// (the owner's ini) the hand was pinned to the gun and the gun ignored it.
+		if (mode == 0)
 		{
 			RS_Support.engaged = false;
 			RS_Support.rearmRequired = false;
@@ -4466,19 +4473,23 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 			}
 		}
 
-		// SCRIPT CAN STILL SAY SO. A card that declares a real support part and
-		// a hand that actually took it is a hold by any measure, and it must not
-		// be overruled by a cone -- the geometry is a way of ANSWERING the
-		// question without authored data, never a way of refusing an answer we
-		// already have.
-		const bool twoHanded = RS_Support.engaged || scriptSaysOnGun;
+		// ONE DECIDER. Script's grip claims (support, forend, foregrip) used to count
+		// as a hold too -- and RS_VR_Reload's brace makes that claim for an OPEN hand
+		// merely near a support point, no grip at all, so a hand resting near the
+		// gun steered it without being asked. The owner has had half a dozen systems
+		// for this and only the stock option, which was grip-driven, ever felt right.
+		// So: grip held with the hand along the barrel. Nothing else.
+		const bool twoHanded = RS_Support.engaged;
 
 		if (publishGrip)
 			consolePawn->TwoHandedHold = twoHanded;
 
-		// Moving the weapon is a separate, opt-in thing. Defaults off: your
-		// hands hold the gun where you are holding it.
-		weaponStabilised = twoHanded && vr_two_handed_weapons;
+		// SUPPORTED MEANS THE GUN FOLLOWS THE OFF HAND. That is what the stock
+		// option did and the only version the owner has ever called close. It is
+		// no longer a separate opt-in: a hold that does not steer the gun is not a
+		// hold, it is a hand glued to a gun that ignores it.
+		weaponStabilised = twoHanded && mode != 0;
+		if (!RS_Support.engaged) RS_Support.lockValid = false;
 
 		if (weaponStabilised)
 		{
@@ -5123,6 +5134,23 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				player->mo->OffhandPos.X = matOffhand[3][0];
 				player->mo->OffhandPos.Y = matOffhand[3][2];
 				player->mo->OffhandPos.Z = matOffhand[3][1];
+
+				// [SUPPORT] KEEP THE HAND WHERE IT WAS TAKEN. The gun aims along the
+				// line from the gun hand to the real off hand; the drawn off hand is
+				// put back on that same line at the distance it had when the hold
+				// began. Direction follows you, distance does not -- so the hand
+				// stays on the same spot of the barrel instead of sliding along it.
+				if (weaponStabilised && RS_Support.engaged)
+				{
+					const DVector3 gunAt = player->mo->AttackPos;
+					DVector3 toOff = player->mo->OffhandPos - gunAt;
+					const double d = toOff.Length();
+					if (d > 0.001)
+					{
+						if (!RS_Support.lockValid) { RS_Support.lockDist = d; RS_Support.lockValid = true; }
+						player->mo->OffhandPos = gunAt + toOff * (RS_Support.lockDist / d);
+					}
+				}
 				player->mo->OffhandPitch = DAngle::fromDeg(VR_UseCinematicScreenLayer()
 					? -offhandangles[PITCH] - r_viewpoint.Angles.Pitch.Degrees()
 					: -offhandangles[PITCH]);

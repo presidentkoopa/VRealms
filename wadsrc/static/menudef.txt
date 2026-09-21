@@ -328,6 +328,15 @@ OptionValue "NoYes"
 	1, "$TXT_NO"
 }
 
+OptionValue "VRSupportModes"
+{
+	0, "Off"
+	1, "Automatic -- flick away to let go"
+	2, "Automatic -- grip to let go"
+	3, "Hold grip"
+	4, "Press grip on, press again off"
+}
+
 OptionValue "OnOff"
 {
 	0, "$OPTVAL_OFF"
@@ -2137,10 +2146,12 @@ OptionMenu VROptionsMenu protected
 	// things can be placed with the renderer-read sliders while looking at them.
 	Option "Menus over the 3D world (head tracking)",	"vr_menu_keep_world", "OnOff"
 	Option "$VRPREFMNU_SECONDARY_BUTTON_MAPPINGS",	"vr_secondary_button_mappings", "OnOff", vr_joy_mode
-	Option "$VRPREFMNU_TWO_HANDED_WEAPONS",		"vr_two_handed_weapons", "OnOff"
-	Slider "Stabilize Distance (in)",			"vr_stabilize_distance_inches", 1.0, 24.0, 1.0, 0
+	// ONE ROW FOR SUPPORTING A GUN WITH THE OTHER HAND. It used to be an on/off
+	// switch plus a "Stabilize Distance" slider; on this renderer the switch no
+	// longer gates anything and the slider was wired to nothing at all.
+	Option "Support gun with other hand",			"vr_support_mode", "VRSupportModes"
 	StaticText " "
-	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_control_scheme vr_switch_sticks vr_mouse_in_menu vr_menu_keep_world vr_menu_pointer_color vr_secondary_button_mappings vr_two_handed_weapons vr_stabilize_distance_inches"
+	SafeCommand "$OPTMNU_DEFAULTS", "resetcvar vr_control_scheme vr_switch_sticks vr_mouse_in_menu vr_menu_keep_world vr_menu_pointer_color vr_secondary_button_mappings vr_support_mode"
 
 	StaticText ""
 	StaticText "$VRPREFMNU_LOCOMOTION", gold
