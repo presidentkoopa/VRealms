@@ -2222,6 +2222,13 @@ class Actor : Thinker native
 		SetNamedBoneScaling(boneName, (0, 0, 0), 0, interpolation_duration);
 	}
 
+	// RS FORK -- lengthen a bone WITHOUT scaling its children: its child joints move out along
+	// it and only its own vertices stretch (bone scaling would skew everything below as the
+	// joint bends). 1 = off. The reach solve and bone getters see the new length. False for an
+	// unknown bone, a bone with no children, or a factor that is not positive.
+	native bool SetBoneLength(int boneIndex, double factor, int modelIndex = 0);
+	native bool SetNamedBoneLength(Name boneName, double factor, int modelIndex = 0);
+
 	native version("4.15.1") void ClearBoneOffsets();
 
 	//================================================

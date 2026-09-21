@@ -3066,6 +3066,11 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 	// bones inside RenderFrame (neither decoupled nor attachments). -1 keeps that path.
 	int posedBoneStart = -1;
 
+	// RS FORK -- BONE LENGTH: this model's overrides, and the scratch palette the stretched skin
+	// is built in (uploaded straight away, so one per thread is enough).
+	TArray<BoneOverride> *boneLengthOverrides = (modelData && modelData->modelBoneOverrides.SSize() > i) ? &modelData->modelBoneOverrides[i] : nullptr;
+	static thread_local TArray<VSMatrix> boneLengthPalette;
+
 	// [Jay] while per-model animations aren't done, DECOUPLEDANIMATIONS does the same as MODELSAREATTACHMENTS
 	if(!evaluatedSingle)
 	{  // [Jay] TODO per-model decoupled animations
@@ -3094,7 +3099,11 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 				boneData = mdl->GetBasePose();
 			}
 
-			boneStartingPosition = boneData ? screen->mBones->UploadBones(*boneData) : -1;
+			// RS FORK -- BONE LENGTH (FModel::ApplyBoneLengths): the stretched skin is what the GPU
+			// gets; boneData stays the unstretched chain for the anchors published below.
+			const TArray<VSMatrix> *skin = boneData;
+			if (boneData && mdl->ApplyBoneLengths(boneLengthOverrides, *boneData, boneLengthPalette)) skin = &boneLengthPalette;
+			boneStartingPosition = skin ? screen->mBones->UploadBones(*skin) : -1;
 			evaluatedSingle = true;
 
 		}
@@ -3104,7 +3113,8 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			// A posed palette gets its own upload for THIS draw only: boneStartingPosition is
 			// shared with the next model index and stays as it was.
 			const TArray<VSMatrix> *posed = ModelDrawPose_Apply(frameinfo.actor, mdl, i, *boneData);
-			if (posed != boneData) posedBoneStart = screen->mBones->UploadBones(*posed);
+			if (mdl->ApplyBoneLengths(boneLengthOverrides, *posed, boneLengthPalette)) posedBoneStart = screen->mBones->UploadBones(boneLengthPalette);
+			else if (posed != boneData) posedBoneStart = screen->mBones->UploadBones(*posed);
 		}
 
 		// Publish this model's bones for anything anchored to this layer.

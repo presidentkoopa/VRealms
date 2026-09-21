@@ -5941,6 +5941,53 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, SetNamedBoneScaling, SetNamedBoneScalingNa
 	return 0;
 }
 
+//================================================
+//
+// SetBoneLength -- RS FORK
+//
+// Lengthens a bone WITHOUT scaling its children (BoneOverride::length):
+// its child joints move out along it, and only the vertices skinned to it
+// stretch. Bone scaling cannot do this -- a parent's scale is inherited, so
+// the children skew as the joint bends. Everything that reads joints (the
+// reach solve, bone getters, anchors) sees the lengthened positions.
+// 1 = off. False, and nothing set, for an unknown bone, a bone with no
+// children (it has no length), or a factor that is not a positive number.
+//
+//================================================
+
+static bool SetModelBoneLengthShared(AActor * self, int model_index, int bone_index, FName * bone_name, double factor)
+{
+	if (!std::isfinite(factor) || factor <= 0.0) return false;
+	int mode = 2;
+	double interp = 0.0;
+	FModel * mdl = SetBoneOffsetShared(self, model_index, bone_index, bone_name, mode, interp);
+	if (!mdl) return false;
+	FVector3 axis;
+	if (!mdl->BoneLengthAxis(bone_index, axis)) return false;
+	self->modelData->modelBoneOverrides[model_index][bone_index].length = (float)factor;
+	self->CalcBones(true);
+	return true;
+}
+
+DEFINE_ACTION_FUNCTION(AActor, SetBoneLength)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(boneindex);
+	PARAM_FLOAT(factor);
+	PARAM_INT(modelindex);
+	ACTION_RETURN_BOOL(SetModelBoneLengthShared(self, modelindex, boneindex, nullptr, factor));
+}
+
+DEFINE_ACTION_FUNCTION(AActor, SetNamedBoneLength)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_NAME(bonename);
+	PARAM_FLOAT(factor);
+	PARAM_INT(modelindex);
+	ACTION_RETURN_BOOL(SetModelBoneLengthShared(self, modelindex, -1, &bonename, factor));
+}
+
+
 
 //================================================
 //

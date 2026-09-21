@@ -333,6 +333,17 @@ public:
 
 	virtual const TArray<VSMatrix>* GetBasePose() {return nullptr;}
 
+	// RS FORK -- BONE LENGTH (AActor.SetBoneLength, BoneOverride::length), the skinning half.
+	// CalculateBones already moved each lengthened bone's children out along it; this stretches
+	// ONLY the vertices skinned to that bone, as a right-multiply on its palette entry that no
+	// child inherits. Run on the FINISHED palette -- after draw poses and reach chains -- so
+	// every pose edit works on the unstretched chain. False (out untouched) when nothing is
+	// lengthened: the caller then uploads its own palette.
+	virtual bool ApplyBoneLengths(const TArray<BoneOverride> *in, const TArray<VSMatrix> &palette, TArray<VSMatrix> &out) { return false; }
+	// The direction a bone runs, in its own joint space: toward its farthest child. False for a
+	// bone with no children, which has no length to change.
+	virtual bool BoneLengthAxis(int joint, FVector3 &axis) { return false; }
+
 	// Largest |X|/|Y|/|Z| across the model's own raw local-space vertices,
 	// tracked independently per axis (not necessarily from the same vertex --
 	// a conservative bounding proxy, not a tight AABB). Unscaled by the

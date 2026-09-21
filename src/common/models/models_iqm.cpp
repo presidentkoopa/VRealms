@@ -748,6 +748,77 @@ ModelAnimFramePrecalculatedIQM IQMModel::CalculateFrameIQM(int frame1, int frame
 	return out;
 }
 
+// RS FORK -- BONE LENGTH (BoneOverride::length), the joint half: a lengthened bone's children
+// sit further out along it. Scales the child's local translation, never its rotation or scale,
+// so nothing below the lengthened bone is skewed. The skinning half is ApplyBoneLengths.
+static inline void LengthenFromParent(TRS &bone, const TArray<BoneOverride> &in, int parent)
+{
+	if (parent < 0) return;
+	const float f = in[parent].length;
+	if (f != 1.f) bone.translation = bone.translation * f;
+}
+
+bool IQMModel::BoneLengthAxis(int joint, FVector3 &axis)
+{
+	if (joint < 0 || joint >= Joints.SSize()) return false;
+	// A child's bind translation is its origin in this joint's own space -- the space the
+	// stretch is applied in. The farthest child is the bone's far end (a hand's wrist-to-knuckle
+	// run beats a short thumb root).
+	float best = 0.f;
+	for (int c : Joints[joint].Children)
+	{
+		const float l = Joints[c].Translate.Length();
+		if (l > best) { best = l; axis = Joints[c].Translate; }
+	}
+	if (best < 1.e-6f) return false;
+	axis = axis / best;
+	return true;
+}
+
+bool IQMModel::ApplyBoneLengths(const TArray<BoneOverride> *in, const TArray<VSMatrix> &palette, TArray<VSMatrix> &out)
+{
+	if (in == nullptr || in->Size() != Joints.Size() || palette.Size() != Joints.Size()) return false;
+	bool any = false;
+	for (auto &o : *in) if (o.length != 1.f) { any = true; break; }
+	if (!any) return false;
+
+	constexpr const float swapYZ[16]
+	{
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
+	};
+
+	out = palette;
+	for (int i = 0; i < Joints.SSize(); i++)
+	{
+		const float f = (*in)[i].length;
+		FVector3 a;
+		if (f == 1.f || !BoneLengthAxis(i, a)) continue;
+
+		// palette[i] = swap * G * B^-1 * swap. The stretch belongs between G and B^-1 -- in the
+		// joint's own space, about its origin -- so palette[i] * (swap * B * S * B^-1 * swap).
+		// S = I + (f-1) a a^T, a stretch along a alone; symmetric, so layout does not matter.
+		const float k = f - 1.f;
+		const float S[16] =
+		{
+			1.f + k*a.X*a.X, k*a.X*a.Y,       k*a.X*a.Z,       0.f,
+			k*a.Y*a.X,       1.f + k*a.Y*a.Y, k*a.Y*a.Z,       0.f,
+			k*a.Z*a.X,       k*a.Z*a.Y,       1.f + k*a.Z*a.Z, 0.f,
+			0.f,             0.f,             0.f,             1.f
+		};
+		VSMatrix K;
+		K.loadMatrix(swapYZ);
+		K.multMatrix(baseframe[i]);
+		K.multMatrix(S);
+		K.multMatrix(inversebaseframe[i]);
+		K.multMatrix(swapYZ);
+		out[i].multMatrix(K);
+	}
+	return true;
+}
+
 template<bool useIn, bool useOut>
 const TArray<VSMatrix>* IQMModel::CalculateBonesIQMSpecialized(int frame1, int frame2, float inter, int frame1_prev, float inter1_prev, int frame2_prev, float inter2_prev, const ModelAnimFramePrecalculatedIQM* precalculated, const TArray<TRS>* animationData, TArray<BoneOverride> *in, BoneInfo *out, double time)
 {
@@ -829,6 +900,7 @@ const TArray<VSMatrix>* IQMModel::CalculateBonesIQMSpecialized(int frame1, int f
 			if constexpr(useIn)
 			{
 				(*in)[i].Modify(bone, time);
+				LengthenFromParent(bone, *in, Joints[i].Parent);
 			}
 
 			out->bones_with_override[i] = bone;
@@ -836,6 +908,7 @@ const TArray<VSMatrix>* IQMModel::CalculateBonesIQMSpecialized(int frame1, int f
 		else if constexpr(useIn)
 		{
 			(*in)[i].Modify(bone, time);
+			LengthenFromParent(bone, *in, Joints[i].Parent);
 		}
 
 		VSMatrix m;
@@ -964,6 +1037,7 @@ const TArray<VSMatrix>* IQMModel::CalculateBonesOnlyOffsets(TArray<BoneOverride>
 				out->bones[i] = {};
 
 				(*in)[i].Modify(bone, time);
+				LengthenFromParent(bone, *in, Joints[i].Parent);
 
 				out->bones_with_override[i] = bone;
 
@@ -1008,6 +1082,7 @@ const TArray<VSMatrix>* IQMModel::CalculateBonesOnlyOffsets(TArray<BoneOverride>
 				bone = Joints[i];
 
 				(*in)[i].Modify(bone, time);
+				LengthenFromParent(bone, *in, Joints[i].Parent);
 
 				VSMatrix m;
 				m.loadIdentity();

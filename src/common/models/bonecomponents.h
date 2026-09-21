@@ -137,6 +137,15 @@ struct BoneOverride
 	BoneOverrideComponent<FQuaternion, &InterpolateQuat, &AddQuat> rotation;
 	BoneOverrideComponent<FVector3, &LerpVec3, &MultVec3> scaling;
 
+	// RS FORK -- BONE LENGTH (AActor.SetBoneLength). 1 = inert.
+	//
+	// Lengthens the bone WITHOUT scaling its children, which `scaling` cannot do: a parent's
+	// scale is inherited, so stretching an upper arm along its axis skews the forearm and hand
+	// as the elbow bends. Two halves: CalculateBones scales each CHILD's local translation by
+	// this (the children move out, unscaled), and FModel::ApplyBoneLengths stretches only the
+	// vertices skinned to this bone. Not interpolated, not touched by Set/Overwrite.
+	float length = 1.f;
+
 	void Modify(TRS &trs, double tic) const
 	{
 		translation.Modify(trs.translation, tic);

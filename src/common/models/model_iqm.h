@@ -254,6 +254,8 @@ public:
 		return Joints.SSize() > 0 ? (TRSData.SSize() / Joints.SSize()) : 0;
 	}
 	virtual const TArray<VSMatrix>* GetBasePose() { return &baseframe; }
+	bool ApplyBoneLengths(const TArray<BoneOverride> *in, const TArray<VSMatrix> &palette, TArray<VSMatrix> &out) override;
+	bool BoneLengthAxis(int joint, FVector3 &axis) override;
 };
 
 struct IQMReadErrorException { };

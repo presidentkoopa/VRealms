@@ -1855,6 +1855,7 @@ FSerializer &Serialize(FSerializer &arc, const char *key, BoneOverride &mod, Bon
 	SerializeBoneOverrideComponent(arc, "translation", mod.translation);
 	SerializeBoneOverrideComponent(arc, "rotation", mod.rotation);
 	SerializeBoneOverrideComponent(arc, "scaling", mod.scaling);
+	arc("length", mod.length);  // RS FORK -- bone length; an older save has none and keeps 1
 	arc.EndObject();
 	return arc;
 }
