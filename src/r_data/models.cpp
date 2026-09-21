@@ -1436,6 +1436,18 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 		: ((flags & MDL_FOLLOWOFFHAND) ? VR_OFFHAND : -1);
 	if (followHandMode == 1)      followHand = VR_MAINHAND;
 	else if (followHandMode == 2) followHand = VR_OFFHAND;
+	// [FIT] THE OFF HAND GETS THE MIRROR IMAGE OF A GUN'S SIDEWAYS OFFSET.
+	//
+	// Gun fit mode fits a gun once, in one hand, and the other hand is meant to
+	// get the mirror image rather than being fitted again. A model that lets the
+	// engine mirror it in the off hand gets that for free -- the whole hand frame
+	// is mirrored, Offset included. A model marked NOAUTOREVERSE (every HacX gun)
+	// is NOT mirrored, so its Offset was not either: the owner nudged the Cryogun
+	// +x and it moved right in BOTH hands, which would have put a fitted grip on
+	// the wrong side of the left hand. Only MODELDEF Offset's x is mirrored --
+	// the placement sliders keep exactly the behaviour they had. Every gun's
+	// sideways Offset was 0 when this went in, so nothing moved on the day.
+	bool fitMirrorX = false;
 	if (!followedActor && !followedBody && followHand >= 0)
 	{
 		auto vrmode = VRMode::GetVRModeCached(true);
@@ -1443,6 +1455,7 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 		if (vrmode != nullptr && vrmode->IsVR() &&
 			vrmode->GetWeaponTransform(&objectToWorldMatrix, followHand, !(flags & MDL_NOAUTOREVERSE), &handMirrored))
 		{
+			fitMirrorX = (followHand == VR_OFFHAND && !handMirrored);
 			// THE MODEL-UNIT CONVERSION, WHICH THIS BRANCH WAS MISSING.
 			//
 			// GetWeaponTransform hands back a frame scaled by vr_vunits_per_meter
@@ -1788,7 +1801,7 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 	//
 	// Zero by default, so every actor that never sets it lands on exactly the
 	// arithmetic that was here before.
-	objectToWorldMatrix.translate((xoffset + wPlaceOfs[0] + (float)followHandOfs.X) / xscale,
+	objectToWorldMatrix.translate(((fitMirrorX ? -xoffset : xoffset) + wPlaceOfs[0] + (float)followHandOfs.X) / xscale,
 		(zoffset + wPlaceOfs[2] + (float)followHandOfs.Z) / (zscale*stretch),
 		(yoffset + wPlaceOfs[1] + (float)followHandOfs.Y) / yscale);
 
