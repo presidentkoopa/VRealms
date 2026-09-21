@@ -788,7 +788,13 @@ static void MarkerMatrix(AActor *t, double ticFrac, VSMatrix &out)
 	out.loadIdentity();
 	out.translate((float)pos.X, (float)pos.Z, (float)pos.Y);	// map (x,y,z) -> render (x,height,y)
 	out.rotate(-(float)ang.Yaw.Degrees(), 0, 1, 0);
-	out.rotate( (float)ang.Pitch.Degrees(), 0, 0, 1);
+	// PITCH IS NEGATED, as the model path negates it: ObjectToWorldMatrix is handed
+	// `pitch -= actor pitch` (models.cpp, MDL_USEACTORPITCH) before it rotates by it. This
+	// copied the rotate and not the negation, so a marker pitched DOWN was read as pitched
+	// UP. Found by the body lane from the owner's first drawn-arm log: in copy mode the
+	// finger axis sat 6-57 degrees off the controller, growing with |pitch|; with the sign
+	// fixed it is 0.7-3.3 aim and 1.6-4.0 roll, both hands. Roll was already right.
+	out.rotate(-(float)ang.Pitch.Degrees(), 0, 0, 1);
 	out.rotate(-(float)ang.Roll.Degrees(), 1, 0, 0);
 }
 
