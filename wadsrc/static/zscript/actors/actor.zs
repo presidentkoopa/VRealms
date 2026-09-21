@@ -2478,6 +2478,15 @@ class Actor : Thinker native
 	// bend, so the end joint does not move at all -- a twist about the bone's own axis
 	// moves nothing lying on that axis. Around 0.5 to 0.7 looks right on a human arm.
 	native bool SetModelReachEndAim(int chain, int mode, double weight = 1.0, double midRollShare = 0.0);
+	// A chain's joint as it was last DRAWN, after the solve and the end aim. which: 0 root,
+	// 1 mid, 2 end. Map coordinates; the three axes are the joint's own X, Y, Z, unit length.
+	// All zero when the chain has not solved within the last tenth of a second. Render-side:
+	// for diagnostics and looks, never for gameplay.
+	native Vector3, Vector3, Vector3, Vector3 GetModelReachDrawn(int chain, int which);
+	// End-aim mode 2 (SetModelReachEndAim(chain, 2, ...)) makes the end bone COPY the target's
+	// rotation; this is the fixed offset on top of it, in degrees about the target model's own
+	// X, Y and Z axes, applied in that order. Zero = copy exactly.
+	native bool SetModelReachEndOffset(int chain, Vector3 degreesXYZ);
 	// A bind-pose point ON THE END BONE, in THIS model's own units, that the solve lands on the
 	// target instead of the bone's origin. An arm chain ends at the WRIST, so reaching a hand
 	// puts the wrist on the target and the hand carries past it by its own wrist-to-palm length;

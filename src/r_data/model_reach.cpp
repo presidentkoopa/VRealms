@@ -173,6 +173,16 @@ struct FJointDriveEntry
 struct FReachChain
 {
 	bool  used = false;
+
+	// [DRAWN] WHERE THE CHAIN'S THREE JOINTS WERE LAST DRAWN, after the solve and the end aim --
+	// in map order, for Actor.GetModelReachDrawn. The owner, of the wrist: "track all the bones...
+	// see how fucked the wrist is from the forearm". Every bone getter a script has returns the
+	// PRE-solve pose, so until this every wrist fix was made blind. Render-side values with
+	// GetModelJointDrawnValue's contract: for looking at, never for gameplay.
+	bool     drawnValid = false;
+	uint64_t drawnMs = 0;
+	FVector3 drawnPos[3];		// root, mid, end
+	FVector3 drawnAxis[3][3];	// per joint: its own X, Y, Z axes, unit, map order
 	FName root = NAME_None, mid = NAME_None, end = NAME_None;
 	FName tuning = NAME_None;
 	int   modelIndex = 0;
@@ -236,6 +246,10 @@ struct FReachChain
 	// [ENDAIM] How much of the end aim's ROLL the MID bone takes instead of the end one.
 	// 0 = none, the old behaviour exactly. See the note at the apply for why this exists.
 	float           endAimMidShare = 0.f;
+	// [ENDAIM 2] Mode 2's fixed offset: degrees about the TARGET model's own X, Y and Z axes (as
+	// the renderer holds them), applied in that order on top of the copied rotation. Zero = the
+	// end bone takes the target's rotation exactly. SetModelReachEndOffset writes it.
+	FVector3        endOffsetDeg = FVector3(0, 0, 0);
 
 	// The previous frame's smoothed values: the time smoothing only.
 	bool     histValid = false;
@@ -1099,6 +1113,90 @@ int SolveChain(FDrawPoseEntry &e, int ci, FJointPoseWork &w, FModel *model, cons
 			}
 			w.SetGlobal(c.jEnd, endPos, endWant);
 		}
+	}
+
+	// [ENDAIM 2] COPY THE TARGET'S ROTATION, times a fixed per-chain offset.
+	//
+	// Owner-approved, from the body lane: "a good thing to have in the engine regardless". Mode 1
+	// DERIVES the hand's facing from the solved forearm direction and a rest-pose twist reference,
+	// which is hard to read and carries a stale-roll error. This does not derive anything: the end
+	// bone's global rotation is the target's world rotation, brought into the chain's joint space
+	// the same way the target position already is (Finv * target matrix), times the offset. The
+	// rig-to-controller difference is then three numbers tuned once, not a chain of reasoning.
+	//
+	// Position is untouched -- only the orientation changes, exactly as mode 1. Weight blends from
+	// the solved rotation to the copied one. The mid bone takes its share of the roll about the
+	// forearm, the candy-wrapper fix mode 1 already carries.
+	else if (c.endAimMode == 2)
+	{
+		VSMatrix o2wc = sc.objectToWorld, armInv;
+		if (o2wc.inverseMatrix(armInv))
+		{
+			VSMatrix J;
+			J.loadMatrix(kSwapYZ);
+			J.multMatrix(armInv);
+			J.multMatrix(handM);
+			const FQuaternion tgt = MatRotation(J);
+
+			auto axisQuat = [](float deg, float ax, float ay, float az) {
+				const float h = deg * float(M_PI / 360.0);	// half angle in radians
+				const float sn = sinf(h);
+				return FQuaternion(ax * sn, ay * sn, az * sn, cosf(h));
+			};
+			const FQuaternion off = (axisQuat(c.endOffsetDeg.Z, 0, 0, 1)
+				* axisQuat(c.endOffsetDeg.Y, 0, 1, 0)
+				* axisQuat(c.endOffsetDeg.X, 1, 0, 0)).Unit();
+			const FQuaternion want = (tgt * off).Unit();
+
+			const VSMatrix gEnd0 = w.GlobalPosed(c.jEnd);
+			const FVector3    endPos = MatTranslation(gEnd0);
+			const FQuaternion cur    = MatRotation(gEnd0);
+			const FQuaternion turn   = QuatFraction((want * cur.Inverse()).Unit(), Clampf(c.endAimWeight, 0.f, 1.f));
+			const FQuaternion endWant = (turn * cur).Unit();
+
+			const float share = Clampf(c.endAimMidShare, 0.f, 1.f);
+			if (share > 0.f)
+			{
+				const FQuaternion roll = QuatFraction(QuatTwistAbout(turn, s.pose.lowerDir), share);
+				const VSMatrix gMid = w.GlobalPosed(c.jMid);
+				w.SetGlobal(c.jMid, MatTranslation(gMid), (roll * MatRotation(gMid)).Unit());
+			}
+			w.SetGlobal(c.jEnd, endPos, endWant);
+		}
+	}
+
+	// [DRAWN] Capture the three joints exactly as they will be drawn. Joint space to world is
+	// objectToWorld * swapYZ (the inverse of this file's Finv); world GL is (x, up, y), so the
+	// result is swapped once more into map order.
+	{
+		VSMatrix F = sc.objectToWorld;
+		VSMatrix S; S.loadMatrix(kSwapYZ);
+		F.multMatrix(S);
+		const FLOATTYPE *f = F.get();
+		auto toMapPt = [&](const FVector3 &p) {
+			const float gx = float(f[0]*p.X + f[4]*p.Y + f[8]*p.Z  + f[12]);
+			const float gy = float(f[1]*p.X + f[5]*p.Y + f[9]*p.Z  + f[13]);
+			const float gz = float(f[2]*p.X + f[6]*p.Y + f[10]*p.Z + f[14]);
+			return FVector3(gx, gz, gy);
+		};
+		const int joints[3] = { c.jRoot, c.jMid, c.jEnd };
+		for (int k = 0; k < 3; k++)
+		{
+			const VSMatrix g = w.GlobalPosed(joints[k]);
+			const FLOATTYPE *m = g.get();
+			const FVector3 at = FVector3(float(m[12]), float(m[13]), float(m[14]));
+			const FVector3 wp = toMapPt(at);
+			c.drawnPos[k] = wp;
+			for (int a = 0; a < 3; a++)
+			{
+				const FVector3 dir = FVector3(float(m[a*4+0]), float(m[a*4+1]), float(m[a*4+2]));
+				FVector3 d = toMapPt(at + dir) - wp;
+				const float len = d.Length();
+				c.drawnAxis[k][a] = len > 1e-9f ? d / len : FVector3(0, 0, 0);
+			}
+		}
+		c.drawnValid = true;
+		c.drawnMs = screen != nullptr ? screen->FrameTime : 0;
 	}
 	return REACH_SOLVED;
 }
@@ -2091,6 +2189,44 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachTarget)
 // limit wearing a tuning knob's clothes.
 // [ENDAIM] Does the end bone take the target's FACING as well as its position? See the note
 // beside the apply, in SolveChain. Off by default, so no existing chain changes behaviour.
+//===========================================================================
+//
+// [DRAWN] Actor.GetModelReachDrawn(chain, which) -> position, axis X, axis Y, axis Z
+//
+// which: 0 root, 1 mid, 2 end. The joint as it was last DRAWN -- after the solve and the end
+// aim -- in map coordinates; the three axes are the joint's own, unit length. All zero when
+// the chain has not solved within the last tenth of a second. Render-side values: for
+// diagnostics and looks, never for anything the playsim decides.
+//
+//===========================================================================
+
+DEFINE_ACTION_FUNCTION(AActor, GetModelReachDrawn)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(chain);
+	PARAM_INT(which);
+	FVector3 pos(0, 0, 0), ax(0, 0, 0), ay(0, 0, 0), az(0, 0, 0);
+	if (ChainIndexOk(chain) && which >= 0 && which < 3)
+	{
+		FDrawPoseEntry *e = EntryFor(self, false);
+		if (e != nullptr && e->chains[chain].used)
+		{
+			const FReachChain &c = e->chains[chain];
+			const uint64_t now = screen != nullptr ? screen->FrameTime : 0;
+			if (c.drawnValid && now >= c.drawnMs && now - c.drawnMs <= 100)
+			{
+				pos = c.drawnPos[which];
+				ax = c.drawnAxis[which][0]; ay = c.drawnAxis[which][1]; az = c.drawnAxis[which][2];
+			}
+		}
+	}
+	if (numret > 3) ret[3].SetVector(DVector3(az.X, az.Y, az.Z));
+	if (numret > 2) ret[2].SetVector(DVector3(ay.X, ay.Y, ay.Z));
+	if (numret > 1) ret[1].SetVector(DVector3(ax.X, ax.Y, ax.Z));
+	if (numret > 0) ret[0].SetVector(DVector3(pos.X, pos.Y, pos.Z));
+	return numret;
+}
+
 DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndAim)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -2099,7 +2235,7 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndAim)
 	PARAM_FLOAT(weight);
 	PARAM_FLOAT(midRollShare);
 
-	if (!ChainIndexOk(chain) || mode < 0 || mode > 1) ACTION_RETURN_BOOL(false);
+	if (!ChainIndexOk(chain) || mode < 0 || mode > 2) ACTION_RETURN_BOOL(false);	// 2 = copy the target's rotation
 	FDrawPoseEntry *e = EntryFor(self, false);
 	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
 	FReachChain &c = e->chains[chain];
@@ -2109,6 +2245,26 @@ DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndAim)
 	c.endAimMode = mode;
 	c.endAimWeight = wf;
 	c.endAimMidShare = sf;
+	Changed(*e);
+	ACTION_RETURN_BOOL(true);
+}
+
+// [ENDAIM 2] The fixed offset end-aim mode 2 puts on top of the copied target rotation: degrees
+// about the target model's own X, Y and Z axes, applied in that order. Zero = copy exactly.
+DEFINE_ACTION_FUNCTION(AActor, SetModelReachEndOffset)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(chain);
+	PARAM_FLOAT(x);
+	PARAM_FLOAT(y);
+	PARAM_FLOAT(z);
+	if (!ChainIndexOk(chain) || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) ACTION_RETURN_BOOL(false);
+	FDrawPoseEntry *e = EntryFor(self, false);
+	if (e == nullptr || !e->chains[chain].used) ACTION_RETURN_BOOL(false);	// SetModelReachChain first
+	FReachChain &c = e->chains[chain];
+	const FVector3 v((float)x, (float)y, (float)z);
+	if (c.endOffsetDeg == v) ACTION_RETURN_BOOL(true);
+	c.endOffsetDeg = v;
 	Changed(*e);
 	ACTION_RETURN_BOOL(true);
 }
