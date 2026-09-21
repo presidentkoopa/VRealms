@@ -5300,7 +5300,19 @@ FModel * SetGetBoneShared(AActor * self, int model_index)
 	}
 	else if(BaseSpriteModelFrames[smf_class].modelIDs.SSize() > model_index)
 	{
-		return Models[BaseSpriteModelFrames[smf_class].modelIDs[model_index]];
+		// RS FORK -- A MODEL THAT FAILED TO LOAD LEAVES ITS ID AT -1, and this
+		// read Models[-1]: an access violation from a WorldTick handler, taking
+		// every bone getter and setter down with it. Found by the body lane when
+		// an IQM with the wrong version was rejected at load. It is the same
+		// situation as a missing MODELDEF, so it gets the same named abort rather
+		// than a crash with no clue which model it was.
+		int id = BaseSpriteModelFrames[smf_class].modelIDs[model_index];
+		if (id < 0 || id >= Models.SSize())
+		{
+			ThrowAbortException(X_OTHER, "Model %d of %s did not load (see the MODELDEF 'model not found' line at startup)",
+				model_index, smf_class->TypeName.GetChars());
+		}
+		return Models[id];
 	}
 	else
 	{

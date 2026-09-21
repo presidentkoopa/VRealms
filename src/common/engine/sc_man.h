@@ -91,6 +91,12 @@ public:
 	void SetStateMode(bool stately);
 	void DisableStateOptions();
 	const SavedPos SavePos();
+	// RS FORK -- WHERE THE SCANNER IS, AS A BYTE OFFSET INTO THE SCRIPT TEXT.
+	// For a parser that has to remember the exact span of text it read, so a
+	// tool can later rewrite that span and nothing else (MODELDEF fit files,
+	// r_data/model_fit.cpp). Read-only views; nothing here moves the scanner.
+	int BytePos() const { return int(ScriptPtr - ScriptBuffer.GetChars()); }
+	const FString &ScriptText() const { return ScriptBuffer; }
 	void RestorePos(const SavedPos &pos);
 	void AddSymbol(const char* name, int64_t value);
 	void AddSymbol(const char* name, uint64_t value);

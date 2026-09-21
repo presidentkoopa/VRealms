@@ -3369,12 +3369,29 @@ static TArray<int> SpriteModelHash;
 //===========================================================================
 
 void ParseModelDefLump(int Lump);
+#include "model_fit.h"
+#include "m_crc32.h"
+
+// RS FORK -- the whole line a token sits on, [start, end) byte offsets into the
+// script text: back to the character after the previous newline, forward to the
+// next newline (not included). For MODELDEF fit files, which replace one line.
+static void ModelFit_LineSpan(const FString &text, int tokenStart, int &lineStart, int &lineEnd)
+{
+	const char *t = text.GetChars();
+	const int len = (int)text.Len();
+	lineStart = tokenStart;
+	while (lineStart > 0 && t[lineStart - 1] != '\n') lineStart--;
+	lineEnd = tokenStart;
+	while (lineEnd < len && t[lineEnd] != '\n') lineEnd++;
+	if (lineEnd > lineStart && t[lineEnd - 1] == '\r') lineEnd--;
+}
 
 void InitModels()
 {
 	Models.DeleteAndClear();
 	SpriteModelFrames.Clear();
 	SpriteModelHash.Clear();
+	ModelFit_ClearSources();	// RS fork -- gun fit mode's record of where each block came from
 
 	// First, create models for each voxel
 	for (unsigned i = 0; i < Voxels.Size(); i++)
@@ -3468,12 +3485,20 @@ void ParseModelDefLump(int Lump)
 			memset((void*)&smf, 0, sizeof(smf));
 			smf.xscale=smf.yscale=smf.zscale=1.f;
 
+			// RS FORK -- GUN FIT MODE REMEMBERS WHERE THIS BLOCK CAME FROM (model_fit.h).
+			// The `Model` keyword has just been read, so it ends at the scanner.
+			ModelDefBlockSource fitSrc;
+			fitSrc.lump = Lump;
+			fitSrc.lumpName = fileSystem.GetFileFullPath(Lump).c_str();
+			fitSrc.blockStart = sc.BytePos() - (int)strlen("model");
+
 			auto type = PClass::FindClass(sc.String);
 			if (!type || type->Defaults == nullptr)
 			{
 				sc.ScriptError("MODELDEF: Unknown actor type '%s'\n", sc.String);
 			}
 			smf.type = type;
+			fitSrc.cls = type;
 			unsigned int preParseFrames = SpriteModelFrames.Size();	// frames earlier blocks defined: what 'inherits' copies from
 			FScanner::SavedPos scPos = sc.SavePos();
 			sc.MustGetStringName("{");
@@ -3575,6 +3600,7 @@ void ParseModelDefLump(int Lump)
 					// inherits <class>: copies every frame another class defined in an earlier MODELDEF block, then lets
 					// this block's models, skins, placement and flags override them (GZSelaco e1e266c2c5, from
 					// ShinyMetagross #1487). Parse-time data only; the struct copy carries every field, placementCVars too.
+					fitSrc.inherited = true;	// RS fork -- fit mode refuses a class built this way
 					sc.MustGetString();
 					auto type2 = PClass::FindClass(sc.String);
 					if (!type2 || type2->Defaults == nullptr)
@@ -3623,8 +3649,10 @@ void ParseModelDefLump(int Lump)
 				// Now it must be considered deprecated.
 				else if (sc.Compare("zoffset"))
 				{
+					const int tok = sc.BytePos() - sc.StringLen;
 					sc.MustGetFloat();
 					smf.zoffset=sc.Float;
+					ModelFit_LineSpan(sc.ScriptText(), tok, fitSrc.zoffsetStart, fitSrc.zoffsetEnd);
 				}
 				// [BB] PivotOffset -- the point the model TURNS ABOUT, in its own
 				// space. Same three axes and the same units as Offset below, and
@@ -3643,12 +3671,14 @@ void ParseModelDefLump(int Lump)
 				// Offset reading.
 				else if (sc.Compare("offset"))
 				{
+					const int tok = sc.BytePos() - sc.StringLen;
 					sc.MustGetFloat();
 					smf.xoffset = sc.Float;
 					sc.MustGetFloat();
 					smf.yoffset = sc.Float;
 					sc.MustGetFloat();
 					smf.zoffset = sc.Float;
+					ModelFit_LineSpan(sc.ScriptText(), tok, fitSrc.offsetStart, fitSrc.offsetEnd);
 				}
 				// angleoffset, pitchoffset and rolloffset reading.
 				else if (sc.Compare("angleoffset"))
@@ -3974,6 +4004,19 @@ void ParseModelDefLump(int Lump)
 					sc.ScriptMessage("Unrecognized string \"%s\"", sc.String);
 				}
 			}
+
+			// RS FORK -- THE BLOCK IS CLOSED: the `}` was just consumed. Record its
+			// span, the Offset it ended with, and a CRC of its exact text, so a fit
+			// file can tell later whether the block it was made against has changed.
+			fitSrc.blockEnd = sc.BytePos();
+			fitSrc.offset = { smf.xoffset, smf.yoffset, smf.zoffset };
+			{
+				const FString &txt = sc.ScriptText();
+				const int a = fitSrc.blockStart, b = fitSrc.blockEnd;
+				if (a >= 0 && b > a && b <= (int)txt.Len())
+					fitSrc.crc = CalcCRC32(std::string_view(txt.GetChars() + a, (size_t)(b - a)));
+			}
+			ModelFit_RecordBlock(fitSrc);
 		}
 		else if (sc.Compare("#include"))
 		{

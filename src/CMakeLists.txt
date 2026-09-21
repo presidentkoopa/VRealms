@@ -1109,6 +1109,7 @@ set (PCH_SOURCES
 	r_data/r_sections.cpp
 	r_data/models.cpp
 	r_data/model_reach.cpp
+	r_data/model_fit.cpp
 	r_data/model_handdrive.cpp
 	r_data/level_solid_query.cpp
 	scripting/vmiterators.cpp
