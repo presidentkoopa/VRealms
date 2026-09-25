@@ -1,0 +1,5 @@
+# Everything here is rebuildable from the player's own game files by build.py.
+# It is also large (~375MB for the full set) and contains artwork derived from
+# the original game, which must never be committed or distributed.
+generated/
+__pycache__/
