@@ -376,6 +376,27 @@ EXTERN_CVAR(Float, vr_3dweaponOffsetZ);
 // Defined here rather than externed: the only consumer is the placement trace
 // below, and an earlier diagnostic that owned it elsewhere was removed.
 CVAR(Bool, vr_place_debug, false, 0)
+// [HANDUNITS] One model unit is one map unit on EVERY world path, the controller
+// included. GetWeaponTransform hands back a frame in metres scaled by
+// vr_vunits_per_meter; the follow-hand branch of ObjectToWorldMatrix divides that
+// scale back out (1 / vr_vunits_per_meter), exactly as the body path does.
+//
+// It used to multiply by 0.01 instead, copied from the HUD psprite path, so a model
+// on a controller drew at vr_vunits_per_meter * 0.01 = 0.34 map units per unit while
+// every other world path drew it at 1. The same mesh therefore changed size between
+// hand, holster and floor, and every hand-frame number in the content was tuned to
+// cancel the difference.
+//
+// THE RATIO IS 2.941 (0.0294 / 0.01), AND THE CONTENT CORRECTION IS x0.34. It is not
+// 100 and not 0.01 -- this branch always had the 0.01, it was never missing entirely.
+// Content was converted once, by 0.34, with CardPipeline/hand_units/hand_units.py.
+// There is no legacy mode and no vr_hand_units cvar: do not re-add one to make an
+// unmigrated package work, migrate the package.
+//
+// The HUD psprite path (RenderHUDModel) keeps ITS 0.01 on purpose: that is the
+// classic GZDoom HUD-model convention third-party weapon mods are authored for.
+// None of our content draws through it.
+EXTERN_CVAR(Float, vr_vunits_per_meter)
 EXTERN_CVAR(Float, vr_hand_ofs_x);
 EXTERN_CVAR(Float, vr_hand_ofs_y);
 EXTERN_CVAR(Float, vr_hand_ofs_z);
@@ -1633,7 +1654,9 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 			// all tuned against the missing conversion; see the MODELDEF blocks in
 			// RS_TestPistol, RS_WorldHands and RS_VRBody, corrected in the same
 			// change.
-			const float followHandUnitScale = 0.01f;
+			// [HANDUNITS] Map units, as the body path: see the note above vr_vunits_per_meter.
+			const float vuHand = (float)vr_vunits_per_meter;
+			const float followHandUnitScale = (vuHand > 1e-3f) ? 1.f / vuHand : 1.f / 34.f;
 			objectToWorldMatrix.scale(followHandUnitScale, followHandUnitScale, followHandUnitScale);
 
 			// AActor::FollowHandRot -- a turn of the hand's own frame, about the hand.

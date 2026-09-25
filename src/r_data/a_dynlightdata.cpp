@@ -150,6 +150,31 @@ void FLightDefaults::ApplyProperties(FDynamicLight * light) const
 	light->SetOffset(m_Pos);	// this must be the last thing to do.
 }
 
+// [LIGHTLIFETIME] See the declaration. Matched on any of the four pointers, not by
+// slot: while a rebuild is pending the slots need not line up with UserLights, and
+// a slot reused by a non-spot definition still holds an older spot's angle pointers.
+void FLightDefaults::ReleaseLightsBuiltFrom(const TArray<FDynamicLight *> &lights) const
+{
+	static const int inertArgs[5] = { 0,0,0,0,0 };
+	static const LightFlags inertFlags = 0;
+	static const DAngle inertAngle = nullAngle;
+
+	for (auto light : lights)
+	{
+		if (light == nullptr) continue;
+		if (light->pArgs != m_Args && light->pLightFlags != &m_lightFlags &&
+			light->pSpotInnerAngle != &m_spotInnerAngle && light->pSpotOuterAngle != &m_spotOuterAngle) continue;
+
+		light->UnlinkLight();
+		light->Deactivate();
+		light->SetPoseAnchor(0, DVector3(0, 0, 0));
+		light->pArgs = inertArgs;
+		light->pLightFlags = &inertFlags;
+		light->pSpotInnerAngle = &inertAngle;
+		light->pSpotOuterAngle = &inertAngle;
+	}
+}
+
 void FLightDefaults::SetAttenuationForLevel(bool yes)
 {
 	if (AttenuationIsSet != int(yes))

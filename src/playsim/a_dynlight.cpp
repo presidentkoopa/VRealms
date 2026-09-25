@@ -938,6 +938,11 @@ int RemoveLight(AActor *self, int _lightid)
 	auto userlight = FindUserLight(self, lightid, false);
 	if (userlight < self->UserLights.Size())
 	{
+		// [LIGHTLIFETIME] The live light still points into this definition. Let it
+		// go before the delete, or a frame drawn before the rebuild reads freed
+		// memory: the slow-mo muzzle-flash crash, where a real-time actor removes
+		// its light after that tic's light rebuild has already run (p_tick.cpp).
+		self->UserLights[userlight]->ReleaseLightsBuiltFrom(self->AttachedLights);
 		delete self->UserLights[userlight];
 		self->UserLights.Delete(userlight);
 		self->flags8 |= MF8_RECREATELIGHTS;

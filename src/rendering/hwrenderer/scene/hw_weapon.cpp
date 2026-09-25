@@ -401,6 +401,20 @@ void HWDrawInfo::DrawHudQuad(FRenderState& state, FGameTexture* texture, float w
 	state.SetDynLight(0, 0, 0);
 	state.SetNoSoftLightLevel();
 	state.SetLightParms(1.f, 0.f);
+	// [DARKNESS] SELF-LIT: THE DARKNESS CURVE MUST NOT TOUCH THIS.
+	//
+	// Every other 'ignore the lighting' flag is already set here -- no dynamic light,
+	// no soft light level, flat light parms, no fog. The darkness curve is NOT part of
+	// the lighting path those switch off: it is applied per fragment in main.fp, and
+	// with no light level to read it falls back to the fragment's OWN brightness
+	// (dl = grayscale(color.rgb)) and dims that. So raising rs_darkness faded the VR
+	// HUD, the laser sight and the tracers -- the three things in the room that exist
+	// to be seen regardless of how dark the room is.
+	//
+	// rs_darkness says how much light the WORLD has. It must never change how bright
+	// something self-lit is drawn. The exemption already existed for sprites and HUD
+	// models (hw_sprites.cpp, DrawPSprite); these three simply never asked for it.
+	state.SetDarknessExempt(1.f);
 	state.EnableFog(false);
 	state.SetFog(0, 0);
 	state.ResetFadeColor();
@@ -463,6 +477,7 @@ void HWDrawInfo::DrawVRHudBorder(FRenderState& state, float width, float height,
 
 	state.Draw(DT_TriangleStrip, vert.second, 4);
 	state.EnableTexture(true);
+	state.SetDarknessExempt(0.f);   // [DARKNESS] never leave the exemption on for the next thing drawn
 	state.SetDepthMask(true);
 	state.EnableDepthTest(true);
 }
@@ -907,6 +922,7 @@ static void DrawLaserBeamGeometry(FRenderState& state, const DVector3& beamStart
 	state.SetDynLight(0, 0, 0);
 	state.SetNoSoftLightLevel();
 	state.SetLightParms(1.f, 0.f);
+	state.SetDarknessExempt(1.f);   // [DARKNESS] self-lit -- see the note in DrawHudQuad
 	state.EnableFog(false);
 	state.SetFog(0, 0);
 	state.ResetFadeColor();
@@ -1181,6 +1197,7 @@ static void DrawLaserBeamGeometry(FRenderState& state, const DVector3& beamStart
 	}
 
 	state.EnableTexture(true);
+	state.SetDarknessExempt(0.f);   // [DARKNESS] never leave the exemption on for the next thing drawn
 	state.SetDepthMask(true);
 	state.SetRenderStyle(DefaultRenderStyle());
 	state.SetTextureMode(TM_NORMAL);
@@ -1227,6 +1244,7 @@ static void DrawHitscanTracerGeometry(FRenderState& state, const DVector3& trace
 	state.SetDynLight(0, 0, 0);
 	state.SetNoSoftLightLevel();
 	state.SetLightParms(1.f, 0.f);
+	state.SetDarknessExempt(1.f);   // [DARKNESS] self-lit -- see the note in DrawHudQuad
 	state.EnableFog(false);
 	state.SetFog(0, 0);
 	state.ResetFadeColor();
@@ -1258,6 +1276,7 @@ static void DrawHitscanTracerGeometry(FRenderState& state, const DVector3& trace
 	state.Draw(DT_TriangleStrip, verts.second, vertexCount, true);
 
 	state.EnableTexture(true);
+	state.SetDarknessExempt(0.f);   // [DARKNESS] never leave the exemption on for the next thing drawn
 	state.SetDepthMask(true);
 	state.SetRenderStyle(DefaultRenderStyle());
 	state.SetTextureMode(TM_NORMAL);

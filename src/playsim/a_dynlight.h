@@ -94,6 +94,13 @@ public:
 	}
 
 	void ApplyProperties(FDynamicLight * light) const;
+	// [LIGHTLIFETIME] A light built from this definition keeps raw pointers into it
+	// (ApplyProperties: args, flags, spot angles). Call this before deleting a
+	// definition: every light in `lights` still reading from it is unlinked,
+	// switched off and pointed at an inert source, so no frame can draw it from
+	// freed memory. The owner's next rebuild (SetDynamicLights) gives the slot a
+	// live definition again. See RemoveLight in a_dynlight.cpp.
+	void ReleaseLightsBuiltFrom(const TArray<FDynamicLight *> &lights) const;
 	FName GetName() const { return m_Name; }
 	void SetParameter(double p) { m_Param = p; }
 	void SetArg(int arg, int val) { m_Args[arg] = val; }
