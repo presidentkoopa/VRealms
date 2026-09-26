@@ -248,6 +248,53 @@ protected:
 };
 
 
+//==========================================================================
+//
+// An 8-bit palette-indexed image whose pixels are ALREADY IN MEMORY and whose
+// colours come from a palette of its own rather than from the game palette.
+//
+// This exists for loaders that build artwork at run time out of a foreign
+// format on the player's disk instead of reading it from a lump: there is a
+// decoded pixel buffer and a palette, and no file for FImageSource::GetImage to
+// hang an image off. FBuildTexture next door is the same idea welded to Build's
+// ART layout and its "index 255 is the hole" rule; this one takes the pixel
+// order and the palette from its caller, so any format can use it.
+//
+// LIFETIME: images live in ImageArena and are freed in bulk WITHOUT their
+// destructors running, so this must not own the pixels. `pixels` has to stay
+// valid and unmoved for as long as the texture can be drawn -- the caller keeps
+// the decoded buffer alive. The same contract FBuildTexture has with its lump.
+//
+// PIXEL ORDER: GZDoom's paletted pixels are COLUMN-major (index x*Height + y).
+// `columnMajor` says the supplied buffer already is, so it is copied straight
+// through; otherwise it is row-major (y*Width + x) and gets transposed on read.
+// A format that stores its art rotated a quarter turn therefore needs no pixel
+// shuffling at all -- hand the bytes over as column-major with width and height
+// exchanged, and the rotation is already undone.
+//
+//==========================================================================
+
+class FPalettedMemoryImage : public FImageSource
+{
+public:
+	// `translation` supplies both the true-colour palette (its Palette[], where
+	// an alpha of 0 marks the transparent index) and the paletted renderer's
+	// remap (its Remap[]). It must outlive the image, so store it in the
+	// translation manager rather than on the stack. `masked` false promises the
+	// image has no holes, which lets the renderer treat it as solid.
+	FPalettedMemoryImage(const uint8_t* pixels, FRemapTable* translation,
+		int width, int height, bool columnMajor = true, bool masked = true);
+
+	PalettedPixels CreatePalettedPixels(int conversion, int frame = 0) override;
+	int CopyPixels(FBitmap* bmp, int conversion, int frame = 0) override;
+
+protected:
+	const uint8_t* RawPixels;
+	FRemapTable* Translation;
+	bool ColumnMajor;
+};
+
+
 class FTexture;
 
 FTexture* CreateImageTexture(FImageSource* img, int frame = 0) noexcept;

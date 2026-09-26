@@ -964,6 +964,9 @@ set (PCH_SOURCES
 	roth/roth_palette.cpp
 	roth/roth_install.cpp
 	roth/roth_log.cpp
+	# The exception: roth_texture is the boundary file that hands decoded
+	# artwork to the texture manager, so it does use engine types.
+	roth/roth_texture.cpp
 	playsim/p_pspr.cpp
 	p_saveg.cpp
 	p_setup.cpp
@@ -1198,6 +1201,7 @@ set (PCH_SOURCES
 	common/textures/formats/automaptexture.cpp
 	common/textures/formats/brightmaptexture.cpp
 	common/textures/formats/buildtexture.cpp
+	common/textures/formats/memoryimage.cpp
 	common/textures/formats/ddstexture.cpp
 	common/textures/formats/flattexture.cpp
 	common/textures/formats/fontchars.cpp

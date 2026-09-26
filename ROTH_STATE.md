@@ -57,13 +57,39 @@ Builds out of tree and checks against known-good totals: 44 maps, 16,906 sectors
 ALL CHECKS PASS. **Never build it beside the sources** — stray object files make the
 engine build fail with a PDB error.
 
-**Stage 2 of 8 done.** Geometry loads: 507 sectors, 1,608 lines for STUDY1, matching
-the Python exactly. Textures, objects, platforms, lighting and logic are all still
-ahead.
+**Stage 3 of 8 done.** Geometry and textures load: 507 sectors, 1,608 lines and 363
+registered images for STUDY1, animated textures included, zero warnings. Objects,
+platforms, doors and logic are still ahead.
 
-**Two traps already hit, in case they recur:** `GetChecksum` reads Doom lumps a
-Realms map does not have (fixed by hashing the `.RAW`), and command-line arguments in
-this fork must be declared with `FARG` rather than passed as strings.
+The stage-3 write-up lives in the commit message; the parts worth knowing here are that
+**the 90-degree transpose is free** (GZDoom's paletted pixels are column-major, so handing
+the bytes over with width and height exchanged undoes the rotation with no pixel
+shuffling), and that **the stored wall extent is newly applied and is NOT covered by the
+Python oracle's visual validation** -- `wall_u_repeats` in `build_map.py` turned out to be
+dead code, so the oracle's known-good screenshots used a flat 0.5.
+
+**Traps already hit, in case they recur:** `GetChecksum` reads Doom lumps a Realms map
+does not have (fixed by hashing the `.RAW`); command-line arguments in this fork must be
+declared with `FARG` rather than passed as strings; and the sector `memset` in
+`LoadRothMap` left `Colormap.LightColor` black, which rendered the whole level black
+except where a dynamic light reached it -- when adding a field there, compare against
+`maploader.cpp:1072-1139` rather than trusting zero to be a sane default.
+
+**Build hazard: LNK1103, distinct from the LNK1318 one above.** Symptom is
+`<file>.obj : fatal error LNK1103: debugging information corrupt; recompile module` on
+whichever file you just edited, and deleting that `.obj` does not fix it -- it recurs
+deterministically. Cause is `/Z7` plus **incremental LTCG**: stale `doomxr.iobj` /
+`doomxr.ipdb` make the linker say `0 of N functions were compiled, the rest were copied
+from previous compilation`, so it never generates code for the changed module and then
+rejects its debug info. Fix:
+
+```
+rm build-dxr/src/zdoom.dir/RelWithDebInfo/doomxr.iobj build-dxr/src/zdoom.dir/RelWithDebInfo/doomxr.ipdb
+```
+
+Rebuild; the log should read `Previous IPDB not found, fall back to full compilation`.
+Costs one full LTCG pass, around four minutes. **Editing a source file while a build is
+compiling it can seed the bad state**, so do not.
 
 ---
 
