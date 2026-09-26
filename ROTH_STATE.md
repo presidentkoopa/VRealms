@@ -1,6 +1,13 @@
 # ROTH work — current state
 *Written 2026-09-25. Read this first when picking the work back up.*
 
+**What this is.** ROTH.C calls itself a modern implementation of the original game.
+So is this -- the difference is that it runs inside the GZDoom VR fork, so it inherits
+the VR mechanics already built there. The project is **ROTHxr** / **VRealms**, not
+UZDXREMA. ROTH.C is the specification: where it and the fork disagree, ROTH.C wins and
+the engine changes to suit. What we learn here is meant to flow back into the main
+engine, so additions belong in it as general capabilities, not as Realms special cases.
+
 Two efforts exist side by side. **The native loader is the destination; the Python
 pipeline is now a test oracle, not the product.**
 
@@ -90,7 +97,14 @@ Everything here came from reading ROTH.C, not from inferring. See
 - **Player facing is 512 units per turn; object facing is 256**, opposite sense.
 - **Flats scale per sector** from bits 4-5 (floor) and 2-3 (ceiling): 2^s units/texel.
 - **3D prop vertices are (x, up, y)** — the middle value is vertical. Do not mirror X.
-- **Doors** are marked by `floorTriggerID` 0xFFFD/0xFFFF and are closed at load.
+- **Doors** are closed at load, and are **hinged walls that swing to a target point**,
+  not floor or ceiling movers -- `cmd_open_door` resolves a face and gives it a target
+  vector. Three sentinels in the sector-ID space, not two: `0xFFFD` secondary pool,
+  `0xFFFE` door-capable with the wall undrawn, `0xFFFF` primary pool. Doors spawn in
+  pairs for double doors.
+- **A command's key is an ID, not an index** -- see `ROTH_COMMANDS.md`. The field we
+  called `floorTriggerID` is the sector's `commandID`; walls are named by a two-hop
+  lookup through `faceID` on the extended texture-map record.
 - **The level logic system is decoded** — see `ROTH_COMMANDS.md`.
 
 **roth-editor approximates** and is wrong about floor anchoring, wall `textureFit`,
@@ -98,27 +112,48 @@ and the X mirror. Prefer ROTH.C every time.
 
 ---
 
-## 4. Next up: what the arguments point at
+## 4. The arguments: answered
 
-The instruction set is decoded but its **operands are not**. "Open door" does not say
-*which* door — the arguments index into tables that have not been verified.
+Done, 2026-09-25, and written up in `ROTH_COMMANDS.md` -- the sections "what the key at
+`+0x08` actually names", "`cmd_open_door`", "flags, items and dialogue" and
+"`cmd_map_transition`". The short version:
 
-Specific questions to answer:
+1. **The key is an ID that gets searched for, never an array index.** Sectors match on
+   `commandID`; walls take **two hops** -- the `faceID` on an extended texture-map record,
+   then the face pointing at that record. `key == 0` means "the thing the player just
+   used", which is why one command record can serve many doors.
+2. **`cmd_open_door`** names a face, a swing extent, a sound id (plus one; `0` is silent)
+   and a **target vector** the wall moves toward.
+3. **`65535` never appears as a key** in any of the 44 maps. It is an argument value only.
+4. **Flags are DBASE100 record ids** in a global 448-bit bitmap that is saved, so they
+   persist across levels.
+5. **Map transitions** store an 8-byte NUL-terminated ASCII map name plus an arrival point.
 
-1. **Key field (`+0x08`) on a trigger** — a sector id, face id or object id depending
-   on the opcode. Which index space, and is it the raw array index or an id looked up
-   by `find_geometry_record` / `find_face_record` / `gather_faces_by_id`?
-2. **`cmd_open_door` arguments** — which door, and what do the other operands set
-   (speed, wait, direction)?
-3. **Sentinels.** `65535` appears as an argument; elsewhere it means "all" or "none".
-   Confirm per opcode rather than assuming.
-4. **`cmd_set_flag` / `cmd_if_not_flag`** — where does the flag live, how many are
-   there, and does it persist across levels?
-5. **`cmd_map_transition`** — how a destination map and arrival point are named.
+Checked against all 44 retail maps: geometry opcodes resolve almost perfectly (`0x2f`
+open-door: 116 records, **zero** unresolved), and the logic opcodes' key ranges each land
+just inside the DBASE100 table they belong to.
 
-`raw_commands.c` has helpers named `find_geometry_record`, `find_face_record` and
-`gather_faces_by_id` which almost certainly answer the first question directly.
+**Two keys still unidentified:** `0x2d` particle effect (24 distinct values, 102-791) and
+`0x0e`/`0x0f` texture scroll (values to 16898, so `+8` is probably not a key at all).
 
-**Open from the last pass:** opcode `0x30` sets an object marker nothing was found to
-read; 220 triggers against 224 entry points; and 27 "water/lava" triggers in a manor
-with no water, suggesting that opcode is a more general sector-link mechanism.
+**Also still open:** opcode `0x30` sets an object marker nothing was found to read; 220
+triggers against 224 entry points in STUDY1.
+
+---
+
+## 5. What the door finding costs us
+
+Realms doors cannot be GZDoom door sectors. They are wall geometry moved toward a stored
+target point, which the fork has no equivalent for. This is the first place the native
+loader needs a real engine addition rather than a translation -- and it is worth building
+as a general "move this wall toward a point" capability, since UZD mapping has no such
+thing either.
+
+---
+
+## 6. Stages left on the native loader
+
+Stage 2 of 8 is done. Remaining: textures, objects and 3D props, mid-platforms as 3D
+floors, doors and lighting, the command system, then standalone. Doors now have their
+semantics pinned down; the command system has its operands pinned down. Textures and
+objects are next and neither depends on the logic work.

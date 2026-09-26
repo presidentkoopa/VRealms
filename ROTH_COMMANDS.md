@@ -37,7 +37,7 @@ records and 224 trigger entry points.
 +0x04  u16  1-based index -- NEXT instruction, or a trigger's chain START
 +0x06  u8   direction mask and fire flags   (triggers)
 +0x07  u8   sub-flags                        (triggers)
-+0x08  u16  key: which sector / face / object this watches  (0 = inert)
++0x08  u16  key: an ID, looked up per-opcode (0 = "whatever the player just used")
 +0x0a  u16  sound effect or auxiliary value
 +0x0c..0x12  s16 x0, x1, z0, z1 -- optional bounding box (0 at +0x0c = no box)
 ```
@@ -141,6 +141,166 @@ most take 2 or 3, though some take 7.
 
 ---
 
+## What the key at `+0x08` actually names
+
+**It is an ID that gets searched for, never an array index.** Three scanners do the
+searching, all of them walking a section of the loaded map and comparing one field:
+
+| Scanner | Walks | Stride | Matches | Returns |
+|---|---|---|---|---|
+| `find_geometry_record` | sectors | `0x1a` | sector `+0x14` — the field we call `floorTriggerID` | a byte offset |
+| `find_raw_state_record` | texture maps | 10 or 14 | texmap `+0x0c` — `faceID`, only on extended records | a byte offset |
+| `find_face_record` | faces | `0x0c` | face `+0x04` — `textureMapOffset` | a byte offset |
+
+Two of those names are misleading and worth restating in our terms:
+
+- **`find_raw_state_record` searches texture-map records**, not some separate state
+  table. Its stride is 10 bytes, 14 when `byte[+1] & 0x80` — which is exactly our
+  `TextureMap.extended`, the high bit of `fitWord`. Its match field is our `faceID`.
+- **`find_face_record` is a reverse lookup**: given a texture-map record's offset, find
+  the face that uses it. It is how the engine gets from a named wall group back to real
+  geometry.
+
+So naming a wall is a **two-hop** operation: `key` → the texture-map record carrying that
+`faceID` → the face pointing at that record. Several walls can share one `faceID`, which
+is how one command moves a whole group of them (`gather_faces_by_id` collects every
+match, capped at 200).
+
+**`floorTriggerID` is misnamed in our reader.** It is the sector's command ID — the handle
+commands use to address it. The door sentinels are reserved values in that ID space.
+
+### key = 0 means "the thing the player just used"
+
+Not inert. `0` routes to the live interaction globals: `g_active_object` (a texture-map
+record) and `g_active_object_secondary` (a face). This is what lets one command record
+serve many doors — the trigger that fired supplies the target.
+
+`gather_faces_by_id(0)` also adds the **sister face**, but only when the sister's
+texture-map record carries the same `faceID`. Using either side of a shared wall affects
+both.
+
+**`65535` never appears in the key field** — not once across all 44 maps. It appears as an
+*argument* (notably `cmd_spawn_object_adv`, where it means "spawn at the player").
+
+### Which space each opcode uses
+
+Measured across all 44 retail maps. "Resolves" = the key matches a real sector ID or
+`faceID` in that same map.
+
+**Geometry** — these resolve almost perfectly, so the key genuinely names map geometry:
+
+| Opcode | Records | Resolves | key=0 | Unresolved |
+|---|---|---|---|---|
+| `0x18` enter sector A | 240 | 239 | 0 | 1 |
+| `0x32` enter sector B | 259 | 258 | 0 | 1 |
+| `0x13` water/lava | 443 | 428 | 0 | 15 |
+| `0x19` use wall | 48 | 48 | 0 | 0 |
+| `0x1a` bump wall | 72 | 72 | 0 | 0 |
+| `0x31` use wall, directional | 125 | 123 | 1 | 1 |
+| `0x2f` **open door** | 116 | 61 | 55 | **0** |
+| `0x34` change wall texture | 103 | 98 | 5 | 0 |
+| `0x07` change height | 126 | 125 | 0 | 1 |
+| `0x1d` change lighting | 60 | 60 | 0 | 0 |
+| `0x09` move sector | 32 | 32 | 0 | 0 |
+| `0x0a` change floor texture | 56 | 56 | 0 | 0 |
+
+`0x2f` having **zero** unresolved keys across the whole game is the strongest single
+confirmation that the two-hop rule is right.
+
+**Their own numbering** — these do not index geometry at all, and their ranges match the
+tables they belong to:
+
+| Opcodes | Key is | Observed | Bound |
+|---|---|---|---|
+| `0x26` set flag, `0x28` if-not-flag | DBASE100 record id | 1–431 | 433 records in `DBASE100.DAT` |
+| `0x27` lacks item, `0x29` give, `0x2a` remove | DBASE100 inventory id | 3–279 | 281 |
+| `0x2b` run dialogue, `0x36` branch on dialogue | DBASE100 dialogue id | 23–693 | 694 |
+| `0x17` toggle, `0x38` jump-if-fails, `0x40` run | **1-based command index** | 1–660 | 661 records in the largest map |
+
+Every one lands just inside its table's size. `0x17` resolving through
+`resolve_command_by_index`, and `0x38` storing `word[rec+8]` straight into
+`g_command_next_active`, both confirm the command-index reading from the code side.
+
+**No key at all** — `0x33` damage (44 records, every key `0`: damage always hits the
+player) and `0x3d` timer (15 records, every key `0`: a timer has nothing to point at).
+
+**Still open:** `0x2d` particle effect (76 records, 24 distinct keys, 102–791 — fits no
+table we have identified) and `0x0e`/`0x0f` texture scroll (values up to 16898, so `+8`
+is probably not a key for these at all).
+
+---
+
+## `cmd_open_door` — and why our doors cannot be Doom doors
+
+`cmd_open_door` resolves its key to a **face**, then calls `register_door_swing`:
+
+| Field | Becomes |
+|---|---|
+| `+0x08` key | the wall, via the two-hop lookup |
+| `+0x0a` × `+0x07` | swing extent — the two are multiplied when `+0x07` is nonzero |
+| `+0x0c` | sound id **plus one**; `0` means silent, and a door with sound also gets a 1000-tick open timer |
+| `+0x0e`, `+0x10` | **target vector x, y** — the point the wall moves to |
+
+The engine's own dev shortcut, `dev_open_nearest_door`, walks the current sector's walls
+and hands `spawn_door_instance` a **wall**, with extent 600 and no sound. Two independent
+paths agreeing that the first argument is a wall, not a sector.
+
+**This is a hinged wall swinging to an explicit destination point** — the door record
+stores a target vector and the wall's geometry is moved toward it. It is not a floor or
+ceiling mover. Modelling Realms doors as Doom door sectors will be wrong for every door
+in the game; they need to move wall geometry.
+
+### The door sentinels are three different things
+
+`dev_open_nearest_door` will only make a door of a wall whose **far** sector has
+`floorTriggerID >= 0xFFFD`, and `spawn_door_instance` then splits on the value:
+
+| Value | Meaning |
+|---|---|
+| `0xFFFD` | door, **secondary** pool — at most 6 |
+| `0xFFFE` | door-capable, and the two-sided wall is not drawn |
+| `0xFFFF` | door, **primary** pool — at most 6, or 5 when a door and its neighbour spawn as a pair |
+
+Our reader's `IsDoor()` tested only `0xFFFD` and `0xFFFF`, so it misses `0xFFFE` and
+flattens a distinction the original keeps. Doors also spawn **in pairs** when
+`resolve_door_neighbor_sector` finds a neighbour, which is how double doors work.
+
+---
+
+## Flags, items and dialogue all live outside the map
+
+`cmd_set_flag` and `cmd_if_not_flag` operate on a **bitmap allocated once at game start**,
+one bit per DBASE100 record: `((count + 0x20) & ~0x1F) >> 3` bytes. For the retail data
+that is 433 records → **56 bytes, 448 flags**.
+
+It is **global and persistent** — savegame chunk 6 writes it out whole. Progress flags
+therefore survive level changes, which they must: the game is one continuous story.
+
+`cmd_set_flag` picks its operation from `byte[rec+6]`: bit `0x02` toggles, else bit `0x01`
+clears, else it sets. It reports "acted" only when the bit actually changed.
+
+---
+
+## `cmd_map_transition`
+
+The destination is an **8-byte NUL-padded ASCII map name**, stored as the two dwords at
+`+0x0a` and `+0x0e`; the key at `+0x08` is the arrival point. Read straight out of the
+retail maps:
+
+```
+AELF      key=13  "STUDY1"
+ANUBIS    key=24  "CHURCH1"
+AQUA1     key=4   "LRINTH1"
+DOPPLE    key=7   "ABAGATE2"
+CAVERNS   key=0   "CAVERNS2"
+```
+
+Treat it as NUL-terminated rather than fixed-width: `CHURCH1`'s exit to `VICAR` stores
+`V I C A R \0 1 \0` — a stray digit left behind the terminator when the name was
+shortened.
+
+---
+
 ## A worked example, from the real Study
 
 Two chains, decoded:
@@ -164,9 +324,8 @@ different targets, which is what made it recognisable before any of it was decod
 ## What is still open
 
 - **Opcode `0x30`** — the marker it sets is certain, what consumes it is not.
-- **Argument meanings.** Knowing an instruction is "open door" does not say *which*
-  door. Arguments index into geometry and object tables, and those index spaces have
-  not been verified.
+- **Two argument keys.** `0x2d` particle effect and `0x0e`/`0x0f` texture scroll are the
+  only key fields left that fit no table we have identified.
 - **The 15 trigger categories.** The Study uses 11 of them and the firers are named
   (contact, use, entry), but each category slot has not been individually mapped.
 

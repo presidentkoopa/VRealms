@@ -21,10 +21,12 @@
 namespace roth
 {
 
-// Sector floorTriggerID sentinels (handoff 4, 5.6).
-static const uint16_t TRIGGER_DOOR_A   = 0xFFFD; // door; closed at load
-static const uint16_t TRIGGER_INVIS    = 0xFFFE; // two-sided walls not drawn
-static const uint16_t TRIGGER_DOOR_B   = 0xFFFF; // door
+// Reserved values in the sector-ID space (ROTH_COMMANDS.md, "the door sentinels
+// are three different things"). The original's spawn_door_instance splits on
+// these: 0xFFFD goes to a separate six-slot pool, the others to the primary one.
+static const uint16_t TRIGGER_DOOR_A   = 0xFFFD; // door, secondary pool; closed at load
+static const uint16_t TRIGGER_INVIS    = 0xFFFE; // door-capable; the two-sided wall is not drawn
+static const uint16_t TRIGGER_DOOR_B   = 0xFFFF; // door, primary pool; closed at load
 
 // Face texture-mapping flags (the byte at +8 of a mapping record).
 enum FaceFlags
@@ -59,7 +61,11 @@ struct Sector
 	uint8_t  faceCount;
 	uint16_t firstFaceOffset;
 	uint8_t  ceilShiftX, ceilShiftY, floorShiftX, floorShiftY;
-	uint16_t floorTriggerID;
+	// The handle commands address this sector by. Commands carry an ID, not an
+	// index, and find_geometry_record scans for a match on this field -- see
+	// ROTH_COMMANDS.md, "what the key at +0x08 actually names". The door
+	// sentinels above are reserved values in the same space.
+	uint16_t commandID;
 	uint16_t flags2;           // high byte: flat flip bits
 	uint16_t platformOffset;   // 0 = none
 
@@ -67,10 +73,16 @@ struct Sector
 	int firstFaceIndex = -1;
 	int platformIndex = -1;
 
+	// Closed at load, so the opening is sealed until something opens it.
 	bool IsDoor() const
 	{
-		return floorTriggerID == TRIGGER_DOOR_A || floorTriggerID == TRIGGER_DOOR_B;
+		return commandID == TRIGGER_DOOR_A || commandID == TRIGGER_DOOR_B;
 	}
+	// The original's dev_open_nearest_door will only make a door of a wall whose
+	// far sector is one of the three sentinels, so TRIGGER_INVIS counts here even
+	// though it is not closed at load.
+	bool IsDoorCapable() const  { return commandID >= TRIGGER_DOOR_A; }
+	bool IsSecondaryDoor() const { return commandID == TRIGGER_DOOR_A; }
 	// 2^s world units per texel (handoff 5.3)
 	int FloorScaleShift() const   { return (flags >> 4) & 3; }
 	int CeilingScaleShift() const { return (flags >> 2) & 3; }

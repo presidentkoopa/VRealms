@@ -116,7 +116,7 @@ Map ParseRaw(const uint8_t *data, size_t size)
 		s.ceilShiftY = r.U8();
 		s.floorShiftX = r.U8();
 		s.floorShiftY = r.U8();
-		s.floorTriggerID = r.U16();
+		s.commandID = r.U16();
 		s.flags2 = r.U16();
 		s.platformOffset = r.U16();
 		map.sectors.push_back(s);
