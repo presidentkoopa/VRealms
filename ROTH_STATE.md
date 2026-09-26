@@ -57,39 +57,15 @@ Builds out of tree and checks against known-good totals: 44 maps, 16,906 sectors
 ALL CHECKS PASS. **Never build it beside the sources** — stray object files make the
 engine build fail with a PDB error.
 
-**Stage 3 of 8 done.** Geometry and textures load: 507 sectors, 1,608 lines and 363
-registered images for STUDY1, animated textures included, zero warnings. Objects,
-platforms, doors and logic are still ahead.
+**Stages 1-5 done, stage 6 part-done.** STUDY1 loads from the retail install with
+geometry, textures, 242 objects (199 sprites, 43 real 3D meshes), 15 mid-platforms as
+3D floors, and 25 doors whose hinges are all resolved. Zero warnings.
 
-The stage-3 write-up lives in the commit message; the parts worth knowing here are that
-**the 90-degree transpose is free** (GZDoom's paletted pixels are column-major, so handing
-the bytes over with width and height exchanged undoes the rotation with no pixel
-shuffling), and that **the stored wall extent is newly applied and is NOT covered by the
-Python oracle's visual validation** -- `wall_u_repeats` in `build_map.py` turned out to be
-dead code, so the oracle's known-good screenshots used a flat 0.5.
-
-**Traps already hit, in case they recur:** `GetChecksum` reads Doom lumps a Realms map
-does not have (fixed by hashing the `.RAW`); command-line arguments in this fork must be
-declared with `FARG` rather than passed as strings; and the sector `memset` in
-`LoadRothMap` left `Colormap.LightColor` black, which rendered the whole level black
-except where a dynamic light reached it -- when adding a field there, compare against
-`maploader.cpp:1072-1139` rather than trusting zero to be a sane default.
-
-**Build hazard: LNK1103, distinct from the LNK1318 one above.** Symptom is
-`<file>.obj : fatal error LNK1103: debugging information corrupt; recompile module` on
-whichever file you just edited, and deleting that `.obj` does not fix it -- it recurs
-deterministically. Cause is `/Z7` plus **incremental LTCG**: stale `doomxr.iobj` /
-`doomxr.ipdb` make the linker say `0 of N functions were compiled, the rest were copied
-from previous compilation`, so it never generates code for the changed module and then
-rejects its debug info. Fix:
-
-```
-rm build-dxr/src/zdoom.dir/RelWithDebInfo/doomxr.iobj build-dxr/src/zdoom.dir/RelWithDebInfo/doomxr.ipdb
-```
-
-Rebuild; the log should read `Previous IPDB not found, fall back to full compilation`.
-Costs one full LTCG pass, around four minutes. **Editing a source file while a build is
-compiling it can seed the bad state**, so do not.
+The stage-3 notes worth keeping: **the 90-degree transpose is free** (GZDoom's paletted
+pixels are column-major, so handing the bytes over with width and height exchanged undoes
+the rotation with no pixel shuffling), and **the stored wall extent is NOT covered by the
+Python oracle's visual validation** -- `wall_u_repeats` in `build_map.py` is dead code, so
+the oracle's known-good screenshots used a flat 0.5.
 
 ---
 
@@ -179,9 +155,62 @@ thing either.
 
 ---
 
-## 6. Stages left on the native loader
+## 6. Where it actually stands (2026-09-26, end of session)
 
-Stage 2 of 8 is done. Remaining: textures, objects and 3D props, mid-platforms as 3D
-floors, doors and lighting, the command system, then standalone. Doors now have their
-semantics pinned down; the command system has its operands pinned down. Textures and
-objects are next and neither depends on the logic work.
+**Done:** readers (1), geometry (2), textures (3), objects and 3D props (4),
+mid-platforms as 3D floors (5). Doors are half of stage 6.
+
+**Doors.** A Realms door is a four-walled slab that swings about a hinge corner toward a
+stored target point. The hinge rule is **verified across all 44 maps: 141 door sectors,
+every one with exactly four faces, every one with exactly one hinge** -- the face whose
+mapping record is extended and whose `faceID` is a door sentinel. In STUDY1 all 25
+resolve, and 14 build as polyobjects using the zero-delta anchor trick (spawn spot and
+anchor both on the hinge, so `TranslateToStartSpot` moves nothing and the polyobject is
+built in place -- no void room, no engine change).
+
+The other 11 fail because **sister-face merging can collapse two of a slab's four faces
+into one line**, so the door comes up short of four. That is the next door job.
+
+**Nothing opens them yet.** That needs stage 7.
+
+---
+
+## 7. Open, with what is known about each
+
+- **`roth_objectangle`** -- object facing is a cvar because three attempts to deduce the
+  constant from descriptions gave three contradictory answers, each fixing one piece of
+  furniture and breaking another. Dial it in game, reload the map, bake in the number.
+  ROTH.C's own formula is `angle512 = 2 * (rotation + 0x40) - viewAngle`.
+- **Textures that do not line up.** ROTH.C has two extent paths and the computed one reads
+  a byte of **repeat nibbles**: high nibble multiplies the horizontal extent by `1+n`, low
+  by `1+n` vertically (`renderer.c:13345-13358`). We apply neither. Traced as far as
+  `renderer.c:13115`, which reads it from a RUNTIME surface record at `+0xf`; the field it
+  comes from in the file is not yet found. **It is not the texture-map record's high byte
+  -- that is zero in all 910 of STUDY1's mappings.** Vertical `FF_IMAGE_FIT` is now solved
+  (903 unfitted pieces down to 662, and those have no gap to fill).
+- **"One suit of armour is massive."** Every sprite measures sanely (tallest 175 against a
+  154-unit player) and mesh `4109` -- the detailed one, 97 vertices -- is 150 tall, which
+  is right. The only outsized props are `DEMO[4123]` and `[4128]`: **542 tall, 460 wide,
+  420 deep, 14 vertices, 12 faces**. The file header's bounding box agrees, so the parse is
+  not wrong. Either those are genuinely large furniture, or mesh units are not 1:1 -- and
+  note the 1:1 claim came from **roth-editor**, not ROTH.C.
+- **Lighting is deliberately OFF.** `ROTH_LIGHTING.md` has the whole model transcribed and
+  both engine pieces are in place but inert while `ShadeFalloffShift` is zero. Turning it
+  on is two lines. It is off because a faithfully dark manor is unusable to work in.
+  Also found: GZDoom's Build mode was being distance-fogged ON TOP of its own shading,
+  which is half of why the first attempt was unreadable.
+- **Parallax sky.** `FF_EDGE_MAP` does not mean "this wall is sky" -- the face draws its own
+  texture and the sky fills the open region ABOVE the wall top. Modelling it needs the
+  wall's own top height, which the loader does not carry: we build every wall
+  floor-to-ceiling, so there is no region above it. That is geometry work, not texturing.
+
+---
+
+## 8. Two build traps that will cost an hour each
+
+- **LNK1318** from stray `.obj` files beside the sources. Never build the selftest in tree.
+- **LNK1103**, "debugging information corrupt", from stale incremental LTCG. Deleting the
+  `.obj` does NOT help -- delete `build-dxr/src/zdoom.dir/RelWithDebInfo/doomxr.iobj` and
+  `doomxr.ipdb`. Editing a source file while a build is compiling it seeds this.
+
+Desktop shortcuts **ROTHxr - STUDY1** and **ROTHxr - CHURCH1** launch the current build.
