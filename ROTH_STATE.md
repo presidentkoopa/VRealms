@@ -158,7 +158,13 @@ thing either.
 ## 6. Where it actually stands (2026-09-26, end of session)
 
 **Done:** readers (1), geometry (2), textures (3), objects and 3D props (4),
-mid-platforms as 3D floors (5). Doors are half of stage 6.
+mid-platforms as 3D floors (5).
+
+**Half:** stage 6 (30 door panels built and hinged; nothing opens them; lighting
+transcribed but switched off) and stage 7 (logic parses, every key resolves, all
+1,937 chains execute -- but no handlers, so nothing happens yet).
+
+**Stage 8 is close and blocked** -- see 6b below.
 
 **Doors.** A Realms door is a four-walled slab that swings about a hinge corner toward a
 stored target point. The hinge rule is **verified across all 44 maps: 141 door sectors,
@@ -187,6 +193,42 @@ two-sided polyobject line is trouble in GZDoom") and then built anyway without s
 Do not simply re-apply the revert.
 
 **Nothing opens them yet.** That needs stage 7.
+
+---
+
+## 6b. Stage 8 -- standalone: close, blocked on visibility
+
+`vrealms_iwad/` is the game package: a marker lump, an IWADINFO, a generated
+PLAYPAL and COLORMAP, and an additive MAPINFO. **It carries nothing from Realms**
+-- the palette is a neutral colour cube of our own, and the real one is still read
+from the player's `.DAS` at map load.
+
+```
+doomxr.exe -iwad vrealms.pk3 -rothpath "<install>" +map STUDY1
+```
+
+**How far it gets:** the engine boots on that package alone, identifies it as
+VRealms, and finds all 44 Realms maps in the install. It then **halts inside base
+MAPINFO parsing**, before any map loads, with no error on stdout or stderr --
+GZDoom reports fatal startup errors in a modal dialog.
+
+**Already ruled out, so do not repeat these:**
+
+- A palette IS required. Without `PLAYPAL`/`COLORMAP` the engine stops silently
+  right after `W_Init`. Generating them got us past that.
+- **Our MAPINFO is not the cause.** It halts identically with ours, with the
+  engine's baseline copied in, and with no MAPINFO at all.
+- **The `Mapinfo =` field is not the cause.** Same halt with and without it.
+- One real error was found and fixed on the way: copying the engine's own
+  `mindefaults.txt` in as our MAPINFO produces *"MAPINFO file is processed more
+  than once"*, because it `include`s files the engine has already read. **Ours
+  must be additive only** -- a `defaultmap`, a `map` entry, a `clusterdef`, and
+  nothing included.
+
+**The blocker is that the engine will not say what it objects to.** The next step
+is to make that message reachable -- get `I_FatalError` into the log, or bisect
+the baseline mapinfo -- rather than keep guessing at MAPINFO contents, which is
+what stalled this.
 
 ---
 

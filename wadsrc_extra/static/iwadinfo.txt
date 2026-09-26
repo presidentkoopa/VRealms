@@ -10,7 +10,7 @@ IWad
 	Game = "Doom"
 	Config = "VRealms"
 	IWADName = "vrealms.pk3"
-	Mapinfo = "mapinfo/vrealms.txt"
+	Mapinfo = "mapinfo/mindefaults.txt"
 	MustContain = "VREALMS"
 	BannerColors = "0b 0b 14", "c8 b8 90"
 }

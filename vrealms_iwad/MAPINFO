@@ -1,0 +1,26 @@
+// VRealms adds only what it needs on top of the engine's own baseline, which
+// IWADINFO points at (mapinfo/mindefaults.txt) and which the engine loads once.
+// Nothing is included from here: including a file the engine has already read
+// is an error ("MAPINFO file is processed more than once").
+//
+// No Realms content lives here. The 44 levels are read from the player's
+// installation at run time and recognised by name; these entries only give the
+// engine somewhere to hang a level it has never heard of.
+
+defaultmap
+{
+	sky1 = "-NOFLAT-"
+	cluster = 1
+	nointermission
+}
+
+map STUDY1 "The Study"
+{
+	next = "STUDY1"
+}
+
+clusterdef 1
+{
+	flat = "-NOFLAT-"
+	music = ""
+}
