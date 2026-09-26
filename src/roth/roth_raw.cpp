@@ -63,6 +63,29 @@ const size_t FACE_RECORD_SIZE = 0x0C;
 
 } // namespace
 
+// From ROTH.C's load-time trigger-registration table (map_load.c:1089-1097).
+// Everything not listed here is an instruction, executed rather than watched for.
+bool IsTriggerOpcode(uint8_t opcode)
+{
+	switch (opcode)
+	{
+	case 0x08:   // the player clicks or uses an object
+	case 0x13:   // enters or leaves water or lava; fires on both edges
+	case 0x18:   // enters a sector, channel A
+	case 0x19:   // uses a wall
+	case 0x1A:   // bumps into a wall
+	case 0x1B:   // touches or activates an object
+	case 0x25:   // inert: does nothing in either table
+	case 0x30:   // marks matching objects; what reads the mark is unresolved
+	case 0x31:   // uses a wall, direction-sensitive
+	case 0x32:   // enters a sector, channel B
+	case 0x3D:   // a timer, started at level load
+		return true;
+	default:
+		return false;
+	}
+}
+
 Map ParseRaw(const uint8_t *data, size_t size)
 {
 	Map map;
@@ -234,6 +257,74 @@ Map ParseRaw(const uint8_t *data, size_t size)
 		return map;
 	}
 
+	// ---- level logic ------------------------------------------------------
+	// The command section follows the vertices. Two record kinds share one
+	// layout; see roth_raw.h and ROTH_COMMANDS.md.
+	//
+	// Layout, in order: a 8-byte header (a 2-char signature, a word, the
+	// commands' offset, the record count), then FIFTEEN category slots of
+	// (offset, count), then one 1-based entry offset per record, then the
+	// records themselves. Offsets are relative to the start of this section.
+	//
+	// The index space is 1-BASED because that is what the original uses:
+	// resolve_command_by_index (renderer.c:9830) returns base[(index-1)*4] and
+	// treats index 0 as "none".
+	{
+		const size_t commandsBase = (size_t)h.verticesOffset + h.verticesSectionSize;
+		r.Skip(2);                             // signature
+		r.U16();                               // unknown
+		r.U16();                               // commands offset
+		const uint16_t commandCount = r.U16();
+		for (int i = 0; i < 15; i++) { r.U16(); r.U16(); }   // category slots
+
+		std::vector<uint16_t> entryOffsets;
+		entryOffsets.reserve(commandCount);
+		for (int i = 0; i < commandCount; i++) entryOffsets.push_back(r.U16());
+
+		std::unordered_map<uint32_t, uint16_t> commandByOffset;
+		map.commands.reserve(commandCount);
+		for (int i = 0; i < commandCount && !r.Bad(); i++)
+		{
+			commandByOffset[(uint32_t)(r.Tell() - commandsBase)] = (uint16_t)(i + 1);
+
+			const size_t recStart = r.Tell();
+			const uint16_t size = r.U16();
+			Command c;
+			c.modifier  = r.U8();
+			c.opcode    = r.U8();
+			c.linkIndex = r.U16();
+
+			// Arguments fill whatever is left of the record. The named fields
+			// below are the first three of them, kept separately because every
+			// opcode uses them the same way.
+			const int argCount = size >= 6 ? (int)((size - 6) / 2) : 0;
+			c.args.reserve(argCount);
+			for (int a = 0; a < argCount; a++) c.args.push_back(r.U16());
+			if (argCount > 0) { c.fireFlags = (uint8_t)(c.args[0] & 0xFF);
+			                    c.subFlags  = (uint8_t)(c.args[0] >> 8); }
+			if (argCount > 1) c.key = c.args[1];
+			if (argCount > 2) c.aux = c.args[2];
+
+			c.isTrigger = IsTriggerOpcode(c.opcode);
+			c.disabled  = (c.modifier & 0x08) != 0;
+			// The SAME word at +4 means opposite things to the two record
+			// kinds. Reading it as "next" for a trigger wires every trigger in
+			// the game to the wrong place, so it is resolved once, here.
+			if (c.isTrigger) c.chainStart = c.linkIndex;
+			else             c.nextIndex  = c.linkIndex;
+
+			map.commands.push_back(c);
+			if (size >= 6) r.Seek(recStart + size);   // records are self-sizing
+		}
+
+		for (uint16_t off : entryOffsets)
+		{
+			if (off == 0) continue;                    // 0 is "no entry"
+			auto it = commandByOffset.find(off);
+			if (it != commandByOffset.end()) map.entryPoints.push_back(it->second);
+		}
+	}
+
 	// ---- objects ----------------------------------------------------------
 	// Laid out as a table of per-sector offsets relative to the start of the
 	// section, each pointing at a small run of object records.
@@ -352,6 +443,58 @@ Map ParseRaw(const uint8_t *data, size_t size)
 			if (tmi < 0 || tmi >= (int)map.textureMaps.size()) continue;
 			const TextureMap &tm = map.textureMaps[tmi];
 			if (tm.extended && tm.faceID >= TRIGGER_DOOR_A) { s.hingeFace = fi; break; }
+		}
+	}
+
+	// ---- resolve what each command's key points at -------------------------
+	// A key is an ID the original SEARCHES for, never an array index.
+	//
+	//   find_geometry_record (raw_commands.c:50) walks the sectors and matches
+	//   the field we call commandID.
+	//   A wall takes TWO HOPS: collect_raw_state_matches (renderer.c:11222)
+	//   gathers the extended mapping records whose faceID equals the key, then
+	//   find_face_record (raw_commands.c:64) finds the face pointing at each.
+	//
+	// Several walls can share one faceID, which is how a single command repaints
+	// or moves a whole group of them.
+	//
+	// ONE MORE RULE, from the original's own load pass (map_load.c:1158-1172):
+	// when a resolved face's own sector is a DOOR, the binding moves to the
+	// SISTER face instead, provided the sister's sector is not also a door. A
+	// trigger on a doorway belongs to the room, not to the moving leaf.
+	{
+		for (Command &c : map.commands)
+		{
+			if (c.key == 0) continue;          // "what the player just used"
+
+			for (size_t si = 0; si < map.sectors.size(); si++)
+			{
+				if (map.sectors[si].commandID == c.key) { c.sector = (int)si; break; }
+			}
+
+			for (size_t fi = 0; fi < map.faces.size(); fi++)
+			{
+				const int tmi = map.faces[fi].textureMap;
+				if (tmi < 0 || tmi >= (int)map.textureMaps.size()) continue;
+				const TextureMap &tm = map.textureMaps[tmi];
+				if (!tm.extended || tm.faceID != c.key) continue;
+
+				int use = (int)fi;
+				const int own = map.faces[fi].sector;
+				if (own >= 0 && own < (int)map.sectors.size()
+					&& map.sectors[own].IsDoorCapable())
+				{
+					const int sis = map.faces[fi].sister;
+					if (sis >= 0 && sis < (int)map.faces.size())
+					{
+						const int ss = map.faces[sis].sector;
+						if (ss >= 0 && ss < (int)map.sectors.size()
+							&& !map.sectors[ss].IsDoorCapable())
+							use = sis;
+					}
+				}
+				c.faces.push_back(use);
+			}
 		}
 	}
 

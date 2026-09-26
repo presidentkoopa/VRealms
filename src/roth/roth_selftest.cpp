@@ -70,12 +70,21 @@ int main(int argc, char **argv)
 	// Totals the Python pipeline already produced for the retail game.
 	const int EXPECT_MAPS = 44;
 	const int EXPECT_SECTORS = 16906;
+	// The Python oracle's totals for the command section, over all 44 maps.
+	const int EXPECT_COMMANDS = 5531;
+	const int EXPECT_TRIGGERS = 1876;
+	const int EXPECT_DEAD_KEYS = 19;   // see the note by the print below
+	const int EXPECT_ENTRIES  = 1937;   // entry POINTS, not chains -- ROTH_COMMANDS.md mislabelled this
 	const int EXPECT_FACES = 82210;
 	const int EXPECT_OBJECTS = 5324;
 	const int EXPECT_PLATFORMS = 2299;
 
 	int nMaps = 0, nSectors = 0, nFaces = 0, nObjects = 0, nPlatforms = 0;
 	int nOpenLoops = 0, nFailed = 0;
+	int nCommands = 0, nTriggers = 0, nEntries = 0;
+	// Geometry opcodes only -- flags, items and dialogue key off DBASE100 ids,
+	// and 0x17/0x38/0x40 take a command index, so none of those should resolve.
+	int nGeomKeys = 0, nGeomResolved = 0;
 
 	for (auto &entry : maps)
 	{
@@ -93,6 +102,22 @@ int main(int argc, char **argv)
 
 		nMaps++;
 		nSectors += (int)m.sectors.size();
+		nCommands += (int)m.commands.size();
+		for (const auto &c : m.commands) if (c.isTrigger) nTriggers++;
+		nEntries += (int)m.entryPoints.size();
+		for (const auto &c : m.commands)
+		{
+			switch (c.opcode)
+			{
+			case 0x18: case 0x32: case 0x13: case 0x19: case 0x1A: case 0x31:
+			case 0x2F: case 0x34: case 0x07: case 0x1D: case 0x09: case 0x0A:
+				if (c.key == 0) break;          // resolved at runtime
+				nGeomKeys++;
+				if (c.sector >= 0 || !c.faces.empty()) nGeomResolved++;
+				break;
+			default: break;
+			}
+		}
 		nFaces += (int)m.faces.size();
 		nPlatforms += (int)m.platforms.size();
 		for (auto &list : m.objects) nObjects += (int)list.size();
@@ -163,6 +188,25 @@ int main(int argc, char **argv)
 		nMaps == EXPECT_MAPS ? "OK" : "MISMATCH");
 	printf("sectors         %6d   expected %6d  %s\n", nSectors, EXPECT_SECTORS,
 		nSectors == EXPECT_SECTORS ? "OK" : "MISMATCH");
+	printf("commands        %6d   expected %6d  %s\n", nCommands, EXPECT_COMMANDS,
+		nCommands == EXPECT_COMMANDS ? "OK" : "MISMATCH");
+	printf("triggers        %6d   expected %6d  %s\n", nTriggers, EXPECT_TRIGGERS,
+		nTriggers == EXPECT_TRIGGERS ? "OK" : "MISMATCH");
+	printf("entry points    %6d   expected %6d  %s\n", nEntries, EXPECT_ENTRIES,
+		nEntries == EXPECT_ENTRIES ? "OK" : "MISMATCH");
+	// 19 of the retail maps' geometry keys match no sector and no wall, and that
+	// is FAITHFUL rather than a gap. Opcode 0x13's init handler in the original
+	// is mark_geometry_records_by_id (raw_commands.c:4994): it scans sectors for
+	// commandID == key and ORs a flag into the matches. No match means nothing
+	// gets marked and the trigger is inert -- ROTH.C resolves these to nothing
+	// either. They are dead keys left behind by level editing: 15 of the 19 are
+	// opcode 0x13, two are already flagged disabled, and one carries key 0xFFFC,
+	// sitting right beside the door sentinels.
+	//
+	// Pinned so the number cannot quietly grow. If it does, the resolver broke.
+	printf("geometry keys   %6d   resolved %6d   dead %3d (expect %d)  %s\n",
+		nGeomKeys, nGeomResolved, nGeomKeys - nGeomResolved, EXPECT_DEAD_KEYS,
+		nGeomKeys - nGeomResolved == EXPECT_DEAD_KEYS ? "OK" : "CHANGED");
 	printf("faces           %6d   expected %6d  %s\n", nFaces, EXPECT_FACES,
 		nFaces == EXPECT_FACES ? "OK" : "MISMATCH");
 	printf("objects         %6d   expected %6d  %s\n", nObjects, EXPECT_OBJECTS,
@@ -180,7 +224,10 @@ int main(int argc, char **argv)
 	bool pass = nMaps == EXPECT_MAPS && nSectors == EXPECT_SECTORS
 		&& nFaces == EXPECT_FACES && nObjects == EXPECT_OBJECTS
 		&& nPlatforms == EXPECT_PLATFORMS && nOpenLoops == 0 && nFailed == 0
-		&& packFails == 0;
+		&& packFails == 0
+		&& nCommands == EXPECT_COMMANDS && nTriggers == EXPECT_TRIGGERS
+		&& nEntries == EXPECT_ENTRIES
+		&& nGeomKeys - nGeomResolved == EXPECT_DEAD_KEYS;
 	printf("\n%s\n", pass ? "ALL CHECKS PASS" : "*** CHECKS FAILED ***");
 	return pass ? 0 : 1;
 }

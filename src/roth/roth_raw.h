@@ -155,6 +155,50 @@ struct Object
 	bool HorizontalFlip() const { return (flags & 0x10) != 0; }
 };
 
+// A level's logic, as small programs attached to its geometry. Two kinds of
+// record share ONE layout, which is the easiest thing in this format to get
+// wrong: a TRIGGER is registered at load and watches for something, while an
+// INSTRUCTION is executed in sequence. The word at +4 means different things to
+// each -- a trigger's chain START versus the NEXT instruction -- so it is
+// resolved here by opcode and consumers never have to know the rule.
+//
+// See ROTH_COMMANDS.md for the decoded opcode set and what the arguments point
+// at. The index space is 1-BASED: ROTH.C's resolve_command_by_index
+// (renderer.c:9830) returns base[(index - 1) * 4] and treats 0 as "none".
+struct Command
+{
+	uint8_t  modifier = 0;     // +0x02  state flags; 0x08 = disabled
+	uint8_t  opcode = 0;       // +0x03  which instruction or trigger
+	uint16_t linkIndex = 0;    // +0x04  raw; use chainStart / nextIndex instead
+	uint8_t  fireFlags = 0;    // +0x06  approach mask and fire bits (triggers)
+	uint8_t  subFlags = 0;     // +0x07
+	uint16_t key = 0;          // +0x08  an ID looked up per-opcode; 0 = "what the player just used"
+	uint16_t aux = 0;          // +0x0a  sound effect or auxiliary value
+	std::vector<uint16_t> args;// everything from +0x06 on, as 2-byte values
+
+	bool isTrigger = false;
+	bool disabled = false;
+	uint16_t chainStart = 0;   // triggers: the chain this fires (1-based)
+	uint16_t nextIndex = 0;    // instructions: the next one (1-based)
+
+	// What the key resolves to, worked out on load so the runtime never has to.
+	// A key is an ID that gets SEARCHED FOR, never an array index --
+	// find_geometry_record matches a sector's commandID, and a wall takes two
+	// hops: the faceID on an extended mapping record, then the face pointing at
+	// that record. See ROTH_COMMANDS.md.
+	//
+	// Both are -1 / empty when the key names something that is not geometry:
+	// flags, items and dialogue are DBASE100 ids, and 0x17/0x38/0x40 take a
+	// command index. key == 0 means "whatever the player just used" and is
+	// resolved at runtime, not here.
+	int sector = -1;                 // key as a sector commandID
+	std::vector<int> faces;          // key as a faceID, via the mapping records
+};
+
+// The opcodes that are TRIGGERS, from ROTH.C's load-time registration table
+// (map_load.c:1089-1097). Everything else is an instruction.
+bool IsTriggerOpcode(uint8_t opcode);
+
 struct Map
 {
 	Header header{};
@@ -166,6 +210,10 @@ struct Map
 	std::vector<Vertex> vertices;
 	// objects[i] holds the objects belonging to sectors[i]
 	std::vector<std::vector<Object>> objects;
+	// Level logic. commands[i] is the 1-based index i+1.
+	std::vector<Command> commands;
+	// Where the game starts executing: 1-based indices into commands.
+	std::vector<uint16_t> entryPoints;
 
 	std::string error;          // empty when Parse succeeded
 	bool ok() const { return error.empty(); }

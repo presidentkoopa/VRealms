@@ -207,8 +207,69 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		if (mp.topZ > mp.undersideZ) platformCount++;
 	}
 
+	//----------------------------------------------------------------------
+	// Door leaves -- the census, for the same allocate-once reason.
+	//
+	// A Realms swinging door is NOT the door sector's walls. ROTH.C keeps the
+	// swinging leaf as a DETACHED four-point quad living in the door record
+	// (setup_door_swing_geometry, doors.c:474: the quad points go to
+	// record+0x36 as hinge-relative offsets, and rotate_quad spins them about
+	// record[0x14]/[0x16], the hinge vertex). The FS sector geometry is never
+	// moved for a swinging door -- tick_swinging_doors only tags the two
+	// touched sectors dirty. The door SECTOR is the doorway, a real passage
+	// between two rooms; the leaf is a separate object filling it.
+	//
+	// So we build the leaf as its own geometry and LEAVE THE MAP ALONE. The
+	// previous attempt (reverted, e1f7ba66ba) instead tagged the door sector's
+	// existing two-sided walls as polyobject lines. That is what tore the map
+	// apart, and the mechanism is exact: PO_Init sets SSECF_POLYORG on every
+	// subsector holding a polyobject seg (polyobjects.cpp:421), and
+	// HWDrawInfo::DoSubsector returns immediately for such a subsector
+	// (hw_bsp.cpp:1224) -- it is never rendered again. Those walls were shared
+	// with the rooms, so the ROOMS' subsectors were flagged and stopped
+	// drawing. That also rules out the zero-delta "build it where it stands"
+	// trick for good: building in place puts the discarded origin subsector
+	// inside the live map. The Hexen void-room convention is not an avoidable
+	// nicety, it is the reason the convention exists -- the sacrificed
+	// subsector has to be somewhere nothing is lost.
+	//
+	// Per leaf, in the void: one sector, eight vertices, eight lines, eight
+	// sides -- an annulus. The inner loop of four is the leaf itself (the
+	// polyobject); the outer four seal the void room around it so the node
+	// builder has a closed, convex container, which is also what
+	// FNodeBuilder::FindPolyContainers wants for split avoidance.
+	//
+	// Only 0xFFFF sectors (roth::Sector::IsDoor) are built: they are the
+	// primary pool, closed at load. VERIFIED across all 44 retail maps by a
+	// standalone probe over the reader: 141 such sectors, every one with
+	// exactly four faces, exactly one hinge, a CLOSED four-vertex loop and a
+	// real positive height (218 for almost all of them). 0xFFFD, the
+	// secondary pool, NEVER OCCURS in any retail map -- and ROTH.C's
+	// tick_secondary_doors shows it would be a ceiling mover, not a swing, so
+	// it would not be built here anyway. 0xFFFE (26 sectors game-wide, none in
+	// STUDY1) is four-faced too but is not closed at load; whether it should
+	// also get a leaf is an OPEN QUESTION, counted below and not guessed at.
+	auto leafBuildable = [&](const roth::Sector &rs) -> bool
+	{
+		if (!rs.IsDoor() || rs.faceCount != 4 || rs.hingeFace < 0) return false;
+		if (rs.firstFaceIndex < 0 || rs.firstFaceIndex + 3 >= (int)rm.faces.size()) return false;
+		// The loop has to close, or the leaf is not a quad.
+		for (int j = 0; j < 4; j++)
+		{
+			const roth::Face &a = rm.faces[rs.firstFaceIndex + j];
+			const roth::Face &b = rm.faces[rs.firstFaceIndex + ((j + 1) & 3)];
+			if (a.vertex1 < 0 || a.vertex2 < 0) return false;
+			if (a.vertex2 != b.vertex1) return false;
+		}
+		return true;
+	};
+	int leafCount = 0;
+	for (const auto &rs : rm.sectors)
+		if (leafBuildable(rs)) leafCount++;
+
 	log.StageBegin("vertices");
-	Level->vertexes.Alloc(rm.vertices.size() + size_t(platformCount) * 4);
+	Level->vertexes.Alloc(rm.vertices.size() + size_t(platformCount) * 4
+		+ size_t(leafCount) * 8);
 	for (size_t i = 0; i < rm.vertices.size(); i++)
 		Level->vertexes[i].set(double(rm.vertices[i].x), double(rm.vertices[i].y));
 
@@ -221,8 +282,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// Sectors
 	//----------------------------------------------------------------------
 	log.StageBegin("sectors");
-	Level->sectors.Alloc(rm.sectors.size() + size_t(platformCount));
-	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount));
+	Level->sectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount));
+	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount));
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
 	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsIgnored = 0;
@@ -264,10 +325,18 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		sec->friction = ORIG_FRICTION;
 		sec->movefactor = ORIG_FRICTION_FACTOR;
 
-		// A door is stored at full height and closed by the engine at load.
-		// Without this every door in the game stands permanently open.
+		// A DOOR SECTOR KEEPS ITS REAL HEIGHT. It used to be clamped flat here so
+		// doors would not "stand open", and that is backwards: the door sector is
+		// the DOORWAY, and what closes it is the leaf built below. Flattening the
+		// doorway deletes the passage instead of blocking it.
+		//
+		// ROTH.C is explicit that the height is real and is the leaf's own extent:
+		// setup_door_swing_geometry puts `fs:[key] - fs:[key+2]` -- the sector's
+		// ceilingHeight minus its floorHeight -- into every quad point's vertical
+		// field (doors.c:545). Measured across all 44 maps: no door sector has
+		// zero or negative height; almost all are 218 units tall.
 		double floorZ = double(rs.floorHeight);
-		double ceilZ = double(rs.IsDoor() ? rs.floorHeight : rs.ceilingHeight);
+		double ceilZ = double(rs.ceilingHeight);
 		if (rs.IsDoor())
 		{
 			doorCount++;
@@ -431,8 +500,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 	// The tails of both arrays are reserved for the 3D floor control geometry
 	// built after this loop -- see the platform count above.
-	Level->lines.Alloc(pending.size() + size_t(platformCount) * 4);
-	Level->sides.Alloc(pending.size() + twoSided + size_t(platformCount) * 4);   // one per original face
+	Level->lines.Alloc(pending.size() + size_t(platformCount) * 4 + size_t(leafCount) * 8);
+	Level->sides.Alloc(pending.size() + twoSided + size_t(platformCount) * 4
+		+ size_t(leafCount) * 8);   // one per original face, plus the void geometry
 	memset(&Level->lines[0], 0, sizeof(line_t) * Level->lines.Size());
 	memset(&Level->sides[0], 0, sizeof(side_t) * Level->sides.Size());
 
