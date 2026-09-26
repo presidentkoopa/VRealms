@@ -202,8 +202,10 @@ for free, and is what the loader now uses.
   changes what you see through it. That is the whole promise of the headset and it is
   exactly what a 2D band cannot do.
 
-**Status:** the divergence is live (GZDoom sky in place of the band). Fog, weather and a
-true skybox are ideas, not built.
+**Status: PHASE 2, not now.** The immediate goal is a 1:1 Realms, so the faithful 2D
+band is what gets built first -- everything above is for the later VR pass. This entry
+was briefly written as a live divergence, which was drift: "it would be better in VR"
+is phase 2's argument, and this file RECORDS such ideas rather than authorising them.
 
 ---
 
