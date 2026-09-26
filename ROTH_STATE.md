@@ -7,6 +7,8 @@ the VR mechanics already built there. The project is **ROTHxr** / **VRealms**, n
 UZDXREMA. ROTH.C is the specification: where it and the fork disagree, ROTH.C wins and
 the engine changes to suit. What we learn here is meant to flow back into the main
 engine, so additions belong in it as general capabilities, not as Realms special cases.
+**`ROTH_BETTER.md` is the living record of those** -- things Realms does that we could do
+differently or better. Append to it whenever one turns up; do not let it go stale.
 
 Two efforts exist side by side. **The native loader is the destination; the Python
 pipeline is now a test oracle, not the product.**
