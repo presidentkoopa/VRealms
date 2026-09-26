@@ -625,6 +625,20 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					double w = gtex->GetDisplayWidth() * p.scaleX;
 					double h = gtex->GetDisplayHeight() * p.scaleY;
 					p.renderRadius = (w > h ? w : h) * 0.5;
+
+					// Same oversize check the mesh path gets. A SPRITE drawn far
+					// taller than a 154-unit player is either an architectural
+					// backdrop or a units-per-texel decode we have got wrong, and
+					// "one of them is enormous" cannot be chased without knowing
+					// WHICH. Named with its index, its decoded scale and its
+					// position so it can be looked up.
+					if (h > 3.0 * 154.0 && log)
+					{
+						log->Line("  OVERSIZED sprite  %s[%d]  %.0f tall  upp=%.1f at (%d, %d)",
+							art.Name().c_str(), artIndex, h, info.unitsPerPixel,
+							(int)o.x, (int)o.y);
+						oversized++;
+					}
 				}
 				spawnedSprites++;
 				break;

@@ -264,6 +264,23 @@ Image Pack::ReadImage(int index, bool allFrames) const
 			if (frameCount == 0xFFFE) continue;     // the other variant
 			if (!readPlainAt(base + firstOff)) continue;
 
+			// THE FLAGS BELONG TO THE ENTRY, NOT TO THE FRAME. readPlainAt has
+			// just taken modifier/imageType from the frame's own little header,
+			// which is not where the original looks: block+0x0a -- entry+0 --
+			// is the flags word, and the animation's frames do not carry their
+			// own. Taking the frame's zeroes cost two visible bugs on the same
+			// object, DEMO[4141], an animated suit of armour:
+			//
+			//   modifier 0x80 lost -> no size modifier -> two world units per
+			//     texel instead of one -> drawn 398 units tall against a
+			//     154-unit player, rather than its real 199
+			//   image_type 0x17 lost -> the translucency bit with it -> the
+			//     transparent area around the figure drawn as solid colour
+			//     instead of holes, so the wallpaper behind it came through as
+			//     coloured streaks
+			img.modifier  = mData[base];
+			img.imageType = mData[base + 1];
+
 			// The original wraps the frame number on the count, so frames
 			// 0 .. count-1 are the whole loop and the LAST table entry is the
 			// wrap back to frame 0 -- which a forward animation must not apply.
