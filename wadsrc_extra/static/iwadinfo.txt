@@ -1,5 +1,20 @@
 // Must be sorted in identification order (easiest to recognize first!)
 
+// VRealms -- Realms of the Haunting in VR. Ships no game content: the maps and
+// artwork are read from the player's own retail install at run time, pointed at
+// by -rothpath. Listed first because its marker lump is unambiguous.
+IWad
+{
+	Name = "VRealms -- Realms of the Haunting"
+	Autoname = "vrealms"
+	Game = "Doom"
+	Config = "VRealms"
+	IWADName = "vrealms.pk3"
+	Mapinfo = "mapinfo/vrealms.txt"
+	MustContain = "VREALMS"
+	BannerColors = "0b 0b 14", "c8 b8 90"
+}
+
 IWad
 {
 	Name = "Rise Of The Wool Ball"

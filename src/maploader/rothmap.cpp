@@ -168,12 +168,18 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	FTextureID skyTex = haveArt ? art.Sky(rm.metadata.skyTexture, &log) : FNullTextureID();
 	if (skyTex.isValid())
 	{
-		// NOT set as the level sky any more. Realms' sky is a 256x146 backdrop
-		// meant to be drawn as parallax COLUMNS above a wall, not stretched
-		// around the world as a Doom sky -- doing that replaced a sky that at
-		// least looked deliberate with one that does not. Resolved and kept for
-		// when the parallax is modelled; the engine's own sky stands until then.
-		(void)skyTex;
+		// The picture the engine draws wherever a surface resolves to the sky.
+		// Named by the MAP (metadata +0x18), never by the pack: TOWER1 asks for
+		// entry 72 (an ANIMATED one, so moving cloud), the Raquia levels for
+		// 400, the labyrinth for 810.
+		//
+		// This was briefly removed on the grounds that Realms' sky is meant to
+		// be drawn as parallax columns above a wall rather than stretched around
+		// the world. Both are true, but the flats come first: 6,208 ceilings and
+		// floors across the game sit ON the sky marker, and with no sky texture
+		// set they render as whatever the engine defaults to. The parallax layer
+		// above walls is still not modelled -- that is the FF_EDGE_MAP counter.
+		Level->skytexture1 = Level->skytexture2 = skyTex;
 		Level->skyspeed1 = Level->skyspeed2 = 0.f;
 		log.Line("  sky image      stored index %d", rm.metadata.skyTexture);
 	}
@@ -292,6 +298,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
 	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsIgnored = 0;
+	int skyFlats = 0;
 	int darkestLight = 255, brightestLight = 0;
 	for (size_t i = 0; i < rm.sectors.size(); i++)
 	{
@@ -400,12 +407,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			const int shx = isFloor ? rs.floorShiftX : rs.ceilShiftX;
 			const int shy = isFloor ? rs.floorShiftY : rs.ceilShiftY;
 
-			FTextureID tex = worldTex(index);
+			// THE SKY MARKER. The pack header names one stored index that means
+			// "this surface is the sky" -- see Pack::SkyMarkerIndex. It is a
+			// different thing from the map's skyTexture, which says which
+			// PICTURE to draw there, and the two were conflated in both
+			// directions before this: first by reading the marker as the
+			// picture, then by dismissing it entirely.
+			//
+			// Measured across all 44 retail maps: 36 of them carry flats on
+			// their pack's marker, 6,208 in total, from 2 in OPTEMP1 to 594
+			// ceilings in TOWER1 -- whose sky picture is an ANIMATED entry, so
+			// it is moving cloud. Drawing those as an ordinary flat paints the
+			// sky onto the ceiling, which is exactly what TOWER1 looked like.
+			const bool isSky = haveArt && art.IsSkySurface(index);
+			FTextureID tex = isSky ? FNullTextureID() : worldTex(index);
+			if (isSky) skyFlats++;
+
 			// A flat must draw SOMETHING or the sector renders hall of mirrors,
-			// so "nothing here" becomes the sky -- which for a ceiling is also
-			// what it means.
+			// so "nothing here" also becomes the sky.
 			sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
-			if (!tex.isValid()) flatsToSky++;
+			if (!isSky && !tex.isValid()) flatsToSky++;
 
 			const double unitsPerTexel = double(1 << shift);
 			sec->SetXScale(which, 1. / unitsPerTexel);
@@ -452,6 +473,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  doors closed at load  %d  (%d with a hinge resolved)", doorCount, doorsWithHinge);
 	log.Count("doors: no hinge face found", doorCount - doorsWithHinge);
 	log.Line("  flats with no art -> sky  %d", flatsToSky);
+	log.Line("  flats ON the sky marker   %d", skyFlats);
 	// Realms' neutral is 0x80 = 128. A range hugging or exceeding 255 means the
 	// mapping has gone wrong again and the level will look flat and overlit.
 	log.Line("  sector light  %d .. %d  (Realms neutral is 128)", darkestLight, brightestLight);
@@ -528,6 +550,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
 	int transUpLoFaces = 0;      // FF_TRANS_UPLO banding: not handled
 	int extentBitsAbove12 = 0;   // see the note where this is reported
+	int doorMidToLeaf = 0;       // doorway mid pieces handed over to a door leaf
 
 	unsigned sideIndex = 0;
 	for (size_t li = 0; li < pending.size(); li++)
@@ -590,7 +613,36 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// every two-sided wall would wall every doorway shut.
 			//--------------------------------------------------------------
 			const int midIndex = tm->midTexture;
-			const bool wantMid = !twoSided || (tf & roth::FF_TRANSPARENT) != 0;
+			bool wantMid = !twoSided || (tf & roth::FF_TRANSPARENT) != 0;
+
+			// A DOOR LEAF TAKES OVER ITS DOORWAY'S MID PIECE.
+			//
+			// The two long walls of a door sector are two-sided and flagged
+			// FF_TRANSPARENT, which is how the closed door's picture gets drawn
+			// into the opening. That static mid piece and the swinging leaf built
+			// further down are THE SAME SURFACE -- and only one of them can move.
+			// Drawing both leaves two copies of the door in the same plane, which
+			// is where the coplanar counter came from.
+			//
+			// So where a leaf is built, the mid piece is dropped and the leaf
+			// carries the door instead. This is not a guess about Realms: it is
+			// the direct consequence of having moved that surface onto the
+			// polyobject, and it is what makes an open door see-through -- the
+			// static piece could never have got out of the way.
+			if (twoSided && (tf & roth::FF_TRANSPARENT))
+			{
+				const bool mineIsLeaf = face.sector >= 0
+					&& face.sector < (int)rm.sectors.size()
+					&& leafBuildable(rm.sectors[face.sector]);
+				const bool theirsIsLeaf = neighbourSector >= 0
+					&& neighbourSector < (int)rm.sectors.size()
+					&& leafBuildable(rm.sectors[neighbourSector]);
+				if (mineIsLeaf || theirsIsLeaf)
+				{
+					wantMid = false;
+					doorMidToLeaf++;
+				}
+			}
 
 			//--------------------------------------------------------------
 			// SCALE. Realms addresses wall art in HALF-texels: two world units
@@ -1015,7 +1067,30 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	//----------------------------------------------------------------------
 	struct PolySpot { double sx, sy, ax, ay; int tag; };
 	std::vector<PolySpot> polySpots;
+	// COINCIDENT SURFACES -- A KNOWN, UNRESOLVED RISK, recorded rather than
+	// papered over.
+	//
+	// The leaf is built on the door sector's own four vertices, because that is
+	// what ROTH.C does (the quad points are `gs:[vertex+8] - hinge`, with no
+	// inset), so when closed the leaf lies EXACTLY on the doorway's own wall
+	// faces. Mostly that is harmless: the two long faces are two-sided portals
+	// whose only drawn pieces are the upper/lower steps ABOVE and BELOW the
+	// leaf's own height, so nothing shares a plane with it. Where it is not
+	// harmless is a face that draws a MID texture in the same place -- a
+	// one-sided thickness edge, or a two-sided face flagged FF_TRANSPARENT --
+	// which will be coplanar with the leaf and can z-fight.
+	//
+	// The original almost certainly has an answer for this: tick_swinging_doors
+	// sets bit 0 of fs:[sector+0x16] on BOTH sectors a door touches
+	// (doors.c:1150-1155, cleared again on full close), and +0x16 is
+	// Sector::flags2. What that bit makes the renderer do was NOT traced, and
+	// "the door quad replaces the sector's own walls" is a plausible reading
+	// that I have not confirmed. UNVERIFIED -- so nothing is suppressed here,
+	// and the faces that could clash are counted instead. If doors shimmer on
+	// screen, this counter is where to start and doors.c's flags2 bit is the
+	// thing to trace.
 	int leavesBuilt = 0, leavesNoTexture = 0, doorCapableNotBuilt = 0;
+	int leafCoplanarRisk = 0;
 	for (const auto &rs : rm.sectors)
 		if (!rs.IsDoor() && rs.IsDoorCapable()) doorCapableNotBuilt++;
 
@@ -1202,8 +1277,30 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// rather than the _a. rotate_quad only produces positions; the
 				// surface-to-side association lives in the renderer and was not
 				// traced. The owning-sector rule above is what decides it here.
+				// THE LEAF IS A FLAT PANEL, NOT A BOX -- and this is read out of
+				// ROTH.C, not chosen for looks. setup_door_swing_geometry fills
+				// the leaf's four surfaces from corner1 and corner3 ONLY: two from
+				// their own mapping records (_a) and two from their sisters' (_b),
+				// doors.c:538-545. corner0 (the hinge edge) and corner2 (the other
+				// thickness edge) are passed in only to supply a stored extent --
+				// `[out+0x26] = fs:[textureMap] & 0xfff` -- and never contribute a
+				// texture at all.
+				//
+				// So the two thickness edges of the leaf draw NOTHING. They still
+				// block, which is what makes the closed door solid. The doorjamb
+				// reveal the player sees there is the door SECTOR's own one-sided
+				// wall, which stays exactly where it was -- and leaving the leaf's
+				// edges blank is also what keeps them from z-fighting with it.
+				const bool isLongFace = (j == 1 || j == 3);
+				if (!isLongFace)
+				{
+					ld->AdjustLine();
+					continue;
+				}
+
 				int skinFace = fi;
 				if (f.sister >= 0 && f.sister < (int)rm.faces.size()) skinFace = f.sister;
+				else leafCoplanarRisk++;   // no sister to take the outward skin from
 				const roth::Face &sf = rm.faces[skinFace];
 				const roth::TextureMap *tm =
 					(sf.textureMap >= 0 && sf.textureMap < (int)rm.textureMaps.size())
@@ -1314,6 +1411,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  door leaves built %d of %d door sectors", leavesBuilt, doorCount);
 		log.Line("  polyobject tags   1 .. %d  (the doorway sector carries the same tag)", leavesBuilt);
 		log.Count("doors: leaf surface had no artwork", leavesNoTexture);
+		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",
+			leafCoplanarRisk);
 		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",
 			doorCapableNotBuilt);
 	}
@@ -1345,6 +1444,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  shifts applied        %d faces", shiftedFaces);
 	log.Line("  records the Python's 15-bit extent would have misread  %d",
 		extentBitsAbove12);
+	log.Line("  door mid pieces handed to a swinging leaf  %d", doorMidToLeaf);
 	log.Count("walls: no texture-map record", noTextureMap);
 	log.Count("walls: mid texture wanted but absent", midMissing);
 	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);

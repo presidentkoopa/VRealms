@@ -50,7 +50,7 @@ bool Pack::Load(const uint8_t *data, size_t size)
 
 	uint32_t fatOffset = RdU32(data + 8);
 	uint32_t paletteOffset = RdU32(data + 12);
-	mUnknown0x22 = RdU16(data + 34);   // NOT a sky index -- see roth_das.h
+	mUnknown0x22 = RdU16(data + 34);   // the sky MARKER index -- see roth_das.h
 
 	// The image count is the sum of four block counts.
 	int count = 0;

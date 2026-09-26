@@ -210,7 +210,7 @@ bool TextureSet::Open(const char *packName, const std::string &packFile, Log *lo
 	if (log)
 	{
 		log->Line("  pack %-8s entries %5d   header word +0x22 %5d",
-			mName.c_str(), mPack->Count(), (int)mPack->UnknownHeaderWord0x22());
+			mName.c_str(), mPack->Count(), (int)mPack->SkyMarkerIndex());
 	}
 	return true;
 }
@@ -234,6 +234,15 @@ bool TextureSet::Open(const char *packName, const std::string &packFile, Log *lo
 // place a caller reaches for the sky carries the explanation with it.
 //
 //==========================================================================
+
+bool TextureSet::IsSkySurface(int index) const
+{
+	// The marker is a real, painted entry in every pack (DEMO's 0 is a fully
+	// opaque 256 x 146 picture), so this cannot be decided by looking at the
+	// artwork -- only the pack header says which index is the sky.
+	return mPack != nullptr && index >= 0
+		&& (uint16_t)index == mPack->SkyMarkerIndex();
+}
 
 FTextureID TextureSet::Sky(int metadataSkyIndex, Log *log)
 {
@@ -288,7 +297,7 @@ static FString ColourName(const std::string &pack, int paletteIndex)
 //
 //==========================================================================
 
-FTextureID TextureSet::Build(int index, Log *log, bool masked)
+FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 {
 	// allFrames: run the delta decoder, so an animated image yields every frame.
 	Image img = mPack->ReadImage(index, true);
@@ -317,6 +326,7 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked)
 		: masked ? Blend::Keyed : Blend::Opaque;
 
 	FString name = PictureName(mName, index, blend);
+	if (flipped) name += "_X";
 	FTextureID existing = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
 	if (existing.isValid()) return existing;
 
@@ -339,8 +349,32 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked)
 	// makes the image source report itself as possibly translucent.
 	const bool hasHoles = (blend != Blend::Opaque);
 
-	auto addFrame = [&](const std::vector<uint8_t> &pixels, const char *texName) -> FTextureID
+	// MIRRORED VARIANT. The original flips by computing u' = limit - u - 1
+	// (renderer.c:4734, `ax = ~ax + [0x90986]`) -- a mirror INSIDE the texture's
+	// own texel range, not across the wall piece. Doom's negative scale mirrors
+	// the whole piece instead, so on any wall carrying more than one copy the
+	// tiles land in different places and the seams do not meet. Mirroring the
+	// image itself is what the original actually does.
+	//
+	// The buffer is column-major with `w` columns of `h`, so a horizontal mirror
+	// is a reversal of the column order.
+	auto mirrorColumns = [&](const std::vector<uint8_t> &src) -> std::vector<uint8_t>
 	{
+		std::vector<uint8_t> out(src.size());
+		const size_t col = (size_t)h;
+		for (int x = 0; x < w; x++)
+		{
+			const size_t from = (size_t)x * col;
+			const size_t to   = (size_t)(w - 1 - x) * col;
+			if (from + col <= src.size() && to + col <= out.size())
+				memcpy(&out[to], &src[from], col);
+		}
+		return out;
+	};
+
+	auto addFrame = [&](const std::vector<uint8_t> &pixelsIn, const char *texName) -> FTextureID
+	{
+		const std::vector<uint8_t> pixels = flipped ? mirrorColumns(pixelsIn) : pixelsIn;
 		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), remap, w, h, true, hasHoles);
 		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
 		return TexMan.AddGameTexture(tex);
@@ -357,7 +391,9 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked)
 	{
 		for (int f = 1; f < frames; f++)
 		{
-			addFrame(img.frames[f], FrameName(mName, index, f, blend).GetChars());
+			FString fn = FrameName(mName, index, f, blend);
+			if (flipped) fn += "_X";
+			addFrame(img.frames[f], fn.GetChars());
 			mRegistered++;
 		}
 		TexAnim.AddSimpleAnim(base, frames, ANIM_FRAME_MS);
@@ -406,11 +442,15 @@ FTextureID TextureSet::SolidColour(int paletteIndex, Log *log)
 // this class registers (roth_das.h has the evidence), and suppressing it threw
 // away a real picture -- in DEMO that was entry 0, a fully painted 256 x 146
 // image, which is why the sectors asking for it rendered black.
-FTextureID TextureSet::World(int index, Log *log, bool masked)
+FTextureID TextureSet::World(int index, Log *log, bool masked, bool flipped)
 {
 	if (!mPack) return FNullTextureID();
 
-	auto &memo = masked ? mByIndexMasked : mByIndex;
+	// Four variants now: masked or not, mirrored or not. A mirrored image is a
+	// separate registration because the mirror lives in the pixels, not in a
+	// draw-time scale.
+	auto &memo = flipped ? (masked ? mByIndexMaskedFlipped : mByIndexFlipped)
+	                     : (masked ? mByIndexMasked : mByIndex);
 	auto found = memo.find(index);
 	if (found != memo.end())
 	{
@@ -438,7 +478,7 @@ FTextureID TextureSet::World(int index, Log *log, bool masked)
 		id = SolidColour(0, log);
 	}
 	else
-		id = Build(index, log, masked);
+		id = Build(index, log, masked, flipped);
 
 	memo[index] = id;
 	return id;

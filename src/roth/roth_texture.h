@@ -78,7 +78,15 @@ public:
 	// The map's sky picture, from the MAP metadata's `skyTexture` (+0x18) --
 	// not from anything in the pack. An ordinary opaque picture; see the
 	// definition for why the pack header's +0x22 word is not this.
+	// The sky PICTURE, named by the map's own metadata (+0x18). Opaque and
+	// unmasked: the parallax column renderer writes every texel it samples.
 	FTextureID Sky(int metadataSkyIndex, Log *log);
+
+	// Does this stored index mean "this surface is the sky"? That is the PACK's
+	// marker, a different quantity from the picture above -- see
+	// Pack::SkyMarkerIndex. 6,208 flats across 36 of the 44 retail maps use it,
+	// so treating it as an ordinary texture paints the sky onto the ceiling.
+	bool IsSkySurface(int index) const;
 
 	// The engine texture for a world surface's stored index. Handles the
 	// solid-colour sentinels; results are memoised.
@@ -103,7 +111,11 @@ public:
 	// carrying it is drawn with holes AND a 50% blend on its high palette half;
 	// this class handles that itself, so `masked` only ADDS masking on top.
 	// See the long comment in roth_texture.cpp.
-	FTextureID World(int index, Log *log, bool masked = false);
+	// `flipped` asks for the X-mirrored variant. The original mirrors INSIDE the
+	// texture's texel range (renderer.c:4734, u' = limit - u - 1), not across the
+	// wall piece the way a negative Doom scale would, so the mirror has to live
+	// in the pixels or the tiling seams stop meeting.
+	FTextureID World(int index, Log *log, bool masked = false, bool flipped = false);
 
 	// Counters, so a load report can say what was not understood.
 	int Registered() const { return mRegistered; }
@@ -168,7 +180,7 @@ private:
 	// A world surface's art is stored rotated a quarter turn, so the decoded
 	// bytes go in as column-major with the dimensions exchanged. See
 	// FPalettedMemoryImage.
-	FTextureID Build(int index, Log *log, bool masked);
+	FTextureID Build(int index, Log *log, bool masked, bool flipped);
 	FTextureID SolidColour(int paletteIndex, Log *log);
 
 	std::string mName, mError;
@@ -186,6 +198,7 @@ private:
 	// be rebuilt under us), so a miss re-resolves by name rather than trusting
 	// this blindly.
 	std::map<int, FTextureID> mByIndex, mByIndexMasked;
+	std::map<int, FTextureID> mByIndexFlipped, mByIndexMaskedFlipped;
 	// Object art is its own name space: same quarter turn as a wall, but its own
 	// masking rule and its own sprite offsets.
 	std::map<int, FTextureID> mByIndexSprite;

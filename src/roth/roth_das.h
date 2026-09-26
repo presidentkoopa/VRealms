@@ -113,13 +113,19 @@ public:
 	// (renderer.c:5414) and what the cache pins as its special index
 	// (das_assets.c:859).
 	//
-	// The two are genuinely different quantities: across the 44 retail maps
-	// this word is only ever 0 or 1 and is constant per pack, while the maps'
-	// own sky indices are 0, 1, 15, 72, 400 and 810 -- and 16 of the 44 maps
-	// disagree with their pack's word. Reading this as a sky index also throws
-	// a finished picture away, since entry 0 of DEMO is a fully painted
-	// 256 x 146 image with no transparent pixel in it.
-	uint16_t UnknownHeaderWord0x22() const { return mUnknown0x22; }
+	// THIS WORD IS THE SKY MARKER: the stored texture INDEX that means "this
+	// surface is the sky". The map's own skyTexture says which PICTURE to draw
+	// there. Two different quantities, and conflating them cost real time in
+	// both directions -- first by reading this as the picture (which threw a
+	// finished image away), then by dismissing it as unknown (which painted
+	// 6,208 sky surfaces with a flat texture).
+	//
+	// MEASURED over all 44 retail maps: this word is 0 or 1 and constant per
+	// pack, while the maps' sky pictures are 0, 1, 15, 72, 400 and 810. 36 of
+	// the 44 maps carry flats using their pack's marker -- 6,208 of them, from
+	// 2 in OPTEMP1 to 594 ceilings in TOWER1, whose sky picture (72) is an
+	// ANIMATED entry, i.e. moving cloud.
+	uint16_t SkyMarkerIndex() const { return mUnknown0x22; }
 	const std::vector<Colour> &Palette() const { return mPalette; }
 
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
@@ -138,7 +144,7 @@ private:
 	size_t mSize = 0;
 	std::vector<FatEntry> mFat;
 	std::vector<Colour> mPalette;
-	uint16_t mUnknown0x22 = 0;   // header +0x22; see UnknownHeaderWord0x22()
+	uint16_t mUnknown0x22 = 0;   // header +0x22; see SkyMarkerIndex()
 	std::string mError;
 
 	EntryKind Classify(const FatEntry &e) const;

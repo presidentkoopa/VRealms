@@ -1,0 +1,8 @@
+VRealms -- Realms of the Haunting in VR.
+
+This file is the marker the engine identifies this package by (IWADINFO's
+MustContain). The package deliberately contains NOTHING from Realms of the
+Haunting: no maps, no artwork, no sounds, no text. All of that is read from the
+player's own retail installation at run time, pointed at by -rothpath.
+
+You must own the game.
