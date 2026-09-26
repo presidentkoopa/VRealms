@@ -118,6 +118,10 @@ copy /Y "%BUILD%\zmusic\b2\source\Release\zmusic.dll" "%OUT%\" >nul 2>&1
 copy /Y "%BUILD%\vcpkg\installed\x64-windows\bin\OpenAL32.dll" "%OUT%\" >nul 2>&1
 copy /Y "%BUILD%\vcpkg\installed\x64-windows\bin\fmt.dll" "%OUT%\" >nul 2>&1
 copy /Y "%BUILD%\vcpkg\installed\x64-windows\bin\openxr_loader.dll" "%OUT%\" >nul 2>&1
+rem -- openxr_loader.dll links against jsoncpp. Without it the loader fails to
+rem -- load, OpenXR initialisation silently fails, and the engine falls back to
+rem -- flat mode with no obvious error -- i.e. VR just never starts.
+copy /Y "%BUILD%\vcpkg\installed\x64-windows\bin\jsoncpp.dll" "%OUT%\" >nul 2>&1
 copy /Y "%BUILD%\openvr\bin\win64\openvr_api.dll" "%OUT%\" >nul 2>&1
 
 popd

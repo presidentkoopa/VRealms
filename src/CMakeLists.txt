@@ -956,6 +956,14 @@ set (PCH_SOURCES
 	playsim/p_maputl.cpp
 	playsim/p_mobj.cpp
 	p_openmap.cpp
+	# Realms of the Haunting support. These readers are deliberately free of
+	# engine types so they can be built and tested on their own (see
+	# roth/roth_selftest.cpp, which is NOT part of this target).
+	roth/roth_raw.cpp
+	roth/roth_das.cpp
+	roth/roth_palette.cpp
+	roth/roth_install.cpp
+	roth/roth_log.cpp
 	playsim/p_pspr.cpp
 	p_saveg.cpp
 	p_setup.cpp
@@ -1066,6 +1074,7 @@ set (PCH_SOURCES
 	maploader/edata.cpp
 	maploader/specials.cpp
 	maploader/maploader.cpp
+	maploader/rothmap.cpp
 	maploader/slopes.cpp
 	maploader/glnodes.cpp
 	maploader/udmf.cpp

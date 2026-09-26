@@ -115,7 +115,7 @@ def classify(d: bytes, e: dict) -> str:
     return "plain"
 
 
-def read_animated(d: bytes, e: dict):
+def read_animated(d: bytes, e: dict, all_frames: bool = False):
     """First frame of an animated image.
 
     Layout (type 1, `num_sub_images != 0xFFFE`):
@@ -152,8 +152,56 @@ def read_animated(d: bytes, e: dict):
         px = d[img_at + 6: img_at + 6 + w2 * h2]
         if len(px) != w2 * h2:
             continue
-        return {"w": w2, "h": h2, "px": px, "modifier": 0, "image_type": 0}
+        frames = [px]
+        if all_frames:
+            frames = decode_animation(d, img_at + 6 + w2 * h2, bytearray(px), nsub)
+        return {"w": w2, "h": h2, "px": px, "frames": frames,
+                "modifier": 0, "image_type": 0}
     return None
+
+
+def decode_animation(d: bytes, p: int, frame: bytearray, nsub: int) -> list:
+    """Decode the delta-compressed frames that follow the first one.
+
+    Each frame is a stream of edits applied to the previous frame in place:
+
+        0x00 n v   run: write value v n times
+        0x00 0x00  end of this frame
+        > 0x80     skip (code & 0x7F) bytes, leaving them as they were
+        < 0x80     copy the next `code` bytes literally
+
+    Ported from roth-editor's das.gd. Returns every frame including the first.
+    """
+    out = [bytes(frame)]
+    for _ in range(min(nsub, 64)):          # cap: malformed data shouldn't hang
+        pos = 0
+        while p < len(d):
+            code = d[p]; p += 1
+            if code == 0:
+                if p >= len(d):
+                    return out
+                code = d[p]; p += 1
+                if code == 0:
+                    break                    # frame complete
+                if p >= len(d):
+                    return out
+                value = d[p]; p += 1
+                for k in range(code):
+                    if pos + k < len(frame):
+                        frame[pos + k] = value
+                pos += code
+            elif code > 0x80:
+                pos += code & 0x7F
+            else:
+                for k in range(code):
+                    if p < len(d) and pos + k < len(frame):
+                        frame[pos + k] = d[p]
+                    p += 1
+                pos += code
+            if pos > len(frame):
+                return out
+        out.append(bytes(frame))
+    return out
 
 
 def read_image_pack(d: bytes, e: dict):
@@ -290,11 +338,12 @@ def main() -> None:
     }))
 
     written = skipped = 0
+    anims: dict = {}
     for e in fat:
         if e["kind"] == "plain":
             img = read_plain(d, e)
         elif e["kind"] == "animated":
-            img = read_animated(d, e)       # first frame only
+            img = read_animated(d, e, all_frames=True)
         elif e["kind"] == "image-pack":
             img = read_image_pack(d, e)     # first sub-image only
         else:
@@ -307,10 +356,24 @@ def main() -> None:
         png = png_indexed(img["w"], img["h"], img["px"], palette, transparent)
         (args.out / f"TEX{e['index']:04d}.png").write_bytes(png)
         written += 1
+        # Extra frames land beside the first as TEXnnnn_1, _2 ... and are
+        # listed in anims.json for the map builder to turn into ANIMDEFS.
+        extra = img.get("frames") or []
+        if len(extra) > 1:
+            for fi, fpx in enumerate(extra[1:], start=1):
+                if len(fpx) != img["w"] * img["h"]:
+                    continue
+                (args.out / f"TEX{e['index']:04d}_{fi}.png").write_bytes(
+                    png_indexed(img["w"], img["h"], fpx, palette, transparent))
+            anims[e["index"]] = min(len(extra), 32)
         if args.limit and written >= args.limit:
             break
 
+    (args.out / "anims.json").write_text(json.dumps(anims))
+    frames = sum(anims.values()) - len(anims)
     print(f"\n  wrote {written} PNGs to {args.out}  (skipped {skipped} non-plain entries)")
+    if anims:
+        print(f"  {len(anims)} animated textures, {frames} extra frames")
 
 
 if __name__ == "__main__":

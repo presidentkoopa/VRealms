@@ -2994,7 +2994,13 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 
 	FMissingTextureTracker missingtex;
 
-	if (!map->isText)
+	if (map->isRoth)
+	{
+		// A Realms of the Haunting map, built from the player's own game files.
+		// It shares nothing with Doom's lump layout, so it takes its own path.
+		LoadRothMap(map, missingtex);
+	}
+	else if (!map->isText)
 	{
 		LoadVertexes(map);
 

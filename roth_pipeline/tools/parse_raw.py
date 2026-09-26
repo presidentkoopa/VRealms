@@ -126,7 +126,40 @@ COMMAND_HEADER = [
     ("signature", [CHAR, CHAR]), ("unk0x02", U16), ("commandsOffset", U16), ("commandCount", U16),
 ]
 ENTRY_COMMAND_COUNT = [("categoryOffset", U16), ("count", U16)]
-COMMAND = [("size", U16), ("commandModifier", U8), ("commandBase", U8), ("nextCommandIndex", U16)]
+
+# Records come in two kinds sharing one layout, which is the easiest thing in this
+# format to get wrong:
+#
+#   INSTRUCTIONS are executed in sequence, and the word at +4 is the NEXT one.
+#   TRIGGERS are registered once at level load and never executed; for them the
+#   word at +4 is the START of the chain they fire.
+#
+# Same offset, opposite meaning. Reading it as "next" for a trigger wires every
+# trigger in the game to the wrong place. Named neutrally here and resolved by
+# opcode. See ROTH_COMMANDS.md.
+COMMAND = [("size", U16), ("commandModifier", U8), ("commandBase", U8), ("linkIndex", U16)]
+
+# Opcodes that are triggers, from ROTH.C's load-time registration table.
+TRIGGER_OPCODES = {
+    0x08,  # click / use an object  (also flips the object's state -- switches)
+    0x13,  # enter or leave water or lava (fires on both edges)
+    0x18,  # enter a sector, channel A
+    0x19,  # use a wall
+    0x1A,  # bump into a wall
+    0x1B,  # touch / activate an object
+    0x25,  # inert -- does nothing in either table
+    0x30,  # marks matching objects; what reads the mark is unresolved
+    0x31,  # use a wall, direction-sensitive
+    0x32,  # enter a sector, channel B
+    0x3D,  # timer, started at level load
+}
+
+# Fire flags in the byte at +6 of a trigger.
+TRIGGER_ONE_SHOT = 0x10
+
+# Modifier bits. 0x80 is NEVER tested at runtime -- it is level-editor metadata,
+# despite appearing on roughly a third of all records.
+CMD_DISABLED = 0x08
 
 SECTION_7_HEADER = [("sizeA", U16), ("count", U16)]
 SOUND_EFFECT = [
@@ -212,6 +245,16 @@ def parse(data: bytes) -> dict:
         commands_offset_map[r.tell() - commands_base] = i + 1
         cmd = parse_section(r, COMMAND)
         cmd.pop("size")
+        # Resolve what the shared +4 field actually means for this record, so
+        # consumers never have to know the rule.
+        is_trigger = cmd["commandBase"] in TRIGGER_OPCODES
+        cmd["isTrigger"] = is_trigger
+        cmd["disabled"] = bool(cmd["commandModifier"] & CMD_DISABLED)
+        if is_trigger:
+            cmd["chainStart"] = cmd["linkIndex"]   # what this trigger fires
+            cmd["nextCommandIndex"] = 0
+        else:
+            cmd["nextCommandIndex"] = cmd["linkIndex"]
         commands.append(cmd)
 
     entry_command_indexes = [commands_offset_map[o] for o in entry_offsets if o != 0x0000]

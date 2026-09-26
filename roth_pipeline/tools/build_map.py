@@ -54,6 +54,9 @@ ROTH_FLAT_SCALE = 0.5   # floors and ceilings
 # the along-wall axis indexes texture ROWS, not columns. Transposing every wall
 # texture was a large, immediately visible improvement. Flats are NOT rotated.
 ROTATE_WALLS = True
+# Floors transpose the same way walls do (handoff 5.3). Direction is stated
+# but the signs are flagged unconfirmed, so --no-transpose-flats can A/B it.
+TRANSPOSE_FLATS = True
 TEX_DIMS: dict = {}   # texture index -> (w, h), filled in main()
 # Per-sector flat fitting matches the original engine's model but currently
 # produces implausible scales (41% of sectors above 8x, max 1152x), so it is
@@ -78,8 +81,13 @@ def texname(index: int, context: str = "wall") -> str:
     """
     if index == SKY_INDEX:
         return NO_TEX if context == "wall" else SKY_TEX
-    if context == "wall" and ROTATE_WALLS and 0 < index < SENTINEL_MIN:
-        return f"RTX{index:04d}"     # transposed copy, walls only
+    # Both walls and flats store their art transposed: the along-wall axis picks
+    # texture rows, and for floors world X drives rows too (handoff 5.1, 5.3).
+    # So every world surface uses the transposed copy. Object sprites and model
+    # skins do NOT -- they are stored the normal way round.
+    if ROTATE_WALLS and 0 < index < SENTINEL_MIN:
+        if context == "wall" or TRANSPOSE_FLATS:
+            return f"RTX{index:04d}"
     if index == SENTINEL_EXACT:
         return palette_tex(255)
     if index >= SENTINEL_MIN:
@@ -215,6 +223,19 @@ def wall_u_repeats(tm: dict, wall_len: float, tex_w: int) -> float:
     return stored / (2.0 * wall_len)
 
 
+# Sector `floorTriggerID` sentinels (ROTH_NATIVE_HANDOFF.md 4 and 5.6).
+TRIGGER_DOOR = (0xFFFD, 0xFFFF)   # a door; the original closes these at load
+TRIGGER_INVISIBLE = 0xFFFE        # two-sided walls in this sector aren't drawn
+
+# Doom linedef special 1: "open, wait, close" on use, retriggerable. The closest
+# native equivalent to a ROTH door, and it needs no scripting.
+DOOR_SPECIAL = 1
+
+
+def is_door(sec: dict) -> bool:
+    return sec.get("floorTriggerID", 0) in TRIGGER_DOOR
+
+
 def side(sector: int, tm: dict, top: str = NO_TEX, bottom: str = NO_TEX,
          mid: str = NO_TEX, wall_len: float = 0.0) -> str:
     """One UDMF sidedef, translating ROTH's texture placement onto Doom's.
@@ -326,9 +347,15 @@ def build_udmf(m: dict, scale: float = 1.0, things: list | None = None) -> str:
         bx0, bx1, by0, by1 = sector_bbox(s, faces, verts)
         rep_u, rep_v = fit_nibbles(s.get("textureFit", 0))
 
+        # A door sector is stored with its ceiling at full height, and the
+        # original engine closes it at load (fixup_raw_sectors_after_load drops
+        # the ceiling to the floor). Without this every door in the game stands
+        # permanently open.
+        ceil_h = s["floorHeight"] if is_door(s) else s["ceilingHeight"]
+
         fields = [
             f'heightfloor = {int(s["floorHeight"] * scale)}',
-            f'heightceiling = {int(s["ceilingHeight"] * scale)}',
+            f'heightceiling = {int(ceil_h * scale)}',
             f'texturefloor = "{texname(s["floorTextureIndex"], "floor")}"',
             f'textureceiling = "{texname(s["ceilingTextureIndex"], "ceiling")}"',
             f'lightlevel = {min(255, max(0, s.get("lighting", 160)))}',
@@ -338,6 +365,17 @@ def build_udmf(m: dict, scale: float = 1.0, things: list | None = None) -> str:
                  s.get("floorTextureShiftX", 0), s.get("floorTextureShiftY", 0)),
                 ("ceiling", s["ceilingTextureIndex"],
                  s.get("ceilingTextureShiftX", 0), s.get("ceilingTextureShiftY", 0))):
+            # Per-sector scale, from the sector flags byte: bits 4-5 for the
+            # floor, 2-3 for the ceiling, giving 2^s world units per texel
+            # (ROTH_NATIVE_HANDOFF.md 5.3). Doom's scale is its reciprocal.
+            #
+            # Forcing one value on every sector -- which is what a flat 0.5 does
+            # -- draws every s=2 surface at twice its intended density, so
+            # rugs and floor patterns tile instead of sitting as one piece.
+            bits = 4 if plane == "floor" else 2
+            s_exp = (s.get("textureFit", 0) >> bits) & 3
+            flat_scale = 1.0 / (2 ** s_exp) / scale
+
             if FLAT_FIT:
                 fx, fy = flat_fit_scale(tex_idx, bx0, bx1, by0, by1, rep_u, rep_v, scale)
                 fields.append(f"xscale{plane} = {fx:.5f}")
@@ -347,12 +385,13 @@ def build_udmf(m: dict, scale: float = 1.0, things: list | None = None) -> str:
                 fields.append(f"xpanning{plane} = {(-bx0 * scale) + shx:.3f}")
                 fields.append(f"ypanning{plane} = {(by1 * scale) - shy:.3f}")
             else:
-                fields.append(f"xscale{plane} = {ROTH_FLAT_SCALE}")
-                fields.append(f"yscale{plane} = {ROTH_FLAT_SCALE}")
+                fields.append(f"xscale{plane} = {flat_scale:.5f}")
+                fields.append(f"yscale{plane} = {flat_scale:.5f}")
+                # Shift steps are half a texel each (handoff 5.3).
                 if shx:
-                    fields.append(f"xpanning{plane} = {shx}")
+                    fields.append(f"xpanning{plane} = {shx * (2 ** s_exp) / 2:.3f}")
                 if shy:
-                    fields.append(f"ypanning{plane} = {-shy}")
+                    fields.append(f"ypanning{plane} = {-shy * (2 ** s_exp) / 2:.3f}")
         out.append("sector { " + "; ".join(fields) + "; }")
     out.append("")
 
@@ -384,9 +423,22 @@ def build_udmf(m: dict, scale: float = 1.0, things: list | None = None) -> str:
                                  bottom=texname(stm["lowerTextureIndex"]),
                                  mid=texname(stm["midTextureIndex"]) if stm["type"] & 0x01 else NO_TEX))
             emitted.add(sister_i)
+            # If exactly one side is a door sector, this line is the door's
+            # face: give it the use-to-open special, pointed at the door side.
+            # A line with doors on both sides isn't a threshold, so skip it.
+            a_door = is_door(sectors[f["sectorIndex"]])
+            b_door = is_door(sectors[sf["sectorIndex"]])
+            extra = ""
+            if a_door != b_door:
+                extra = (f" special = {DOOR_SPECIAL}; playeruse = true; "
+                         "repeatspecial = true; playercross = false;")
+                # The special acts on the sector behind the line, so the door
+                # sector must be on the BACK. Swap the sides if it isn't.
+                if a_door:
+                    front, back = back, front
             linedefs.append(
                 f"linedef {{ v1 = {f['vertexIndex01']}; v2 = {f['vertexIndex02']}; "
-                f"sidefront = {front}; sideback = {back}; twosided = true; }}"
+                f"sidefront = {front}; sideback = {back}; twosided = true;{extra} }}"
             )
         else:
             sidedefs.append(side(f["sectorIndex"], tm, mid=texname(tm["midTextureIndex"])))
@@ -404,7 +456,10 @@ def build_udmf(m: dict, scale: float = 1.0, things: list | None = None) -> str:
     # Player 1 start, from the map's own recorded start position.
     out.append(
         f"thing {{ x = {meta['initPosX'] * scale:.3f}; y = {meta['initPosY'] * scale:.3f}; "
-        f"angle = {int(meta['rotation'] / 256.0 * 360) % 360}; type = 1; skill1 = true; "
+        # The PLAYER's angle uses 512 units per turn, counter-clockwise, with 0
+        # facing +Y -- a different convention from objects, which use 256. Doom
+        # measures counter-clockwise from +X, hence the 90 degree offset.
+        f"angle = {int(90 + meta['rotation'] * 360.0 / 512.0) % 360}; type = 1; skill1 = true; "
         "skill2 = true; skill3 = true; skill4 = true; skill5 = true; single = true; }"
     )
 
@@ -557,7 +612,10 @@ def build_objects(m: dict, available: set, scale: float):
     for si, oi, o, key, fixed in wanted:
         # ROTH stores an absolute Z; UDMF wants height above the sector floor.
         z = int(o["posZ"] * scale) - int(sectors[si]["floorHeight"] * scale)
-        ang = int(o["rotation"] / 256.0 * 360) % 360
+        # OBJECT facing is 256 units per turn measured CLOCKWISE from +Y, which
+        # is the opposite sense to the player's 512-unit counter-clockwise
+        # angle. Doom measures counter-clockwise from +X.
+        ang = int(90 - o["rotation"] * 360.0 / 256.0) % 360
         things.append(
             f'thing {{ x = {o["posX"] * scale:.3f}; y = {o["posY"] * scale:.3f}; '
             f"height = {z}; angle = {ang}; type = {ednum[(key, fixed)]}; "
@@ -576,31 +634,57 @@ def build_objects(m: dict, available: set, scale: float):
 
 
 def build_player_decorate(meta: dict) -> str:
-    """A player actor sized to the map's own recorded dimensions.
+    """A player actor sized the way the original engine sizes it.
 
-    Doom's player is 56 units tall with a 41-unit eye height and a 24-unit step.
-    ROTH records its own values per map: `playerHeight` (72 on 41 of the 44
-    maps, 64 on three), `maxClimb` and `minFit`. Using Doom's player in a world
-    authored for ROTH's makes everything look roughly 30% too tall.
+    THE ORIGINAL DOUBLES THESE. `playerHeight`, `maxClimb` and `minFit` are
+    stored halved in the map metadata and doubled by ROTH.C at load, giving a
+    144-unit player with a 65-unit step and a 96-unit minimum gap (per
+    ROTH_NATIVE_HANDOFF.md section 2.1, verified against ROTH.C).
 
-    View height is scaled by Doom's own eye-to-height ratio (41/56) rather than
-    guessed, so the player keeps human proportions at the new size.
+    This matters more than it looks. Sizing the player at the raw 72 makes the
+    entire world read as twice its intended size -- doorways appearing three
+    times a person's height -- which is a player bug, NOT a world-scale bug.
+    Do not "fix" it by shrinking the geometry; world units are 1:1.
+
+    Read per map rather than hardcoding: three maps (ABAGATE2, AQUA1, DOPPLE)
+    store 64 instead of 72.
     """
-    h = int(meta.get("playerHeight", 72))
-    view = round(h * 41.0 / 56.0)
-    step = int(meta.get("maxClimb", 24))
+    h = int(meta.get("playerHeight", 72)) * 2
+    step = int(meta.get("maxClimb", 32)) * 2
+    view = round(h * 41.0 / 56.0)      # Doom's own eye-to-height ratio
     return f"""// Generated by roth_pipeline/build_map.py -- do not hand-edit.
-// Sized from this map's own metadata: playerHeight={h}, maxClimb={step}.
+// Sized from this map's metadata, doubled as the original engine does:
+// playerHeight {h // 2}*2 = {h}, maxClimb {step // 2}*2 = {step}.
 
 ACTOR RothPlayer : DoomPlayer
 {{
     Height {h}
-    Radius 16
+    Radius 28
     MaxStepHeight {step}
     Player.ViewHeight {view}
     Player.AttackZOffset {view - 8}
 }}
 """
+
+def build_animdefs(anims: dict, used: set, tics: int = 8) -> str:
+    """ANIMDEFS so ROTH's animated textures actually cycle.
+
+    Frames were written beside the first as TEXnnnn_1, _2 ... Walls and flats
+    use the transposed copies, so the animation is declared on those names and
+    the extra frames are transposed to match.
+    """
+    out = ["// Generated by roth_pipeline/tools/build_map.py -- do not hand-edit.\n"]
+    prefix = "RTX" if ROTATE_WALLS else "TEX"
+    for idx, count in sorted(anims.items()):
+        if idx not in used:
+            continue
+        lines = [f'texture {prefix}{idx:04d}']
+        lines.append(f"    pic {prefix}{idx:04d} tics {tics}")
+        for f in range(1, count):
+            lines.append(f"    pic {prefix}{idx:04d}_{f} tics {tics}")
+        out.append("\n".join(lines) + "\n")
+    return "\n".join(out)
+
 
 def build_mapinfo(mapname: str, title: str) -> str:
     """MAPINFO so the pk3 boots straight into this map.
@@ -665,6 +749,8 @@ def main() -> None:
     ap.add_argument("--mapname", default=None)
     ap.add_argument("--title", default=None, help="level title shown in-game")
     ap.add_argument("--scale", type=float, default=1.0)
+    ap.add_argument("--no-transpose-flats", action="store_true",
+                    help="stop transposing floor/ceiling art (A/B for handoff 5.3)")
     ap.add_argument("--flat-fit", action="store_true",
                     help="fit flats per-sector (matches the original engine's model; "
                          "currently produces extreme scales, so off by default)")
@@ -675,7 +761,7 @@ def main() -> None:
                          "instead of the real artwork, so alignment error can be counted")
     args = ap.parse_args()
 
-    global SKY_INDEX, PALETTE, ROTATE_WALLS, TEX_DIMS, FLAT_FIT, MESHES
+    global SKY_INDEX, PALETTE, ROTATE_WALLS, TEX_DIMS, FLAT_FIT, MESHES, TRANSPOSE_FLATS
     # Texture scale is tied to geometry scale: shrinking the world by N means a
     # texel covers N times fewer world units, so the texture scale must rise by
     # N to keep the same on-screen size. Keeping these in lockstep means --scale
@@ -684,6 +770,7 @@ def main() -> None:
     ROTH_WALL_SCALE = 0.5 / args.scale
     ROTH_FLAT_SCALE = 0.5 / args.scale
     ROTATE_WALLS = not args.no_rotate_walls
+    TRANSPOSE_FLATS = not args.no_transpose_flats
     FLAT_FIT = args.flat_fit
     mapname = (args.mapname or args.json.stem).upper()[:8]
     m = json.loads(args.json.read_text())
@@ -784,6 +871,26 @@ def main() -> None:
                     z.writestr(f"textures/RTX{idx:04d}.png", rot)
                     w, h = struct.unpack(">II", rot[16:24])
                     defs.append((f"RTX{idx:04d}", w, h))
+
+            # Animation frames, transposed to match the surfaces that use them.
+            anim_path = args.textures / "anims.json"
+            anims = ({int(k): v for k, v in json.loads(anim_path.read_text()).items()}
+                     if anim_path.exists() else {})
+            used_idx = {i for i in TEX_DIMS}
+            for idx, count in anims.items():
+                for f in range(1, count):
+                    fp = args.textures / f"TEX{idx:04d}_{f}.png"
+                    if not fp.exists():
+                        continue
+                    raw = fp.read_bytes()
+                    img = png_transpose(raw) if ROTATE_WALLS else raw
+                    name = f"{'RTX' if ROTATE_WALLS else 'TEX'}{idx:04d}_{f}"
+                    z.writestr(f"textures/{name}.png", img)
+                    w, h = struct.unpack(">II", img[16:24])
+                    defs.append((name, w, h))
+            if anims:
+                z.writestr("ANIMDEFS.txt", build_animdefs(anims, used_idx))
+
             z.writestr("TEXTURES.txt", build_textures_lump(defs))
             for p in pngs:
                 z.writestr(f"textures/{p.name}", p.read_bytes())

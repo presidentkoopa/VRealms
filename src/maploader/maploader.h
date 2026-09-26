@@ -329,6 +329,8 @@ public:
 	void GetPolySpots(MapData * map, TArray<FNodeBuilder::FPolyStart> &spots, TArray<FNodeBuilder::FPolyStart> &anchors);
 	void GroupLines(bool buildmap);
 	void ParseTextMap(MapData *map, FMissingTextureTracker &missingtex);
+	// Realms of the Haunting maps, read from the player's own install (rothmap.cpp)
+	void LoadRothMap(MapData *map, FMissingTextureTracker &missingtex);
 	void SummarizeMissingTextures(const FMissingTextureTracker &missing);
 	void SetRenderSector();
 	void SpawnSlopeMakers(FMapThing *firstmt, FMapThing *lastmt, const int *oldvertextable);

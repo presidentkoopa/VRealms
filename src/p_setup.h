@@ -61,6 +61,13 @@ public:
 	bool InWad = false;
 	int lumpnum = -1;
 
+	// Realms of the Haunting map, read straight from the player's own install
+	// rather than from a lump. Both paths are resolved when the map is opened
+	// so the loader doesn't have to look them up again.
+	bool isRoth = false;
+	FString rothFile;   // absolute path to the map's .RAW
+	FString rothPack;   // name of the artwork pack it uses
+
 	/*
 	void Seek(unsigned int lumpindex)
 	{

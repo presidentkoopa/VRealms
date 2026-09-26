@@ -61,9 +61,13 @@ def read_roth_res(roth: Path) -> dict:
 def ensure_pack(roth: Path, pack: str) -> Path:
     """Extract a DAS pack's textures and meshes once, then reuse."""
     out = GEN / "packs" / pack
+    # Check BOTH halves. Checking only one lets a partial extraction look
+    # complete and silently drop the other (e.g. all the 3D furniture).
     if not (out / "textures" / "meta.json").exists():
-        print(f"  extracting pack {pack} ...")
+        print(f"  extracting pack {pack} textures ...")
         run("extract_das.py", roth / "M" / f"{pack}.DAS", "-o", out / "textures")
+    if not (out / "meshes" / "meshes.json").exists():
+        print(f"  extracting pack {pack} meshes ...")
         run("extract_meshes.py", roth / "M" / f"{pack}.DAS", "-o", out / "meshes")
     return out
 

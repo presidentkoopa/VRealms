@@ -29,6 +29,12 @@
 #include "md5.h"
 #include "g_levellocals.h"
 #include "cmdlib.h"
+#include "c_cvars.h"
+#include "c_dispatch.h"
+#include "printf.h"
+#include "m_argv.h"
+#include "roth/roth_install.h"
+#include "roth/roth_log.h"
 
 #define IWAD_ID		MAKE_ID('I','W','A','D')
 #define PWAD_ID		MAKE_ID('P','W','A','D')
@@ -37,6 +43,86 @@
 inline bool P_IsBuildMap(MapData *map)
 {
 	return false;
+}
+
+//===========================================================================
+//
+// Realms of the Haunting maps are read from the player's own installation.
+// `roth_path` points at the folder holding ROTH.RES and M\; when a requested
+// map name appears in that manifest it is loaded from there rather than from
+// a lump. Nothing derived from the game is generated, cached or shipped.
+//
+//===========================================================================
+
+FARG(rothpath, "Realms of the Haunting",
+	"Path to a Realms of the Haunting installation.",
+	"path",
+	"Points at the folder containing ROTH.RES and M\\ inside a legitimate copy of"
+	" Realms of the Haunting. Its maps and artwork are then read directly from"
+	" that installation. Nothing derived from the game is generated or stored;"
+	" a copy of the original is required to play.");
+
+CUSTOM_CVAR(String, roth_path, "", CVAR_ARCHIVE | CVAR_NOINITCALL)
+{
+	if (*self == nullptr || **self == 0)
+		return;
+	if (!roth::TheInstall().Open(self))
+		Printf(TEXTCOLOR_RED "roth_path: %s\n", roth::TheInstall().Error().c_str());
+	else
+		Printf("Realms of the Haunting: %d maps available\n",
+			(int)roth::TheInstall().MapNames().size());
+}
+
+// True when this map name belongs to the install. Returns false for every
+// ordinary map, so the usual lump lookup is left completely untouched.
+static bool P_IsRothMap(const char *mapname, MapData *map)
+{
+	auto &install = roth::TheInstall();
+	static bool reported = false;   // say this once, not once per map lookup
+
+	if (!install.IsOpen())
+	{
+		// Accept -rothpath on the command line as well as the cvar.
+		const char *fromArgs = Args->CheckValue(FArg_rothpath);
+		const char *path = (fromArgs && *fromArgs) ? fromArgs
+			: ((roth_path && *roth_path) ? (const char *)roth_path : nullptr);
+
+		if (path)
+		{
+			if (!install.Open(path) && !reported)
+			{
+				reported = true;
+				Printf(TEXTCOLOR_RED "Realms of the Haunting: %s\n",
+					install.Error().c_str());
+			}
+			else if (install.IsOpen() && !reported)
+			{
+				reported = true;
+				Printf("Realms of the Haunting: %d maps found in %s\n",
+					(int)install.MapNames().size(), install.Path().c_str());
+			}
+		}
+	}
+
+	if (!install.IsOpen())
+		return false;
+	if (!install.HasMap(mapname))
+		return false;
+
+	map->isRoth = true;
+	map->rothFile = install.MapFile(mapname).c_str();
+	map->rothPack = install.PackFor(mapname).c_str();
+
+	// Every load gets its own report. Loading a foreign format off someone
+	// else's disk fails in ways that are hard to diagnose after the fact.
+	auto &log = roth::TheLog();
+	log.Begin(mapname);
+	log.Section("Source");
+	log.Line("  install   %s", install.Path().c_str());
+	log.Line("  map file  %s", map->rothFile.GetChars());
+	log.Line("  artwork   %s  (shared: %s)", map->rothPack.GetChars(),
+		install.SharedPack().c_str());
+	return true;
 }
 
 //===========================================================================
@@ -104,6 +190,11 @@ MapData *P_OpenMapData(const char * mapname, bool justcheck)
 	MapData * map = new MapData;
 	FileReader * wadReader = nullptr;
 	bool externalfile = !strnicmp(mapname, "file:", 5);
+
+	// Check the Realms install before anything else: these maps live on disk in
+	// their own format and have no lump to find.
+	if (!externalfile && P_IsRothMap(mapname, map))
+		return map;
 
 	if (externalfile)
 	{
@@ -383,6 +474,18 @@ bool P_CheckMapData(const char *mapname)
 void MapData::GetChecksum(uint8_t cksum[16])
 {
 	MD5Context md5;
+
+	if (isRoth)
+	{
+		// A Realms map has no lumps at all -- it is a file on disk in the
+		// player's install. Hash that file's bytes instead; reading the Doom
+		// lumps here dereferences readers that were never opened.
+		FileReader fr;
+		if (fr.OpenFile(rothFile.GetChars()))
+			md5Update(fr, md5, (uint32_t)fr.GetLength());
+		md5.Final(cksum);
+		return;
+	}
 
 	if (isText)
 	{
