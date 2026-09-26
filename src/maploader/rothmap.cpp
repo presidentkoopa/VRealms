@@ -252,12 +252,20 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// real positive height (218 for almost all of them). 0xFFFD, the
 	// secondary pool, NEVER OCCURS in any retail map -- and ROTH.C's
 	// tick_secondary_doors shows it would be a ceiling mover, not a swing, so
-	// it would not be built here anyway. 0xFFFE (26 sectors game-wide, none in
-	// STUDY1) is four-faced too but is not closed at load; whether it should
-	// also get a leaf is an OPEN QUESTION, counted below and not guessed at.
+	// it would not be built here anyway.
+	//
+	// 0xFFFE IS A DOOR, and the OPEN QUESTION that stood here is answered:
+	// resolve_door_neighbor_sector (doors.c:320) -- the function that finds a
+	// door's PARTNER -- accepts a neighbour whose id is >= 0xFFFE, and
+	// spawn_door_instance sends anything that is not 0xFFFD to the primary
+	// pool, i.e. an ordinary swinging door. So a 0xFFFE sector is the second
+	// panel of a DOUBLE DOOR.
+	//
+	// Leaving them out left a black gap with a vertical seam down the middle of
+	// it -- which is exactly where the two panels of a double door meet.
 	auto leafBuildable = [&](const roth::Sector &rs) -> bool
 	{
-		if (!rs.IsDoor() || rs.faceCount != 4 || rs.hingeFace < 0) return false;
+		if (!rs.IsDoorCapable() || rs.faceCount != 4 || rs.hingeFace < 0) return false;
 		if (rs.firstFaceIndex < 0 || rs.firstFaceIndex + 3 >= (int)rm.faces.size()) return false;
 		// The hinge must be one of THIS sector's four faces, because the leaf's
 		// corner order is cyclic from it.
@@ -1092,7 +1100,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int leavesBuilt = 0, leavesNoTexture = 0, doorCapableNotBuilt = 0;
 	int leafCoplanarRisk = 0;
 	for (const auto &rs : rm.sectors)
-		if (!rs.IsDoor() && rs.IsDoorCapable()) doorCapableNotBuilt++;
+		if (rs.IsDoorCapable() && !leafBuildable(rs)) doorCapableNotBuilt++;
 
 	if (leafCount > 0)
 	{
@@ -1408,7 +1416,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			log.Warn("door leaf census %d but built %d -- zeroed lines left in the array",
 				leafCount, leavesBuilt);
 
-		log.Line("  door leaves built %d of %d door sectors", leavesBuilt, doorCount);
+		// leafCount, not doorCount: a double door's second panel is a 0xFFFE
+		// sector, which IsDoor() excludes but IsDoorCapable() counts.
+		log.Line("  door leaves built %d of %d door sectors  (%d closed at load)",
+			leavesBuilt, leafCount, doorCount);
 		log.Line("  polyobject tags   1 .. %d  (the doorway sector carries the same tag)", leavesBuilt);
 		log.Count("doors: leaf surface had no artwork", leavesNoTexture);
 		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",

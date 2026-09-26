@@ -434,7 +434,10 @@ Map ParseRaw(const uint8_t *data, size_t size)
 	// exactly four faces, every one with exactly one hinge. No exceptions.
 	for (auto &s : map.sectors)
 	{
-		if (!s.IsDoor() || s.faceCount != 4 || s.firstFaceIndex < 0) continue;
+		// IsDoorCapable, not IsDoor: 0xFFFE is the second panel of a double door
+		// (resolve_door_neighbor_sector accepts >= 0xFFFE, doors.c:320), so it needs
+		// a hinge too or nothing can be built for it.
+		if (!s.IsDoorCapable() || s.faceCount != 4 || s.firstFaceIndex < 0) continue;
 		for (int j = 0; j < 4; j++)
 		{
 			const int fi = s.firstFaceIndex + j;

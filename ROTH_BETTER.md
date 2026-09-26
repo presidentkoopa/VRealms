@@ -166,6 +166,47 @@ not. Worth deciding deliberately what it becomes.
 
 ---
 
+## 9. The sky is a 2D band, and in VR that is not good enough
+
+**Realms has no skybox.** `render_parallax_sky_columns` (`renderer.c:5389`) blits a
+single 2D image in vertical columns straight into the framebuffer. *(verified)*
+
+- The image is the map's own, from metadata `+0x18`, and it **animates** -- if the
+  block's flags carry `0x100` it advances a frame every draw. TOWER1's sky is an
+  animated entry, so the original genuinely has moving cloud.
+- The parallax is one line: the source column is offset by `view_angle * 2`. Turning
+  scrolls the band horizontally. That is the whole effect.
+- **Vertically it does not move at all.** Fixed start row, wrapped on the block height.
+  Look up or down and the sky stays exactly where it was.
+
+That was fine on a 320-pixel screen. **In a headset a band with no vertical response
+and no positional parallax reads as flat wallpaper the instant you tilt your head**, and
+Realms leans on it heavily: 6,208 sky surfaces across 36 of the 44 maps. *(measured)*
+
+So this is a place to **deliberately diverge rather than reproduce**. GZDoom's own sky
+already projects onto a cylinder and responds to pitch, which is better than the original
+for free, and is what the loader now uses.
+
+**Where to push it further (the user's own list, 2026-09-26):**
+
+- **Darkness and fog.** We already have the fork's fog and the real Realms shade model
+  transcribed in `ROTH_LIGHTING.md`. An outdoor sky lit and fogged to match the sector it
+  is seen through would do far more for the manor's atmosphere than the flat band ever
+  could -- and Realms' own model already thinks in terms of how fast dark closes in, so
+  the two are a natural fit rather than a bolt-on.
+- **Weather.** Rain, mist, drifting cloud. The original could not have afforded any of
+  it; the reference screenshots show rain streaks painted INTO the window artwork,
+  because that was the only way to get them. Real weather in front of a real sky is the
+  version of that idea the 1996 team would have shipped if they could.
+- **A real skybox or portal** for the genuinely outdoor maps, so leaning toward a window
+  changes what you see through it. That is the whole promise of the headset and it is
+  exactly what a 2D band cannot do.
+
+**Status:** the divergence is live (GZDoom sky in place of the band). Fog, weather and a
+true skybox are ideas, not built.
+
+---
+
 ## How to add to this
 
 One heading per idea. Say what Realms does, what we do, why theirs might be better, and what it would
