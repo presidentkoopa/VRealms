@@ -193,6 +193,43 @@ struct Command
 	// resolved at runtime, not here.
 	int sector = -1;                 // key as a sector commandID
 	std::vector<int> faces;          // key as a faceID, via the mapping records
+
+	// RAW RECORD ACCESS, by the record offset ROTH.C names.
+	//
+	// The effect handlers read and WRITE this record at byte precision -- a light
+	// switch keeps its signed accumulator in byte[rec+0x0c], a mover its step in
+	// byte[rec+0x07] -- and a vector of words cannot express that. These map an
+	// offset onto args, which is the word at +0x06 onward, so a handler can be
+	// transcribed against the original's offsets without a second layout to keep
+	// in step. Out-of-range reads give 0, matching a record too short to hold the
+	// field; out-of-range writes are dropped.
+	uint16_t Word(int off) const
+	{
+		if (off < 6 || (off & 1)) return 0;
+		const size_t i = (size_t)(off - 6) / 2;
+		return i < args.size() ? args[i] : 0;
+	}
+	uint8_t Byte(int off) const
+	{
+		if (off < 6) return 0;
+		const size_t i = (size_t)(off - 6) / 2;
+		if (i >= args.size()) return 0;
+		return ((off - 6) & 1) ? (uint8_t)(args[i] >> 8) : (uint8_t)(args[i] & 0xFF);
+	}
+	void SetByte(int off, uint8_t v)
+	{
+		if (off < 6) return;
+		const size_t i = (size_t)(off - 6) / 2;
+		if (i >= args.size()) return;
+		if ((off - 6) & 1) args[i] = (uint16_t)((args[i] & 0x00FF) | ((uint16_t)v << 8));
+		else               args[i] = (uint16_t)((args[i] & 0xFF00) | v);
+	}
+	void SetWord(int off, uint16_t v)
+	{
+		if (off < 6 || (off & 1)) return;
+		const size_t i = (size_t)(off - 6) / 2;
+		if (i < args.size()) args[i] = v;
+	}
 };
 
 // The opcodes that are TRIGGERS, from ROTH.C's load-time registration table

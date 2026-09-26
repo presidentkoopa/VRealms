@@ -151,9 +151,17 @@ struct Effect
 {
 	uint8_t  tick = 0;            // chunk[+4]: which per-frame handler
 	uint16_t record = 0;          // chunk[+8]: the command, as a 1-based index
-	uint16_t payload = 0;         // chunk[+6]: per-type; for 0x1d the ramp
+	uint16_t payload = 0;         // chunk[+6]: per-type; the ramp (0x1d) or phase (0x11)
 	std::vector<int> sectors;     // the collected geometry group
 	bool finished = false;
+
+	// 0x11 flash-lights only. It animates AROUND each sector's brightness rather
+	// than accumulating onto it, so the registrar snapshots the starting value
+	// per sector (the original stashes it beside each match, at match+2) and
+	// every frame writes base + pattern. baseLight is parallel to sectors.
+	std::vector<uint8_t> baseLight;
+	uint16_t hold = 0;            // chunk[+0xc]: the between-bursts countdown
+	bool holding = false;         // chunk[+5] bit 0x80
 };
 
 struct Runtime
@@ -979,6 +987,311 @@ static bool TickChangeLighting(Effect &e)
 
 //==========================================================================
 //
+// THE LIGHT PATTERNS -- obj1_owned.c:95, the 62-byte block at 0x322ce, with the
+// five sub-block pointers from boot.c:177 and the count dword (=5) at +0x3e.
+//
+// This is data out of ROTH.EXE's own image, not out of the player's game files,
+// so it is transcribed rather than read: the five offsets 0x00 / 0x11 / 0x20 /
+// 0x2d / 0x36 slice the block into patterns whose first byte is the PERIOD and
+// whose remaining bytes are the brightness deltas, period of them each. All five
+// check out against their own length.
+//
+//==========================================================================
+
+struct LightPattern { uint8_t period; const uint8_t *delta; };
+
+static const uint8_t kPat0[16] = { 0x00,0x02,0x04,0x06,0x08,0x0a,0x0c,0x0e,
+                                   0x10,0x12,0x14,0x16,0x18,0x1a,0x1c,0x00 };
+static const uint8_t kPat1[14] = { 0x00,0x14,0x0f,0x0a,0x00,0x00,0x00,
+                                   0x00,0x00,0x28,0x1e,0x14,0x0a,0x00 };
+static const uint8_t kPat2[12] = { 0x04,0x08,0x0c,0x10,0x12,0x14,
+                                   0x12,0x10,0x0c,0x08,0x04,0x00 };
+static const uint8_t kPat3[8]  = { 0x00,0x3c,0x32,0x28,0x1e,0x14,0x0a,0x00 };
+static const uint8_t kPat4[6]  = { 0x00,0x14,0x3c,0x28,0x14,0x00 };
+
+static const LightPattern kLightPatterns[5] = {
+	{ 16, kPat0 }, { 14, kPat1 }, { 12, kPat2 }, { 8, kPat3 }, { 6, kPat4 },
+};
+static const int kLightPatternCount = 5;      // the count dword at block +0x3e
+
+//==========================================================================
+//
+// apply_flag_mask_to_record_list (raw_commands.c) -- the other thing a lighting
+// effect can do on the way out: rewrite the sector FLAGS byte at +0x0a, which is
+// Sector::flags here, as (flags & ~clear) | set.
+//
+// A light switch uses it to record which way it ended, on bit 0x02. Nothing in
+// the loader reads that bit today, so this keeps the Realms byte correct without
+// yet having a visible effect -- worth maintaining because it is one byte and it
+// is the sector's own on/off state, which a later reader will want.
+//
+//==========================================================================
+
+static void ApplyFlagMask(const std::vector<int> &sectors, uint8_t clear, uint8_t set)
+{
+	for (int si : sectors)
+	{
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		Sector &rs = g.map.sectors[si];
+		rs.flags = (uint8_t)((rs.flags & (uint8_t)~clear) | set);
+	}
+}
+
+// Set a sector's brightness OUTRIGHT rather than by a delta, for the flash
+// effect, which writes base + pattern every frame. Same authored-dark immunity
+// and the same recompute as ApplyLightDelta -- see there for both.
+static void SetSectorLight(int si, int value)
+{
+	if (g.level == nullptr) return;
+	if (si < 0 || (size_t)si >= g.map.sectors.size()) return;
+	Sector &rs = g.map.sectors[si];
+	if (rs.light == 0) return;                            // authored dark: immune
+
+	rs.light = (uint8_t)clamp<int>(value, 0, 255);
+	if ((size_t)si >= g.level->sectors.Size()) return;
+	const int rows = 39 + ((int)rs.light - 128);
+	const int ll = rows <= 0 ? 0
+		: int((255.0 * double(rows) * double(1 << g.level->ShadeFalloffShift)) / 1984.0 + 0.5);
+	g.level->sectors[si].lightlevel = (short)clamp<int>(ll, 0, 255);
+}
+
+//==========================================================================
+//
+// cmd_light_switch -- raw_commands.c:4331, RAW command base 0x02
+//
+// A switch, not a fade. The effect record carries nothing: the travel left is
+// kept on the COMMAND record, in the signed byte at +0x0c, and each execution
+// ADDS to it -- so hitting the same switch twice before it settles doubles the
+// throw rather than restarting it.
+//
+// Two things differ from 0x1d and both matter. The key comes from +0x0a, not
+// +0x08, so a switch names its geometry in a different field from every other
+// lighting opcode. And the collector is ALWAYS the connected flood, never the
+// flat match, so a switch necessarily lights a whole connected area.
+//
+//==========================================================================
+
+int LightSwitch(Command *rec, int index)
+{
+	Effect *eff = FindEffect(0x02, (uint16_t)index);
+	if (eff == nullptr)
+	{
+		Effect e;
+		e.tick = 0x02;
+		e.record = (uint16_t)index;
+		e.sectors = CollectGeometryGroup(rec->aux, true);   // key at +0x0a, always flood
+		if (e.sectors.empty()) return CMD_NOTHING;
+		g.effects.push_back(e);
+		eff = &g.effects.back();
+		rec->modifier |= 0x20;
+		SyncDisabled(rec);
+	}
+
+	uint8_t dl = rec->subFlags;                            // byte[rec+7]
+	if (!(rec->fireFlags & 0x08)) dl = (uint8_t)(0u - dl);
+	rec->SetByte(0x0C, (uint8_t)(rec->Byte(0x0C) + dl));
+	rec->fireFlags ^= 0x08;
+	rec->SetByte(0x06, rec->fireFlags);                    // fireFlags mirrors byte[rec+6]
+	rec->modifier ^= 0x02;
+	SyncDisabled(rec);
+	eff->tick = 0x02;
+	return CMD_ACTED;
+}
+
+//==========================================================================
+//
+// tick_light_switch -- raw_commands.c:1816
+//
+// Walk the accumulator at byte[rec+0x0c] toward zero, at most one frame step at
+// a time, and apply exactly what it moved. Transcribed rather than rewritten,
+// because the clamp is a two-sided one that is easy to simplify wrongly:
+//
+//     v = min(acc, step);  v = -v;  delta = (v <= step) ? v : step
+//
+// which yields -step while acc is positive and +step while it is negative, so a
+// switch of either sign converges. On arrival, +0x06 bit 0x80 means "record which
+// way I ended" -- bit 0x02 of the sector flags, set or cleared by the sign of the
+// last delta.
+//
+//==========================================================================
+
+static bool TickLightSwitch(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	const int step = ROTH_FRAME_TICKS_PER_TIC;
+	int v = (int)(int8_t)rec->Byte(0x0C);
+	if (!(v < step)) v = step;
+	v = -v;
+	int delta = (!(v > step)) ? v : step;
+
+	rec->SetByte(0x0C, (uint8_t)(rec->Byte(0x0C) + (uint8_t)delta));
+	ApplyLightDelta(e.sectors, delta);
+
+	if (rec->Byte(0x0C) != 0) return false;                // still throwing
+
+	if (rec->fireFlags & 0x80)
+		ApplyFlagMask(e.sectors, (delta & 0x80) ? 0 : 2, (delta & 0x80) ? 2 : 0);
+	rec->modifier &= 0xDE;
+	SyncDisabled(rec);
+	return true;
+}
+
+//==========================================================================
+//
+// cmd_flash_lights -- raw_commands.c:4453, RAW command base 0x11
+//
+// The registrar SNAPSHOTS each sector's current brightness, because the flash
+// animates around it: every frame the tick writes base + pattern, so the
+// brightness returns exactly where it started instead of drifting the way a
+// sequence of deltas would.
+//
+//==========================================================================
+
+int FlashLights(Command *rec, int index)
+{
+	if (rec->modifier & 0x21) return CMD_NOTHING;          // already armed
+
+	Effect e;
+	e.tick = 0x11;
+	e.record = (uint16_t)index;
+	e.sectors = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
+	if (e.sectors.empty()) return CMD_NOTHING;
+
+	e.baseLight.reserve(e.sectors.size());
+	for (int si : e.sectors)
+		e.baseLight.push_back((size_t)si < g.map.sectors.size() ? g.map.sectors[si].light : 0);
+
+	e.payload = 0;                                         // chunk[6] = 0: the phase
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+//==========================================================================
+//
+// tick_flash_lights -- raw_commands.c:3516
+//
+// The pattern index is byte[rec+7], bounded by the block's own count of 5; out of
+// range finishes the effect rather than reading past the table. The phase runs to
+// twice the period and samples at phase/2, so every pattern byte is held for two
+// frame ticks.
+//
+// Three paths, and the record's +0x06 picks between them:
+//
+//   bit 0x04 CHASE -- each sector samples the NEXT pattern byte, so the burst
+//   travels along the group instead of hitting it all at once.
+//   otherwise SINGLE SAMPLE -- every sector shares one delta.
+//   bit 0x01 inverts the delta, so a pattern can darken instead of brighten.
+//
+// And at the end of a sweep, +0x06 bit 0x20 decides whether it repeats: without
+// it the effect emits one last sample and finishes; with it, a nonzero +0x0a is
+// latched as a hold countdown between bursts -- randomized when bit 0x02 is set,
+// through the LCG the original shares with the delay opcode -- and a zero +0x0a
+// just runs straight into the next sweep.
+//
+//==========================================================================
+
+static bool TickFlashLights(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+	const int step = ROTH_FRAME_TICKS_PER_TIC;
+
+	// Holding between bursts: nothing is emitted, just the countdown.
+	if (e.holding)
+	{
+		const uint16_t cd = e.hold;
+		e.hold = (uint16_t)(cd - step);
+		if (cd < (uint16_t)step) e.holding = false;
+		return false;
+	}
+
+	const uint32_t patIdx = rec->subFlags;                 // byte[rec+7]
+	if (patIdx >= (uint32_t)kLightPatternCount)
+	{
+		rec->modifier &= 0xDE;
+		SyncDisabled(rec);
+		return true;
+	}
+	const LightPattern &pat = kLightPatterns[patIdx];
+	const uint32_t period  = pat.period;
+	const uint32_t period2 = 2u * period;
+
+	uint32_t phase = (uint32_t)e.payload + (uint32_t)step;
+	const uint8_t c6 = rec->fireFlags;                     // byte[rec+6]
+	const bool neg = (c6 & 0x01) != 0;
+	const size_t n = e.sectors.size();
+
+	if (c6 & 0x04)                                         // CHASE
+	{
+		if (!(phase < period2))
+		{
+			phase -= period2;
+			if (!(phase < period2)) phase = 0;
+		}
+		e.payload = (uint16_t)phase;
+
+		uint32_t idx = phase >> 1;
+		for (size_t i = 0; i < n; i++)
+		{
+			int d = (int)pat.delta[idx];
+			if (neg) d = -d;
+			idx++;
+			if (!(idx < period)) idx = 0;
+			SetSectorLight(e.sectors[i], (int)e.baseLight[i] + d);
+		}
+		return false;
+	}
+
+	// SINGLE SAMPLE.
+	bool finish = false;
+	if (phase >= period2)
+	{
+		if (!(c6 & 0x20))                                  // one-shot: last sample, then done
+		{
+			finish = true;
+			phase = period2 - 1;
+		}
+		else if (rec->Word(0x0A) == 0)                     // repeat immediately
+		{
+			phase -= period2;
+			if (!(phase < period2)) phase = 1;
+		}
+		else                                               // repeat after a hold
+		{
+			uint32_t dwell = rec->Word(0x0A);
+			if (c6 & 0x02)
+			{
+				// The same LCG the delay opcode randomizes through -- the word at
+				// g_frame_time_scale+4 is not a time scale at all, it is an RNG
+				// state stepped with seed*0x5e5+0x29 (renderer.c:13416).
+				g.rng = g.rng * 0x5e5u + 0x29u;
+				dwell = (dwell * (g.rng & 0xffffu)) >> 16;
+			}
+			e.hold = (uint16_t)dwell;
+			e.holding = true;
+			e.payload = 0;
+			return false;
+		}
+	}
+
+	e.payload = (uint16_t)phase;
+	int d = (int)pat.delta[phase >> 1];
+	if (neg) d = -d;
+	for (size_t i = 0; i < n; i++)
+		SetSectorLight(e.sectors[i], (int)e.baseLight[i] + d);
+
+	if (!finish) return false;
+	rec->modifier &= 0xDE;
+	SyncDisabled(rec);
+	return true;
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -1001,6 +1314,8 @@ static void TickEffects()
 		switch (g.effects[i].tick)
 		{
 		case 0x1D: done = TickChangeLighting(g.effects[i]); break;
+		case 0x02: done = TickLightSwitch(g.effects[i]); break;
+		case 0x11: done = TickFlashLights(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -1044,7 +1359,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x1D: case 0x2F: case 0x34: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -1072,6 +1387,8 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x12: return DelayTimer(rec, index);
 	case 0x34: return ChangeFaceTexture(*rec);
 	case 0x1D: return ChangeLighting(rec, index);
+	case 0x02: return LightSwitch(rec, index);
+	case 0x11: return FlashLights(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
