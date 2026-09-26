@@ -267,7 +267,14 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// A door is stored at full height and closed by the engine at load.
 		// Without this every door in the game stands permanently open.
 		double floorZ = double(rs.floorHeight);
-		double ceilZ = double(rs.IsDoor() ? rs.floorHeight : rs.ceilingHeight);
+		// A DOOR SECTOR IS THE DOOR LEAF, not a hole, so it keeps its real
+		// height. This used to be clamped to the floor to stop doors "standing
+		// open", which was backwards: flattening the slab deletes the door
+		// itself and leaves the neighbours' upper and lower pieces filling the
+		// gap -- hence doors being nowhere to be seen. Closed at load is the
+		// natural state of a slab that has not been swung yet; there is nothing
+		// to force.
+		double ceilZ = double(rs.ceilingHeight);
 		if (rs.IsDoor())
 		{
 			doorCount++;
@@ -970,6 +977,76 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		mt.FloatbobPhase = -1;
 		MapThingsConverted.Push(mt);
 	}
+
+	//----------------------------------------------------------------------
+	// Doors, as polyobjects.
+	//
+	// A Realms door is a four-walled slab that ROTATES ABOUT A HINGE CORNER
+	// toward a stored target point -- it is not a floor or ceiling mover, so
+	// none of Doom's door machinery fits it. GZDoom's PODOOR_SWING is the same
+	// operation: FPolyObj::RotatePolyobj turns every vertex about StartSpot.
+	//
+	// The Hexen convention draws a polyobject in a void area and translates it
+	// into place, but TranslateToStartSpot moves everything by
+	// (anchor - startSpot), so putting BOTH at the hinge makes that delta zero
+	// and the polyobject is built exactly where it already stands. No void room,
+	// no engine change.
+	//
+	// Polyobj_ExplicitLine is used rather than Polyobj_StartLine because it
+	// states the four lines and their order outright instead of relying on a
+	// traversal -- this is generated, not authored, so being explicit is free.
+	int doorsBuilt = 0, doorsUnbuilt = 0;
+	for (size_t i = 0; i < rm.sectors.size(); i++)
+	{
+		const roth::Sector &rs = rm.sectors[i];
+		if (!rs.IsDoor() || rs.hingeFace < 0) { if (rs.IsDoor()) doorsUnbuilt++; continue; }
+
+		// The slab's four lines, in the order the loader built them.
+		unsigned ln[4]; int found = 0;
+		for (unsigned li = 0; li < pending.size() && found < 4; li++)
+		{
+			const int fi = pending[li].face;
+			if (fi >= rs.firstFaceIndex && fi < rs.firstFaceIndex + 4) ln[found++] = li;
+		}
+		if (found != 4) { doorsUnbuilt++; continue; }
+
+		const int tag = 1 + doorsBuilt;          // polyobject tags are 1-based
+		for (int k = 0; k < 4; k++)
+		{
+			line_t *dl = &Level->lines[ln[k]];
+			dl->special = Polyobj_ExplicitLine;
+			dl->args[0] = tag;                    // which polyobject
+			dl->args[1] = k + 1;                  // order around it
+			dl->args[2] = 0;                      // mirror: none
+			dl->args[3] = 0;                      // sound sequence
+		}
+
+		// Both things at the hinge, so the translate is a no-op.
+		const roth::Face &hf = rm.faces[rs.hingeFace];
+		const vertex_t *hv = &Level->vertexes[hf.vertex1];
+		for (int which = 0; which < 2; which++)
+		{
+			FMapThing mt = {};
+			mt.pos.X = hv->fX();
+			mt.pos.Y = hv->fY();
+			mt.pos.Z = 0;
+			mt.angle = tag;                       // PO_Init reads the tag from angle
+			mt.EdNum = which == 0 ? 9301 : 9300;  // spawn spot, then anchor
+			mt.info = DoomEdMap.CheckKey(mt.EdNum);
+			mt.flags = MTF_SINGLE | MTF_COOPERATIVE | MTF_DEATHMATCH;
+			mt.SkillFilter = 0xffff;
+			mt.ClassFilter = 0xffff;
+			mt.Gravity = 1;
+			mt.RenderStyle = STYLE_Count;
+			mt.Alpha = -1;
+			mt.Health = 1;
+			mt.FloatbobPhase = -1;
+			if (mt.info != nullptr) MapThingsConverted.Push(mt);
+		}
+		doorsBuilt++;
+	}
+	log.Line("  doors as polyobjects  %d built, %d not", doorsBuilt, doorsUnbuilt);
+	log.Count("doors: could not be built as a polyobject", doorsUnbuilt);
 
 	log.Line("  player start    (%d, %d) facing %d",
 		rm.metadata.startX, rm.metadata.startY,
