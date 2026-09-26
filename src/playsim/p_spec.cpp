@@ -59,6 +59,7 @@
 #include "p_local.h"
 #include "p_setup.h"
 #include "p_spec.h"
+#include "roth/roth_runtime.h"
 #include "p_terrain.h"
 #include "r_sky.h"
 #include "vm.h"
@@ -121,6 +122,14 @@ bool P_ActivateLine (line_t *line, AActor *mo, int side, int activationType, DVe
 	INTBOOL repeat;
 	INTBOOL buttonSuccess;
 	uint8_t special;
+
+	// Realms of the Haunting's triggers are not Doom line specials, so they must
+	// be tested BEFORE the engine decides this line is inert. Inert itself when
+	// no Realms level is loaded. See roth_runtime.
+	if (roth::ActivateLine(line, mo, side))
+	{
+		return true;
+	}
 
 	if (!P_TestActivateLine (line, mo, side, activationType, optpos))
 	{

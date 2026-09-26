@@ -37,6 +37,7 @@
 #include "roth/roth_log.h"
 #include "roth/roth_texture.h"
 #include "roth/roth_objects.h"
+#include "roth/roth_runtime.h"
 
 //==========================================================================
 //
@@ -133,6 +134,11 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// on another map's walls as soon as a second pack is loaded.
 	//----------------------------------------------------------------------
 	log.StageBegin("artwork");
+	// Drop the previous level's logic before anything registers against this
+	// one. BeginLevel cannot do it -- by the time it runs, the loader has
+	// already recorded its face and door bindings.
+	roth::EndLevel();
+
 	log.Section("Artwork");
 
 	roth::TextureSet art;
@@ -584,6 +590,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		auto makeSide = [&](const roth::Face &face, bool twoSided, int neighbourSector) -> side_t *
 		{
 			side_t *sd = &Level->sides[sideIndex++];
+			// A trigger names a FACE; the engine hands us a sidedef. Only this
+			// loop knows both, so the pairing is recorded here or the two index
+			// spaces never meet. See roth_runtime.
+			roth::RegisterFaceSide((int)(&face - &rm.faces[0]), (int)(sd - &Level->sides[0]));
 			sd->sector = &Level->sectors[face.sector];
 			sd->linedef = ld;
 			sd->Flags = 0;
@@ -1416,6 +1426,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// the sector the player used to the polyobject that fills it. A tag is
 			// the engine's own general handle for this; nothing Realms-specific.
 			Level->tagManager.AddSectorTag((int)i, tag);
+			// And tell the runtime, so a command that names this door can find
+			// the polyobject that swings without searching the tag table.
+			roth::RegisterDoor((int)i, tag);
 
 			vSector++; vVertex += 8; vLine += 8;
 			leavesBuilt++;
@@ -1558,6 +1571,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// that half runs from MapLoader::LoadLevel after SpawnThings. See
 	// roth_objects.h.
 	roth::PrepareObjects(rm, art, &log);
+
+	// Hand the level's logic to the runtime. Everything it needs -- the resolved
+	// keys, the face-to-sidedef pairing, the door tags -- is in place by now.
+	roth::BeginLevel(rm, Level, &log);
 
 	log.StageEnd();
 	log.Section("Not yet handled");

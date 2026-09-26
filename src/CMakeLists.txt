@@ -972,6 +972,10 @@ set (PCH_SOURCES
 	roth/roth_texture_object.cpp
 	# Placed objects: props, furniture and the 3D meshes, all built in memory.
 	roth/roth_objects.cpp
+	# The level-logic spine (engine-free) and the runtime that binds it to the
+	# live world. roth_commands is also compiled into the standalone selftest.
+	roth/roth_commands.cpp
+	roth/roth_runtime.cpp
 	playsim/p_pspr.cpp
 	p_saveg.cpp
 	p_setup.cpp
