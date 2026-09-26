@@ -967,6 +967,11 @@ set (PCH_SOURCES
 	# The exception: roth_texture is the boundary file that hands decoded
 	# artwork to the texture manager, so it does use engine types.
 	roth/roth_texture.cpp
+	# Object art registration. Belongs in roth_texture.cpp and is split out only
+	# because that file was owned by another lane when it was written.
+	roth/roth_texture_object.cpp
+	# Placed objects: props, furniture and the 3D meshes, all built in memory.
+	roth/roth_objects.cpp
 	playsim/p_pspr.cpp
 	p_saveg.cpp
 	p_setup.cpp
@@ -1229,6 +1234,9 @@ set (PCH_SOURCES
 	common/models/models_ue1.cpp
 	common/models/models_obj.cpp
 	common/models/models_iqm.cpp
+	# A model whose geometry is handed over in memory rather than parsed from a
+	# file, for loaders and generators that already hold the triangles.
+	common/models/model_memorymesh.cpp
 	common/models/model.cpp
 	common/models/voxels.cpp
 	common/console/c_commandline.cpp

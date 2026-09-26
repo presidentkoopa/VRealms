@@ -108,6 +108,13 @@ FSpriteModelFrame * FindModelFrame(const PClass * ti, int sprite, int frame, boo
 FSpriteModelFrame * FindModelDefFrame(const PClass * ti, int sprite, int frame);
 FSpriteModelFrame * FindVoxelFrame(int sprite, int frame, bool dropped);
 
+// Binding a model to (class, sprite, frame) without a MODELDEF lump, for models
+// that are built while a level loads. See the comment on the definitions in
+// models.cpp -- these are level-load-only calls, because they reallocate and
+// rehash the table the renderer takes pointers into.
+void AddSpriteModelFrame(const FSpriteModelFrame &smf);
+void ClearAddedSpriteModelFrames();
+
 // RS FORK -- r_voxels_mode / r_voxeldistance helpers, defined beside
 // FindVoxelFrame in models.cpp (see the notes there).
 //   VoxelsEffectiveMode     r_voxels_mode with auto (-1) resolved against

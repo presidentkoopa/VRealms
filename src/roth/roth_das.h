@@ -102,7 +102,24 @@ public:
 	const std::string &Error() const { return mError; }
 	int Count() const { return (int)mFat.size(); }
 	const FatEntry *Entry(int index) const;
-	uint16_t SkyIndex() const { return mSkyIndex; }
+	// THIS IS NOT A SKY INDEX, whatever it was called before. The pack header
+	// word at +0x22 is `g_das_unk_0x22` in the original: map_load.c:363 reads
+	// it and renderer.c:1518 copies it to 0x89f06, and nothing else touches it.
+	//
+	// The sky picture is named by the MAP, not by the pack -- the metadata word
+	// at +0x18, which roth_raw.h calls `Metadata::skyTexture`. It reaches
+	// `g_das_special_fat_index` (map_load.c:214, renderer.c:10306), which is
+	// what render_parallax_sky_columns resolves the sky block from
+	// (renderer.c:5414) and what the cache pins as its special index
+	// (das_assets.c:859).
+	//
+	// The two are genuinely different quantities: across the 44 retail maps
+	// this word is only ever 0 or 1 and is constant per pack, while the maps'
+	// own sky indices are 0, 1, 15, 72, 400 and 810 -- and 16 of the 44 maps
+	// disagree with their pack's word. Reading this as a sky index also throws
+	// a finished picture away, since entry 0 of DEMO is a fully painted
+	// 256 x 146 image with no transparent pixel in it.
+	uint16_t UnknownHeaderWord0x22() const { return mUnknown0x22; }
 	const std::vector<Colour> &Palette() const { return mPalette; }
 
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
@@ -121,10 +138,13 @@ private:
 	size_t mSize = 0;
 	std::vector<FatEntry> mFat;
 	std::vector<Colour> mPalette;
-	uint16_t mSkyIndex = 0;
+	uint16_t mUnknown0x22 = 0;   // header +0x22; see UnknownHeaderWord0x22()
 	std::string mError;
 
 	EntryKind Classify(const FatEntry &e) const;
+	// One animation frame's edit stream, applied in place to the previous
+	// frame. `p` is a file offset. See the comment on the definition.
+	void ApplyFrameDelta(std::vector<uint8_t> &frame, size_t p) const;
 };
 
 // The palette ROTH falls back on when a pack stores none (the shared sprite

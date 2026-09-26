@@ -241,3 +241,32 @@ unsigned FindModel(const char * path, const char * modelfile, bool silent)
 	model->mFilePath = {path, modelfile};
 	return Models.Push(model);
 }
+
+//===========================================================================
+//
+// RegisterModel
+//
+// A model that was not read from a file. FindModel is the only way in today,
+// and it starts by opening a lump -- so anything that BUILDS a model (a loader
+// that decodes a foreign game's own data off the player's disk, a procedural
+// mesh, a mesh lifted from level geometry) has no way to get an index at all.
+//
+// `pseudoName` takes the place of the file name, and that is not cosmetic:
+// FindModel dedupes on it (above) and the mesh-particle cache revalidates its
+// cached index by comparing it (hw_meshparticles.cpp), because InitModels
+// empties Models on a full reload. It must be unique and it must not collide
+// with a real model path -- prefix it, e.g. "*memory/<something>".
+//
+// Models takes ownership: it is a TDeletingArray and InitModels clears it. A
+// caller whose models must outlive that has to register them again afterwards,
+// exactly as the mesh-particle cache re-finds its own.
+//
+//===========================================================================
+
+unsigned RegisterModel(FModel *model, const char *pseudoName)
+{
+	if (model == nullptr) return -1;
+	model->mFileName = pseudoName ? pseudoName : "";
+	model->mFilePath = { FString(), model->mFileName };
+	return Models.Push(model);
+}

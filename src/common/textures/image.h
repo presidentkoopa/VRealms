@@ -288,6 +288,28 @@ public:
 	PalettedPixels CreatePalettedPixels(int conversion, int frame = 0) override;
 	int CopyPixels(FBitmap* bmp, int conversion, int frame = 0) override;
 
+	//----------------------------------------------------------------------
+	// WHEN AND HOW OFTEN THESE CONVERT, so that a stall can be attributed
+	// rather than guessed at.
+	//
+	// An image source converts LAZILY on the main thread, the first time
+	// something asks for its pixels. That is invisible for a handful of images
+	// and very visible for a few hundred, and a loader that builds its textures
+	// in memory at level load is exactly the caller that makes a few hundred.
+	// Counting it costs two clock reads per conversion and answers the question
+	// outright; the `imagestats` console command prints the totals.
+	//----------------------------------------------------------------------
+	struct ConversionStats
+	{
+		uint64_t count = 0;       // conversions performed
+		uint64_t pixels = 0;      // pixels converted
+		double totalMs = 0.;      // wall time spent inside them
+		double worstMs = 0.;      // the single worst one
+	};
+	static const ConversionStats& TrueColourStats();
+	static const ConversionStats& PalettedStats();
+	static void ResetStats();
+
 protected:
 	const uint8_t* RawPixels;
 	FRemapTable* Translation;

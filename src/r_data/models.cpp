@@ -3557,6 +3557,9 @@ void RenderFrameModels(FModelRenderer *renderer, FLevelLocals *Level, const FSpr
 
 
 static TArray<int> SpriteModelHash;
+// How much of SpriteModelFrames InitModels put there. See AddSpriteModelFrame.
+static unsigned ParsedSpriteModelFrames = 0;
+void RehashSpriteModelFrames();
 //TArray<FStateModelFrame> StateModelFrames;
 
 //===========================================================================
@@ -3655,16 +3658,63 @@ void InitModels()
 	}
 
 	// create a hash table for quick access
-	SpriteModelHash.Resize(SpriteModelFrames.Size ());
-	memset(SpriteModelHash.Data(), 0xff, SpriteModelFrames.Size () * sizeof(int));
+	RehashSpriteModelFrames();
 
-	for (unsigned int i = 0; i < SpriteModelFrames.Size (); i++)
+	// Where the parsed table ends. Anything past this was added at level load
+	// by AddSpriteModelFrame and is discardable; see below.
+	ParsedSpriteModelFrames = SpriteModelFrames.Size();
+}
+
+//===========================================================================
+//
+// MODEL BINDINGS THAT WERE NOT PARSED FROM A LUMP
+//
+// InitModels fills SpriteModelFrames once -- from the voxel defs and every
+// MODELDEF lump -- and then hashes it. A loader that BUILDS its models while a
+// level loads, from data that only exists at that moment (a foreign game's own
+// files read off the player's disk, a procedural mesh, geometry lifted from the
+// map), has no lump to declare them in and arrives long after InitModels. These
+// two calls let it bind a model index to (class, sprite, frame) anyway.
+//
+// TIMING RULE: while a level is loading, and not otherwise. Pushing into
+// SpriteModelFrames reallocates it, which kills every FSpriteModelFrame* the
+// lookups have handed out (including FModel::baseFrame), and the hash has to be
+// rebuilt from scratch. Nothing holds such a pointer across a level load;
+// the renderer certainly holds one across a frame.
+//
+//===========================================================================
+
+void RehashSpriteModelFrames()
+{
+	SpriteModelHash.Resize(SpriteModelFrames.Size());
+	if (SpriteModelFrames.Size() == 0) return;
+	memset(SpriteModelHash.Data(), 0xff, SpriteModelFrames.Size() * sizeof(int));
+
+	for (unsigned int i = 0; i < SpriteModelFrames.Size(); i++)
 	{
-		int j = ModelFrameHash(&SpriteModelFrames[i]) % SpriteModelFrames.Size ();
+		int j = ModelFrameHash(&SpriteModelFrames[i]) % SpriteModelFrames.Size();
 
 		SpriteModelFrames[i].hashnext = SpriteModelHash[j];
-		SpriteModelHash[j]=i;
+		SpriteModelHash[j] = i;
 	}
+}
+
+void AddSpriteModelFrame(const FSpriteModelFrame &smf)
+{
+	SpriteModelFrames.Push(smf);
+	// Without this the lookup never even walks the hash: FindModelFrameRaw
+	// tests the class default's hasmodel first, and it is MODELDEF that
+	// normally sets it.
+	auto def = GetDefaultByType((const PClass *)smf.type);
+	if (def != nullptr) def->hasmodel = true;
+	RehashSpriteModelFrames();
+}
+
+void ClearAddedSpriteModelFrames()
+{
+	if (SpriteModelFrames.Size() <= ParsedSpriteModelFrames) return;
+	SpriteModelFrames.Resize(ParsedSpriteModelFrames);
+	RehashSpriteModelFrames();
 }
 
 void ParseModelDefLump(int Lump)
@@ -4359,7 +4409,12 @@ bool KeepVoxelWithoutSprite(int sprite, int frame)
 
 FSpriteModelFrame * FindModelFrameRaw(const AActor * actorDefaults, const PClass * ti, int sprite, int frame, bool dropped)
 {
-	if(actorDefaults->hasmodel)
+	// Size() is a modulus below, so an empty table is a divide by zero, not a
+	// miss. FindModelDefFrame already guards this; hasmodel used to be enough on
+	// its own because only MODELDEF set it and MODELDEF always left an entry
+	// behind, which stopped being true once bindings could also be added and
+	// discarded per level (AddSpriteModelFrame).
+	if(actorDefaults->hasmodel && SpriteModelFrames.Size() != 0)
 	{
 		FSpriteModelFrame smf;
 

@@ -1509,6 +1509,22 @@ public:
 	FTextureID	skytexture2;
 	FTextureID	skymisttexture;
 
+	// A level whose world is built to a different human scale than Doom's can
+	// state the player's size here, in map units, and the player spawns that
+	// tall instead of using its class defaults. BOTH ZERO means "use the class
+	// defaults", so every existing level and every existing player class is
+	// untouched.
+	//
+	// This exists because a map format can be authored around its own idea of
+	// how big a person is. Scaling the geometry to suit Doom's 56-unit player
+	// would be the wrong fix: it corrupts every other measurement in the map --
+	// step heights, door widths, how far a table sits off the floor. It is the
+	// player that should change size, not the world.
+	//
+	// Set it during map load, before the player spawns.
+	double		ForcedPlayerHeight = 0;			// total height, 0 = class default
+	double		ForcedPlayerViewHeight = 0;		// eye height,   0 = class default
+
 	float		skyspeed1;				// Scrolling speed of sky textures, in pixels per ms
 	float		skyspeed2;
 	float		skymistspeed;

@@ -77,24 +77,74 @@ static const int ANIM_FRAME_MS = 229;
 
 //==========================================================================
 //
-// Two translations per pack: one where stored index 0 is a hole and one where
-// it is an ordinary colour. Realms decides that per image (IT_ZERO_OPAQUE), and
-// transparency lives in the palette's alpha, so it cannot be one table.
+// THE THREE WAYS A REALMS IMAGE MEETS THE FRAMEBUFFER.
+//
+// The original picks a span function per IMAGE, from bit 2 of the image's
+// `image_type` byte -- the bit roth_das.h calls IT_TRANSLUCENT. Two independent
+// sites set it, and they agree:
+//
+//   renderer.c:6288   g_span_textured_mode_flag = byte[block + 0xb] & 4;
+//   renderer.c:13278  eax = dword[block + 8];   // bits 16..31 are the flags word
+//                     if (eax & 0x04000000) mode = 0xff; else mode = 0;
+//
+// (block + 0xa is the flags word, whose high byte is image_type, so 0x04000000
+// and `byte[block+0xb] & 4` are the same bit.)
+//
+// When the bit is SET the span function is renderer.c:2635 / 11727, whose
+// per-texel rule is exactly:
+//
+//   if (texel == 0)          skip           -- a hole
+//   else if (texel & 0x80)   dst = blend[(dst << 8) | colour]   -- see through
+//   else                     dst = colour   -- opaque
+//
+// When it is CLEAR every texel is written, index 0 included.
+//
+// VERIFIED, not assumed: `blend` is the 64K table the DAS file stores right
+// after its palette (map_load.c:377 reads 0x10000 bytes into the buffer whose
+// selector is g_transparency_blend_selector). Reading DEMO.DAS's copy of it and
+// fitting an alpha over every (dst, src) pair gives a clean minimum at 0.50,
+// and blend[(x << 8) | x] == x exactly for every x. It is a 50% average.
+//
+// All of that maps onto a palette's alpha channel, which is what
+// FPalettedMemoryImage already consumes, so it needs no renderer work: alpha 0
+// is the hole CopyPixelData skips, alpha 128 is the 50% blend, alpha 255 is
+// opaque. Hence three tables rather than two.
 //
 //==========================================================================
 
+// The 0x80 blend is a 50% average of the source and the destination -- measured
+// off the retail blend table, see above.
+static const uint8_t BLEND_ALPHA = 128;
+
+// Indices from here up are the translucent half of the palette in an image the
+// original draws with the transparency+translucency span function.
+static const int BLEND_INDEX_FIRST = 0x80;
+
+struct PackTranslations
+{
+	int opaque = -1;      // every index written, index 0 included
+	int keyed = -1;       // index 0 is a hole, everything else opaque
+	int translucent = -1; // index 0 is a hole, index >= 0x80 is a 50% blend
+};
+
 // Cached per pack, because a pack's palette does not change between loads and
 // the translation manager has no way to retire one. Without this, loading the
-// same map twice would store a second identical pair.
-static std::map<std::string, std::pair<int, int>> TranslationsByPack;
+// same map twice would store a second identical set.
+static std::map<std::string, PackTranslations> TranslationsByPack;
 
-static int MakeTranslation(const std::vector<Colour> &palette, bool zeroTransparent)
+static int MakeTranslation(const std::vector<Colour> &palette, bool zeroTransparent,
+	bool blendHighIndices)
 {
 	FRemapTable opal;
 	for (int c = 0; c < 256; c++)
 	{
 		const Colour &col = palette[c];
-		opal.Palette[c] = PalEntry(255, col.r, col.g, col.b);
+		// The paletted renderer cannot express a per-index blend, so Remap[]
+		// stays the nearest opaque match either way; the alpha in Palette[] is
+		// what the true-colour path reads.
+		const uint8_t alpha = (blendHighIndices && c >= BLEND_INDEX_FIRST)
+			? BLEND_ALPHA : 255;
+		opal.Palette[c] = PalEntry(alpha, col.r, col.g, col.b);
 		opal.Remap[c] = ColorMatcher.Pick(col.r, col.g, col.b);
 	}
 	if (zeroTransparent)
@@ -141,27 +191,53 @@ bool TextureSet::Open(const char *packName, const std::string &packFile, Log *lo
 	auto cached = TranslationsByPack.find(mName);
 	if (cached != TranslationsByPack.end())
 	{
-		mTranslation = cached->second.first;
-		mOpaqueTranslation = cached->second.second;
+		mTranslation = cached->second.keyed;
+		mOpaqueTranslation = cached->second.opaque;
+		mTranslucentTranslation = cached->second.translucent;
 	}
 	else
 	{
-		mTranslation = MakeTranslation(mPack->Palette(), true);
-		mOpaqueTranslation = MakeTranslation(mPack->Palette(), false);
-		TranslationsByPack[mName] = { mTranslation, mOpaqueTranslation };
+		PackTranslations t;
+		t.keyed = MakeTranslation(mPack->Palette(), true, false);
+		t.opaque = MakeTranslation(mPack->Palette(), false, false);
+		t.translucent = MakeTranslation(mPack->Palette(), true, true);
+		TranslationsByPack[mName] = t;
+		mTranslation = t.keyed;
+		mOpaqueTranslation = t.opaque;
+		mTranslucentTranslation = t.translucent;
 	}
 
 	if (log)
 	{
-		log->Line("  pack %-8s entries %5d   sky index %5d",
-			mName.c_str(), mPack->Count(), (int)mPack->SkyIndex());
+		log->Line("  pack %-8s entries %5d   header word +0x22 %5d",
+			mName.c_str(), mPack->Count(), (int)mPack->UnknownHeaderWord0x22());
 	}
 	return true;
 }
 
-uint16_t TextureSet::SkyIndex() const
+//==========================================================================
+//
+// The map's sky picture.
+//
+// THE SKY IS NAMED BY THE MAP, NOT BY THE PACK, and it is an ordinary picture:
+// the metadata word at +0x18 (roth_raw.h `Metadata::skyTexture`) becomes
+// `g_das_special_fat_index` (map_load.c:214, renderer.c:10306), which
+// render_parallax_sky_columns resolves a normal DAS block from
+// (renderer.c:5414). Nothing in the original makes an index mean "draw
+// nothing"; that reading came from the pack header word at +0x22, which is
+// something else entirely (see roth_das.h).
+//
+// Opaque and unmasked, because the parallax column renderer writes every texel
+// it samples -- a sky with holes in it would show the void through the window.
+//
+// This is a named door onto World() rather than new machinery, so that the
+// place a caller reaches for the sky carries the explanation with it.
+//
+//==========================================================================
+
+FTextureID TextureSet::Sky(int metadataSkyIndex, Log *log)
 {
-	return mPack ? mPack->SkyIndex() : 0;
+	return World(metadataSkyIndex, log, false);
 }
 
 //==========================================================================
@@ -172,16 +248,29 @@ uint16_t TextureSet::SkyIndex() const
 //
 //==========================================================================
 
-// The masked variant of a picture is a separate texture under its own name: the
-// hole is baked into the palette, and one picture serves many faces.
-static FString PictureName(const std::string &pack, int index, bool masked)
+// How a picture's pixels reach the framebuffer, which is part of its identity:
+// the hole and the blend are baked into the palette, and one picture serves
+// many faces, so each way of drawing it is a texture of its own.
+enum class Blend
 {
-	return FStringf("ROTH_%s_T%05d%s", pack.c_str(), index, masked ? "_M" : "");
+	Opaque,      // ""   every index written
+	Keyed,       // "_M" index 0 is a hole
+	Translucent, // "_T" index 0 is a hole, index >= 0x80 is a 50% blend
+};
+
+static const char *BlendSuffix(Blend b)
+{
+	return b == Blend::Keyed ? "_M" : b == Blend::Translucent ? "_T" : "";
 }
 
-static FString FrameName(const std::string &pack, int index, int frame, bool masked)
+static FString PictureName(const std::string &pack, int index, Blend b)
 {
-	return FStringf("ROTH_%s_T%05d%s_%02d", pack.c_str(), index, masked ? "_M" : "", frame);
+	return FStringf("ROTH_%s_T%05d%s", pack.c_str(), index, BlendSuffix(b));
+}
+
+static FString FrameName(const std::string &pack, int index, int frame, Blend b)
+{
+	return FStringf("ROTH_%s_T%05d%s_%02d", pack.c_str(), index, BlendSuffix(b), frame);
 }
 
 static FString ColourName(const std::string &pack, int paletteIndex)
@@ -201,10 +290,6 @@ static FString ColourName(const std::string &pack, int paletteIndex)
 
 FTextureID TextureSet::Build(int index, Log *log, bool masked)
 {
-	FString name = PictureName(mName, index, masked);
-	FTextureID existing = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
-	if (existing.isValid()) return existing;
-
 	// allFrames: run the delta decoder, so an animated image yields every frame.
 	Image img = mPack->ReadImage(index, true);
 	if (!img.ok())
@@ -214,17 +299,49 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked)
 		return FNullTextureID();
 	}
 
+	//----------------------------------------------------------------------
+	// HOW THIS PICTURE IS DRAWN IS THE PICTURE'S OWN PROPERTY, not the
+	// surface's. See the Blend comment above: the original reads bit 2 of
+	// image_type and picks a span function, and nothing about the face reaches
+	// that decision.
+	//
+	// The caller's `masked` hint is kept as an ADDITION rather than replaced,
+	// because taking it away would make every two-sided mid piece opaque at
+	// once and that is a change nobody has looked at yet. Strictly, ROTH.C
+	// keys masking off the image alone and the hint should go; it is a
+	// superset of the right answer today, so it can only leave a hole where
+	// the original drew a colour, never the reverse.
+	//----------------------------------------------------------------------
+	const bool imageIsTranslucent = (img.imageType & IT_TRANSLUCENT) != 0;
+	const Blend blend = imageIsTranslucent ? Blend::Translucent
+		: masked ? Blend::Keyed : Blend::Opaque;
+
+	FString name = PictureName(mName, index, blend);
+	FTextureID existing = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
+	if (existing.isValid()) return existing;
+
 	FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard,
-		masked ? mTranslation : mOpaqueTranslation);
+		blend == Blend::Translucent ? mTranslucentTranslation
+		: blend == Blend::Keyed ? mTranslation : mOpaqueTranslation);
+
+	if (imageIsTranslucent)
+	{
+		mTranslucent++;
+		if (log) log->Count("artwork: translucent images (IT_TRANSLUCENT)");
+	}
 
 	// The quarter turn: exchange the dimensions and hand the stored bytes over
 	// as column-major. See the file comment.
 	const int w = img.height;
 	const int h = img.width;
 
+	// bMasked: true wherever a texel can be a hole or a blend, which is what
+	// makes the image source report itself as possibly translucent.
+	const bool hasHoles = (blend != Blend::Opaque);
+
 	auto addFrame = [&](const std::vector<uint8_t> &pixels, const char *texName) -> FTextureID
 	{
-		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), remap, w, h, true, masked);
+		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), remap, w, h, true, hasHoles);
 		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
 		return TexMan.AddGameTexture(tex);
 	};
@@ -240,7 +357,7 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked)
 	{
 		for (int f = 1; f < frames; f++)
 		{
-			addFrame(img.frames[f], FrameName(mName, index, f, masked).GetChars());
+			addFrame(img.frames[f], FrameName(mName, index, f, blend).GetChars());
 			mRegistered++;
 		}
 		TexAnim.AddSimpleAnim(base, frames, ANIM_FRAME_MS);
@@ -283,14 +400,15 @@ FTextureID TextureSet::SolidColour(int paletteIndex, Log *log)
 //
 //==========================================================================
 
-bool TextureSet::IsNothing(int index) const
-{
-	return mPack && index == (int)mPack->SkyIndex();
-}
-
+// NO INDEX MEANS "DRAW NOTHING". There used to be an IsNothing() here that
+// suppressed the pack header's +0x22 word, on the reading that it named an
+// index Realms used as a blank. It does not: it is not an index into anything
+// this class registers (roth_das.h has the evidence), and suppressing it threw
+// away a real picture -- in DEMO that was entry 0, a fully painted 256 x 146
+// image, which is why the sectors asking for it rendered black.
 FTextureID TextureSet::World(int index, Log *log, bool masked)
 {
-	if (!mPack || IsNothing(index)) return FNullTextureID();
+	if (!mPack) return FNullTextureID();
 
 	auto &memo = masked ? mByIndexMasked : mByIndex;
 	auto found = memo.find(index);

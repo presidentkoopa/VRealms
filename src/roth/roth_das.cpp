@@ -50,7 +50,7 @@ bool Pack::Load(const uint8_t *data, size_t size)
 
 	uint32_t fatOffset = RdU32(data + 8);
 	uint32_t paletteOffset = RdU32(data + 12);
-	mSkyIndex = RdU16(data + 34);
+	mUnknown0x22 = RdU16(data + 34);   // NOT a sky index -- see roth_das.h
 
 	// The image count is the sum of four block counts.
 	int count = 0;
@@ -110,6 +110,89 @@ EntryKind Pack::Classify(const FatEntry &e) const
 	return EntryKind::Plain;
 }
 
+//==========================================================================
+//
+// One animation frame's edit stream, applied in place to the previous frame.
+//
+// Transcribed from apply_das_sprite_frame_delta_stream (renderer.c:834). The
+// opcode set is small and every case matters:
+//
+//   0x00 c v      fill the next c bytes with v        (c == 0 is legal, not an end)
+//   0x01..0x7f    copy that many literal bytes
+//   0x81..0xff    skip (code - 0x80) bytes, leaving the previous frame's
+//   0x80 lo hi    hi == 0x00      END OF STREAM
+//                 hi <  0x80      skip the 16-bit count
+//                 hi <  0xc0      copy ((hi - 0x80) << 8 | lo) literal bytes
+//                 else            fill ((hi & 0x3f) << 8 | lo) bytes with the next byte
+//
+// The version this replaces had neither the 0x80 escape nor the real
+// terminator: it read 0x80 as a 128-byte literal and stopped on a 0x00 0x00
+// pair, which is an ordinary zero-length fill. Bounds are checked here because
+// the source is a stranger's file; the original trusts it.
+//
+//==========================================================================
+
+void Pack::ApplyFrameDelta(std::vector<uint8_t> &frame, size_t p) const
+{
+	size_t pos = 0;
+	const size_t end = frame.size();
+
+	auto fill = [&](size_t count, uint8_t value)
+	{
+		for (size_t k = 0; k < count && pos + k < end; k++) frame[pos + k] = value;
+		pos += count;
+	};
+	auto literal = [&](size_t count) -> bool
+	{
+		if (p + count > mSize) return false;
+		for (size_t k = 0; k < count && pos + k < end; k++) frame[pos + k] = mData[p + k];
+		p += count;
+		pos += count;
+		return true;
+	};
+
+	while (p < mSize)
+	{
+		uint8_t code = mData[p++];
+		if (code == 0x00)
+		{
+			if (p + 2 > mSize) return;
+			uint8_t count = mData[p], value = mData[p + 1];
+			p += 2;
+			fill(count, value);
+		}
+		else if (code < 0x80)
+		{
+			if (!literal(code)) return;
+		}
+		else if (code != 0x80)
+		{
+			pos += (size_t)(code - 0x80);
+		}
+		else
+		{
+			if (p + 2 > mSize) return;
+			uint8_t lo = mData[p], hi = mData[p + 1];
+			p += 2;
+			if (hi == 0x00) return;                       // the terminator
+			const uint16_t word = (uint16_t)(lo | (hi << 8));
+			if (hi < 0x80) pos += word;
+			else if (hi < 0xC0)
+			{
+				if (!literal((size_t)(((hi - 0x80) << 8) | lo))) return;
+			}
+			else
+			{
+				if (p >= mSize) return;
+				fill((size_t)(((hi & 0x3F) << 8) | lo), mData[p++]);
+			}
+		}
+		// A stream that walks past the end of the frame is corrupt; the
+		// writes are clamped above, so stopping here just avoids spinning.
+		if (pos > end) return;
+	}
+}
+
 Image Pack::ReadImage(int index, bool allFrames) const
 {
 	Image img;
@@ -139,58 +222,62 @@ Image Pack::ReadImage(int index, bool allFrames) const
 
 	case EntryKind::Animated:
 	{
-		// Header, then frame offsets, then padding, then a small header and the
-		// first frame uncompressed. Packs using the built-in palette prefix the
-		// entry with 4 bytes, so try both starts and take the plausible one.
+		//------------------------------------------------------------------
+		// A STORED ENTRY IS A CACHE BLOCK MINUS ITS FIRST TEN BYTES.
+		//
+		// The original reads a FAT entry into a block whose leading 10 bytes it
+		// fills in itself, so every offset it quotes as `block + N` is byte
+		// N - 10 of the stored entry:
+		//
+		//   block+0x0a  flags word    = entry+0    (modifier | image_type << 8)
+		//   block+0x0c  width         = entry+2
+		//   block+0x0e  height        = entry+4
+		//   block+0x14  frame offset  = entry+10
+		//   block+0x16  frame count   = entry+12   (0xFFFE = the RLE variant)
+		//   block+0x1a  timer, rate   = entry+16
+		//   block+0x1c  DELTA TABLE   = entry+18   one dword per frame
+		//
+		// das_assets.c:1479-1488 is the whole animation step:
+		//
+		//   framep = block + word[block+0x14] + 0x10;
+		//   delta  = dword[block + oldFrame*4 + 0x1c];
+		//   if (delta) apply_delta(framep, block + delta);
+		//
+		// So frame 0's pixels are at entry + frameOffset + 6, and each frame's
+		// edit stream is found THROUGH THE TABLE -- not by running on from
+		// wherever the previous one stopped. A table entry of 0 means "no
+		// change from the previous frame"; the original just skips the call.
+		//
+		// Cross-checked against all 57 animated entries in DEMO.DAS: table[0]
+		// is always exactly frameOffset + 6 + width*height + 10, so the first
+		// stream does sit right behind the pixels -- which is why the old
+		// reader got frame 1 right and then drifted -- every stream terminates
+		// cleanly inside the entry, and 334 of the 346 consecutive stream pairs
+		// end exactly where the next one starts.
+		//------------------------------------------------------------------
 		for (int attempt = 0; attempt < 2 && !img.ok(); attempt++)
 		{
 			size_t base = e->offset + (attempt ? 4 : 0);
 			if (base + 18 > mSize) continue;
 			uint16_t firstOff = RdU16(mData + base + 10);
-			uint16_t nsub = RdU16(mData + base + 12);
-			if (nsub == 0xFFFE) continue;           // the other variant
+			uint16_t frameCount = RdU16(mData + base + 12);
+			if (frameCount == 0xFFFE) continue;     // the other variant
 			if (!readPlainAt(base + firstOff)) continue;
 
-			if (allFrames && nsub > 0)
+			// The original wraps the frame number on the count, so frames
+			// 0 .. count-1 are the whole loop and the LAST table entry is the
+			// wrap back to frame 0 -- which a forward animation must not apply.
+			if (!allFrames || frameCount <= 1) break;
+			if (base + 18 + (size_t)frameCount * 4 > mSize) break;
+
+			std::vector<uint8_t> frame = img.frames[0];
+			for (int f = 0; f + 1 < (int)frameCount && f < 63; f++)
 			{
-				// Each later frame is a stream of edits applied to the one
-				// before it, in place.
-				size_t p = base + firstOff + 6
-					+ (size_t)img.width * img.height;
-				std::vector<uint8_t> frame = img.frames[0];
-				for (int f = 0; f < nsub && f < 64; f++)
-				{
-					size_t pos = 0;
-					bool done = false;
-					while (p < mSize && !done)
-					{
-						uint8_t code = mData[p++];
-						if (code == 0)
-						{
-							if (p >= mSize) break;
-							code = mData[p++];
-							if (code == 0) { done = true; break; }
-							if (p >= mSize) break;
-							uint8_t value = mData[p++];
-							for (int k = 0; k < code; k++)
-								if (pos + k < frame.size()) frame[pos + k] = value;
-							pos += code;
-						}
-						else if (code > 0x80)
-						{
-							pos += code & 0x7F;     // leave these bytes alone
-						}
-						else
-						{
-							for (int k = 0; k < code; k++, p++)
-								if (p < mSize && pos + k < frame.size())
-									frame[pos + k] = mData[p];
-							pos += code;
-						}
-						if (pos > frame.size()) { done = true; break; }
-					}
-					img.frames.push_back(frame);
-				}
+				uint32_t delta = RdU32(mData + base + 18 + (size_t)f * 4);
+				// Block-relative, and the block starts 10 bytes before the
+				// entry, so anything under 10 cannot be a real stream.
+				if (delta >= 10) ApplyFrameDelta(frame, base + delta - 10);
+				img.frames.push_back(frame);
 			}
 		}
 		break;

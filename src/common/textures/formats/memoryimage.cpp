@@ -18,6 +18,86 @@
 #include "bitmap.h"
 #include "image.h"
 #include "palettecontainer.h"
+#include "c_dispatch.h"
+#include "c_cvars.h"
+#include "printf.h"
+
+#include <chrono>
+
+//==========================================================================
+//
+// Conversion accounting. See the comment on ConversionStats in image.h.
+//
+// Not thread-safe by design: a background texture loader would have to make
+// these atomic, and paying for that on every conversion to serve a diagnostic
+// would be the wrong trade. A lost increment does not change the answer these
+// numbers exist to give.
+//
+//==========================================================================
+
+// Off by default: this is a diagnostic, and the interesting question is WHEN
+// the conversions happen, which needs them interleaved with the rest of the
+// console log. Set it before loading the level to capture the whole burst.
+CVAR(Bool, img_conversion_log, false, 0)
+
+static FPalettedMemoryImage::ConversionStats TrueColour, Paletted;
+
+const FPalettedMemoryImage::ConversionStats& FPalettedMemoryImage::TrueColourStats() { return TrueColour; }
+const FPalettedMemoryImage::ConversionStats& FPalettedMemoryImage::PalettedStats() { return Paletted; }
+
+void FPalettedMemoryImage::ResetStats()
+{
+	TrueColour = ConversionStats();
+	Paletted = ConversionStats();
+}
+
+namespace
+{
+
+class ScopedConversionTimer
+{
+public:
+	ScopedConversionTimer(FPalettedMemoryImage::ConversionStats& into, uint64_t pixels)
+		: mInto(into), mPixels(pixels), mStart(std::chrono::steady_clock::now()) {}
+
+	~ScopedConversionTimer()
+	{
+		const double ms = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - mStart).count();
+		mInto.count++;
+		mInto.pixels += mPixels;
+		mInto.totalMs += ms;
+		if (ms > mInto.worstMs) mInto.worstMs = ms;
+
+		// A running trace, so the burst can be located in time rather than
+		// only counted. One line per 64 conversions plus the first.
+		if (img_conversion_log && (mInto.count == 1 || (mInto.count % 64) == 0))
+		{
+			Printf("imagestats: %llu conversions, %.2f ms total, %.2f ms worst\n",
+				(unsigned long long)mInto.count, mInto.totalMs, mInto.worstMs);
+		}
+	}
+
+private:
+	FPalettedMemoryImage::ConversionStats& mInto;
+	uint64_t mPixels;
+	std::chrono::steady_clock::time_point mStart;
+};
+
+} // namespace
+
+CCMD(imagestats)
+{
+	auto print = [](const char* what, const FPalettedMemoryImage::ConversionStats& s)
+	{
+		Printf("  %-12s %6llu conversions  %10llu px  %8.2f ms total  %7.2f ms worst\n",
+			what, (unsigned long long)s.count, (unsigned long long)s.pixels,
+			s.totalMs, s.worstMs);
+	};
+	Printf("In-memory paletted image conversions since startup:\n");
+	print("true colour", FPalettedMemoryImage::TrueColourStats());
+	print("paletted", FPalettedMemoryImage::PalettedStats());
+}
 
 //==========================================================================
 //
@@ -50,6 +130,8 @@ FPalettedMemoryImage::FPalettedMemoryImage(const uint8_t* pixels, FRemapTable* t
 
 PalettedPixels FPalettedMemoryImage::CreatePalettedPixels(int conversion, int frame)
 {
+	ScopedConversionTimer timer(Paletted, (uint64_t)Width * Height);
+
 	PalettedPixels Pixels(Width * Height);
 	FRemapTable* Remap = Translation;
 	const bool luminous = (conversion == luminance);
@@ -87,6 +169,8 @@ PalettedPixels FPalettedMemoryImage::CreatePalettedPixels(int conversion, int fr
 
 int FPalettedMemoryImage::CopyPixels(FBitmap* bmp, int conversion, int frame)
 {
+	ScopedConversionTimer timer(TrueColour, (uint64_t)Width * Height);
+
 	PalEntry* Remap = Translation->Palette;
 	if (ColumnMajor)
 		bmp->CopyPixelData(0, 0, RawPixels, Width, Height, Height, 1, 0, Remap);

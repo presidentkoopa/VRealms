@@ -6506,6 +6506,22 @@ AActor *FLevelLocals::SpawnPlayer (FPlayerStart *mthing, int playernum, int flag
 	oldactor = p->mo;
 	p->mo = mobj;
 	mobj->player = p;
+
+	// A level built to a different human scale than Doom's can say how big a
+	// person is there -- see FLevelLocals::ForcedPlayerHeight. Zero leaves the
+	// class defaults alone, so this is inert for every level that does not set
+	// it. Done here, before the view height is read below, and deliberately not
+	// by scaling the world: the map's other measurements (step heights, door
+	// widths, how far a table sits off the floor) are all correct relative to
+	// ITS player, so the player is the thing that has to change.
+	if (ForcedPlayerHeight > 0)
+	{
+		mobj->Height = ForcedPlayerHeight;
+	}
+	if (ForcedPlayerViewHeight > 0)
+	{
+		mobj->FloatVar(NAME_ViewHeight) = ForcedPlayerViewHeight;
+	}
 	state = p->playerstate;
 	const auto heldWeap = state == PST_REBORN && (dmflags3 & DF3_REMEMBER_LAST_WEAP) ? p->ReadyWeapon : nullptr;
 	if (state == PST_REBORN || state == PST_ENTER)

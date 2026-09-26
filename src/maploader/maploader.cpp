@@ -29,6 +29,7 @@
 #include <math.h>
 #include <cmath>	// needed for std::floor on mac
 #include "maploader.h"
+#include "roth/roth_objects.h"
 #include "c_cvars.h"
 #include "actor.h"
 #include "g_levellocals.h"
@@ -3195,6 +3196,13 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 	Spawn3DFloors();
 
 	SpawnThings(position);
+
+	// A native loader that builds its own things -- LoadRothMap does, from the
+	// player's Realms of the Haunting install -- cannot spawn them while it
+	// runs: there is no BSP or blockmap to link an actor into yet. It records
+	// what it decided and puts the actors in here instead. Does nothing when no
+	// such loader ran, so an ordinary map pays one compare.
+	roth::SpawnPreparedObjects(Level);
 
 	// Load and link lightmaps - must be done after P_Spawn3DFloors (and SpawnThings? Potentially for baking static model actors?)
 	if (!ForceNodeBuild)

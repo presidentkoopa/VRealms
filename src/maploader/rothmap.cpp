@@ -30,11 +30,13 @@
 #include "printf.h"
 #include "rendering/r_sky.h"
 #include "playsim/p_lnspec.h"    // Sector_Outside, for the outside-fog test
+#include "playsim/p_3dfloors.h"  // P_Add3DFloor, for Realms' intermediate floors
 
 #include "roth/roth_raw.h"
 #include "roth/roth_install.h"
 #include "roth/roth_log.h"
 #include "roth/roth_texture.h"
+#include "roth/roth_objects.h"
 
 //==========================================================================
 //
@@ -79,6 +81,27 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  player height  %d (%d doubled)", rm.metadata.playerHeight,
 		rm.metadata.PlayerHeight());
 
+	// Make the player the size Realms says a person is, instead of leaving them
+	// at Doom's 56 units in a world built for 144. That difference is why the
+	// manor read as enormous: standing in a 154-unit world at 56 units tall,
+	// with your eyes at 41 rather than 144, puts you at roughly a third of your
+	// proper height and everything towers.
+	//
+	// The original's collision top is z + player_height + 10 (collision_physics.c:65),
+	// so the body occupies height+10 and the eye sits 10 below the crown.
+	//
+	// THE GEOMETRY MUST NOT BE RESCALED TO COMPENSATE. Every other measurement
+	// in the map -- step heights, door widths, how far a table is off the floor
+	// -- is correct relative to this player. Rescaling the world corrupts all of
+	// them to fix one. We have already been round this loop once.
+	{
+		const double ph = double(rm.metadata.PlayerHeight());
+		Level->ForcedPlayerViewHeight = ph;
+		Level->ForcedPlayerHeight = ph + 10.;
+		log.Line("  player size    %.0f tall, eye at %.0f (Doom's default is 56 / 41)",
+			Level->ForcedPlayerHeight, Level->ForcedPlayerViewHeight);
+	}
+
 	// Realms maps carry no BSP, blockmap or reject, so all of it is generated.
 	ForceNodeBuild = true;
 
@@ -117,28 +140,70 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		return art.World(index, &log, masked);
 	};
 
+	// The sky is named by the MAP, not by the artwork pack -- the pack header's
+	// word at +0x22 is something else entirely, and across the 44 retail maps
+	// the two disagree on 16 of them. See roth_das.h.
+	//
+	// A Realms map has no MAPINFO, so without this the level's sky texture stays
+	// null, r_sky falls back to "-noflat-", and every sky surface renders solid
+	// black. That was the hole in the Study's ceiling.
+	FTextureID skyTex = haveArt ? art.Sky(rm.metadata.skyTexture, &log) : FNullTextureID();
+	if (skyTex.isValid())
+	{
+		Level->skytexture1 = Level->skytexture2 = skyTex;
+		Level->skyspeed1 = Level->skyspeed2 = 0.f;
+		log.Line("  sky image      stored index %d", rm.metadata.skyTexture);
+	}
+	else
+	{
+		log.Count("artwork: no sky image -- sky surfaces will be black");
+	}
+
 	//----------------------------------------------------------------------
 	// Vertices
 	//----------------------------------------------------------------------
+	// Realms gives a sector ONE optional intermediate floor -- a slab with its
+	// own top and underside -- as an inline field. That is a tabletop, a shelf,
+	// a balcony. GZDoom expresses the same thing as a 3D floor, which needs a
+	// CONTROL SECTOR whose own floor and ceiling define the slab, plus a control
+	// linedef the renderer reads the slab's side texture from.
+	//
+	// So every platform costs one sector, one line, one side and two vertices,
+	// all of them off in the void where nothing references them. They have to be
+	// counted NOW, because the arrays below hand out raw pointers (sd->sector,
+	// ld->sidedef) and growing an array later would leave every one of them
+	// dangling. Allocate once, exactly.
+	// Only slabs with real thickness count: a top at or below its own underside
+	// has no volume to render, and reserving space for one would leave a zeroed
+	// sector and a zeroed line in the arrays for the node builder to trip over.
+	int platformCount = 0;
+	for (const auto &rs : rm.sectors)
+	{
+		if (rs.platformIndex < 0 || rs.platformIndex >= (int)rm.platforms.size()) continue;
+		const roth::MidPlatform &mp = rm.platforms[rs.platformIndex];
+		if (mp.topZ > mp.undersideZ) platformCount++;
+	}
+
 	log.StageBegin("vertices");
-	Level->vertexes.Alloc(rm.vertices.size());
+	Level->vertexes.Alloc(rm.vertices.size() + size_t(platformCount) * 4);
 	for (size_t i = 0; i < rm.vertices.size(); i++)
 		Level->vertexes[i].set(double(rm.vertices[i].x), double(rm.vertices[i].y));
 
 	// Every vertex needs a matching extra record; the renderer expects one.
 	vertexdatas.Clear();
-	vertexdatas.Reserve(rm.vertices.size());
+	vertexdatas.Reserve(Level->vertexes.Size());
 	memset(&vertexdatas[0], 0, sizeof(vertexdata_t) * vertexdatas.Size());
 
 	//----------------------------------------------------------------------
 	// Sectors
 	//----------------------------------------------------------------------
 	log.StageBegin("sectors");
-	Level->sectors.Alloc(rm.sectors.size());
-	Level->extsectors.Alloc(rm.sectors.size());
+	Level->sectors.Alloc(rm.sectors.size() + size_t(platformCount));
+	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount));
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
 	int doorCount = 0, flatsToSky = 0, flatFlipsIgnored = 0;
+	int darkestLight = 255, brightestLight = 0;
 	for (size_t i = 0; i < rm.sectors.size(); i++)
 	{
 		const roth::Sector &rs = rm.sectors[i];
@@ -187,9 +252,25 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		sec->floorplane.set(0., 0., 1., -floorZ);
 		sec->ceilingplane.set(0., 0., -1., ceilZ);
 
-		// Realms' light byte is centred on 0x80. Mapping is provisional until
-		// the shade tables are used properly; see the handoff, section 5.7.
-		sec->lightlevel = (short)clamp<int>(rs.light * 2, 0, 255);
+		// Realms' light byte is centred on 0x80, and so is Doom's light level:
+		// both are 8-bit with the middle of the range meaning "ordinarily lit".
+		// So this is one to one.
+		//
+		// It USED to double the byte, which pegged 0x80 at 255 -- and since 392
+		// of STUDY1's 507 sectors carry exactly 0x80, that lit three quarters of
+		// the level at full brightness and flattened the game's whole look. The
+		// original is mostly darkness with a few sources, and the darkness is
+		// the atmosphere. A value centred on 0x80 cannot mean "maximum".
+		//
+		// STILL NOT THE REAL MODEL. Realms shades per column through a 64K
+		// palette remap, with the ramp and tint table chosen per map by
+		// init_map_lighting_from_metadata (renderer.c:10300) from shadeLevel,
+		// lightAmbience and candleGlow. Doom's own distance falloff stands in
+		// for the per-column part; the three metadata terms are read but not
+		// yet applied. See ROTH_STATE.md.
+		sec->lightlevel = (short)clamp<int>(rs.light, 0, 255);
+		if (rs.light < darkestLight) darkestLight = rs.light;
+		if (rs.light > brightestLight) brightestLight = rs.light;
 
 		//------------------------------------------------------------------
 		// Flats.
@@ -282,6 +363,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	}
 	log.Line("  doors closed at load  %d", doorCount);
 	log.Line("  flats with no art -> sky  %d", flatsToSky);
+	// Realms' neutral is 0x80 = 128. A range hugging or exceeding 255 means the
+	// mapping has gone wrong again and the level will look flat and overlit.
+	log.Line("  sector light  %d .. %d  (Realms neutral is 128)", darkestLight, brightestLight);
 	log.Count("flats: flip bits ignored", flatFlipsIgnored);
 
 	//----------------------------------------------------------------------
@@ -330,8 +414,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	if (orphaned) log.Warn("%d faces belonged to no sector and were dropped", orphaned);
 	log.Count("faces with no sector", orphaned);
 
-	Level->lines.Alloc(pending.size());
-	Level->sides.Alloc(pending.size() + twoSided);   // one per original face
+	// The tails of both arrays are reserved for the 3D floor control geometry
+	// built after this loop -- see the platform count above.
+	Level->lines.Alloc(pending.size() + size_t(platformCount) * 4);
+	Level->sides.Alloc(pending.size() + twoSided + size_t(platformCount) * 4);   // one per original face
 	memset(&Level->lines[0], 0, sizeof(line_t) * Level->lines.Size());
 	memset(&Level->sides[0], 0, sizeof(side_t) * Level->sides.Size());
 
@@ -349,7 +435,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int imageFitVerticalUnhandled = 0; // PIECES, not faces: up to 3 per side
 	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
 	int shiftedFaces = 0;        // a non-zero shiftX/shiftY was applied
-	int edgeMapFaces = 0;        // FF_EDGE_MAP parallax sky: not handled
+	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
+	int edgeMapGivenSky = 0;     // ...of those, how many got the sky image
 	int transUpLoFaces = 0;      // FF_TRANS_UPLO banding: not handled
 	int extentBitsAbove12 = 0;   // see the note where this is reported
 
@@ -553,10 +640,46 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			//--------------------------------------------------------------
 			if (tf & roth::FF_PIN_BOTTOM) wantPegBottom = true;
 
-			// Flags that do something the loader does not yet do, counted so
-			// they stay visible. FF_EDGE_MAP is the parallax sky above a wall
-			// (renderer.c:9020); FF_TRANS_UPLO clips the mid piece to a band.
-			if (tf & roth::FF_EDGE_MAP) edgeMapFaces++;
+			// FF_EDGE_MAP is the outdoor backdrop: the original sets
+			// g_parallax_sky_active from this bit (renderer.c:9020) and hands the
+			// face to render_parallax_sky_columns, which fills it from the map's
+			// sky block and drifts it with the view angle. These are the manor's
+			// windows -- in the original you see trees and moonlight through them.
+			//
+			// We give the face the sky image so it shows the right picture.
+			// The DRIFT IS NOT IMPLEMENTED: this is a flat wall of the backdrop,
+			// not a parallax layer, so it will not slide as you turn. Counted
+			// separately from the faces we do nothing at all with, so the report
+			// does not claim more than was done.
+			if (tf & roth::FF_EDGE_MAP)
+			{
+				edgeMapFaces++;
+				// ONE-SIDED ONLY, and that restriction is not a detail.
+				//
+				// On a one-sided wall the mid piece IS the wall, so putting the
+				// backdrop there shows it where the window is. On a TWO-SIDED
+				// line the mid piece is the hanging decal in the opening, so the
+				// same assignment drapes a sheet of sky across the doorway --
+				// which is exactly what it did: 36 of STUDY1's 62 and most of
+				// CHURCH1's 198 turned into floating curtains and sky-covered
+				// walls. A church is mostly windows, so the mistake scaled with
+				// the map.
+				//
+				// Doing the two-sided case properly means the upper piece or a
+				// sky sector beyond the opening, not a mid texture. Until then
+				// they are counted and left alone: the counter below reports how
+				// many were flagged against how many were actually given art, so
+				// the report cannot overstate what was done.
+				if (!twoSided && skyTex.isValid())
+				{
+					sd->SetTexture(side_t::mid, skyTex);
+					sd->SetTextureXScale(side_t::mid, 1.);
+					sd->SetTextureYScale(side_t::mid, 1.);
+					sd->SetTextureXOffset(side_t::mid, 0.);
+					sd->SetTextureYOffset(side_t::mid, 0.);
+					edgeMapGivenSky++;
+				}
+			}
 			if (tf & roth::FF_TRANS_UPLO) transUpLoFaces++;
 			return sd;
 		};
@@ -578,6 +701,171 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		linemap.Push((unsigned)li);
 		ld->AdjustLine();
 		FinishLoadingLineDef(ld, 255);
+	}
+
+	//----------------------------------------------------------------------
+	// Mid-platforms -> 3D floors
+	//
+	// A Realms sector may carry one intermediate floor: a slab with a top you
+	// stand on and an underside you see from below, each with its own texture
+	// and scale. 16 of them in STUDY1, 2,299 across the 44 maps -- TOWER1 alone
+	// has 338. They are tables, shelves, ledges and balconies, and without them
+	// a table is four legs and no top.
+	//
+	// GZDoom says the same thing with a 3D floor, which is described by a
+	// CONTROL SECTOR sitting outside the map: its floor plane becomes the slab's
+	// underside, its ceiling plane the top, and their textures come with them.
+	// The control linedef is not optional -- the renderer reads the slab's SIDE
+	// texture straight off master->sidedef[0] with no null check
+	// (hw_walls.cpp:2032), so a 3D floor without one crashes.
+	//
+	// Realms has no side texture for a slab, so the top's art is used for it:
+	// a tabletop's edge is the same wood as its surface.
+	//----------------------------------------------------------------------
+	int platformsBuilt = 0, platformsSkipped = 0;
+	if (platformCount > 0)
+	{
+		log.StageBegin("mid-platforms");
+
+		// Park the control sectors clear of the real map. They are unreachable
+		// geometry, but they still go through the node builder and the blockmap,
+		// so they must not overlap anything -- an overlapping control sector
+		// would carve the BSP of the room it landed in.
+		double voidX = 0., voidY = 0.;
+		for (const auto &v : rm.vertices)
+		{
+			if (double(v.x) < voidX) voidX = double(v.x);
+			if (double(v.y) < voidY) voidY = double(v.y);
+		}
+		voidX -= 4096.;
+		voidY -= 4096.;
+
+		unsigned ctrlSector = (unsigned)rm.sectors.size();
+		unsigned ctrlVertex = (unsigned)rm.vertices.size();
+		unsigned ctrlLine   = (unsigned)pending.size();
+
+		for (size_t i = 0; i < rm.sectors.size(); i++)
+		{
+			const roth::Sector &rs = rm.sectors[i];
+			if (rs.platformIndex < 0 || rs.platformIndex >= (int)rm.platforms.size())
+				continue;
+
+			const roth::MidPlatform &mp = rm.platforms[rs.platformIndex];
+			const double topZ  = double(mp.topZ);
+			const double undZ  = double(mp.undersideZ);
+
+			// A slab with no thickness has nothing to render and would give the
+			// renderer a zero-height volume. Counted rather than dropped quietly.
+			if (topZ <= undZ)
+			{
+				platformsSkipped++;
+				continue;
+			}
+
+			sector_t *cs = &Level->sectors[ctrlSector];
+			cs->Level = Level;
+			cs->e = &Level->extsectors[ctrlSector];
+			cs->sectornum = (int)ctrlSector;
+			cs->SetXScale(sector_t::floor, 1.);   cs->SetYScale(sector_t::floor, 1.);
+			cs->SetXScale(sector_t::ceiling, 1.); cs->SetYScale(sector_t::ceiling, 1.);
+			cs->SetAlpha(sector_t::floor, 1.);    cs->SetAlpha(sector_t::ceiling, 1.);
+			cs->seqType = -1;
+			cs->nextsec = cs->prevsec = -1;
+			cs->heightsec = nullptr;
+			cs->damageinterval = 32;
+			cs->terrainnum[sector_t::ceiling] = cs->terrainnum[sector_t::floor] = -1;
+			cs->ibocount = -1;
+			memset(cs->SpecialColors, -1, sizeof(cs->SpecialColors));
+			memset(cs->AdditiveColors, 0, sizeof(cs->AdditiveColors));
+			cs->gravity = 1.;
+			cs->ZoneNumber = 0xFFFF;
+			cs->friction = ORIG_FRICTION;
+			cs->movefactor = ORIG_FRICTION_FACTOR;
+			cs->Colormap.LightColor = PalEntry(255, 255, 255);
+			cs->Colormap.FadeColor.SetRGB(Level->fadeto);
+			// The slab is lit like the room it sits in, not like the void.
+			cs->lightlevel = Level->sectors[i].lightlevel;
+
+			// Control floor = the slab's UNDERSIDE, control ceiling = its TOP.
+			cs->SetPlaneTexZ(sector_t::floor, undZ);
+			cs->SetPlaneTexZ(sector_t::ceiling, topZ);
+			cs->floorplane.set(0., 0., 1., -undZ);
+			cs->ceilingplane.set(0., 0., -1., topZ);
+
+			FTextureID topTex = worldTex(mp.topTexture);
+			FTextureID undTex = worldTex(mp.undersideTexture);
+			cs->SetTexture(sector_t::ceiling, topTex.isValid() ? topTex : skyflatnum, false);
+			cs->SetTexture(sector_t::floor, undTex.isValid() ? undTex : skyflatnum, false);
+
+			// Scale, exactly as for an ordinary flat: 2^s world units per texel,
+			// and Doom's scale is the reciprocal. Bits 4-5 top, 2-3 underside,
+			// the same layout the sector flags byte uses.
+			const double topScale = 1.0 / double(1 << ((mp.scales >> 4) & 3));
+			const double undScale = 1.0 / double(1 << ((mp.scales >> 2) & 3));
+			cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
+			cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
+			cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
+			cs->SetYOffset(sector_t::ceiling, double(mp.topShiftY));
+			cs->SetXOffset(sector_t::floor, double(mp.undersideShiftX));
+			cs->SetYOffset(sector_t::floor, double(mp.undersideShiftY));
+
+			// A CLOSED square, parked in the void well outside the map. It has to
+			// be closed: the node builder walks every line, and a lone degenerate
+			// one produces "right edge is unconnected" for each and leaves the BSP
+			// wrong. Real maps put their control sectors in a sealed void room for
+			// exactly this reason; this builds the same thing rather than faking it.
+			//
+			// Nothing joins these to the level, so they are unreachable and never
+			// drawn -- they exist only to give the 3D floor a sector to copy its
+			// planes from and a sidedef to take its edge texture from.
+			const double cx = voidX + double(platformsBuilt % 64) * 96.;
+			const double cy = voidY - double(platformsBuilt / 64) * 96.;
+			vertex_t *vv[4] = {
+				&Level->vertexes[ctrlVertex + 0], &Level->vertexes[ctrlVertex + 1],
+				&Level->vertexes[ctrlVertex + 2], &Level->vertexes[ctrlVertex + 3] };
+			vv[0]->set(cx,       cy);
+			vv[1]->set(cx + 64., cy);
+			vv[2]->set(cx + 64., cy + 64.);
+			vv[3]->set(cx,       cy + 64.);
+
+			for (int e = 0; e < 4; e++)
+			{
+				side_t *cd = &Level->sides[sideIndex];
+				cd->sector = cs;
+				cd->SetTexture(side_t::mid, topTex.isValid() ? topTex : FNullTextureID());
+				cd->SetTextureXScale(side_t::mid, 1.);
+				cd->SetTextureYScale(side_t::mid, 1.);
+				cd->SetTextureXOffset(side_t::mid, 0.);
+				cd->SetTextureYOffset(side_t::mid, 0.);
+				cd->Flags = 0;
+
+				line_t *cl = &Level->lines[ctrlLine + e];
+				cl->v1 = vv[e];
+				cl->v2 = vv[(e + 1) & 3];
+				cl->sidedef[0] = cd;
+				cl->sidedef[1] = nullptr;
+				cl->frontsector = cs;
+				cl->backsector = nullptr;
+				cl->flags = ML_BLOCKING;
+				cl->special = 0;
+				cl->alpha = 1.;
+				cd->linedef = cl;
+				cl->AdjustLine();
+				sideIndex++;
+			}
+
+			// The first edge is the master: the renderer reads the slab's side
+			// texture off master->sidedef[0] with no null check (hw_walls.cpp:2032).
+			P_Add3DFloor(&Level->sectors[i], cs, &Level->lines[ctrlLine],
+				FF_EXISTS | FF_SOLID | FF_RENDERALL, 255);
+
+			ctrlSector++; ctrlVertex += 4; ctrlLine += 4;
+			platformsBuilt++;
+		}
+
+		log.Line("  platforms built %d  (%d skipped as zero thickness)",
+			platformsBuilt, platformsSkipped);
+		log.Count("mid-platforms: zero thickness, skipped", platformsSkipped);
 	}
 
 	if (sideIndex < Level->sides.Size())
@@ -610,7 +898,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Count("walls: no texture-map record", noTextureMap);
 	log.Count("walls: mid texture wanted but absent", midMissing);
 	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);
-	log.Count("walls: FF_EDGE_MAP parallax sky not handled", edgeMapFaces);
+	log.Count("walls: FF_EDGE_MAP window faces", edgeMapFaces);
+	log.Count("walls: window faces given the sky image (no parallax drift)", edgeMapGivenSky);
 	log.Count("walls: FF_TRANS_UPLO banding not handled", transUpLoFaces);
 	log.Count("artwork: images that failed to decode", art.Failed());
 	log.Count("artwork: stored indices out of every known range", art.OutOfRange());
@@ -649,13 +938,15 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  player start    (%d, %d) facing %d",
 		rm.metadata.startX, rm.metadata.startY,
 		(int)(90 + rm.metadata.rotation * 360.0 / 512.0) % 360);
-	log.Count("objects not yet spawned", objectCount);
+	// Objects. Everything about them -- which artwork, which draw mode, the
+	// meshes, the sprite definitions -- is decided and built here; the actors
+	// themselves cannot be spawned until the level has a BSP and a blockmap, so
+	// that half runs from MapLoader::LoadLevel after SpawnThings. See
+	// roth_objects.h.
+	roth::PrepareObjects(rm, art, &log);
 
 	log.StageEnd();
 	log.Section("Not yet handled");
-	log.Line("  sprites and model skins         -- stage 4 (walls and flats done)");
-	log.Line("  objects and 3D props            -- stage 4");
-	log.Line("  mid-platforms as 3D floors      -- stage 5");
 	log.Line("  door logic and lighting         -- stage 6");
 	log.Line("  commands and triggers           -- stage 7");
 
