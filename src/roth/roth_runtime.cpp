@@ -180,8 +180,46 @@ int g_warpArrivalSector = -1;
 // Opcodes that watch for the player USING a wall, and for ENTERING a sector.
 // From the original's load-time registration table (map_load.c:1089-1097) and
 // ROTH_COMMANDS.md.
-bool IsUseWall(uint8_t op)   { return op == 0x19 || op == 0x31 || op == 0x1A; }
-bool IsEnterSector(uint8_t op) { return op == 0x18 || op == 0x32; }
+// WHICH GEOMETRY A TRIGGER WATCHES. This is read off the MARKERS, not guessed
+// from the opcode number: a trigger does not test anything itself, it sets a bit
+// on the geometry at load and a reader elsewhere tests that bit. ml_objinit_tab
+// (map_load.c:1087) says which marker each opcode gets, and the marker says
+// which index space the key lives in:
+//
+//   mark_raw_state_records_by_key (raw_commands.c:5032) writes geom[rec+9] |= bit
+//   over collect_raw_state_matches -- the FACE scan, the same collector
+//   gather_faces_by_id uses, with the same two-hop key resolution the reader
+//   implements. So its opcodes are FACE-keyed:
+//       0x18 -> bit 1   0x1a -> bit 2   0x32 -> bit 4
+//
+//   mark_geometry_faces_by_key writes the SECTOR's own flags byte +0x16:
+//       0x19 -> 0x10    0x31 -> 0x20
+//
+// (0x13 is a third kind -- it marks sector +0x17 and is read per-frame by
+// twe_link_state, the water/lava machine. It is not one of these.)
+//
+// CORRECTED 2026-09: this file previously bound 0x18 and 0x32 BY SECTOR, on the
+// assumption that they were enter-sector triggers. They are not; they are
+// face-keyed like 0x1a, and binding them to a sector pointed them at the wrong
+// geometry entirely.
+//
+// AND THE EVENTS ARE NOT WHAT THE OLD NAMES CLAIMED. Tracing each bit to its
+// reader, there is no per-frame "player entered a sector" poll for any of these:
+//
+//   bit 2 (0x1a) is read in the WALL-COLLISION hit path
+//   (collision_physics.c:562) and fires fire_wall_object_trigger. It is a BUMP.
+//   bit 1 (0x18) is read by dispatch_entry_command_trigger's type-3 channel
+//   (raw_commands.c:3019), gated on a direction mask and a bounding box.
+//   bit 4 (0x32) is read by dispatch_entry_command_trigger_b (raw_commands.c:3114).
+//   sector 0x10/0x20 (0x19/0x31) gate that same dispatcher's use channels.
+//
+// THE DIRECTION MASK AND BOUNDING BOX ARE NOT IMPLEMENTED HERE. Both live in the
+// object-table refs the dispatcher scans, which this port does not build yet, so
+// a face trigger fires whenever its face is activated rather than only from the
+// authored approach direction. That is a KNOWN over-fire, recorded in the load
+// report, not an approximation of the original's test.
+bool IsFaceTrigger(uint8_t op)   { return op == 0x18 || op == 0x1A || op == 0x32; }
+bool IsSectorTrigger(uint8_t op) { return op == 0x19 || op == 0x31; }
 
 // A mutable record by 1-based index -- resolve_command_by_index (renderer.c:9830).
 // MUTABLE on purpose: command records are game STATE in the original, not read-
@@ -455,21 +493,37 @@ int Dbase100IfNextFails(int index)
 // record's NEXT index is pushed onto the deferred queue, and the queue is drained
 // a moment later by running that chain from the top.
 //
-// THE ONE THING NOT READ FROM ROTH.C IS THE UNIT. The countdown is decremented
-// by g_frame_time_scale, a PIT tick delta, and the PIT divisor lives in the
-// hardware seam ROTH.C replaces: dos_runtime.c:278 says "keeping the 120 Hz
-// divisor" and the very next line quotes a ratio that does not agree with it, and
-// no `out 0x43/0x40` value survives anywhere in the tree. So the file does not
-// settle it. ONE REALMS TICK IS TREATED AS ONE GZDOOM TIC BELOW, WHICH IS
-// UNVERIFIED: if the rate really is 120 Hz then the retail delays (30, 60, 120
-// and 300 are the common values, which read as authored against a round rate)
-// will run about 3.4x too slow at GZDoom's 35 tics per second. It is one named
-// constant and an OPEN QUESTION, not a number tuned until it looked right.
+// THE UNIT IS DERIVED, NOT STATED. The countdown is decremented by a PIT tick
+// delta, and the PIT latch reprogram itself lives in the hardware seam ROTH.C
+// replaces -- no `out 0x43/0x40` value survives anywhere in the tree, so the
+// rate is never written down. But the ISR's OTHER half was transcribed, and it
+// pins the rate down. game_heartbeat_timer_isr (dos_runtime.c:280-289) keeps a
+// divider so it can chain to the BIOS handler at the BIOS's own 18.2065 Hz:
+//
+//     word[0x7e918] -= 0x3e8;                   // 1000 every ISR tick
+//     if ((int16_t)word[0x7e918] < 0) += 0xf17;  // 3863 on underflow
+//
+// so the chain fires on 1000/3863 of ISR ticks, i.e. every 3.863 of them, and
+// the ISR rate is 18.2065 * 3.863 = 70.33 Hz.
+//
+// CAUTION -- THE PROSE BESIDE IT SAYS 120. The same comment block calls the
+// latch "keeping the 120 Hz divisor" and reads 1000/3863 as "the 18.2-of-120 Hz
+// ratio", which the arithmetic does not support: 18.2-of-120 would be 1000/6592.
+// The constants are transcribed opcodes and the "120 Hz" is prose about the
+// untranscribed seam, so the constants are taken as the evidence. Two things
+// corroborate them: 70.33 Hz is VGA's 400-line refresh (70.086 Hz), and the one
+// engine-visible call the ISR makes is vsync_timer_tick. Realms' heartbeat is
+// the video retrace.
+//
+// 70.33 Hz against GZDoom's 35 tics/s is 2.008, so ONE WORLD TIC CONSUMES TWO
+// REALMS TICKS. That puts the retail delay values (30, 60, 120, 200, 300) at
+// 0.43s, 0.85s, 1.7s, 2.8s and 4.3s. Anyone revisiting this: the number below is
+// the derivation above and nothing else -- it was not tuned against the screen.
 //
 //==========================================================================
 
-// UNVERIFIED -- see above. Realms frame ticks consumed per GZDoom world tic.
-static const int ROTH_FRAME_TICKS_PER_TIC = 1;
+// 70.33 Hz / 35 tics per second. Derived above from the ISR's chain divider.
+static const int ROTH_FRAME_TICKS_PER_TIC = 2;
 
 int DelayTimer(Command *rec, int index)
 {
@@ -880,23 +934,23 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// Bind every trigger to the geometry it watches. The reader has already
 	// resolved each key to a sector and/or a set of faces; this only sorts them
 	// by what kind of event they wait for.
-	int useWall = 0, enterSector = 0, unbound = 0;
+	int faceBound = 0, sectorBound = 0, unbound = 0;
 	for (const Command &c : g.map.commands)
 	{
 		if (!c.isTrigger || c.disabled) continue;
 		if (c.chainStart == 0) continue;
 
-		if (IsUseWall(c.opcode))
+		if (IsFaceTrigger(c.opcode))
 		{
 			if (c.faces.empty()) { unbound++; continue; }
 			for (int fi : c.faces) g.byFace[fi].push_back(c.chainStart);
-			useWall++;
+			faceBound++;
 		}
-		else if (IsEnterSector(c.opcode))
+		else if (IsSectorTrigger(c.opcode))
 		{
 			if (c.sector < 0) { unbound++; continue; }
 			g.bySector[c.sector].push_back(c.chainStart);
-			enterSector++;
+			sectorBound++;
 		}
 	}
 
@@ -913,7 +967,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	if (log)
 	{
 		log->Section("Level logic");
-		log->Line("  triggers bound   %d use-wall, %d enter-sector", useWall, enterSector);
+		log->Line("  triggers bound   %d face-keyed, %d sector-keyed", faceBound, sectorBound);
 		log->Line("  doors reachable  %d   walls wired %d", (int)g.doorTag.size(), (int)g.bySide.size());
 		log->Count("logic: triggers whose key named no geometry", unbound);
 
@@ -1011,7 +1065,7 @@ bool ActivateLine(line_t *line, AActor *who, int side)
 	return any;
 }
 
-void CrossSector(sector_t *sec, AActor *who)
+void FireSectorTriggers(sector_t *sec, AActor *who)
 {
 	if (!g.active || sec == nullptr) return;
 	g.activeSector = sec->sectornum;

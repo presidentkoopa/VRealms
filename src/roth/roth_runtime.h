@@ -70,8 +70,19 @@ void RegisterFaceSide(int rothFace, int sideIndex);
 // specials and must be tested before the engine decides the line is inert.
 bool ActivateLine(line_t *line, AActor *who, int side);
 
-// The player entered a sector. Fires the enter-sector triggers bound to it.
-void CrossSector(sector_t *sec, AActor *who);
+// Fire the SECTOR-keyed triggers bound to a sector -- the 0x19 and 0x31 marks.
+//
+// NOTHING CALLS THIS YET, DELIBERATELY. In the original these bits do not mean
+// "the player is in this sector": they are a fast-reject gate inside
+// dispatch_entry_command_trigger (raw_commands.c:3058), which runs from the USE
+// and cursor-probe paths and matches the sector against the object-table refs
+// this port does not build yet. There is no movement callback to hook it to.
+//
+// It is left here rather than deleted because it is the correct half -- the
+// binding and the firing are right, only the caller is missing. Wiring it to a
+// sector-entry event would fire these triggers on walking through a doorway,
+// which the original does not do; see IsSectorTrigger for the trace.
+void FireSectorTriggers(sector_t *sec, AActor *who);
 
 // One WORLD STEP of Realms' own level logic: the delay countdowns and the
 // deferred command queue the original drives from tick_world_effects

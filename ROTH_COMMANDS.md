@@ -56,9 +56,11 @@ most take 2 or 3, though some take 7.
 - `0x01` — armed for a tick re-run
 - `0x02` — use the alternate value at `+0x0c`
 - `0x04` — use connected-flood collection
-- **`0x80` is never tested at runtime.** A third of all records carry it. It is
-  authoring metadata from the level editor, not game state. Do not build behaviour
-  on it.
+- **`0x80` is never tested at runtime.** It is authoring metadata from the level
+  editor, not game state. Do not build behaviour on it.
+  **Correction:** the "a third of all records carry it" claim is about THIS
+  modifier byte. On the OPCODE byte it is measured at **0 of 5,531 records across
+  all 44 maps**, so the `& 0x7f` mask the executor applies is a no-op in practice.
 
 ---
 
@@ -215,7 +217,8 @@ tables they belong to:
 | `0x26` set flag, `0x28` if-not-flag | DBASE100 record id | 1–431 | 433 records in `DBASE100.DAT` |
 | `0x27` lacks item, `0x29` give, `0x2a` remove | DBASE100 inventory id | 3–279 | 281 |
 | `0x2b` run dialogue, `0x36` branch on dialogue | DBASE100 dialogue id | 23–693 | 694 |
-| `0x17` toggle, `0x38` jump-if-fails, `0x40` run | **1-based command index** | 1–660 | 661 records in the largest map |
+| `0x17` toggle, `0x38` jump-if-fails | **1-based command index** | 1–660 | 661 records in the largest map |
+| `0x40` run by index | **1-based command index, but read from `+0x06`, NOT the key** | | see below |
 
 Every one lands just inside its table's size. `0x17` resolving through
 `resolve_command_by_index`, and `0x38` storing `word[rec+8]` straight into
@@ -298,6 +301,25 @@ CAVERNS   key=0   "CAVERNS2"
 Treat it as NUL-terminated rather than fixed-width: `CHURCH1`'s exit to `VICAR` stores
 `V I C A R \0 1 \0` — a stray digit left behind the terminator when the name was
 shortened.
+
+### Three corrections, all measured
+
+- **`0x40` does not read the key.** It takes its command index from **`word[rec+6]`**
+  (`raw_commands.c:3958`), not `+0x08`. Every one of the 76 retail records is 8
+  bytes long, so there is no `+0x08` to read at all; `+6` is in range for 76 of 76.
+  `0x17` and `0x38` DO use the key and are in range 397/400 and 26/26.
+- **`0x01` (62 records), `0x37` (4), `0x2c` and `0x39` are no-ops.** Their slots in
+  the dispatch table are `cmd_default_nop` (`boot.c:189-205`), so they provably do
+  nothing. They were simply undocumented.
+- **Most "opcodes" are not handlers.** The dispatch table holds three kinds of
+  entry: immediate, verified no-op, and **REGISTRAR** -- which allocates an
+  active-effect record and returns, with the visible behaviour living in a
+  SEPARATE per-frame tick handler reached through a second table at `0x3088c`
+  (`boot.c:215-229`). Every lighting, texture and geometry-mover opcode is a
+  registrar. `cmd_change_lighting` (`raw_commands.c:4390`) does not touch a light:
+  it calls `alloc_active_effect` and writes a ramp step. So "implement the
+  lighting opcode" is not one function -- it is the effect pool plus that tick
+  table, and it is a stage of its own.
 
 ---
 

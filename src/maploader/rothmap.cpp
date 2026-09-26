@@ -1647,8 +1647,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// likewise on full close, positioned at the hinge (doors.c:1142-1145).
 	// There is no target point in the swing at all -- the leaf rotates about
 	// its hinge by a fixed 90 degrees and nothing else.
-	log.Line("  door leaves are built and closed; nothing opens them -- stage 7");
-	log.Line("  commands and triggers           -- stage 7");
+	log.Line("  door leaves are built, hinged and openable by the level logic");
+	log.Line("  commands: the active-effect pool and its tick table -- see ROTH_COMMANDS.md");
 
 	Printf("Realms: %s -- %d sectors, %d lines, %d sides. Report: %s\n",
 		map->rothFile.GetChars(), (int)Level->sectors.Size(),

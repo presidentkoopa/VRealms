@@ -36,6 +36,7 @@
 #include "c_dispatch.h"
 #include "texturemanager.h"
 #include "menu.h"          // [BB] M_MenuPauses -- see P_CheckTickerPaused
+#include "roth/roth_runtime.h"
 
 extern gamestate_t wipegamestate;
 extern uint8_t globalfreeze, globalchangefreeze;
@@ -719,6 +720,20 @@ void P_Ticker (void)
 			{
 				P_UpdateSpecials(Level);
 			}
+
+			// A FOREIGN LEVEL FORMAT'S OWN LOGIC TICK, beside the engine's.
+			//
+			// A map format that carries its own scripted behaviour needs one
+			// place per world step to advance it -- a Realms of the Haunting map
+			// is a list of small programs with delays in them, and a delay that
+			// is never counted down truncates every chain that contains one.
+			// This is the world step and not the real tic because it IS world
+			// logic: doors, lights and timers, the same things Level->Tick and
+			// P_UpdateSpecials just did for Doom's own specials.
+			//
+			// Inert -- an immediate return -- on every map that is not one of
+			// these. See src/roth/roth_runtime.h.
+			roth::TickLevelLogic(Level);
 
 			// for par times
 			Level->time++;
