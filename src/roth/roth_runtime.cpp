@@ -121,6 +121,41 @@ struct Deferred
 	uint32_t context = 0;     // entry.dword1
 };
 
+//==========================================================================
+//
+// THE ACTIVE-EFFECT POOL -- raw_commands.c:3307, the pool walk inside
+// tick_world_effects, and alloc_active_effect at 4308.
+//
+// Most Realms opcodes are not handlers. The 0x30780 dispatch table's entry for
+// a light, a height, a sector move or a texture animation does not do the thing:
+// it ALLOCATES one of these, and the visible behaviour lives in a second table
+// at 0x3088c indexed by the SAME opcode, run once per frame until it reports
+// finished. So an opcode like 0x1d is two functions, a registrar and a tick.
+//
+// The original's record is a heap chunk with the collected geometry appended
+// after a per-type payload; the layout is DOS heap discipline we do not need, so
+// the fields it actually reads are named here instead:
+//
+//   chunk[+4]  the tick index -- stamped from the command's own base opcode
+//   chunk[+6]  the per-type payload word (a ramp, a countdown, a step)
+//   chunk[+8]  a back-pointer to the command record that registered it
+//   chunk[+size] onward, the collected geometry group
+//
+// A record is marked registered ([rec+2] |= 0x20) so a second execution
+// refreshes the existing effect rather than stacking another, which is what
+// find_active_effect is for.
+//
+//==========================================================================
+
+struct Effect
+{
+	uint8_t  tick = 0;            // chunk[+4]: which per-frame handler
+	uint16_t record = 0;          // chunk[+8]: the command, as a 1-based index
+	uint16_t payload = 0;         // chunk[+6]: per-type; for 0x1d the ramp
+	std::vector<int> sectors;     // the collected geometry group
+	bool finished = false;
+};
+
 struct Runtime
 {
 	bool active = false;
@@ -164,6 +199,9 @@ struct Runtime
 	// g_command_rng (0x71f48). The seed is ROTH.EXE's own initialiser,
 	// data/obj3_owned.c:761.
 	uint32_t rng = 0xcc61;
+
+	// THE ACTIVE-EFFECT POOL. See TickEffects.
+	std::vector<Effect> effects;
 
 	// Realms texture index -> the engine texture the loader made for it.
 	// PRE-RESOLVED rather than looked up on demand, because the loader's
@@ -747,6 +785,240 @@ int ChangeFaceTexture(const Command &c)
 	return changed > 0 ? CMD_ACTED : CMD_NOTHING;
 }
 
+//==========================================================================
+//
+// The two geometry collectors the registrars choose between, selected by the
+// record's own bit 0x04 (alloc_active_effect's `flag`).
+//
+// geom_find_matches -- every sector whose commandID is the key. The plain one.
+//
+// collect_connected_geometry_group (raw_commands.c) -- a FLOOD outward from the
+// sector the key names: for each of that sector's faces whose collisionFlags
+// bit 3 is clear, cross to the face's SISTER and take the sister's sector, then
+// recurse if it has not been visited. So "light this room and everywhere it
+// joins", with bit 3 the barrier that stops the spread. This is how one command
+// lights a whole connected area without naming every sector in it.
+//
+//==========================================================================
+
+int FindSectorByCommandID(uint16_t id);   // defined below, beside the warp code
+
+static void FloodConnected(int sec, std::vector<int> &out, std::vector<char> &seen)
+{
+	if (sec < 0 || (size_t)sec >= g.map.sectors.size()) return;
+	if (seen[sec]) return;
+	seen[sec] = 1;
+	out.push_back(sec);
+
+	const Sector &s = g.map.sectors[sec];
+	if (s.firstFaceIndex < 0) return;
+	for (int i = 0; i < (int)s.faceCount; i++)
+	{
+		const int fi = s.firstFaceIndex + i;
+		if (fi < 0 || (size_t)fi >= g.map.faces.size()) continue;
+		const Face &f = g.map.faces[fi];
+		if (f.collisionFlags & 0x8) continue;            // the barrier bit
+		if (f.sister < 0 || (size_t)f.sister >= g.map.faces.size()) continue;
+		FloodConnected(g.map.faces[f.sister].sector, out, seen);
+	}
+}
+
+static std::vector<int> CollectGeometryGroup(uint16_t key, bool connected)
+{
+	std::vector<int> out;
+	if (connected)
+	{
+		const int start = FindSectorByCommandID(key);
+		if (start < 0) return out;
+		std::vector<char> seen(g.map.sectors.size(), 0);
+		FloodConnected(start, out, seen);
+	}
+	else
+	{
+		for (size_t i = 0; i < g.map.sectors.size(); i++)
+			if (g.map.sectors[i].commandID == key) out.push_back((int)i);
+	}
+	// Both collectors are capped at 0xc8 by their caller's scratch list, and a
+	// flood that reaches the cap simply stops there.
+	if (out.size() > 0xc8) out.resize(0xc8);
+	return out;
+}
+
+//==========================================================================
+//
+// apply_light_delta_to_record_list (raw_commands.c) -- what every lighting
+// effect ultimately does.
+//
+// It adds a signed delta to the sector's brightness BYTE at +0x0b, which is
+// Sector::light here, and skips any sector whose brightness is already exactly
+// zero. That guard is not a bounds check: a sector authored at 0 is immune to
+// being lit at all, which the original's designers used deliberately -- the same
+// test keeps the muzzle flash out of those sectors (renderer.c:9187, and the
+// loader's own note beside this formula).
+//
+// Realms brightness is not a Doom light level, so the engine-side value is
+// RECOMPUTED through the loader's derivation rather than nudged in parallel.
+// Keeping the Realms byte the single authority is the only way the two stay in
+// step across a fade that runs for many tics.
+//
+//==========================================================================
+
+static void ApplyLightDelta(const std::vector<int> &sectors, int delta)
+{
+	if (g.level == nullptr || delta == 0) return;
+	const int shadeShift = g.level->ShadeFalloffShift;
+
+	for (int si : sectors)
+	{
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		Sector &rs = g.map.sectors[si];
+		if (rs.light == 0) continue;                      // authored dark: immune
+
+		rs.light = (uint8_t)clamp<int>((int)rs.light + delta, 0, 255);
+
+		if ((size_t)si >= g.level->sectors.Size()) continue;
+		const int rows = 39 + ((int)rs.light - 128);
+		const int ll = rows <= 0 ? 0
+			: int((255.0 * double(rows) * double(1 << shadeShift)) / 1984.0 + 0.5);
+		g.level->sectors[si].lightlevel = (short)clamp<int>(ll, 0, 255);
+	}
+}
+
+static Effect *FindEffect(uint8_t tick, uint16_t record)
+{
+	for (Effect &e : g.effects)
+		if (!e.finished && e.tick == tick && e.record == record) return &e;
+	return nullptr;
+}
+
+//==========================================================================
+//
+// cmd_change_lighting -- raw_commands.c:4389, RAW command base 0x1d
+//
+// The REGISTRAR. It does not change a light. It finds or allocates the effect,
+// then writes the ramp into the payload word:
+//
+//   step = byte[rec+7], negated when the record's bit 0x02 is set
+//   payload = step < 0 ? (0xff00 | -step) : step
+//
+// so the payload's LOW byte is how far the brightness still has to travel and
+// the HIGH byte is nonzero when travelling down. Bit 0x01 of +0x06 flips the
+// direction bit afterwards, which is what lets ONE record alternate: fire it
+// again and it fades back the other way.
+//
+//==========================================================================
+
+int ChangeLighting(Command *rec, int index)
+{
+	Effect *eff = FindEffect(0x1D, (uint16_t)index);
+	if (eff == nullptr)
+	{
+		// Already registered, or disabled: the original refuses rather than
+		// stacking a second effect on the same record.
+		if (rec->modifier & 0x21) return CMD_NOTHING;
+
+		Effect e;
+		e.tick = 0x1D;
+		e.record = (uint16_t)index;
+		e.sectors = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
+		if (e.sectors.empty()) return CMD_NOTHING;       // alloc_active_effect's 0
+		g.effects.push_back(e);
+		eff = &g.effects.back();
+		rec->modifier |= 0x20;
+		SyncDisabled(rec);
+	}
+
+	int step = (int)rec->subFlags;                        // byte[rec+7]
+	if (rec->modifier & 0x02) step = -step;
+	eff->payload = step < 0 ? (uint16_t)(0xFF00u | (uint8_t)(-step))
+	                        : (uint16_t)(uint8_t)step;
+	if (rec->fireFlags & 0x01) { rec->modifier ^= 0x02; SyncDisabled(rec); }
+	eff->tick = 0x1D;
+	return CMD_ACTED;
+}
+
+//==========================================================================
+//
+// tick_change_lighting -- raw_commands.c:1788
+//
+// Walk the ramp down by the frame delta, applying whatever it consumed as the
+// brightness change, negated when the direction byte is set. When the low byte
+// reaches zero the effect is done and it finalises on the COMMAND record: +0x06
+// bit 0x10 means "disable me now that I have finished", and then bits 0x21 are
+// cleared so the record can be registered again.
+//
+//==========================================================================
+
+static bool TickChangeLighting(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	uint8_t remaining = (uint8_t)(e.payload & 0xFF);
+	const bool down = (e.payload >> 8) != 0;
+
+	if (remaining == 0)
+	{
+		if (rec != nullptr)
+		{
+			if (rec->fireFlags & 0x10) rec->modifier |= 0x08;
+			rec->modifier &= 0xDE;
+			SyncDisabled(rec);
+		}
+		return true;                                      // finished
+	}
+
+	int stepThisTic = ROTH_FRAME_TICKS_PER_TIC;
+	if (stepThisTic > 0x40) stepThisTic = 0x40;           // the original's clamp
+	if (remaining <= stepThisTic) stepThisTic = remaining;
+
+	remaining = (uint8_t)(remaining - stepThisTic);
+	e.payload = (uint16_t)((e.payload & 0xFF00u) | remaining);
+
+	ApplyLightDelta(e.sectors, down ? -stepThisTic : stepThisTic);
+	return false;
+}
+
+//==========================================================================
+//
+// The pool walk -- raw_commands.c:3307.
+//
+// Every effect gets its per-frame handler, and a handler reporting "finished" is
+// unlinked and freed. The original re-dereferences the node on the not-finished
+// path because a handler may relocate the heap chunk; that is DOS heap
+// discipline and does not survive the port. What DOES survive is that a handler
+// can register another effect while the walk is in progress, so this iterates by
+// index and compacts afterwards rather than holding an iterator across a
+// dispatch.
+//
+//==========================================================================
+
+static void TickEffects()
+{
+	for (size_t i = 0; i < g.effects.size(); i++)
+	{
+		if (g.effects[i].finished) continue;
+
+		bool done = false;
+		switch (g.effects[i].tick)
+		{
+		case 0x1D: done = TickChangeLighting(g.effects[i]); break;
+		default:
+			// A registrar put this here but its tick is not written yet. Dropping
+			// it is the honest outcome: left in the pool it would be walked every
+			// frame forever without ever doing anything.
+			g.unhandledOps[g.effects[i].tick]++;
+			done = true;
+			break;
+		}
+		if (done) g.effects[i].finished = true;
+	}
+
+	for (size_t i = 0; i < g.effects.size(); )
+	{
+		if (g.effects[i].finished) g.effects.erase(g.effects.begin() + i);
+		else i++;
+	}
+}
+
 bool IsVerifiedNop(uint8_t op)
 {
 	switch (op)
@@ -772,7 +1044,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x2F: case 0x34: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x1D: case 0x2F: case 0x34: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -799,6 +1071,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x3B: return MapTransition(rec);
 	case 0x12: return DelayTimer(rec, index);
 	case 0x34: return ChangeFaceTexture(*rec);
+	case 0x1D: return ChangeLighting(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
@@ -1095,6 +1368,7 @@ void EndLevel()
 {
 	g.active = false;
 	g.level = nullptr;
+	g.effects.clear();
 	g.texByIndex.clear();
 	g.byFace.clear();
 	g.bySide.clear();
@@ -1217,6 +1491,9 @@ void TickLevelLogic(FLevelLocals *level)
 			i++;
 		}
 	}
+
+	// The active-effect pool: the per-frame half of every registrar opcode.
+	TickEffects();
 
 	DrainDeferred();
 	ApplyPendingWarp();
