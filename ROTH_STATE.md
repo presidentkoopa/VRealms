@@ -171,6 +171,21 @@ built in place -- no void room, no engine change).
 The other 11 fail because **sister-face merging can collapse two of a slab's four faces
 into one line**, so the door comes up short of four. That is the next door job.
 
+**THE DOOR WORK WAS REVERTED** (commit `e1f7ba66ba`). Building the slabs as polyobjects
+tore the geometry apart: GZDoom pulls polyobject lines out of the BSP and renders them
+specially, and a Realms slab's faces are TWO-SIDED -- shared with the rooms either side.
+Two-sided polyobject lines are not something the renderer copes with, so doorways and
+whatever the BSP was splitting with those lines both broke. Un-flattening the leaves at
+the same time made it worse.
+
+The hinge detection is KEPT and is correct: it is pure data, 25/25 in STUDY1 against
+141/141 across all 44 maps.
+
+**The next door job is geometry, not tagging:** a slab has to become four ONE-SIDED lines
+of its own before it can be a polyobject. This was flagged earlier in the session ("a
+two-sided polyobject line is trouble in GZDoom") and then built anyway without solving it.
+Do not simply re-apply the revert.
+
 **Nothing opens them yet.** That needs stage 7.
 
 ---
