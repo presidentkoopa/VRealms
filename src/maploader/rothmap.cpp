@@ -657,24 +657,19 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// per texture pixel, where Doom uses one -- so the base scale is
 			// 0.5 on both axes. FF_HALF_PIXEL drops that to one unit per texel.
 			//
-			// Horizontally the face's STORED EXTENT is authoritative and can
-			// deliberately differ from the wall's measured length in order to
-			// stretch or squash the art, so it is used rather than the geometry.
-			// Doom expresses tiling as a scale, so with repeats = stored /
-			// (unitsPerTexel * texWidth) and Doom's repeats = wallLen * scale /
-			// texWidth, texWidth cancels and
+			// Horizontally the scale is the SAME FIXED 0.5, not derived from the
+			// face at all. The original's u is `accumulator >> 1` (renderer.c:4734)
+			// masked by the texture dimension minus one (13289 sets the mask to
+			// texDim - 1; 4356/4437/4734 apply it), and THE WALL'S LENGTH NEVER
+			// APPEARS IN THAT PATH. The stored extent says where the coordinate
+			// WRAPS, not how far the art is stretched.
 			//
-			//     scaleX = stored / (wallLen * unitsPerTexel)
-			//
-			// which reduces to exactly 0.5 when the stored extent equals the
-			// true length. So this only deviates where a map author authored a
-			// deviation.
-			//
-			// Verified in ROTH.C: renderer.c:4734 is the literal `>> 1` that
-			// makes a texel two world units; renderer.c:13336 is FF_HALF_PIXEL
-			// doubling both extents; renderer.c:13116 feeds the stored extent
-			// straight into the u interpolator, and the wall's world length
-			// never appears in that path at all.
+			// This used to divide the stored extent by the wall length, which
+			// gave every face its own stretch -- so at a corner, two faces
+			// sharing a texture stopped continuing each other's pattern. That is
+			// what a seam is. The masked wrap is also why the ORIGINAL cannot
+			// have seams: a coordinate can only land inside the texture, so a
+			// partial tile is structurally impossible.
 			//
 			// FF_IMAGE_FIT (renderer.c:8272, 13342-13359) takes the OTHER branch
 			// entirely: the extents become 2 * texture_dimension, i.e. exactly
@@ -691,14 +686,32 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			{
 				imageFitFaces++;
 			}
-			else if (stored > 0. && wallLen > 0.)
-			{
-				scaleX = stored / (wallLen * unitsPerTexel);
-				if (fabs(stored - wallLen) > 1.) storedExtentDeviates++;
-			}
 			else
 			{
-				storedExtentUnusable++;
+				// THE STORED EXTENT IS A WRAP EXTENT, NOT A SCALE, and dividing
+				// by the wall's length was the seam.
+				//
+				// The original's u is `accumulator >> 1` -- two world units per
+				// texel, fixed -- masked by the texture dimension minus one
+				// (renderer.c:13289 sets column_clip_mode+4 = texDim - 1, and
+				// 4734/4356/4437 apply it). THE WALL'S LENGTH APPEARS NOWHERE IN
+				// THAT PATH. The stored extent says where the coordinate wraps,
+				// not how far the picture is stretched.
+				//
+				// Scaling by stored/wallLen gave every face its own stretch, so
+				// at a corner two faces sharing a texture no longer continued
+				// each other's pattern -- which is exactly what a seam is. The
+				// scale is FIXED, and the Python oracle corroborates it: its
+				// stored-extent path (wall_u_repeats) is dead code and the
+				// screenshots everyone called good used a flat 0.5.
+				//
+				// What the stored extent IS still good for is the wrap, which
+				// Doom does for us: a texture repeats every texWidth/scale world
+				// units regardless. Counted here so a deviation stays visible.
+				if (stored > 0. && wallLen > 0. && fabs(stored - wallLen) > 1.)
+					storedExtentDeviates++;
+				else if (stored <= 0.)
+					storedExtentUnusable++;
 			}
 
 			//--------------------------------------------------------------

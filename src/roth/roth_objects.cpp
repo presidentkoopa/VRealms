@@ -445,6 +445,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	int meshesBuilt = 0, flatFaces = 0, texturedFaces = 0;
 	int fixedAngle = 0, flipped = 0, hanging = 0, scaled = 0, lit = 0, nibbleShift = 0;
 	int fromShared = 0, sharedUnavailable = 0, noSpriteSlot = 0;
+	int oversized = 0;
 
 	for (size_t si = 0; si < rm.objects.size(); si++)
 	{
@@ -531,7 +532,21 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 				float ex = 0, ey = 0, ez = 0;
 				if (b->modelIndex < Models.Size() &&
 					Models[b->modelIndex]->GetLocalExtent(&ex, &ey, &ez))
+				{
 					p.renderRadius = (ex > ez ? ex : ez);
+					// NAME anything implausibly large. Realms' player is 154
+					// units, so a prop over three times that is either genuinely
+					// architectural or a scale we have got wrong -- and "one of
+					// them is enormous" is impossible to chase without knowing
+					// WHICH. Reported with its art index and position so it can
+					// be looked up rather than hunted.
+					if (ey > 3.f * 154.f && log)
+					{
+						log->Line("  OVERSIZED prop  %s[%d]  %.0f tall at (%d, %d)",
+							art.Name().c_str(), artIndex, ey, (int)o.x, (int)o.y);
+						oversized++;
+					}
+				}
 				spawnedMeshes++;
 				break;
 			}
@@ -635,6 +650,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  x-flipped             %d", flipped);
 		log->Line("  top-anchored (HANG)   %d", hanging);
 		log->Line("  non-default draw size %d", scaled);
+		log->Count("objects: implausibly large (over 3x the player)", oversized);
 		log->Line("  carrying a light byte %d  (NOT applied yet)", lit);
 		log->Line("  artwork nibble shift  %d  (READ, deliberately NOT applied -- see the"
 			" comment in roth_objects.cpp)", nibbleShift);
