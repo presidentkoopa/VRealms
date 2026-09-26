@@ -232,6 +232,31 @@ what stalled this.
 
 ---
 
+## 6c. After stage 8: the rest of the game, still 1:1
+
+The loader stages end at 8. These are the game systems, and under a 1:1 goal every
+one of them is a PORT with its answer in ROTH.C -- not a design question. See the
+`project-goal-1to1-first` memory.
+
+**The movies.** Realms plays `.GDV` cutscenes and they carry most of the story:
+**164 of them** in `DATA/GDV/` of a 1.7 GB install. ROTH.C already contains the
+decoder -- `gdv_cutscene.c`, 217 KB of lifted code -- so this is a transcription
+job like the rest, not reverse engineering. It needs an in-engine player: decode a
+frame, hand it to a texture, drive it off the game clock, and let the command
+system trigger one (opcode `0x2b` runs a DBASE100 dialogue record, and
+`cmd_map_transition` is what fires between levels).
+
+**The automap must be REMOVED.** Realms never had one; GZDoom gives us one for
+free. 1:1 means switching it off, and it is one of the few places where being
+faithful means taking something away rather than adding it. Cheap to do and worth
+doing early, because it is visible.
+
+**Then:** inventory (281 DBASE100 items), menus, dialogue (694 records), weapons,
+enemies (`FAT_MONSTER` art spawns a live AI actor the first time it is drawn), and
+saving. All read from the original.
+
+---
+
 ## 7. Open, with what is known about each
 
 - **`roth_objectangle`** -- object facing is a cvar because three attempts to deduce the
