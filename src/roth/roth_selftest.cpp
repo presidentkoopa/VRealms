@@ -12,6 +12,7 @@
 //
 
 #include "roth_raw.h"
+#include "roth_commands.h"
 #include "roth_das.h"
 #include "roth_install.h"
 
@@ -85,6 +86,10 @@ int main(int argc, char **argv)
 	// Geometry opcodes only -- flags, items and dialogue key off DBASE100 ids,
 	// and 0x17/0x38/0x40 take a command index, so none of those should resolve.
 	int nGeomKeys = 0, nGeomResolved = 0;
+	// Every entry point in every map is walked and executed, to prove the spine
+	// terminates on real data and to see which opcodes the game actually reaches.
+	int nChainsRun = 0, nChainsGated = 0, nStepsRun = 0;
+	int opSeen[256] = {0};
 
 	for (auto &entry : maps)
 	{
@@ -105,6 +110,19 @@ int main(int argc, char **argv)
 		nCommands += (int)m.commands.size();
 		for (const auto &c : m.commands) if (c.isTrigger) nTriggers++;
 		nEntries += (int)m.entryPoints.size();
+		for (uint16_t ep : m.entryPoints)
+		{
+			if (roth::WalkChainFlow(m, ep) != 0) { nChainsGated++; continue; }
+			roth::Handlers h;
+			h.Run = [&](const roth::Map &, const roth::Command &c, int) -> int
+			{
+				opSeen[c.opcode & 0x7f]++;
+				nStepsRun++;
+				return roth::CMD_NOTHING;
+			};
+			roth::ExecChain(m, ep, h);
+			nChainsRun++;
+		}
 		for (const auto &c : m.commands)
 		{
 			switch (c.opcode)
@@ -190,6 +208,12 @@ int main(int argc, char **argv)
 		nSectors == EXPECT_SECTORS ? "OK" : "MISMATCH");
 	printf("commands        %6d   expected %6d  %s\n", nCommands, EXPECT_COMMANDS,
 		nCommands == EXPECT_COMMANDS ? "OK" : "MISMATCH");
+	{
+		int distinct = 0;
+		for (int i = 0; i < 256; i++) if (opSeen[i]) distinct++;
+		printf("chains run      %6d   gated %6d   steps %6d   opcodes reached %d\n",
+			nChainsRun, nChainsGated, nStepsRun, distinct);
+	}
 	printf("triggers        %6d   expected %6d  %s\n", nTriggers, EXPECT_TRIGGERS,
 		nTriggers == EXPECT_TRIGGERS ? "OK" : "MISMATCH");
 	printf("entry points    %6d   expected %6d  %s\n", nEntries, EXPECT_ENTRIES,

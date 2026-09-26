@@ -253,12 +253,17 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	{
 		if (!rs.IsDoor() || rs.faceCount != 4 || rs.hingeFace < 0) return false;
 		if (rs.firstFaceIndex < 0 || rs.firstFaceIndex + 3 >= (int)rm.faces.size()) return false;
+		// The hinge must be one of THIS sector's four faces, because the leaf's
+		// corner order is cyclic from it.
+		const int hingeRel = rs.hingeFace - rs.firstFaceIndex;
+		if (hingeRel < 0 || hingeRel > 3) return false;
 		// The loop has to close, or the leaf is not a quad.
 		for (int j = 0; j < 4; j++)
 		{
 			const roth::Face &a = rm.faces[rs.firstFaceIndex + j];
 			const roth::Face &b = rm.faces[rs.firstFaceIndex + ((j + 1) & 3)];
-			if (a.vertex1 < 0 || a.vertex2 < 0) return false;
+			if (a.vertex1 < 0 || a.vertex1 >= (int)rm.vertices.size()) return false;
+			if (a.vertex2 < 0 || a.vertex2 >= (int)rm.vertices.size()) return false;
 			if (a.vertex2 != b.vertex1) return false;
 		}
 		return true;
@@ -975,6 +980,344 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Count("mid-platforms: zero thickness, skipped", platformsSkipped);
 	}
 
+	//----------------------------------------------------------------------
+	// Door leaves -> polyobjects
+	//
+	// See the census above for why the leaf is separate geometry rather than
+	// the door sector's own walls, and why it is built in the void.
+	//
+	// WHAT ROTH.C DOES, and what each piece of this maps to:
+	//
+	//  * The leaf is a four-point quad stored HINGE-RELATIVE
+	//    (setup_door_swing_geometry, doors.c:548-556: each point is
+	//    `gs:[vertex+8] - record[0x14]`, `gs:[vertex+0xa] - record[0x16]`,
+	//    where record[0x14]/[0x16] are the hinge vertex's x,y).
+	//  * rotate_quad (renderer.c:1557) rotates those offsets and adds the
+	//    hinge back. At angle 0 it is the identity, so the authored position
+	//    IS the closed position. GZDoom's PODOOR_SWING rotates every polyobject
+	//    vertex about StartSpot -- the same operation about the same point.
+	//  * The angle is a BYTE over a 256-step turn: rotate_quad indexes a
+	//    512-entry sine table with `(-2*angle) & 0x1ff`, so one step is
+	//    360/256 degrees. tick_swinging_doors clamps the open limit to
+	//    +0x40 / -0x40 (doors.c:1084, 1117), i.e. EXACTLY 90 DEGREES. There is
+	//    no variable swing extent; see the command-argument note below.
+	//  * The four faces are ordered CYCLICALLY FROM THE HINGE (the rol/ror of
+	//    the packed offset table 0x24180c00 over the 0xc-byte face stride), and
+	//    the hinge face is a THICKNESS edge: the two faces adjacent to it are
+	//    the long room-facing ones. Measured over all 44 maps: on 141 of 141
+	//    doors those two adjacent faces have two DIFFERENT far sectors, which is
+	//    exactly the pair ROTH.C derives as the rooms either side.
+	//
+	// The surface texture is the face's MID texture: door_corner_tail
+	// (doors.c:271) sets the leaf surface's `[out+0xc] = fs:[textureMap+2]`,
+	// which is TextureMap::midTexture, unconditionally -- not the upper/lower
+	// step pieces a two-sided wall would use.
+	//----------------------------------------------------------------------
+	struct PolySpot { double sx, sy, ax, ay; int tag; };
+	std::vector<PolySpot> polySpots;
+	int leavesBuilt = 0, leavesNoTexture = 0, doorCapableNotBuilt = 0;
+	for (const auto &rs : rm.sectors)
+		if (!rs.IsDoor() && rs.IsDoorCapable()) doorCapableNotBuilt++;
+
+	if (leafCount > 0)
+	{
+		log.StageBegin("door leaves");
+		polySpots.reserve(size_t(leafCount) * 2);
+
+		// The same void-parking rule the 3D-floor control sectors use, on its own
+		// band so the two can never overlap. These are OUR bookkeeping numbers for
+		// scratch space, not anything read out of Realms: a cell wide enough for the
+		// longest leaf measured in the retail data (128 long by 64 thick) with room
+		// for the sealing loop around it.
+		const double CELL = 512.;
+		double voidX = 0., voidY = 0.;
+		for (const auto &v : rm.vertices)
+		{
+			if (double(v.x) < voidX) voidX = double(v.x);
+			if (double(v.y) < voidY) voidY = double(v.y);
+		}
+		voidX -= 4096.;
+		voidY -= 4096. + 4096.;   // clear of the platform band above
+
+		unsigned vSector = (unsigned)rm.sectors.size() + (unsigned)platformsBuilt;
+		unsigned vVertex = (unsigned)rm.vertices.size() + (unsigned)platformsBuilt * 4;
+		unsigned vLine   = (unsigned)pending.size() + (unsigned)platformsBuilt * 4;
+
+		for (size_t i = 0; i < rm.sectors.size(); i++)
+		{
+			const roth::Sector &rs = rm.sectors[i];
+			if (!leafBuildable(rs)) continue;
+
+			const int f0 = rs.firstFaceIndex;
+			const int hingeRel = rs.hingeFace - f0;
+
+			// THE HINGE POINT. ROTH.C takes the dword at the hinge face -- its two
+			// vertex offsets packed together -- and uses the LOW half, i.e.
+			// vertex1, unless the swing is mirrored, in which case `rol ebx,16`
+			// selects vertex2 (doors.c:520, 531, 540).
+			//
+			// UNVERIFIED / KNOWN DIVERGENCE: that mirror choice is made PER
+			// ACTIVATION, from which room the player used the door -- the door
+			// swings away from whoever opened it. A GZDoom polyobject has one
+			// fixed StartSpot, so we pin the hinge to vertex1 (which is also the
+			// unconditional choice when the hinge face's faceID is 0xFFFE). A door
+			// opened from the mirrored side will therefore pivot about the far end
+			// of the hinge edge, a difference of the slab's thickness (8 to 64
+			// units in the retail data). Stage 7 can close this properly: it knows
+			// which side was used, and it can set po->StartSpot before calling
+			// EV_OpenPolyDoor.
+			const roth::Face &hf = rm.faces[rs.hingeFace];
+			const double hingeX = double(rm.vertices[hf.vertex1].x);
+			const double hingeY = double(rm.vertices[hf.vertex1].y);
+
+			// Park this leaf's cell and put its hinge at the cell's centre, so the
+			// anchor/spawn delta is exactly the cell offset and nothing else.
+			const double ox = voidX + double(leavesBuilt % 32) * CELL;
+			const double oy = voidY - double(leavesBuilt / 32) * CELL;
+			const double cxc = ox + CELL * 0.5, cyc = oy + CELL * 0.5;
+			const double offX = cxc - hingeX, offY = cyc - hingeY;
+
+			//--------------------------------------------------------------
+			// The void room: one sector, lit and sized like the doorway it
+			// belongs to, so the leaf renders at the right height and
+			// brightness once it is translated into place. A one-sided
+			// polyobject wall spans its own sidedef sector's floor to ceiling.
+			//--------------------------------------------------------------
+			sector_t *vs = &Level->sectors[vSector];
+			const sector_t *door = &Level->sectors[i];
+			vs->Level = Level;
+			vs->e = &Level->extsectors[vSector];
+			vs->sectornum = (int)vSector;
+			vs->SetXScale(sector_t::floor, 1.);   vs->SetYScale(sector_t::floor, 1.);
+			vs->SetXScale(sector_t::ceiling, 1.); vs->SetYScale(sector_t::ceiling, 1.);
+			vs->SetAlpha(sector_t::floor, 1.);    vs->SetAlpha(sector_t::ceiling, 1.);
+			vs->seqType = -1;
+			vs->nextsec = vs->prevsec = -1;
+			vs->LastDamage = -1;
+			vs->heightsec = nullptr;
+			vs->damageinterval = 32;
+			vs->terrainnum[sector_t::ceiling] = vs->terrainnum[sector_t::floor] = -1;
+			vs->ibocount = -1;
+			memset(vs->SpecialColors, -1, sizeof(vs->SpecialColors));
+			memset(vs->AdditiveColors, 0, sizeof(vs->AdditiveColors));
+			vs->gravity = 1.;
+			vs->ZoneNumber = 0xFFFF;
+			vs->friction = ORIG_FRICTION;
+			vs->movefactor = ORIG_FRICTION_FACTOR;
+			vs->Colormap.LightColor = PalEntry(255, 255, 255);
+			vs->Colormap.FadeColor.SetRGB(Level->fadeto);
+			vs->lightlevel = door->lightlevel;
+			// The doorway's own heights, so the leaf is exactly as tall as the
+			// opening it fills.
+			const double lfZ = door->GetPlaneTexZ(sector_t::floor);
+			const double lcZ = door->GetPlaneTexZ(sector_t::ceiling);
+			vs->SetPlaneTexZ(sector_t::floor, lfZ);
+			vs->SetPlaneTexZ(sector_t::ceiling, lcZ);
+			vs->floorplane.set(0., 0., 1., -lfZ);
+			vs->ceilingplane.set(0., 0., -1., lcZ);
+			// NEVER the sky flat in the void: the same trap the 3D-floor control
+			// sectors document. Borrow the doorway's own flats; they are never seen.
+			vs->SetTexture(sector_t::floor, door->GetTexture(sector_t::floor), false);
+			vs->SetTexture(sector_t::ceiling, door->GetTexture(sector_t::ceiling), false);
+
+			const int tag = 1 + leavesBuilt;
+
+			//--------------------------------------------------------------
+			// The leaf: four ONE-SIDED lines, fronts facing OUT of the slab.
+			// Realms winds a face v1->v2 with its owning sector on the right,
+			// which is Doom's own convention and is what the wall loop above
+			// already relies on. The door sector owns these faces, so it is on
+			// the right -- and the leaf is solid, seen from outside. Reversing
+			// each line puts the front where it has to be.
+			//--------------------------------------------------------------
+			for (int j = 0; j < 4; j++)
+			{
+				// Cyclically from the hinge, matching ROTH.C's corner ordering.
+				const int fi = f0 + ((hingeRel + j) & 3);
+				const roth::Face &f = rm.faces[fi];
+
+				vertex_t *va = &Level->vertexes[vVertex + (unsigned)j];
+				// Reversed: this line runs face.vertex2 -> face.vertex1.
+				va->set(double(rm.vertices[f.vertex2].x) + offX,
+				        double(rm.vertices[f.vertex2].y) + offY);
+			}
+			for (int j = 0; j < 4; j++)
+			{
+				const int fi = f0 + ((hingeRel + j) & 3);
+				const roth::Face &f = rm.faces[fi];
+
+				line_t *ld = &Level->lines[vLine + (unsigned)j];
+				side_t *sd = &Level->sides[sideIndex++];
+
+				ld->v1 = &Level->vertexes[vVertex + (unsigned)j];
+				ld->v2 = &Level->vertexes[vVertex + (unsigned)((j + 1) & 3)];
+				ld->alpha = 1.;
+				ld->portalindex = UINT_MAX;
+				ld->portaltransferred = UINT_MAX;
+				ld->flags = ML_BLOCKING;
+				ld->sidedef[0] = sd;
+				ld->sidedef[1] = nullptr;
+				ld->frontsector = vs;
+				ld->backsector = nullptr;
+				// Polyobj_ExplicitLine states the lines and their order outright,
+				// which suits generated geometry far better than relying on the
+				// traversal PO_LINE_START needs. args[1] is the order and MUST be
+				// nonzero -- SpawnPolyobj rejects the poly otherwise
+				// (polyobjects.cpp:224).
+				ld->special = Polyobj_ExplicitLine;
+				ld->args[0] = tag;
+				ld->args[1] = j + 1;
+				ld->args[2] = 0;    // no mirror
+				ld->args[3] = 0;    // no sound sequence
+
+				sd->sector = vs;
+				sd->linedef = ld;
+				sd->Flags = 0;
+				sd->UDMFIndex = (int)(sd - &Level->sides[0]);
+				for (int part = 0; part < 3; part++)
+				{
+					sd->SetTextureXScale(part, 1.);
+					sd->SetTextureYScale(part, 1.);
+					sd->SetTextureXOffset(part, 0.);
+					sd->SetTextureYOffset(part, 0.);
+				}
+				sd->ClearAlpha();
+
+				//------------------------------------------------------
+				// The skin. A Realms face is drawn from its OWNING sector's
+				// side -- that is the rule the whole wall loop above is built
+				// on. This leaf line faces a ROOM, so the picture the player
+				// sees on it is the one carried by the face on the room's
+				// side: the SISTER. The slab's own face looks the other way,
+				// into the doorway.
+				//
+				// ROTH.C gives the leaf four surfaces, not two, and does
+				// exactly this pairing: setup_door_swing_geometry fills two
+				// from the slab's own faces (_a, via fs:[face+4]) and two from
+				// their sisters (_b, via fs:[fs:[face+8]+4]) -- doors.c:538-545.
+				// A one-sided Doom line has one skin, so it takes the
+				// outward-facing one.
+				//
+				// UNVERIFIED: that the _b (sister) surface is the outward one
+				// rather than the _a. rotate_quad only produces positions; the
+				// surface-to-side association lives in the renderer and was not
+				// traced. The owning-sector rule above is what decides it here.
+				int skinFace = fi;
+				if (f.sister >= 0 && f.sister < (int)rm.faces.size()) skinFace = f.sister;
+				const roth::Face &sf = rm.faces[skinFace];
+				const roth::TextureMap *tm =
+					(sf.textureMap >= 0 && sf.textureMap < (int)rm.textureMaps.size())
+						? &rm.textureMaps[sf.textureMap] : nullptr;
+
+				FTextureID tex = tm ? worldTex(tm->midTexture) : FNullTextureID();
+				if (!tex.isValid())
+				{
+					leavesNoTexture++;
+				}
+				else
+				{
+					// The same scale law as an ordinary wall: two world units per
+					// texture pixel unless FF_HALF_PIXEL, and the stored extent is
+					// authoritative horizontally.
+					const double unitsPerTexel =
+						(tm->flags & roth::FF_HALF_PIXEL) ? 1. : 2.;
+					const double len = (ld->v2->fPos() - ld->v1->fPos()).Length();
+					const double stored = double(tm->StoredExtent());
+					double sx = 1. / unitsPerTexel;
+					if (stored > 0. && len > 0.) sx = stored / (len * unitsPerTexel);
+					sd->SetTexture(side_t::mid, tex);
+					sd->SetTextureXScale(side_t::mid, sx);
+					sd->SetTextureYScale(side_t::mid, 1. / unitsPerTexel);
+				}
+
+				ld->AdjustLine();
+			}
+
+			//--------------------------------------------------------------
+			// The seal: four one-sided lines round the cell, fronts facing IN,
+			// so the void room is a closed convex container for the leaf. A
+			// polyobject's origin subsector is discarded by the renderer
+			// (SSECF_POLYORG), which is precisely why it has to be in here and
+			// not in the map.
+			//--------------------------------------------------------------
+			{
+				vertex_t *rv[4] = {
+					&Level->vertexes[vVertex + 4], &Level->vertexes[vVertex + 5],
+					&Level->vertexes[vVertex + 6], &Level->vertexes[vVertex + 7] };
+				// Wound so the room's interior is on the right of v1->v2.
+				rv[0]->set(ox,        oy);
+				rv[1]->set(ox,        oy + CELL);
+				rv[2]->set(ox + CELL, oy + CELL);
+				rv[3]->set(ox + CELL, oy);
+
+				for (int e = 0; e < 4; e++)
+				{
+					line_t *ld = &Level->lines[vLine + 4 + (unsigned)e];
+					side_t *sd = &Level->sides[sideIndex++];
+
+					ld->v1 = rv[e];
+					ld->v2 = rv[(e + 1) & 3];
+					ld->alpha = 1.;
+					ld->portalindex = UINT_MAX;
+					ld->portaltransferred = UINT_MAX;
+					ld->flags = ML_BLOCKING;
+					ld->special = 0;
+					ld->sidedef[0] = sd;
+					ld->sidedef[1] = nullptr;
+					ld->frontsector = vs;
+					ld->backsector = nullptr;
+
+					sd->sector = vs;
+					sd->linedef = ld;
+					sd->Flags = 0;
+					sd->UDMFIndex = (int)(sd - &Level->sides[0]);
+					for (int part = 0; part < 3; part++)
+					{
+						sd->SetTextureXScale(part, 1.);
+						sd->SetTextureYScale(part, 1.);
+						sd->SetTextureXOffset(part, 0.);
+						sd->SetTextureYOffset(part, 0.);
+					}
+					sd->ClearAlpha();
+					// Untextured on purpose: nothing can ever see these, and giving
+					// them the sky flat's equivalent would be the trap the 3D-floor
+					// control sectors document.
+					ld->AdjustLine();
+				}
+			}
+
+			// The spawn spot goes where the door really is; the anchor goes on the
+			// SAME point of the leaf as built, i.e. offset by the cell delta.
+			// TranslateToStartSpot moves every vertex by (anchor - spawn), which is
+			// exactly that delta, so the leaf lands on its authored position with
+			// its hinge on StartSpot -- and PODOOR_SWING then rotates about the
+			// hinge, which is what ROTH.C does.
+			polySpots.push_back({ hingeX, hingeY, hingeX + offX, hingeY + offY, tag });
+
+			// Tag the DOORWAY sector with the same number so stage 7 can get from
+			// the sector the player used to the polyobject that fills it. A tag is
+			// the engine's own general handle for this; nothing Realms-specific.
+			Level->tagManager.AddSectorTag((int)i, tag);
+
+			vSector++; vVertex += 8; vLine += 8;
+			leavesBuilt++;
+		}
+
+		// The census and the loop above use the SAME predicate, so these must
+		// agree. If they ever do not, the tails of the line and vertex arrays are
+		// left zeroed and the node builder will report unconnected edges -- so say
+		// so loudly rather than let it look like a geometry bug.
+		if (leavesBuilt != leafCount)
+			log.Warn("door leaf census %d but built %d -- zeroed lines left in the array",
+				leafCount, leavesBuilt);
+
+		log.Line("  door leaves built %d of %d door sectors", leavesBuilt, doorCount);
+		log.Line("  polyobject tags   1 .. %d  (the doorway sector carries the same tag)", leavesBuilt);
+		log.Count("doors: leaf surface had no artwork", leavesNoTexture);
+		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",
+			doorCapableNotBuilt);
+	}
+
 	if (sideIndex < Level->sides.Size())
 		Level->sides.Resize(sideIndex);
 
@@ -1041,6 +1384,47 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		MapThingsConverted.Push(mt);
 	}
 
+	//----------------------------------------------------------------------
+	// Polyobject spawn spots and anchors for the door leaves.
+	//
+	// These are not actors -- PO_Init and GetPolySpots pick them out of
+	// MapThingsConverted by their editor entry's Special (9301 PolySpawn, 9300
+	// PolyAnchor, both in mapinfo/common.txt so every game has them), and read
+	// the TAG out of the thing's ANGLE field. They have to be pushed here
+	// because the Things stage clears the array.
+	//
+	// GetPolySpots also hands both to the node builder, which uses the pair to
+	// work out where the leaf will end up and protect the loop of segs around
+	// its origin from being split.
+	//----------------------------------------------------------------------
+	for (const auto &ps : polySpots)
+	{
+		for (int which = 0; which < 2; which++)
+		{
+			FMapThing mt = {};
+			mt.pos.X = which ? ps.ax : ps.sx;
+			mt.pos.Y = which ? ps.ay : ps.sy;
+			mt.pos.Z = 0;
+			mt.angle = ps.tag;          // the polyobject number, not a facing
+			mt.EdNum = which ? 9300 : 9301;   // PolyAnchor : PolySpawn
+			mt.info = DoomEdMap.CheckKey(mt.EdNum);
+			mt.flags = MTF_SINGLE | MTF_COOPERATIVE | MTF_DEATHMATCH;
+			mt.SkillFilter = 0xffff;
+			mt.ClassFilter = 0xffff;
+			mt.Gravity = 1;
+			mt.RenderStyle = STYLE_Count;
+			mt.Alpha = -1;
+			mt.Health = 1;
+			mt.FloatbobPhase = -1;
+			if (mt.info == nullptr)
+				log.Count("doors: no editor entry for the polyobject spot -- leaf will not spawn");
+			MapThingsConverted.Push(mt);
+		}
+	}
+	if (!polySpots.empty())
+		log.Line("  polyobject spots %d spawn + %d anchor",
+			(int)polySpots.size(), (int)polySpots.size());
+
 	log.Line("  player start    (%d, %d) facing %d",
 		rm.metadata.startX, rm.metadata.startY,
 		(int)(90 + rm.metadata.rotation * 360.0 / 512.0) % 360);
@@ -1053,7 +1437,38 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 	log.StageEnd();
 	log.Section("Not yet handled");
-	log.Line("  door logic and lighting         -- stage 6");
+	// The leaves exist and are closed. NOTHING OPENS THEM yet -- that is the
+	// command system, stage 7. When it does, the numbers it needs are these,
+	// all read out of ROTH.C rather than guessed:
+	//
+	//   EV_OpenPolyDoor(Level, nullptr, tag, speed, DAngle::fromDeg(90), delay,
+	//                   0, PODOOR_SWING)
+	//
+	//   * 90 DEGREES, always. tick_swinging_doors clamps the angle byte to
+	//     +0x40/-0x40 over a 256-step turn (doors.c:1084, 1117). There is no
+	//     variable extent anywhere in the swing.
+	//   * THE SIGN is chosen per activation, not stored: the mirror bit
+	//     record[2]&1 is set when the face the player used belongs to the room
+	//     the hinge's preceding face opens onto (doors.c:527-533), so the door
+	//     always swings AWAY from whoever opened it.
+	//   * SPEED is the frame step times byte[cmdrec+7] when that is nonzero,
+	//     and otherwise the frame step clamped to 8 (doors.c:1044-1047).
+	//   * DELAY -- how long it stands open before closing itself -- is
+	//     word[cmdrec+0x0a] times byte[cmdrec+7] (spawn_door_instance's
+	//     `ecx ? ebx*ecx : ebx` into record[0xa], read back as the dwell
+	//     counter at doors.c:1055-1060).
+	//
+	// CORRECTION TO ROTH_COMMANDS.md, from doors.c: that document calls
+	// `+0x0a` x `+0x07` the "swing extent" and `+0x0e`/`+0x10` a "target
+	// vector x,y -- the point the wall moves to". Neither holds. The product is
+	// the OPEN DWELL TIME as above, and the two words land in record[0x26] and
+	// record[0x28], whose only readers in the whole subsystem treat them as
+	// SOUND IDS PLUS ONE: record[0x26] is decremented and played when the dwell
+	// expires and the door starts closing (doors.c:1057-1063), record[0x28]
+	// likewise on full close, positioned at the hinge (doors.c:1142-1145).
+	// There is no target point in the swing at all -- the leaf rotates about
+	// its hinge by a fixed 90 degrees and nothing else.
+	log.Line("  door leaves are built and closed; nothing opens them -- stage 7");
 	log.Line("  commands and triggers           -- stage 7");
 
 	Printf("Realms: %s -- %d sectors, %d lines, %d sides. Report: %s\n",

@@ -13,7 +13,7 @@ call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
 
 cl /nologo /std:c++17 /EHsc /D_CRT_SECURE_NO_WARNINGS ^
    /Fo:"%OUT%\\" /Fd:"%OUT%\selftest.pdb" /Fe:"%OUT%\roth_selftest.exe" ^
-   "%HERE%roth_selftest.cpp" "%HERE%roth_raw.cpp" "%HERE%roth_das.cpp" ^
+   "%HERE%roth_selftest.cpp" "%HERE%roth_raw.cpp" "%HERE%roth_commands.cpp" "%HERE%roth_das.cpp" ^
    "%HERE%roth_palette.cpp" "%HERE%roth_install.cpp"
 if errorlevel 1 exit /b 1
 
