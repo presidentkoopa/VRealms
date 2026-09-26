@@ -2597,8 +2597,12 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 			zbottom[1] = zfloor[1];
 			PutPortal(di, PORTALTYPE_LINETOLINE, -1);
 		}
-		else if (transferredPortal)
+		else if (transferredPortal || (sidedef->Flags2 & WALLF2_SKYWALL))
 		{
+			// WALLF2_SKYWALL: the wall IS a view of the sky, not a surface with a
+			// texture -- a window onto the outside. SkyLine already draws exactly
+			// that for a transferred portal, panning with the view, so this just
+			// lets a wall ask for it directly.
 			SkyLine(di, frontsector, linedef);
 		}
 		else

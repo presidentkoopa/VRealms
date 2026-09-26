@@ -1352,6 +1352,18 @@ enum
 	WALLF_DITHERTRANS_BOTTOM	= WALLF_DITHERTRANS << 2,	// Bottom tier (gets reset every frame)
 };
 
+// side_t::Flags is a full uint16_t already, so anything new lives here. Kept as a
+// separate word rather than widening Flags, which is serialised and read in a
+// dozen places.
+enum
+{
+	// Draw this wall as the sky instead of its own texture, panning with the
+	// view the way a sky ceiling does. For a map format whose walls can be a
+	// window onto the outside -- the backdrop seen through the glass -- rather
+	// than a surface. Inert unless something sets it.
+	WALLF2_SKYWALL				= 1,
+};
+
 struct side_t
 {
 	// Ceiling glow and floor glow, same as sector_t's above -- same names,
@@ -1433,6 +1445,7 @@ struct side_t
 	int16_t		Light;
 	int16_t		TierLights[3];	// per-tier light levels
 	uint16_t	Flags;
+	uint16_t	Flags2 = 0;	// WALLF2_*, additive; zero means nothing new applies
 	double		alpha;
 	int			UDMFIndex;		// needed to access custom UDMF fields which are stored in loading order.
 	LightmapSurface* lightmap;

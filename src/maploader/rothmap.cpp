@@ -435,8 +435,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int imageFitVerticalUnhandled = 0; // PIECES, not faces: up to 3 per side
 	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
 	int shiftedFaces = 0;        // a non-zero shiftX/shiftY was applied
-	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
-	int edgeMapGivenSky = 0;     // ...of those, how many got the sky image
+	int edgeMapFaces = 0, edgeMapSky = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
 	int transUpLoFaces = 0;      // FF_TRANS_UPLO banding: not handled
 	int extentBitsAbove12 = 0;   // see the note where this is reported
 
@@ -651,33 +650,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// not a parallax layer, so it will not slide as you turn. Counted
 			// separately from the faces we do nothing at all with, so the report
 			// does not claim more than was done.
+			// FF_EDGE_MAP: the wall IS a view of the outside, not a surface.
+			// The original sets g_parallax_sky_active from this bit
+			// (renderer.c:9020) and fills the face from the map's sky block via
+			// render_parallax_sky_columns (renderer.c:5374), drifting the source
+			// column with the view angle -- so it is a sky, drawn where the wall
+			// would be, and it is why you see trees through the manor's windows.
+			//
+			// GZDoom's sky renderer is the same thing and already pans with the
+			// view, so the wall is marked WALLF2_SKYWALL and the renderer draws
+			// it as sky instead of its texture. That is a real sky with real
+			// parallax, not the image painted flat on the wall -- which was tried
+			// first, and on a two-sided line put a sheet of sky across every
+			// doorway.
 			if (tf & roth::FF_EDGE_MAP)
 			{
 				edgeMapFaces++;
-				// ONE-SIDED ONLY, and that restriction is not a detail.
-				//
-				// On a one-sided wall the mid piece IS the wall, so putting the
-				// backdrop there shows it where the window is. On a TWO-SIDED
-				// line the mid piece is the hanging decal in the opening, so the
-				// same assignment drapes a sheet of sky across the doorway --
-				// which is exactly what it did: 36 of STUDY1's 62 and most of
-				// CHURCH1's 198 turned into floating curtains and sky-covered
-				// walls. A church is mostly windows, so the mistake scaled with
-				// the map.
-				//
-				// Doing the two-sided case properly means the upper piece or a
-				// sky sector beyond the opening, not a mid texture. Until then
-				// they are counted and left alone: the counter below reports how
-				// many were flagged against how many were actually given art, so
-				// the report cannot overstate what was done.
-				if (!twoSided && skyTex.isValid())
+				if (!twoSided)
 				{
-					sd->SetTexture(side_t::mid, skyTex);
-					sd->SetTextureXScale(side_t::mid, 1.);
-					sd->SetTextureYScale(side_t::mid, 1.);
-					sd->SetTextureXOffset(side_t::mid, 0.);
-					sd->SetTextureYOffset(side_t::mid, 0.);
-					edgeMapGivenSky++;
+					sd->Flags2 |= WALLF2_SKYWALL;
+					edgeMapSky++;
 				}
 			}
 			if (tf & roth::FF_TRANS_UPLO) transUpLoFaces++;
@@ -899,7 +891,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Count("walls: mid texture wanted but absent", midMissing);
 	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);
 	log.Count("walls: FF_EDGE_MAP window faces", edgeMapFaces);
-	log.Count("walls: window faces given the sky image (no parallax drift)", edgeMapGivenSky);
+	log.Count("walls: window faces drawn as sky", edgeMapSky);
 	log.Count("walls: FF_TRANS_UPLO banding not handled", transUpLoFaces);
 	log.Count("artwork: images that failed to decode", art.Failed());
 	log.Count("artwork: stored indices out of every known range", art.OutOfRange());
