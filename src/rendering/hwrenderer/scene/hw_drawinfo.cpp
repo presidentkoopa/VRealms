@@ -1818,7 +1818,12 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 		int fogmode = Viewpoint.bDoOrtho && (lightmode == ELightMode::ZDoomSoftware) ? 2 : gl_fogmode; // Force radial if Ortho and ZDoomSoftware
 		if (lightmode == ELightMode::Build)
 		{
-			VPUniforms.mGlobVis = 1 / 64.f;
+			// A level that states its own falloff gets it exactly: Realms shades
+			// by (depth >> shift), so the visibility slope IS 1/(1<<shift).
+			// Build's own default of 1/64 stands for everything else.
+			VPUniforms.mGlobVis = Level->ShadeFalloffShift > 0
+				? 1.f / float(1 << Level->ShadeFalloffShift)
+				: 1 / 64.f;
 			VPUniforms.mPalLightLevels = 32 | (static_cast<int>(fogmode) << 8) | ((int)lightmode << 16);
 		}
 		else

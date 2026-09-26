@@ -81,6 +81,24 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  player height  %d (%d doubled)", rm.metadata.playerHeight,
 		rm.metadata.PlayerHeight());
 
+	// LIGHTING IS DELIBERATELY FLAT FOR NOW. The real model is transcribed in
+	// ROTH_LIGHTING.md and is ready to switch on: a sector's byte is a SIGNED
+	// offset from 128 that sets how fast darkness closes in, the falloff rate
+	// comes from lightAmbience indexing ROTH.C's g_shade_const_table_b, and
+	// GZDoom's Build light mode is the same equation. Setting
+	// Level->ShadeFalloffShift to that rate and info->lightmode to Build turns
+	// it on; the two engine-side pieces it needs are already in place and inert
+	// while the shift is zero.
+	//
+	// It is off because a faithfully dark manor is unusable to work in: you
+	// cannot judge a texture or a prop you cannot see. Correct lighting is worth
+	// nothing until the things it lights are right.
+	//
+	// Flat mapping meanwhile: keep the sector's relative ordering but sit it
+	// around Doom's normal 160 so the level is readable.
+	Level->ShadeFalloffShift = 0;
+	log.Line("  lighting       FLAT (readable); Realms' model is off -- see ROTH_LIGHTING.md");
+
 	// Make the player the size Realms says a person is, instead of leaving them
 	// at Doom's 56 units in a world built for 144. That difference is why the
 	// manor read as enormous: standing in a 154-unit world at 56 units tall,
@@ -252,23 +270,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		sec->floorplane.set(0., 0., 1., -floorZ);
 		sec->ceilingplane.set(0., 0., -1., ceilZ);
 
-		// Realms' light byte is centred on 0x80, and so is Doom's light level:
-		// both are 8-bit with the middle of the range meaning "ordinarily lit".
-		// So this is one to one.
-		//
-		// It USED to double the byte, which pegged 0x80 at 255 -- and since 392
-		// of STUDY1's 507 sectors carry exactly 0x80, that lit three quarters of
-		// the level at full brightness and flattened the game's whole look. The
-		// original is mostly darkness with a few sources, and the darkness is
-		// the atmosphere. A value centred on 0x80 cannot mean "maximum".
-		//
-		// STILL NOT THE REAL MODEL. Realms shades per column through a 64K
-		// palette remap, with the ramp and tint table chosen per map by
-		// init_map_lighting_from_metadata (renderer.c:10300) from shadeLevel,
-		// lightAmbience and candleGlow. Doom's own distance falloff stands in
-		// for the per-column part; the three metadata terms are read but not
-		// yet applied. See ROTH_STATE.md.
-		sec->lightlevel = (short)clamp<int>(rs.light, 0, 255);
+		// Flat and readable while the real model is off: Doom's normal 160,
+		// shifted by the sector's own offset from Realms' neutral 128 so the
+		// relative light between rooms still reads.
+		sec->lightlevel = (short)clamp<int>(160 + (int(rs.light) - 128), 0, 255);
 		if (rs.light < darkestLight) darkestLight = rs.light;
 		if (rs.light > brightestLight) brightestLight = rs.light;
 
@@ -435,7 +440,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int imageFitVerticalUnhandled = 0; // PIECES, not faces: up to 3 per side
 	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
 	int shiftedFaces = 0;        // a non-zero shiftX/shiftY was applied
-	int edgeMapFaces = 0, edgeMapSky = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
+	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
 	int transUpLoFaces = 0;      // FF_TRANS_UPLO banding: not handled
 	int extentBitsAbove12 = 0;   // see the note where this is reported
 
@@ -460,7 +465,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// accumulate into these and the line takes the result.
 		bool hasUpper = false, wantPegBottom = false;
 
-		auto makeSide = [&](const roth::Face &face, bool twoSided) -> side_t *
+		auto makeSide = [&](const roth::Face &face, bool twoSided, int neighbourSector) -> side_t *
 		{
 			side_t *sd = &Level->sides[sideIndex++];
 			sd->sector = &Level->sectors[face.sector];
@@ -570,13 +575,38 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				if (offX != 0. || offY != 0.) shiftedFaces++;
 			}
 
-			// The piece height, where it is well defined. Only a one-sided wall
-			// has one: its mid piece spans the whole sector. An upper or lower
-			// piece depends on the neighbour's planes, which Doom resolves at
-			// draw time, so a vertical fit cannot be expressed for those.
+			// The height of each piece, so FF_IMAGE_FIT can put exactly one copy
+			// down it. Doom resolves these at draw time, but WE ALREADY KNOW
+			// BOTH SECTORS here -- we built them -- so every piece's extent is
+			// computable at load and none of them has to be given up on.
+			//
+			// This used to bail on any two-sided wall, which left 903 of
+			// STUDY1's pieces silently taking the default scale. That is most of
+			// the level, and it is why some walls lined up and others did not:
+			// the ones that happened to be one-sided were right.
 			const sector_t *ownSec = &Level->sectors[face.sector];
-			const double pieceHeight = twoSided ? 0.
-				: ownSec->GetPlaneTexZ(sector_t::ceiling) - ownSec->GetPlaneTexZ(sector_t::floor);
+			const double ownFloor = ownSec->GetPlaneTexZ(sector_t::floor);
+			const double ownCeil  = ownSec->GetPlaneTexZ(sector_t::ceiling);
+			double nbrFloor = 0., nbrCeil = 0.;
+			const bool haveNbr = twoSided && neighbourSector >= 0
+				&& neighbourSector < (int)rm.sectors.size();
+			if (haveNbr)
+			{
+				const sector_t *ns = &Level->sectors[neighbourSector];
+				nbrFloor = ns->GetPlaneTexZ(sector_t::floor);
+				nbrCeil  = ns->GetPlaneTexZ(sector_t::ceiling);
+			}
+			// Which piece is which, in Doom's terms:
+			//   upper  = my ceiling down to the neighbour's
+			//   lower  = the neighbour's floor down to mine
+			//   mid    = the opening between them (the whole sector if solid)
+			auto heightOf = [&](int part) -> double
+			{
+				if (!haveNbr) return ownCeil - ownFloor;
+				if (part == side_t::top)    return ownCeil - nbrCeil;
+				if (part == side_t::bottom) return nbrFloor - ownFloor;
+				return min(ownCeil, nbrCeil) - max(ownFloor, nbrFloor);
+			};
 
 			auto setPart = [&](int part, int storedIndex, bool masked)
 			{
@@ -592,6 +622,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					double texW = gt ? gt->GetDisplayWidth() : 0.;
 					double texH = gt ? gt->GetDisplayHeight() : 0.;
 					if (texW > 0. && wallLen > 0.) sx = texW / wallLen;
+					const double pieceHeight = heightOf(part);
 					if (texH > 0. && pieceHeight > 0.) sy = texH / pieceHeight;
 					else if (texH > 0.) imageFitVerticalUnhandled++;
 				}
@@ -650,36 +681,34 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// not a parallax layer, so it will not slide as you turn. Counted
 			// separately from the faces we do nothing at all with, so the report
 			// does not claim more than was done.
-			// FF_EDGE_MAP: the wall IS a view of the outside, not a surface.
-			// The original sets g_parallax_sky_active from this bit
-			// (renderer.c:9020) and fills the face from the map's sky block via
-			// render_parallax_sky_columns (renderer.c:5374), drifting the source
-			// column with the view angle -- so it is a sky, drawn where the wall
-			// would be, and it is why you see trees through the manor's windows.
+			// FF_EDGE_MAP marks a face that can have the outdoor backdrop ABOVE
+			// it -- and "above it" is the whole point.
 			//
-			// GZDoom's sky renderer is the same thing and already pans with the
-			// view, so the wall is marked WALLF2_SKYWALL and the renderer draws
-			// it as sky instead of its texture. That is a real sky with real
-			// parallax, not the image painted flat on the wall -- which was tried
-			// first, and on a two-sided line put a sheet of sky across every
-			// doorway.
-			if (tf & roth::FF_EDGE_MAP)
-			{
-				edgeMapFaces++;
-				if (!twoSided)
-				{
-					sd->Flags2 |= WALLF2_SKYWALL;
-					edgeMapSky++;
-				}
-			}
+			// ROTH.C sets g_parallax_sky_active from this bit
+			// (renderer.c:9020, off the mapping record's flags byte at +8) and
+			// then render_parallax_sky_columns fills the open region ABOVE THE
+			// WALL TOP, and only where that top is above the horizon. The face
+			// still draws its own texture underneath. The sky is what is left
+			// over above a wall that does not reach the top of the view.
+			//
+			// We drew the whole face as sky instead, which is why clouds turned
+			// up in hallways and the outside looked wrong: every flagged wall
+			// became a sky, including interior ones. Reverted.
+			//
+			// Doing it properly needs the wall's own top height, which Realms
+			// stores per face and our loader does not model yet -- we build every
+			// wall floor-to-ceiling, so there IS no region above it to fill. That
+			// is the real work, and it is geometry, not texturing.
+			if (tf & roth::FF_EDGE_MAP) edgeMapFaces++;
 			if (tf & roth::FF_TRANS_UPLO) transUpLoFaces++;
 			return sd;
 		};
 
-		ld->sidedef[0] = makeSide(f, pending[li].sister >= 0);
+		ld->sidedef[0] = makeSide(f, pending[li].sister >= 0,
+			pending[li].sister >= 0 ? rm.faces[pending[li].sister].sector : -1);
 		if (pending[li].sister >= 0)
 		{
-			ld->sidedef[1] = makeSide(rm.faces[pending[li].sister], true);
+			ld->sidedef[1] = makeSide(rm.faces[pending[li].sister], true, f.sector);
 			ld->flags |= ML_TWOSIDED;
 		}
 		else
@@ -890,8 +919,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Count("walls: no texture-map record", noTextureMap);
 	log.Count("walls: mid texture wanted but absent", midMissing);
 	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);
-	log.Count("walls: FF_EDGE_MAP window faces", edgeMapFaces);
-	log.Count("walls: window faces drawn as sky", edgeMapSky);
+	log.Count("walls: FF_EDGE_MAP faces -- sky above the wall top not modelled", edgeMapFaces);
 	log.Count("walls: FF_TRANS_UPLO banding not handled", transUpLoFaces);
 	log.Count("artwork: images that failed to decode", art.Failed());
 	log.Count("artwork: stored indices out of every known range", art.OutOfRange());

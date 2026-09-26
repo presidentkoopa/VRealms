@@ -176,7 +176,12 @@ float GetFogDensity(FLevelLocals* Level, ELightMode lightmode, int lightlevel, P
 	else if ((fogcolor.d & 0xffffff) == 0)
 	{
 		// case 2: black fog
-		if ((!isDoomSoftwareLighting(lightmode) || blendfactor > 0) && !(Level->flags3 & LEVEL3_NOLIGHTFADE))
+		// A level that shades by distance in the shader must NOT also get
+		// distance fog, or every surface is darkened twice and the world is
+		// unreadable. The software modes are already excluded; Build is not,
+		// because ordinarily nothing drives it this way. Keyed off the level's
+		// own falloff so nothing else changes behaviour.
+		if ((!isDoomSoftwareLighting(lightmode) || blendfactor > 0) && Level->ShadeFalloffShift == 0 && !(Level->flags3 & LEVEL3_NOLIGHTFADE))
 		{
 			density = distfogtable[lightmode != ELightMode::LinearStandard][hw_ClampLight(lightlevel)];
 		}

@@ -1525,6 +1525,13 @@ public:
 	double		ForcedPlayerHeight = 0;			// total height, 0 = class default
 	double		ForcedPlayerViewHeight = 0;		// eye height,   0 = class default
 
+	// How fast darkness closes in with distance, for ELightMode::DistanceShade.
+	// A surface's shade step is (distance >> ShadeFalloffShift), so a LARGER
+	// shift means a slower fade and a brighter world. Zero disables the mode's
+	// calculation entirely, which is why a level that does not set it is
+	// unaffected even if something set the mode by accident.
+	int			ShadeFalloffShift = 0;
+
 	float		skyspeed1;				// Scrolling speed of sky textures, in pixels per ms
 	float		skyspeed2;
 	float		skymistspeed;

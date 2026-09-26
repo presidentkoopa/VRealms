@@ -100,16 +100,18 @@ namespace roth
 // was right all along and the quarter turn below was the culprit.
 static const double ANGLE_SENSE = +1.0;
 
-// Doom measures counter-clockwise from +X; Realms measures from +Y, which is the
-// quarter turn -- and then a HALF turn on top, because Realms' object rotation
-// records which way the object's back faces, not its front. Measured: at 90 a
-// couch faced directly away from where it should, uniformly, whatever its
-// rotation byte. 90 + 180 = 270.
+// ROTH.C builds an object's world angle as
 //
-// The player start in rothmap.cpp lives in this same space but does NOT take the
-// half turn -- a player start records where the player looks. If one of these is
-// ever changed, check the other rather than assuming they move together.
-static const double ANGLE_ZERO = 270.0;
+//     angle512 = 2 * (rotationByte + 0x40) - viewAngle          (renderer.c:6096)
+//
+// so the object contributes rotationByte*2 units of a 512-unit turn, plus a
+// fixed 0x80 units == 90 degrees.
+//
+// MEASURED, twice, because the constant folds together Realms' +Y origin,
+// Doom's +X origin, and that 90: at 90 the couches faced 12 o'clock when they
+// should face 6 (a uniform 180 out), and at 270 the chairs sat 90 degrees
+// clockwise of right. 270 + 90 = 360 = 0.
+static const double ANGLE_ZERO = 0.0;
 
 static double ObjectYaw(uint8_t rotation)
 {

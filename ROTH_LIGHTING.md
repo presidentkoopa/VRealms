@@ -95,22 +95,49 @@ is *absolutely* dark, which is a tool the level designers clearly used.
 
 ---
 
-## The two constants I have not resolved
+## The constants — RESOLVED
 
-`shr_n` and `projectBias` are **self-modifying code**: `patch_span_driver_shade`
-(`renderer.c:9125-9139`) pokes them into the span drivers' immediate operands,
-reading them from two tables in the original executable's data segment at
-`0x71db4` and `0x71dba`, indexed by the map's `lightAmbience` (metadata `+0x10`).
+They are in ROTH.C after all, as data lifted byte-exact out of `ROTH.EXE`:
+`data/obj3_owned.c:699-712`.
 
-They are per-map, not per-sector, so there is one pair per level. They are not in
-the `.DAS` or the `.RAW` — they are in `ROTH.EXE`, which the player has. Reading
-them from there is the faithful answer and is no different in kind from reading
-the maps.
+```
+g_shade_const_table_a  @0x71db4 = 02 08   + ext 04 09 08 0a
+g_shade_const_table_b  @0x71dba = 05 03   + ext 06 02 07 01 40 c0 80 00
+```
 
-**Do not guess these.** Until they are read, any implementation is calibrated
-against nothing.
+`patch_span_driver_shade` (`renderer.c:9125`) indexes both by **words**, with the
+index being the map's `lightAmbience` (metadata `+0x10`). So:
 
----
+| `lightAmbience` | `table_b` word | `shr_n` (low) | `shl_n` (high) |
+|---|---|---|---|
+| 0 | `0x0305` | **5** | 3 |
+| 1 | `0x0206` | **6** | 2 |
+| 2 | `0x0107` | **7** | 1 |
+
+`shr_n` is the one that matters: it is how many bits the depth accumulator is
+shifted down before becoming a shade row, so it *is* the falloff rate. Three
+settings, chosen per map. **STUDY1 uses 0, so `depth >> 5`.**
+
+(The remaining entries, `0xc040` and `0x0080`, are out of range once masked to
+`& 0x1f` and are almost certainly a different array that happens to follow. Three
+shade levels is the real answer.)
+
+`table_a` is the matching pair for the wall path (`0x0802, 0x0904, 0x0a08`).
+
+### `projectBias` is not a constant
+
+`setup_surface_render_constants` (`renderer.c:9384-9390`) computes it per frame:
+
+```
+projectBias = viewParams[+0x1c] + playerSectorCache[+0x2]
+```
+
+It is a projection term, recomputed as the view changes, and it is written into
+BOTH the wall-edge and floor-ceiling edge projectors. It has no meaning outside
+the original's fixed-point projection, so there is nothing to copy across: in our
+renderer its job is done by however we measure view distance. It shifts the whole
+curve uniformly, so it is the one place a calibration is legitimately needed --
+and it should be calibrated against the original's output, not chosen by eye.
 
 ## What this means for our renderer
 
