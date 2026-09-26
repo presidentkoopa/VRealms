@@ -82,23 +82,45 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  player height  %d (%d doubled)", rm.metadata.playerHeight,
 		rm.metadata.PlayerHeight());
 
-	// LIGHTING IS DELIBERATELY FLAT FOR NOW. The real model is transcribed in
-	// ROTH_LIGHTING.md and is ready to switch on: a sector's byte is a SIGNED
-	// offset from 128 that sets how fast darkness closes in, the falloff rate
-	// comes from lightAmbience indexing ROTH.C's g_shade_const_table_b, and
-	// GZDoom's Build light mode is the same equation. Setting
-	// Level->ShadeFalloffShift to that rate and info->lightmode to Build turns
-	// it on; the two engine-side pieces it needs are already in place and inert
-	// while the shift is zero.
+	// Realms' lighting, ON. A sector's light byte is a SIGNED offset from 128
+	// and does NOT set brightness -- it sets where the darkness starts and how
+	// black it can get. The whole model, and where every part of it was read
+	// from, is in ROTH_LIGHTING.md:
 	//
-	// It is off because a faithfully dark manor is unusable to work in: you
-	// cannot judge a texture or a prop you cannot see. Correct lighting is worth
-	// nothing until the things it lights are right.
+	//     off  = light - 128
+	//     row  = (depth >> shift) - (8 + off)      clamped to 0..31
 	//
-	// Flat mapping meanwhile: keep the sector's relative ordering but sit it
-	// around Doom's normal 160 so the level is readable.
-	Level->ShadeFalloffShift = 0;
-	log.Line("  lighting       FLAT (readable); Realms' model is off -- see ROTH_LIGHTING.md");
+	// The shift is per map, from lightAmbience indexing ROTH.C's
+	// g_shade_const_table_b (data/obj3_owned.c:708, lifted byte-exact from
+	// ROTH.EXE): 0 -> 5, 1 -> 6, 2 -> 7.
+	//
+	// GZDoom's BUILD light mode is the same equation, which is why it is used
+	// rather than fog. Its shader computes
+	//
+	//     shade = (1 - light) * 31 + depth * globvis   clamped to 32 shades
+	//
+	// -- linear in depth, per-surface offset, 32 shades. Build fixes globvis at
+	// 1/64 (hw_drawinfo.cpp:1821); with ShadeFalloffShift set, the loader
+	// overrides it to 1/(1<<shift) so the falloff RATE is the original's exactly.
+	//
+	// This was off for a while so the level could be worked on. It is on now
+	// because the goal is 1:1, and in Realms the darkness IS the game: the
+	// original is mostly black with a few sources, and a flat, evenly lit manor
+	// is not the same place.
+	int shadeShift = 5;
+	{
+		static const int kShadeShift[3] = { 5, 6, 7 };
+		const int amb = int(rm.metadata.lightAmbience);
+		if (amb >= 0 && amb < 3) shadeShift = kShadeShift[amb];
+		else log.Count("lighting: lightAmbience outside the shade table", 1);
+
+		Level->ShadeFalloffShift = shadeShift;
+		// getRealLightmode takes info->lightmode unconditionally when set
+		// (g_level.cpp:163), so this wins over the user's gl_maplightmode.
+		if (Level->info != nullptr) Level->info->lightmode = ELightMode::Build;
+		log.Line("  lighting       lightAmbience %d -> depth >> %d, Build shading",
+			amb, shadeShift);
+	}
 
 	// Make the player the size Realms says a person is, instead of leaving them
 	// at Doom's 56 units in a world built for 144. That difference is why the
@@ -374,10 +396,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		sec->floorplane.set(0., 0., 1., -floorZ);
 		sec->ceilingplane.set(0., 0., -1., ceilZ);
 
-		// Flat and readable while the real model is off: Doom's normal 160,
-		// shifted by the sector's own offset from Realms' neutral 128 so the
-		// relative light between rooms still reads.
-		sec->lightlevel = (short)clamp<int>(160 + (int(rs.light) - 128), 0, 255);
+		// Equating the two shade equations for the distance at which a surface
+		// reaches black gives
+		//
+		//     lightlevel = 255 * (39 + off) * 2^shift / 1984
+		//
+		// with 39 = 31 + 8, the full shade range plus the original's head start.
+		// off = 0 lands on 160, +20 on 242, -10 on 119. DERIVED from the two
+		// equations, not tuned by eye.
+		//
+		// A sector whose fade would already be over at zero distance goes fully
+		// black, which is what the original does and a tool its designers used:
+		// the `light != 0` test in renderer.c:9187 means a sector authored at
+		// exactly 0 is immune even to the muzzle-flash brightening.
+		{
+			const int off = int(rs.light) - 128;
+			const int rows = 39 + off;
+			const int ll = rows <= 0 ? 0
+				: int((255.0 * double(rows) * double(1 << shadeShift)) / 1984.0 + 0.5);
+			sec->lightlevel = (short)clamp<int>(ll, 0, 255);
+		}
 		if (rs.light < darkestLight) darkestLight = rs.light;
 		if (rs.light > brightestLight) brightestLight = rs.light;
 

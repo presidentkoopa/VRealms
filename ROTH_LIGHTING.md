@@ -139,6 +139,41 @@ renderer its job is done by however we measure view distance. It shifts the whol
 curve uniformly, so it is the one place a calibration is legitimately needed --
 and it should be calibrated against the original's output, not chosen by eye.
 
+## The flash: read in full, NOT implemented
+
+All three parts are read; what is missing is only a safe place to apply it.
+
+**Raised** when the player fires: `entity_ai.c:1212-1219` takes the MAX of the
+current bonus and a per-weapon light value from the weapon definition at
+`def+0x68` -- so a brighter weapon does not stack with a dimmer one, it just
+wins.
+
+**Decayed** every player tick: `player.c:459-462` subtracts the frame-time scale
+and floors at zero. So it is a fade, not a one-frame flash.
+
+**Applied** at `renderer.c:9186-9188`:
+
+```
+if (light != 0) light += bonus
+```
+
+which is a LEVEL-WIDE brightening -- every sector at once, not a light with a
+position. And the `!= 0` test means a sector authored at exactly 0 is immune,
+which is the same immunity that makes those sectors absolutely black.
+
+**Why it is not in yet.** Applying it means changing the light path for every
+surface the renderer draws, and the only honest way to check that is to look at
+it. It is the largest blast radius available in this codebase, so it is left for
+someone who can see the screen. The static model above is in and is safe: it is
+derived from the two shade equations rather than tuned.
+
+**When implementing:** it wants a level-wide decaying value -- name it for what it
+does, not for Realms, since any game could use one -- with the decay on the level
+tick, the raise wherever a weapon fires, and the application at the single point
+where a sector's light becomes the renderer's light. Do NOT add it per sector.
+
+---
+
 ## What this means for our renderer
 
 GZDoom's colormap is also 32 levels, so the table drops in. What does not drop in

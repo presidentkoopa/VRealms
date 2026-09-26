@@ -10,6 +10,23 @@
 // The decoded opcode set is in ROTH_COMMANDS.md; the door behaviour this drives
 // is read from doors.c and cited where it is used.
 //
+// WHAT A HANDLER IS, IN THE ORIGINAL. Read this before adding one. The 0x30780
+// dispatch table (transcribed at platform/boot.c:189-205) splits into two very
+// different kinds of entry:
+//
+//   IMMEDIATE handlers do the thing and return -- 0x2f open a door, 0x17 toggle
+//   another command, 0x26 set a flag, 0x3b change map.
+//
+//   REGISTRARS do not do the thing at all. They allocate an ACTIVE EFFECT
+//   record and return; the visible behaviour lives in a separate per-frame TICK
+//   handler reached through a second table (0x3088c, boot.c:215-229). Every
+//   light, texture, height and sector-move opcode is one of these.
+//
+// So "implement the lighting opcode" is not one function: it is the active-effect
+// pool plus its tick. That machinery is NOT built yet, and the registrar opcodes
+// are counted as unimplemented rather than approximated. The load report carries
+// a per-opcode census saying which is which.
+//
 
 #include <stdint.h>
 
@@ -29,6 +46,11 @@ class Log;
 void BeginLevel(const Map &map, FLevelLocals *level, Log *log);
 
 // Forget it again. Safe to call when no level is active.
+//
+// The progress FLAGS are deliberately NOT forgotten: they are global and
+// persistent in the original (ROTH_COMMANDS.md, "flags, items and dialogue all
+// live outside the map") and savegame chunk 6 writes the whole bitmap. Use
+// ResetProgressFlags for a new game.
 void EndLevel();
 
 // A door panel's polyobject tag, recorded by the loader as it builds them, so a
@@ -50,5 +72,13 @@ bool ActivateLine(line_t *line, AActor *who, int side);
 
 // The player entered a sector. Fires the enter-sector triggers bound to it.
 void CrossSector(sector_t *sec, AActor *who);
+
+// One WORLD STEP of Realms' own level logic: the delay countdowns and the
+// deferred command queue the original drives from tick_world_effects
+// (raw_commands.c:3288). Inert when no Realms level is loaded.
+void TickLevelLogic(FLevelLocals *level);
+
+// Wipe the persistent progress flags. A new game, not a level change.
+void ResetProgressFlags();
 
 } // namespace roth
