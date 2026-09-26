@@ -193,12 +193,12 @@ Measured across all 44 retail maps. "Resolves" = the key matches a real sector I
 
 | Opcode | Records | Resolves | key=0 | Unresolved |
 |---|---|---|---|---|
-| `0x18` enter sector A | 240 | 239 | 0 | 1 |
-| `0x32` enter sector B | 259 | 258 | 0 | 1 |
+| `0x18` approach, dir-masked | 240 | 239 | 0 | 1 |
+| `0x32` approach, category B | 259 | 258 | 0 | 1 |
 | `0x13` water/lava | 443 | 428 | 0 | 15 |
-| `0x19` use wall | 48 | 48 | 0 | 0 |
+| `0x19` use, sector-gated | 48 | 48 | 0 | 0 |
 | `0x1a` bump wall | 72 | 72 | 0 | 0 |
-| `0x31` use wall, directional | 125 | 123 | 1 | 1 |
+| `0x31` use, sector-gated B | 125 | 123 | 1 | 1 |
 | `0x2f` **open door** | 116 | 61 | 55 | **0** |
 | `0x34` change wall texture | 103 | 98 | 5 | 0 |
 | `0x07` change height | 126 | 125 | 0 | 1 |

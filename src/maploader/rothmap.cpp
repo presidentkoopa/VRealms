@@ -1610,6 +1610,25 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// roth_objects.h.
 	roth::PrepareObjects(rm, art, &log);
 
+	// Textures the LOGIC can ask for, which are not the same set as the textures
+	// the geometry already wears: opcode 0x34 repaints a wall to an index that may
+	// appear nowhere in the map's own mapping records. The runtime cannot resolve
+	// one itself because `art` is a local here and dies with the load, so every
+	// index a command record names is resolved now and handed over.
+	{
+		int registered = 0;
+		for (const roth::Command &c : rm.commands)
+		{
+			if ((c.opcode & 0x7f) != 0x34) continue;
+			FTextureID tex = worldTex((int)c.aux);
+			if (!tex.isValid()) continue;
+			roth::RegisterTexture((int)c.aux, tex);
+			registered++;
+		}
+		if (registered > 0)
+			log.Line("  logic textures   %d index(es) pre-resolved for opcode 0x34", registered);
+	}
+
 	// Hand the level's logic to the runtime. Everything it needs -- the resolved
 	// keys, the face-to-sidedef pairing, the door tags -- is in place by now.
 	roth::BeginLevel(rm, Level, &log);

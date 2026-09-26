@@ -165,6 +165,12 @@ struct Runtime
 	// data/obj3_owned.c:761.
 	uint32_t rng = 0xcc61;
 
+	// Realms texture index -> the engine texture the loader made for it.
+	// PRE-RESOLVED rather than looked up on demand, because the loader's
+	// TextureSet is a local that dies with the load; the loader registers every
+	// index its command records can name. See RegisterTexture.
+	std::map<int, FTextureID> texByIndex;
+
 	// What ran and what could not, for the report and for the console.
 	int fired = 0;
 	std::map<uint8_t, int> unhandledOps;
@@ -658,6 +664,89 @@ int RunIndexedCommand(const Command &rec, Handlers &h)
 //
 //==========================================================================
 
+//==========================================================================
+//
+// cmd_change_face_texture -- raw_commands.c:396, RAW command base 0x34
+//
+// Repaints a wall. The original gathers the texture-MAPPING records matching the
+// key, then writes one of three slots in each:
+//
+//     dirOff = {2, 6, 4, 2}[flags & 3]
+//
+// which lands exactly on our TextureMap fields -- +2 mid, +6 lower, +4 upper --
+// so `flags & 3` selects mid / lower / upper / mid. The value written is the
+// record's +0x0a, the texture index.
+//
+// This is an IMMEDIATE handler, not a registrar: 0x32738 is absent from the
+// 0x3088c per-frame tick table (boot.c:211-229), so it does the work and
+// returns. That is why it can be implemented before the active-effect pool.
+//
+// THE TRANSPARENCY FLIP IS NOT IMPLEMENTED, and deliberately not faked. The
+// original also flips bit 0 of the paired face record's +0x0a -- our
+// Face::collisionFlags -- under `if (!(fl & 4)) { al |= 1; if (fl & 8) al &= 0xfe; }`.
+// The loader never consumes collisionFlags for anything, so there is no
+// renderer or collision state for the flip to change: writing it would be a
+// store nobody reads. It is recorded here and counted in the report instead.
+//
+//==========================================================================
+
+int ChangeFaceTexture(const Command &c)
+{
+	if (g.level == nullptr) return CMD_NOTHING;
+
+	// Which slot, and the sidedef part the loader put that slot on (rothmap.cpp:
+	// top <- upperTexture, bottom <- lowerTexture).
+	enum Slot { SlotMid, SlotLower, SlotUpper };
+	static const Slot slotOf[4] = { SlotMid, SlotLower, SlotUpper, SlotMid };
+	const Slot slot = slotOf[c.fireFlags & 3];
+
+	auto tex = g.texByIndex.find((int)c.aux);
+	if (tex == g.texByIndex.end() || !tex->second.isValid())
+	{
+		g.unhandledOps[0x34]++;          // the loader never registered this index
+		return CMD_NOTHING;
+	}
+
+	// A key of 0 is "what the player just used", same as everywhere else.
+	std::vector<int> targets;
+	if (c.key == 0) { if (g.activeFace >= 0) targets.push_back(g.activeFace); }
+	else targets = c.faces;
+	if (targets.empty()) return CMD_NOTHING;
+
+	int changed = 0;
+	for (int fi : targets)
+	{
+		if (fi < 0 || (size_t)fi >= g.map.faces.size()) continue;
+
+		// Keep the map's own copy in step, because it is the game's state: a
+		// later 0x34 on the same wall compares against it, and the original
+		// reports "no change" when the slot already holds the index.
+		const int tmi = g.map.faces[fi].textureMap;
+		if (tmi >= 0 && (size_t)tmi < g.map.textureMaps.size())
+		{
+			TextureMap &tm = g.map.textureMaps[tmi];
+			uint16_t &field = slot == SlotMid   ? tm.midTexture
+			                : slot == SlotLower ? tm.lowerTexture
+			                                    : tm.upperTexture;
+			if (field == c.aux) continue;                 // already there
+			field = c.aux;
+		}
+
+		auto sd = g.faceToSide.find(fi);
+		if (sd == g.faceToSide.end()) continue;
+		if (sd->second < 0 || (size_t)sd->second >= g.level->sides.Size()) continue;
+
+		const int part = slot == SlotMid   ? side_t::mid
+		               : slot == SlotLower ? side_t::bottom
+		                                   : side_t::top;
+		g.level->sides[sd->second].SetTexture(part, tex->second);
+		changed++;
+	}
+
+	// The original returns "did anything change", which the chain uses.
+	return changed > 0 ? CMD_ACTED : CMD_NOTHING;
+}
+
 bool IsVerifiedNop(uint8_t op)
 {
 	switch (op)
@@ -683,7 +772,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x2F: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x2F: case 0x34: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -709,6 +798,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x17: return ToggleCommand(rec);
 	case 0x3B: return MapTransition(rec);
 	case 0x12: return DelayTimer(rec, index);
+	case 0x34: return ChangeFaceTexture(*rec);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
@@ -1005,6 +1095,7 @@ void EndLevel()
 {
 	g.active = false;
 	g.level = nullptr;
+	g.texByIndex.clear();
 	g.byFace.clear();
 	g.bySide.clear();
 	g.faceToSide.clear();
@@ -1035,6 +1126,11 @@ void RegisterDoor(int rothSector, int polyTag)
 void RegisterFaceSide(int rothFace, int sideIndex)
 {
 	g.faceToSide[rothFace] = sideIndex;
+}
+
+void RegisterTexture(int rothIndex, FTextureID tex)
+{
+	if (rothIndex >= 0 && tex.isValid()) g.texByIndex[rothIndex] = tex;
 }
 
 bool ActivateLine(line_t *line, AActor *who, int side)

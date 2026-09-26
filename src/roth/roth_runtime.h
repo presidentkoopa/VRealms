@@ -30,6 +30,8 @@
 
 #include <stdint.h>
 
+#include "textureid.h"
+
 struct line_t;
 struct sector_t;
 class AActor;
@@ -62,6 +64,14 @@ void RegisterDoor(int rothSector, int polyTag);
 // trigger names a FACE while the engine hands us a sidedef, so without this the
 // two index spaces never meet.
 void RegisterFaceSide(int rothFace, int sideIndex);
+
+// A Realms texture index and the engine texture the loader built for it.
+//
+// The loader's TextureSet is a local that does not outlive the load, so an
+// opcode that repaints a wall at run time cannot resolve an index itself. The
+// loader registers every index its command records can name, which is a few per
+// map, and the runtime looks up rather than resolving. Call before BeginLevel.
+void RegisterTexture(int rothIndex, FTextureID tex);
 
 // The player used a wall. Returns true if a Realms chain fired, in which case
 // the engine's own line activation should not also run.
