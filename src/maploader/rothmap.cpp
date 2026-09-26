@@ -168,7 +168,12 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	FTextureID skyTex = haveArt ? art.Sky(rm.metadata.skyTexture, &log) : FNullTextureID();
 	if (skyTex.isValid())
 	{
-		Level->skytexture1 = Level->skytexture2 = skyTex;
+		// NOT set as the level sky any more. Realms' sky is a 256x146 backdrop
+		// meant to be drawn as parallax COLUMNS above a wall, not stretched
+		// around the world as a Doom sky -- doing that replaced a sky that at
+		// least looked deliberate with one that does not. Resolved and kept for
+		// when the parallax is modelled; the engine's own sky stands until then.
+		(void)skyTex;
 		Level->skyspeed1 = Level->skyspeed2 = 0.f;
 		log.Line("  sky image      stored index %d", rm.metadata.skyTexture);
 	}
@@ -220,7 +225,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount));
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
-	int doorCount = 0, flatsToSky = 0, flatFlipsIgnored = 0;
+	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsIgnored = 0;
 	int darkestLight = 255, brightestLight = 0;
 	for (size_t i = 0; i < rm.sectors.size(); i++)
 	{
@@ -263,7 +268,11 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// Without this every door in the game stands permanently open.
 		double floorZ = double(rs.floorHeight);
 		double ceilZ = double(rs.IsDoor() ? rs.floorHeight : rs.ceilingHeight);
-		if (rs.IsDoor()) doorCount++;
+		if (rs.IsDoor())
+		{
+			doorCount++;
+			if (rs.hingeFace >= 0) doorsWithHinge++;
+		}
 
 		sec->SetPlaneTexZ(sector_t::floor, floorZ);
 		sec->SetPlaneTexZ(sector_t::ceiling, ceilZ);
@@ -366,7 +375,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// flats do come out mirrored there is a number to reach for.
 		if (rs.flags2 & 0xFF00) flatFlipsIgnored++;
 	}
-	log.Line("  doors closed at load  %d", doorCount);
+	log.Line("  doors closed at load  %d  (%d with a hinge resolved)", doorCount, doorsWithHinge);
+	log.Count("doors: no hinge face found", doorCount - doorsWithHinge);
 	log.Line("  flats with no art -> sky  %d", flatsToSky);
 	// Realms' neutral is 0x80 = 128. A range hugging or exceeding 255 means the
 	// mapping has gone wrong again and the level will look flat and overlit.
@@ -815,8 +825,14 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 			FTextureID topTex = worldTex(mp.topTexture);
 			FTextureID undTex = worldTex(mp.undersideTexture);
-			cs->SetTexture(sector_t::ceiling, topTex.isValid() ? topTex : skyflatnum, false);
-			cs->SetTexture(sector_t::floor, undTex.isValid() ? undTex : skyflatnum, false);
+			// NEVER the sky flat here. A control sector's planes become the
+			// slab's top and underside, and a sky flat there renders as sky --
+			// indoors, inside a table. Missing art borrows the other face's,
+			// and a slab with neither draws nothing at all.
+			const FTextureID slabTop = topTex.isValid() ? topTex : undTex;
+			const FTextureID slabBot = undTex.isValid() ? undTex : topTex;
+			cs->SetTexture(sector_t::ceiling, slabTop.isValid() ? slabTop : FNullTextureID(), false);
+			cs->SetTexture(sector_t::floor, slabBot.isValid() ? slabBot : FNullTextureID(), false);
 
 			// Scale, exactly as for an ordinary flat: 2^s world units per texel,
 			// and Doom's scale is the reciprocal. Bits 4-5 top, 2-3 underside,

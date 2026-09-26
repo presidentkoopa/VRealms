@@ -83,6 +83,10 @@ struct Sector
 	// though it is not closed at load.
 	bool IsDoorCapable() const  { return commandID >= TRIGGER_DOOR_A; }
 	bool IsSecondaryDoor() const { return commandID == TRIGGER_DOOR_A; }
+
+	// Which of this door's four faces it swings about. Resolved on load; -1 when
+	// the sector is not a door or no hinge was found. See Map::hingeOf.
+	int hingeFace = -1;
 	// 2^s world units per texel (handoff 5.3)
 	int FloorScaleShift() const   { return (flags >> 4) & 3; }
 	int CeilingScaleShift() const { return (flags >> 2) & 3; }

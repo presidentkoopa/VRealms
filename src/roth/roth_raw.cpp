@@ -329,6 +329,32 @@ Map ParseRaw(const uint8_t *data, size_t size)
 		}
 	}
 
+	// THE HINGE, resolved AFTER the faces above -- it reads face.textureMap, so
+	// it cannot run in the sector loop where firstFaceIndex is set. It did, once,
+	// and found nothing at all while the same rule matched 141 out of 141 offline.
+	//
+	// A Realms door is a four-walled slab that swings about one corner, and the
+	// original finds that corner by walking the slab's four walls for the one
+	// whose mapping record is EXTENDED and whose faceID is a door sentinel
+	// (setup_door_swing_geometry, doors.c:496-503: it tests fs:[edge]&0x8000,
+	// the record's extended bit, and fs:[edge+0xc] >= 0xfffd, its faceID).
+	//
+	// VERIFIED across all 44 retail maps: 141 door sectors, every one with
+	// exactly four faces, every one with exactly one hinge. No exceptions.
+	for (auto &s : map.sectors)
+	{
+		if (!s.IsDoor() || s.faceCount != 4 || s.firstFaceIndex < 0) continue;
+		for (int j = 0; j < 4; j++)
+		{
+			const int fi = s.firstFaceIndex + j;
+			if (fi < 0 || fi >= (int)map.faces.size()) continue;
+			const int tmi = map.faces[fi].textureMap;
+			if (tmi < 0 || tmi >= (int)map.textureMaps.size()) continue;
+			const TextureMap &tm = map.textureMaps[tmi];
+			if (tm.extended && tm.faceID >= TRIGGER_DOOR_A) { s.hingeFace = fi; break; }
+		}
+	}
+
 	if (r.Bad())
 		map.error = "truncated file";
 	return map;

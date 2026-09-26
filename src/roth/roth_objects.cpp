@@ -41,6 +41,7 @@
 #include "texturemanager.h"
 #include "gametexture.h"
 #include "printf.h"
+#include "c_cvars.h"
 #include "r_state.h"
 #include "r_data/sprites.h"
 #include "r_data/models.h"
@@ -107,15 +108,25 @@ static const double ANGLE_SENSE = +1.0;
 // so the object contributes rotationByte*2 units of a 512-unit turn, plus a
 // fixed 0x80 units == 90 degrees.
 //
-// MEASURED, twice, because the constant folds together Realms' +Y origin,
-// Doom's +X origin, and that 90: at 90 the couches faced 12 o'clock when they
-// should face 6 (a uniform 180 out), and at 270 the chairs sat 90 degrees
-// clockwise of right. 270 + 90 = 360 = 0.
+// THE CONSTANT IS A CVAR because deducing it from descriptions of which way a
+// couch faces has produced contradictory answers three times running: the same
+// nudge that fixed one piece of furniture broke another, which is the signature
+// of guessing at a value that wants measuring. `roth_objectangle` is added to
+// the base below and takes effect on the next map load, so it can be dialled in
+// live and the answer written down once rather than argued about.
 static const double ANGLE_ZERO = 0.0;
+
+// Added to ANGLE_ZERO. Set it in the console and reload the map; when the
+// furniture faces the right way, that number is the answer.
+CUSTOM_CVAR(Float, roth_objectangle, 0.f, CVAR_ARCHIVE)
+{
+	Printf("roth_objectangle %.1f -- reload the map to apply\n", (float)self);
+}
 
 static double ObjectYaw(uint8_t rotation)
 {
-	double deg = ANGLE_ZERO + ANGLE_SENSE * (double(rotation) * 360.0 / 256.0);
+	double deg = ANGLE_ZERO + double(roth_objectangle)
+		+ ANGLE_SENSE * (double(rotation) * 360.0 / 256.0);
 	deg = fmod(deg, 360.0);
 	if (deg < 0) deg += 360.0;
 	return deg;
