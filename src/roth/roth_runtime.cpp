@@ -1791,6 +1791,162 @@ static bool TickChangeObjectTexture(Effect &e)
 
 //==========================================================================
 //
+// Move one sector's floor or ceiling, and take with it whatever is standing on
+// it. Realms heights are world units one for one (rothmap.cpp reads floorHeight
+// straight into the plane), so there is no scaling here.
+//
+// THE PLAYER CARRY IS DELEGATED, NOT TRANSCRIBED, and this is the one place in
+// the height effects where that is true. The original hands the per-frame budget
+// to apply_cell_move_to_player and moves the player itself; GZDoom already does
+// that for its own movers, through P_ChangeSector, including crushing and
+// riders. Reproducing the original's version on top of that would fight it. So
+// the ramp -- which sectors, how fast, to what limit, in what units -- is read
+// from ROTH.C exactly, and only the "and the player goes up with it" step is the
+// host engine's.
+//
+//==========================================================================
+
+static void MoveSectorPlane(int si, bool ceiling, int16_t height)
+{
+	if (g.level == nullptr) return;
+	if (si < 0 || (size_t)si >= g.map.sectors.size()) return;
+	if ((size_t)si >= g.level->sectors.Size()) return;
+
+	Sector &rs = g.map.sectors[si];
+	const double oldZ = ceiling ? double(rs.ceilingHeight) : double(rs.floorHeight);
+	const double newZ = double(height);
+	if (oldZ == newZ) return;
+
+	if (ceiling) rs.ceilingHeight = height; else rs.floorHeight = height;
+
+	sector_t *sec = &g.level->sectors[si];
+	const int which = ceiling ? sector_t::ceiling : sector_t::floor;
+	if (ceiling) sec->ceilingplane.setD(newZ);
+	else         sec->floorplane.setD(-newZ);
+	sec->SetPlaneTexZ(which, newZ);
+	P_ChangeSector(sec, 0, newZ - oldZ, which, false);
+}
+
+//==========================================================================
+//
+// cmd_change_height -- raw_commands.c:4483, RAW command base 0x07
+// tick_change_height -- raw_commands.c:2448
+//
+// The sector version of 0x23, and the same record fields mean the same things:
+// +0x07 is the speed, +0x0a and +0x0c the two limits, +0x0e the dwell, bit 0x04
+// of +0x06 makes the step fixed point, and re-running a registered record flips
+// the direction of the move already in flight.
+//
+// What is new is WHICH surface moves. Bit 0x01 of +0x06 picks the field: clear is
+// the sector's +0x02, its FLOOR, and set is +0x00, its CEILING. One opcode
+// therefore drives both lifts and closing ceilings.
+//
+// TWO THINGS ARE NOT REPRODUCED, and both are named rather than approximated:
+//
+//   The SOUND. The registrar optionally links an SFX node through +0x10 and the
+//   exits start and stop it. There is no sound-node system on this side yet, so
+//   the link is skipped and the moves are silent.
+//
+//   The PORTAL MERGE. Two of the original's four loop variants accumulate a flag
+//   from apply_cell_move_to_player_portalcheck, and a completed sweep with that
+//   flag set turns around immediately instead of going through the finalize.
+//   There is no equivalent to accumulate here, so it is treated as never set,
+//   which means those two variants always take the finalize. This is a KNOWN
+//   deviation, not a reading of the original.
+//
+//==========================================================================
+
+int ChangeHeight(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+
+	if (rec->modifier & 0x21)                        // TOGGLE
+	{
+		if (rec->Word(0x0E) != 0) return CMD_NOTHING;
+		if (!(rec->fireFlags & 0x20)) return CMD_NOTHING;
+		Effect *eff = FindEffect(base, (uint16_t)index);
+		if (eff == nullptr) return CMD_NOTHING;
+		eff->flags5 ^= 0x80;
+		rec->modifier ^= 0x02;
+		SyncDisabled(rec);
+		return CMD_ACTED;
+	}
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	e.sectors = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
+	if (e.sectors.empty()) return CMD_NOTHING;
+	e.payload = 0;
+	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickChangeHeight(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);
+
+	int32_t delta = ROTH_FRAME_TICKS_PER_TIC * (int32_t)rec->Byte(0x07);
+	if (rec->fireFlags & 0x04)
+	{
+		delta += (int32_t)(e.payload & 0x3F);
+		e.payload = (uint16_t)(uint8_t)delta;
+		delta = (int32_t)((uint32_t)delta >> 6);
+		if (delta == 0) return false;
+	}
+
+	// The original has no count==0 guard here: its member list is a do-while, so
+	// an empty group would step member[0] regardless. There is no member[0] to
+	// step on this side, so an empty group finishes instead of reading past.
+	if (e.sectors.empty())
+	{
+		rec->modifier &= 0xDE;
+		SyncDisabled(rec);
+		return true;
+	}
+
+	const bool ceiling = (rec->fireFlags & 0x01) != 0;   // set -> +0x00, the ceiling
+	const bool ascend  = (e.flags5 & 0x80) != 0;
+
+	int32_t budget = ascend ? delta : -delta;
+	const int32_t limit32 = 2 * (int32_t)(int16_t)rec->Word(ascend ? 0x0C : 0x0A);
+	const int16_t limit = (int16_t)limit32;
+
+	bool overshoot = false;
+	for (int si : e.sectors)
+	{
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		const Sector &rs = g.map.sectors[si];
+		const int16_t cur = ceiling ? rs.ceilingHeight : rs.floorHeight;
+
+		if (ascend ? (cur >= limit) : (cur <= limit)) { overshoot = true; break; }
+
+		const int16_t sum = (int16_t)(cur + (int16_t)budget);
+		int16_t stored;
+		if (ascend ? (sum <= limit) : (sum >= limit))
+		{
+			stored = sum;
+		}
+		else
+		{
+			budget -= (int32_t)(sum - limit);      // the surplus folds back
+			stored = limit;
+		}
+		MoveSectorPlane(si, ceiling, stored);
+	}
+
+	if (overshoot) return TickHeightExit(e, rec);
+	return false;                                  // see the portal-merge note
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -1817,6 +1973,7 @@ static void TickEffects()
 		case 0x11: done = TickFlashLights(g.effects[i]); break;
 		case 0x23: done = TickChangeObjectHeight(g.effects[i]); break;
 		case 0x0D: done = TickChangeObjectTexture(g.effects[i]); break;
+		case 0x07: done = TickChangeHeight(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -1860,7 +2017,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x0D: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x07: case 0x0D: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -1893,6 +2050,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x24: return RotateObject(rec);
 	case 0x23: return ChangeObjectHeight(rec, index);
 	case 0x0D: return ChangeObjectTexture(rec, index);
+	case 0x07: return ChangeHeight(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
