@@ -197,6 +197,9 @@ struct Runtime
 	// Realms face -> engine sidedef, so a trigger's face can be found from a side.
 	std::map<int, int> faceToSide;
 	std::map<int, int> sideToFace;                 // and back again
+	// Realms texture-map record -> the faces that use it, for the scroll effect:
+	// its members are MAPPING records and the sidedefs hang off the faces.
+	std::map<int, std::vector<int>> texmapToFaces;
 	std::map<int, std::vector<uint16_t>> bySide;   // built from the two above
 
 	// "Whatever the player just used" -- the original's g_active_object /
@@ -2139,6 +2142,197 @@ static bool TickChangeFlatTexture(Effect &e, bool isFloor)
 
 //==========================================================================
 //
+// THE SCROLL ACCUMULATOR, shared by both scroll ticks (raw_commands.c:1944 and
+// 1976) and the reason a Realms texture can crawl instead of only sliding:
+//
+//     product = rate * step + carry;   delta = product >> 1;   carry = product & 1
+//
+// The rate is a SIGNED byte, so scrolling runs either way, and the halving with
+// the carry kept means a rate of 1 advances one texel every other frame rather
+// than one per frame. Each axis keeps its own carry, in the effect's +0x06 and
+// +0x07.
+//
+//==========================================================================
+
+struct ScrollDelta { uint8_t u, v; };
+
+static ScrollDelta AdvanceScroll(Effect &e, const Command *rec)
+{
+	const int step = ROTH_FRAME_TICKS_PER_TIC;
+
+	const int carryU = (e.payload & 0x0001) ? 1 : 0;          // +0x06 bit 0
+	const int carryV = (e.payload & 0x0100) ? 1 : 0;          // +0x07 bit 0
+
+	const int32_t prodU = (int32_t)(int8_t)rec->Byte(0x07) * step + carryU;
+	const int32_t prodV = (int32_t)(int8_t)rec->Byte(0x08) * step + carryV;
+
+	ScrollDelta d;
+	d.u = (uint8_t)((uint32_t)prodU >> 1);
+	d.v = (uint8_t)((uint32_t)prodV >> 1);
+
+	e.payload = (uint16_t)(((uint32_t)prodU & 1u)
+	                     | (((uint32_t)prodV & 1u) << 8));
+	return d;
+}
+
+//==========================================================================
+//
+// Re-apply one texture-mapping record's shift to every sidedef that wears it.
+// The loader's derivation is just offX = shiftX and offY = shiftY, negated when
+// the record is pinned to the bottom of its piece (rothmap.cpp:775).
+//
+//==========================================================================
+
+static void ApplyTexmapShift(int tmi)
+{
+	if (g.level == nullptr) return;
+	if (tmi < 0 || (size_t)tmi >= g.map.textureMaps.size()) return;
+	const TextureMap &tm = g.map.textureMaps[tmi];
+
+	double offX = double(tm.shiftX);
+	double offY = double(tm.shiftY);
+	if (tm.flags & FF_PIN_BOTTOM) offY = -offY;
+
+	auto faces = g.texmapToFaces.find(tmi);
+	if (faces == g.texmapToFaces.end()) return;
+	for (int fi : faces->second)
+	{
+		auto sd = g.faceToSide.find(fi);
+		if (sd == g.faceToSide.end()) continue;
+		if (sd->second < 0 || (size_t)sd->second >= g.level->sides.Size()) continue;
+		side_t &side = g.level->sides[sd->second];
+		for (int part = 0; part < 3; part++)
+		{
+			side.SetTextureXOffset(part, offX);
+			side.SetTextureYOffset(part, offY);
+		}
+	}
+}
+
+//==========================================================================
+//
+// cmd_scroll_face_texture -- RAW command base 0x0f
+// tick_scroll_face_texture -- raw_commands.c:1944
+//
+// Crawling wall art: the effect's members are texture-MAPPING records and the
+// scroll lands on their +0x0a / +0x0b, which are the record's shiftX and shiftY.
+// (ROTH.C's comment calls them u and v, which is the same pair under another
+// name -- worth saying because this port had +0x0a on a face record labelled as
+// collision flags, and these are mapping records, not faces.)
+//
+//==========================================================================
+
+int ScrollFaceTexture(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+	if (rec->modifier & 0x21) return CMD_NOTHING;
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	// Its members are the mapping records the key resolves to, which the reader
+	// has already worked out as FACES -- take each one's mapping record.
+	for (int fi : rec->faces)
+		if (fi >= 0 && (size_t)fi < g.map.faces.size()
+		    && g.map.faces[fi].textureMap >= 0)
+			e.sectors.push_back(g.map.faces[fi].textureMap);
+	if (e.sectors.empty()) return CMD_NOTHING;
+	e.payload = 0;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickScrollFaceTexture(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	const ScrollDelta d = AdvanceScroll(e, rec);
+	for (int tmi : e.sectors)          // mapping-record indices, despite the name
+	{
+		if (tmi < 0 || (size_t)tmi >= g.map.textureMaps.size()) continue;
+		TextureMap &tm = g.map.textureMaps[tmi];
+		tm.shiftX = (uint8_t)(tm.shiftX + d.u);
+		tm.shiftY = (uint8_t)(tm.shiftY + d.v);
+		ApplyTexmapShift(tmi);
+	}
+	return false;                      // a scroll runs until something stops it
+}
+
+//==========================================================================
+//
+// cmd_scroll_sector_texture -- raw_commands.c:4371, RAW command base 0x0e
+// tick_scroll_sector_texture -- raw_commands.c:1976
+//
+// The same accumulator on a sector's flats, and the record's +0x06 says WHICH
+// surfaces move -- it is a set of bits, dispatched in order, each subtracted as
+// it is handled so the walk stops once they are exhausted:
+//
+//     bit 0  the sector's +0x12 / +0x13 -- the FLOOR shift
+//     bit 1  the sector's +0x10 / +0x11 -- the CEILING shift
+//     bit 2  through the mid-platform at +0x18, its +0x0a / +0x0b
+//     bit 3  through the mid-platform at +0x18, its +0x04 / +0x05
+//
+// So one record can crawl a floor and a ceiling together. BITS 2 AND 3 ARE NOT
+// IMPLEMENTED: they reach through the mid-platform sub-record, which becomes a
+// 3D floor at load and is not live state an effect can address. They are counted.
+//
+//==========================================================================
+
+int ScrollSectorTexture(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+	if (rec->modifier & 0x21) return CMD_NOTHING;
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	e.sectors = CollectGeometryGroup(rec->key, false);
+	if (e.sectors.empty()) return CMD_NOTHING;
+	e.payload = 0;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickScrollSectorTexture(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	const ScrollDelta d = AdvanceScroll(e, rec);
+	const uint8_t which = rec->fireFlags;
+
+	for (int si : e.sectors)
+	{
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		Sector &rs = g.map.sectors[si];
+
+		uint8_t cl = which;
+		if (cl & 0x01)
+		{
+			rs.floorShiftX = (uint8_t)(rs.floorShiftX + d.u);
+			rs.floorShiftY = (uint8_t)(rs.floorShiftY + d.v);
+			ApplySectorFlat(si, true);
+			cl -= 1; if (cl == 0) continue;
+		}
+		if (cl & 0x02)
+		{
+			rs.ceilShiftX = (uint8_t)(rs.ceilShiftX + d.u);
+			rs.ceilShiftY = (uint8_t)(rs.ceilShiftY + d.v);
+			ApplySectorFlat(si, false);
+			cl -= 2; if (cl == 0) continue;
+		}
+		if (cl & 0x0C) g.unhandledOps[0x0E]++;    // the mid-platform bits
+	}
+	return false;
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -2168,6 +2362,8 @@ static void TickEffects()
 		case 0x07: done = TickChangeHeight(g.effects[i]); break;
 		case 0x0A: done = TickChangeFlatTexture(g.effects[i], true);  break;
 		case 0x0B: done = TickChangeFlatTexture(g.effects[i], false); break;
+		case 0x0E: done = TickScrollSectorTexture(g.effects[i]); break;
+		case 0x0F: done = TickScrollFaceTexture(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -2211,7 +2407,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -2246,6 +2442,8 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x0D: return ChangeObjectTexture(rec, index);
 	case 0x07: return ChangeHeight(rec, index);
 	case 0x0A: case 0x0B: return ChangeFlatTexture(rec, index);
+	case 0x0E: return ScrollSectorTexture(rec, index);
+	case 0x0F: return ScrollFaceTexture(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
@@ -2465,6 +2663,12 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 
 	// The reverse of the loader's pairing, so the wall the player just used can
 	// be named as a Realms FACE -- which is what a key of 0 resolves to.
+	g.texmapToFaces.clear();
+	for (size_t fi = 0; fi < g.map.faces.size(); fi++)
+	{
+		const int tmi = g.map.faces[fi].textureMap;
+		if (tmi >= 0) g.texmapToFaces[tmi].push_back((int)fi);
+	}
 	g.sideToFace.clear();
 	for (auto &kv : g.faceToSide) g.sideToFace[kv.second] = kv.first;
 
