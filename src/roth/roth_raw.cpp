@@ -132,7 +132,7 @@ Map ParseRaw(const uint8_t *data, size_t size)
 		s.floorTexture = r.U16();
 		s.flags = r.U8();
 		s.light = r.U8();
-		s.overrideHeight = r.I8();
+		s.textureMapOverride = r.I8();
 		s.faceCount = r.U8();
 		s.firstFaceOffset = r.U16();
 		s.ceilShiftX = r.U8();

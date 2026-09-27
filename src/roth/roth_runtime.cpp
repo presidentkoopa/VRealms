@@ -2682,13 +2682,18 @@ static bool TmsStep(int16_t &field, int16_t lim, int16_t &bud, bool desc, bool d
 //   THE SOUNDS, as in 0x07: the SFX node the exits start and stop has no
 //   equivalent here yet.
 //
-// A NAMING CONFLICT, recorded rather than resolved: the byte at sector +0x0c is
-// `overrideHeight` in this port's reader and ROTH.C's own comment calls it the
-// sector light. Neither is verified -- our reader parses it and never uses it,
-// and Sector::light at +0x0b is already the confirmed brightness, so a second
-// light byte would be odd. The ramp below is faithful to the CODE either way,
-// since it only moves the byte toward a target; nothing renders it today, so the
-// question can be settled before it matters.
+// WHAT THE +0x0c BYTE IS, now settled and it was neither guess. RAW.md calls it
+// TEXTURE_MAP_OVERRIDE: it overrides the position and SIZE of the MID_TEXTURE on
+// this sector's double-sided faces that carry TRANSPARENT and
+// TRANSPARENT_FIXED_SIZE. The value is the size, 0 is fit-to-size, negative
+// anchors to the floor and positive to the ceiling. This port had guessed
+// "overrideHeight" and ROTH.C's comment guessed "sector light"; both were wrong,
+// and the confirmed brightness is +0x0b.
+//
+// So this sub-pass animates a transparent mid-texture's SIZE alongside the floor
+// move, which is a sensible thing for a sinking floor to do. The ramp below was
+// already faithful to the code; it is only now legible. Nothing in the loader
+// consumes the field yet, so it still has no visible effect.
 //
 //==========================================================================
 
@@ -2774,12 +2779,12 @@ static bool TickModifySector(Effect &e)
 			MoveSectorPlane(si, false, floorH);
 		}
 
-		if ((f6 & 0x02) && !(rs.flags & 0x01) && (int8_t)rs.overrideHeight < -1)
+		if ((f6 & 0x02) && !(rs.flags & 0x01) && (int8_t)rs.textureMapOverride < -1)
 		{
-			int32_t pos = -(int32_t)(int8_t)rs.overrideHeight;
+			int32_t pos = -(int32_t)(int8_t)rs.textureMapOverride;
 			int32_t ee = pos + companion;
 			if (!(ee > 1)) ee = 1;
-			rs.overrideHeight = (int8_t)(-(int8_t)(uint8_t)ee);
+			rs.textureMapOverride = (int8_t)(-(int8_t)(uint8_t)ee);
 			moved = true;
 		}
 

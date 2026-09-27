@@ -58,7 +58,16 @@ struct Sector
 	uint16_t unk04, ceilingTexture, floorTexture;
 	uint8_t  flags;            // bits 2-3 ceiling scale, 4-5 floor scale
 	uint8_t  light;
-	int8_t   overrideHeight;
+	// TEXTURE_MAP_OVERRIDE (RAW.md, sector +0x0c). NOT a height and NOT a light,
+	// which is what this field was guessed to be from both sides: it overrides the
+	// position and SIZE of the MID_TEXTURE on double-sided faces in this sector
+	// that carry TRANSPARENT and TRANSPARENT_FIXED_SIZE. The value is the size; 0
+	// means fit-to-size, negative anchors to the floor, positive to the ceiling.
+	//
+	// Still unused by the loader. tick_modify_sector (opcode 0x03) ramps it, which
+	// is now legible: that effect animates a transparent mid-texture size, not a
+	// brightness as ROTH.C's comment guessed.
+	int8_t   textureMapOverride;
 	uint8_t  faceCount;
 	uint16_t firstFaceOffset;
 	uint8_t  ceilShiftX, ceilShiftY, floorShiftX, floorShiftY;
