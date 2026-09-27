@@ -305,16 +305,44 @@ static void on_frame_game(const struct roth_api_v1 *api)
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
                             uint32_t width, uint32_t height)
 {
-    (void)api;
     if (g_shots_done >= g_shots_wanted || pixels == NULL) return;
     if (width == 0 || height == 0 || width > 4096 || height > 4096) return;
 
+    /* WRITE RGB, NOT INDICES. The first version dumped palette indices as a
+     * greyscale PGM, and comparing those against REMAROTH's RGB output is
+     * meaningless -- index 200 is not "brighter" than index 50, it is simply a
+     * different colour. Any measurement taken from that comparison would have
+     * been noise dressed up as evidence.
+     *
+     * So the frame goes through the game's own palette, g_palette_rgb_ptr
+     * (0x85488), which is 256 RGB triples of 6-BIT VGA values: they went straight
+     * to the DAC, so 0..63 rather than 0..255. Scaling by 255/63 rather than <<2
+     * keeps white actually white.
+     *
+     * If the palette pointer is not up yet the frame is skipped rather than
+     * written wrongly -- a missing frame is obvious, a mis-coloured one is not.
+     */
+    const uint32_t palptr = api->game_ram->u32(0x85488u);
+    if (palptr == 0) return;
+    const uint8_t *pal = (const uint8_t *)(uintptr_t)palptr;
+
     char name[64];
-    snprintf(name, sizeof name, "shot_%05d.pgm", g_shots_done);
+    snprintf(name, sizeof name, "shot_%05d.ppm", g_shots_done);
     FILE *f = fopen(name, "wb");
     if (f == NULL) return;
-    fprintf(f, "P5\n%u %u\n255\n", width, height);
-    fwrite(pixels, 1, (size_t)width * (size_t)height, f);
+    fprintf(f, "P6\n%u %u\n255\n", width, height);
+
+    const size_t n = (size_t)width * (size_t)height;
+    for (size_t i = 0; i < n; i++)
+    {
+        const uint8_t *e = pal + (size_t)pixels[i] * 3u;
+        const uint8_t rgb[3] = {
+            (uint8_t)((e[0] * 255u) / 63u),
+            (uint8_t)((e[1] * 255u) / 63u),
+            (uint8_t)((e[2] * 255u) / 63u),
+        };
+        fwrite(rgb, 1, 3, f);
+    }
     fclose(f);
 
     if (g_shots_done == 0)
