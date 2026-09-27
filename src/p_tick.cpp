@@ -37,6 +37,31 @@
 #include "texturemanager.h"
 #include "menu.h"          // [BB] M_MenuPauses -- see P_CheckTickerPaused
 #include "roth/roth_runtime.h"
+#include "m_argv.h"
+
+//==========================================================================
+//
+// -autoshot <tics>: take a screenshot this many tics after a level starts
+// running, then quit.
+//
+// A COMPARISON RIG NEEDS REPEATABLE FRAMES, and driving the screenshot key
+// from outside does not give them: the window may not take focus, the key may
+// not be bound, and the exact tic the shot lands on varies with load time and
+// frame rate. None of that is acceptable when the whole point is to diff two
+// images of the same moment.
+//
+// This fires on a COUNTED TIC rather than a wall-clock delay, so the same
+// command produces the same frame on any machine, which is what makes a
+// regression set meaningful. Default off, and it touches nothing when unused.
+//
+// General on purpose: it says nothing about Realms and any map or mod can use
+// it for the same job.
+//
+//==========================================================================
+FARG(autoshot, "Debug",
+	"Screenshot N tics after a level starts, then quit.", "tics",
+	"For automated comparison rigs: fires on a counted tic so the same frame is"
+	" captured on every machine, unlike a timed keypress from outside.");
 
 extern gamestate_t wipegamestate;
 extern uint8_t globalfreeze, globalchangefreeze;
@@ -734,6 +759,24 @@ void P_Ticker (void)
 			// Inert -- an immediate return -- on every map that is not one of
 			// these. See src/roth/roth_runtime.h.
 			roth::TickLevelLogic(Level);
+
+			// -autoshot: counted from the first ticked frame of this level.
+			{
+				static int shotCountdown = -1;
+				static FLevelLocals *shotLevel = nullptr;
+				if (shotLevel != Level)
+				{
+					shotLevel = Level;
+					const char *n = Args->CheckValue(FArg_autoshot);
+					shotCountdown = n != nullptr ? atoi(n) : -1;
+				}
+				if (shotCountdown > 0 && --shotCountdown == 0)
+				{
+					C_DoCommand("screenshot");
+					// Next tic, so the shot is actually written before we go.
+					C_DoCommand("wait 2; quit");
+				}
+			}
 
 			// for par times
 			Level->time++;
