@@ -232,6 +232,9 @@ struct Runtime
 	// THE ACTIVE-EFFECT POOL. See TickEffects.
 	std::vector<Effect> effects;
 
+	// Realms sector -> the engine sector holding its mid-platform's two planes.
+	std::map<int, int> platformCtrl;
+
 	// Realms FLAT index -> the engine texture, and whether the index is the
 	// pack's sky marker. See RegisterFlat.
 	std::map<int, std::pair<FTextureID, bool>> flatByIndex;
@@ -1999,6 +2002,65 @@ static void ApplySectorFlat(int si, bool isFloor)
 
 //==========================================================================
 //
+// Re-apply a mid-platform to the control sector that renders it, after the logic
+// has changed the platform record. A mid-platform is a slab: its TOP becomes the
+// control sector's ceiling and its UNDERSIDE that sector's floor, which is why
+// the opcodes that reach a platform treat top as a floor-ish thing and underside
+// as a ceiling-ish thing -- you stand on one and look up at the other.
+//
+// A recompute of everything, for the same reason as ApplySectorFlat: heights,
+// textures, scales and offsets are all derived together. rothmap.cpp:1018 is the
+// original of this arithmetic, including its rule that a control sector NEVER
+// takes the sky flat and that a missing face borrows the other's.
+//
+//==========================================================================
+
+static void ApplyPlatform(int rothSector)
+{
+	if (g.level == nullptr) return;
+	if (rothSector < 0 || (size_t)rothSector >= g.map.sectors.size()) return;
+
+	auto cit = g.platformCtrl.find(rothSector);
+	if (cit == g.platformCtrl.end()) return;
+	if (cit->second < 0 || (size_t)cit->second >= g.level->sectors.Size()) return;
+
+	const int pi = g.map.sectors[rothSector].platformIndex;
+	if (pi < 0 || (size_t)pi >= g.map.platforms.size()) return;
+	const MidPlatform &mp = g.map.platforms[pi];
+
+	sector_t *cs = &g.level->sectors[cit->second];
+	const double topZ = double(mp.topZ);
+	const double undZ = double(mp.undersideZ);
+
+	cs->SetPlaneTexZ(sector_t::ceiling, topZ);
+	cs->SetPlaneTexZ(sector_t::floor, undZ);
+	cs->floorplane.set(0., 0., 1., -undZ);
+	cs->ceilingplane.set(0., 0., -1., topZ);
+
+	auto look = [](int index) -> FTextureID
+	{
+		auto it = g.texByIndex.find(index);
+		return it == g.texByIndex.end() ? FNullTextureID() : it->second;
+	};
+	const FTextureID topTex = look(mp.topTexture);
+	const FTextureID undTex = look(mp.undersideTexture);
+	const FTextureID slabTop = topTex.isValid() ? topTex : undTex;
+	const FTextureID slabBot = undTex.isValid() ? undTex : topTex;
+	cs->SetTexture(sector_t::ceiling, slabTop.isValid() ? slabTop : FNullTextureID(), false);
+	cs->SetTexture(sector_t::floor,   slabBot.isValid() ? slabBot : FNullTextureID(), false);
+
+	const double topScale = 1.0 / double(1 << ((mp.scales >> 4) & 3));
+	const double undScale = 1.0 / double(1 << ((mp.scales >> 2) & 3));
+	cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
+	cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
+	cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
+	cs->SetYOffset(sector_t::ceiling, double(mp.topShiftY));
+	cs->SetXOffset(sector_t::floor, double(mp.undersideShiftX));
+	cs->SetYOffset(sector_t::floor, double(mp.undersideShiftY));
+}
+
+//==========================================================================
+//
 // cmd_change_floor_texture -- raw_commands.c:4356, RAW command bases 0x0a and 0x0b
 // swap_cell_state_group_v1 / _v2 -- what their ticks actually do
 //
@@ -2052,14 +2114,69 @@ static bool TickChangeFlatTexture(Effect &e, bool isFloor)
 	if (e.flags5 & 0x40) return TickArmedCountdown(e);
 	if (e.sectors.empty()) return TickFinalize(e, rec, rec->Word(0x0E));
 
+	const bool frozen = (rec->fireFlags & 0x08) != 0;
+
+	// THE ALT PATH. Bit 0x04 sends the swap through each member's mid-platform
+	// instead of the sector itself, and which FACE of the slab it lands on
+	// mirrors the sector case exactly: v1, the floor variant, swaps the
+	// platform's TOP (+0x06 texture, +0x0a shift) and v2, the ceiling variant,
+	// its UNDERSIDE (+0x00 texture, +0x04 shift). Which is the right way round --
+	// a slab's top is the floor you stand on and its underside the ceiling above
+	// you.
 	if (rec->fireFlags & 0x04)
 	{
-		// The ALT path, through the mid-platform sub-record. See above.
-		g.unhandledOps[isFloor ? 0x0A : 0x0B]++;
+		const int first = e.sectors.empty() ? -1 : e.sectors[0];
+		if (first < 0 || (size_t)first >= g.map.sectors.size())
+			return TickFinalize(e, rec, rec->Word(0x0E));
+		const int pi = g.map.sectors[first].platformIndex;
+		if (pi < 0 || (size_t)pi >= g.map.platforms.size())
+			return TickFinalize(e, rec, rec->Word(0x0E));   // no sub-record: the original returns
+		MidPlatform &mp = g.map.platforms[pi];
+
+		const uint8_t sMask = isFloor ? 0x30 : 0x0C;
+		const int     sSh   = isFloor ? 4    : 2;
+		const uint8_t fMask = isFloor ? 0x03 : 0x0C;
+		const int     fSh   = isFloor ? 0    : 2;
+
+		const uint16_t inTex   = rec->Word(0x0A);
+		const uint16_t inShift = rec->Word(0x0C);
+		const uint8_t  inPack  = rec->Byte(0x07);
+
+		const uint16_t oldTex = isFloor ? mp.topTexture : mp.undersideTexture;
+		const uint16_t oldShift = isFloor
+			? (uint16_t)(mp.topShiftX | ((uint16_t)mp.topShiftY << 8))
+			: (uint16_t)(mp.undersideShiftX | ((uint16_t)mp.undersideShiftY << 8));
+		const uint8_t oldScales = mp.scales;
+		const uint8_t oldPad    = mp.pad;
+
+		if (!frozen)
+		{
+			rec->SetWord(0x0A, oldTex);
+			rec->SetWord(0x0C, oldShift);
+		}
+		if (isFloor)
+		{
+			mp.topTexture = inTex;
+			mp.topShiftX = (uint8_t)(inShift & 0xFF);
+			mp.topShiftY = (uint8_t)(inShift >> 8);
+		}
+		else
+		{
+			mp.undersideTexture = inTex;
+			mp.undersideShiftX = (uint8_t)(inShift & 0xFF);
+			mp.undersideShiftY = (uint8_t)(inShift >> 8);
+		}
+		mp.scales = (uint8_t)((oldScales & (uint8_t)~sMask)
+		          | (uint8_t)(((inPack & 0x03) << sSh) & sMask));
+		mp.pad = (uint8_t)((oldPad & (uint8_t)~fMask)
+		       | (uint8_t)((((inPack & 0x0C) >> 2) << fSh) & fMask));
+		if (!frozen)
+			rec->SetByte(0x07, (uint8_t)(((oldScales & sMask) >> sSh)
+			                           | (((oldPad & fMask) >> fSh) << 2)));
+
+		for (int si : e.sectors) ApplyPlatform(si);
 		return TickFinalize(e, rec, rec->Word(0x0E));
 	}
-
-	const bool frozen = (rec->fireFlags & 0x08) != 0;
 
 	// Which fields this variant moves. v1 is the floor, v2 the ceiling, and the
 	// only differences are these offsets and the two bit positions.
@@ -2326,7 +2443,27 @@ static bool TickScrollSectorTexture(Effect &e)
 			ApplySectorFlat(si, false);
 			cl -= 2; if (cl == 0) continue;
 		}
-		if (cl & 0x0C) g.unhandledOps[0x0E]++;    // the mid-platform bits
+		// Bits 2 and 3 reach the sector's mid-platform: bit 2 its TOP shift
+		// (+0x0a / +0x0b) and bit 3 its UNDERSIDE (+0x04 / +0x05). The original
+		// stops the whole dispatch if the sector has no sub-record.
+		if (cl & 0x0C)
+		{
+			const int pi = rs.platformIndex;
+			if (pi < 0 || (size_t)pi >= g.map.platforms.size()) continue;
+			MidPlatform &mp = g.map.platforms[pi];
+			if (cl & 0x04)
+			{
+				mp.topShiftX = (uint8_t)(mp.topShiftX + d.u);
+				mp.topShiftY = (uint8_t)(mp.topShiftY + d.v);
+				cl -= 4; if (cl == 0) { ApplyPlatform(si); continue; }
+			}
+			if (cl & 0x08)
+			{
+				mp.undersideShiftX = (uint8_t)(mp.undersideShiftX + d.u);
+				mp.undersideShiftY = (uint8_t)(mp.undersideShiftY + d.v);
+			}
+			ApplyPlatform(si);
+		}
 	}
 	return false;
 }
@@ -2881,6 +3018,7 @@ void EndLevel()
 {
 	g.active = false;
 	g.level = nullptr;
+	g.platformCtrl.clear();
 	g.flatByIndex.clear();
 	g.effects.clear();
 	g.texByIndex.clear();
@@ -2924,6 +3062,11 @@ void RegisterTexture(int rothIndex, FTextureID tex)
 void RegisterFlat(int rothIndex, FTextureID tex, bool isSky)
 {
 	if (rothIndex >= 0) g.flatByIndex[rothIndex] = std::make_pair(tex, isSky);
+}
+
+void RegisterPlatformControl(int rothSector, int ctrlSector)
+{
+	if (rothSector >= 0 && ctrlSector >= 0) g.platformCtrl[rothSector] = ctrlSector;
 }
 
 bool ActivateLine(line_t *line, AActor *who, int side)

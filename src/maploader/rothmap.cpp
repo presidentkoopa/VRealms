@@ -1092,6 +1092,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			P_Add3DFloor(&Level->sectors[i], cs, &Level->lines[ctrlLine],
 				FF_EXISTS | FF_SOLID | FF_RENDERALL, 255);
 
+			// So the level LOGIC can move this slab later: several opcodes reach
+			// a sector's mid-platform through its +0x18, and on this side that
+			// platform IS this control sector's two planes.
+			roth::RegisterPlatformControl((int)i, (int)ctrlSector);
+			roth::RegisterTexture(mp.topTexture, topTex);
+			roth::RegisterTexture(mp.undersideTexture, undTex);
+
 			ctrlSector++; ctrlVertex += 4; ctrlLine += 4;
 			platformsBuilt++;
 		}

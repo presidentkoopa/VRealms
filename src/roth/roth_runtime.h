@@ -79,6 +79,13 @@ void RegisterTexture(int rothIndex, FTextureID tex);
 // a distinction the runtime cannot make for itself and must not lose.
 void RegisterFlat(int rothIndex, FTextureID tex, bool isSky);
 
+// Which engine sector became the 3D-floor CONTROL sector for a Realms sector's
+// mid-platform. Only the loader knows the pairing, and the level logic needs it:
+// several opcodes reach a sector's mid-platform through its +0x18 to move the
+// slab's heights or swap its faces, and on this side a mid-platform IS a control
+// sector's two planes. Without this those paths have nowhere to write.
+void RegisterPlatformControl(int rothSector, int ctrlSector);
+
 // The player used a wall. Returns true if a Realms chain fired, in which case
 // the engine's own line activation should not also run.
 //
