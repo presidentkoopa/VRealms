@@ -1625,6 +1625,32 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			roth::RegisterTexture((int)c.aux, tex);
 			registered++;
 		}
+
+		// And the FLATS opcodes 0x0a / 0x0b can swap onto a floor or ceiling,
+		// which the record names at +0x0a. A flat index may be the pack's sky
+		// marker, so that is registered with it rather than resolved to a
+		// texture -- the runtime cannot tell the two apart by itself.
+		int flats = 0;
+		for (const roth::Command &c : rm.commands)
+		{
+			const uint8_t op = (uint8_t)(c.opcode & 0x7f);
+			if (op != 0x0A && op != 0x0B) continue;
+			const int fi = (int)c.Word(0x0A);
+			const bool isSky = haveArt && art.IsSkySurface(fi);
+			roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky);
+			flats++;
+		}
+		// Every flat the GEOMETRY wears, too: a swap puts the sector's previous
+		// appearance into the record, and swapping back has to find it again.
+		for (const roth::Sector &rs : rm.sectors)
+			for (int pass = 0; pass < 2; pass++)
+			{
+				const int fi = pass == 0 ? rs.floorTexture : rs.ceilingTexture;
+				const bool isSky = haveArt && art.IsSkySurface(fi);
+				roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky);
+			}
+		if (flats > 0)
+			log.Line("  logic flats      %d record(s) for opcodes 0x0a/0x0b", flats);
 		if (registered > 0)
 			log.Line("  logic textures   %d index(es) pre-resolved for opcode 0x34", registered);
 	}

@@ -73,6 +73,12 @@ void RegisterFaceSide(int rothFace, int sideIndex);
 // map, and the runtime looks up rather than resolving. Call before BeginLevel.
 void RegisterTexture(int rothIndex, FTextureID tex);
 
+// The same, for a FLAT the logic can swap onto a floor or ceiling (0x0a, 0x0b).
+// Separate from RegisterTexture because a flat index can be the pack's SKY
+// MARKER, which resolves to no texture at all and means "draw the sky here" --
+// a distinction the runtime cannot make for itself and must not lose.
+void RegisterFlat(int rothIndex, FTextureID tex, bool isSky);
+
 // The player used a wall. Returns true if a Realms chain fired, in which case
 // the engine's own line activation should not also run.
 //

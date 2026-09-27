@@ -229,6 +229,10 @@ struct Runtime
 	// THE ACTIVE-EFFECT POOL. See TickEffects.
 	std::vector<Effect> effects;
 
+	// Realms FLAT index -> the engine texture, and whether the index is the
+	// pack's sky marker. See RegisterFlat.
+	std::map<int, std::pair<FTextureID, bool>> flatByIndex;
+
 	// Realms texture index -> the engine texture the loader made for it.
 	// PRE-RESOLVED rather than looked up on demand, because the loader's
 	// TextureSet is a local that dies with the load; the loader registers every
@@ -1947,6 +1951,194 @@ static bool TickChangeHeight(Effect &e)
 
 //==========================================================================
 //
+// Re-apply a sector's floor or ceiling flat from the Realms fields, after the
+// logic has changed them. Deliberately a RECOMPUTE of everything the loader
+// derives -- texture, scale, offsets -- rather than a patch of the one field
+// that moved, because the swap changes the texture and its shift and its scale
+// bits together and they are all derived from each other. rothmap.cpp:455 is the
+// original of this arithmetic; if that changes, this has to change with it.
+//
+//==========================================================================
+
+static void ApplySectorFlat(int si, bool isFloor)
+{
+	if (g.level == nullptr) return;
+	if (si < 0 || (size_t)si >= g.map.sectors.size()) return;
+	if ((size_t)si >= g.level->sectors.Size()) return;
+
+	const Sector &rs = g.map.sectors[si];
+	sector_t *sec = &g.level->sectors[si];
+
+	const int which = isFloor ? sector_t::floor : sector_t::ceiling;
+	const int index = isFloor ? rs.floorTexture : rs.ceilingTexture;
+	const int shift = isFloor ? rs.FloorScaleShift() : rs.CeilingScaleShift();
+	const int shx   = isFloor ? rs.floorShiftX : rs.ceilShiftX;
+	const int shy   = isFloor ? rs.floorShiftY : rs.ceilShiftY;
+
+	auto it = g.flatByIndex.find(index);
+	if (it == g.flatByIndex.end())
+	{
+		g.unhandledOps[isFloor ? 0x0A : 0x0B]++;   // no flat registered for it
+		return;
+	}
+	const FTextureID tex = it->second.second ? FNullTextureID() : it->second.first;
+
+	// "Nothing here" becomes the sky, exactly as at load: a flat must draw
+	// something or the sector renders hall of mirrors.
+	sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
+
+	const double unitsPerTexel = double(1 << shift);
+	sec->SetXScale(which, 1. / unitsPerTexel);
+	sec->SetYScale(which, 1. / unitsPerTexel);
+	sec->SetXOffset(which,  shx * unitsPerTexel * 0.5);
+	sec->SetYOffset(which, -shy * unitsPerTexel * 0.5);
+}
+
+//==========================================================================
+//
+// cmd_change_floor_texture -- raw_commands.c:4356, RAW command bases 0x0a and 0x0b
+// swap_cell_state_group_v1 / _v2 -- what their ticks actually do
+//
+// The same SWAP idea as the object texture, on a sector's flat: the record holds
+// one appearance and the sector wears the other, and each application exchanges
+// them. 0x0a is the FLOOR and 0x0b the CEILING, and the two collectors are exact
+// mirrors -- v1 touches the sector's +0x08 texture and +0x12 shift pair, v2 the
+// +0x06 texture and +0x10 pair.
+//
+// It is not only the picture. The SCALE bits move too, packed two at a time into
+// the sector's flags (+0x0a) and the flip bits into the high byte of +0x16, with
+// the sector's previous values captured back into the record's +0x07. So one
+// swap can change a floor's texture, its tiling and its mirroring together, and
+// swapping back restores all three.
+//
+// Member 0 is the one that EXCHANGES. Every other member in the group is then
+// assigned member 0's new values -- they do not each swap with the record, so a
+// group ends up uniform however it started. That is the original's behaviour, not
+// a simplification.
+//
+// +0x06 bit 0x08 freezes the capture, turning the toggle into a one-way set, and
+// bit 0x04 selects an ALT path that works through each member's sub-record at
+// +0x18 -- the mid-platform -- instead of the sector itself. THE ALT PATH IS NOT
+// IMPLEMENTED: mid-platform records are built into 3D floors at load and are not
+// modelled as live state that an effect can reach, so those records are counted
+// rather than approximated.
+//
+//==========================================================================
+
+int ChangeFlatTexture(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+	if (rec->modifier & 0x21) return CMD_NOTHING;     // already registered
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	e.sectors = CollectGeometryGroup(rec->key, false);   // the flat collector
+	if (e.sectors.empty()) return CMD_NOTHING;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickChangeFlatTexture(Effect &e, bool isFloor)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);
+	if (e.sectors.empty()) return TickFinalize(e, rec, rec->Word(0x0E));
+
+	if (rec->fireFlags & 0x04)
+	{
+		// The ALT path, through the mid-platform sub-record. See above.
+		g.unhandledOps[isFloor ? 0x0A : 0x0B]++;
+		return TickFinalize(e, rec, rec->Word(0x0E));
+	}
+
+	const bool frozen = (rec->fireFlags & 0x08) != 0;
+
+	// Which fields this variant moves. v1 is the floor, v2 the ceiling, and the
+	// only differences are these offsets and the two bit positions.
+	const uint8_t scaleMask = isFloor ? 0x30 : 0x0C;   // in Sector::flags
+	const int     scaleSh   = isFloor ? 4    : 2;
+	const uint8_t flipMask  = isFloor ? 0x03 : 0x0C;   // in flags2's high byte
+	const int     flipSh    = isFloor ? 0    : 2;
+
+	const int first = e.sectors[0];
+	if (first < 0 || (size_t)first >= g.map.sectors.size()) return false;
+	Sector &s0 = g.map.sectors[first];
+
+	// Everything read before anything is written, as the original does.
+	const uint16_t inTex   = rec->Word(0x0A);
+	const uint16_t inShift = rec->Word(0x0C);
+	const uint8_t  inPack  = rec->Byte(0x07);
+
+	const uint16_t oldTex   = isFloor ? s0.floorTexture : s0.ceilingTexture;
+	const uint16_t oldShift = isFloor
+		? (uint16_t)(s0.floorShiftX | ((uint16_t)s0.floorShiftY << 8))
+		: (uint16_t)(s0.ceilShiftX  | ((uint16_t)s0.ceilShiftY  << 8));
+	const uint8_t oldFlags = s0.flags;
+	const uint8_t oldHi    = (uint8_t)(s0.flags2 >> 8);
+
+	if (!frozen)
+	{
+		rec->SetWord(0x0A, oldTex);
+		rec->SetWord(0x0C, oldShift);
+	}
+
+	// Member 0 takes the record's appearance.
+	if (isFloor)
+	{
+		s0.floorTexture = inTex;
+		s0.floorShiftX = (uint8_t)(inShift & 0xFF);
+		s0.floorShiftY = (uint8_t)(inShift >> 8);
+	}
+	else
+	{
+		s0.ceilingTexture = inTex;
+		s0.ceilShiftX = (uint8_t)(inShift & 0xFF);
+		s0.ceilShiftY = (uint8_t)(inShift >> 8);
+	}
+	s0.flags  = (uint8_t)((oldFlags & (uint8_t)~scaleMask)
+	                      | (uint8_t)(((inPack & 0x03) << scaleSh) & scaleMask));
+	const uint8_t newHi = (uint8_t)((oldHi & (uint8_t)~flipMask)
+	                      | (uint8_t)((((inPack & 0x0C) >> 2) << flipSh) & flipMask));
+	s0.flags2 = (uint16_t)((s0.flags2 & 0x00FF) | ((uint16_t)newHi << 8));
+
+	if (!frozen)
+		rec->SetByte(0x07, (uint8_t)(((oldFlags & scaleMask) >> scaleSh)
+		                           | (((oldHi & flipMask) >> flipSh) << 2)));
+
+	ApplySectorFlat(first, isFloor);
+
+	// And every other member is ASSIGNED member 0's new values -- they do not
+	// each swap with the record.
+	for (size_t i = 1; i < e.sectors.size(); i++)
+	{
+		const int si = e.sectors[i];
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		Sector &sn = g.map.sectors[si];
+		if (isFloor)
+		{
+			sn.floorTexture = inTex;
+			sn.floorShiftX = (uint8_t)(inShift & 0xFF);
+			sn.floorShiftY = (uint8_t)(inShift >> 8);
+		}
+		else
+		{
+			sn.ceilingTexture = inTex;
+			sn.ceilShiftX = (uint8_t)(inShift & 0xFF);
+			sn.ceilShiftY = (uint8_t)(inShift >> 8);
+		}
+		ApplySectorFlat(si, isFloor);
+	}
+
+	return TickFinalize(e, rec, rec->Word(0x0E));
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -1974,6 +2166,8 @@ static void TickEffects()
 		case 0x23: done = TickChangeObjectHeight(g.effects[i]); break;
 		case 0x0D: done = TickChangeObjectTexture(g.effects[i]); break;
 		case 0x07: done = TickChangeHeight(g.effects[i]); break;
+		case 0x0A: done = TickChangeFlatTexture(g.effects[i], true);  break;
+		case 0x0B: done = TickChangeFlatTexture(g.effects[i], false); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -2017,7 +2211,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x07: case 0x0D: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -2051,6 +2245,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x23: return ChangeObjectHeight(rec, index);
 	case 0x0D: return ChangeObjectTexture(rec, index);
 	case 0x07: return ChangeHeight(rec, index);
+	case 0x0A: case 0x0B: return ChangeFlatTexture(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
@@ -2347,6 +2542,7 @@ void EndLevel()
 {
 	g.active = false;
 	g.level = nullptr;
+	g.flatByIndex.clear();
 	g.effects.clear();
 	g.texByIndex.clear();
 	g.byFace.clear();
@@ -2384,6 +2580,11 @@ void RegisterFaceSide(int rothFace, int sideIndex)
 void RegisterTexture(int rothIndex, FTextureID tex)
 {
 	if (rothIndex >= 0 && tex.isValid()) g.texByIndex[rothIndex] = tex;
+}
+
+void RegisterFlat(int rothIndex, FTextureID tex, bool isSky)
+{
+	if (rothIndex >= 0) g.flatByIndex[rothIndex] = std::make_pair(tex, isSky);
 }
 
 bool ActivateLine(line_t *line, AActor *who, int side)
