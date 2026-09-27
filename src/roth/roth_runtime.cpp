@@ -1669,6 +1669,128 @@ static bool TickChangeObjectHeight(Effect &e)
 
 //==========================================================================
 //
+// cmd_change_object_texture -- raw_commands.c:4528, RAW command base 0x0d
+// apply_object_state_to_group -- raw_commands.c, what its tick actually does
+//
+// A SWAP, and the cleverness is where the other state lives: the record's +0x0c
+// holds one texture word and the props wear the other, and each application
+// exchanges them. The first member's previous texture is written BACK into the
+// record, so running the command again puts it back -- one record, two
+// appearances, no second record and no stored "original" anywhere else.
+//
+// That is why only the record's INITIAL +0x0c needs a sprite built at load: after
+// the first swap the record holds a texture some prop was already wearing.
+//
+// +0x06 bit 0x08 makes it one-way. The capture is skipped, so the props take the
+// record's texture and the record keeps it -- it sets rather than toggles.
+//
+// The texture word packs the object's +0x04 pair: index low, source high.
+//
+//==========================================================================
+
+// Push a texture word we have just changed out to the world.
+static void ApplyObjectTexture(const ObjectRef &r, uint16_t word)
+{
+	if (r.sector < 0 || (size_t)r.sector >= g.map.objects.size()) return;
+	std::vector<Object> &list = g.map.objects[r.sector];
+	if (r.index < 0 || (size_t)r.index >= list.size()) return;
+
+	Object &o = list[r.index];
+	o.textureIndex  = (uint8_t)(word & 0xFF);
+	o.textureSource = (uint8_t)(word >> 8);
+
+	AActor *mo = FindObjectActor(r.sector, r.index);
+	if (mo == nullptr) return;
+	const int sn = FindLogicSprite(word);
+	if (sn >= 0) mo->sprite = sn;
+	else g.unhandledOps[0x0D]++;      // no sprite was built for this word
+}
+
+int ChangeObjectTexture(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+
+	if (rec->modifier & 0x21)                        // TOGGLE, as 0x23
+	{
+		if (rec->Word(0x0E) != 0) return CMD_NOTHING;
+		if (!(rec->fireFlags & 0x20)) return CMD_NOTHING;
+		Effect *eff = FindEffect(base, (uint16_t)index);
+		if (eff == nullptr) return CMD_NOTHING;
+		eff->flags5 ^= 0x80;
+		rec->modifier ^= 0x02;
+		SyncDisabled(rec);
+		return CMD_ACTED;
+	}
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	e.objects = ResolveCommandObjects(rec->key);
+	if (e.objects.empty()) return CMD_NOTHING;
+	e.payload = 0;
+	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickChangeObjectTexture(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);
+	if (e.objects.empty())
+	{
+		rec->modifier &= 0xDE;
+		SyncDisabled(rec);
+		return true;
+	}
+
+	const bool skip = (rec->fireFlags & 0x08) != 0;
+	const ObjectRef &first = e.objects[0];
+
+	// The state being swapped IN, and the first prop's state, read before
+	// anything is written -- the original reads both up front for the same reason.
+	const uint16_t incoming = rec->Word(0x0C);
+	uint16_t firstWord = 0;
+	uint8_t firstFlags = 0;
+	if (first.sector >= 0 && (size_t)first.sector < g.map.objects.size())
+	{
+		const std::vector<Object> &fl = g.map.objects[first.sector];
+		if (first.index >= 0 && (size_t)first.index < fl.size())
+		{
+			firstWord  = (uint16_t)(fl[first.index].textureIndex
+			                     | ((uint16_t)fl[first.index].textureSource << 8));
+			firstFlags = fl[first.index].flags;
+		}
+	}
+
+	if (!skip)
+	{
+		rec->SetWord(0x0C, firstWord);                // the swap: keep the old one
+		rec->SetByte(0x07, (uint8_t)(firstFlags & 0x10));
+	}
+
+	const uint8_t carry = (uint8_t)(firstFlags & 0xEF);
+	for (const ObjectRef &r : e.objects)
+	{
+		ApplyObjectTexture(r, incoming);
+		rec->SetByte(0x07, (uint8_t)(rec->Byte(0x07) & 0xEF));
+		if (r.sector >= 0 && (size_t)r.sector < g.map.objects.size())
+		{
+			std::vector<Object> &list = g.map.objects[r.sector];
+			if (r.index >= 0 && (size_t)r.index < list.size())
+				list[r.index].flags |= carry;
+		}
+	}
+
+	return TickFinalize(e, rec, rec->Word(0x0A));
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -1694,6 +1816,7 @@ static void TickEffects()
 		case 0x02: done = TickLightSwitch(g.effects[i]); break;
 		case 0x11: done = TickFlashLights(g.effects[i]); break;
 		case 0x23: done = TickChangeObjectHeight(g.effects[i]); break;
+		case 0x0D: done = TickChangeObjectTexture(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -1737,7 +1860,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x0D: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -1769,6 +1892,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x11: return FlashLights(rec, index);
 	case 0x24: return RotateObject(rec);
 	case 0x23: return ChangeObjectHeight(rec, index);
+	case 0x0D: return ChangeObjectTexture(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound

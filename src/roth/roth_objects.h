@@ -55,6 +55,16 @@ void SpawnPreparedObjects(FLevelLocals *Level);
 // whose spawn failed, is simply absent rather than an error at every use.
 AActor *FindObjectActor(int rothSector, int rothIndex);
 
+// A sprite for a texture the LOGIC can ask for, looked up by the packed texture
+// word a command record carries -- the object's +0x04 pair, texture index in the
+// low byte and source in the high one.
+//
+// Built at load for the same reason wall textures are: opcode 0x0d repaints a
+// prop to a texture that may appear on no object in the map, and the art pack is
+// a loader local that does not outlive the load, so nothing can be resolved
+// later. Negative when the loader never built one.
+int FindLogicSprite(uint16_t textureWord);
+
 // The rotation byte -> yaw conversion the objects were built with, exported so a
 // later rotation lands on the same convention as the original spawn instead of a
 // second derivation that can drift from it.

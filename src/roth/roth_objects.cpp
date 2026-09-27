@@ -426,6 +426,16 @@ static const MeshBinding *EnsureMesh(const std::string &packName, int index,
 //
 //==========================================================================
 
+// Packed texture word -> sprite, for the textures the level LOGIC names rather
+// than the ones its objects wear. See FindLogicSprite.
+static std::map<uint16_t, int> gLogicSprites;
+
+int FindLogicSprite(uint16_t textureWord)
+{
+	auto it = gLogicSprites.find(textureWord);
+	return it == gLogicSprites.end() ? -1 : it->second;
+}
+
 void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 {
 	gPending.clear();
@@ -690,6 +700,47 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			sharedArt.SpritesRegistered(), sharedName.c_str());
 		log->Count("objects: light byte not applied", lit);
 	}
+
+	//------------------------------------------------------------------
+	// SPRITES THE LOGIC CAN NAME, which are not the set its objects wear.
+	//
+	// Opcode 0x0d repaints a prop to the texture word its record carries at
+	// +0x0c, and that texture may be on no object anywhere in the map. The
+	// packs are locals here and the runtime cannot open one later, so the
+	// sprite is built now. Only the record's INITIAL word needs this: the
+	// swap puts the prop's own previous texture back into the record, and
+	// that one already has a sprite because the prop is wearing it.
+	//------------------------------------------------------------------
+	gLogicSprites.clear();
+	for (const Command &c : rm.commands)
+	{
+		if ((c.opcode & 0x7f) != 0x0D) continue;
+		const uint16_t word = c.Word(0x0C);
+		if (word == 0 || gLogicSprites.count(word) != 0) continue;
+
+		int artIndex = 0;
+		const bool useShared = Pack::ResolveObjectArt((uint8_t)(word & 0xFF),
+			(uint8_t)(word >> 8), artIndex);
+		if (useShared && !haveShared) continue;
+		TextureSet &art = useShared ? sharedArt : levelArt;
+
+		const Pack *pack = art.PackData();
+		if (pack == nullptr || pack->Entry(artIndex) == nullptr) continue;
+
+		SpriteInfo info;
+		FTextureID tex = art.Sprite(artIndex, log, &info);
+		if (!tex.isValid()) continue;
+
+		auto found = spriteByTexture.find(tex.GetIndex());
+		int sn = (found != spriteByTexture.end()) ? found->second
+		                                         : MakeRuntimeSprite(tex, log);
+		if (sn < 0) continue;
+		spriteByTexture[tex.GetIndex()] = sn;
+		gLogicSprites[word] = sn;
+	}
+	if (log && !gLogicSprites.empty())
+		log->Line("  logic sprites    %d texture word(s) pre-built for opcode 0x0d",
+			(int)gLogicSprites.size());
 }
 
 //==========================================================================
