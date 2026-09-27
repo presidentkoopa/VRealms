@@ -333,7 +333,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount));
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
-	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsIgnored = 0;
+	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsApplied = 0;
 	int skyFlats = 0;
 	int darkestLight = 255, brightestLight = 0;
 	for (size_t i = 0; i < rm.sectors.size(); i++)
@@ -498,10 +498,53 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// was reverted for being reasoned rather than measured, and this is
 			// what measuring says.
 			const double unitsPerTexel = double(1 << shift) * 2.0;
-			sec->SetXScale(which, 1. / unitsPerTexel);
-			sec->SetYScale(which, 1. / unitsPerTexel);
-			sec->SetXOffset(which,  shx * unitsPerTexel * 0.5);
-			sec->SetYOffset(which, -shy * unitsPerTexel * 0.5);
+
+			//----------------------------------------------------------
+			// THE MIRROR FLIPS, which this loader used to count and throw
+			// away ("flats: flip bits ignored").
+			//
+			// Flats are world-anchored in Realms exactly as in Doom -- the
+			// world grid is right and must not become per-sector. What a
+			// sector adds on top is scale, shift, and a MIRROR on either
+			// texture axis, and it is the missing mirror that makes a
+			// pattern run the wrong way across a boundary.
+			//
+			// The bits live in the high byte of +0x16, i.e. sector +0x17,
+			// and the floor and ceiling use different halves of it. From
+			// the per-sector span setup in ROTH.C's renderer:
+			//
+			//     ceiling: fill_mode = 0x38 | ((sec[+0x17] & 0x0C) >> 1)
+			//     floor:   fill_mode = 0xB8 | ((sec[+0x17] & 0x03) << 1)
+			//
+			// and the flat span driver then reads that fill mode:
+			//
+			//     flags & 2  ->  negate the FIRST axis step
+			//     flags & 4  ->  negate the SECOND axis step
+			//
+			// Tracing the shifts through gives, for each surface, one bit
+			// per axis:
+			//
+			//     floor    bit 0 -> first axis,  bit 1 -> second axis
+			//     ceiling  bit 2 -> first axis,  bit 3 -> second axis
+			//
+			// A negated step is a mirrored axis, which Doom expresses as a
+			// NEGATIVE scale. The offset has to be negated with it, or the
+			// mirrored copy lands a texture-width away from where it
+			// belongs and the seam moves instead of closing.
+			//----------------------------------------------------------
+			const uint8_t flipBits = (uint8_t)(rs.flags2 >> 8);
+			const bool flipU = isFloor ? (flipBits & 0x01) != 0
+			                           : (flipBits & 0x04) != 0;
+			const bool flipV = isFloor ? (flipBits & 0x02) != 0
+			                           : (flipBits & 0x08) != 0;
+			if (flipU || flipV) flatFlipsApplied++;
+
+			const double sx = (flipU ? -1. : 1.) / unitsPerTexel;
+			const double sy = (flipV ? -1. : 1.) / unitsPerTexel;
+			sec->SetXScale(which, sx);
+			sec->SetYScale(which, sy);
+			sec->SetXOffset(which, (flipU ? -1. : 1.) *  shx * unitsPerTexel * 0.5);
+			sec->SetYOffset(which, (flipV ? -1. : 1.) * -shy * unitsPerTexel * 0.5);
 		}
 
 		//------------------------------------------------------------------
@@ -537,7 +580,6 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// at all, only a flip of the texture-quad corner assignment in the
 		// separate driver used for 3D mesh faces. Counted either way, so if
 		// flats do come out mirrored there is a number to reach for.
-		if (rs.flags2 & 0xFF00) flatFlipsIgnored++;
 	}
 	log.Line("  doors closed at load  %d  (%d with a hinge resolved)", doorCount, doorsWithHinge);
 	log.Count("doors: no hinge face found", doorCount - doorsWithHinge);
@@ -546,7 +588,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// Realms' neutral is 0x80 = 128. A range hugging or exceeding 255 means the
 	// mapping has gone wrong again and the level will look flat and overlit.
 	log.Line("  sector light  %d .. %d  (Realms neutral is 128)", darkestLight, brightestLight);
-	log.Count("flats: flip bits ignored", flatFlipsIgnored);
+	log.Line("  flat mirror flips %d surface(s) mirrored on one or both axes", flatFlipsApplied);
 
 	//----------------------------------------------------------------------
 	// Lines and sides
