@@ -2603,6 +2603,199 @@ static bool TickChangeFaceTextureAdv(Effect &e)
 
 //==========================================================================
 //
+// tms_step -- raw_commands.c, the clamp shared by every sub-pass of 0x03.
+//
+// One step of a 16-bit height toward a limit, with a signed budget. Returns
+// whether it moved, which is what decides the whole tick's exit. `decr` says
+// whether a clamp CONSUMES the budget by the surplus -- two of the sub-passes
+// pass false, so their move does not bill the shared allowance.
+//
+//==========================================================================
+
+static bool TmsStep(int16_t &field, int16_t lim, int16_t &bud, bool desc, bool decr)
+{
+	const int16_t cur = field;
+	if (desc ? (cur <= lim) : (cur >= lim)) return false;
+
+	const int16_t sum = (int16_t)(cur + bud);
+	int16_t stored;
+	if (desc ? (sum > lim) : (sum < lim))
+	{
+		stored = sum;
+	}
+	else
+	{
+		if (decr) bud = (int16_t)(bud - (int16_t)(sum - lim));
+		stored = lim;
+	}
+	field = stored;
+	return true;
+}
+
+//==========================================================================
+//
+// cmd_modify_sector -- raw_commands.c:4954, RAW command base 0x03
+// tick_modify_sector -- raw_commands.c:2590, the largest tick in the game
+//
+// The compound mover: it sinks a group of floors, and optionally the slab inside
+// each of them and a per-sector byte, all on one shared budget. This is what a
+// Realms stone floor grinding down into the ground is made of.
+//
+// Register and toggle are 0x07's, with one difference worth noting because it is
+// the sort of thing that silently breaks the neighbouring field: the linked-SFX
+// key is read from +0x14 here, not +0x10 as 0x07 reads it.
+//
+// What +0x06's low bits select:
+//     0            SIMPLE -- the members' floors and nothing else
+//     bit 0 (1)    also the sector's mid-platform, its top and its underside
+//     bit 1 (2)    also the sector's +0x0c byte, ramped alongside
+//
+// THE BUDGET IS RESET PER MEMBER HERE, unlike 0x07 where it accumulates across
+// the group. So every floor in the group gets the full per-frame allowance rather
+// than sharing one, and they move together instead of in sequence. Transcribed as
+// written; it reads like a difference the original meant.
+//
+// TWO THINGS ARE NOT IMPLEMENTED, both stated rather than approximated:
+//
+//   THE ASCENDING SWEEP. Descending drives every member toward one limit,
+//   2 * +0x0a, which is right there in the record. Ascending instead reads a
+//   per-member array of SNAPSHOT targets through a pointer at the record's +0x10,
+//   dereferenced twice -- and nothing in ROTH.C that I could find writes that
+//   pointer. The registrar does not. Without knowing what it points at, the
+//   targets cannot be reproduced, and inventing them would be inventing the
+//   distances every one of these floors travels. So the ascending half is counted
+//   and the record is left registered rather than moved wrongly.
+//
+//   THE SOUNDS, as in 0x07: the SFX node the exits start and stop has no
+//   equivalent here yet.
+//
+// A NAMING CONFLICT, recorded rather than resolved: the byte at sector +0x0c is
+// `overrideHeight` in this port's reader and ROTH.C's own comment calls it the
+// sector light. Neither is verified -- our reader parses it and never uses it,
+// and Sector::light at +0x0b is already the confirmed brightness, so a second
+// light byte would be odd. The ramp below is faithful to the CODE either way,
+// since it only moves the byte toward a target; nothing renders it today, so the
+// question can be settled before it matters.
+//
+//==========================================================================
+
+int ModifySector(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+
+	if (rec->modifier & 0x21)                        // TOGGLE, as 0x07
+	{
+		if (rec->Word(0x0E) != 0) return CMD_NOTHING;
+		if (!(rec->fireFlags & 0x20)) return CMD_NOTHING;
+		Effect *eff = FindEffect(base, (uint16_t)index);
+		if (eff == nullptr) return CMD_NOTHING;
+		eff->flags5 ^= 0x80;
+		rec->modifier ^= 0x02;
+		SyncDisabled(rec);
+		return CMD_ACTED;
+	}
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	e.sectors = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
+	if (e.sectors.empty()) return CMD_NOTHING;
+	e.payload = 0;
+	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickModifySector(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);
+
+	int32_t delta = ROTH_FRAME_TICKS_PER_TIC * (int32_t)rec->Byte(0x07);
+	if (rec->fireFlags & 0x04)
+	{
+		delta += (int32_t)(e.payload & 0x3F);
+		e.payload = (uint16_t)(uint8_t)delta;
+		delta = (int32_t)((uint32_t)delta >> 6);
+		if (delta == 0) return false;
+	}
+
+	if (e.flags5 & 0x80)
+	{
+		// The ascending sweep. See the note above: its targets come from a
+		// snapshot this port cannot locate the source of.
+		g.unhandledOps[e.tick]++;
+		return false;
+	}
+
+	const uint8_t f6 = rec->fireFlags;
+	const int16_t master = (int16_t)(-delta);
+	const int16_t limD = (int16_t)(2 * (int32_t)(int16_t)rec->Word(0x0A));
+
+	// The companion ramp's per-frame amount, carried at half rate with its odd
+	// bit kept in the effect -- the same trick the scrolls use.
+	int32_t companion = 0;
+	if (f6 & 0x03)
+	{
+		const uint32_t acc = (uint32_t)delta + (uint32_t)(e.flags5 & 0x01 ? 1u : 0u);
+		companion = -(int32_t)(acc >> 1);
+	}
+
+	bool moved = false;
+	for (int si : e.sectors)
+	{
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		Sector &rs = g.map.sectors[si];
+
+		// Reset per member, NOT shared across the group. See above.
+		int16_t bud = master;
+
+		int16_t floorH = rs.floorHeight;
+		if (TmsStep(floorH, limD, bud, true, true))
+		{
+			moved = true;
+			MoveSectorPlane(si, false, floorH);
+		}
+
+		if ((f6 & 0x02) && !(rs.flags & 0x01) && (int8_t)rs.overrideHeight < -1)
+		{
+			int32_t pos = -(int32_t)(int8_t)rs.overrideHeight;
+			int32_t ee = pos + companion;
+			if (!(ee > 1)) ee = 1;
+			rs.overrideHeight = (int8_t)(-(int8_t)(uint8_t)ee);
+			moved = true;
+		}
+
+		if (f6 & 0x01)
+		{
+			const int pi = rs.platformIndex;
+			if (pi >= 0 && (size_t)pi < g.map.platforms.size())
+			{
+				MidPlatform &mp = g.map.platforms[pi];
+				int16_t bud2 = master;
+				int16_t top = mp.topZ;
+				if (TmsStep(top, limD, bud2, true, true)) { mp.topZ = top; moved = true; }
+
+				// The second pass does NOT bill the budget -- decr is false.
+				int16_t rem = master;
+				int16_t und = mp.undersideZ;
+				if (TmsStep(und, limD, rem, true, false)) { mp.undersideZ = und; moved = true; }
+
+				ApplyPlatform(si);
+			}
+		}
+	}
+
+	if (!moved) return TickHeightExit(e, rec);
+	return false;
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -2635,6 +2828,7 @@ static void TickEffects()
 		case 0x0E: done = TickScrollSectorTexture(g.effects[i]); break;
 		case 0x0F: done = TickScrollFaceTexture(g.effects[i]); break;
 		case 0x0C: done = TickChangeFaceTextureAdv(g.effects[i]); break;
+		case 0x03: done = TickModifySector(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -2678,7 +2872,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0C: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x03: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0C: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -2716,6 +2910,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x0E: return ScrollSectorTexture(rec, index);
 	case 0x0F: return ScrollFaceTexture(rec, index);
 	case 0x0C: return ChangeFaceTextureAdv(rec, index);
+	case 0x03: return ModifySector(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
