@@ -123,13 +123,26 @@ CUSTOM_CVAR(Float, roth_objectangle, 0.f, CVAR_ARCHIVE)
 	Printf("roth_objectangle %.1f -- reload the map to apply\n", (float)self);
 }
 
-static double ObjectYaw(uint8_t rotation)
+double ObjectYaw(uint8_t rotation)
 {
 	double deg = ANGLE_ZERO + double(roth_objectangle)
 		+ ANGLE_SENSE * (double(rotation) * 360.0 / 256.0);
 	deg = fmod(deg, 360.0);
 	if (deg < 0) deg += 360.0;
 	return deg;
+}
+
+// The exact inverse of ObjectYaw, for the level logic: "face the player" arrives
+// as a world bearing in degrees and has to become the rotation BYTE, because the
+// Realms byte is what the map and the command records hold. Kept beside its
+// forward direction so a change to the convention cannot update only one of them.
+uint8_t RotationFromYaw(double deg)
+{
+	double r = (deg - ANGLE_ZERO - double(roth_objectangle)) / ANGLE_SENSE;
+	r = r * 256.0 / 360.0;
+	r = fmod(r, 256.0);
+	if (r < 0) r += 256.0;
+	return (uint8_t)(int)(r + 0.5);
 }
 
 //==========================================================================
@@ -685,8 +698,25 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 //
 //==========================================================================
 
+// Realms (sector, index) -> the actor it became. Keyed as one int so the map is
+// a plain lookup; sectors and their object counts are both well under 16 bits.
+static std::map<uint32_t, AActor *> gObjectActors;
+
+static inline uint32_t ObjectKey(int rothSector, int rothIndex)
+{
+	return ((uint32_t)(rothSector & 0xFFFF) << 16) | (uint32_t)(rothIndex & 0xFFFF);
+}
+
+AActor *FindObjectActor(int rothSector, int rothIndex)
+{
+	if (rothSector < 0 || rothIndex < 0) return nullptr;
+	auto it = gObjectActors.find(ObjectKey(rothSector, rothIndex));
+	return it == gObjectActors.end() ? nullptr : it->second;
+}
+
 void SpawnPreparedObjects(FLevelLocals *Level)
 {
+	gObjectActors.clear();
 	if (gPending.empty() || Level == nullptr) return;
 
 	PClassActor *cls = PropClass();
@@ -707,6 +737,9 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 	{
 		AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
 		if (mo == nullptr) { failed++; continue; }
+
+		// So the level logic can find this prop again. See FindObjectActor.
+		gObjectActors[ObjectKey(p.rothSector, p.rothIndex)] = mo;
 
 		// After the spawn, not before: the spawn state sets the sprite, and
 		// LoaderProp's spawn state has tics -1 so nothing ever sets it again.

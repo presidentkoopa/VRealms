@@ -149,7 +149,12 @@ struct Object
 	int16_t  x, y;
 	uint8_t  textureIndex, textureSource, rotation, flags, light, renderType;
 	int16_t  z;                // ABSOLUTE, not relative to the floor
-	uint16_t unk0C, unk0E;
+	uint16_t unk0C;
+	// The handle COMMANDS address this object by, exactly as Sector::commandID is
+	// for sectors: resolve_command_objects (raw_commands.c:318) walks every object
+	// group and matches this field against the command's key. Objects are a
+	// 0x10 stride and this is the field at +0x0e.
+	uint16_t commandID;
 
 	bool FixedAngle() const { return (renderType & 0x80) != 0; }
 	bool HorizontalFlip() const { return (flags & 0x10) != 0; }

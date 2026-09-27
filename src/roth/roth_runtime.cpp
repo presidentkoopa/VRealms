@@ -38,6 +38,10 @@
 #include "gamedata/g_mapinfo.h"
 #include "p_spec.h"
 #include "playsim/p_local.h"
+#include "roth_objects.h"
+#include "actor.h"
+#include "d_player.h"
+#include <math.h>
 #include "playsim/po_man.h"
 #include "printf.h"
 
@@ -147,6 +151,9 @@ struct Deferred
 //
 //==========================================================================
 
+// A prop, addressed the way the map stores them. See ResolveCommandObjects.
+struct ObjectRef { int sector; int index; };
+
 struct Effect
 {
 	uint8_t  tick = 0;            // chunk[+4]: which per-frame handler
@@ -162,6 +169,17 @@ struct Effect
 	std::vector<uint8_t> baseLight;
 	uint16_t hold = 0;            // chunk[+0xc]: the between-bursts countdown
 	bool holding = false;         // chunk[+5] bit 0x80
+
+	// The HEIGHT and TEXTURE families carry more state than the lighting ones.
+	// chunk[+5] is their control byte and the names are the original's meanings:
+	//   0x80 ascending   0x40 armed (dwelling, not moving)   0x20 / 0x10 repeat
+	// and chunk[+6], which lighting uses as a ramp, is either a dwell countdown
+	// (while armed) or the low 6 fractional bits of a fixed-point step.
+	uint8_t flags5 = 0;
+
+	// The members of an OBJECT effect. Sectors go in `sectors` above; these are
+	// the (sector, index) pairs of the props a command named.
+	std::vector<ObjectRef> objects;
 };
 
 struct Runtime
@@ -987,6 +1005,170 @@ static bool TickChangeLighting(Effect &e)
 
 //==========================================================================
 //
+// resolve_command_objects -- raw_commands.c:318. Which objects a command acts on.
+//
+// Every object whose commandID is the key, found by scanning: exactly the same
+// "an id is searched for, never indexed" rule as sectors and faces. The original
+// walks its flat object buffer; the objects live per-sector here, which is how
+// the map stores them, so the pair (sector, index) is the address.
+//
+// A key of 0 means the single g_command_source_object -- the object the player
+// just used. That is not tracked yet: this port latches the active FACE and
+// SECTOR for key-0 resolution but has no equivalent for objects, so a key of 0
+// is counted as unresolved rather than silently acting on the wrong prop.
+//
+//==========================================================================
+
+
+static std::vector<ObjectRef> ResolveCommandObjects(uint16_t key)
+{
+	std::vector<ObjectRef> out;
+	if (key == 0) return out;                // see above: no active-object latch
+
+	for (size_t si = 0; si < g.map.objects.size(); si++)
+	{
+		const std::vector<Object> &list = g.map.objects[si];
+		for (size_t oi = 0; oi < list.size(); oi++)
+			if (list[oi].commandID == key)
+			{
+				ObjectRef r; r.sector = (int)si; r.index = (int)oi;
+				out.push_back(r);
+				if (out.size() >= 0xc8) return out;     // the original's cap
+			}
+	}
+	return out;
+}
+
+// Push a rotation byte we have just changed out to the world. The Realms byte
+// stays the authority and the actor's yaw is derived from it through the same
+// conversion the spawn used, so one turn cannot drift from the other.
+static void ApplyObjectRotation(const ObjectRef &r, uint8_t rotation)
+{
+	if (r.sector < 0 || (size_t)r.sector >= g.map.objects.size()) return;
+	std::vector<Object> &list = g.map.objects[r.sector];
+	if (r.index < 0 || (size_t)r.index >= list.size()) return;
+
+	list[r.index].rotation = rotation;
+	AActor *mo = FindObjectActor(r.sector, r.index);
+	if (mo != nullptr) mo->Angles.Yaw = DAngle::fromDeg(ObjectYaw(rotation));
+}
+
+// compute_player_object_bearing (raw_commands.c:300): the 8-bit facing from the
+// player to the object. The original is atan2_bearing(player -> object) >> 1,
+// over a 512-step table halved to 256; the same angle here is the actor-space
+// bearing folded into a byte, taken through the object's own yaw convention so
+// "face the player" agrees with how the prop was spawned facing.
+static uint8_t PlayerObjectBearing(const ObjectRef &r)
+{
+	if (g.level == nullptr) return 0;
+	if (r.sector < 0 || (size_t)r.sector >= g.map.objects.size()) return 0;
+	const std::vector<Object> &list = g.map.objects[r.sector];
+	if (r.index < 0 || (size_t)r.index >= list.size()) return 0;
+
+	AActor *player = nullptr;
+	for (int i = 0; i < MAXPLAYERS; i++)
+		if (g.level->PlayerInGame(i) && g.level->Players[i]->mo != nullptr)
+		{ player = g.level->Players[i]->mo; break; }
+	if (player == nullptr) return 0;
+
+	const Object &o = list[r.index];
+	const double dx = double(o.x) - player->X();
+	const double dy = double(o.y) - player->Y();
+	if (dx == 0.0 && dy == 0.0) return o.rotation;
+
+	// The inverse of ObjectYaw: that maps a rotation byte to degrees, so a
+	// bearing in degrees maps back through the same constants.
+	const double deg = atan2(dy, dx) * (180.0 / M_PI);
+	return RotationFromYaw(deg);
+}
+
+//==========================================================================
+//
+// cmd_rotate_object -- raw_commands.c:241, RAW command base 0x24
+//
+// IMMEDIATE, despite 0x24 also having an entry in the per-frame tick table: this
+// handler turns the objects and returns. (The tick entry belongs to a continuous
+// rotation registered through a different path, which is not wired here.)
+//
+// Two modes, on +0x06 bit 0x02:
+//
+//   STEP -- the record counts a FRAME through n positions, keeping the frame in
+//   byte[rec+0x0b], and turns by the difference between two quantised angles,
+//   newFrame*256/n - oldFrame*256/n. So a cupboard with n=4 turns in exact
+//   quarters and returns to true after four uses, which adding 256/n each time
+//   would not do. Bit 0x01 runs it backwards. n < 2 does nothing.
+//
+//   PLAYER-RELATIVE -- n <= 1 SNAPS the object to face the player; otherwise it
+//   steps toward the player's bearing, clamped to +/-n.
+//
+// Bit 0x01 of the modifier is an early-out, and bit 0x10 of +0x06 re-arms the
+// record by setting its disable bit afterwards.
+//
+//==========================================================================
+
+int RotateObject(Command *rec)
+{
+	if (rec->modifier & 0x01) return CMD_NOTHING;
+
+	std::vector<ObjectRef> targets = ResolveCommandObjects(rec->key);
+	if (targets.empty())
+	{
+		if (rec->key == 0) g.unhandledOps[0x24]++;    // no active-object latch
+		return CMD_NOTHING;
+	}
+
+	const uint8_t flags = rec->fireFlags;             // byte[rec+6]
+	const uint8_t n = rec->Byte(0x0A);
+
+	if (!(flags & 0x02))                              // STEP MODE
+	{
+		if (n <= 1) return CMD_NOTHING;
+
+		uint8_t dir, sentinel, wrap;
+		if (flags & 0x01) { dir = 0xFF; sentinel = 0xFF; wrap = (uint8_t)(n - 1); }
+		else              { dir = 0x01; sentinel = n;    wrap = 0; }
+
+		const uint8_t oldframe = rec->Byte(0x0B);
+		uint8_t newframe = (uint8_t)(oldframe + dir);
+		if (newframe == sentinel) newframe = wrap;
+		rec->SetByte(0x0B, newframe);
+
+		const uint8_t newQ = (uint8_t)(((uint16_t)newframe << 8) / n);
+		const uint8_t oldQ = (uint8_t)(((uint16_t)oldframe << 8) / n);
+		const uint8_t delta = (uint8_t)(newQ - oldQ);
+
+		for (const ObjectRef &r : targets)
+		{
+			const std::vector<Object> &list = g.map.objects[r.sector];
+			ApplyObjectRotation(r, (uint8_t)(list[r.index].rotation + delta));
+		}
+	}
+	else if (n <= 1)                                  // SNAP TO PLAYER
+	{
+		for (const ObjectRef &r : targets)
+			ApplyObjectRotation(r, PlayerObjectBearing(r));
+	}
+	else                                              // STEP TOWARD PLAYER
+	{
+		const int lim = (int)n;
+		for (const ObjectRef &r : targets)
+		{
+			const std::vector<Object> &list = g.map.objects[r.sector];
+			const uint8_t cur = list[r.index].rotation;
+			int v = (int)(int8_t)(uint8_t)(PlayerObjectBearing(r) - cur);
+			if (v >= lim) v = lim;
+			v = -v;
+			if (v >= lim) v = lim;
+			ApplyObjectRotation(r, (uint8_t)(cur - (uint8_t)v));
+		}
+	}
+
+	if (flags & 0x10) { rec->modifier |= 0x08; SyncDisabled(rec); }
+	return CMD_ACTED;
+}
+
+//==========================================================================
+//
 // THE LIGHT PATTERNS -- obj1_owned.c:95, the 62-byte block at 0x322ce, with the
 // five sub-block pointers from boot.c:177 and the count dword (=5) at +0x3e.
 //
@@ -1292,6 +1474,201 @@ static bool TickFlashLights(Effect &e)
 
 //==========================================================================
 //
+// The three helpers every HEIGHT and TEXTURE effect shares, transcribed once.
+//
+// rawcmd_texture_countdown -- while the armed bit is set the effect is DWELLING,
+// not moving: the dwell word counts down and bit 0x40 clears when it runs out.
+//
+// rawcmd_texture_tick_finalize -- what happens when a sweep completes, decided by
+// two things: whether the record repeats (+0x06 bit 0x20) and whether it has a
+// dwell value (+0x0e for heights). The four outcomes are the whole reason a
+// Realms lift can go up once, or go up and stop, or go up and come back, or run
+// up and down forever with a pause at each end:
+//
+//     no repeat, no dwell : finish and DISABLE the record
+//     repeat,    no dwell : finish, flipping the direction for next time
+//     no repeat, dwell    : finish (when already mid-repeat), else turn around
+//     repeat,    dwell    : turn around and dwell -- the perpetual case
+//
+// rawcmd_tick_height_exit -- the overshoot path. Bit 0x10 turns straight around
+// without going through the finalize at all.
+//
+//==========================================================================
+
+static bool TickArmedCountdown(Effect &e)
+{
+	const uint16_t step16 = (uint16_t)ROTH_FRAME_TICKS_PER_TIC;
+	const uint16_t old = e.payload;
+	e.payload = (uint16_t)(old - step16);
+	if (!((int16_t)old > (int16_t)step16)) e.flags5 &= 0xBF;
+	return false;                                   // never finishes here
+}
+
+static bool TickFinalize(Effect &e, Command *rec, uint16_t latch)
+{
+	if (rec == nullptr) return true;
+
+	unsigned which = (rec->fireFlags & 0x20) ? 1u : 0u;
+	if (latch != 0) which += 2u;
+
+	if (which == 0)
+	{
+		rec->modifier = (uint8_t)((rec->modifier & 0xDE) | 8);
+		SyncDisabled(rec);
+		return true;
+	}
+	if (which == 1)
+	{
+		rec->modifier &= 0xDE;
+		rec->modifier ^= 0x02;
+		SyncDisabled(rec);
+		return true;
+	}
+	if (which == 2 && (e.flags5 & 0x20))
+	{
+		rec->modifier &= 0xDE;
+		SyncDisabled(rec);
+		return true;
+	}
+	e.flags5 ^= 0xE0;                               // turn around, and dwell
+	e.payload = latch;
+	return false;
+}
+
+static bool TickHeightExit(Effect &e, Command *rec)
+{
+	const uint16_t latch = rec != nullptr ? rec->Word(0x0E) : 0;
+	if (e.flags5 & 0x10) { e.flags5 ^= 0x90; return false; }
+	return TickFinalize(e, rec, latch);
+}
+
+// Push a height we have just changed out to the world. Same discipline as
+// rotation: the Realms word stays the authority, the actor follows it.
+static void ApplyObjectHeight(const ObjectRef &r, int16_t z)
+{
+	if (r.sector < 0 || (size_t)r.sector >= g.map.objects.size()) return;
+	std::vector<Object> &list = g.map.objects[r.sector];
+	if (r.index < 0 || (size_t)r.index >= list.size()) return;
+
+	list[r.index].z = z;
+	AActor *mo = FindObjectActor(r.sector, r.index);
+	if (mo != nullptr) mo->SetZ((double)z);
+}
+
+//==========================================================================
+//
+// cmd_change_object_height -- raw_commands.c:4554, RAW command base 0x23
+//
+// Two paths, and which one runs is decided by whether the record is already
+// registered. Registering snapshots the objects and sets the initial direction
+// from the record's bit 0x02. Re-running an ALREADY registered record does not
+// start a second move: it flips the direction of the one in flight, so the same
+// command both raises and lowers -- but only when +0x0e is zero and +0x06 bit
+// 0x20 is set, which is the original's way of saying "this one is a toggle".
+//
+// There is no generation re-resolve here. The original re-collects its members
+// when the object table relocates, because its members are raw buffer offsets;
+// ours are (sector, index) pairs into the map, which nothing moves.
+//
+//==========================================================================
+
+int ChangeObjectHeight(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+
+	if (rec->modifier & 0x21)                        // TOGGLE
+	{
+		if (rec->Word(0x0E) != 0) return CMD_NOTHING;
+		if (!(rec->fireFlags & 0x20)) return CMD_NOTHING;
+		Effect *eff = FindEffect(base, (uint16_t)index);
+		if (eff == nullptr) return CMD_NOTHING;
+		eff->flags5 ^= 0x80;
+		rec->modifier ^= 0x02;
+		SyncDisabled(rec);
+		return CMD_ACTED;
+	}
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	e.objects = ResolveCommandObjects(rec->key);
+	if (e.objects.empty()) return CMD_NOTHING;
+	e.payload = 0;
+	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+//==========================================================================
+//
+// tick_change_object_height -- raw_commands.c:2357
+//
+// Ramps each named prop's height toward a limit -- 2 * the record's +0x0c going
+// up, 2 * +0x0a coming down -- at +0x07 units per frame tick. Bit 0x04 of +0x06
+// makes that step FIXED POINT, six fractional bits kept in the effect, so a prop
+// can rise slower than one unit per tick instead of not at all.
+//
+// The budget is shared across the group and the overshoot folds back into it: the
+// first member to reach the limit gives back what it did not need, and only when
+// the budget is exhausted does the sweep end. That is what keeps a group of props
+// moving as one piece rather than each finishing separately.
+//
+//==========================================================================
+
+static bool TickChangeObjectHeight(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);
+
+	uint32_t delta = (uint32_t)(ROTH_FRAME_TICKS_PER_TIC * (int32_t)rec->Byte(0x07));
+	if (rec->fireFlags & 0x04)
+	{
+		delta += (uint32_t)(e.payload & 0x3F);
+		e.payload = (uint16_t)(uint8_t)delta;
+		delta >>= 6;
+		if (delta == 0) return false;
+	}
+
+	if (e.objects.empty())
+	{
+		rec->modifier &= 0xDE;
+		SyncDisabled(rec);
+		return true;
+	}
+
+	const bool ascend = (e.flags5 & 0x80) != 0;
+	int16_t acc   = ascend ? (int16_t)(uint16_t)delta : (int16_t)(uint16_t)(-(int32_t)delta);
+	const int16_t limit = (int16_t)(uint16_t)(2 * (int32_t)(int16_t)rec->Word(ascend ? 0x0C : 0x0A));
+
+	for (const ObjectRef &r : e.objects)
+	{
+		if (r.sector < 0 || (size_t)r.sector >= g.map.objects.size()) continue;
+		std::vector<Object> &list = g.map.objects[r.sector];
+		if (r.index < 0 || (size_t)r.index >= list.size()) continue;
+
+		const int16_t sum = (int16_t)(list[r.index].z + acc);
+		int16_t stored;
+		if (ascend ? (sum <= limit) : (sum >= limit))
+		{
+			stored = sum;
+		}
+		else
+		{
+			acc = (int16_t)(acc - (int16_t)(sum - limit));
+			if (ascend ? (acc >= 0) : (acc <= 0)) return TickHeightExit(e, rec);
+			stored = limit;
+		}
+		ApplyObjectHeight(r, stored);
+	}
+	return false;
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -1316,6 +1693,7 @@ static void TickEffects()
 		case 0x1D: done = TickChangeLighting(g.effects[i]); break;
 		case 0x02: done = TickLightSwitch(g.effects[i]); break;
 		case 0x11: done = TickFlashLights(g.effects[i]); break;
+		case 0x23: done = TickChangeObjectHeight(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -1359,7 +1737,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -1389,6 +1767,8 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x1D: return ChangeLighting(rec, index);
 	case 0x02: return LightSwitch(rec, index);
 	case 0x11: return FlashLights(rec, index);
+	case 0x24: return RotateObject(rec);
+	case 0x23: return ChangeObjectHeight(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound

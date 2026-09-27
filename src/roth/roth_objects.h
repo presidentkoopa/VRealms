@@ -22,6 +22,7 @@
 //
 
 struct FLevelLocals;
+class AActor;
 
 namespace roth
 {
@@ -40,5 +41,27 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log);
 // SpawnThings -- and does nothing at all when Prepare was not called, so it is
 // harmless on an ordinary Doom map.
 void SpawnPreparedObjects(FLevelLocals *Level);
+
+// WHICH ACTOR A REALMS OBJECT BECAME, and the angle convention it was spawned
+// with. Both exist because the level LOGIC can move an object after it has
+// spawned -- rotate it, raise it, repaint it -- and a command names the object
+// by its place in the map while the world only knows the actor.
+//
+// Addressed by the Realms sector that owns the object and the object's index
+// within that sector, which is how the map itself stores them, so no third
+// numbering has to be invented or kept in step.
+//
+// Null when the object never spawned: an object outside the pack's art, or one
+// whose spawn failed, is simply absent rather than an error at every use.
+AActor *FindObjectActor(int rothSector, int rothIndex);
+
+// The rotation byte -> yaw conversion the objects were built with, exported so a
+// later rotation lands on the same convention as the original spawn instead of a
+// second derivation that can drift from it.
+double ObjectYaw(uint8_t rotation);
+
+// And its inverse, for a command that turns an object to face something in the
+// world: the bearing arrives in degrees and the map holds a byte.
+uint8_t RotationFromYaw(double deg);
 
 } // namespace roth

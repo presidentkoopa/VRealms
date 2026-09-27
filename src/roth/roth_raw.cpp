@@ -360,7 +360,7 @@ Map ParseRaw(const uint8_t *data, size_t size)
 				o.renderType = r.U8();
 				o.z = r.I16();
 				o.unk0C = r.U16();
-				o.unk0E = r.U16();
+				o.commandID = r.U16();
 				map.objects[i].push_back(o);
 			}
 		}
