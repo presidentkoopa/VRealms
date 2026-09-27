@@ -108,16 +108,37 @@ static const double ANGLE_SENSE = +1.0;
 // so the object contributes rotationByte*2 units of a 512-unit turn, plus a
 // fixed 0x80 units == 90 degrees.
 //
-// THE CONSTANT IS A CVAR because deducing it from descriptions of which way a
-// couch faces has produced contradictory answers three times running: the same
-// nudge that fixed one piece of furniture broke another, which is the signature
-// of guessing at a value that wants measuring. `roth_objectangle` is added to
-// the base below and takes effect on the next map load, so it can be dialled in
-// live and the answer written down once rather than argued about.
-static const double ANGLE_ZERO = 0.0;
+// SO THE ORIGIN IS 90 DEGREES, and it is now used. It was derived correctly in
+// the comment above and then thrown away: the constant sat at 0.0 with the
+// derivation written directly over it, and the 90 was left for the user to
+// rediscover by dialling a cvar. That is the exact failure the project rule
+// forbids -- a value that ROTH.C states, replaced by a placeholder.
+//
+// The citation is renderer.c:6096, rwss_rotated_tail, which is the path that
+// orients a flat object rather than billboarding it:
+//
+//     angle512 = (2 * (rotationByte + 0x40) - viewAngle) & 0x1ff
+//
+// GZDoom subtracts the view angle itself, so the ABSOLUTE yaw we owe it is the
+// object's own term, 2*rot + 0x80, converted from 512-per-turn to degrees:
+//
+//     (2*rot + 128) * 360/512  ==  rot * 360/256 + 90
+//
+// which is the per-step factor already below plus this 90.
+//
+// ONE DISAGREEMENT, recorded rather than smoothed over: the sense note above
+// says "the observed error was a uniform 180". That came from reading
+// descriptions of which way furniture pointed, which is the method that gave
+// three contradictory answers. This 90 comes from the code. If furniture is
+// still wrong after this, the remaining error is a MEASUREMENT against the
+// oracle, not another guess -- and it should be a clean 90, since a wrong
+// origin is rotation-independent.
+static const double ANGLE_ZERO = 90.0;
 
-// Added to ANGLE_ZERO. Set it in the console and reload the map; when the
-// furniture faces the right way, that number is the answer.
+// A TRIM on top of the measured origin, defaulting to 0 because the origin is
+// now known. Kept only so a disagreement can be confirmed without a rebuild: if
+// this ends up needing a value, that value is evidence the derivation above is
+// wrong and belongs in a bug report, not in the cvar.
 CUSTOM_CVAR(Float, roth_objectangle, 0.f, CVAR_ARCHIVE)
 {
 	Printf("roth_objectangle %.1f -- reload the map to apply\n", (float)self);
