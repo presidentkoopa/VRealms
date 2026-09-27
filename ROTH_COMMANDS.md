@@ -343,8 +343,68 @@ different targets, which is what made it recognisable before any of it was decod
 
 ---
 
+## The active-effect pool, and the 15 ticks
+
+Most opcodes are **registrars**, not handlers: the `0x30780` entry allocates an
+active effect and returns, and the visible behaviour lives in a second table at
+`0x3088c` **indexed by the same opcode**, run once per frame until it reports
+itself finished. So an opcode like `0x1d` is two functions that have to be found
+separately, and roughly 671 records did nothing at all until the pool existed.
+
+The pool and every tick but one are implemented in `src/roth/roth_runtime.cpp`.
+
+| Op | Tick | What it does | State |
+|---|---|---|---|
+| `0x02` | `tick_light_switch` | throw a light to a new level | done |
+| `0x03` | `tick_modify_sector` | sink floors + slab + a byte | **descending only** |
+| `0x07` | `tick_change_height` | raise/lower floor or ceiling | done |
+| `0x09` | `tick_moving_sector` | slide a sector by its vertices | **not done — engine** |
+| `0x0a` | `tick_change_floor_texture` | swap a floor's whole look | done |
+| `0x0b` | `tick_change_floor_texture_b` | the ceiling twin | done |
+| `0x0c` | `tick_change_face_texture_adv` | swap a wall's whole look | register path |
+| `0x0d` | `tick_change_object_texture` | swap a prop's texture | done |
+| `0x0e` | `tick_scroll_sector_texture` | crawl floor/ceiling/slab art | done |
+| `0x0f` | `tick_scroll_face_texture` | crawl wall art | done |
+| `0x11` | `tick_flash_lights` | pattern-driven flashing | done |
+| `0x12` | `tick_delay_timer` | the chain delay | done (own path) |
+| `0x1d` | `tick_change_lighting` | fade a light | done |
+| `0x23` | `tick_change_object_height` | raise/lower props | done |
+| `0x24` | `tick_rotate_object` | turn props | done (immediate) |
+
+### Four things about the pool worth knowing before touching it
+
+- **A registrar re-run does not stack.** It finds its existing effect and flips
+  the direction of the move in flight. That is how one command both opens and
+  closes, and it is gated on `+0x0e == 0 && +0x06 & 0x20`.
+- **The finalize has four outcomes**, decided by whether the record repeats
+  (`+0x06` bit `0x20`) and whether it has a dwell (`+0x0e`). They are the whole
+  reason a lift can go up once, go up and stop, go up and come back, or run
+  forever pausing at each end.
+- **The frame step is 2.** Derived from the ISR chain divider, and confirmed
+  independently by `blit_2d.c` seeding `g_frame_time_scale` to literally 2.
+- **The budget rule differs between 0x07 and 0x03.** `0x07` shares one allowance
+  across the group and folds overshoot back into it; `0x03` resets it per member.
+
 ## What is still open
 
+- **`0x09` needs an engine capability, not a transcription.** It slides a sector
+  by moving its four vertices, and GZDoom's BSP is static. 32 records game-wide.
+- **`0x03`'s ascending sweep.** Its per-member targets come from a snapshot
+  reached through a pointer at the record's `+0x10`, dereferenced twice, and
+  nothing in ROTH.C appears to write that pointer. Those targets are how far each
+  floor travels back up, so they cannot be guessed.
+- **Sector `+0x0c`.** `overrideHeight` in our reader, "sector light" in ROTH.C's
+  comment. Neither verified; the confirmed brightness is `+0x0b`.
+- **`0x0c`'s immediate path** reads an undefined register in the original, which
+  ROTH.C itself bridges rather than lifts. There is nothing faithful to write.
+- **The trigger direction mask and bounding box.** Both live in object-table refs
+  this port does not build, so a face trigger over-fires: it runs whenever its
+  wall is activated rather than only from the authored approach direction.
+- **The sector-keyed triggers `0x19`/`0x31` have no caller.** 173 records. The
+  bits they set gate `dispatch_entry_command_trigger`, which runs from the use and
+  cursor-probe paths, and this port has no equivalent probe yet.
+- **No sound at all.** Every mover's SFX node link is skipped; there is no
+  sound-node system on this side.
 - **Opcode `0x30`** — the marker it sets is certain, what consumes it is not.
 - **Two argument keys.** `0x2d` particle effect and `0x0e`/`0x0f` texture scroll are the
   only key fields left that fit no table we have identified.
