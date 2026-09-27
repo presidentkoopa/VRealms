@@ -65,6 +65,8 @@ static const uint32_t RNG_VA[] = {
 };
 #define RNG_COUNT ((int)(sizeof RNG_VA / sizeof RNG_VA[0]))
 
+#include "staticdump.inc.c"
+
 static FILE *g_log;
 static uint16_t g_last_tick;
 static int g_started;
@@ -112,6 +114,12 @@ static void on_frame_game(const struct roth_api_v1 *api)
     if (g_started && tick == g_last_tick) return;
     g_started = 1;
     g_last_tick = tick;
+
+    /* The static dump, once, as soon as the map is really in memory. It cannot
+     * run at on_load (game_ram is pristine) or at on_game_ram_ready (no map yet),
+     * so it is gated here on the geometry buffer having been filled. */
+    static int dumped;
+    if (!dumped && static_dump(api)) dumped = 1;
 
     uint32_t fdig = 0;
     const uint32_t fsize = m->u32(VA_FLAGS_SIZE);
