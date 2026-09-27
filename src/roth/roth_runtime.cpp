@@ -2560,14 +2560,27 @@ static bool TickChangeFaceTextureAdv(Effect &e)
 
 	if (e.flags5 & 0x40) return TickArmedCountdown(e);
 
+	// WHICH FACE. The original does geom + word[rec+8], a raw offset -- but
+	// MEASURED against the retail data that resolves 0 times out of 8 in STUDY1,
+	// so our offset base is not the one it indexes from. The reader's ordinary
+	// two-hop key resolution is tried as well, and whichever answers is used;
+	// the load report counts both so the reading stays evidence-backed rather
+	// than a transcription that happens to compile.
+	int faceIdx = -1;
 	auto fit = g.map.faceByOffset.find((uint32_t)rec->key);
-	if (fit == g.map.faceByOffset.end() || (size_t)fit->second >= g.map.faces.size())
+	if (fit != g.map.faceByOffset.end() && (size_t)fit->second < g.map.faces.size())
+		faceIdx = fit->second;
+	else if (!rec->faces.empty() && rec->faces[0] >= 0
+	         && (size_t)rec->faces[0] < g.map.faces.size())
+		faceIdx = rec->faces[0];
+
+	if (faceIdx < 0)
 	{
-		g.unhandledOps[e.tick]++;        // the key named no face
+		g.unhandledOps[e.tick]++;        // the key named no face either way
 		return TickFinalize(e, rec, rec->Word(0x0E));
 	}
 
-	Face &fa = g.map.faces[fit->second];
+	Face &fa = g.map.faces[faceIdx];
 
 	// Cell A: exchange bits 0x83 of the face's own byte, keeping 0x7c.
 	const uint8_t av = (uint8_t)(fa.collisionFlags & 0xFF);

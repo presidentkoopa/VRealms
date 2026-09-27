@@ -196,7 +196,7 @@ Do not simply re-apply the revert.
 
 ---
 
-## 6b. Stage 8 -- standalone: close, blocked on visibility
+## 6b. Stage 8 -- standalone: DONE (2026-09-27)
 
 `vrealms_iwad/` is the game package: a marker lump, an IWADINFO, a generated
 PLAYPAL and COLORMAP, and an additive MAPINFO. **It carries nothing from Realms**
@@ -207,28 +207,46 @@ from the player's `.DAS` at map load.
 doomxr.exe -iwad vrealms.pk3 -rothpath "<install>" +map STUDY1
 ```
 
-**How far it gets:** the engine boots on that package alone, identifies it as
-VRealms, and finds all 44 Realms maps in the install. It then **halts inside base
-MAPINFO parsing**, before any map loads, with no error on stdout or stderr --
-GZDoom reports fatal startup errors in a modal dialog.
+**It works.** The engine boots on that package alone, with no Doom IWAD, finds all
+44 maps in the install and loads STUDY1 -- 552 sectors, 1908 lines, 2754 sides,
+242 objects -- and runs.
 
-**Already ruled out, so do not repeat these:**
+### What the blocker actually was
 
-- A palette IS required. Without `PLAYPAL`/`COLORMAP` the engine stops silently
-  right after `W_Init`. Generating them got us past that.
-- **Our MAPINFO is not the cause.** It halts identically with ours, with the
-  engine's baseline copied in, and with no MAPINFO at all.
-- **The `Mapinfo =` field is not the cause.** Same halt with and without it.
-- One real error was found and fixed on the way: copying the engine's own
-  `mindefaults.txt` in as our MAPINFO produces *"MAPINFO file is processed more
-  than once"*, because it `include`s files the engine has already read. **Ours
-  must be additive only** -- a `defaultmap`, a `map` entry, a `clusterdef`, and
-  nothing included.
+**Two missing MAPINFO entries: an episode and a skill.** G_ParseMapInfo ends with
+two unconditional checks (g_mapinfo.cpp:2861-2868): an empty `AllEpisodes` or an
+empty `AllSkills` is a fatal error. The engine's minimal baseline defines
+neither -- not `mindefaults.txt`, not the `common.txt` it includes -- because
+every stock game ships its own. An IWAD booting on the minimum has to supply them.
 
-**The blocker is that the engine will not say what it objects to.** The next step
-is to make that message reachable -- get `I_FatalError` into the log, or bisect
-the baseline mapinfo -- rather than keep guessing at MAPINFO contents, which is
-what stalled this.
+**Why it cost so much time.** The error message blames `clearepisodes`, a command
+we never used; the check does not test for it, only for an empty list. So the
+message describes one route to the failure and we hit the other. Worse, the error
+arrives BEFORE the video backend is up, so I_ShowFatalError's message pane has no
+window to appear in and the process exits silently with nothing on stdout. That is
+why bisecting the MAPINFO got nowhere: the file was never wrong, it was
+incomplete, and nothing in it could have revealed that.
+
+### How to read a silent startup failure (worth keeping)
+
+Run with **both** `-stdout` and `-errorlog <file>`. `-errorlog` sets `batchrun`,
+which turns the fatal-error pane into a plain `Printf`. Note that `batchrun` also
+takes the `if (norun || batchrun) return GAMEEXIT_NORUN` early exit
+(d_main.cpp:4647), so the engine quits cleanly after init and never loads a map --
+use it to read errors, not to test a map load.
+
+**Still true, do not repeat:** a palette IS required (no PLAYPAL/COLORMAP and the
+engine stops silently after W_Init), and our MAPINFO must stay additive -- copying
+the engine's own mindefaults.txt in produces "MAPINFO file is processed more than
+once" because it includes files already read.
+
+### Known, open
+
+- `Unknown texture: "F_SKY1"`. mindefaults names that sky flat and our package
+  does not provide it. Sky surfaces in Realms are mostly CEILINGS, so this is the
+  first thing to check against the reported ceiling-texture problems.
+- 24 menudef.txt script errors, non-fatal: the minimal package lacks graphics the
+  stock menu references.
 
 ---
 

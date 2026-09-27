@@ -24,3 +24,45 @@ clusterdef 1
 	flat = "-NOFLAT-"
 	music = ""
 }
+
+//===========================================================================
+//
+// AN EPISODE AND A SKILL, WITHOUT WHICH THE ENGINE WILL NOT START.
+//
+// G_ParseMapInfo ends with two unconditional checks (g_mapinfo.cpp:2861-2868):
+// if AllEpisodes is empty, or AllSkills is empty, it calls I_FatalError. The
+// message it prints blames `clearepisodes`, which is misleading -- nothing here
+// clears anything. The real condition is simply that NOTHING defined an episode
+// or a skill, and the engine's minimal baseline defines neither:
+// mindefaults.txt has no episode and no skill, and neither does the common.txt
+// it includes. Every stock game supplies its own, so an IWAD that boots on the
+// minimum alone has to supply them too.
+//
+// This is what stalled stage 8. The failure is silent in practice because the
+// error arrives before the video backend is up, so I_ShowFatalError's message
+// pane has no window to appear in and the process just exits with no output.
+// To read it: run with BOTH -stdout and -errorlog, which sets `batchrun` and
+// turns the pane into a plain Printf.
+//
+// One episode and one skill are the honest minimum. Realms has neither concept
+// -- no episode select, no difficulty -- so these exist to satisfy the engine
+// and are deliberately inert rather than an attempt to model something.
+//
+//===========================================================================
+
+episode STUDY1
+{
+	name = "Realms of the Haunting"
+	noskillmenu
+}
+
+skill normal
+{
+	// Realms has no difficulty setting, so this is a straight pass-through:
+	// no damage scaling, no spawn filtering, no ammo multipliers.
+	DamageFactor = 1.0
+	SpawnFilter = Normal
+	PicName = "-NOFLAT-"
+	Name = "Normal"
+	DefaultSkill
+}
