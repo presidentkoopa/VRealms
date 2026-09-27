@@ -16,6 +16,13 @@ wadsrc/static/meta.xml
 /libs/*
 /obj/*
 /docs/*.md
+# ...but NOT ours. The rule above is upstream's, for GZDoom's own generated
+# docs, and it was silently swallowing the Realms specifications -- the six
+# GAME_*.md reference manuals that the whole game port is written against, plus
+# the NATIVE_*.md rules. They lived untracked for a while; a git clean would have
+# taken them with no history to recover from. Keep these tracked.
+!/docs/GAME_*.md
+!/docs/NATIVE_*.md
 
 # editor/tooling/os files
 *~
