@@ -480,7 +480,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
 			if (!isSky && !tex.isValid()) flatsToSky++;
 
-			// MEASURED, NOT DERIVED: flats are 2^(v+2) world units per texel.
+			// MEASURED, NOT DERIVED: flats are 2^(v+1) world units per texel.
 			//
 			// Reading it as 2^v tiled every flat in the game FOUR times too often,
 			// i.e. drew each texture at a quarter of its authored size. Measured
@@ -497,7 +497,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// 2^(v-1), which would have made the tiling eight times too fine. It
 			// was reverted for being reasoned rather than measured, and this is
 			// what measuring says.
-			const double unitsPerTexel = double(1 << shift) * 4.0;
+			const double unitsPerTexel = double(1 << shift) * 2.0;
 			sec->SetXScale(which, 1. / unitsPerTexel);
 			sec->SetYScale(which, 1. / unitsPerTexel);
 			sec->SetXOffset(which,  shx * unitsPerTexel * 0.5);
@@ -1050,9 +1050,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// Scale, exactly as for an ordinary flat: 2^s world units per texel,
 			// and Doom's scale is the reciprocal. Bits 4-5 top, 2-3 underside,
 			// the same layout the sector flags byte uses.
-			// Same 2^(v+2) base as the sector flats above -- identical encoding.
-			const double topScale = 1.0 / (double(1 << ((mp.scales >> 4) & 3)) * 4.0);
-			const double undScale = 1.0 / (double(1 << ((mp.scales >> 2) & 3)) * 4.0);
+			// Same 2^(v+1) base as the sector flats above -- identical encoding.
+			const double topScale = 1.0 / (double(1 << ((mp.scales >> 4) & 3)) * 2.0);
+			const double undScale = 1.0 / (double(1 << ((mp.scales >> 2) & 3)) * 2.0);
 			cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
 			cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
 			cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
