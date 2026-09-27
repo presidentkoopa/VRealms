@@ -148,7 +148,7 @@ Map ParseRaw(const uint8_t *data, size_t size)
 	// ---- faces ------------------------------------------------------------
 	// Offsets in this format are absolute file positions used as foreign keys,
 	// so record where each record began and resolve to indices afterwards.
-	std::unordered_map<uint32_t, int> faceByOffset;
+	std::unordered_map<uint32_t, int> &faceByOffset = map.faceByOffset;
 	uint16_t faceCount = r.U16();
 	map.faces.reserve(faceCount);
 	for (int i = 0; i < faceCount; i++)

@@ -1626,6 +1626,29 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			registered++;
 		}
 
+		// Opcode 0x0c swaps a whole wall appearance, so all THREE of its slots
+		// can name a texture the map wears nowhere. It also names its face by raw
+		// offset rather than by id, alone among the geometry opcodes -- counted
+		// here so the reading is checked against the retail data.
+		int advSlots = 0, advKeysHit = 0, advKeysMiss = 0;
+		for (const roth::Command &c : rm.commands)
+		{
+			if ((c.opcode & 0x7f) != 0x0C) continue;
+			if (rm.faceByOffset.count((uint32_t)c.key) != 0) advKeysHit++;
+			else advKeysMiss++;
+			const int slots[3] = { (int)c.Word(0x0A), (int)c.Word(0x10), (int)c.Word(0x12) };
+			for (int k = 0; k < 3; k++)
+			{
+				FTextureID t = worldTex(slots[k]);
+				if (!t.isValid()) continue;
+				roth::RegisterTexture(slots[k], t);
+				advSlots++;
+			}
+		}
+		if (advKeysHit + advKeysMiss > 0)
+			log.Line("  logic walls      0x0c: %d slot(s); keys on a face %d/%d",
+				advSlots, advKeysHit, advKeysHit + advKeysMiss);
+
 		// And the FLATS opcodes 0x0a / 0x0b can swap onto a floor or ceiling,
 		// which the record names at +0x0a. A flat index may be the pack's sky
 		// marker, so that is registered with it rather than resolved to a

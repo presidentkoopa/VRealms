@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <vector>
+#include <unordered_map>
 #include <string>
 
 namespace roth
@@ -256,6 +257,12 @@ struct Map
 	std::vector<Command> commands;
 	// Where the game starts executing: 1-based indices into commands.
 	std::vector<uint16_t> entryPoints;
+
+	// Face record file offset -> face index. Offsets in this format are absolute
+	// file positions used as foreign keys, and MOST commands name geometry by a
+	// searched id -- but opcode 0x0c names its face by the raw OFFSET, so that
+	// lookup has to survive the parse instead of being a local to it.
+	std::unordered_map<uint32_t, int> faceByOffset;
 
 	std::string error;          // empty when Parse succeeded
 	bool ok() const { return error.empty(); }

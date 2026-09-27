@@ -2333,6 +2333,139 @@ static bool TickScrollSectorTexture(Effect &e)
 
 //==========================================================================
 //
+// Re-apply a mapping record's three texture slots AND its shift to every sidedef
+// that wears it. The shift-only version above is enough for a scroll; a swap
+// changes the pictures too.
+//
+//==========================================================================
+
+static void ApplyTexmapFull(int tmi)
+{
+	if (g.level == nullptr) return;
+	if (tmi < 0 || (size_t)tmi >= g.map.textureMaps.size()) return;
+	const TextureMap &tm = g.map.textureMaps[tmi];
+
+	auto faces = g.texmapToFaces.find(tmi);
+	if (faces == g.texmapToFaces.end()) return;
+
+	const int slot[3] = { tm.midTexture, tm.upperTexture, tm.lowerTexture };
+	const int part[3] = { side_t::mid, side_t::top, side_t::bottom };
+
+	for (int fi : faces->second)
+	{
+		auto sd = g.faceToSide.find(fi);
+		if (sd == g.faceToSide.end()) continue;
+		if (sd->second < 0 || (size_t)sd->second >= g.level->sides.Size()) continue;
+		side_t &side = g.level->sides[sd->second];
+		for (int k = 0; k < 3; k++)
+		{
+			auto t = g.texByIndex.find(slot[k]);
+			if (t == g.texByIndex.end() || !t->second.isValid()) continue;
+			side.SetTexture(part[k], t->second);
+		}
+	}
+	ApplyTexmapShift(tmi);
+}
+
+//==========================================================================
+//
+// cmd_change_face_texture_adv -- raw_commands.c:4721, RAW command base 0x0c
+// swap_cell_state_linked_pair -- raw_commands.c, what its tick does
+//
+// The "extended form" of 0x34, and a much bigger swap. 0x34 writes ONE texture
+// slot; this exchanges a wall's whole appearance with the record: all three
+// slots, the mapping flags, the shift pair, and some of the face's own bits.
+//
+// It works on a LINKED PAIR. Cell A is a face and cell B is the mapping record
+// that face points at through its +0x04 -- so the record's fields swap against
+// the mapping while the face's +0x0a exchanges only bits 0x83, keeping 0x7c in
+// place. One command therefore changes what a wall looks like and whether you can
+// walk through it, together, and swapping back restores both.
+//
+// THIS OPCODE NAMES ITS FACE BY RAW OFFSET, alone among the geometry opcodes:
+// the original does `geom + word[rec+8]` rather than searching for an id. Offsets
+// in this format are absolute file positions used as foreign keys, so the
+// reader's face-offset map answers it directly -- and the load report counts how
+// many 0x0c keys actually land on a face, so the reading is checked against the
+// retail data rather than assumed.
+//
+// ONLY THE REGISTER PATH IS HERE. When +0x06 bit 0x08 is set, or the key is 0,
+// the original takes an immediate path that ROTH.C itself cannot reproduce: it
+// bridges the original code because the block contains an irreducible read of an
+// undefined register (raw_commands.c:4716). That path is counted, not invented.
+//
+//==========================================================================
+
+int ChangeFaceTextureAdv(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+
+	if ((rec->fireFlags & 0x08) || rec->key == 0)
+	{
+		g.unhandledOps[base]++;          // the bridged undefined-behaviour path
+		return CMD_NOTHING;
+	}
+	if (rec->modifier & 0x21) return CMD_NOTHING;
+
+	Effect e;
+	e.tick = base;
+	e.record = (uint16_t)index;
+	g.effects.push_back(e);
+	rec->modifier |= 0x20;
+	SyncDisabled(rec);
+	return CMD_ACTED;
+}
+
+static bool TickChangeFaceTextureAdv(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);
+
+	auto fit = g.map.faceByOffset.find((uint32_t)rec->key);
+	if (fit == g.map.faceByOffset.end() || (size_t)fit->second >= g.map.faces.size())
+	{
+		g.unhandledOps[e.tick]++;        // the key named no face
+		return TickFinalize(e, rec, rec->Word(0x0E));
+	}
+
+	Face &fa = g.map.faces[fit->second];
+
+	// Cell A: exchange bits 0x83 of the face's own byte, keeping 0x7c.
+	const uint8_t av = (uint8_t)(fa.collisionFlags & 0xFF);
+	const uint8_t held = rec->Byte(0x14);
+	rec->SetByte(0x14, av);
+	fa.collisionFlags = (uint16_t)((fa.collisionFlags & 0xFF00)
+	                  | (uint8_t)((av & 0x7C) | (held & 0x83)));
+
+	// Cell B: the mapping record the face points at. Every field exchanges.
+	const int tmi = fa.textureMap;
+	if (tmi < 0 || (size_t)tmi >= g.map.textureMaps.size())
+		return TickFinalize(e, rec, rec->Word(0x0E));
+	TextureMap &tm = g.map.textureMaps[tmi];
+
+	uint16_t w;
+	w = tm.midTexture;   tm.midTexture   = rec->Word(0x0A); rec->SetWord(0x0A, w);
+	w = tm.upperTexture; tm.upperTexture = rec->Word(0x10); rec->SetWord(0x10, w);
+	w = tm.lowerTexture; tm.lowerTexture = rec->Word(0x12); rec->SetWord(0x12, w);
+
+	const uint8_t f = tm.flags;
+	tm.flags = rec->Byte(0x07);
+	rec->SetByte(0x07, f);
+
+	const uint16_t shift = (uint16_t)(tm.shiftX | ((uint16_t)tm.shiftY << 8));
+	const uint16_t inShift = rec->Word(0x0C);
+	tm.shiftX = (uint8_t)(inShift & 0xFF);
+	tm.shiftY = (uint8_t)(inShift >> 8);
+	rec->SetWord(0x0C, shift);
+
+	ApplyTexmapFull(tmi);
+	return TickFinalize(e, rec, rec->Word(0x0E));
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -2364,6 +2497,7 @@ static void TickEffects()
 		case 0x0B: done = TickChangeFlatTexture(g.effects[i], false); break;
 		case 0x0E: done = TickScrollSectorTexture(g.effects[i]); break;
 		case 0x0F: done = TickScrollFaceTexture(g.effects[i]); break;
+		case 0x0C: done = TickChangeFaceTextureAdv(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -2407,7 +2541,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0C: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	default:
 		return false;
@@ -2444,6 +2578,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x0A: case 0x0B: return ChangeFlatTexture(rec, index);
 	case 0x0E: return ScrollSectorTexture(rec, index);
 	case 0x0F: return ScrollFaceTexture(rec, index);
+	case 0x0C: return ChangeFaceTextureAdv(rec, index);
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
