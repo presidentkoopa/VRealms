@@ -71,6 +71,9 @@ static const uint32_t RNG_VA[] = {
 
 #include "staticdump.inc.c"
 
+/* Frame-dump state, declared early because on_load reads it. See on_compose_tick. */
+static int g_shots_wanted, g_shots_done;
+
 static FILE *g_log;
 static uint16_t g_last_tick;
 static int g_started;
@@ -111,12 +114,29 @@ static uint32_t ROTH_CDECL ov_show_message_box(struct roth_chain *chain,
                                               uint32_t desc, uint32_t flags)
 {
     (void)api;
-    if (!g_play_answered)
-    {
-        g_play_answered = 1;
-        fprintf(stderr, "[oraclelog] answering the main menu with Play\n");
-        return 1;                      /* <= 1 == Play (menu_hud_ui.c:2088) */
-    }
+    /* Answer EVERY box, and log each one. The first attempt answered only the
+     * first call and chained the rest through to the real, blocking one -- and the
+     * game still stopped dead. So this reports how many boxes there are and what
+     * they are, which is the difference between knowing and guessing.
+     *
+     * Returning 1 is "Play" at the main menu (menu_hud_ui.c:2088) and the first
+     * option anywhere else, which is what a rig wants: it must never block.
+     */
+    /* PASS THROUGH, and only report. Both forged answers were wrong: 1 meant
+     * "retry" and produced 163,973 calls in an infinite loop, 0 meant "decline"
+     * and quit the game outright with code -1. Either way the rig never reached
+     * gameplay, so the projection constants stayed zero and nothing could be
+     * measured.
+     *
+     * The mistake was forging an answer at all. Run WINDOWED and the box appears
+     * where it can be read and answered with a real keystroke -- which is also
+     * the only way to find out what it is asking, since headless shows no screen.
+     * So this now observes and gets out of the way.
+     */
+    g_play_answered++;
+    if (g_play_answered <= 8)
+        fprintf(stderr, "[oraclelog] message box #%d (desc=%08x flags=%08x) passed through\n",
+                g_play_answered, desc, flags);
     return roth_next_show_message_box(chain, desc, flags);
 }
 
@@ -130,6 +150,9 @@ static void on_register_overrides(const struct roth_api_v1 *api,
 
 static void on_load(const struct roth_api_v1 *api)
 {
+    const char *shots = getenv("ROTH_ORACLE_SHOTS");
+    if (shots != NULL) g_shots_wanted = atoi(shots);
+
     const char *path = getenv("ROTH_ORACLE_LOG");
     if (path == NULL) path = "oraclelog.csv";
     g_log = fopen(path, "w");
@@ -143,7 +166,13 @@ static void on_load(const struct roth_api_v1 *api)
      * which is a different bug from disagreeing about a value. */
     fprintf(g_log, "# oraclelog v1  ROTH.C  abi %u.%u\n",
             api->abi_major, api->abi_minor);
-    fprintf(g_log, "tick,x,h,y,angle,sector,health,pitch,flags");
+    /* The projection constants go in the PER-TICK log, not the one-shot static
+     * dump. They are written by the world render pass, which happens long after
+     * the map loads -- so the static dump, which fires the moment the geometry
+     * buffer appears, always caught them at zero and that zero proved nothing.
+     * Sampled every tick, they simply appear the moment the world first draws.
+     */
+    fprintf(g_log, "tick,x,h,y,angle,sector,health,pitch,flags,mulA,mulB,clip");
     for (int i = 0; i < RNG_COUNT; i++) fprintf(g_log, ",rng%d", i);
     fprintf(g_log, "\n");
     fflush(g_log);
@@ -241,15 +270,57 @@ static void on_frame_game(const struct roth_api_v1 *api)
         }
     }
 
-    fprintf(g_log, "%u,%d,%d,%d,%u,%u,%d,%d,%08x",
+    fprintf(g_log, "%u,%d,%d,%d,%u,%u,%d,%d,%08x,%d,%d,%d",
             (unsigned)tick,
             (int)m->u32(VA_POS_X), (int)m->u32(VA_POS_H), (int)m->u32(VA_POS_Y),
             (unsigned)m->u16(VA_ANGLE), (unsigned)m->u16(VA_SECTOR),
             (int)m->u32(VA_HEALTH), (int)(int16_t)m->u16(VA_PITCH),
-            fdig);
+            fdig,
+            (int)m->u32(VA_VIEW_PARAMS + 0x0c),
+            (int)m->u32(VA_PERSP_SCALE),
+            (int)m->u32(VA_CLIP_PLANE));
     for (int i = 0; i < RNG_COUNT; i++)
         fprintf(g_log, ",%04x", (unsigned)m->u16(RNG_VA[i]));
     fprintf(g_log, "\n");
+}
+
+/* SCREENSHOTS, FROM INSIDE THE ORACLE.
+ *
+ * on_compose_tick hands us the finished 8-bit frame, so the rig can see what the
+ * original is showing without a screen-capture tool and without a human watching.
+ * That answers the question headless could not: WHAT is it waiting on.
+ *
+ * It is also half of the plan's visual reference set -- the same hook, fired at
+ * chosen camera positions, produces the ROTH.C side of every comparison shot.
+ *
+ * Written as PGM (P5) of the raw palette indices rather than RGB: the VGA palette
+ * lives elsewhere and is not needed to READ a frame -- text and edges are already
+ * legible as distinct index values, and an index image is the honest thing to
+ * compare anyway, since it is what the original actually rasterised.
+ *
+ * ROTH_ORACLE_SHOTS = how many frames to write (default 0, off). They land beside
+ * the log as shot_00000.pgm and so on, one per composed frame, so the sequence
+ * shows how the boot progresses rather than one arbitrary instant.
+ */
+static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
+                            uint32_t width, uint32_t height)
+{
+    (void)api;
+    if (g_shots_done >= g_shots_wanted || pixels == NULL) return;
+    if (width == 0 || height == 0 || width > 4096 || height > 4096) return;
+
+    char name[64];
+    snprintf(name, sizeof name, "shot_%05d.pgm", g_shots_done);
+    FILE *f = fopen(name, "wb");
+    if (f == NULL) return;
+    fprintf(f, "P5\n%u %u\n255\n", width, height);
+    fwrite(pixels, 1, (size_t)width * (size_t)height, f);
+    fclose(f);
+
+    if (g_shots_done == 0)
+        fprintf(stderr, "[oraclelog] writing %d frame(s) at %ux%u\n",
+                g_shots_wanted, width, height);
+    g_shots_done++;
 }
 
 static void on_unload(const struct roth_api_v1 *api)
@@ -268,12 +339,12 @@ static const struct roth_plugin_info_v1 ORACLELOG = {
     .version       = "1.0.0",
     .sdk_req_major = ROTH_SDK_MAJOR,
     .sdk_req_minor = ROTH_SDK_MINOR,
-    .api_use       = ROTH_API_USE_GAME_RAM | ROTH_API_USE_ENGINE,
+    .api_use       = ROTH_API_USE_GAME_RAM | ROTH_API_USE_ENGINE | ROTH_API_USE_COMPOSE,
     .on_load           = on_load,
     .on_register_overrides = on_register_overrides,
     .on_game_ram_ready = NULL,
     .on_frame_game     = on_frame_game,
-    .on_compose_tick   = NULL,
+    .on_compose_tick   = on_compose_tick,
     .on_audio          = NULL,
     .on_unload         = on_unload,
 };

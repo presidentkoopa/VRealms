@@ -67,6 +67,27 @@
 #define VA_MAX_CLIMB    0x8c148u
 #define VA_MIN_FIT      0x90be0u
 
+/* THE PROJECTION. rwss_proj (renderer.c:5350) is a plain perspective divide,
+ *
+ *     screen = world * mul / depth + centre,  clamped to +/-0x3ffe
+ *
+ * and its own comment names the constants it models: "imul [0x8527c]/[0x85288];
+ * idiv [0x85264]; add [0x909a*]". Those resolve to named globals:
+ *
+ *     0x8527c = g_view_params_block + 0x0c   (block at 0x85270, extent 0x18)
+ *     0x85288 = g_perspective_scale
+ *     0x85264 = g_view_clip_plane            (the depth divisor)
+ *
+ * The RATIO of the two scales is the vertical-to-horizontal projection
+ * relationship -- which is what decides whether a correct-height ceiling reads
+ * as too tall. The heights themselves are already proven identical to ours, so
+ * this is the remaining candidate. Dumped raw, with the ratio worked out, rather
+ * than reasoned about: reasoning about this renderer is what produced two wrong
+ * answers already. */
+#define VA_VIEW_PARAMS  0x85270u
+#define VA_PERSP_SCALE  0x85288u
+#define VA_CLIP_PLANE   0x85264u
+
 /* THE MAP BUFFERS ARE NOT IN game_ram. The geometry and object buffers are
  * allocated from the DPMI arena at run time, so their stored pointers land well
  * outside the bounded game_ram window -- measured: geom resolves to 0x078ad388
@@ -115,6 +136,26 @@ static int static_dump(const struct roth_api_v1 *api)
     fprintf(f, "view,player_height,%d\n", (int)(int16_t)m->u16(VA_PLAYER_H));
     fprintf(f, "view,max_climb,%d\n", (int)(int16_t)m->u16(VA_MAX_CLIMB));
     fprintf(f, "view,min_fit,%d\n", (int)(int16_t)m->u16(VA_MIN_FIT));
+
+    /* The projection block, raw. Six dwords of view_params_block, the three of
+     * g_perspective_scale, and the clip plane. */
+    for (int i = 0; i < 6; i++)
+        fprintf(f, "proj,view_params_%02x,%d\n", i * 4, (int)m->u32(VA_VIEW_PARAMS + (uint32_t)i * 4));
+    for (int i = 0; i < 3; i++)
+        fprintf(f, "proj,persp_scale_%02x,%d\n", i * 4, (int)m->u32(VA_PERSP_SCALE + (uint32_t)i * 4));
+    fprintf(f, "proj,clip_plane,%d\n", (int)m->u32(VA_CLIP_PLANE));
+
+    /* The two scales rwss_proj multiplies by, and their ratio -- the number that
+     * matters. A ratio of 1 means square pixels; anything else is the aspect
+     * correction the original applied and we may not. */
+    {
+        const int32_t mulA = (int32_t)m->u32(VA_VIEW_PARAMS + 0x0c);
+        const int32_t mulB = (int32_t)m->u32(VA_PERSP_SCALE);
+        fprintf(f, "proj,mul_8527c,%d\n", mulA);
+        fprintf(f, "proj,mul_85288,%d\n", mulB);
+        if (mulA != 0)
+            fprintf(f, "proj,ratio_B_over_A,%.6f\n", (double)mulB / (double)mulA);
+    }
 
     fprintf(f, "sec,idx,ceil_h,floor_h,ceil_tex,floor_tex,flags,"
                "ceil_scale,floor_scale,light,texmap_ovr,faces,"
