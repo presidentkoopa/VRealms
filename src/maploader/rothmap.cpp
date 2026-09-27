@@ -480,7 +480,24 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
 			if (!isSky && !tex.isValid()) flatsToSky++;
 
-			const double unitsPerTexel = double(1 << shift);
+			// MEASURED, NOT DERIVED: flats are 2^(v+2) world units per texel.
+			//
+			// Reading it as 2^v tiled every flat in the game FOUR times too often,
+			// i.e. drew each texture at a quarter of its authored size. Measured
+			// against the oracle on STUDY1's entrance-hall carpet, same camera,
+			// same row: the original repeats every 16 px, we repeated every 4 --
+			// a ratio of exactly 4.00.
+			//
+			// That fits RAW.md's CEIL_A/CEIL_B table (1/2, full, 2x, 4x) with a
+			// base of EIGHT world units per texel. The mistake was assuming flats
+			// share the walls' base of two ("one texel is two world units, like a
+			// wall"); they do not.
+			//
+			// Note the direction. An earlier attempt at this went the other way,
+			// 2^(v-1), which would have made the tiling eight times too fine. It
+			// was reverted for being reasoned rather than measured, and this is
+			// what measuring says.
+			const double unitsPerTexel = double(1 << shift) * 4.0;
 			sec->SetXScale(which, 1. / unitsPerTexel);
 			sec->SetYScale(which, 1. / unitsPerTexel);
 			sec->SetXOffset(which,  shx * unitsPerTexel * 0.5);
@@ -1033,8 +1050,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// Scale, exactly as for an ordinary flat: 2^s world units per texel,
 			// and Doom's scale is the reciprocal. Bits 4-5 top, 2-3 underside,
 			// the same layout the sector flags byte uses.
-			const double topScale = 1.0 / double(1 << ((mp.scales >> 4) & 3));
-			const double undScale = 1.0 / double(1 << ((mp.scales >> 2) & 3));
+			// Same 2^(v+2) base as the sector flats above -- identical encoding.
+			const double topScale = 1.0 / (double(1 << ((mp.scales >> 4) & 3)) * 4.0);
+			const double undScale = 1.0 / (double(1 << ((mp.scales >> 2) & 3)) * 4.0);
 			cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
 			cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
 			cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
