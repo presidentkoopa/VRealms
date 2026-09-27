@@ -45,6 +45,10 @@
 #define VA_SECTOR      0x90c12u   /* u16                                          */
 #define VA_HEALTH      0x8a0f0u   /* g_player_health, default 0x800               */
 #define VA_PITCH       0x819c8u   /* view pitch, saved chunk 2 +0x1c              */
+#define VA_MODE        0x7674au   /* g_player_movement_enabled                    */
+#define VA_DLG_BUSY    0x83aeau   /* g_dialogue_busy_flag                         */
+#define VA_DLG_CTX     0x83115u   /* g_active_dialogue_context: laid-out line count */
+#define VA_FREEZE_GATE 0x83125u   /* g_move_freeze_gate: 0x6ffff menu / 0x7ffff line */   /* view pitch, saved chunk 2 +0x1c              */
 
 /* The DBASE100 story-flag bitmap: a POINTER at +0x28 and its size at +0x2c
  * (GAME_core.md §6, game_core.c:420-432). 433 retail records -> 56 bytes. */
@@ -78,6 +82,50 @@ static uint32_t digest(const uint8_t *p, uint32_t n)
     uint32_t h = 0x811c9dc5u;
     for (uint32_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x01000193u; }
     return h;
+}
+
+/*
+ * GETTING PAST THE MENU, PROPERLY.
+ *
+ * Headless has no keyboard, so run_main_menu (menu_hud_ui.c:2079) blocks forever
+ * in show_message_box and the world is never simulated: the first runs logged
+ * 8,344 ticks with the player frozen at the map start and the sector stuck at 0.
+ *
+ * Writing the mode byte does NOT fix that -- tried, and health changed while the
+ * player stayed put, because the engine is still inside the menu's own loop, not
+ * in the frame loop that would move anything.
+ *
+ * So override the blocking call instead. run_main_menu treats any result <= 1 as
+ * "Play" (its own comment: "Esc/row 1 both start the game"), so answering 1 once
+ * makes the menu return exactly as if Esc had been pressed, through the engine's
+ * own code path. After that the override steps aside and every later message box
+ * behaves normally -- a save prompt or an error must still work.
+ *
+ * This is the rig pressing a key, not the rig faking a result: the value returned
+ * is one the real menu can produce, and the engine does the rest itself.
+ */
+static int g_play_answered;
+
+static uint32_t ROTH_CDECL ov_show_message_box(struct roth_chain *chain,
+                                              const struct roth_api_v1 *api,
+                                              uint32_t desc, uint32_t flags)
+{
+    (void)api;
+    if (!g_play_answered)
+    {
+        g_play_answered = 1;
+        fprintf(stderr, "[oraclelog] answering the main menu with Play\n");
+        return 1;                      /* <= 1 == Play (menu_hud_ui.c:2088) */
+    }
+    return roth_next_show_message_box(chain, desc, flags);
+}
+
+static void on_register_overrides(const struct roth_api_v1 *api,
+                                  struct roth_registrar_v1 *reg)
+{
+    (void)api;
+    if (roth_override(reg, ROTH_FN_show_message_box, ov_show_message_box, 0) != 0)
+        fprintf(stderr, "[oraclelog] could not override show_message_box\n");
 }
 
 static void on_load(const struct roth_api_v1 *api)
@@ -114,6 +162,60 @@ static void on_frame_game(const struct roth_api_v1 *api)
     if (g_started && tick == g_last_tick) return;
     g_started = 1;
     g_last_tick = tick;
+
+    /* DISMISS DIALOGUE, every tick it appears.
+     *
+     * The new-game script (DBASE100 record 3) opens a text line, and a line with
+     * no speech clip "waits for a click or key" (GAME_dialogue.md §2.5, gate
+     * 0x7ffff). Headless has neither, so the engine parks in the dialogue mode
+     * and the player is never simulated -- which is why the sector stayed 0 while
+     * the tick counter kept advancing and our health write landed. The trace shows
+     * it: an 8-byte DBASE400 header and 29 bytes of text read, then no further
+     * file I/O at all.
+     *
+     * Clearing busy and the laid-out-line count is what voice_stream_pump does
+     * itself once a line finishes (dbase100.c:484-497): while busy AND the text
+     * context is non-zero it does nothing, otherwise it clears busy and advances
+     * the queue. So this is the rig acknowledging each line as fast as it appears,
+     * which is what holding Enter would do.
+     *
+     * It is deliberately unconditional rather than one-shot: record 3 can queue
+     * several lines, and any later script can open more.
+     */
+    if (m->u32(VA_DLG_BUSY) != 0 || m->u32(VA_DLG_CTX) != 0)
+    {
+        const uint32_t zero = 0;
+        m->write_block(VA_DLG_BUSY, &zero, 4);
+        m->write_block(VA_DLG_CTX, &zero, 4);
+        m->write_block(VA_FREEZE_GATE, &zero, 4);
+        static int said;
+        if (!said) { said = 1; fprintf(stderr, "[oraclelog] dismissing dialogue lines\n"); }
+    }
+
+    /* PRESS PLAY. Headless has no keyboard, so the game sits at the intro menu
+     * forever and never renders the world or moves the player -- the first run
+     * logged 8,344 ticks with sector and health both stuck at 0.
+     *
+     * This writes what selecting Play writes: mode 1 (gameplay) and full health.
+     * It is the one place this mod writes anything, it happens once, and it is
+     * doing to the oracle exactly what a keypress would. Everything else here is
+     * read-only. Deliberately delayed until the map is in memory, because before
+     * that there is no world to be in.
+     *
+     * Mode values, game_core.c:861-921 via GAME_core.md §4.1:
+     *   0 off  1 gameplay  3 inventory  4/5 dialogue  8 transitional  0x20 dead
+     */
+    static int pressed_play;
+    if (!pressed_play && m->u32(VA_GEOM_BUF) != 0 && tick > 120)
+    {
+        const uint8_t mode = 1;
+        const uint32_t hp = 0x800;          /* the default max, game_core.c:769-772 */
+        m->write_block(VA_MODE, &mode, 1);
+        m->write_block(VA_HEALTH, &hp, 4);
+        pressed_play = 1;
+        fprintf(stderr, "[oraclelog] pressed Play at tick %u (mode=1, health=0x800)\n",
+                (unsigned)tick);
+    }
 
     /* The static dump, once, as soon as the map is really in memory. It cannot
      * run at on_load (game_ram is pristine) or at on_game_ram_ready (no map yet),
@@ -166,8 +268,9 @@ static const struct roth_plugin_info_v1 ORACLELOG = {
     .version       = "1.0.0",
     .sdk_req_major = ROTH_SDK_MAJOR,
     .sdk_req_minor = ROTH_SDK_MINOR,
-    .api_use       = ROTH_API_USE_GAME_RAM,
+    .api_use       = ROTH_API_USE_GAME_RAM | ROTH_API_USE_ENGINE,
     .on_load           = on_load,
+    .on_register_overrides = on_register_overrides,
     .on_game_ram_ready = NULL,
     .on_frame_game     = on_frame_game,
     .on_compose_tick   = NULL,
