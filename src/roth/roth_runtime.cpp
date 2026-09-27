@@ -1993,8 +1993,7 @@ static void ApplySectorFlat(int si, bool isFloor)
 	// something or the sector renders hall of mirrors.
 	sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
 
-	// 2^(v-1), not 2^v -- see the note beside rothmap.cpp's copy of this.
-	const double unitsPerTexel = double(1 << shift) * 0.5;
+	const double unitsPerTexel = double(1 << shift);
 	sec->SetXScale(which, 1. / unitsPerTexel);
 	sec->SetYScale(which, 1. / unitsPerTexel);
 	sec->SetXOffset(which,  shx * unitsPerTexel * 0.5);
