@@ -228,9 +228,21 @@ PClassActor *PropClass()
 //
 // `sprites` is an ordinary TArray the renderer indexes with AActor::sprite, and
 // R_InitSkins already appends to it at runtime, so this needs no engine change.
-// All sixteen view angles get the same texture: Realms' own directional art is
-// an indirection we do not follow yet, and everything that reaches here is a
-// single picture.
+//
+// A plain picture fills all sixteen view angles with the one texture. Realms'
+// DIRECTIONAL art instead names a picture per view, and the two systems turn
+// out to agree exactly: Realms picks its frame with
+//
+//     ((2*rot + 0x120 - viewAngle) >> 6) & 7        renderer.c:5897-5911
+//
+// where a turn is 512 units, so its 0x120 offset is 202.5 degrees -- which is
+// GZDoom's own `45.0/2*9` rounding offset at hw_sprites.cpp:1436, to the
+// degree. So a Realms view index is a GZDoom rotation index, and the mirror
+// bit on each frame is GZDoom's per-rotation Flip. Nothing needs converting.
+//
+// An eight-view entry fills the pairs (0,1), (2,3) ... because GZDoom tells an
+// eight-rotation sprite from a sixteen by testing Texture[0] == Texture[1]
+// (hw_sprites.cpp:1432) and then indexes all sixteen slots regardless.
 //
 //==========================================================================
 
@@ -253,7 +265,10 @@ static void MarkSpriteTable()
 	}
 }
 
-static int MakeRuntimeSprite(FTextureID tex, Log *log)
+// `views` is 1 (the same picture from everywhere), 8 or 16. `flip` may be null
+// when no view is mirrored.
+static int MakeRuntimeSprite(const FTextureID *tex, const bool *flip, int views,
+	Log *log)
 {
 	// spritedef_t::spriteframes is a uint16_t, so the frame table has a hard
 	// ceiling. Reported rather than wrapped silently.
@@ -266,8 +281,15 @@ static int MakeRuntimeSprite(FTextureID tex, Log *log)
 	spriteframe_t sf;
 	memset(&sf, 0, sizeof(sf));
 	sf.Voxel = nullptr;
-	for (int i = 0; i < 16; i++) sf.Texture[i] = tex;
 	sf.Flip = 0;
+	for (int i = 0; i < 16; i++)
+	{
+		// 1 view -> every slot; 8 -> each view fills two adjacent slots;
+		// 16 -> one slot each.
+		const int view = (views == 1) ? 0 : (views == 8) ? (i >> 1) : i;
+		sf.Texture[i] = tex[view];
+		if (flip != nullptr && flip[view]) sf.Flip |= (uint16_t)(1 << i);
+	}
 	unsigned frameIndex = SpriteFrames.Push(sf);
 
 	spritedef_t sd;
@@ -279,6 +301,11 @@ static int MakeRuntimeSprite(FTextureID tex, Log *log)
 	sd.numframes = 1;
 	sd.spriteframes = (uint16_t)frameIndex;
 	return (int)sprites.Push(sd);
+}
+
+static int MakeRuntimeSprite(FTextureID tex, Log *log)
+{
+	return MakeRuntimeSprite(&tex, nullptr, 1, log);
 }
 
 //==========================================================================
@@ -485,11 +512,93 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	std::map<int, int> spriteByTexture;
 
 	int total = 0, spawnedSprites = 0, spawnedMeshes = 0;
-	int hiddenFlag = 0, noArt = 0, emptyEntry = 0, creatures = 0, directional = 0;
+	int hiddenFlag = 0, noArt = 0, emptyEntry = 0, creatures = 0;
 	int meshesBuilt = 0, flatFaces = 0, texturedFaces = 0;
 	int fixedAngle = 0, flipped = 0, hanging = 0, scaled = 0, lit = 0, nibbleShift = 0;
 	int fromShared = 0, sharedUnavailable = 0, noSpriteSlot = 0;
 	int oversized = 0;
+	int directionalPlaced = 0, directionalUnresolved = 0, directionalFrames = 0;
+	int directionalFixedAngle = 0;
+
+	// Sprite definitions for directional art, keyed by the entry rather than by
+	// a texture: one entry is eight pictures, and two entries may share a
+	// picture without sharing a frame table.
+	std::map<std::pair<bool, int>, int> dirSpriteByEntry;
+
+	// Everything a picture sprite needs after its sprite definition exists:
+	// the drawn size, the object's own render flags, and the cull radius. Both
+	// the plain and the directional paths end here, so a rule added to one is
+	// not silently missing from the other.
+	auto finishPictureSprite = [&](Pending &p, FTextureID tex, const SpriteInfo &info,
+		const roth::Object &o, const std::string &artName, int artIndex)
+	{
+		// One texel is two world units, like a wall, unless the artwork
+		// carries its own size modifier.
+		p.scaleX = p.scaleY = info.unitsPerPixel;
+		if (info.unitsPerPixel != 2.0) scaled++;
+		if (info.hang) hanging++;
+
+		// THE MODIFIER NIBBLE SHIFT IS READ BUT NOT APPLIED, and that is a
+		// deliberate refusal to follow a reading of ROTH.C that the retail
+		// data contradicts.
+		//
+		// renderer.c:6552-6556 adds 2 * (modifier & 0xf) world units to the
+		// vertical, downward for a standing picture. Applying it measurably
+		// makes things worse: of STUDY1's 243 drawn objects, 175 have a Z
+		// exactly equal to their own sector's floor height -- they are standing
+		// on the floor, which is plainly the intent -- and 71 carry a non-zero
+		// nibble. Applying the shift sinks 68 of those below the floor they
+		// were sitting on. A prop buried in the floor is not what the original
+		// draws.
+		//
+		// So either the sign is the other way, or the nibble is not an offset,
+		// or the global the original adds beside it ([0x84aba], for which no
+		// writer was found anywhere in ROTH.C) cancels it. Not guessing: it is
+		// counted and left off, and the number is in the load report so the
+		// question stays visible.
+		if (info.anchorShift != 0.0)
+		{
+			nibbleShift++;
+			if (log) log->Count("objects: artwork nibble vertical shift not applied");
+		}
+
+		// renderType bit 7: the picture hangs at its own orientation instead of
+		// turning to face the camera, as a vertical quad whose normal is the
+		// object's bearing (renderer.c:6095-6147). That is exactly
+		// RF_WALLSPRITE, which builds its quad perpendicular to Angles.Yaw.
+		if (o.FixedAngle())
+		{
+			p.renderFlags |= RF_WALLSPRITE;
+			fixedAngle++;
+		}
+		if (o.HorizontalFlip())
+		{
+			p.renderFlags |= RF_XFLIP;
+			flipped++;
+		}
+
+		auto gtex = TexMan.GetGameTexture(tex, false);
+		if (gtex != nullptr)
+		{
+			double w = gtex->GetDisplayWidth() * p.scaleX;
+			double h = gtex->GetDisplayHeight() * p.scaleY;
+			p.renderRadius = (w > h ? w : h) * 0.5;
+
+			// Same oversize check the mesh path gets. A SPRITE drawn far taller
+			// than a 154-unit player is either an architectural backdrop or a
+			// units-per-texel decode we have got wrong, and "one of them is
+			// enormous" cannot be chased without knowing WHICH. Named with its
+			// index, its decoded scale and its position so it can be looked up.
+			if (h > 3.0 * 154.0 && log)
+			{
+				log->Line("  OVERSIZED sprite  %s[%d]  %.0f tall  upp=%.1f at (%d, %d)",
+					artName.c_str(), artIndex, h, info.unitsPerPixel,
+					(int)o.x, (int)o.y);
+				oversized++;
+			}
+		}
+		spawnedSprites++;
+	};
 
 	for (size_t si = 0; si < rm.objects.size(); si++)
 	{
@@ -546,23 +655,103 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 				continue;
 
 			case EntryKind::Indirection:
+			{
 				// Not a picture: the original resolves these through the
 				// creature/directional tables (das_assets.c:886-891,
-				// renderer.c:5827-5927). FAT_MONSTER means the object SPAWNS A
-				// LIVE ACTOR the first time it is drawn, with its own AI; a
-				// directional entry is a decoration whose frame is picked from
-				// the view angle. Neither is a decoration this stage can place.
-				if (entry->flags1 & FAT_MONSTER)
+				// renderer.c:5827-5927). A CREATURE entry spawns a LIVE ACTOR
+				// the first time it is drawn, with its own AI, which this stage
+				// cannot place. A DIRECTIONAL entry is a decoration whose
+				// picture is chosen from the view angle, and that this stage
+				// can place: it is eight ordinary pictures and a rotation.
+				if (pack->Indirect(artIndex) != IndirectKind::Directional)
 				{
 					creatures++;
-					if (log) log->Count("objects: creature (FAT_MONSTER art) -- not a decoration");
+					if (log) log->Count("objects: creature art -- spawns an actor, not a decoration");
+					continue;
+				}
+
+				const Directional dir = pack->ReadDirectional(artIndex);
+				if (!dir.ok())
+				{
+					// A record the file does not resolve: a fixed frame chosen
+					// through a table the original keeps in engine state. Left
+					// unplaced and counted rather than guessed at a view.
+					directionalUnresolved++;
+					if (log) log->Count("objects: directional art with no frame table in the file");
+					continue;
+				}
+
+				// One sprite definition per ENTRY. Memoised on which pack the
+				// entry came from as well as its index, because the two packs
+				// number their entries from zero independently.
+				const std::pair<bool, int> entryKey(useShared, artIndex);
+				auto haveDir = dirSpriteByEntry.find(entryKey);
+				SpriteInfo info;
+				FTextureID first = FNullTextureID();
+
+				// The frames are named by GLOBAL das ids, so a view may live in
+				// the other pack -- the shared pack's directional entries point
+				// almost entirely into the map's own. Resolved the way the
+				// original's select_das_fat_entry does (renderer.c:730-733).
+				bool badFrame = false;
+				FTextureID views[16];
+				bool flips[16];
+				for (int v = 0; v < dir.count; v++)
+				{
+					int frameIndex = 0;
+					const bool frameShared =
+						Pack::ResolveDasId(dir.frames[v].entry, frameIndex);
+					if (frameShared && !haveShared) { badFrame = true; break; }
+					TextureSet &frameArt = frameShared ? sharedArt : levelArt;
+
+					SpriteInfo frameInfo;
+					views[v] = frameArt.Sprite(frameIndex, log, &frameInfo);
+					if (!views[v].isValid()) { badFrame = true; break; }
+					flips[v] = dir.frames[v].mirror;
+					// The views of one prop are the same artwork from different
+					// sides, so the first view's size and anchor speak for all.
+					if (v == 0) { info = frameInfo; first = views[v]; }
+				}
+				if (badFrame)
+				{
+					noArt++;
+					if (log) log->Count("objects: a directional view's picture is missing");
+					continue;
+				}
+				directionalFrames += dir.count;
+
+				if (haveDir != dirSpriteByEntry.end())
+				{
+					p.spriteNum = haveDir->second;
 				}
 				else
 				{
-					directional++;
-					if (log) log->Count("objects: view-dependent art (FAT_DIRECTIONAL) not followed");
+					p.spriteNum = MakeRuntimeSprite(views, flips, dir.count, log);
+					if (p.spriteNum < 0) { noSpriteSlot++; continue; }
+					dirSpriteByEntry[entryKey] = p.spriteNum;
 				}
-				continue;
+
+				// p.yaw is already the object's own facing, which is what
+				// GZDoom measures its rotation against -- exactly as the
+				// original measures its view index against the object's
+				// rotation byte. Nothing else to set: the rotation IS the
+				// facing.
+				//
+				// A directional object carrying renderType bit 7 as well would
+				// contradict itself: bit 7 draws the picture as a fixed-angle
+				// quad instead of turning it to face the camera, and a
+				// view-dependent frame is meaningless on a quad that does not
+				// turn. MEASURED over all 44 maps (tools/rothdiff/dircheck):
+				// of the 53 placed directional objects, NONE carries bit 7 and
+				// none carries the x-flip either. So the case does not arise
+				// and is not special-cased -- but it is counted, because that
+				// is a fact about the retail data and not a guarantee.
+				if (o.FixedAngle()) directionalFixedAngle++;
+
+				directionalPlaced++;
+				finishPictureSprite(p, first, info, o, art.Name(), artIndex);
+				break;
+			}
 
 			case EntryKind::Object3D:
 			{
@@ -617,74 +806,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					spriteByTexture[tex.GetIndex()] = p.spriteNum;
 				}
 
-				// One texel is two world units, like a wall, unless the artwork
-				// carries its own size modifier.
-				p.scaleX = p.scaleY = info.unitsPerPixel;
-				if (info.unitsPerPixel != 2.0) scaled++;
-				if (info.hang) hanging++;
-
-				// THE MODIFIER NIBBLE SHIFT IS READ BUT NOT APPLIED, and that
-				// is a deliberate refusal to follow a reading of ROTH.C that
-				// the retail data contradicts.
-				//
-				// renderer.c:6552-6556 adds 2 * (modifier & 0xf) world units to
-				// the vertical, downward for a standing picture. Applying it
-				// measurably makes things worse: of STUDY1's 243 drawn objects,
-				// 175 have a Z exactly equal to their own sector's floor height
-				// -- they are standing on the floor, which is plainly the intent
-				// -- and 71 carry a non-zero nibble. Applying the shift sinks 68
-				// of those below the floor they were sitting on. A prop buried
-				// in the floor is not what the original draws.
-				//
-				// So either the sign is the other way, or the nibble is not an
-				// offset, or the global the original adds beside it
-				// ([0x84aba], for which no writer was found anywhere in ROTH.C)
-				// cancels it. Not guessing: it is counted and left off, and the
-				// number is in the load report so the question stays visible.
-				if (info.anchorShift != 0.0)
-				{
-					nibbleShift++;
-					if (log) log->Count("objects: artwork nibble vertical shift not applied");
-				}
-
-				// renderType bit 7: the picture hangs at its own orientation
-				// instead of turning to face the camera, as a vertical quad
-				// whose normal is the object's bearing (renderer.c:6095-6147).
-				// That is exactly RF_WALLSPRITE, which builds its quad
-				// perpendicular to Angles.Yaw.
-				if (o.FixedAngle())
-				{
-					p.renderFlags |= RF_WALLSPRITE;
-					fixedAngle++;
-				}
-				if (o.HorizontalFlip())
-				{
-					p.renderFlags |= RF_XFLIP;
-					flipped++;
-				}
-
-				auto gtex = TexMan.GetGameTexture(tex, false);
-				if (gtex != nullptr)
-				{
-					double w = gtex->GetDisplayWidth() * p.scaleX;
-					double h = gtex->GetDisplayHeight() * p.scaleY;
-					p.renderRadius = (w > h ? w : h) * 0.5;
-
-					// Same oversize check the mesh path gets. A SPRITE drawn far
-					// taller than a 154-unit player is either an architectural
-					// backdrop or a units-per-texel decode we have got wrong, and
-					// "one of them is enormous" cannot be chased without knowing
-					// WHICH. Named with its index, its decoded scale and its
-					// position so it can be looked up.
-					if (h > 3.0 * 154.0 && log)
-					{
-						log->Line("  OVERSIZED sprite  %s[%d]  %.0f tall  upp=%.1f at (%d, %d)",
-							art.Name().c_str(), artIndex, h, info.unitsPerPixel,
-							(int)o.x, (int)o.y);
-						oversized++;
-					}
-				}
-				spawnedSprites++;
+				finishPictureSprite(p, tex, info, o, art.Name(), artIndex);
 				break;
 			}
 			}
@@ -704,6 +826,9 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  sprite definitions    %d registered at load",
 			(int)(sprites.Size() - gSpriteMark));
 		log->Line("  from the shared pack  %d", fromShared);
+		log->Line("  directional           %d placed from %d view frames, %d unresolved%s",
+			directionalPlaced, directionalFrames, directionalUnresolved,
+			directionalFixedAngle != 0 ? "  (SOME ALSO FIXED-ANGLE -- see the comment)" : "");
 		log->Line("  fixed angle           %d  (drawn as wall sprites)", fixedAngle);
 		log->Line("  x-flipped             %d", flipped);
 		log->Line("  top-anchored (HANG)   %d", hanging);
@@ -713,9 +838,10 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  artwork nibble shift  %d  (READ, deliberately NOT applied -- see the"
 			" comment in roth_objects.cpp)", nibbleShift);
 		log->Line("  not spawned           %d  = %d not-drawn flag, %d empty art,"
-			" %d creature, %d directional, %d no art, %d shared pack missing, %d no sprite slot",
-			total - (int)gPending.size(), hiddenFlag, emptyEntry, creatures, directional,
-			noArt, sharedUnavailable, noSpriteSlot);
+			" %d creature, %d directional unresolved, %d no art, %d shared pack missing,"
+			" %d no sprite slot",
+			total - (int)gPending.size(), hiddenFlag, emptyEntry, creatures,
+			directionalUnresolved, noArt, sharedUnavailable, noSpriteSlot);
 		log->Line("  object art registered %d pictures in %s, %d in %s",
 			levelArt.SpritesRegistered(), levelArt.Name().c_str(),
 			sharedArt.SpritesRegistered(), sharedName.c_str());

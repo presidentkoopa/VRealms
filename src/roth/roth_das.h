@@ -59,6 +59,46 @@ struct FatEntry
 	EntryKind kind = EntryKind::Empty;
 };
 
+// How an indirection resolves. The original keys this off the whole of flags_1
+// rather than off single bits: 0x20 alone goes to the per-map directional
+// table, 0x24 spawns a live actor instead (das_assets.c:886-891, where the
+// status word is stamped 0xfe or 0xfc accordingly).
+enum class IndirectKind
+{
+	None,
+	Directional,    // flags1 == 0x20: art chosen from the viewing angle
+	Creature,       // flags1 == 0x24: spawns an actor, art driven by its state
+};
+
+// One view's worth of a directional entry.
+struct DirectionalFrame
+{
+	uint16_t entry = 0;     // the FAT index to draw for this view
+	bool mirror = false;    // drawn left-right reversed (frame word bit 15)
+};
+
+// A view-dependent art entry: which picture is drawn depends on the angle the
+// object is seen from. The original picks the frame at renderer.c:5884-5920:
+//
+//   rec   = dirBlock + u16(dirBlock + flags2 * 2)
+//   w     = u16(rec)
+//   w & 0x8000 == 0  ->  a fixed frame, through a table held in engine state
+//   w & 0x2000       ->  sixteen views, index ((2*rot + 0x110 - view) >> 4) & 0x1e
+//   otherwise        ->  eight views,   index ((2*rot + 0x120 - view) >> 5) & 0x0e
+//   frame = u16(rec + 2 + index), bit 15 = mirror, low 15 bits = a FAT index
+//
+// The same 8/16-way rule with the same mirror bit appears in all three of the
+// original's frame-picking paths (the resident-block table at renderer.c:5705,
+// the creature table at :5844, this one at :5897). It is one rule.
+struct Directional
+{
+	int count = 0;                  // 0 unresolved, 1 fixed, or 8 / 16 views
+	DirectionalFrame frames[16];
+
+	bool ok() const { return count > 0; }
+	bool ViewDependent() const { return count > 1; }
+};
+
 struct Image
 {
 	int width = 0, height = 0;
@@ -132,6 +172,17 @@ public:
 	Image ReadImage(int index, bool allFrames = false) const;
 	Mesh ReadMesh(int index) const;
 
+	// Which of the two indirections this entry is, if either.
+	IndirectKind Indirect(int index) const;
+
+	// Resolve a directional entry to the pictures for each view. Returns an
+	// empty Directional when the entry is not directional, when the pack has
+	// no directional block, or when the record runs outside it.
+	Directional ReadDirectional(int index) const;
+
+	// True when the pack carries a directional block at all.
+	bool HasDirectional() const { return mDirSize > 0; }
+
 	// Object art is indirected through `textureSource` (handoff 4):
 	//   0 -> this pack, index + 4096      2 -> the shared pack, index
 	//   1 -> this pack, index + 4096+256  3 -> the shared pack, index + 256
@@ -139,12 +190,32 @@ public:
 	static bool ResolveObjectArt(uint8_t textureIndex, uint8_t textureSource,
 		int &outIndex);
 
+	// A map has two packs open at once and the DAS ids in its data are numbered
+	// across BOTH: ids below this are the map's own pack, ids at or above it
+	// are the shared pack, numbered from zero again.
+	//
+	// select_das_fat_entry (renderer.c:730-733) is the whole rule: it holds the
+	// index pre-doubled, so its `>= 0x2400` test and `-= 0x2400` are this
+	// boundary. The DAS cache picks the file the same way (das_assets.c:930).
+	//
+	// ResolveObjectArt answers the same question for an OBJECT's art, where the
+	// map data carries a pack selector beside the index; this one is for ids
+	// that arrive bare, as a directional entry's frames do.
+	static const int SHARED_ID_BASE = 0x1200;
+	static bool ResolveDasId(int id, int &outIndex);
+
 private:
 	const uint8_t *mData = nullptr;
 	size_t mSize = 0;
 	std::vector<FatEntry> mFat;
 	std::vector<Colour> mPalette;
 	uint16_t mUnknown0x22 = 0;   // header +0x22; see SkyMarkerIndex()
+	// The directional-object block: header +0x1c is its file offset (0 means
+	// the pack has none) and +0x1a its byte size. The original reads it into
+	// its own allocation at map load (map_load.c:367, :385-390); here it stays
+	// where it is in the mapped file.
+	uint32_t mDirOffset = 0;
+	uint16_t mDirSize = 0;
 	std::string mError;
 
 	EntryKind Classify(const FatEntry &e) const;

@@ -12,11 +12,56 @@ defaultmap
 	sky1 = "-NOFLAT-"
 	cluster = 1
 	nointermission
+
+	// SQUARE PIXELS. The engine's default is 1.2 (g_mapinfo.cpp:317), inherited
+	// from Doom, where 320x200 was shown on a 4:3 screen and so had to be
+	// stretched vertically by 6/5. Realms treats pixels as square in world
+	// terms, so 1.0 is the correct value for it.
+	//
+	// THIS DOES FIX ROOM HEIGHT. The hardware renderer applies pixelstretch in
+	// the VIEW matrix, scaling world Y (hw_drawinfo.cpp:3027, 3034-3035):
+	//
+	//     planemult = Level->info->pixelstretch;
+	//     mViewMatrix.translate(vx * mult, -vz * planemult, -vy);
+	//     mViewMatrix.scale(-mult, planemult, 1);
+	//
+	// so the engine default of 1.2 really was making every room 20% taller.
+	//
+	// An earlier version of this comment claimed the opposite, on the grounds
+	// that VREyeInfo::GetProjection (hw_vrmodes.cpp:1350) builds the projection
+	// from fov, aspect and fovratio with no pixelstretch term. That is true and
+	// beside the point: the stretch is applied to the VIEW transform, not the
+	// projection. Checking one of the two and stopping is how that was missed.
+	//
+	// Also read by the software renderer (r_viewport.cpp:164-174), camera
+	// textures (hw_entrypoint.cpp:709) and the VR transforms, which convert HMD
+	// metres to world units (vk_openxrdevice.cpp:817, gl_openvr.cpp:1087/1442).
+	//
+	// The MAPINFO keyword is `pixelratio`; the field is `pixelstretch`
+	// (g_mapinfo.cpp:1645-1650). Same thing, two names, worth knowing when
+	// grepping.
+	pixelratio = 1.0
+
+	// NOTE: Realms' field of view is 91.82 degrees, NOT the 90 this engine
+	// defaults to -- but it is not set here. There is no `fov` map option in
+	// this build (grep DEFINE_MAP_OPTION), and an unknown MAPINFO key is a
+	// fatal parse error before the video backend is up, which is exactly the
+	// silent startup failure that stalled stage 8. It is set by the loader
+	// instead; see rothmap.cpp, ROTH_FOV_DEGREES.
 }
 
 map STUDY1 "The Study"
 {
 	next = "STUDY1"
+}
+
+// STUDY2 carries 17 directional objects, more than any other map in the game
+// (tools/rothdiff/dircheck), which makes it the place to look at view-dependent
+// art. Every map loads through the same path, so declaring one costs nothing
+// but the entry.
+map STUDY2 "The Study, Upper"
+{
+	next = "STUDY2"
 }
 
 clusterdef 1

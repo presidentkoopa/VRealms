@@ -52,6 +52,17 @@ bool Pack::Load(const uint8_t *data, size_t size)
 	uint32_t paletteOffset = RdU32(data + 12);
 	mUnknown0x22 = RdU16(data + 34);   // the sky MARKER index -- see roth_das.h
 
+	// The directional-object block. A pack without one simply has no
+	// view-dependent art; that is not an error, so a bad extent disables the
+	// block rather than failing the load.
+	mDirOffset = RdU32(data + 0x1c);
+	mDirSize = RdU16(data + 0x1a);
+	if (mDirOffset == 0 || (size_t)mDirOffset + mDirSize > size)
+	{
+		mDirOffset = 0;
+		mDirSize = 0;
+	}
+
 	// The image count is the sum of four block counts.
 	int count = 0;
 	for (int i = 0; i < 4; i++)
@@ -108,6 +119,79 @@ EntryKind Pack::Classify(const FatEntry &e) const
 	if (imageType & IT_ANIMATED)    return EntryKind::Animated;
 	if (modifier & IM_IMAGE_PACK)   return EntryKind::ImagePack;
 	return EntryKind::Plain;
+}
+
+//==========================================================================
+//
+// Which indirection an entry is.
+//
+// The original tests the WHOLE of flags_1, not single bits (das_assets.c:886):
+// 0x20 stamps the status word 0xfe and resolves through the per-map
+// directional table; 0x24 stamps 0xfc and spawns a live actor. An entry
+// carrying either bit alongside others takes neither path -- it is loaded as
+// an ordinary picture. Classify() groups both under Indirection, which is
+// enough to know "not a picture"; this says which kind.
+//
+//==========================================================================
+
+IndirectKind Pack::Indirect(int index) const
+{
+	const FatEntry *e = Entry(index);
+	if (e == nullptr) return IndirectKind::None;
+	if (e->flags1 == 0x20) return IndirectKind::Directional;
+	if (e->flags1 == 0x24) return IndirectKind::Creature;
+	return IndirectKind::None;
+}
+
+//==========================================================================
+//
+// Resolve a directional entry to one picture per view. See the comment on
+// `Directional` in the header for the original's frame pick.
+//
+// The record is found by the entry's flags_2 byte, not by its FAT index: the
+// loader stamps flags_2 into the high byte of the status word, and the
+// renderer reads it back from there as the table index (das_assets.c:888,
+// renderer.c:5890). That indirection is the piece that connects an object to
+// its frames, and nothing else in this reader needed flags_2 before.
+//
+// The view count comes from the record's own first word, so a pack may mix
+// eight- and sixteen-view entries.
+//
+//==========================================================================
+
+Directional Pack::ReadDirectional(int index) const
+{
+	Directional d;
+	if (mDirSize == 0 || Indirect(index) != IndirectKind::Directional)
+		return d;
+
+	const uint8_t *block = mData + mDirOffset;
+	const size_t aid = (size_t)Entry(index)->flags2;
+	if (aid * 2 + 2 > mDirSize) return d;
+
+	const size_t off = RdU16(block + aid * 2);
+	if (off + 2 > mDirSize) return d;
+
+	const uint8_t *rec = block + off;
+	const uint16_t w = RdU16(rec);
+
+	// Bit 15 clear means a fixed frame chosen through a table the original
+	// keeps in engine state rather than in the file (renderer.c:5915, the same
+	// table as the resident-block path at :5708). Nothing in the file resolves
+	// it, so report the entry as unresolved rather than guessing an index.
+	if (!(w & 0x8000)) return d;
+
+	const int count = (w & 0x2000) ? 16 : 8;
+	if (off + 2 + (size_t)count * 2 > mDirSize) return d;
+
+	for (int i = 0; i < count; i++)
+	{
+		const uint16_t fw = RdU16(rec + 2 + (size_t)i * 2);
+		d.frames[i].entry = (uint16_t)(fw & 0x7fff);
+		d.frames[i].mirror = (fw & 0x8000) != 0;
+	}
+	d.count = count;
+	return d;
 }
 
 //==========================================================================
@@ -396,8 +480,16 @@ bool Pack::ResolveObjectArt(uint8_t textureIndex, uint8_t textureSource, int &ou
 	case 0: outIndex = textureIndex + 4096;       return false;
 	case 1: outIndex = textureIndex + 4096 + 256; return false;
 	case 2: outIndex = textureIndex;              return true;
+	// (see ResolveDasId below for ids that arrive without a pack selector)
 	default: outIndex = textureIndex + 256;       return true;
 	}
+}
+
+bool Pack::ResolveDasId(int id, int &outIndex)
+{
+	if (id >= SHARED_ID_BASE) { outIndex = id - SHARED_ID_BASE; return true; }
+	outIndex = id;
+	return false;
 }
 
 } // namespace roth
