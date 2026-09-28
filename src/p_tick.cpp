@@ -63,6 +63,11 @@ FARG(autoshot, "Debug",
 	"For automated comparison rigs: fires on a counted tic so the same frame is"
 	" captured on every machine, unlike a timed keypress from outside.");
 
+FARG(autopitch, "Debug",
+	"Aim the player this many degrees up before -autoshot fires.", "degrees",
+	"Positive looks up, negative down. Without it a rig can only ever capture a"
+	" level view, which cannot show any difference that depends on pitch.");
+
 extern gamestate_t wipegamestate;
 extern uint8_t globalfreeze, globalchangefreeze;
 
@@ -525,6 +530,14 @@ void P_Ticker (void)
 {
 	unsigned int i;
 
+	// rothdiff captures that were asked for before a level existed. Console
+	// commands from +exec all run at startup -- `map` is deferred, `exec` is
+	// not -- so a dump requested on the command line has to wait here until
+	// there is a world to look at. One early-out per tic when nothing is
+	// queued, which is always, outside a comparison run.
+	extern void RothDiff_RunPending();
+	RothDiff_RunPending();
+
 	for (auto Level : AllLevels())
 	{
 		Level->interpolator.UpdateInterpolations();
@@ -769,6 +782,30 @@ void P_Ticker (void)
 					shotLevel = Level;
 					const char *n = Args->CheckValue(FArg_autoshot);
 					shotCountdown = n != nullptr ? atoi(n) : -1;
+				}
+				// -autopitch <degrees>: aim the player up (+) or down (-) before
+				// the shot. A comparison rig that can only ever photograph a
+				// level view cannot see any difference that depends on pitch,
+				// and sky projections are exactly that -- at the horizon a dome
+				// and a flat band are the same picture. Asking a person to look
+				// up and describe it is not a measurement.
+				//
+				// Applied every tic up to the shot rather than once, because
+				// the player's own movement code will otherwise settle it back.
+				if (shotCountdown > 0)
+				{
+					const char *pv = Args->CheckValue(FArg_autopitch);
+					if (pv != nullptr)
+					{
+						for (int i = 0; i < MAXPLAYERS; i++)
+						{
+							if (!Level->PlayerInGame(i)) continue;
+							AActor *pmo = Level->Players[i]->mo;
+							// GZDoom's pitch is negative when looking UP, so the
+							// argument reads the way a person would say it.
+							if (pmo != nullptr) pmo->Angles.Pitch = DAngle::fromDeg(-atof(pv));
+						}
+					}
 				}
 				if (shotCountdown > 0 && --shotCountdown == 0)
 				{

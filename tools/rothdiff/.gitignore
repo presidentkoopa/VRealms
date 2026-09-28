@@ -1,0 +1,10 @@
+# Outputs, not sources. A stale capture silently compared against new code is
+# exactly the trap this tool exists to remove, so they are never committed.
+captures/
+*.ridb
+baseline.json
+
+# Build products.
+*.exe
+*.dll
+__pycache__/
