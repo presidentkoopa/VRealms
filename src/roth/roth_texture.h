@@ -88,6 +88,20 @@ public:
 	// so treating it as an ordinary texture paints the sky onto the ceiling.
 	bool IsSkySurface(int index) const;
 
+	// Shape and blend of a stored picture, for the flat scale rule.
+	//
+	// ROTH.C gives 256x256 OPAQUE flats a different units-per-texel (2^(s-1)
+	// rather than 2^s). The branch is renderer.c:3367 --
+	// `width == height && (uint8_t)width == 0`, i.e. 256x256 -- and then on
+	// g_span_textured_mode_flag, which picks the opaque inner loop 0x3a220 over
+	// the translucent 0x3a100 (renderer.c:3341). That flag comes from bit 26 of
+	// the texture block's +8 dword (renderer.c:13281), which is this pack's
+	// IT_TRANSLUCENT -- a property of the PICTURE, not of the surface, so the
+	// loader can settle it once at load time.
+	//
+	// Returns false if the index does not decode, leaving the outputs untouched.
+	bool ImageShape(int index, int &w, int &h, bool &translucent) const;
+
 	// The engine texture for a world surface's stored index. Handles the
 	// solid-colour sentinels; results are memoised.
 	//

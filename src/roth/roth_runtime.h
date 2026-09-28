@@ -77,7 +77,15 @@ void RegisterTexture(int rothIndex, FTextureID tex);
 // Separate from RegisterTexture because a flat index can be the pack's SKY
 // MARKER, which resolves to no texture at all and means "draw the sky here" --
 // a distinction the runtime cannot make for itself and must not lose.
-void RegisterFlat(int rothIndex, FTextureID tex, bool isSky);
+//
+// `opaque256` travels with the registration because the runtime cannot see the
+// artwork -- the loader's TextureSet does not outlive the load -- yet it needs
+// the SAME scale rule the loader used. 256x256 opaque flats take an exception
+// (2^(s-1) units per texel, and a whole-texel shift unit), and a platform
+// rescaled by a different rule than the one it was built with changes
+// appearance the moment it moves. That is precisely how the loader's and the
+// runtime's copies of this code drifted apart before roth_surface existed.
+void RegisterFlat(int rothIndex, FTextureID tex, bool isSky, bool opaque256 = false);
 
 // Which engine sector became the 3D-floor CONTROL sector for a Realms sector's
 // mid-platform. Only the loader knows the pairing, and the level logic needs it:

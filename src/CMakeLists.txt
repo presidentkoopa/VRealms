@@ -976,6 +976,14 @@ set (PCH_SOURCES
 	# live world. roth_commands is also compiled into the standalone selftest.
 	roth/roth_commands.cpp
 	roth/roth_runtime.cpp
+	# The single source of truth for how a surface is textured. The loader, the
+	# runtime and the tests all call this; nothing else computes a scale,
+	# offset, flip or anchor.
+	roth/roth_surface.cpp
+	# rothdiff's capture side: the rothdiff_dump console command. Pairs with
+	# tools/rothdiff, which compares its output against the same identity
+	# buffer taken from ROTH.C. Console-only, so it costs nothing at run time.
+	roth/roth_diff.cpp
 	playsim/p_pspr.cpp
 	p_saveg.cpp
 	p_setup.cpp

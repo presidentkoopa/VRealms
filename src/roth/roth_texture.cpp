@@ -244,6 +244,19 @@ bool TextureSet::IsSkySurface(int index) const
 		&& (uint16_t)index == mPack->SkyMarkerIndex();
 }
 
+bool TextureSet::ImageShape(int index, int &w, int &h, bool &translucent) const
+{
+	if (mPack == nullptr || index < 0) return false;
+	// Header only: allFrames would run the animation delta decoder, and all this
+	// answers is the shape and blend of the still image.
+	const Image img = mPack->ReadImage(index, false);
+	if (!img.ok()) return false;
+	w = img.width;
+	h = img.height;
+	translucent = (img.imageType & IT_TRANSLUCENT) != 0;
+	return true;
+}
+
 FTextureID TextureSet::Sky(int metadataSkyIndex, Log *log)
 {
 	return World(metadataSkyIndex, log, false);

@@ -70,6 +70,7 @@ static const uint32_t RNG_VA[] = {
 #define RNG_COUNT ((int)(sizeof RNG_VA / sizeof RNG_VA[0]))
 
 #include "staticdump.inc.c"
+#include "flatspans.inc.c"
 
 /* Frame-dump state, declared early because on_load reads it. See on_compose_tick. */
 static int g_shots_wanted, g_shots_done;
@@ -146,6 +147,20 @@ static void on_register_overrides(const struct roth_api_v1 *api,
     (void)api;
     if (roth_override(reg, ROTH_FN_show_message_box, ov_show_message_box, 0) != 0)
         fprintf(stderr, "[oraclelog] could not override show_message_box\n");
+
+    /* WORLD FLATS. Hooked at the DRIVER, not at the span emitters: the fill
+     * word carries 0x20, so the dispatch at R:13314 sends them here, and by
+     * this point the texture is resolved so its width and height are real.
+     * The emitters used to be hooked instead, which sampled the previous
+     * surface's dimensions and -- worse -- fired during the cursor pick pass.
+     * See the header of flatspans.inc.c; that mistake reached the loader. */
+    if (roth_override(reg, ROTH_FN_draw_scaled_sprite_spans, ov_scaled_spans, 0) != 0)
+        fprintf(stderr, "[oraclelog] could not override the flat/sprite span driver\n");
+
+    /* 3D MESH faces (draw flags 0x200). Counted so a large number here is not
+     * mistaken for evidence about world flats again. */
+    if (roth_override(reg, ROTH_FN_draw_floorceil_surface, ov_draw_floorceil, 0) != 0)
+        fprintf(stderr, "[oraclelog] could not override the mesh face driver\n");
 }
 
 static void on_load(const struct roth_api_v1 *api)
@@ -183,6 +198,13 @@ static void on_frame_game(const struct roth_api_v1 *api)
     const struct roth_game_ram_api_v1 *m = api->game_ram;
     const uint16_t tick = m->u16(VA_TICK);
 
+    /* Stamp the frame the flat spans about to be drawn belong to. The span
+     * probe needs the player position of the SAME frame, because the whole
+     * measurement is a difference between two positions -- see flatspans. */
+    g_fs_tick = tick;
+    g_fs_px   = (int32_t)m->u32(VA_POS_X) >> 16;
+    g_fs_py   = (int32_t)m->u32(VA_POS_Y) >> 16;
+
     /* One line per ENGINE TICK, not per frame. The hook is per frame and the
      * original's frame rate is uncapped, so without this a fast machine emits
      * several lines for one tick and a slow one skips ticks -- and the log stops
@@ -191,6 +213,20 @@ static void on_frame_game(const struct roth_api_v1 *api)
     if (g_started && tick == g_last_tick) return;
     g_started = 1;
     g_last_tick = tick;
+
+    /* Dump the flat-setup table from the TICK hook, not only at unload: a rig
+     * run ends by killing the process, so on_unload never fires and the table
+     * was lost. Written once the world has actually drawn some spans, then
+     * re-written periodically so the newest view is always on disk.
+     */
+    {
+        static uint16_t lastDump;
+        if (g_fs_n > 0 && (uint16_t)(tick - lastDump) > 200u)
+        {
+            lastDump = tick;
+            flatspan_dump();
+        }
+    }
 
     /* DISMISS DIALOGUE, every tick it appears.
      *
@@ -327,7 +363,16 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
     const uint8_t *pal = (const uint8_t *)(uintptr_t)palptr;
 
     char name[64];
-    snprintf(name, sizeof name, "shot_%05d.ppm", g_shots_done);
+    /* NAME THE CONDITIONS INTO THE FILE. A ROTH.C shot and a REMAROTH shot were
+     * once compared at 640x480 against 320x200 -- about 16% different field of
+     * view -- and the difference was read as a projection defect. A screenshot
+     * that does not carry its own resolution and build cannot be compared to
+     * anything later, so both go in the name. ROTH_ORACLE_TAG supplies the
+     * build id; it is not optional in a comparison run. */
+    const char *tag = getenv("ROTH_ORACLE_TAG");
+    if (tag == NULL) tag = "untagged";
+    snprintf(name, sizeof name, "rothc_%s_%ux%u_%05d.ppm",
+             tag, (unsigned)width, (unsigned)height, g_shots_done);
     FILE *f = fopen(name, "wb");
     if (f == NULL) return;
     fprintf(f, "P6\n%u %u\n255\n", width, height);
@@ -354,6 +399,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
 static void on_unload(const struct roth_api_v1 *api)
 {
     (void)api;
+    flatspan_dump();
     if (g_log != NULL && g_log != stderr) fclose(g_log);
     g_log = NULL;
 }

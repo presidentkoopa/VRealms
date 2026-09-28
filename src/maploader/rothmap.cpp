@@ -33,11 +33,29 @@
 #include "playsim/p_3dfloors.h"  // P_Add3DFloor, for Realms' intermediate floors
 
 #include "roth/roth_raw.h"
+#include "roth/roth_surface.h"
 #include "roth/roth_install.h"
 #include "roth/roth_log.h"
 #include "roth/roth_texture.h"
 #include "roth/roth_objects.h"
 #include "roth/roth_runtime.h"
+#include "c_cvars.h"
+
+//==========================================================================
+//
+// Realms' depth shading, on or off.
+//
+// ON is correct and is the default: in Realms the darkness IS the game -- the
+// manor is mostly black with a few sources, and an evenly lit one is not the
+// same place. But it makes the level hard to WORK on, and the reason this was
+// switched off for a stretch is that you cannot see what you are fixing.
+//
+// So it is a switch rather than an edit. Applied at load, so a change needs the
+// map reloading; that is deliberate, because the alternative is recomputing
+// every sector's shading on a cvar callback and the two paths then disagree.
+//
+//==========================================================================
+CVAR(Bool, roth_lighting, true, CVAR_ARCHIVE | CVAR_NOINITCALL)
 
 //==========================================================================
 //
@@ -114,12 +132,22 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		if (amb >= 0 && amb < 3) shadeShift = kShadeShift[amb];
 		else log.Count("lighting: lightAmbience outside the shade table", 1);
 
-		Level->ShadeFalloffShift = shadeShift;
-		// getRealLightmode takes info->lightmode unconditionally when set
-		// (g_level.cpp:163), so this wins over the user's gl_maplightmode.
-		if (Level->info != nullptr) Level->info->lightmode = ELightMode::Build;
-		log.Line("  lighting       lightAmbience %d -> depth >> %d, Build shading",
-			amb, shadeShift);
+		if (roth_lighting)
+		{
+			Level->ShadeFalloffShift = shadeShift;
+			// getRealLightmode takes info->lightmode unconditionally when set
+			// (g_level.cpp:163), so this wins over the user's gl_maplightmode.
+			if (Level->info != nullptr) Level->info->lightmode = ELightMode::Build;
+			log.Line("  lighting       lightAmbience %d -> depth >> %d, Build shading",
+				amb, shadeShift);
+		}
+		else
+		{
+			// Left to the engine's own default rather than forced bright: the
+			// point of the switch is to SEE the level, and whatever GZDoom does
+			// untouched is the most honest "not Realms' lighting" baseline.
+			log.Line("  lighting       OFF (roth_lighting 0) -- engine default shading");
+		}
 	}
 
 	// Make the player the size Realms says a person is, instead of leaving them
@@ -334,6 +362,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
 	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsApplied = 0;
+	int flatOpaque256 = 0;   // flats taking the 256x256-opaque scale exception
+	int pinBottomFaces = 0;  // pieces anchored by DRAW_FROM_BOTTOM
 	int skyFlats = 0;
 	int darkestLight = 255, brightestLight = 0;
 	for (size_t i = 0; i < rm.sectors.size(); i++)
@@ -480,71 +510,67 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
 			if (!isSky && !tex.isValid()) flatsToSky++;
 
-			// MEASURED, NOT DERIVED: flats are 2^(v+1) world units per texel.
+			//----------------------------------------------------------
+			// THE FLAT TRANSFORM, and the ONLY place a sector plane gets one.
 			//
-			// Reading it as 2^v tiled every flat in the game FOUR times too often,
-			// i.e. drew each texture at a quarter of its authored size. Measured
-			// against the oracle on STUDY1's entrance-hall carpet, same camera,
-			// same row: the original repeats every 16 px, we repeated every 4 --
-			// a ratio of exactly 4.00.
+			// Everything about how a flat is scaled, shifted and mirrored lives
+			// in roth_surface. It used to live here AND in roth_runtime.cpp with
+			// different numbers, which is why fixes kept landing in one copy and
+			// not the other: a platform changed appearance the moment it moved,
+			// because the runtime recomputed the scale and silently dropped the
+			// mirrors.
 			//
-			// That fits RAW.md's CEIL_A/CEIL_B table (1/2, full, 2x, 4x) with a
-			// base of EIGHT world units per texel. The mistake was assuming flats
-			// share the walls' base of two ("one texel is two world units, like a
-			// wall"); they do not.
+			// What this block used to do wrong, for the record, because all of
+			// it was believed at the time:
+			//   * 2^(s+1) units per texel. It is 2^s (renderer.c:3406 via the
+			//     visible pass), so every flat was twice too coarse -- four
+			//     times on a 256x256 opaque one, which has its own rule.
+			//   * POSITIVE scales on both axes. Both are negative: the engine's
+			//     v is already -y/64 at the vertex, so matching ROTH's +y needs
+			//     a second negation, and ROTH's -x needs one of its own. Every
+			//     flat in the game was mirrored on both axes.
+			//   * A mirror negated the scale AND the offset, which double-
+			//     negates and leaves the mirrored copy a shift out of place.
 			//
-			// Note the direction. An earlier attempt at this went the other way,
-			// 2^(v-1), which would have made the tiling eight times too fine. It
-			// was reverted for being reasoned rather than measured, and this is
-			// what measuring says.
-			const double unitsPerTexel = double(1 << shift) * 2.0;
+			// The encoding is proven by test rather than argued: 665,856 sample
+			// points over every scale, shift, mirror and four texture sizes --
+			// see tools/rothdiff/test_roth_surface.cpp.
+			//----------------------------------------------------------
+			roth::FlatSetup fs = {};
+			fs.textureWord = (uint16_t)index;
+			fs.scaleBits = (uint8_t)shift;
+			fs.shiftX = (uint8_t)shx;
+			fs.shiftY = (uint8_t)shy;
 
-			//----------------------------------------------------------
-			// THE MIRROR FLIPS, which this loader used to count and throw
-			// away ("flats: flip bits ignored").
-			//
-			// Flats are world-anchored in Realms exactly as in Doom -- the
-			// world grid is right and must not become per-sector. What a
-			// sector adds on top is scale, shift, and a MIRROR on either
-			// texture axis, and it is the missing mirror that makes a
-			// pattern run the wrong way across a boundary.
-			//
-			// The bits live in the high byte of +0x16, i.e. sector +0x17,
-			// and the floor and ceiling use different halves of it. From
-			// the per-sector span setup in ROTH.C's renderer:
-			//
-			//     ceiling: fill_mode = 0x38 | ((sec[+0x17] & 0x0C) >> 1)
-			//     floor:   fill_mode = 0xB8 | ((sec[+0x17] & 0x03) << 1)
-			//
-			// and the flat span driver then reads that fill mode:
-			//
-			//     flags & 2  ->  negate the FIRST axis step
-			//     flags & 4  ->  negate the SECOND axis step
-			//
-			// Tracing the shifts through gives, for each surface, one bit
-			// per axis:
-			//
-			//     floor    bit 0 -> first axis,  bit 1 -> second axis
-			//     ceiling  bit 2 -> first axis,  bit 3 -> second axis
-			//
-			// A negated step is a mirrored axis, which Doom expresses as a
-			// NEGATIVE scale. The offset has to be negated with it, or the
-			// mirrored copy lands a texture-width away from where it
-			// belongs and the seam moves instead of closing.
-			//----------------------------------------------------------
+			// The mirror bits, from sector +0x17. Floor uses bits 0-1, ceiling
+			// bits 2-3 (renderer.c:9229 / :9249, VISIBLE pass -- the cursor-pick
+			// pass writes a bare fill word with no mirrors in it, and reading
+			// rules from that pass is what made this code look wrong once
+			// already).
 			const uint8_t flipBits = (uint8_t)(rs.flags2 >> 8);
-			const bool flipU = isFloor ? (flipBits & 0x01) != 0
-			                           : (flipBits & 0x04) != 0;
-			const bool flipV = isFloor ? (flipBits & 0x02) != 0
-			                           : (flipBits & 0x08) != 0;
-			if (flipU || flipV) flatFlipsApplied++;
+			fs.mirrorX = isFloor ? (flipBits & 0x01) != 0 : (flipBits & 0x04) != 0;
+			fs.mirrorY = isFloor ? (flipBits & 0x02) != 0 : (flipBits & 0x08) != 0;
+			if (fs.mirrorX || fs.mirrorY) flatFlipsApplied++;
 
-			const double sx = (flipU ? -1. : 1.) / unitsPerTexel;
-			const double sy = (flipV ? -1. : 1.) / unitsPerTexel;
-			sec->SetXScale(which, sx);
-			sec->SetYScale(which, sy);
-			sec->SetXOffset(which, (flipU ? -1. : 1.) *  shx * unitsPerTexel * 0.5);
-			sec->SetYOffset(which, (flipV ? -1. : 1.) * -shy * unitsPerTexel * 0.5);
+			// 256x256 AND opaque takes the exception (2^(s-1), and a shift unit
+			// becomes a whole texel). Translucent 256x256 keeps the normal rule.
+			if (haveArt)
+			{
+				int iw = 0, ih = 0; bool trans = false;
+				if (art.ImageShape(index, iw, ih, trans))
+				{
+					fs.texW = (uint16_t)iw;
+					fs.texH = (uint16_t)ih;
+					fs.opaque256 = (iw == 256 && ih == 256 && !trans);
+					if (fs.opaque256) flatOpaque256++;
+				}
+			}
+
+			const roth::FlatEngineSetup fe = roth::FlatToEngine(fs);
+			sec->SetXScale(which, fe.xScale);
+			sec->SetYScale(which, fe.yScale);
+			sec->SetXOffset(which, fe.xOffset);
+			sec->SetYOffset(which, fe.yOffset);
 		}
 
 		//------------------------------------------------------------------
@@ -575,11 +601,6 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			sec->Colormap.FadeColor.SetRGB(Level->fadeto);
 		}
 
-		// The high byte of flags2 is recorded as carrying flat flip bits, but
-		// that is UNCONFIRMED: reading ROTH.C found no flat-specific flip decode
-		// at all, only a flip of the texture-quad corner assignment in the
-		// separate driver used for 3D mesh faces. Counted either way, so if
-		// flats do come out mirrored there is a number to reach for.
 	}
 	log.Line("  doors closed at load  %d  (%d with a hinge resolved)", doorCount, doorsWithHinge);
 	log.Count("doors: no hinge face found", doorCount - doorsWithHinge);
@@ -589,6 +610,36 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// mapping has gone wrong again and the level will look flat and overlit.
 	log.Line("  sector light  %d .. %d  (Realms neutral is 128)", darkestLight, brightestLight);
 	log.Line("  flat mirror flips %d surface(s) mirrored on one or both axes", flatFlipsApplied);
+	log.Line("  flats on the 256x256-opaque scale exception  %d", flatOpaque256);
+	log.Line("  DRAW_FROM_BOTTOM pieces  %d  (explicit offset, not a peg flag)", pinBottomFaces);
+
+	//----------------------------------------------------------------------
+	// REALMS' FIELD OF VIEW. We were not setting one at all, so every level has
+	// rendered at GZDoom's default 90 degrees.
+	//
+	// ROTH.C builds its projection from a focal length of
+	// `view width * 0x7c/256` (ROTH_SURFACES_FIX.md 3.7):
+	//
+	//     tan(hfov/2) = (w/2) / (w * 124/256) = 128/124 = 1.032258
+	//     hfov        = 2 * atan(1.032258)    = 91.82 degrees
+	//
+	// Set on the player rather than in MAPINFO because this build has no `fov`
+	// map option (grep DEFINE_MAP_OPTION), and an unknown MAPINFO key is a
+	// fatal parse error raised before the video backend exists -- a silent
+	// startup failure of exactly the kind that stalled stage 8.
+	//
+	// Both fields are set: DesiredFOV is what the player wants and FOV is what
+	// is in force, and setting only one lets the next think undo it.
+	{
+		const float ROTH_FOV_DEGREES = 91.82f;
+		for (int i = 0; i < MAXPLAYERS; i++)
+		{
+			players[i].DesiredFOV = ROTH_FOV_DEGREES;
+			players[i].FOV = ROTH_FOV_DEGREES;
+		}
+		log.Line("  field of view         %.2f degrees (Realms; engine default 90)",
+			ROTH_FOV_DEGREES);
+	}
 
 	//----------------------------------------------------------------------
 	// Lines and sides
@@ -654,6 +705,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int midMissing = 0;          // a piece that wanted a mid texture and got none
 	int storedExtentDeviates = 0;// stored extent differs from measured length
 	int storedExtentUnusable = 0;// no usable stored extent; fell back to 0.5
+	int storedExtentScaled = 0;  // faces scaled by the stored extent (the real rule)
 	int imageFitFaces = 0;       // FF_IMAGE_FIT faces
 	int imageFitVerticalUnhandled = 0; // PIECES, not faces: up to 3 per side
 	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
@@ -682,7 +734,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 		// Anchoring is per-face in Realms but per-LINE in Doom, so the sides
 		// accumulate into these and the line takes the result.
-		bool hasUpper = false, wantPegBottom = false;
+		bool hasUpper = false;
 
 		auto makeSide = [&](const roth::Face &face, bool twoSided, int neighbourSector) -> side_t *
 		{
@@ -795,30 +847,57 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			}
 			else
 			{
-				// THE STORED EXTENT IS A WRAP EXTENT, NOT A SCALE, and dividing
-				// by the wall's length was the seam.
+				// THE STORED EXTENT *IS* THE HORIZONTAL SCALE. Measured, not
+				// argued: an instrumented ROTH.C run over STUDY1 logged every
+				// wall span's draw flags, and bit 0x100 -- the one that selects
+				// the unscaled path -- was CLEAR on all of them:
 				//
-				// The original's u is `accumulator >> 1` -- two world units per
-				// texel, fixed -- masked by the texture dimension minus one
-				// (renderer.c:13289 sets column_clip_mode+4 = texDim - 1, and
-				// 4734/4356/4437 apply it). THE WALL'S LENGTH APPEARS NOWHERE IN
-				// THAT PATH. The stored extent says where the coordinate wraps,
-				// not how far the picture is stretched.
+				//     stored-extent path   0 spans
+				//     computed-extent path 34 spans
 				//
-				// Scaling by stored/wallLen gave every face its own stretch, so
-				// at a corner two faces sharing a texture no longer continued
-				// each other's pattern -- which is exactly what a seam is. The
-				// scale is FIXED, and the Python oracle corroborates it: its
-				// stored-extent path (wall_u_repeats) is dead code and the
-				// screenshots everyone called good used a flat 0.5.
+				// So every wall takes the computed path, where renderer.c:13347
+				// builds extent_out = 2 * storedRowLength and renderer.c:4943
+				// applies it:
 				//
-				// What the stored extent IS still good for is the wrap, which
-				// Doom does for us: a texture repeats every texWidth/scale world
-				// units regardless. Counted here so a deviation stays visible.
+				//     u = alongWall * extent_out / hfit
+				//
+				// i.e. the stored extent divides the coordinate. Texels across
+				// the face = hfit / 2, so
+				//
+				//     unitsPerTexel = 2 * faceLength / hfit
+				//
+				// The comment that used to be here claimed the opposite -- that
+				// the extent was only a wrap and the scale was a fixed 0.5. That
+				// held for the common case ONLY because most faces have
+				// hfit == storedRowLength, which collapses the ratio to 2. The
+				// probe found one setup with hfit = 16 against a width of 8,
+				// where the true density is 1 world unit per texel and the fixed
+				// rule draws it at half size -- and that setup was the most drawn
+				// of the sample, 16 spans of 34.
+				//
+				// HALF_PIXEL still halves it (renderer.c:13336 doubles the
+				// along-wall coordinate itself).
+				if (stored > 0. && wallLen > 0.)
+				{
+					// texels across = hfit/2, and Doom's scale is texels per
+					// world unit.
+					scaleX = (stored * 0.5) / wallLen;
+					if (tf & roth::FF_HALF_PIXEL) scaleX *= 2.;
+					storedExtentScaled++;
+				}
+				else
+				{
+					// No usable extent: fall back to the old fixed density
+					// rather than divide by zero, and count it so a map full of
+					// these is visible rather than silent.
+					storedExtentUnusable++;
+				}
+
+				// Faces where the extent is NOT simply the wall's length are the
+				// ones the old fixed rule drew at the wrong size, so they are
+				// worth a number of their own.
 				if (stored > 0. && wallLen > 0. && fabs(stored - wallLen) > 1.)
 					storedExtentDeviates++;
-				else if (stored <= 0.)
-					storedExtentUnusable++;
 			}
 
 			//--------------------------------------------------------------
@@ -899,11 +978,47 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// A negative scale is the closest Doom has.
 				if (tf & roth::FF_FLIP_X) { sx = -sx; flippedFaces++; }
 
+				//------------------------------------------------------------
+				// DRAW_FROM_BOTTOM, as an EXPLICIT OFFSET rather than a peg flag.
+				//
+				// Realms anchors each wall piece to a coordinate it computes --
+				// the visible pass writes it into wrap_reoff[0x0a]:
+				//
+				//   upper piece   = clip_top, the sector's own ceiling  R:8664
+				//   lower piece   = the piece's own top edge, i.e. the
+				//                   top of the step                     R:8685
+				//
+				// Doom's DEFAULT bottom-part anchor is already the top of the
+				// step, so a lower piece needs NO flag at all. Setting
+				// ML_DONTPEGBOTTOM there -- which is what FF_PIN_BOTTOM used to
+				// do -- re-anchors it to the ceiling and misplaces every one.
+				//
+				// FF_PIN_BOTTOM (DRAW_FROM_BOTTOM) is a different rule entirely:
+				// the texture's BOTTOM sits on the piece's bottom edge
+				// (renderer.c:5057-5063). Where the piece is taller than the
+				// art that is a downward shift of (pieceHeight - texHeight),
+				// expressed in the texel units Doom's offsets use.
+				//------------------------------------------------------------
+				double pieceOffY = offY;
+				if (tf & roth::FF_PIN_BOTTOM)
+				{
+					auto *gt = TexMan.GetGameTexture(tex, false);
+					const double texH = gt ? gt->GetDisplayHeight() : 0.;
+					const double pieceHeight = heightOf(part);
+					if (texH > 0. && pieceHeight > 0.)
+					{
+						// sy is texels-per-world-unit for this part, so the
+						// piece is pieceHeight * sy texels tall.
+						pieceOffY += pieceHeight * sy - texH;
+						pinBottomFaces++;
+					}
+				}
+
 				sd->SetTexture(part, tex);
 				sd->SetTextureXScale(part, sx);
 				sd->SetTextureYScale(part, sy);
 				sd->SetTextureXOffset(part, offX);
-				sd->SetTextureYOffset(part, offY);
+				sd->SetTextureYOffset(part, pieceOffY);
 				return true;
 			};
 
@@ -927,13 +1042,21 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// sister pair that disagrees cannot be represented at all. They are
 			// OR-ed, which is the permissive choice.
 			//
-			// NOT VERIFIED: ROTH.C's face walk gives every wall piece its own
-			// mapping record and shows no separate upper/lower anchoring rule,
-			// so the upper-piece case below is reasoned from Doom's defaults plus
-			// the verified Realms "anchor at the top" rule, not read out of the
-			// original. This is the least-evidenced part of the stage.
+			// NOW VERIFIED, and one half of it was wrong. The visible pass
+			// writes each piece's anchor into wrap_reoff[0x0a]:
+			//
+			//   upper piece  = clip_top, the sector's own ceiling     R:8664
+			//   lower piece  = the piece's own top edge, the step top R:8685
+			//
+			// The upper case matches ML_DONTPEGTOP, so that stays. The LOWER
+			// case is already Doom's default for the bottom part, so it needs
+			// no flag -- and ML_DONTPEGBOTTOM re-anchors it to the ceiling,
+			// which misplaced every lower that carried FF_PIN_BOTTOM.
+			//
+			// FF_PIN_BOTTOM is not a Doom pegging rule at all: it puts the
+			// TEXTURE's bottom on the PIECE's bottom edge (renderer.c:5057-5063)
+			// and is now applied as an explicit Y offset in setPart above.
 			//--------------------------------------------------------------
-			if (tf & roth::FF_PIN_BOTTOM) wantPegBottom = true;
 
 			// FF_EDGE_MAP is the outdoor backdrop: the original sets
 			// g_parallax_sky_active from this bit (renderer.c:9020) and hands the
@@ -982,7 +1105,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		}
 
 		if (hasUpper) ld->flags |= ML_DONTPEGTOP;
-		if (wantPegBottom) ld->flags |= ML_DONTPEGBOTTOM;
+		// NO ML_DONTPEGBOTTOM. Doom's default bottom-part anchor is already the
+		// top of the step, which is exactly what Realms does (R:8685); the flag
+		// would re-anchor it to the ceiling instead. FF_PIN_BOTTOM is applied as
+		// an explicit texture offset in setPart.
 
 		linemap.Push((unsigned)li);
 		ld->AdjustLine();
@@ -1089,18 +1215,57 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			cs->SetTexture(sector_t::ceiling, slabTop.isValid() ? slabTop : FNullTextureID(), false);
 			cs->SetTexture(sector_t::floor, slabBot.isValid() ? slabBot : FNullTextureID(), false);
 
-			// Scale, exactly as for an ordinary flat: 2^s world units per texel,
-			// and Doom's scale is the reciprocal. Bits 4-5 top, 2-3 underside,
-			// the same layout the sector flags byte uses.
-			// Same 2^(v+1) base as the sector flats above -- identical encoding.
-			const double topScale = 1.0 / (double(1 << ((mp.scales >> 4) & 3)) * 2.0);
-			const double undScale = 1.0 / (double(1 << ((mp.scales >> 2) & 3)) * 2.0);
-			cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
-			cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
-			cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
-			cs->SetYOffset(sector_t::ceiling, double(mp.topShiftY));
-			cs->SetXOffset(sector_t::floor, double(mp.undersideShiftX));
-			cs->SetYOffset(sector_t::floor, double(mp.undersideShiftY));
+			// THROUGH roth_surface, like every other flat. These slabs are the
+			// rugs and table tops, so they are exactly the surfaces people look
+			// at and say the textures are wrong.
+			//
+			// Two things this block used to get wrong beyond the scale:
+			//   * the shifts went in RAW, unscaled -- the engine's offsets are
+			//     in world units and get multiplied by the scale afterwards, so
+			//     a raw shift is off by a factor of units-per-texel;
+			//   * the Y offset was not negated, so the two axes disagreed about
+			//     which way was up.
+			//
+			// NO MIRRORS on mid-platforms: their span setup writes a bare
+			// 0x38 / 0xb8 with no sector bits ORed in (renderer.c:9339, :9354),
+			// unlike sector flats at :9229 / :9249. The scale byte at +0x0C
+			// carries both fields -- bits 2-3 underside, 4-5 top.
+			auto midFlat = [&](uint16_t texWord, uint8_t s, uint8_t shX, uint8_t shY)
+			{
+				roth::FlatSetup f = {};
+				f.textureWord = texWord;
+				f.scaleBits = s;
+				f.shiftX = shX;
+				f.shiftY = shY;
+				// mirrorX / mirrorY stay false: see above.
+				if (haveArt)
+				{
+					int iw = 0, ih = 0; bool trans = false;
+					if (art.ImageShape((int)texWord, iw, ih, trans))
+					{
+						f.texW = (uint16_t)iw;
+						f.texH = (uint16_t)ih;
+						f.opaque256 = (iw == 256 && ih == 256 && !trans);
+					}
+				}
+				return roth::FlatToEngine(f);
+			};
+
+			const roth::FlatEngineSetup top =
+				midFlat(mp.topTexture, (uint8_t)((mp.scales >> 4) & 3),
+					mp.topShiftX, mp.topShiftY);
+			const roth::FlatEngineSetup und =
+				midFlat(mp.undersideTexture, (uint8_t)((mp.scales >> 2) & 3),
+					mp.undersideShiftX, mp.undersideShiftY);
+
+			cs->SetXScale(sector_t::ceiling, top.xScale);
+			cs->SetYScale(sector_t::ceiling, top.yScale);
+			cs->SetXOffset(sector_t::ceiling, top.xOffset);
+			cs->SetYOffset(sector_t::ceiling, top.yOffset);
+			cs->SetXScale(sector_t::floor, und.xScale);
+			cs->SetYScale(sector_t::floor, und.yScale);
+			cs->SetXOffset(sector_t::floor, und.xOffset);
+			cs->SetYOffset(sector_t::floor, und.yOffset);
 
 			// A CLOSED square, parked in the void well outside the map. It has to
 			// be closed: the node builder walks every line, and a lone degenerate
@@ -1578,8 +1743,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Section("Texturing");
 	log.Line("  registered images     %d  (%d animated, %d solid colour)",
 		art.Registered(), art.Animated(), art.SolidColours());
-	log.Line("  stored extent used    %d deviate from measured length, %d unusable",
-		storedExtentDeviates, storedExtentUnusable);
+	log.Line("  wall horizontal scale %d face(s) scaled by the stored extent, %d unusable",
+		storedExtentScaled, storedExtentUnusable);
+	log.Line("    of those, %d have an extent that differs from the wall's length"
+		" -- the faces the old fixed 0.5 drew at the wrong size", storedExtentDeviates);
 	log.Line("  image fit             %d faces; %d PIECES got no vertical fit",
 		imageFitFaces, imageFitVerticalUnhandled);
 	log.Line("  x-flipped             %d pieces", flippedFaces);
@@ -1684,6 +1851,17 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// index a command record names is resolved now and handed over.
 	{
 		int registered = 0;
+		// Whether a flat index takes the 256x256-opaque scale exception. The
+		// runtime needs it because the artwork is gone by the time it runs, and
+		// it must apply the SAME rule the loader did -- see RegisterFlat.
+		auto flatOpaque256For = [&](int fi)
+		{
+			if (!haveArt) return false;
+			int iw = 0, ih = 0; bool trans = false;
+			if (!art.ImageShape(fi, iw, ih, trans)) return false;
+			return iw == 256 && ih == 256 && !trans;
+		};
+
 		for (const roth::Command &c : rm.commands)
 		{
 			if ((c.opcode & 0x7f) != 0x34) continue;
@@ -1727,7 +1905,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			if (op != 0x0A && op != 0x0B) continue;
 			const int fi = (int)c.Word(0x0A);
 			const bool isSky = haveArt && art.IsSkySurface(fi);
-			roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky);
+			roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky, flatOpaque256For(fi));
 			flats++;
 		}
 		// Every flat the GEOMETRY wears, too: a swap puts the sector's previous
@@ -1737,7 +1915,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			{
 				const int fi = pass == 0 ? rs.floorTexture : rs.ceilingTexture;
 				const bool isSky = haveArt && art.IsSkySurface(fi);
-				roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky);
+				roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky, flatOpaque256For(fi));
 			}
 		if (flats > 0)
 			log.Line("  logic flats      %d record(s) for opcodes 0x0a/0x0b", flats);

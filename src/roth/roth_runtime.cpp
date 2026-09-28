@@ -26,6 +26,7 @@
 #include "roth_runtime.h"
 #include "roth_commands.h"
 #include "roth_raw.h"
+#include "roth_surface.h"
 #include "roth_log.h"
 
 #include <map>
@@ -237,7 +238,11 @@ struct Runtime
 
 	// Realms FLAT index -> the engine texture, and whether the index is the
 	// pack's sky marker. See RegisterFlat.
-	std::map<int, std::pair<FTextureID, bool>> flatByIndex;
+	// index -> (texture, isSky, opaque256). The third field is the 256x256
+	// opaque scale exception, carried from the loader because the artwork is
+	// gone by the time the runtime needs it.
+	struct FlatReg { FTextureID tex; bool isSky; bool opaque256; };
+	std::map<int, FlatReg> flatByIndex;
 
 	// Realms texture index -> the engine texture the loader made for it.
 	// PRE-RESOLVED rather than looked up on demand, because the loader's
@@ -1987,18 +1992,34 @@ static void ApplySectorFlat(int si, bool isFloor)
 		g.unhandledOps[isFloor ? 0x0A : 0x0B]++;   // no flat registered for it
 		return;
 	}
-	const FTextureID tex = it->second.second ? FNullTextureID() : it->second.first;
+	const FTextureID tex = it->second.isSky ? FNullTextureID() : it->second.tex;
 
 	// "Nothing here" becomes the sky, exactly as at load: a flat must draw
 	// something or the sector renders hall of mirrors.
 	sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
 
-	// 2^(v+1) -- see the measurement beside rothmap.cpp's copy.
-	const double unitsPerTexel = double(1 << shift) * 2.0;
-	sec->SetXScale(which, 1. / unitsPerTexel);
-	sec->SetYScale(which, 1. / unitsPerTexel);
-	sec->SetXOffset(which,  shx * unitsPerTexel * 0.5);
-	sec->SetYOffset(which, -shy * unitsPerTexel * 0.5);
+	// THROUGH roth_surface -- the same call the loader makes.
+	//
+	// This used to be a second, divergent copy of the rule: it recomputed the
+	// scale and silently dropped the MIRROR bits, so a platform changed
+	// appearance the moment the level logic moved it or swapped its texture.
+	// There is now one implementation and no way for the two to disagree.
+	roth::FlatSetup fs = {};
+	fs.textureWord = (uint16_t)index;
+	fs.scaleBits = (uint8_t)shift;
+	fs.shiftX = (uint8_t)shx;
+	fs.shiftY = (uint8_t)shy;
+
+	const uint8_t flipBits = (uint8_t)(rs.flags2 >> 8);
+	fs.mirrorX = isFloor ? (flipBits & 0x01) != 0 : (flipBits & 0x04) != 0;
+	fs.mirrorY = isFloor ? (flipBits & 0x02) != 0 : (flipBits & 0x08) != 0;
+	fs.opaque256 = it->second.opaque256;
+
+	const roth::FlatEngineSetup fe = roth::FlatToEngine(fs);
+	sec->SetXScale(which, fe.xScale);
+	sec->SetYScale(which, fe.yScale);
+	sec->SetXOffset(which, fe.xOffset);
+	sec->SetYOffset(which, fe.yOffset);
 }
 
 //==========================================================================
@@ -3273,9 +3294,9 @@ void RegisterTexture(int rothIndex, FTextureID tex)
 	if (rothIndex >= 0 && tex.isValid()) g.texByIndex[rothIndex] = tex;
 }
 
-void RegisterFlat(int rothIndex, FTextureID tex, bool isSky)
+void RegisterFlat(int rothIndex, FTextureID tex, bool isSky, bool opaque256)
 {
-	if (rothIndex >= 0) g.flatByIndex[rothIndex] = std::make_pair(tex, isSky);
+	if (rothIndex >= 0) g.flatByIndex[rothIndex] = Runtime::FlatReg{ tex, isSky, opaque256 };
 }
 
 void RegisterPlatformControl(int rothSector, int ctrlSector)
