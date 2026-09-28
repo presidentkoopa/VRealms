@@ -29,6 +29,12 @@
 
 std::pair<PalEntry, PalEntry>& R_GetSkyCapColor(FGameTexture* tex);
 
+// RS FORK -- draw the sky as a BAND rather than a dome. FSkyVertexBuffer::
+// BandSky says what the projection is and why an engine would want it. A cvar
+// rather than a map property so the two can be compared without a reload, and
+// off by default so no existing map changes.
+CVAR(Bool, r_skyband, false, CVAR_ARCHIVE)
+
 //-----------------------------------------------------------------------------
 //
 //
@@ -84,10 +90,21 @@ void HWSkyPortal::DrawContents(HWDrawInfo *di, FRenderState &state)
 	{
 		if (origin->texture[0]==origin->texture[1] && origin->doublesky) origin->doublesky=false;
 
+		// RS FORK -- the band takes the viewer's own angles, because cancelling
+		// the pitch is the whole mechanism. Built here rather than inside the
+		// vertex buffer, which has no viewpoint of its own.
+		FSkyVertexBuffer::BandSky band;
+		if (r_skyband)
+		{
+			band.active = true;
+			band.pitch = (float)vp.HWAngles.Pitch.Degrees();
+			band.yaw = (float)vp.HWAngles.Yaw.Degrees();
+		}
+
 		if (origin->texture[0])
 		{
 			state.SetTextureMode(TM_OPAQUE);
-			vertexBuffer->RenderDome(state, origin->texture[0], origin->x_offset[0], origin->y_offset, origin->mirrored, FSkyVertexBuffer::SKYMODE_MAINLAYER, !!(di->Level->flags & LEVEL_FORCETILEDSKY));
+			vertexBuffer->RenderDome(state, origin->texture[0], origin->x_offset[0], origin->y_offset, origin->mirrored, FSkyVertexBuffer::SKYMODE_MAINLAYER, !!(di->Level->flags & LEVEL_FORCETILEDSKY), 0, 0, 0xffffffff, band);
 			state.SetTextureMode(TM_NORMAL);
 		}
 

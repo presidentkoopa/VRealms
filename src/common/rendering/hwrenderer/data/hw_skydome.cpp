@@ -354,12 +354,35 @@ void FSkyVertexBuffer::CreateDome()
 //
 //-----------------------------------------------------------------------------
 
-void FSkyVertexBuffer::SetupMatrices(FGameTexture *tex, float x_offset, float y_offset, bool mirror, int mode, VSMatrix &modelMatrix, VSMatrix &textureMatrix, bool tiled, float xscale, float yscale)
+void FSkyVertexBuffer::SetupMatrices(FGameTexture *tex, float x_offset, float y_offset, bool mirror, int mode, VSMatrix &modelMatrix, VSMatrix &textureMatrix, bool tiled, float xscale, float yscale, const BandSky &band)
 {
 	float texw = tex->GetDisplayWidth();
 	float texh = tex->GetDisplayHeight();
 
 	modelMatrix.loadIdentity();
+
+	// A BAND SKY (see the struct in the header): turn the dome WITH the viewer
+	// so the texture stays put vertically on screen.
+	//
+	// The view matrix rotates this geometry by the viewer's yaw AND pitch. To
+	// undo only the pitch, rotate the dome the same way first, about the
+	// viewer's own right axis. In the dome's own space that axis depends on
+	// where the viewer is looking, so the rotation is conjugated by the yaw:
+	//
+	//     yaw  ->  pitch about X  ->  -yaw
+	//
+	// These are the first calls after the identity, which makes them the
+	// OUTERMOST part of the transform -- applied in the same space the view
+	// matrix works in, which is the whole point. Get that order wrong and the
+	// band slides vertically as you TURN, which is the first symptom to look
+	// for if this is misbehaving.
+	if (band.active)
+	{
+		modelMatrix.rotate(band.yaw, 0.f, 1.f, 0.f);
+		modelMatrix.rotate(band.pitch, 1.f, 0.f, 0.f);
+		modelMatrix.rotate(-band.yaw, 0.f, 1.f, 0.f);
+	}
+
 	modelMatrix.rotate(-180.0f + x_offset, 0.f, 1.f, 0.f);
 
 	if (xscale == 0) xscale = texw < 1024.f ? floorf(1024.f / float(texw)) : 1.f;
@@ -475,11 +498,11 @@ void FSkyVertexBuffer::DoRenderDome(FRenderState& state, FGameTexture* tex, int 
 //
 //-----------------------------------------------------------------------------
 
-void FSkyVertexBuffer::RenderDome(FRenderState& state, FGameTexture* tex, float x_offset, float y_offset, bool mirror, int mode, bool tiled, float xscale, float yscale, PalEntry color)
+void FSkyVertexBuffer::RenderDome(FRenderState& state, FGameTexture* tex, float x_offset, float y_offset, bool mirror, int mode, bool tiled, float xscale, float yscale, PalEntry color, const BandSky &band)
 {
 	if (tex)
 	{
-		SetupMatrices(tex, x_offset, y_offset, mirror, mode, state.mModelMatrix, state.mTextureMatrix, tiled, xscale, yscale);
+		SetupMatrices(tex, x_offset, y_offset, mirror, mode, state.mModelMatrix, state.mTextureMatrix, tiled, xscale, yscale, band);
 	}
 	DoRenderDome(state, tex, mode, false, color);
 }

@@ -99,9 +99,34 @@ public:
 
 public:
 
+	// A BAND SKY instead of a dome.
+	//
+	// A dome maps the viewer's pitch onto curvature, so the sky wraps overhead.
+	// Some engines never do that: they paint the sky as a strip anchored to the
+	// viewport that only drifts sideways as you turn, because their look-up is a
+	// vertical shear of the finished picture rather than a camera rotation.
+	// Realms of the Haunting is one (render_parallax_sky_columns,
+	// renderer.c:5383), but the projection is not specific to it and is named
+	// for what it does, not for who asked.
+	//
+	// It is the ordinary dome geometry with the viewer's PITCH CANCELLED, which
+	// pins the texture's vertical position to the screen while yaw still moves
+	// it sideways. The cancelling rotation is about the viewer's own right axis,
+	// which in the dome's own space means conjugating it by the view yaw -- see
+	// SetupMatrices.
+	//
+	// Inert by default: `active` false is exactly what every existing caller
+	// already gets.
+	struct BandSky
+	{
+		bool active = false;
+		float pitch = 0.f;   // the viewer pitch to cancel, degrees
+		float yaw = 0.f;     // the viewer yaw, naming the axis, degrees
+	};
+
 	FSkyVertexBuffer();
 	~FSkyVertexBuffer();
-	void SetupMatrices(FGameTexture *tex, float x_offset, float y_offset, bool mirror, int mode, VSMatrix &modelmatrix, VSMatrix &textureMatrix, bool tiled, float xscale = 0, float vertscale = 0);
+	void SetupMatrices(FGameTexture *tex, float x_offset, float y_offset, bool mirror, int mode, VSMatrix &modelmatrix, VSMatrix &textureMatrix, bool tiled, float xscale = 0, float vertscale = 0, const BandSky &band = BandSky());
 	std::pair<IVertexBuffer *, IIndexBuffer *> GetBufferObjects() const
 	{
 		return std::make_pair(mVertexBuffer, nullptr);
@@ -115,7 +140,7 @@ public:
 
 	void RenderRow(FRenderState& state, EDrawType prim, int row, TArray<unsigned int>& mPrimStart, bool apply = true);
 	void DoRenderDome(FRenderState& state, FGameTexture* tex, int mode, bool which, PalEntry color = 0xffffffff);
-	void RenderDome(FRenderState& state, FGameTexture* tex, float x_offset, float y_offset, bool mirror, int mode, bool tiled, float xscale = 0, float yscale = 0, PalEntry color = 0xffffffff);
+	void RenderDome(FRenderState& state, FGameTexture* tex, float x_offset, float y_offset, bool mirror, int mode, bool tiled, float xscale = 0, float yscale = 0, PalEntry color = 0xffffffff, const BandSky &band = BandSky());
 	void RenderBox(FRenderState& state, FSkyBox* tex, float x_offset, bool sky2, float stretch, const FVector3& skyrotatevector, const FVector3& skyrotatevector2, PalEntry color = 0xffffffff);
 
 };
