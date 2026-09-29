@@ -8,3 +8,9 @@ baseline.json
 *.exe
 *.dll
 __pycache__/
+
+# Savegames are GAME-DERIVED DATA and never go in the repo -- the same rule
+# that keeps the retail install read-only. They are made once per map by hand
+# (see warp_and_save.bat) and live here only so run_rothdiff can swap them
+# into slot 0 without destroying each other.
+saves/

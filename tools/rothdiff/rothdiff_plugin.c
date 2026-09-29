@@ -45,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "roth_sdk.h"
 
@@ -120,6 +121,11 @@ static int      g_hold = 3;        /* ticks to hold each pose after the first */
 static int      g_done;
 static uint16_t g_pose_tick;       /* tick this pose was pinned at */
 static int      g_have_tick;
+/* The watchdog -- see pose_timed_out(). Wall clock, because the clock every
+ * other wait in here uses is the one that stops. */
+static int      g_timeout_s = 25;  /* seconds a spot may take; 0 disables */
+static int      g_watch_pose = -1; /* which spot the clock below belongs to */
+static time_t   g_watch_started;
 static int      g_play_answered;
 
 /* Where this pose's buffer goes. Single-pose mode keeps its explicit path so
@@ -248,9 +254,17 @@ static void on_load(const struct roth_api_v1 *api)
     if (hd != NULL) g_hold = atoi(hd);
     if (g_hold < 1) g_hold = 1;
 
+    /* Seconds of WALL CLOCK a single spot may take before it is written off.
+     * 0 disables the watchdog, which is only ever right when someone is sitting
+     * in front of the game deliberately taking their time over one spot. */
+    {
+        const char *to = getenv("ROTHDIFF_TIMEOUT");
+        if (to != NULL) g_timeout_s = atoi(to);
+    }
+
     g_active = 1;
-    fprintf(stderr, "[rothdiff] %d pose(s), settle %d, hold %d -- ONE run\n",
-            g_pose_n, g_settle, g_hold);
+    fprintf(stderr, "[rothdiff] %d pose(s), settle %d, hold %d, timeout %ds"
+                    " -- ONE run\n", g_pose_n, g_settle, g_hold, g_timeout_s);
 }
 
 /* The pose is pinned every tick. Writing it once is not enough: the player
@@ -294,6 +308,54 @@ static int ring_push(const struct roth_api_v1 *api, uint8_t sc)
     if (next == m->u16(VA_RING_TAIL)) return 0;      /* full: the game drops it too */
     m->set_u8(VA_KEY_RING + head, sc);
     m->set_u16(VA_RING_HEAD, next);
+    return 1;
+}
+
+/* THE WATCHDOG: one bad camera spot must not cost the other nine.
+ *
+ * Every wait in here is counted in the GAME's 70 Hz tick (0x90bcc), and that
+ * clock stops whenever the world does -- a menu, a fade, a cutscene, a level
+ * trigger firing under the camera. When it stops, `held` never reaches `wait`,
+ * on_compose_tick never sees a drawn frame, and the run sits there for ever.
+ *
+ * Measured 2026-09-28 and again 2026-09-29: pose 6 of the STUDY1 set,
+ * `study_doorway` (980, 3840, 0), wedges exactly this way. Both runs captured
+ * five poses and then hung, so the remaining four were never attempted and the
+ * whole table came back empty.
+ *
+ * So the timeout is deliberately on the WALL CLOCK, not on the game's -- a
+ * watchdog that runs on the clock it is watching cannot fire. A pose that has
+ * not produced a buffer within ROTHDIFF_TIMEOUT seconds is logged as failed and
+ * skipped, and the set carries on. A missing pose in the report is a fact; an
+ * empty report is not.
+ */
+static int pose_timed_out(void)
+{
+    if (!g_active || g_done || g_pose_n <= 0) return 0;
+
+    if (g_watch_pose != g_cur)          /* a new spot: start its clock */
+    {
+        g_watch_pose = g_cur;
+        g_watch_started = time(NULL);
+        return 0;
+    }
+    if (g_timeout_s <= 0) return 0;     /* explicitly disabled */
+    if ((long)(time(NULL) - g_watch_started) < (long)g_timeout_s) return 0;
+
+    fprintf(stderr, "[rothdiff] %2d/%d  %-20s TIMED OUT after %ds -- skipped\n",
+            g_cur + 1, g_pose_n, g_pose[g_cur].name, g_timeout_s);
+
+    g_id_armed = 0;
+    g_have_tick = 0;
+    g_watch_pose = -1;
+    g_cur++;
+    if (g_cur >= g_pose_n)
+    {
+        fprintf(stderr, "[rothdiff] pose set finished, with at least one "
+                        "timeout -- the missing files are the failures\n");
+        g_done = 1;
+        if (getenv("ROTHDIFF_QUIT") != NULL) exit(0);
+    }
     return 1;
 }
 
@@ -371,6 +433,7 @@ static void on_frame_game(const struct roth_api_v1 *api)
         }
     }
 
+    if (pose_timed_out()) return;
     if (!trigger_ready()) return;
     const struct roth_game_ram_api_v1 *m = api->game_ram;
     const uint16_t tick = m->u16(VA_TICK);
@@ -395,6 +458,11 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
                             uint32_t width, uint32_t height)
 {
     (void)api; (void)pixels; (void)width; (void)height;
+    /* Checked here too, and BEFORE the armed test: when the world stops the
+     * game still composes frames (a menu is drawn like anything else), so this
+     * hook keeps running when on_frame_game's tick has frozen. It is the one
+     * that actually fires in the wedged case. */
+    if (pose_timed_out()) return;
     if (!g_active || g_done || !g_id_armed) return;
 
     if (g_id_written == 0)

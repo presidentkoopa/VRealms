@@ -17,12 +17,22 @@ is exactly the trap this tool exists to remove.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CAPTURES = os.path.join(HERE, "captures")
 BASELINE = os.path.join(HERE, "baseline.json")
+
+# The external watchdog. See capture_roth for why it cannot live in the plugin.
+# FIRST_GRACE_S covers the intro, the menus and the quickload on each launch;
+# STALL_S is how long a single camera spot may go without producing a buffer
+# before the run is declared wedged on it. A good spot takes well under a
+# second, so STALL_S is generous by two orders of magnitude on purpose.
+FIRST_GRACE_S = 180
+STALL_S = 40
 
 sys.path.insert(0, HERE)
 from rothdiff import POSES  # noqa: E402
@@ -32,7 +42,51 @@ CROOT_DIR = r"E:\DOOMWork\_croot"
 ROTHC_EXE = os.path.join(ORACLE_DIR, "rothc.exe")
 
 
-def capture_roth(poses, settle, hold):
+SAVES = os.path.join(HERE, "saves")
+LIVE_SAVE = os.path.join(ORACLE_DIR, "savegame", "SAVE0.SAV")
+
+
+def install_save(mapname):
+    """Put the right map's quicksave in slot 0 before capturing it.
+
+    ROTH.C skips its intro by quickloading, so whatever map the save holds is
+    the only map that can be captured. There is one quicksave key (F9, slot 0),
+    so saving in a second map used to destroy the first -- which is not a
+    workable way to run a rig that has 44 maps to get through.
+
+    They are just files (`SAVE%D.SAV`), so instead we keep one per map in
+    tools/rothdiff/saves as SAVE0.<MAP>.SAV and copy the right one into slot 0
+    here. Nothing is ever overwritten: to add a map, quicksave in it once and
+    file the result.
+
+    A live slot 0 that is not yet filed gets filed before it is replaced, so a
+    save made by hand is never silently thrown away.
+    """
+    want = os.path.join(SAVES, f"SAVE0.{mapname.upper()}.SAV")
+    if not os.path.exists(want):
+        print(f"  no saved game for {mapname} -- expected {want}")
+        print(f"  make one: warp to {mapname} in ROTH.C (--devmode, W) and "
+              f"press F9, then file SAVE0.SAV here under that name")
+        return False
+
+    os.makedirs(SAVES, exist_ok=True)
+    if os.path.exists(LIVE_SAVE):
+        import filecmp
+        filed = [f for f in os.listdir(SAVES)
+                 if filecmp.cmp(LIVE_SAVE, os.path.join(SAVES, f), shallow=False)]
+        if not filed:
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            keep = os.path.join(SAVES, f"SAVE0.UNFILED_{stamp}.SAV")
+            shutil.copy2(LIVE_SAVE, keep)
+            print(f"  slot 0 held an unfiled save -- kept it as "
+                  f"{os.path.basename(keep)}")
+
+    shutil.copy2(want, LIVE_SAVE)
+    print(f"  slot 0 <- {os.path.basename(want)}")
+    return True
+
+
+def capture_roth(poses, settle, hold, mapname="STUDY1"):
     """ONE headless ROTH.C run for the WHOLE pose set.
 
     Loading the map is the expensive part and the camera is only being moved
@@ -47,37 +101,104 @@ def capture_roth(poses, settle, hold):
 
     The save only has to be in the right MAP. The camera spots are absolute
     world coordinates, so where the save stands inside the level is irrelevant.
+
+    ONE WEDGED SPOT MUST NOT COST THE WHOLE SET.
+
+    Some camera spots wedge the original solidly: STUDY1's `study_doorway` and
+    `corridor_along` both do. The game stops inside its own render loop, so the
+    70 Hz tick never advances and no plugin hook is ever called again -- which
+    means the watchdog INSIDE the plugin cannot fire. A watchdog running on the
+    clock it is watching is no watchdog at all. Measured 2026-09-29: seven and a
+    half minutes on one spot, no progress, process still alive.
+
+    So it lives out here, where it has a wall clock and, more to the point, can
+    kill the process. If no new buffer appears for `STALL_S`, the run is stuck
+    on the first spot it has not produced; that spot is dropped and the game
+    relaunched with what is left, until the set is done.
+
+    The first capture of each launch gets a much longer grace period, because it
+    includes the intro, the menus and the quickload. A load slower than the
+    stall timeout would otherwise look exactly like a wedge and throw away a
+    good spot -- an in-plugin version of this did precisely that to
+    `study_start`.
     """
     os.makedirs(CAPTURES, exist_ok=True)
-    posefile = os.path.join(CAPTURES, "poses.csv")
-    with open(posefile, "w") as f:
-        for name, x, y, a in poses:
-            f.write(f"{name},{x},{y},{a}\n")
+    if not install_save(mapname):
+        return
 
-    env = dict(os.environ)
-    env["ROTHDIFF_POSEFILE"] = posefile
-    env["ROTHDIFF_OUTDIR"] = CAPTURES
-    env["ROTHDIFF_SETTLE"] = str(settle)
-    env["ROTHDIFF_HOLD"] = str(hold)
-    env["ROTHDIFF_QUICKLOAD"] = "1"
+    def have():
+        return {n for n, *_ in poses
+                if os.path.exists(os.path.join(CAPTURES, f"{n}.roth.ridb"))}
 
-    print(f"  ROTH.C: one run, quickload, {len(poses)} camera spot(s) ...")
-    r = subprocess.run(
-        [ROTHC_EXE, "--headless",
-         "--game-dir", ORACLE_DIR, "--c-root", CROOT_DIR],
-        cwd=ORACLE_DIR, env=env, capture_output=True, timeout=600,
-    )
-    err = r.stderr.decode("latin-1", "replace")
-    for line in err.splitlines():
-        if "[rothdiff]" in line:
-            print("   ", line.strip())
+    remaining = [p for p in poses if p[0] not in have()]
+    wedged = []
 
-    missing = [n for n, *_ in poses
-               if not os.path.exists(os.path.join(CAPTURES, f"{n}.roth.ridb"))]
+    # Bounded: every pass either captures something or drops exactly one spot.
+    for attempt in range(len(poses) + 1):
+        remaining = [p for p in remaining if p[0] not in have()]
+        if not remaining:
+            break
+
+        posefile = os.path.join(CAPTURES, "poses.csv")
+        with open(posefile, "w") as f:
+            for name, x, y, a in remaining:
+                f.write(f"{name},{x},{y},{a}\n")
+
+        env = dict(os.environ)
+        env["ROTHDIFF_POSEFILE"] = posefile
+        env["ROTHDIFF_OUTDIR"] = CAPTURES
+        env["ROTHDIFF_SETTLE"] = str(settle)
+        env["ROTHDIFF_HOLD"] = str(hold)
+        env["ROTHDIFF_QUICKLOAD"] = "1"
+
+        logpath = os.path.join(CAPTURES, f"roth_attempt{attempt}.log")
+        print(f"  ROTH.C run {attempt + 1}: quickload, "
+              f"{len(remaining)} camera spot(s) ...")
+
+        with open(logpath, "wb") as log:
+            proc = subprocess.Popen(
+                [ROTHC_EXE, "--headless",
+                 "--game-dir", ORACLE_DIR, "--c-root", CROOT_DIR],
+                cwd=ORACLE_DIR, env=env, stdout=log, stderr=subprocess.STDOUT,
+            )
+
+            seen = have()
+            deadline = time.time() + FIRST_GRACE_S
+            while proc.poll() is None:
+                time.sleep(1.0)
+                now = have()
+                if now != seen:
+                    for n in sorted(now - seen):
+                        print(f"      captured {n}")
+                    seen = now
+                    deadline = time.time() + STALL_S
+                if time.time() > deadline:
+                    break
+
+            stalled = proc.poll() is None
+            if stalled:
+                proc.kill()
+                proc.wait(timeout=20)
+
+        remaining = [p for p in remaining if p[0] not in have()]
+        if stalled and remaining:
+            bad = remaining[0]          # the first it never produced
+            wedged.append(bad[0])
+            remaining = remaining[1:]
+            print(f"      WEDGED on {bad[0]} -- killed it, dropping that spot "
+                  f"and retrying the other {len(remaining)}")
+        elif not stalled and remaining:
+            print(f"      exited on its own with {len(remaining)} spot(s) "
+                  f"unmade -- see {os.path.basename(logpath)}")
+            break
+
+    missing = [n for n, *_ in poses if n not in have()]
+    if wedged:
+        print(f"  WEDGED {len(wedged)}: {', '.join(wedged)}")
     if missing:
         print(f"  MISSING {len(missing)}: {', '.join(missing)}")
-        for line in err.strip().splitlines()[-3:]:
-            print(f"      {line}")
+        print(f"      per-run output is in {os.path.basename(CAPTURES)}"
+              f"/roth_attempt*.log")
 
 
 def emit_remaroth_script(poses, w, h, path):
@@ -172,7 +293,7 @@ def main():
         return 2
 
     if args.capture_roth:
-        capture_roth(poses, args.settle, args.hold)
+        capture_roth(poses, args.settle, args.hold, args.map)
     if args.capture_remaroth:
         p = emit_remaroth_script(poses, args.width, args.height,
                                  os.path.join(CAPTURES, "rothdiff.cfg"))
