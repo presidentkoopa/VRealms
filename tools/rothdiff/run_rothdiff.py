@@ -34,6 +34,9 @@ BASELINE = os.path.join(HERE, "baseline.json")
 FIRST_GRACE_S = 180
 STALL_S = 40
 
+# The four pattern passes, in the order roth_pattern numbers them.
+PASS_NAME = {1: "ilo", 2: "ihi", 3: "tlo", 4: "thi"}
+
 sys.path.insert(0, HERE)
 from rothdiff import POSES  # noqa: E402
 
@@ -201,15 +204,57 @@ def capture_roth(poses, settle, hold, mapname="STUDY1"):
               f"/roth_attempt*.log")
 
 
-def emit_remaroth_script(poses, w, h, path):
+# Everything that must be OFF before a pattern capture, and why.
+#
+# The pattern puts a number on the screen and the screenshot reads it back. Any
+# stage that changes a pixel between those two points corrupts the measurement
+# while leaving a picture that looks fine -- which is the exact failure this
+# whole rig exists to stop. uvdiff checks R==G==B per pixel and reports
+# "TAINTED" when something here has been missed.
+#
+# Unknown names are harmless: the console says so and carries on, which is
+# better than pruning the list to whatever this build happens to have.
+PATTERN_OFF = [
+    "roth_lighting 0",           # the Realms shade model; ours, and it shades
+    "gl_texture_filter 0",       # nearest, or a texel is blended with its neighbour
+    "gl_texture_filter_anisotropic 1",
+    "r_mipmap 0",                # a distant surface must not sample a smaller copy
+    "gl_bloom 0", "gl_ssao 0", "gl_fxaa 0", "gl_tonemap 0",
+    "gl_lens 0", "gl_blendcolormaps 0",
+    "vid_brightness 0", "vid_contrast 1", "vid_gamma 1",
+    "gl_global_fade 0",
+    "r_drawplayersprites 0",     # the weapon would cover part of the frame
+    "hud_althud 0", "screenblocks 12", "crosshair 0",
+]
+
+
+def emit_remaroth_script(poses, w, h, path, pattern=0):
     """REMAROTH captures every pose in ONE run, because loading the level is the
-    expensive part and the camera is just moved between dumps."""
+    expensive part and the camera is just moved between dumps.
+
+    With `pattern` set this emits a PATTERN pass: the textures are replaced by
+    their own coordinates and each spot is an ordinary screenshot, which is the
+    method the comparison uses now. Without it, the older identity-buffer dump.
+
+    roth_pattern is read when a texture is built, so it has to be set before the
+    level loads -- which it is, because console commands from +exec run
+    immediately while `map` is deferred.
+    """
     os.makedirs(CAPTURES, exist_ok=True)
     with open(path, "w") as f:
         # First, so that anything the run says afterwards is on disk. +logfile
         # on the command line is too late when the failure is early.
         f.write(f"logfile {os.path.join(CAPTURES, 'rema.log')}\n".replace("\\", "/"))
+        if pattern:
+            for line in PATTERN_OFF:
+                f.write(line + "\n")
+            f.write(f"roth_pattern {pattern}\n")
         for name, x, y, a in poses:
+            if pattern:
+                out = os.path.join(
+                    CAPTURES, f"{name}.rema.{PASS_NAME[pattern]}.png").replace("\\", "/")
+                f.write(f"rothdiff_shot {x} {y} {a} {out}\n")
+                continue
             out = os.path.join(CAPTURES, f"{name}.rema.ridb").replace("\\", "/")
             f.write(f"rothdiff_dump {x} {y} {a} {w} {h} {out}\n")
         # NO `quit` HERE. Console commands from +exec are not deferred, but
@@ -282,6 +327,9 @@ def main():
                     help="ticks before the first capture, for the map to settle")
     ap.add_argument("--hold", type=int, default=3,
                     help="ticks to hold each later pose; the level is already up")
+    ap.add_argument("--pattern", type=int, default=0, choices=[0, 1, 2, 3, 4],
+                    help="capture a PATTERN pass instead of an identity buffer: "
+                         "1 texel index low, 2 index high, 3 texture id low, 4 id high")
     ap.add_argument("--width", type=int, default=320)
     ap.add_argument("--height", type=int, default=200)
     ap.add_argument("--save-baseline", action="store_true")
@@ -296,8 +344,12 @@ def main():
         capture_roth(poses, args.settle, args.hold, args.map)
     if args.capture_remaroth:
         p = emit_remaroth_script(poses, args.width, args.height,
-                                 os.path.join(CAPTURES, "rothdiff.cfg"))
+                                 os.path.join(CAPTURES, "rothdiff.cfg"),
+                                 args.pattern)
         print(f"wrote {p}\nrun REMAROTH with:  +exec {p}")
+        if args.pattern:
+            print(f"  pattern pass {args.pattern} ({PASS_NAME[args.pattern]}); "
+                  f"all four passes are needed before uvdiff can score a spot")
         return 0
 
     return do_diff(poses, BASELINE, args.save_baseline)
