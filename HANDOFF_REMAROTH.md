@@ -424,8 +424,19 @@ scale, shift and mirror — which is the entire live problem.
 - **`+exec` runs before `map`** — `map` is deferred, `exec` is not. A `quit` in
   an exec script fires at startup. `roth_diff.cpp` queues console-requested
   captures until a level exists, drained from `P_Ticker`.
-- **LNK1103** on rebuild: delete `doomxr.iobj` / `doomxr.ipdb` (and the
-  offending `.obj`) from `build-dxr/src/zdoom.dir/<config>/`.
+- **LNK1103 "debugging information corrupt" is a PARALLEL BUILD RACE.** Build
+  **without `-m`**:
+
+  ```
+  cmake --build . --config RelWithDebInfo --target zdoom -- -verbosity:minimal
+  ```
+
+  Parallel compilation inside one project shares a PDB, and a race there emits
+  an object the linker then refuses. Deleting `doomxr.iobj` / `doomxr.ipdb` and
+  the offending `.obj` — which this note used to prescribe — only ever worked by
+  accident: the next build happened to win the race. On 2026-09-29 it failed on
+  a *freshly compiled* object through a full clean rebuild, three times, and
+  dropping `-m` linked first try. A serial build is slower and it works.
 - **The Debug output directory has no DLLs.** `openvr_api.dll`,
   `openxr_loader.dll`, `zmusic.dll`, `OpenAL32.dll` only sit beside
   RelWithDebInfo. Build RelWithDebInfo, or copy them.

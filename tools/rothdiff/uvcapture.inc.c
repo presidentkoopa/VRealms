@@ -135,10 +135,25 @@ void uv_paint_now(const struct roth_api_v1 *api)
      * u: the texel COLUMN.  v: the texel ROW. Both derived from the linear
      * index and the row length the fill itself is using, so neither depends on
      * an assumption about how the image is stored. */
+    /* THE LINEAR INDEX, low byte then high byte -- which is what the comment
+     * above argues for and what the code had drifted away from.
+     *
+     * It painted `i % w` and `i / w`: a column and a row. That reintroduces the
+     * very assumption the comment says not to make, because those are only a
+     * column and a row if the stored row length really is w. The two engines
+     * describe this same buffer with the dimensions EXCHANGED -- our reader
+     * takes Realms' quarter turn by swapping them -- so "column" would mean
+     * opposite things on the two sides, and the comparison would measure the
+     * wrong axis while looking entirely reasonable.
+     *
+     * The linear index needs no such assumption: it is the offset the fill
+     * actually computed into the actual stored bytes, it is the same number on
+     * both sides because it is the same buffer, and (u, v) can be recovered
+     * afterwards from whichever dimensions each side believes in. */
     if (g_uv_pattern_v)
-        for (uint32_t i = 0; i < n; i++) tex[i] = (uint8_t)((i / w) & 0xffu);
+        for (uint32_t i = 0; i < n; i++) tex[i] = (uint8_t)((i >> 8) & 0xffu);
     else
-        for (uint32_t i = 0; i < n; i++) tex[i] = (uint8_t)((i % w) & 0xffu);
+        for (uint32_t i = 0; i < n; i++) tex[i] = (uint8_t)(i & 0xffu);
 
     /* READ BACK WHAT WE JUST WROTE.
      *

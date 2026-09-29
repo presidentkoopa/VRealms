@@ -38,6 +38,7 @@
 #include "gametexture.h"
 #include "palettecontainer.h"
 #include "r_data/r_translate.h"
+#include "c_cvars.h"
 
 namespace roth
 {
@@ -155,6 +156,84 @@ static int MakeTranslation(const std::vector<Colour> &palette, bool zeroTranspar
 		opal.Remap[0] = 0;
 	}
 	return GetTranslationIndex(GPalette.StoreTranslation(TRANSLATION_Standard, &opal));
+}
+
+//==========================================================================
+//
+// MEASURING WHAT IS ACTUALLY SAMPLED, rather than asking our own code.
+//
+// Every texture decision on this port that was settled by comparing two
+// ordinary screenshots has had to be reversed at least once, because a
+// screenshot carries only colour: a wrong texture, a wrong scale and a wrong
+// light all look the same in one. And asking the engine what it sampled only
+// proves our arithmetic agrees with itself.
+//
+// So the picture is replaced by its own coordinates. With `roth_pattern` set,
+// every texel of every world texture becomes the number we want to read --
+// its column, its row, or which texture it belongs to -- and an ordinary
+// screenshot is then literally the texel buffer. Nothing of ours sits between
+// the sample and the pixel, which is the whole point: the same trick works on
+// the original, where we have no arithmetic to ask.
+//
+//   1  texel index, low byte      2  its high byte
+//   3  texture id, low byte       4  its high byte
+//
+// THE TEXEL INDEX, NOT A COLUMN AND A ROW. Realms stores wall art rotated a
+// quarter turn and this reader takes that turn by EXCHANGING the dimensions, so
+// "column" means opposite things in the two engines. Painting a column would
+// compare the wrong axis against the original while looking entirely
+// reasonable. The linear offset into the stored bytes is the same number on
+// both sides because it is the same buffer, and (u, v) can be recovered
+// afterwards from whichever dimensions each side believes in.
+//
+// Two passes each because a palette index holds eight bits and a texel index
+// into a 256x256 image does not.
+//
+// Rendered through a GREY IDENTITY translation so palette entry i arrives as
+// RGB(i, i, i) and the screenshot inverts exactly. Going through the real
+// palette would be lossy: two indices can share a colour, and then the value
+// cannot be read back at all.
+//
+// Applied when a texture is built, so it takes a map reload -- same as
+// `roth_lighting`. Turn off lighting and any filtering before capturing, or
+// the number on screen is not the number that was sampled.
+//
+//==========================================================================
+
+CVAR(Int, roth_pattern, 0, CVAR_ARCHIVE)
+
+static int GreyTranslation()
+{
+	static int cached = -1;
+	if (cached >= 0) return cached;
+	FRemapTable grey;
+	for (int c = 0; c < 256; c++)
+	{
+		grey.Palette[c] = PalEntry(255, (uint8_t)c, (uint8_t)c, (uint8_t)c);
+		grey.Remap[c] = ColorMatcher.Pick(c, c, c);
+	}
+	cached = GetTranslationIndex(GPalette.StoreTranslation(TRANSLATION_Standard, &grey));
+	return cached;
+}
+
+// Walked as a flat run, deliberately: the value written at offset i IS i, so
+// nothing here needs to know which axis the buffer runs along. The oracle's
+// side paints the same number the same way (tools/rothdiff/uvcapture.inc.c).
+static std::vector<uint8_t> PatternPixels(int w, int h, int index, int mode)
+{
+	const size_t n = (size_t)w * (size_t)h;
+	std::vector<uint8_t> out(n, 0);
+	for (size_t i = 0; i < n; i++)
+	{
+		switch (mode)
+		{
+		case 1:  out[i] = (uint8_t)(i & 0xff); break;
+		case 2:  out[i] = (uint8_t)((i >> 8) & 0xff); break;
+		case 3:  out[i] = (uint8_t)(index & 0xff); break;
+		default: out[i] = (uint8_t)((index >> 8) & 0xff); break;
+		}
+	}
+	return out;
 }
 
 //==========================================================================
@@ -387,8 +466,22 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 
 	auto addFrame = [&](const std::vector<uint8_t> &pixelsIn, const char *texName) -> FTextureID
 	{
-		const std::vector<uint8_t> pixels = flipped ? mirrorColumns(pixelsIn) : pixelsIn;
-		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), remap, w, h, true, hasHoles);
+		std::vector<uint8_t> pixels = flipped ? mirrorColumns(pixelsIn) : pixelsIn;
+		FRemapTable *useRemap = remap;
+		bool useHoles = hasHoles;
+
+		// PATTERN MODE: the picture is replaced by its own coordinates, so an
+		// ordinary screenshot IS the texel buffer. See PatternPixels.
+		if (roth_pattern > 0)
+		{
+			pixels = PatternPixels(w, h, index, roth_pattern);
+			useRemap = GPalette.GetTranslation(TRANSLATION_Standard, GreyTranslation());
+			// Every texel has to survive to the screen. A hole would drop the
+			// very value being measured and a blend would alter it.
+			useHoles = false;
+		}
+
+		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), useRemap, w, h, true, useHoles);
 		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
 		return TexMan.AddGameTexture(tex);
 	};
