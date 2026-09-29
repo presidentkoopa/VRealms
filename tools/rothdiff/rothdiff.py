@@ -269,7 +269,24 @@ POSES = {
         ("stairs_foot",     1100, 4400, 128),
         ("stairs_look_up",  1100, 4400,  96),
     ],
+    # LRINTH1 -- chosen by tools/rothdiff/findspots, which asks the map which
+    # sectors carry each property under test rather than picking spots by eye.
+    # This map is used for the flats pass because it is one of only four that
+    # carry EVERY property in one place; STUDY1 has no mirrored floor at all,
+    # so it cannot test the mirror bits, which are the rule the docs mark
+    # [derived] and never confirmed.
+    "LRINTH1": [
+        ("flat_plain",   -4180, -3506,   0),   # 1 baseline, s=1, no shift/mirror
+        ("flat_shifted", -6656,  -256,   0),   # 2 the shift signs
+        ("flat_mirx",    -1536,  -384,   0),   # 3a mirrored in X
+        ("flat_miry",    -4032,  2240,   0),   # 3b mirrored in Y
+        ("ceil_plain",   -7282,  -264,   0),   # 4 the ceiling signs
+        ("flat_256",     -4096, -1600,   0),   # 5 the 256x256 opaque exception
+        ("flat_seam",    -3808,  1069, 256),   # 6 same texture, different shift
+        ("midplat_top",  -4096, -1408,   0),   # 7 the mid-platform path
+    ],
 }
+
 
 
 def cmd_poses(args):
