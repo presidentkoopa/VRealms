@@ -579,19 +579,35 @@ scale, shift and mirror — which is the entire live problem.
 
 ---
 
-## 10. Suggested order
+## 10. THE ORDER OF WORK
 
-1. ~~Directional sprites~~ — **done 2026-09-28** (§7), bar the view order.
-2. **Colour-key ceilings** (§5). Small; the rule is already in `roth_surface`.
-   The owner on seeing STUDY2's courtyard, 2026-09-28: *"skybox is all fucked
-   up"* — STUDY2 is the EDGE_MAP-wall sky case, so it is the map to work on.
-3. **The read-only comparison** (§8). Until this exists nothing can be *proven*.
-4. **Sprite size and vertical placement** (`ROTH_SURFACES_FIX.md` §3.4).
-5. **The global light term** (§6) — small, fully specified, and visible.
-6. Then the bigger engine work the owner has authorised: the shade table applied
-   exactly, and paletted rendering, which is what "pixel perfect" ultimately
-   requires.
-7. Doors, then `ROTH_GAME_PORT.md`.
+**This section is the priority order. §4 is an unordered inventory of
+everything outstanding — do not read its numbering as a plan.**
+
+Done, and struck out rather than deleted so nobody re-opens them:
+
+- ~~Directional sprites~~ — 2026-09-28 (§7), bar the view order.
+- ~~The comparison rig~~ — `tools/oracle`, 2026-10-01 (§8).
+- ~~Paletted rendering and the shade table~~ — 2026-10-01, `roth_palshade`.
+- ~~The lighting model~~ — 2026-10-01, verified 2943/2943 vertices.
+- ~~The vertical projection~~ — 2026-10-01 (§5).
+
+Outstanding, in the order to do them:
+
+1. **Colour-key ceilings** (§5). Smallest. The three-way test is already in
+   `roth_surface`; it is simply not wired for ceilings and walls. Black
+   side-aisle ceilings are this.
+2. **The sky** (§4.4). Most visible. Spec settled: a screen-space strip, no
+   pitch term, pitch clamped to the original's shear range.
+3. **Sprite size and vertical placement** (`ROTH_SURFACES_FIX.md` §3.4). The
+   owner's "those pillars are too tall". Measure against the oracle before
+   implementing — the documented rule, applied as written, sinks 68 of STUDY1's
+   props through the floor they are standing on.
+4. **The remaining lighting terms** (§4.5) — muzzle flash, object light bytes,
+   the glow table, tint ramp selection.
+5. **Doors** (§4.8). The only item that blocks *playing* rather than looking.
+   Needs a mechanism other than polyobjects.
+6. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
 
 ---
 
