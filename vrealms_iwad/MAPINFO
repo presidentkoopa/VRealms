@@ -64,6 +64,16 @@ map STUDY2 "The Study, Upper"
 	next = "STUDY2"
 }
 
+// LRINTH1 is the surface test map. It is one of only four that carry EVERY
+// property the flat rules are tested against in ONE place -- including a
+// mirrored floor on each axis, which STUDY1 has none of -- and it has 226 wall
+// pieces sitting on the colour key, where STUDY1 has none at all. A map that
+// cannot exercise a rule cannot verify it.
+map LRINTH1 "The Labyrinth"
+{
+	next = "LRINTH1"
+}
+
 clusterdef 1
 {
 	flat = "-NOFLAT-"

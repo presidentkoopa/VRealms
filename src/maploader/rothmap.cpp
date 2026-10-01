@@ -762,6 +762,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
 	int shiftedFaces = 0;        // a non-zero shiftX/shiftY was applied
 	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
+	int keyWallPieces = 0;       // on the colour key: the original draws nothing there
 	int transUpLoFaces = 0;      // FF_TRANS_UPLO with no band (not transparent, or override 0)
 	int transUpLoBanded = 0;     // mid pieces cut to the TEXTURE_MAP_OVERRIDE band
 	int transUpLoInexact = 0;    // ...whose single copy cannot match the original's wrap
@@ -1048,6 +1049,29 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 			auto setPart = [&](int part, int storedIndex, bool masked)
 			{
+				// THE COLOUR KEY MEANS DRAW NOTHING, on a wall as on a flat.
+				//
+				// renderer.c:9222-9225 is a THREE-way test, and this port had
+				// it as two: a negative index is a solid palette colour, an
+				// index equal to the pack's key draws NO PIXELS AT ALL, and
+				// anything else is textured. The key is a real painted entry in
+				// every pack -- DEMO's is an opaque 256x146 picture -- so
+				// handing it to World() returns that artwork and we paint a
+				// wall across an opening the original leaves open.
+				//
+				// Measured over all 44 maps: of 59,273 wall pieces that are
+				// present, 1,778 sit on the key, and 1,325 of those are MID
+				// pieces -- the ones on two-sided lines, where drawing anything
+				// at all turns a doorway into a barrier.
+				//
+				// IsSkySurface is this exact test (index == SkyMarkerIndex);
+				// the name is from when the key was thought to mean sky.
+				if (haveArt && art.IsSkySurface(storedIndex))
+				{
+					keyWallPieces++;
+					return false;
+				}
+
 				FTextureID tex = worldTex(storedIndex, masked);
 				if (!tex.isValid()) return false;   // nothing to draw here
 
@@ -1886,6 +1910,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Count("walls: mid texture wanted but absent", midMissing);
 	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);
 	log.Count("walls: FF_EDGE_MAP faces -- sky above the wall top not modelled", edgeMapFaces);
+	log.Count("walls: pieces on the colour key -- left undrawn, as the original does", keyWallPieces);
 	log.Line("  FF_TRANS_UPLO mid pieces banded  %d", transUpLoBanded);
 	log.Count("walls: FF_TRANS_UPLO faces with no band (opaque or override 0)", transUpLoFaces);
 	log.Count("walls: FF_TRANS_UPLO band not exact (art shorter, or spills below)", transUpLoInexact);
