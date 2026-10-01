@@ -628,15 +628,21 @@ Outstanding, in the order to do them:
    - ~~object light bytes~~ — done (`06ef8ef`). A SIGNED OFFSET on the sector's
      light, 0x80 neutral, no radius and no distance term. 231 of STUDY1's
      objects carry one.
-   - **the glow table** — next. `screen = glow_table[texel]`: no depth, no
+   - ~~the glow table~~ — done (`d9f7a79`). `screen = glow_table[texel]`: no depth, no
      sector light, no flash. A flat palette remap that ignores lighting
      entirely. Gated on sector flags byte +0x0a bit 6 AND `(phase & 0x49) != 0`
      where phase is the byte at `0x8a355`. The table is 256 bytes at
      `palOff + 0x14402` in the map DAS. **618 sectors carry the bit, 335 of them
      in STUDY2** — it is the storm in the courtyard. STILL NEEDED: how the phase
      counter advances. Touches `roth_palshade` / `func_roth.fp`.
-   - **tint ramp selection** — rule survived, with one correction from its
-     critic: the radial depth term cites two globals that are never read there.
+   - ~~tint ramp selection~~ — **NO CODE NEEDED, measured 2026-10-01.** Map
+     metadata `+0x16` is not a ramp index, it is a per-map boolean deciding
+     whether the tint ramp exists at all, and when it is zero the engine aliases
+     the tint pointer back onto the WORLD ramp. **It is zero on all 44 retail
+     maps** (checked directly, not inferred), so rows 32-62 are never read by
+     the world renderer in the shipping game. What the sector's bit 1 actually
+     does — swap the shade-pair index from metadata `+0x10` to `+0x14`, and
+     perspective-correct mapping — is the lantern/candle path we already have.
    - **muzzle flash** — rule is solid (decays 120 units/second, raised by MAX
      not ADD from three sites, added 8-bit WRAPPING to the sector light only
      when that light is non-zero). **BLOCKED, not pending**: it is raised only
