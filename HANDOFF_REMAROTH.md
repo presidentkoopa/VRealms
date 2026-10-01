@@ -622,8 +622,26 @@ Outstanding, in the order to do them:
    owner's "those pillars are too tall". Measure against the oracle before
    implementing — the documented rule, applied as written, sinks 68 of STUDY1's
    props through the floor they are standing on.
-2. **The remaining lighting terms** (§4.5) — muzzle flash, object light bytes,
-   the glow table, tint ramp selection.
+2. **The remaining lighting terms.** Re-derived 2026-10-01 with three readers
+   and a skeptic each; all four survived, against none on the first attempt.
+
+   - ~~object light bytes~~ — done (`06ef8ef`). A SIGNED OFFSET on the sector's
+     light, 0x80 neutral, no radius and no distance term. 231 of STUDY1's
+     objects carry one.
+   - **the glow table** — next. `screen = glow_table[texel]`: no depth, no
+     sector light, no flash. A flat palette remap that ignores lighting
+     entirely. Gated on sector flags byte +0x0a bit 6 AND `(phase & 0x49) != 0`
+     where phase is the byte at `0x8a355`. The table is 256 bytes at
+     `palOff + 0x14402` in the map DAS. **618 sectors carry the bit, 335 of them
+     in STUDY2** — it is the storm in the courtyard. STILL NEEDED: how the phase
+     counter advances. Touches `roth_palshade` / `func_roth.fp`.
+   - **tint ramp selection** — rule survived, with one correction from its
+     critic: the radial depth term cites two globals that are never read there.
+   - **muzzle flash** — rule is solid (decays 120 units/second, raised by MAX
+     not ADD from three sites, added 8-bit WRAPPING to the sector light only
+     when that light is non-zero). **BLOCKED, not pending**: it is raised only
+     by weapon fire and creature attacks, so nothing can move it until the game
+     layer exists. Do not schedule it before then.
 3. **Doors** (§4.8). The only item that blocks *playing* rather than looking.
    Needs a mechanism other than polyobjects.
 4. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
