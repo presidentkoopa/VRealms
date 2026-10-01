@@ -1532,6 +1532,15 @@ public:
 	// unaffected even if something set the mode by accident.
 	int			ShadeFalloffShift = 0;
 
+	// Realms of the Haunting's own shading (R_RothShade in main.fp). When set,
+	// sector lightlevel holds the Realms light BYTE unchanged and
+	// Colormap.Desaturation 1 marks a "lantern" sector; ShadeFalloffShift is the
+	// normal sectors' shift and RothLanternShift the lantern sectors'.
+	bool		RothLighting = false;
+	int			RothLanternShift = 5;
+	uint16_t	RothLightRng = 0;		// the original's flicker LCG (0x85328)
+	int			RothLightStep = 0;
+
 	float		skyspeed1;				// Scrolling speed of sky textures, in pixels per ms
 	float		skyspeed2;
 	float		skymistspeed;

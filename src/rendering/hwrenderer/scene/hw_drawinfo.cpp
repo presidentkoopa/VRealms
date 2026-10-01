@@ -1785,6 +1785,9 @@ static Clipper staticVClipper;		// Another clipper to clip vertically (used if (
 static Clipper staticRClipper;		// Another clipper for radar (doesn't actually clip. Changes SSECMF_DRAWN setting).
 static HWDrawInfo * gl_drawinfo;	// This is a linked list of all active DrawInfos and needed to free the memory arena after the last one goes out of scope.
 
+// Debug: draw Realms surfaces unshaded (for measuring the shade by ratio).
+CVAR(Int, roth_shade_debug, 0, 0)   // 1 unshaded, 2 light byte, 3 Z, 4 cone, 5 lantern flag, 6 row, 7 row (per-pixel candle)
+
 void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uniforms)
 {
 	staticClipper.Clear();
@@ -1825,6 +1828,30 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 				? 1.f / float(1 << Level->ShadeFalloffShift)
 				: 1 / 64.f;
 			VPUniforms.mPalLightLevels = 32 | (static_cast<int>(fogmode) << 8) | ((int)lightmode << 16);
+			if (Level->RothLighting)
+			{
+				// Realms: pack the per-frame shading state into uGlobVis (see
+				// R_RothShade). The flicker is the original's LCG, stepped once
+				// per 7 ticks of its 70 Hz clock (tick_ambient_render_animation,
+				// renderer.c:13413) -- 10 Hz, from the level clock.
+				const int target = (Level->maptime * 2) / 7;
+				if (target < Level->RothLightStep) { Level->RothLightStep = 0; Level->RothLightRng = 0; }
+				while (Level->RothLightStep < target)
+				{
+					Level->RothLightRng = uint16_t(Level->RothLightRng * 0x5e5u + 0x29u);
+					Level->RothLightStep++;
+				}
+				const int rx = Level->RothLightRng & 31, ry = (Level->RothLightRng >> 8) & 31;
+				// E: the lantern bias. recA+0x1c (8) plus -13 when the viewer
+				// stands OUTSIDE a lantern sector (collision_physics.c:1774).
+				const bool viewInLantern = Viewpoint.sector != nullptr && Viewpoint.sector->Colormap.Desaturation != 0;
+				const int E = 8 + (viewInLantern ? 0 : -13);
+				const int Ln = clamp(Level->ShadeFalloffShift - 5, 0, 3);
+				const int Ll = clamp(Level->RothLanternShift - 5, 0, 3);
+				const int packed = Ln | (Ll << 2) | ((E + 64) << 4) | (rx << 11) | (ry << 16) | ((roth_shade_debug & 7) << 21);
+				VPUniforms.mGlobVis = float(packed);
+				VPUniforms.mPalLightLevels |= 1 << 24;
+			}
 		}
 		else
 		{

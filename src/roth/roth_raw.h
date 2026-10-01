@@ -273,11 +273,17 @@ struct Map
 	// lookup has to survive the parse instead of being a local to it.
 	std::unordered_map<uint32_t, int> faceByOffset;
 
+	// Applied to every x/y by RecentreWrappedMap (0 unless the map straddles the
+	// 16-bit wrap -- RAQUIA2). Anything converting a coordinate read from the
+	// original's MEMORY back to ours must add these.
+	int wrapShiftX = 0, wrapShiftY = 0;
+
 	std::string error;          // empty when Parse succeeded
 	bool ok() const { return error.empty(); }
 };
 
 // Parse a whole .RAW file held in memory.
+void RecentreWrappedMap(Map &map);
 Map ParseRaw(const uint8_t *data, size_t size);
 
 } // namespace roth

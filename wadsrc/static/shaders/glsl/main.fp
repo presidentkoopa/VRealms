@@ -23,6 +23,7 @@ layout(location = 4) in vec3 gradientdist;
 layout(location = 5) in vec4 vWorldNormal;
 layout(location = 6) in vec4 vEyeNormal;
 layout(location = 9) in vec3 vLightmap;
+layout(location = 10) noperspective in float vRothE;
 
 #ifdef NO_CLIPDISTANCE_SUPPORT
 layout(location = 7) in vec4 ClipDistanceA;
@@ -495,6 +496,121 @@ float R_DoomColormap(float light, float z)
 
 //===========================================================================
 //
+// Realms of the Haunting shading, transcribed from ROTH.C and checked
+// against the original's own per-vertex shade on 2943 of 2943 vertices
+// (REMAROTH_LIGHTING_ORACLE.md).
+//
+// Inputs:
+//   light                 the sector's light BYTE / 255 (the loader stores it
+//                         raw in ROTH maps; 128 is neutral, 0 = unshaded)
+//   uDesaturationFactor   > 0 marks a "lantern" sector (sector byte +0x0a bit 1)
+//   uGlobVis              packed per-frame state, see hw_drawinfo.cpp:
+//                         bits 0-1 normal shade level, 2-3 lantern shade level,
+//                         4-10 E+64, 11-15 / 16-20 lantern jitter (rng 0..31)
+//
+// Normal:  row = (Z >> (5+Ln)) - bias          <=0 -> 0, min cap, >31 -> fog
+// Lantern: row = ((Z + 1024*max(|tx-jx|,|ty-jy|)) >> (5+Ll)) - bias - E
+//                                              clamped 1..31
+//   Z = depth along the HORIZONTAL view axis, tx/ty = lateral / vertical
+//   offset over Z (the original's |x-Lx|/focal), so a head tilt in VR does not
+//   move the light: in the original the view never pitches, it shears.
+// bias = 8 + (light-128), cap = 32 - (max(light-124,0) >> 2)
+// Rows are the DAS colormap ramp; its brightness curve is RothRamp.
+//
+//===========================================================================
+
+const float RothRamp[32] = float[](
+	1.0, 0.997, 0.952, 0.913, 0.882, 0.851, 0.814, 0.788, 0.753, 0.714, 0.687, 0.652,
+	0.622, 0.584, 0.552, 0.519, 0.494, 0.458, 0.427, 0.398, 0.364, 0.328, 0.299, 0.267,
+	0.239, 0.209, 0.172, 0.141, 0.111, 0.081, 0.051, 0.021);
+
+float gRothDbg = -1.0;	// roth_shade_debug >= 2 writes this straight to the frame
+int gRothRow = -1;	// ROTH_PALETTE: the colormap row this pixel takes (64 = the fog colour)
+
+float R_RothShade(float light)
+{
+	int lb = int(light * 255.0 + 0.5);
+	if (lb <= 0) return 0.0;				// authored unshaded: raw texels
+
+	int pk = int(uGlobVis + 0.5);
+	int dbg = (pk >> 21) & 7;				// roth_shade_debug
+	if (dbg == 1) return 0.0;
+	if (dbg == 2) gRothDbg = float(lb) / 255.0;
+	int Ln = pk & 3;
+	int Ll = (pk >> 2) & 3;
+	int E  = ((pk >> 4) & 127) - 64;
+	float jx = float(((pk >> 11) & 31) - 16) / 256.0;
+	float jy = float(((pk >> 16) & 31) - 16) / 256.0;
+
+	vec3 fwd3 = -vec3(ViewMatrix[0][2], ViewMatrix[1][2], ViewMatrix[2][2]);
+	vec2 fh = fwd3.xz;
+	float fl = length(fh);
+	fh = fl > 1e-4 ? fh / fl : vec2(1.0, 0.0);
+	vec3 d = pixelpos.xyz - uCameraPos.xyz;
+	float Z = max(dot(d.xz, fh), 1.0);
+
+	if (dbg == 3) gRothDbg = Z / 2048.0;
+	if (dbg == 5) gRothDbg = uDesaturationFactor > 0.5 / 255.0 ? 1.0 : 0.25;	// lantern flag
+	int off = lb - 128;
+	int bias = 8 + off;
+	int cap = 32 - (max(off + 4, 0) >> 2);
+	int row;
+	if (uDesaturationFactor > 0.5 / 255.0)
+	{
+		float tx = (d.x * fh.y - d.z * fh.x) / Z;
+		float ty = d.y / Z;
+		float e = Z + 1024.0 * max(abs(tx - jx), abs(ty - jy));
+		// (dbg 4: the vertex shader writes a wall/flat marker into vRothE)
+		// Per-vertex, as the original. Every vertex value is clamped to
+		// 1..31.99, so anything under 1 here is the rasterizer interpolating
+		// across a triangle clipped against the eye (seen on llvmpipe: 0 on a
+		// ceiling running behind the camera) -- fall back to per-pixel there.
+		if (dbg != 7 && vRothE >= 1.0) row = int(floor(min(vRothE, 31.99)));
+		else row = clamp(min(int(floor(e / float(32 << Ll))) - bias - E, cap), 1, 31);
+	}
+	else
+	{
+		row = int(floor(Z / float(32 << Ln))) - bias;
+		if (row <= 0) row = 0;
+		row = min(row, cap);
+		if (row > 31)	// the original's fog fill
+		{
+			if (dbg >= 6) gRothDbg = 1.0;
+#ifdef ROTH_PALETTE
+			gRothRow = 64;
+			return 0.0;
+#else
+			return 1.0;
+#endif
+		}
+	}
+	if (dbg >= 6 || dbg == 4) gRothDbg = float(row) / 32.0;
+#ifdef ROTH_PALETTE
+	// The original never scales a colour: it looks the texel up in the row's
+	// table (render_world_col_*: gs[(row << 8) | texel]). Done after the
+	// lighting, in RothPaletteShade; the light factor itself stays 1.
+	gRothRow = row;
+	return 0.0;
+#else
+	return 1.0 - RothRamp[row];
+#endif
+}
+
+#ifdef ROTH_PALETTE
+// Palette shading, exactly as the original: the texel's colour is mapped back
+// to its palette index (rothinvlut: 64x64x64 cells of the 6-bit VGA colour,
+// tiled 8x8 into 512x512), then rothcmap[row][index] is the shaded colour.
+// texelFetch, so the material sampler's filtering cannot blend table entries.
+vec3 RothPaletteShade(vec3 rgb, int row)
+{
+	ivec3 q = ivec3(clamp(rgb, 0.0, 1.0) * 63.0 + 0.5);
+	int idx = int(texelFetch(rothinvlut, ivec2(q.r + (q.b & 7) * 64, q.g + (q.b >> 3) * 64), 0).r * 255.0 + 0.5);
+	return texelFetch(rothcmap, ivec2(idx, row), 0).rgb;
+}
+#endif
+
+//===========================================================================
+//
 // Doom software lighting equation
 //
 //===========================================================================
@@ -511,7 +627,11 @@ float R_DoomLightingEquation(float light)
 		z = pixelpos.w;
 	}
 #ifndef SHADER_LITE
-	if ((uPalLightLevels >> 16) == 5) // gl_lightmode 5: Build software lighting emulation.
+	if (((uPalLightLevels >> 24) & 1) != 0) // Realms of the Haunting (see R_RothShade)
+	{
+		return R_RothShade(light);
+	}
+	if (((uPalLightLevels >> 16) & 0xff) == 5) // gl_lightmode 5: Build software lighting emulation.
 	{
 		// This is a lot more primitive than Doom's lighting...
 		float numShades = float(uPalLightLevels & 255);
@@ -4454,6 +4574,9 @@ void main()
 		if ((uTextureMode & 0xffff) != 7)
 		{
 			frag = getLightColor(material, fogdist, fogfactor);
+#ifdef ROTH_PALETTE
+			if (gRothRow >= 0) frag.rgb = RothPaletteShade(frag.rgb, gRothRow);
+#endif
 #ifdef SURFACE_DAMAGE
 			// [SURFACEDAMAGE] Hot metal glows: emissive light added after the lighting, so a dark room does not dim it and bloom
 			// takes it; the fog below still covers it.
@@ -4581,6 +4704,7 @@ void main()
 	}
 	
 	FragColor = frag;
+	if (gRothDbg >= 0.0) FragColor = vec4(vec3(clamp(gRothDbg, 0.0, 1.0)), 1.0);
 
 #ifdef MODEL_EYE_FADE
 	// [EYEFADE] A model near the eye dissolves instead of filling the view (EFF_EYEFADE;

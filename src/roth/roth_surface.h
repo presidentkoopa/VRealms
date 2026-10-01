@@ -109,9 +109,11 @@ struct Texel
 // 256x256 images keep the normal rule. This is what makes the s=2 ceiling land
 // on 2 units per texel alongside the s=1 floors.
 //
-// THE TWO SIGNS (-x, +y) ARE [derived], not read directly: they come from a
-// derivation in which the camera terms cancel. They are implemented here so the
-// static test can check them, and MUST NOT be treated as settled until it has.
+// THE TWO SIGNS (-x, +y) are MEASURED (oracle, 2026-10-01): ROTH.C was made to
+// paint every texel with its own coordinates and the frame was decoded per
+// pixel against the map. Every flat in view on STUDY1 and LRINTH1 fits this
+// formula, including 256x256 opaque ceilings at s=1 and s=2 and mirrored floors
+// on both axes.
 Texel FlatTexel(const FlatSetup &s, int32_t worldX, int32_t worldY, uint16_t colourKey);
 
 // World units per texel for a flat. Split out because the loader needs it on
@@ -143,15 +145,30 @@ double FlatUnitsPerTexel(const FlatSetup &s);
 // Offsets are therefore in WORLD units and are scaled afterwards; getting that
 // backwards silently halves or doubles every shift.
 //
+// THE QUARTER TURN (measured 2026-10-01, ROTH.C oracle). roth_texture.cpp
+// registers every world texture -- flats included -- with its dimensions
+// exchanged and its bytes declared column-major, so the GZDoom texture's u axis
+// runs along the image's STORED ROWS and its v axis along STORED COLUMNS. ROTH
+// samples a flat in stored layout with the row on +y and the column on -x. The
+// two only line up if the plane is turned a quarter: angle 270 makes the
+// engine's u follow world +y and its v follow world +x, and the scales/offsets
+// are then solved against THOSE axes. Without the turn every flat in the game
+// is drawn transposed (rotated 90 degrees and mirrored), which no encoding test
+// that models the engine without the quarter turn can see.
+//
 // NOTE what is proven and what is not. The static test proves this ENCODING is
 // faithful -- that the engine, given these numbers, samples exactly what
 // FlatTexel says. Whether FlatTexel's own two signs are right is a separate
-// question, still [derived], answered only by comparing against the oracle.
+// question -- ANSWERED 2026-10-01: the oracle (ROTH.C painting texel codes,
+// read back per pixel) confirms -x / +y, the 2^s scale, the 256x256 opaque
+// exception, the half-texel shift and both mirrors including their shift, on
+// STUDY1 and LRINTH1. See REMAROTH_ORACLE_RESULTS.md.
 // ---------------------------------------------------------------------------
 struct FlatEngineSetup
 {
 	double xScale, yScale;     // sector_t::SetXScale / SetYScale
 	double xOffset, yOffset;   // sector_t::SetXOffset / SetYOffset, world units
+	double angle;              // sector_t::SetAngle, DEGREES. Always 270: see below.
 };
 
 FlatEngineSetup FlatToEngine(const FlatSetup &s);

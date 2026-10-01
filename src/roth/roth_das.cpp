@@ -91,6 +91,13 @@ bool Pack::Load(const uint8_t *data, size_t size)
 	const uint8_t *pal = DEFAULT_RAW_PALETTE;
 	if (paletteOffset != 0 && paletteOffset + 768 <= size)
 		pal = data + paletteOffset;
+	mShade = nullptr;
+	mFogIndex = 0;
+	if (paletteOffset != 0 && (size_t)paletteOffset + 768 + 2 + 0x4000 <= size)
+	{
+		mFogIndex = data[paletteOffset + 768];
+		mShade = data + paletteOffset + 768 + 2;
+	}
 	for (int i = 0; i < 256; i++)
 		mPalette[i] = { Expand6(pal[i * 3]), Expand6(pal[i * 3 + 1]),
 						Expand6(pal[i * 3 + 2]) };

@@ -94,6 +94,12 @@ void RegisterFlat(int rothIndex, FTextureID tex, bool isSky, bool opaque256 = fa
 // sector's two planes. Without this those paths have nowhere to write.
 void RegisterPlatformControl(int rothSector, int ctrlSector);
 
+// An engine sector that must stay lit exactly like a Realms sector: a
+// mid-platform's control sector, a door leaf's void room. The loader copies
+// light at build time; this keeps run-time light changes (switches, fades,
+// the load-time lights-out pass) reaching them too.
+void RegisterLightFollower(int rothSector, int engineSector);
+
 // The player used a wall. Returns true if a Realms chain fired, in which case
 // the engine's own line activation should not also run.
 //

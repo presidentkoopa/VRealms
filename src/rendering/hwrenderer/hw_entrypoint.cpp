@@ -57,6 +57,35 @@
 EXTERN_CVAR(Bool, cl_capfps)
 extern bool NoInterpolateView;
 
+// RS FORK -- extra VERTICAL stretch of the flat-screen projection.
+//
+// Some engines do not project with square pixels: they use a different focal
+// length across than down. Realms of the Haunting is one -- fitted from its own
+// output at 640x480, FX = 309.77 and FY = 355.06, which is 91.9 degrees across
+// and 68.1 degrees down. A square-pixel projection at the same horizontal field
+// gives 75.4 degrees down, roughly 7 too wide.
+//
+// This matters beyond looking right. Every check this port makes compares one
+// of our rendered frames against one of the original's -- shade levels, texel
+// positions, where a vertex lands -- so a vertical projection mismatch puts
+// every comparison point on the wrong row, and reads as a lighting or a surface
+// error when it is neither.
+//
+// Applied to the PROJECTION, and only on the flat screen. MAPINFO's
+// `pixelratio` is the obvious lever and the wrong one: it scales the VIEW
+// transform, and the VR code also reads it to convert headset metres to world
+// units (gl_openvr.cpp:1087, :1098), so using it would silently resize the
+// world in the headset. In VR the lens sets the projection and none of this
+// applies.
+//
+// 1.0 is inert, so nothing changes for any other map or mod. A map that needs
+// it sets it at load; Realms does, in rothmap.cpp.
+// NOT archived, deliberately. A map that needs this sets it when it loads, so
+// persisting it would leave one map's projection applied to the next one after
+// a restart -- a stretch nobody asked for, on a map with no idea why.
+CVARD(Float, r_view_vstretch, 1.0f, CVAR_NOSAVE,
+	"extra vertical stretch of the flat-screen projection; 1.0 = square pixels, ignored in VR")
+
 extern int flatVerticesPerEye;
 extern int wallVerticesPerEye;
 extern int portalsPerEye;
@@ -726,6 +755,15 @@ sector_t* RenderView(player_t* player)
 		}
 
 		auto vrmode = VRMode::GetVRModeCached(true);
+
+		// RS FORK -- see r_view_vstretch at the top of this file. Both terms,
+		// so the horizontal field is untouched and only the vertical narrows.
+		if (r_view_vstretch != 1.0f && !vrmode->IsVR())
+		{
+			ratio *= r_view_vstretch;
+			fovratio *= r_view_vstretch;
+		}
+
 		VR_EnsureHudSurface(screen->GetWidth() * vrmode->mHorizontalViewportScale, screen->GetHeight() * vrmode->mVerticalViewportScale);
 
 		screen->ImageTransitionScene(true); // Only relevant for Vulkan.

@@ -168,6 +168,14 @@ public:
 	uint16_t SkyMarkerIndex() const { return mUnknown0x22; }
 	const std::vector<Colour> &Palette() const { return mPalette; }
 
+	// The pack's shading tables, read in the original straight after the
+	// palette (map_load.c:373-376): a 2-byte fog colour index, then 0x4000
+	// bytes holding TWO 32-row x 256 colormaps -- the world ramp and, at
+	// +0x2000, the tint ramp. Row 0 brightest, 31 darkest. Null when the pack
+	// carries no palette of its own.
+	const uint8_t *ShadeTables() const { return mShade; }
+	int FogIndex() const { return mFogIndex; }
+
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
 	Image ReadImage(int index, bool allFrames = false) const;
 	Mesh ReadMesh(int index) const;
@@ -210,6 +218,8 @@ private:
 	std::vector<FatEntry> mFat;
 	std::vector<Colour> mPalette;
 	uint16_t mUnknown0x22 = 0;   // header +0x22; see SkyMarkerIndex()
+	const uint8_t *mShade = nullptr;
+	int mFogIndex = 0;
 	// The directional-object block: header +0x1c is its file offset (0 means
 	// the pack has none) and +0x1a its byte size. The original reads it into
 	// its own allocation at map load (map_load.c:367, :385-390); here it stays

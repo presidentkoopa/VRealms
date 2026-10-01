@@ -213,8 +213,13 @@ namespace
 		size = 0;
 		mtime = 0;
 		hash4m = 0xcbf29ce484222325ull;
+#ifdef _WIN32
 		struct _stat64 st;
 		if (path != nullptr && _stat64(path, &st) == 0)
+#else
+		struct stat st;
+		if (path != nullptr && stat(path, &st) == 0)
+#endif
 		{
 			size = (uint64_t)st.st_size;
 			mtime = (int64_t)st.st_mtime;

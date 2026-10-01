@@ -71,7 +71,7 @@ bool Install::Open(const char *rothDir)
 	while (!mPath.empty() && (mPath.back() == '\\' || mPath.back() == '/'))
 		mPath.pop_back();
 
-	auto bytes = ReadWholeFile(mPath + "\\ROTH.RES");
+	auto bytes = ReadWholeFile(mPath + "/ROTH.RES");
 	if (bytes.empty())
 	{
 		mError = "ROTH.RES not found in " + mPath;
@@ -132,7 +132,7 @@ bool Install::HasMap(const char *name) const
 std::string Install::MapFile(const char *name) const
 {
 	if (!HasMap(name)) return "";
-	return mPath + "\\M\\" + ToUpper(name) + ".RAW";
+	return mPath + "/M/" + ToUpper(name) + ".RAW";
 }
 
 std::string Install::PackFor(const char *name) const
@@ -145,7 +145,7 @@ std::string Install::PackFor(const char *name) const
 std::string Install::PackFile(const char *pack) const
 {
 	if (!mOpen || !pack || !*pack) return "";
-	return mPath + "\\M\\" + ToUpper(pack) + ".DAS";
+	return mPath + "/M/" + ToUpper(pack) + ".DAS";
 }
 
 std::vector<std::string> Install::MapNames() const

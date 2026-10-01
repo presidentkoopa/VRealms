@@ -28,6 +28,7 @@
 #include "roth_das.h"
 #include "roth_install.h"
 #include "roth_log.h"
+#include "roth_palshade.h"
 
 #include "colormatcher.h"
 #include "bitmap.h"
@@ -483,6 +484,7 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 
 		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), useRemap, w, h, true, useHoles);
 		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
+		if (roth_pattern <= 0) ApplyPaletteShading(tex, mName, *mPack);
 		return TexMan.AddGameTexture(tex);
 	};
 
@@ -530,6 +532,7 @@ FTextureID TextureSet::SolidColour(int paletteIndex, Log *log)
 	FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard, mOpaqueTranslation);
 	auto *image = new FPalettedMemoryImage(KeepPixels(pixels), remap, 8, 8, true, false);
 	auto *tex = MakeGameTexture(new FImageTexture(image), name.GetChars(), ETextureType::Override);
+	ApplyPaletteShading(tex, mName, *mPack);
 
 	mSolidColours++;
 	if (log) log->Count("artwork: solid-colour surfaces");

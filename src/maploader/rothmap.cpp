@@ -57,6 +57,10 @@
 //==========================================================================
 CVAR(Bool, roth_lighting, true, CVAR_ARCHIVE | CVAR_NOINITCALL)
 
+// The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
+// Realms does not project with square pixels; see where this is set below.
+EXTERN_CVAR(Float, r_view_vstretch)
+
 //==========================================================================
 //
 // One Realms world unit is one map unit; the geometry is used as authored.
@@ -125,21 +129,35 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// because the goal is 1:1, and in Realms the darkness IS the game: the
 	// original is mostly black with a few sources, and a flat, evenly lit manor
 	// is not the same place.
-	int shadeShift = 5;
+	//
+	// CORRECTED 2026-10-01 against the oracle (REMAROTH_LIGHTING_ORACLE.md):
+	// NORMAL sectors take their shift from metadata +0x10 (shadeLevel), and
+	// only LANTERN sectors (sector byte +0x0a bit 1) take +0x14 (lightAmbience)
+	// -- render_world_face_list, renderer.c:9190-9197. Lantern sectors add a
+	// screen-centred cone term; the whole equation is R_RothShade in main.fp,
+	// which this mode now drives instead of Build's.
+	int shadeShift = 5, lanternShift = 5;
 	{
 		static const int kShadeShift[3] = { 5, 6, 7 };
+		const int lvl = int(rm.metadata.shadeLevel);
 		const int amb = int(rm.metadata.lightAmbience);
-		if (amb >= 0 && amb < 3) shadeShift = kShadeShift[amb];
+		if (lvl >= 0 && lvl < 3) shadeShift = kShadeShift[lvl];
+		else log.Count("lighting: shadeLevel outside the shade table", 1);
+		if (amb >= 0 && amb < 3) lanternShift = kShadeShift[amb];
 		else log.Count("lighting: lightAmbience outside the shade table", 1);
 
 		if (roth_lighting)
 		{
 			Level->ShadeFalloffShift = shadeShift;
+			Level->RothLanternShift = lanternShift;
+			Level->RothLighting = true;
+			Level->RothLightRng = 0;
+			Level->RothLightStep = 0;
 			// getRealLightmode takes info->lightmode unconditionally when set
 			// (g_level.cpp:163), so this wins over the user's gl_maplightmode.
 			if (Level->info != nullptr) Level->info->lightmode = ELightMode::Build;
-			log.Line("  lighting       lightAmbience %d -> depth >> %d, Build shading",
-				amb, shadeShift);
+			log.Line("  lighting       depth >> %d (lantern >> %d), Realms shading",
+				shadeShift, lanternShift);
 		}
 		else
 		{
@@ -440,11 +458,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// the `light != 0` test in renderer.c:9187 means a sector authored at
 		// exactly 0 is immune even to the muzzle-flash brightening.
 		{
-			const int off = int(rs.light) - 128;
-			const int rows = 39 + off;
-			const int ll = rows <= 0 ? 0
-				: int((255.0 * double(rows) * double(1 << shadeShift)) / 1984.0 + 0.5);
-			sec->lightlevel = (short)clamp<int>(ll, 0, 255);
+			// Realms shading reads the light BYTE straight out of lightlevel
+			// (R_RothShade); the old Build-equivalent mapping saturated at 255
+			// for anything brighter than about -23 and lost the difference.
+			sec->lightlevel = roth_lighting ? (short)rs.light : (short)160;
 		}
 		if (rs.light < darkestLight) darkestLight = rs.light;
 		if (rs.light > brightestLight) brightestLight = rs.light;
@@ -571,6 +588,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			sec->SetYScale(which, fe.yScale);
 			sec->SetXOffset(which, fe.xOffset);
 			sec->SetYOffset(which, fe.yOffset);
+			// The quarter turn. The texture is registered turned (roth_texture.cpp),
+			// so the plane must be turned too or the flat draws transposed. See
+			// roth_surface.h, FlatEngineSetup::angle.
+			sec->SetAngle(which, DAngle::fromDeg(fe.angle));
 		}
 
 		//------------------------------------------------------------------
@@ -600,6 +621,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		{
 			sec->Colormap.FadeColor.SetRGB(Level->fadeto);
 		}
+		// Lantern flag for R_RothShade (sector byte +0x0a bit 1). Desaturation
+		// 1/255 is invisible; the shader reads it as a flag.
+		sec->Colormap.Desaturation = (roth_lighting && (rs.flags & 2)) ? 1 : 0;
 
 	}
 	log.Line("  doors closed at load  %d  (%d with a hinge resolved)", doorCount, doorsWithHinge);
@@ -639,6 +663,33 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		}
 		log.Line("  field of view         %.2f degrees (Realms; engine default 90)",
 			ROTH_FOV_DEGREES);
+	}
+
+	//----------------------------------------------------------------------
+	// AND THE VERTICAL HALF OF THE SAME PROJECTION, which the field of view
+	// above does not cover.
+	//
+	// Realms does not project with square pixels. Fitted from the original's
+	// own output at 640x480 (tools/oracle, flatfit.py): FX = 309.77 across,
+	// FY = 355.06 down -- 91.9 degrees and 68.1. The horizontal matches what is
+	// set above already; square pixels would put the vertical at 75.4, about 7
+	// too wide, and everything would sit at the wrong height on screen.
+	//
+	// That is not only a look: every check this port makes compares one of our
+	// frames against one of the original's, so a vertical mismatch moves every
+	// comparison point to the wrong row and reads as a lighting or a surface
+	// error when it is neither.
+	//
+	// NOT `pixelratio`. That scales the view transform, and the VR code reads
+	// it to convert headset metres to world units (gl_openvr.cpp:1087), so
+	// setting it here would silently resize the world in the headset. The cvar
+	// below is applied to the flat-screen PROJECTION only and is ignored in VR,
+	// where the lens sets the projection. See hw_entrypoint.cpp.
+	{
+		const float ROTH_VIEW_VSTRETCH = 355.06f / 309.77f;   // 1.1462
+		r_view_vstretch = ROTH_VIEW_VSTRETCH;
+		log.Line("  view vertical stretch %.4f  (Realms FY/FX; flat screen only)",
+			ROTH_VIEW_VSTRETCH);
 	}
 
 	//----------------------------------------------------------------------
@@ -711,7 +762,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
 	int shiftedFaces = 0;        // a non-zero shiftX/shiftY was applied
 	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
-	int transUpLoFaces = 0;      // FF_TRANS_UPLO banding: not handled
+	int transUpLoFaces = 0;      // FF_TRANS_UPLO with no band (not transparent, or override 0)
+	int transUpLoBanded = 0;     // mid pieces cut to the TEXTURE_MAP_OVERRIDE band
+	int transUpLoInexact = 0;    // ...whose single copy cannot match the original's wrap
 	int extentBitsAbove12 = 0;   // see the note where this is reported
 	int doorMidToLeaf = 0;       // doorway mid pieces handed over to a door leaf
 
@@ -745,7 +798,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			roth::RegisterFaceSide((int)(&face - &rm.faces[0]), (int)(sd - &Level->sides[0]));
 			sd->sector = &Level->sectors[face.sector];
 			sd->linedef = ld;
-			sd->Flags = 0;
+			sd->Flags = WALLF_NOFAKECONTRAST;   // Realms has no fake contrast
 			sd->UDMFIndex = (int)(sd - &Level->sides[0]);
 			// A zeroed side has zero texture scale, which renders nothing at
 			// all. Every part needs an explicit 1.
@@ -840,7 +893,14 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			const double baseScale = 1. / unitsPerTexel;
 
 			double scaleX = baseScale;
-			const double stored = double(tm->StoredExtent());
+			double stored = double(tm->StoredExtent());
+			// The extended record keeps only 12 bits of the extent. Across all 44
+			// maps every visible wall's stored extent equals its length modulo
+			// that field (oracle survey, 2026-10-01): RAQUIA4 has two 6080- and
+			// 6144-long walls stored as 1984 and 2048. Restore the lost high bits
+			// rather than drawing those walls three times too wide.
+			if (tm->extended && stored > 0. && wallLen > 4096.)
+				stored += 4096. * floor((wallLen - stored) / 4096. + 0.5);
 			if (imageFit)
 			{
 				imageFitFaces++;
@@ -944,12 +1004,46 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			//   upper  = my ceiling down to the neighbour's
 			//   lower  = the neighbour's floor down to mine
 			//   mid    = the opening between them (the whole sector if solid)
+			//--------------------------------------------------------------
+			// FF_TRANS_UPLO: THE MID PIECE IS A BAND, NOT THE WHOLE OPENING.
+			//
+			// compute_face_span_extents (renderer.c:8171) builds a transparent
+			// mid piece from the opening -- top = min(ceilings), bottom =
+			// max(floors) of the face's own sector (face +6) and its sister's --
+			// and then, when the texture map has flag 0x08 AND the face's OWN
+			// sector's TEXTURE_MAP_OVERRIDE (sector +0x0c, signed) is non-zero,
+			// cuts it to a band 4 * |override| world units tall
+			// (renderer.c:8196-8207):
+			//
+			//   override > 0   bottom = top - 4*override     (hung from the top)
+			//   override < 0   top    = bottom + 4*|override| (stood on the floor)
+			//
+			// The texture is anchored at the band's top (0x852be feeds
+			// wrap_reoffset+0x0a). This is how furniture draws its low panels:
+			// STUDY1's chair (sectors 421-427, override -10) has a 40-unit band
+			// at floor level on its back and arm faces. Ignoring it hung the
+			// chair-back art from the CEILING, top-anchored in an opening 384
+			// units tall, and stretched the FF_IMAGE_FIT arm faces over the
+			// whole height -- the purple slab and brown posts over the desk.
+			//--------------------------------------------------------------
+			const double openTop = haveNbr ? min(ownCeil, nbrCeil) : ownCeil;
+			const double openBot = haveNbr ? max(ownFloor, nbrFloor) : ownFloor;
+			double bandTop = openTop, bandBot = openBot;
+			bool banded = false;
+			if (twoSided && (tf & roth::FF_TRANSPARENT) && (tf & roth::FF_TRANS_UPLO)
+				&& face.sector >= 0 && face.sector < (int)rm.sectors.size())
+			{
+				const int tmo = (int)rm.sectors[face.sector].textureMapOverride;
+				if (tmo > 0)      { bandBot = openTop - 4. * tmo; banded = true; }
+				else if (tmo < 0) { bandTop = openBot - 4. * tmo; banded = true; }
+			}
+
 			auto heightOf = [&](int part) -> double
 			{
 				if (!haveNbr) return ownCeil - ownFloor;
 				if (part == side_t::top)    return ownCeil - nbrCeil;
 				if (part == side_t::bottom) return nbrFloor - ownFloor;
-				return min(ownCeil, nbrCeil) - max(ownFloor, nbrFloor);
+				return bandTop - bandBot;
 			};
 
 			auto setPart = [&](int part, int storedIndex, bool masked)
@@ -1009,9 +1103,37 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					{
 						// sy is texels-per-world-unit for this part, so the
 						// piece is pieceHeight * sy texels tall.
-						pieceOffY += pieceHeight * sy - texH;
+						//
+						// MEASURED (oracle, SALVAT face 14208, 100% of 248k
+						// pixels): texel = W - (z - bottom)/2 - shiftY, i.e. the
+						// art's bottom row on the piece's bottom edge. In Doom
+						// terms, from the top anchor, that is a row offset of
+						// +(texH - pieceHeight*sy). This line used to have the
+						// sign the other way round, which misplaced every
+						// DRAW_FROM_BOTTOM wall whose height is not a whole
+						// number of copies (483 faces, mostly SALVAT/DOMINION).
+						pieceOffY += texH - pieceHeight * sy;
 						pinBottomFaces++;
 					}
+				}
+
+				// A banded mid piece: Doom anchors a two-sided mid texture's top
+				// at min(ceilings) + rowoffset/scale (hw_walls.cpp DoMidTexture),
+				// so move it down to the band's top. pieceOffY so far is the
+				// texel row wanted AT the band top.
+				if (part == side_t::mid && banded)
+				{
+					pieceOffY += (bandTop - openTop) * sy;
+					transUpLoBanded++;
+					auto *gt = TexMan.GetGameTexture(tex, false);
+					const double texH = gt ? gt->GetDisplayHeight() : 0.;
+					// One copy is drawn. The original wraps inside the band, so a
+					// band taller than the art loses its repeats, and a ceiling-
+					// hung band shorter than the art spills below it (Doom only
+					// clips a mid piece to the opening). Counted, not hidden.
+					if (sy > 0. && texH > 0. && fabs(texH / sy - (bandTop - bandBot)) > 0.5
+						&& !(bandBot <= openBot && texH / sy > bandTop - bandBot))
+						transUpLoInexact++;
 				}
 
 				sd->SetTexture(part, tex);
@@ -1088,7 +1210,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// wall floor-to-ceiling, so there IS no region above it to fill. That
 			// is the real work, and it is geometry, not texturing.
 			if (tf & roth::FF_EDGE_MAP) edgeMapFaces++;
-			if (tf & roth::FF_TRANS_UPLO) transUpLoFaces++;
+			if ((tf & roth::FF_TRANS_UPLO) && !banded) transUpLoFaces++;
 			return sd;
 		};
 
@@ -1197,6 +1319,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			cs->Colormap.FadeColor.SetRGB(Level->fadeto);
 			// The slab is lit like the room it sits in, not like the void.
 			cs->lightlevel = Level->sectors[i].lightlevel;
+			cs->Colormap.Desaturation = Level->sectors[i].Colormap.Desaturation;
 
 			// Control floor = the slab's UNDERSIDE, control ceiling = its TOP.
 			cs->SetPlaneTexZ(sector_t::floor, undZ);
@@ -1266,6 +1389,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			cs->SetYScale(sector_t::floor, und.yScale);
 			cs->SetXOffset(sector_t::floor, und.xOffset);
 			cs->SetYOffset(sector_t::floor, und.yOffset);
+			cs->SetAngle(sector_t::ceiling, DAngle::fromDeg(top.angle));
+			cs->SetAngle(sector_t::floor, DAngle::fromDeg(und.angle));
 
 			// A CLOSED square, parked in the void well outside the map. It has to
 			// be closed: the node builder walks every line, and a lone degenerate
@@ -1321,6 +1446,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// a sector's mid-platform through its +0x18, and on this side that
 			// platform IS this control sector's two planes.
 			roth::RegisterPlatformControl((int)i, (int)ctrlSector);
+			roth::RegisterLightFollower((int)i, (int)ctrlSector);
 			roth::RegisterTexture(mp.topTexture, topTex);
 			roth::RegisterTexture(mp.undersideTexture, undTex);
 
@@ -1483,6 +1609,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			vs->Colormap.LightColor = PalEntry(255, 255, 255);
 			vs->Colormap.FadeColor.SetRGB(Level->fadeto);
 			vs->lightlevel = door->lightlevel;
+			vs->Colormap.Desaturation = door->Colormap.Desaturation;
+			roth::RegisterLightFollower((int)i, (int)vSector);
 			// The doorway's own heights, so the leaf is exactly as tall as the
 			// opening it fills.
 			const double lfZ = door->GetPlaneTexZ(sector_t::floor);
@@ -1548,7 +1676,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 				sd->sector = vs;
 				sd->linedef = ld;
-				sd->Flags = 0;
+				sd->Flags = WALLF_NOFAKECONTRAST;   // Realms has no fake contrast
 				sd->UDMFIndex = (int)(sd - &Level->sides[0]);
 				for (int part = 0; part < 3; part++)
 				{
@@ -1667,7 +1795,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 					sd->sector = vs;
 					sd->linedef = ld;
-					sd->Flags = 0;
+					sd->Flags = WALLF_NOFAKECONTRAST;   // Realms has no fake contrast
 					sd->UDMFIndex = (int)(sd - &Level->sides[0]);
 					for (int part = 0; part < 3; part++)
 					{
@@ -1758,7 +1886,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Count("walls: mid texture wanted but absent", midMissing);
 	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);
 	log.Count("walls: FF_EDGE_MAP faces -- sky above the wall top not modelled", edgeMapFaces);
-	log.Count("walls: FF_TRANS_UPLO banding not handled", transUpLoFaces);
+	log.Line("  FF_TRANS_UPLO mid pieces banded  %d", transUpLoBanded);
+	log.Count("walls: FF_TRANS_UPLO faces with no band (opaque or override 0)", transUpLoFaces);
+	log.Count("walls: FF_TRANS_UPLO band not exact (art shorter, or spills below)", transUpLoInexact);
 	log.Count("artwork: images that failed to decode", art.Failed());
 	log.Count("artwork: stored indices out of every known range", art.OutOfRange());
 

@@ -55,6 +55,7 @@
 #include "d_dehacked.h"
 #include "d_event.h"
 #include "d_main.h"
+#include "roth/roth_palshade.h"
 #include "d_net.h"
 #include "d_netinf.h"
 #include "decallib.h"
@@ -4448,6 +4449,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	LoadSurfaceDefinitions();
 
 	ParseGLDefs();
+	roth::RegisterPaletteShader();	// Realms palette shading; must precede shader compilation
 
 	// [PARTICLEDEFS] GPU particle definitions from every PARTICLEDEFS lump
 	// (gamedata/particledefs.cpp). After the textures, which stage 2c's flipbooks

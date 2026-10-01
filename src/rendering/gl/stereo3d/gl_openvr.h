@@ -32,6 +32,7 @@
 
 namespace openvr {
 	// forward declarations
+	typedef uint32_t TrackedDeviceIndex_t;   // as in openvr_capi.h; a repeated identical typedef is legal C++
 	struct TrackedDevicePose_t;
 	struct Texture_t;
 	struct VR_IVRSystem_FnTable;

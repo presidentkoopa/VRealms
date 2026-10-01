@@ -522,7 +522,8 @@ endif()
 
 set( PLAT_POSIX_SOURCES
 	posix/i_steam.cpp
-	common/platform/posix/i_system_posix.cpp )
+	common/platform/posix/i_system_posix.cpp
+	common/platform/posix/openxr_stubs_posix.cpp )
 set( PLAT_SDL_SOURCES
 	common/platform/posix/sdl/crashcatcher.c
 	common/platform/posix/sdl/hardware.cpp
@@ -980,6 +981,7 @@ set (PCH_SOURCES
 	# runtime and the tests all call this; nothing else computes a scale,
 	# offset, flip or anchor.
 	roth/roth_surface.cpp
+	roth/roth_palshade.cpp
 	# rothdiff's capture side: the rothdiff_dump console command. Pairs with
 	# tools/rothdiff, which compares its output against the same identity
 	# buffer taken from ROTH.C. Console-only, so it costs nothing at run time.

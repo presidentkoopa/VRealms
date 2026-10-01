@@ -7,6 +7,8 @@
 
 #include "roth_raw.h"
 
+#include <algorithm>
+
 #include <string.h>
 #include <unordered_map>
 
@@ -84,6 +86,68 @@ bool IsTriggerOpcode(uint8_t opcode)
 	default:
 		return false;
 	}
+}
+
+
+//==========================================================================
+//
+// WRAP RE-CENTRING. Realms coordinates are 16-bit and the original's maths
+// wraps, so a map may legitimately straddle +-32768: RAQUIA2's content runs
+// over y = [20480, 32767] and [-32768, -26112], one continuous area in the
+// original. Read as plain int16 it splits in two and its boundary walls become
+// ~64,000 units long. Found by the oracle survey, 2026-10-01.
+//
+// Per axis: find the largest empty gap on the 16-bit circle. If it is NOT the
+// one that already contains the wrap point, shift every coordinate so the gap
+// sits at the wrap, by a multiple of 2048 so world-anchored flats keep their
+// alignment (2048 is a multiple of every texture period: <= 256 texels at
+// <= 8 units). Maps that do not wrap are untouched.
+//
+//==========================================================================
+
+static int WrapShiftFor(std::vector<int> vals)
+{
+	if (vals.size() < 2) return 0;
+	std::sort(vals.begin(), vals.end());
+	vals.erase(std::unique(vals.begin(), vals.end()), vals.end());
+	// gaps between neighbours, plus the gap that crosses +-32768
+	int bestGap = (vals.front() + 65536) - vals.back();   // the wrap gap
+	int bestLo = vals.back();
+	bool wrapIsBest = true;
+	for (size_t i = 1; i < vals.size(); i++)
+	{
+		const int g = vals[i] - vals[i - 1];
+		if (g > bestGap) { bestGap = g; bestLo = vals[i - 1]; wrapIsBest = false; }
+	}
+	if (wrapIsBest) return 0;
+	// content starts just above the gap and runs (65536 - gap) round the circle;
+	// move its centre to 0
+	const int start = bestLo + bestGap;
+	const int span = 65536 - bestGap;
+	int centre = start + span / 2;
+	int shift = -centre;
+	shift = (int)((shift >= 0 ? shift + 1024 : shift - 1024) / 2048) * 2048;
+	return shift;
+}
+
+static int16_t Wrap16(int v, int shift)
+{
+	return (int16_t)(uint16_t)((v + shift) & 0xFFFF);
+}
+
+void RecentreWrappedMap(Map &map)
+{
+	std::vector<int> xs, ys;
+	for (const Vertex &v : map.vertices) { xs.push_back(v.x); ys.push_back(v.y); }
+	const int sx = WrapShiftFor(xs), sy = WrapShiftFor(ys);
+	map.wrapShiftX = sx;
+	map.wrapShiftY = sy;
+	if (sx == 0 && sy == 0) return;
+	for (Vertex &v : map.vertices) { v.x = Wrap16(v.x, sx); v.y = Wrap16(v.y, sy); }
+	for (auto &group : map.objects)
+		for (Object &o : group) { o.x = Wrap16(o.x, sx); o.y = Wrap16(o.y, sy); }
+	map.metadata.startX = Wrap16(map.metadata.startX, sx);
+	map.metadata.startY = Wrap16(map.metadata.startY, sy);
 }
 
 Map ParseRaw(const uint8_t *data, size_t size)
@@ -503,6 +567,8 @@ Map ParseRaw(const uint8_t *data, size_t size)
 
 	if (r.Bad())
 		map.error = "truncated file";
+	else
+		RecentreWrappedMap(map);
 	return map;
 }
 

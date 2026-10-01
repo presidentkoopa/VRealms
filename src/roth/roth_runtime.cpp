@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "g_levellocals.h"
+#include "p_3dfloors.h"
 #include "g_level.h"
 #include "gamedata/g_mapinfo.h"
 #include "p_spec.h"
@@ -235,6 +236,7 @@ struct Runtime
 
 	// Realms sector -> the engine sector holding its mid-platform's two planes.
 	std::map<int, int> platformCtrl;
+	std::map<int, std::vector<int>> lightFollowers;
 
 	// Realms FLAT index -> the engine texture, and whether the index is the
 	// pack's sky marker. See RegisterFlat.
@@ -904,6 +906,41 @@ static std::vector<int> CollectGeometryGroup(uint16_t key, bool connected)
 //
 //==========================================================================
 
+// The engine-side lightlevel for a Realms light byte. Under Realms shading the
+// shader reads the byte itself (R_RothShade); otherwise the old Build mapping.
+static short EngineLight(uint8_t light, int shadeShift)
+{
+	if (g.level != nullptr && g.level->RothLighting) return (short)light;
+	const int rows = 39 + ((int)light - 128);
+	const int ll = rows <= 0 ? 0
+		: int((255.0 * double(rows) * double(1 << shadeShift)) / 1984.0 + 0.5);
+	return (short)clamp<int>(ll, 0, 255);
+}
+
+// Push a Realms sector's light byte and lights-out bit to its engine sector
+// and to every engine sector registered as following it.
+static void SyncSectorLight(int si)
+{
+	if (g.level == nullptr || si < 0 || (size_t)si >= g.map.sectors.size()) return;
+	const Sector &rs = g.map.sectors[si];
+	const short ll = EngineLight(rs.light, g.level->ShadeFalloffShift);
+	const uint8_t lantern = (g.level->RothLighting && (rs.flags & 2)) ? 1 : 0;
+	auto apply = [&](int es)
+	{
+		if (es < 0 || (size_t)es >= g.level->sectors.Size()) return;
+		sector_t &sec = g.level->sectors[es];
+		const bool changed = sec.Colormap.Desaturation != lantern;
+		sec.lightlevel = ll;
+		sec.Colormap.Desaturation = lantern;
+		// 3D-floor light lists hold a COPY of the colormap (p_3dfloors.cpp:464),
+		// so a changed lantern bit must be pushed into them explicitly.
+		if (changed && sec.e != nullptr) P_RecalculateAttachedLights(&sec);
+	};
+	apply(si);
+	auto it = g.lightFollowers.find(si);
+	if (it != g.lightFollowers.end()) for (int es : it->second) apply(es);
+}
+
 static void ApplyLightDelta(const std::vector<int> &sectors, int delta)
 {
 	if (g.level == nullptr || delta == 0) return;
@@ -917,11 +954,7 @@ static void ApplyLightDelta(const std::vector<int> &sectors, int delta)
 
 		rs.light = (uint8_t)clamp<int>((int)rs.light + delta, 0, 255);
 
-		if ((size_t)si >= g.level->sectors.Size()) continue;
-		const int rows = 39 + ((int)rs.light - 128);
-		const int ll = rows <= 0 ? 0
-			: int((255.0 * double(rows) * double(1 << shadeShift)) / 1984.0 + 0.5);
-		g.level->sectors[si].lightlevel = (short)clamp<int>(ll, 0, 255);
+		SyncSectorLight(si);
 	}
 }
 
@@ -1231,6 +1264,10 @@ static void ApplyFlagMask(const std::vector<int> &sectors, uint8_t clear, uint8_
 		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
 		Sector &rs = g.map.sectors[si];
 		rs.flags = (uint8_t)((rs.flags & (uint8_t)~clear) | set);
+		// Bit 0x02 is the "lights out" state, and it is what the renderer
+		// keys the candle (lantern) shading on (renderer.c:9194). Measured
+		// 2026-10-01: STUDY1's opening switches put 139 sectors into it.
+		SyncSectorLight(si);
 	}
 }
 
@@ -1245,11 +1282,7 @@ static void SetSectorLight(int si, int value)
 	if (rs.light == 0) return;                            // authored dark: immune
 
 	rs.light = (uint8_t)clamp<int>(value, 0, 255);
-	if ((size_t)si >= g.level->sectors.Size()) return;
-	const int rows = 39 + ((int)rs.light - 128);
-	const int ll = rows <= 0 ? 0
-		: int((255.0 * double(rows) * double(1 << g.level->ShadeFalloffShift)) / 1984.0 + 0.5);
-	g.level->sectors[si].lightlevel = (short)clamp<int>(ll, 0, 255);
+	SyncSectorLight(si);
 }
 
 //==========================================================================
@@ -2020,6 +2053,7 @@ static void ApplySectorFlat(int si, bool isFloor)
 	sec->SetYScale(which, fe.yScale);
 	sec->SetXOffset(which, fe.xOffset);
 	sec->SetYOffset(which, fe.yOffset);
+	sec->SetAngle(which, DAngle::fromDeg(fe.angle));   // the quarter turn, as at load
 }
 
 //==========================================================================
@@ -2071,14 +2105,40 @@ static void ApplyPlatform(int rothSector)
 	cs->SetTexture(sector_t::ceiling, slabTop.isValid() ? slabTop : FNullTextureID(), false);
 	cs->SetTexture(sector_t::floor,   slabBot.isValid() ? slabBot : FNullTextureID(), false);
 
-	const double topScale = 1.0 / double(1 << ((mp.scales >> 4) & 3));
-	const double undScale = 1.0 / double(1 << ((mp.scales >> 2) & 3));
-	cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
-	cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
-	cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
-	cs->SetYOffset(sector_t::ceiling, double(mp.topShiftY));
-	cs->SetXOffset(sector_t::floor, double(mp.undersideShiftX));
-	cs->SetYOffset(sector_t::floor, double(mp.undersideShiftY));
+	// THROUGH roth_surface, exactly as the loader does (rothmap.cpp, midFlat).
+	// This used to keep its own copy -- a positive 1/2^s scale, raw unscaled
+	// shifts and no quarter turn -- so any script that moved a platform put the
+	// rug and table-top error straight back. No mirrors: a mid-platform's span
+	// setup writes a bare 0x38/0xb8 (renderer.c:9339, :9354).
+	auto opaque256 = [](int index)
+	{
+		auto it = g.flatByIndex.find(index);
+		return it != g.flatByIndex.end() && it->second.opaque256;
+	};
+	auto midFlat = [&](uint16_t texWord, uint8_t s, uint8_t shX, uint8_t shY)
+	{
+		roth::FlatSetup f = {};
+		f.textureWord = texWord;
+		f.scaleBits = s;
+		f.shiftX = shX;
+		f.shiftY = shY;
+		f.opaque256 = opaque256((int)texWord);
+		return roth::FlatToEngine(f);
+	};
+	const roth::FlatEngineSetup top = midFlat(mp.topTexture, (uint8_t)((mp.scales >> 4) & 3),
+		mp.topShiftX, mp.topShiftY);
+	const roth::FlatEngineSetup und = midFlat(mp.undersideTexture, (uint8_t)((mp.scales >> 2) & 3),
+		mp.undersideShiftX, mp.undersideShiftY);
+	cs->SetXScale(sector_t::ceiling, top.xScale);
+	cs->SetYScale(sector_t::ceiling, top.yScale);
+	cs->SetXOffset(sector_t::ceiling, top.xOffset);
+	cs->SetYOffset(sector_t::ceiling, top.yOffset);
+	cs->SetAngle(sector_t::ceiling, DAngle::fromDeg(top.angle));
+	cs->SetXScale(sector_t::floor, und.xScale);
+	cs->SetYScale(sector_t::floor, und.yScale);
+	cs->SetXOffset(sector_t::floor, und.xOffset);
+	cs->SetYOffset(sector_t::floor, und.yOffset);
+	cs->SetAngle(sector_t::floor, DAngle::fromDeg(und.angle));
 }
 
 //==========================================================================
@@ -3139,6 +3199,50 @@ void ApplyPendingWarp()
 
 //==========================================================================
 
+//==========================================================================
+//
+// The load-time init pass for light switches -- tick_cmd_45 (raw_commands.c:
+// 1875), reached for every record of type 0x02 from the per-type init table
+// at 0x30998 (map_load.c:1086, init_loaded_object_table pass 2).
+//
+// This is how a map starts with its lights OFF. An armed switch (byte[rec+6]
+// & 0x20) floods its connected group from word[rec+0x0a], applies its delta
+// byte[rec+7] once, flips its own state, and when finalize-flagged writes the
+// lights-out bit 0x02 into every sector it reached -- the bit the renderer
+// keys the candle shading on. Measured 2026-10-01: STUDY1 runs three of these
+// before the first frame (-15, -15, -10), darkening 139 sectors including
+// the study itself.
+//
+// First visit only in the original (g@0x89f5c == 0); REMAROTH has no revisit
+// state yet, so every load is a first visit.
+//
+//==========================================================================
+
+static void InitLightSwitchesAtLoad()
+{
+	for (Command &c : g.map.commands)
+	{
+		if ((c.opcode & 0x7f) != 0x02) continue;
+		c.SetByte(0x0C, 0);
+		if (!(c.fireFlags & 0x20)) continue;
+		c.fireFlags = (uint8_t)(c.fireFlags - 0x20);
+		c.SetByte(0x06, c.fireFlags);
+		const std::vector<int> group = CollectGeometryGroup(c.aux, true);
+		if (!group.empty())
+		{
+			const int8_t delta = (int8_t)c.subFlags;
+			ApplyLightDelta(group, delta);
+			c.fireFlags ^= 0x08;
+			c.SetByte(0x06, c.fireFlags);
+			c.modifier ^= 0x02;
+			if (c.fireFlags & 0x80)
+				ApplyFlagMask(group, (delta & 0x80) ? 0 : 2, (delta & 0x80) ? 2 : 0);
+		}
+		c.modifier &= 0xde;
+		SyncDisabled(&c);
+	}
+}
+
 void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 {
 	// NOT EndLevel() here: the loader registers its face-to-sidedef pairing and
@@ -3202,6 +3306,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		}
 	}
 
+	InitLightSwitchesAtLoad();
+
 	// Translate the face bindings into sidedef bindings now, so activation is a
 	// single lookup rather than a search.
 	for (auto &kv : g.byFace)
@@ -3254,6 +3360,7 @@ void EndLevel()
 	g.active = false;
 	g.level = nullptr;
 	g.platformCtrl.clear();
+	g.lightFollowers.clear();
 	g.flatByIndex.clear();
 	g.effects.clear();
 	g.texByIndex.clear();
@@ -3297,6 +3404,11 @@ void RegisterTexture(int rothIndex, FTextureID tex)
 void RegisterFlat(int rothIndex, FTextureID tex, bool isSky, bool opaque256)
 {
 	if (rothIndex >= 0) g.flatByIndex[rothIndex] = Runtime::FlatReg{ tex, isSky, opaque256 };
+}
+
+void RegisterLightFollower(int rothSector, int engineSector)
+{
+	if (rothSector >= 0 && engineSector >= 0) g.lightFollowers[rothSector].push_back(engineSector);
 }
 
 void RegisterPlatformControl(int rothSector, int ctrlSector)

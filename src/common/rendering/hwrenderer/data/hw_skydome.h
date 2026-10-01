@@ -119,9 +119,13 @@ public:
 	// already gets.
 	struct BandSky
 	{
-		bool active = false;
-		float pitch = 0.f;   // the viewer pitch to cancel, degrees
-		float yaw = 0.f;     // the viewer yaw, naming the axis, degrees
+		bool active;
+		float pitch;   // the viewer pitch to cancel, degrees
+		float yaw;     // the viewer yaw, naming the axis, degrees
+		// A constructor rather than member initializers: GCC rejects a default
+		// argument (`= BandSky()` below) that needs a nested class's member
+		// initializers before the enclosing class is complete. MSVC allows it.
+		BandSky() : active(false), pitch(0.f), yaw(0.f) {}
 	};
 
 	FSkyVertexBuffer();

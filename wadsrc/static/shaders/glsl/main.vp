@@ -22,6 +22,9 @@ layout(location = 2) in vec4 aColor;
 layout(location = 0) out vec4 vTexCoord;
 layout(location = 1) out vec4 vColor;
 layout(location = 9) out vec3 vLightmap;
+// Realms candle ROW (clamped), evaluated per VERTEX and interpolated screen-linear, as
+// the original's span drivers do (see R_RothShade in main.fp).
+layout(location = 10) noperspective out float vRothE;
 
 #ifndef SIMPLE	// we do not need these for simple shaders
 layout(location = 3) in vec4 aVertex2;
@@ -73,6 +76,41 @@ void main()
 	#endif
 
 	vec4 eyeCoordPos = ViewMatrix * worldcoord;
+
+	{
+		// The Realms candle row, per VERTEX, clamped per vertex, then
+		// interpolated screen-linear -- what project_floorceil_edge_texcoord
+		// (0x3b724) and wd_project (0x38c46) do. See R_RothShade in main.fp.
+		// Harmless outside Realms lantern sectors: only those read it.
+		int pk = int(uGlobVis + 0.5);
+		int Ll = (pk >> 2) & 3;
+		int E  = ((pk >> 4) & 127) - 64;
+		float jx = float(((pk >> 11) & 31) - 16) / 256.0;
+		float jy = float(((pk >> 16) & 31) - 16) / 256.0;
+		vec3 fwd3 = -vec3(ViewMatrix[0][2], ViewMatrix[1][2], ViewMatrix[2][2]);
+		vec2 fh = fwd3.xz;
+		float fl = length(fh);
+		fh = fl > 1e-4 ? fh / fl : vec2(1.0, 0.0);
+		vec3 d = worldcoord.xyz - uCameraPos.xyz;
+		float Z = max(dot(d.xz, fh), 16.0);
+		float tx = (d.x * fh.y - d.z * fh.x) / Z;
+		float ty = clamp(d.y / Z, -240.0 / 355.06, 240.0 / 355.06);
+		// A FLAT is clipped to the view before its corners are evaluated, so
+		// an off-screen corner lands on the screen edge. A WALL is not: only
+		// its Y is clamped to the view band, its X stays where it projects --
+		// which is why a wall that runs off the side of the screen goes dark
+		// across its whole width (the study's left bay window, 2026-10-01).
+		vec3 nrm = bones.Normal;
+		bool isWall = dot(nrm, nrm) > 0.25 && abs(nrm.y) < 0.7 * length(nrm);
+		if (!isWall) tx = clamp(tx, -320.0 / 309.77, 320.0 / 309.77);
+		float e = Z + 1024.0 * max(abs(tx - jx), abs(ty - jy));
+		int lb = int(uLightLevel * 255.0 + 0.5);
+		int off = lb - 128;
+		float row = e / float(32 << Ll) - float(8 + off) - float(E);
+		if (isWall) row = min(row, float(32 - (max(off + 4, 0) >> 2)));
+		vRothE = clamp(row, 1.0, 31.99);
+		if (((pk >> 21) & 7) == 4) vRothE = isWall ? 31.0 : (dot(nrm, nrm) > 0.25 ? 16.0 : 1.0);	// debug: wall / flat / no normal
+	}
 
 	#ifdef HAS_UNIFORM_VERTEX_DATA
 		if ((useVertexData & 1) == 0)

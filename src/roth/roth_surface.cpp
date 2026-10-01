@@ -10,6 +10,8 @@
 
 #include "roth_surface.h"
 
+#include <math.h>
+
 namespace roth
 {
 
@@ -121,52 +123,65 @@ FlatEngineSetup FlatToEngine(const FlatSetup &s)
 	FlatEngineSetup e;
 	const double upt = FlatUnitsPerTexel(s);
 
-	// Solve the engine's own formula for our rule.
+	// THE ENGINE, AS IT REALLY IS (hw_flats.cpp:68-98, hw_vertexbuilder.cpp:176):
 	//
-	//   engine:  col = xScale * ( x + xOffset)
-	//   want:    col = -x/upt + shiftTexelsX
-	//     => xScale  = -1/upt
-	//        xOffset = -shiftTexelsX * upt
+	//     (u0, v0) = (x/64, -y/64)
+	//     tc       = scale(S) * translate(Offs/D) * scale(64/D) * rotate(-angle) * (u0, v0)
 	//
-	//   engine:  row = yScale * (-y + yOffset)
-	//   want:    row = +y/upt - shiftTexelsY
-	//     => yScale  = -1/upt
-	//        yOffset = +shiftTexelsY * upt
+	// with D the texture's DISPLAY size. In texels that is
 	//
-	// BOTH SCALES COME OUT NEGATIVE. That is not a slip: the engine's v axis is
-	// already negated at the vertex (v0 = -y/64), so matching ROTH's +y needs a
-	// second negation, and ROTH's -x needs one of its own. The loader currently
-	// uses +1/upt for both, which mirrors every flat on both axes.
-	e.xScale = -1.0 / upt;
-	e.yScale = -1.0 / upt;
-	e.xOffset = -ShiftTexels(s, s.shiftX) * upt;
-	e.yOffset = +ShiftTexels(s, s.shiftY) * upt;
-
-	// A mirror flips the axis about the world origin: col -> -col. In this
-	// encoding col = A*(x + B), so -col = (-A)*(x + B) -- the SCALE negates and
-	// the OFFSET DOES NOT. The shift term still ends up negated, because it
-	// rides on A.
+	//     u = S.X * ( Offs.X + R.u )      R = rotate(-angle) * (x, -y)
+	//     v = S.Y * ( Offs.Y + R.v )
 	//
-	// Negating both, which is the obvious-looking thing to write and which the
-	// first draft of this function did, cancels the shift's negation and leaves
-	// the mirrored copy a shift off. The round-trip test catches exactly that.
-	if (s.mirrorX) e.xScale = -e.xScale;
-	if (s.mirrorY) e.yScale = -e.yScale;
-
+	// and, because of the quarter turn in roth_texture.cpp, u indexes the
+	// image's STORED ROW and v its STORED COLUMN (display width = stored H).
+	//
+	// angle = 270  ->  rotate(-270) = rotate(90)  ->  R.u = +y, R.v = +x.
+	//
+	//   want  row = my * ( +y/upt - shY )       (my = -1 when mirrored)
+	//     u = S.X*(Offs.X + y)  =>  S.X = my/upt,   Offs.X = -shY*upt
+	//   want  col = mx * ( -x/upt + shX )
+	//     v = S.Y*(Offs.Y + x)  =>  S.Y = -mx/upt,  Offs.Y = -shX*upt
+	//
+	// A mirror flips only the SCALE: the offset rides inside the bracket, so the
+	// shift is negated with the axis -- which is what the oracle measured
+	// (LRINTH1 sector 210: mirrorX, shift 64 -> col = +x/2 + 192 on a 256 image).
+	const double mx = s.mirrorX ? -1.0 : 1.0;
+	const double my = s.mirrorY ? -1.0 : 1.0;
+	e.angle   = 270.0;
+	e.xScale  = my / upt;
+	e.yScale  = -mx / upt;
+	e.xOffset = -ShiftTexels(s, s.shiftY) * upt;
+	e.yOffset = -ShiftTexels(s, s.shiftX) * upt;
 	return e;
 }
 
 Texel EngineTexel(const FlatEngineSetup &e, uint16_t texW, uint16_t texH,
 	int32_t worldX, int32_t worldY)
 {
+	// A model of the GZDoom flat path WITH the quarter-turned texture, written
+	// from the engine's matrix rather than from FlatToEngine's algebra, so the
+	// round-trip test compares two independent things.
 	Texel t;
 	t.ok = false;
 	t.col = 0;
 	t.row = 0;
 	if (texW == 0 || texH == 0) return t;
 
-	t.col = WrapTo(e.xScale * ((double)worldX + e.xOffset), texW);
-	t.row = WrapTo(e.yScale * (-(double)worldY + e.yOffset), texH);
+	const double PI = 3.14159265358979323846;
+	const double th = -e.angle * PI / 180.0;
+	const double c = cos(th), sn = sin(th);
+	const double u0 = (double)worldX, v0 = -(double)worldY;      // x64 cancels below
+	const double ru = u0 * c - v0 * sn;
+	const double rv = u0 * sn + v0 * c;
+	const double u = e.xScale * (e.xOffset + ru);   // texels along the display width  = stored rows
+	const double v = e.yScale * (e.yOffset + rv);   // texels along the display height = stored cols
+
+	// Round the rotation's float dust away before flooring: cos(90) is not 0.
+	const double ur = floor(u * 4096.0 + 0.5) / 4096.0;
+	const double vr = floor(v * 4096.0 + 0.5) / 4096.0;
+	t.row = WrapTo(ur, texH);
+	t.col = WrapTo(vr, texW);
 	t.ok = true;
 	return t;
 }
