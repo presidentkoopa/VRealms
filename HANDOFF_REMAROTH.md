@@ -541,32 +541,33 @@ scale, shift and mirror — which is the entire live problem.
 - **`+exec` runs before `map`** — `map` is deferred, `exec` is not. A `quit` in
   an exec script fires at startup. `roth_diff.cpp` queues console-requested
   captures until a level exists, drained from `P_Ticker`.
-- **LNK1103 "debugging information corrupt" — SUSPECT THE CODE, NOT THE BUILD.**
-
-  This note has now been wrong twice, so here is the whole history rather than
-  another confident rule:
-
-  1. It first prescribed deleting `doomxr.iobj` / `doomxr.ipdb` and the
-     offending `.obj`. That sometimes worked.
-  2. On 2026-09-29 it was rewritten to blame a parallel-build PDB race, because
-     dropping `-m` fixed it that day.
-  3. On 2026-10-01 a **clean serial rebuild failed anyway**, repeatedly, on one
-     object (`rothmap.obj`), while 627 others linked. Killing `mspdbsrv`,
-     clearing every object and every PDB, and rebuilding from scratch did not
-     help.
-
-  **It was a specific construct in that one translation unit.** The file had
-  been edited to set a cvar with `FindCVar()` + `SetGenericRep()`. Rewriting
-  that as an `EXTERN_CVAR` declaration and a direct assignment — the idiomatic
-  form — linked first try with no other change.
-
-  So: when one object fails and the rest link, **bisect the source of that
-  object** before touching the build. A serial build (no `-m`) is still
-  advisable and still cheap:
+- **LNK1103 "debugging information corrupt" = DELETE `doomxr.iobj`.**
 
   ```
-  cmake --build . --config RelWithDebInfo --target zdoom -- -verbosity:minimal
+  del build-dxr\src\zdoom.dir\RelWithDebInfo\doomxr.iobj
+  del build-dxr\src\zdoom.dir\RelWithDebInfo\doomxr.ipdb
   ```
+
+  That is the INCREMENTAL LTCG CACHE, and when it goes stale the linker rejects
+  a freshly compiled object. The tell is in the build log, just above the error:
+
+  ```
+  1 of 123325 functions (<0.1%) were compiled, the rest were copied from
+  previous compilation.
+  ```
+
+  It is 1.45 GB, it lives in `zdoom.dir` beside the objects rather than in the
+  output directory, and **it survives a "clean" that only removes `*.obj`,
+  `*.pdb` and `*.idb`** — which is why this note was wrong twice and cost most
+  of 2026-10-01. Earlier editions blamed, in order: leftover `doomxr.iobj` in
+  the *output* directory (right file, wrong directory), a parallel-build PDB
+  race, and a bad code construct in one translation unit. The last of those came
+  from `rothmap.cpp` appearing to be fixed by rewriting a `FindCVar` call;
+  almost certainly that edit just perturbed enough code to invalidate the cache.
+
+  A serial build (no `-m`) is still worth having for legibility, but it is not
+  the fix.
+
 - **The Debug output directory has no DLLs.** `openvr_api.dll`,
   `openxr_loader.dll`, `zmusic.dll`, `OpenAL32.dll` only sit beside
   RelWithDebInfo. Build RelWithDebInfo, or copy them.
@@ -608,23 +609,31 @@ Done, and struck out rather than deleted so nobody re-opens them:
 - ~~Paletted rendering and the shade table~~ — 2026-10-01, `roth_palshade`.
 - ~~The lighting model~~ — 2026-10-01, verified 2943/2943 vertices.
 - ~~The vertical projection~~ — 2026-10-01 (§5).
+- ~~Colour-key walls~~ — 2026-10-01. 1,778 wall pieces across the 44 maps that
+  drew artwork over the original's openings now draw nothing.
+- ~~The sky~~ — 2026-10-01. A world-locked cylinder, `r_skyband`. The zenith
+  disc is gone and the drift measures 0.88-0.94x world-locked. NOT yet compared
+  against an oracle frame, so the texture's orientation and the exact vertical
+  placement are unconfirmed.
 
 Outstanding, in the order to do them:
 
-1. **Colour-key ceilings** (§5). Smallest. The three-way test is already in
-   `roth_surface`; it is simply not wired for ceilings and walls. Black
-   side-aisle ceilings are this.
-2. **The sky** (§4.4). Most visible. Spec settled: a screen-space strip, no
-   pitch term, pitch clamped to the original's shear range.
-3. **Sprite size and vertical placement** (`ROTH_SURFACES_FIX.md` §3.4). The
+1. **Sprite size and vertical placement** (`ROTH_SURFACES_FIX.md` §3.4). The
    owner's "those pillars are too tall". Measure against the oracle before
    implementing — the documented rule, applied as written, sinks 68 of STUDY1's
    props through the floor they are standing on.
-4. **The remaining lighting terms** (§4.5) — muzzle flash, object light bytes,
+2. **The remaining lighting terms** (§4.5) — muzzle flash, object light bytes,
    the glow table, tint ramp selection.
-5. **Doors** (§4.8). The only item that blocks *playing* rather than looking.
+3. **Doors** (§4.8). The only item that blocks *playing* rather than looking.
    Needs a mechanism other than polyobjects.
-6. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
+4. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
+
+**Before building any of 1-3, re-derive the rule.** All three were extracted
+from ROTH.C on 2026-10-01 and all three were REFUTED by an independent reader:
+the sprite spec had the two face-list passes exactly backwards (the §2 trap),
+the lighting spec parsed the Sector record at a 24-byte stride when it is 26,
+and the doors spec had the hinge corner ordering inverted. Treat any numbers
+circulating on those three as unsafe.
 
 ---
 
