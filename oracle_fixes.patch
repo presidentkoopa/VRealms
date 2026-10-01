@@ -1,0 +1,383 @@
+--- a/src/roth/roth_surface.h	2026-10-01 01:01:53.288432570 -0400
++++ b/src/roth/roth_surface.h	2026-10-01 01:08:19.391616323 -0400
+@@ -109,9 +109,11 @@
+ // 256x256 images keep the normal rule. This is what makes the s=2 ceiling land
+ // on 2 units per texel alongside the s=1 floors.
+ //
+-// THE TWO SIGNS (-x, +y) ARE [derived], not read directly: they come from a
+-// derivation in which the camera terms cancel. They are implemented here so the
+-// static test can check them, and MUST NOT be treated as settled until it has.
++// THE TWO SIGNS (-x, +y) are MEASURED (oracle, 2026-10-01): ROTH.C was made to
++// paint every texel with its own coordinates and the frame was decoded per
++// pixel against the map. Every flat in view on STUDY1 and LRINTH1 fits this
++// formula, including 256x256 opaque ceilings at s=1 and s=2 and mirrored floors
++// on both axes.
+ Texel FlatTexel(const FlatSetup &s, int32_t worldX, int32_t worldY, uint16_t colourKey);
+ 
+ // World units per texel for a flat. Split out because the loader needs it on
+@@ -143,15 +145,30 @@
+ // Offsets are therefore in WORLD units and are scaled afterwards; getting that
+ // backwards silently halves or doubles every shift.
+ //
++// THE QUARTER TURN (measured 2026-10-01, ROTH.C oracle). roth_texture.cpp
++// registers every world texture -- flats included -- with its dimensions
++// exchanged and its bytes declared column-major, so the GZDoom texture's u axis
++// runs along the image's STORED ROWS and its v axis along STORED COLUMNS. ROTH
++// samples a flat in stored layout with the row on +y and the column on -x. The
++// two only line up if the plane is turned a quarter: angle 270 makes the
++// engine's u follow world +y and its v follow world +x, and the scales/offsets
++// are then solved against THOSE axes. Without the turn every flat in the game
++// is drawn transposed (rotated 90 degrees and mirrored), which no encoding test
++// that models the engine without the quarter turn can see.
++//
+ // NOTE what is proven and what is not. The static test proves this ENCODING is
+ // faithful -- that the engine, given these numbers, samples exactly what
+ // FlatTexel says. Whether FlatTexel's own two signs are right is a separate
+-// question, still [derived], answered only by comparing against the oracle.
++// question -- ANSWERED 2026-10-01: the oracle (ROTH.C painting texel codes,
++// read back per pixel) confirms -x / +y, the 2^s scale, the 256x256 opaque
++// exception, the half-texel shift and both mirrors including their shift, on
++// STUDY1 and LRINTH1. See REMAROTH_ORACLE_RESULTS.md.
+ // ---------------------------------------------------------------------------
+ struct FlatEngineSetup
+ {
+ 	double xScale, yScale;     // sector_t::SetXScale / SetYScale
+ 	double xOffset, yOffset;   // sector_t::SetXOffset / SetYOffset, world units
++	double angle;              // sector_t::SetAngle, DEGREES. Always 270: see below.
+ };
+ 
+ FlatEngineSetup FlatToEngine(const FlatSetup &s);
+--- a/src/roth/roth_surface.cpp	2026-10-01 01:01:53.188432564 -0400
++++ b/src/roth/roth_surface.cpp	2026-10-01 01:08:19.392050641 -0400
+@@ -10,6 +10,8 @@
+ 
+ #include "roth_surface.h"
+ 
++#include <math.h>
++
+ namespace roth
+ {
+ 
+@@ -121,52 +123,65 @@
+ 	FlatEngineSetup e;
+ 	const double upt = FlatUnitsPerTexel(s);
+ 
+-	// Solve the engine's own formula for our rule.
++	// THE ENGINE, AS IT REALLY IS (hw_flats.cpp:68-98, hw_vertexbuilder.cpp:176):
+ 	//
+-	//   engine:  col = xScale * ( x + xOffset)
+-	//   want:    col = -x/upt + shiftTexelsX
+-	//     => xScale  = -1/upt
+-	//        xOffset = -shiftTexelsX * upt
+-	//
+-	//   engine:  row = yScale * (-y + yOffset)
+-	//   want:    row = +y/upt - shiftTexelsY
+-	//     => yScale  = -1/upt
+-	//        yOffset = +shiftTexelsY * upt
+-	//
+-	// BOTH SCALES COME OUT NEGATIVE. That is not a slip: the engine's v axis is
+-	// already negated at the vertex (v0 = -y/64), so matching ROTH's +y needs a
+-	// second negation, and ROTH's -x needs one of its own. The loader currently
+-	// uses +1/upt for both, which mirrors every flat on both axes.
+-	e.xScale = -1.0 / upt;
+-	e.yScale = -1.0 / upt;
+-	e.xOffset = -ShiftTexels(s, s.shiftX) * upt;
+-	e.yOffset = +ShiftTexels(s, s.shiftY) * upt;
+-
+-	// A mirror flips the axis about the world origin: col -> -col. In this
+-	// encoding col = A*(x + B), so -col = (-A)*(x + B) -- the SCALE negates and
+-	// the OFFSET DOES NOT. The shift term still ends up negated, because it
+-	// rides on A.
+-	//
+-	// Negating both, which is the obvious-looking thing to write and which the
+-	// first draft of this function did, cancels the shift's negation and leaves
+-	// the mirrored copy a shift off. The round-trip test catches exactly that.
+-	if (s.mirrorX) e.xScale = -e.xScale;
+-	if (s.mirrorY) e.yScale = -e.yScale;
+-
++	//     (u0, v0) = (x/64, -y/64)
++	//     tc       = scale(S) * translate(Offs/D) * scale(64/D) * rotate(-angle) * (u0, v0)
++	//
++	// with D the texture's DISPLAY size. In texels that is
++	//
++	//     u = S.X * ( Offs.X + R.u )      R = rotate(-angle) * (x, -y)
++	//     v = S.Y * ( Offs.Y + R.v )
++	//
++	// and, because of the quarter turn in roth_texture.cpp, u indexes the
++	// image's STORED ROW and v its STORED COLUMN (display width = stored H).
++	//
++	// angle = 270  ->  rotate(-270) = rotate(90)  ->  R.u = +y, R.v = +x.
++	//
++	//   want  row = my * ( +y/upt - shY )       (my = -1 when mirrored)
++	//     u = S.X*(Offs.X + y)  =>  S.X = my/upt,   Offs.X = -shY*upt
++	//   want  col = mx * ( -x/upt + shX )
++	//     v = S.Y*(Offs.Y + x)  =>  S.Y = -mx/upt,  Offs.Y = -shX*upt
++	//
++	// A mirror flips only the SCALE: the offset rides inside the bracket, so the
++	// shift is negated with the axis -- which is what the oracle measured
++	// (LRINTH1 sector 210: mirrorX, shift 64 -> col = +x/2 + 192 on a 256 image).
++	const double mx = s.mirrorX ? -1.0 : 1.0;
++	const double my = s.mirrorY ? -1.0 : 1.0;
++	e.angle   = 270.0;
++	e.xScale  = my / upt;
++	e.yScale  = -mx / upt;
++	e.xOffset = -ShiftTexels(s, s.shiftY) * upt;
++	e.yOffset = -ShiftTexels(s, s.shiftX) * upt;
+ 	return e;
+ }
+ 
+ Texel EngineTexel(const FlatEngineSetup &e, uint16_t texW, uint16_t texH,
+ 	int32_t worldX, int32_t worldY)
+ {
++	// A model of the GZDoom flat path WITH the quarter-turned texture, written
++	// from the engine's matrix rather than from FlatToEngine's algebra, so the
++	// round-trip test compares two independent things.
+ 	Texel t;
+ 	t.ok = false;
+ 	t.col = 0;
+ 	t.row = 0;
+ 	if (texW == 0 || texH == 0) return t;
+ 
+-	t.col = WrapTo(e.xScale * ((double)worldX + e.xOffset), texW);
+-	t.row = WrapTo(e.yScale * (-(double)worldY + e.yOffset), texH);
++	const double PI = 3.14159265358979323846;
++	const double th = -e.angle * PI / 180.0;
++	const double c = cos(th), sn = sin(th);
++	const double u0 = (double)worldX, v0 = -(double)worldY;      // x64 cancels below
++	const double ru = u0 * c - v0 * sn;
++	const double rv = u0 * sn + v0 * c;
++	const double u = e.xScale * (e.xOffset + ru);   // texels along the display width  = stored rows
++	const double v = e.yScale * (e.yOffset + rv);   // texels along the display height = stored cols
++
++	// Round the rotation's float dust away before flooring: cos(90) is not 0.
++	const double ur = floor(u * 4096.0 + 0.5) / 4096.0;
++	const double vr = floor(v * 4096.0 + 0.5) / 4096.0;
++	t.row = WrapTo(ur, texH);
++	t.col = WrapTo(vr, texW);
+ 	t.ok = true;
+ 	return t;
+ }
+--- a/src/maploader/rothmap.cpp	2026-10-01 01:01:52.732432537 -0400
++++ b/src/maploader/rothmap.cpp	2026-10-01 01:30:33.395619831 -0400
+@@ -571,6 +571,10 @@
+ 			sec->SetYScale(which, fe.yScale);
+ 			sec->SetXOffset(which, fe.xOffset);
+ 			sec->SetYOffset(which, fe.yOffset);
++			// The quarter turn. The texture is registered turned (roth_texture.cpp),
++			// so the plane must be turned too or the flat draws transposed. See
++			// roth_surface.h, FlatEngineSetup::angle.
++			sec->SetAngle(which, DAngle::fromDeg(fe.angle));
+ 		}
+ 
+ 		//------------------------------------------------------------------
+@@ -840,7 +844,14 @@
+ 			const double baseScale = 1. / unitsPerTexel;
+ 
+ 			double scaleX = baseScale;
+-			const double stored = double(tm->StoredExtent());
++			double stored = double(tm->StoredExtent());
++			// The extended record keeps only 12 bits of the extent. Across all 44
++			// maps every visible wall's stored extent equals its length modulo
++			// that field (oracle survey, 2026-10-01): RAQUIA4 has two 6080- and
++			// 6144-long walls stored as 1984 and 2048. Restore the lost high bits
++			// rather than drawing those walls three times too wide.
++			if (tm->extended && stored > 0. && wallLen > 4096.)
++				stored += 4096. * floor((wallLen - stored) / 4096. + 0.5);
+ 			if (imageFit)
+ 			{
+ 				imageFitFaces++;
+@@ -1009,7 +1020,16 @@
+ 					{
+ 						// sy is texels-per-world-unit for this part, so the
+ 						// piece is pieceHeight * sy texels tall.
+-						pieceOffY += pieceHeight * sy - texH;
++						//
++						// MEASURED (oracle, SALVAT face 14208, 100% of 248k
++						// pixels): texel = W - (z - bottom)/2 - shiftY, i.e. the
++						// art's bottom row on the piece's bottom edge. In Doom
++						// terms, from the top anchor, that is a row offset of
++						// +(texH - pieceHeight*sy). This line used to have the
++						// sign the other way round, which misplaced every
++						// DRAW_FROM_BOTTOM wall whose height is not a whole
++						// number of copies (483 faces, mostly SALVAT/DOMINION).
++						pieceOffY += texH - pieceHeight * sy;
+ 						pinBottomFaces++;
+ 					}
+ 				}
+@@ -1266,6 +1286,8 @@
+ 			cs->SetYScale(sector_t::floor, und.yScale);
+ 			cs->SetXOffset(sector_t::floor, und.xOffset);
+ 			cs->SetYOffset(sector_t::floor, und.yOffset);
++			cs->SetAngle(sector_t::ceiling, DAngle::fromDeg(top.angle));
++			cs->SetAngle(sector_t::floor, DAngle::fromDeg(und.angle));
+ 
+ 			// A CLOSED square, parked in the void well outside the map. It has to
+ 			// be closed: the node builder walks every line, and a lone degenerate
+--- a/src/roth/roth_runtime.cpp	2026-10-01 01:01:53.340432573 -0400
++++ b/src/roth/roth_runtime.cpp	2026-10-01 01:09:30.267839612 -0400
+@@ -2020,6 +2020,7 @@
+ 	sec->SetYScale(which, fe.yScale);
+ 	sec->SetXOffset(which, fe.xOffset);
+ 	sec->SetYOffset(which, fe.yOffset);
++	sec->SetAngle(which, DAngle::fromDeg(fe.angle));   // the quarter turn, as at load
+ }
+ 
+ //==========================================================================
+@@ -2071,14 +2072,40 @@
+ 	cs->SetTexture(sector_t::ceiling, slabTop.isValid() ? slabTop : FNullTextureID(), false);
+ 	cs->SetTexture(sector_t::floor,   slabBot.isValid() ? slabBot : FNullTextureID(), false);
+ 
+-	const double topScale = 1.0 / double(1 << ((mp.scales >> 4) & 3));
+-	const double undScale = 1.0 / double(1 << ((mp.scales >> 2) & 3));
+-	cs->SetXScale(sector_t::ceiling, topScale); cs->SetYScale(sector_t::ceiling, topScale);
+-	cs->SetXScale(sector_t::floor, undScale);   cs->SetYScale(sector_t::floor, undScale);
+-	cs->SetXOffset(sector_t::ceiling, double(mp.topShiftX));
+-	cs->SetYOffset(sector_t::ceiling, double(mp.topShiftY));
+-	cs->SetXOffset(sector_t::floor, double(mp.undersideShiftX));
+-	cs->SetYOffset(sector_t::floor, double(mp.undersideShiftY));
++	// THROUGH roth_surface, exactly as the loader does (rothmap.cpp, midFlat).
++	// This used to keep its own copy -- a positive 1/2^s scale, raw unscaled
++	// shifts and no quarter turn -- so any script that moved a platform put the
++	// rug and table-top error straight back. No mirrors: a mid-platform's span
++	// setup writes a bare 0x38/0xb8 (renderer.c:9339, :9354).
++	auto opaque256 = [](int index)
++	{
++		auto it = g.flatByIndex.find(index);
++		return it != g.flatByIndex.end() && it->second.opaque256;
++	};
++	auto midFlat = [&](uint16_t texWord, uint8_t s, uint8_t shX, uint8_t shY)
++	{
++		roth::FlatSetup f = {};
++		f.textureWord = texWord;
++		f.scaleBits = s;
++		f.shiftX = shX;
++		f.shiftY = shY;
++		f.opaque256 = opaque256((int)texWord);
++		return roth::FlatToEngine(f);
++	};
++	const roth::FlatEngineSetup top = midFlat(mp.topTexture, (uint8_t)((mp.scales >> 4) & 3),
++		mp.topShiftX, mp.topShiftY);
++	const roth::FlatEngineSetup und = midFlat(mp.undersideTexture, (uint8_t)((mp.scales >> 2) & 3),
++		mp.undersideShiftX, mp.undersideShiftY);
++	cs->SetXScale(sector_t::ceiling, top.xScale);
++	cs->SetYScale(sector_t::ceiling, top.yScale);
++	cs->SetXOffset(sector_t::ceiling, top.xOffset);
++	cs->SetYOffset(sector_t::ceiling, top.yOffset);
++	cs->SetAngle(sector_t::ceiling, DAngle::fromDeg(top.angle));
++	cs->SetXScale(sector_t::floor, und.xScale);
++	cs->SetYScale(sector_t::floor, und.yScale);
++	cs->SetXOffset(sector_t::floor, und.xOffset);
++	cs->SetYOffset(sector_t::floor, und.yOffset);
++	cs->SetAngle(sector_t::floor, DAngle::fromDeg(und.angle));
+ }
+ 
+ //==========================================================================
+--- a/src/roth/roth_raw.h	2026-10-01 01:47:01.931539540 -0400
++++ b/src/roth/roth_raw.h	2026-10-01 01:46:46.761167691 -0400
+@@ -273,11 +273,17 @@
+ 	// lookup has to survive the parse instead of being a local to it.
+ 	std::unordered_map<uint32_t, int> faceByOffset;
+ 
++	// Applied to every x/y by RecentreWrappedMap (0 unless the map straddles the
++	// 16-bit wrap -- RAQUIA2). Anything converting a coordinate read from the
++	// original's MEMORY back to ours must add these.
++	int wrapShiftX = 0, wrapShiftY = 0;
++
+ 	std::string error;          // empty when Parse succeeded
+ 	bool ok() const { return error.empty(); }
+ };
+ 
+ // Parse a whole .RAW file held in memory.
++void RecentreWrappedMap(Map &map);
+ Map ParseRaw(const uint8_t *data, size_t size);
+ 
+ } // namespace roth
+--- a/src/roth/roth_raw.cpp	2026-10-01 01:47:01.927539539 -0400
++++ b/src/roth/roth_raw.cpp	2026-10-01 01:46:34.425790556 -0400
+@@ -7,6 +7,8 @@
+ 
+ #include "roth_raw.h"
+ 
++#include <algorithm>
++
+ #include <string.h>
+ #include <unordered_map>
+ 
+@@ -86,6 +88,68 @@
+ 	}
+ }
+ 
++
++//==========================================================================
++//
++// WRAP RE-CENTRING. Realms coordinates are 16-bit and the original's maths
++// wraps, so a map may legitimately straddle +-32768: RAQUIA2's content runs
++// over y = [20480, 32767] and [-32768, -26112], one continuous area in the
++// original. Read as plain int16 it splits in two and its boundary walls become
++// ~64,000 units long. Found by the oracle survey, 2026-10-01.
++//
++// Per axis: find the largest empty gap on the 16-bit circle. If it is NOT the
++// one that already contains the wrap point, shift every coordinate so the gap
++// sits at the wrap, by a multiple of 2048 so world-anchored flats keep their
++// alignment (2048 is a multiple of every texture period: <= 256 texels at
++// <= 8 units). Maps that do not wrap are untouched.
++//
++//==========================================================================
++
++static int WrapShiftFor(std::vector<int> vals)
++{
++	if (vals.size() < 2) return 0;
++	std::sort(vals.begin(), vals.end());
++	vals.erase(std::unique(vals.begin(), vals.end()), vals.end());
++	// gaps between neighbours, plus the gap that crosses +-32768
++	int bestGap = (vals.front() + 65536) - vals.back();   // the wrap gap
++	int bestLo = vals.back();
++	bool wrapIsBest = true;
++	for (size_t i = 1; i < vals.size(); i++)
++	{
++		const int g = vals[i] - vals[i - 1];
++		if (g > bestGap) { bestGap = g; bestLo = vals[i - 1]; wrapIsBest = false; }
++	}
++	if (wrapIsBest) return 0;
++	// content starts just above the gap and runs (65536 - gap) round the circle;
++	// move its centre to 0
++	const int start = bestLo + bestGap;
++	const int span = 65536 - bestGap;
++	int centre = start + span / 2;
++	int shift = -centre;
++	shift = (int)((shift >= 0 ? shift + 1024 : shift - 1024) / 2048) * 2048;
++	return shift;
++}
++
++static int16_t Wrap16(int v, int shift)
++{
++	return (int16_t)(uint16_t)((v + shift) & 0xFFFF);
++}
++
++void RecentreWrappedMap(Map &map)
++{
++	std::vector<int> xs, ys;
++	for (const Vertex &v : map.vertices) { xs.push_back(v.x); ys.push_back(v.y); }
++	const int sx = WrapShiftFor(xs), sy = WrapShiftFor(ys);
++	map.wrapShiftX = sx;
++	map.wrapShiftY = sy;
++	if (sx == 0 && sy == 0) return;
++	for (Vertex &v : map.vertices) { v.x = Wrap16(v.x, sx); v.y = Wrap16(v.y, sy); }
++	for (auto &group : map.objects)
++		for (Object &o : group) { o.x = Wrap16(o.x, sx); o.y = Wrap16(o.y, sy); }
++	map.metadata.startX = Wrap16(map.metadata.startX, sx);
++	map.metadata.startY = Wrap16(map.metadata.startY, sy);
++}
++
+ Map ParseRaw(const uint8_t *data, size_t size)
+ {
+ 	Map map;
+@@ -503,6 +567,8 @@
+ 
+ 	if (r.Bad())
+ 		map.error = "truncated file";
++	else
++		RecentreWrappedMap(map);
+ 	return map;
+ }
+ 
