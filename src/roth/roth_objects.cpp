@@ -538,28 +538,53 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		if (info.unitsPerPixel != 2.0) scaled++;
 		if (info.hang) hanging++;
 
-		// THE MODIFIER NIBBLE SHIFT IS READ BUT NOT APPLIED, and that is a
-		// deliberate refusal to follow a reading of ROTH.C that the retail
-		// data contradicts.
+		// THE MODIFIER NIBBLE SHIFT, which this loader refused to apply until
+		// 2026-10-01 on a premise that turned out to be false.
 		//
-		// renderer.c:6552-6556 adds 2 * (modifier & 0xf) world units to the
-		// vertical, downward for a standing picture. Applying it measurably
-		// makes things worse: of STUDY1's 243 drawn objects, 175 have a Z
-		// exactly equal to their own sector's floor height -- they are standing
-		// on the floor, which is plainly the intent -- and 71 carry a non-zero
-		// nibble. Applying the shift sinks 68 of those below the floor they
-		// were sitting on. A prop buried in the floor is not what the original
-		// draws.
+		// renderer.c:7756-7760 and 6553-6555 admit one reading and no other.
+		// For a standing picture (modifier bit 0x10 clear):
 		//
-		// So either the sign is the other way, or the nibble is not an offset,
-		// or the global the original adds beside it ([0x84aba], for which no
-		// writer was found anywhere in ROTH.C) cancels it. Not guessing: it is
-		// counted and left off, and the number is in the load report so the
-		// question stays visible.
+		//     near = base + shift          far = near - height
+		//     => the picture's BOTTOM sits at objZ - shift
+		//
+		// so the shift TRANSLATES the whole picture and does not change its
+		// height, and a standing prop's base really does end up as much as 30
+		// world units below its own Z.
+		//
+		// THE REFUSAL. This used to read: of STUDY1's 243 drawn objects, 175
+		// have a Z exactly equal to their sector's floor height, 71 carry a
+		// non-zero nibble, and applying the shift sinks 68 of those below the
+		// floor they stand on -- "a prop buried in the floor is not what the
+		// original draws". That last sentence is the false half. Three readers
+		// went through the subtree independently and the burial is real in the
+		// original: both alternatives are plainly worse, since flipping the
+		// sign floats every standing prop up to 30 units ABOVE its floor, and
+		// anchoring the top instead buries it by its entire height.
+		//
+		// THE SECOND TERM, still missing. The full shift is
+		//
+		//     shift = (int16)(2 * (modifier & 0x0f) + u16[0x84aba])
+		//
+		// added in 16 bits and then sign-extended. The old comment said no
+		// writer for 0x84aba could be found anywhere; that was a search
+		// artefact -- nothing writes 16 bits there, every write is a 32-BIT
+		// store to 0x84ab8 whose high half lands on it. It is read in exactly
+		// two places, both this shift (renderer.c:6553, :7758), and it comes
+		// from the art entry's own size prefix (FAT flags bit 3 -> dword at
+		// block+4, das_assets.c:601).
+		//
+		// It is ZERO for every one of STUDY1's 243 objects, because DEMO.DAS
+		// has no entry carrying that flag -- which is why leaving it out looked
+		// harmless. It is NOT zero for the shared sprite pack: 321 of ADEMO's
+		// ~550 live entries carry a prefix, with values spanning roughly
+		// -10..130. So shared-pack sprites are still placed wrongly until the
+		// reader exposes it, and that is counted below rather than hidden.
 		if (info.anchorShift != 0.0)
 		{
 			nibbleShift++;
-			if (log) log->Count("objects: artwork nibble vertical shift not applied");
+			// Standing: the bottom drops by the shift. Hanging (IM_HANG): the
+			// picture is anchored by its top, which rises by the same amount.
+			p.z += info.hang ? info.anchorShift : -info.anchorShift;
 		}
 
 		// renderType bit 7: the picture hangs at its own orientation instead of
@@ -835,8 +860,9 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  non-default draw size %d", scaled);
 		log->Count("objects: implausibly large (over 3x the player)", oversized);
 		log->Line("  carrying a light byte %d  (NOT applied yet)", lit);
-		log->Line("  artwork nibble shift  %d  (READ, deliberately NOT applied -- see the"
-			" comment in roth_objects.cpp)", nibbleShift);
+		log->Line("  artwork nibble shift  %d applied  (the 0x84aba second term is"
+			" still missing -- zero on this pack's own art, NOT on shared sprites)",
+			nibbleShift);
 		log->Line("  not spawned           %d  = %d not-drawn flag, %d empty art,"
 			" %d creature, %d directional unresolved, %d no art, %d shared pack missing,"
 			" %d no sprite slot",
