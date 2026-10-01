@@ -98,10 +98,17 @@ tests `& 0x20` before `& 0x200`, and flats carry `0x20`.
 | Mid-platforms (rugs, table tops) | through the same module |
 | Wall horizontal scale | wired 2026-09-28 from the measured rule (see §5) |
 | Lower-wall anchors | explicit offsets, not Doom peg flags |
-| FOV 91.82° | set on the player at load |
-| `pixelratio = 1.0` | room height fixed |
-| Lighting | implemented, on, toggleable with `roth_lighting` |
+| FOV 91.82° horizontal | set on the player at load |
+| Vertical projection | **fixed 2026-10-01.** Realms is NOT square-pixel — see §5 |
+| Lighting | transcribed and verified on **2943 of 2943** vertices, incl. the candle mode |
+| Lights out at load | `InitLightSwitchesAtLoad` reproduces `tick_cmd_45`; 139 sectors in STUDY1, same as the original |
+| Light followers | control sectors under mid-platforms and void sectors behind door leaves track their parent |
+| Furniture bands | `TRANS_UPLO` mid-texture bands; the study chair and ~8000 faces across all maps |
+| Palette shading | `roth_palette_shading`, default on. The original's real 32-row table lookup on the GPU (`roth_palshade`, `func_roth.fp`). Walls and flats; **not sprites yet** |
 | Directional sprites | placed 2026-09-28; frame tables 208/208 offline over 44 maps, 17/17 in STUDY2. **View ORDER unverified** — see §7 |
+
+**Debug views:** `roth_shade_debug` 1 unshaded, 2 light byte, 3 Z, 4 wall/flat
+marker, 5 lantern flag, 6 row, 7 per-pixel row.
 
 ### Key files
 
@@ -134,17 +141,79 @@ offset, flip or anchor. If you find a second copy, that is the bug.
    pillars are too tall"*.
 3. **Colour-key ceilings** — the three-way test exists in `roth_surface` but is
    not wired for ceilings/walls. This is the black side-aisle ceilings.
-4. **The global light term** — see §6.
-5. **Doors** — hinges verified 141/141 across 44 maps; the polyobject build was
+4. **The sky.** Realms paints a flat strip above outdoor-flagged walls, drifting
+   with yaw and never with pitch; we draw GZDoom's dome, which pinches shut into
+   a grey disc overhead. Settled approach: a screen-space quad with no pitch
+   term, pitch clamped to the original's shear range so the zenith is never in
+   view. `ROTH_BETTER.md` §9 settles that the faithful band comes first and a
+   real VR sky is phase 2. The rotated-dome attempt in `6b3d12f` does NOT work
+   and is superseded.
+5. **Lighting, the parts not yet applied** — muzzle-flash brightening, object
+   light bytes (231 in STUDY1), the glow table (face flag 0x40 with the
+   storm/lightning phase counter at `0x8a355`), and tint ramp selection
+   (metadata `+0x16`).
+6. **Palette shading on sprites.** A user shader forces `CLAMP_NONE`, so it
+   needs care before it goes on.
+7. **The rest of the `0x30998` load-time init table** — moving floors and
+   ceilings, geometry effects, re-runs. Only type `0x02` is implemented.
+8. **Doors** — hinges verified 141/141 across 44 maps; the polyobject build was
    reverted (`e1f7ba66ba`) because Realms slabs have two-sided faces and GZDoom
    cannot render two-sided polyobject lines. Nothing opens.
-6. **Level logic handlers** — 1,937 chains parse and execute; no handlers.
-7. **The game layer** — `ROTH_GAME_PORT.md`. Not started.
-8. **A real ROTH.C-vs-REMAROTH comparison.** See §8. This is the big hole.
+9. **Level logic handlers** — 1,937 chains parse and execute; no handlers.
+10. **The game layer** — `ROTH_GAME_PORT.md`. Not started.
+
+### Known discrepancies, not yet explained
+
+- **The left bay window pane in the study.** The original draws it at row 31
+  through mapper 9 (masked, flat colormap); the glass takes one shade value per
+  screen column, maxed across the whole pane. The pane's left edge is clipped by
+  the view bound at x=181. Next step: instrument ROTH.C's wall-corner values —
+  `wd_project` is static in the code ROTH.C was lifted to, so hook
+  `compute_wall_column_source_offset`, or tag the mappers as is already done.
+- **Corridor pose L1** is about 9 rows brighter than the original, and our Z
+  there is about 8% short. Some of that may have been the vertical projection
+  error fixed on 2026-10-01 — worth re-measuring before chasing it as lighting.
 
 ---
 
 ## 5. Rules established from ROTH.C (cite these, don't re-derive)
+
+**THE PROJECTION IS NOT SQUARE-PIXEL.** Realms uses a different focal length
+across and down. Fitted from its own output at 640×480 (`tools/oracle`,
+`flatfit.py`):
+
+```
+FX = 309.77   X0 = 320.48      horizontal FOV 91.9°
+FY = 355.06   Y0 = 240.54      vertical   FOV 68.1°
+EYE = 143.94  (playerZ + 144 = 2 × playerHeight)
+FY / FX = 1.1462
+```
+
+A square-pixel projection at the same horizontal field gives **75.4°** down,
+about 7° too wide — which is what this port drew until 2026-10-01. That is not
+cosmetic: every check here compares one of our frames against one of the
+original's, so a vertical mismatch moves every comparison point to the wrong
+row and reads as a lighting or a surface error when it is neither.
+
+- The horizontal rule (`focal = view width × 0x7c/256`) is confirmed: it
+  predicts 310.00 against the fitted 309.77.
+- **There is no matching constant in the source for the vertical.** `0x8E`
+  (which would give exactly 355) does not appear anywhere, and the aspect term
+  at `render_target_buffer+0x1c` (`renderer.c:12075`) works out to 0.956, so it
+  is not the vertical focal. Two plausible source leads, both dead. Use the
+  measured 1.1462.
+- **Do NOT use MAPINFO `pixelratio` for this.** It scales the view *transform*,
+  and the VR code reads it to convert headset metres to world units
+  (`gl_openvr.cpp:1087`, `:1098`) — setting it silently resizes the world in
+  the headset. It is applied instead to the flat-screen *projection*,
+  `r_view_vstretch` in `hw_entrypoint.cpp`, gated on `!IsVR()` and set per map
+  by `rothmap.cpp`. In VR the lens sets the projection and none of it applies.
+- Verified by rendering one pose before and after: vertical scale **1.1480**
+  measured against 1.1462 asked for, horizontal **1.0000**. A first measurement
+  said 1.193 and was wrong because it assumed the viewport was centred in the
+  window; the centre is ~60 rows off and a wrong centre reads as a wrong scale.
+  1.193 is close enough to the engine's old 1.2 default to be believed, so fit
+  the centre as a free parameter.
 
 **Flats are world-anchored**, Doom-style. Per surface: a scale, a shift, a
 mirror.
@@ -347,9 +416,40 @@ Test on an asymmetric one at `rot = 64`.
 
 ## 8. The comparison tool — READ THIS BEFORE REBUILDING IT
 
-**There is still no number.** Getting one is the highest-value work in the
-project, because without it every fix is a guess with a confident test wrapped
-round it.
+> **USE `tools/oracle` (2026-10-01). Everything below it is the older rig.**
+>
+> `tools/oracle` runs ROTH.C headless, skips every GDV and answers the main menu
+> with "new game" so it boots straight into a map — **no savegame needed**, and
+> `mkgame.sh` builds a symlinked game dir whose `ROTH.RES` lists whichever map
+> you want first. It paints each loaded DAS image with a 6-bit slice of
+> `col | row<<8 | fatIndex<<16` across five passes, makes shade and remap tables
+> identity, tags flat spans with sector and fill word, pins the camera, and
+> dumps the indexed frame plus tags.
+>
+> It also **fits the rule rather than only scoring it**: `flatfit.py` derives
+> ROTH's flat mapping — axis, sign, scale, offset — per sector from the pixels,
+> and `walls.py` assigns wall pixels to faces by ray cast and fits the wall
+> mapping. That answers *what the rule is*, which a match percentage cannot.
+>
+> Its own gotchas, found the hard way, are in `tools/oracle/README.md`: run
+> captures one at a time (the host framebuffer `/roth_fb` is global and parallel
+> runs corrupt each other); the paint hook must only paint blocks the call
+> actually loaded; images wider than 256 lose column bit 8, so compare the low
+> 8 bits; and the original sometimes nudges the player after a pose is set, so
+> fit the camera rather than trusting the header.
+>
+> **Note the rig lives in a Linux workspace.** There are no captures on the
+> Windows tree, and `capture.sh` / `mkgame.sh` are bash.
+>
+> `tools/rothdiff/` below still holds two things worth keeping: `findspots`,
+> which chooses camera spots from the map data by property, and the saved-game
+> handling — both are independent of which oracle you use. Its own identity
+> buffer comparison is superseded: it compared *surface identity*, which cannot
+> see a wrong scale, shift or mirror even when working.
+
+**The older rig, for context.** Getting a number was the highest-value work in
+the project, because without it every fix is a guess with a confident test
+wrapped round it.
 
 ### What works
 
@@ -424,19 +524,32 @@ scale, shift and mirror — which is the entire live problem.
 - **`+exec` runs before `map`** — `map` is deferred, `exec` is not. A `quit` in
   an exec script fires at startup. `roth_diff.cpp` queues console-requested
   captures until a level exists, drained from `P_Ticker`.
-- **LNK1103 "debugging information corrupt" is a PARALLEL BUILD RACE.** Build
-  **without `-m`**:
+- **LNK1103 "debugging information corrupt" — SUSPECT THE CODE, NOT THE BUILD.**
+
+  This note has now been wrong twice, so here is the whole history rather than
+  another confident rule:
+
+  1. It first prescribed deleting `doomxr.iobj` / `doomxr.ipdb` and the
+     offending `.obj`. That sometimes worked.
+  2. On 2026-09-29 it was rewritten to blame a parallel-build PDB race, because
+     dropping `-m` fixed it that day.
+  3. On 2026-10-01 a **clean serial rebuild failed anyway**, repeatedly, on one
+     object (`rothmap.obj`), while 627 others linked. Killing `mspdbsrv`,
+     clearing every object and every PDB, and rebuilding from scratch did not
+     help.
+
+  **It was a specific construct in that one translation unit.** The file had
+  been edited to set a cvar with `FindCVar()` + `SetGenericRep()`. Rewriting
+  that as an `EXTERN_CVAR` declaration and a direct assignment — the idiomatic
+  form — linked first try with no other change.
+
+  So: when one object fails and the rest link, **bisect the source of that
+  object** before touching the build. A serial build (no `-m`) is still
+  advisable and still cheap:
 
   ```
   cmake --build . --config RelWithDebInfo --target zdoom -- -verbosity:minimal
   ```
-
-  Parallel compilation inside one project shares a PDB, and a race there emits
-  an object the linker then refuses. Deleting `doomxr.iobj` / `doomxr.ipdb` and
-  the offending `.obj` — which this note used to prescribe — only ever worked by
-  accident: the next build happened to win the race. On 2026-09-29 it failed on
-  a *freshly compiled* object through a full clean rebuild, three times, and
-  dropping `-m` linked first try. A serial build is slower and it works.
 - **The Debug output directory has no DLLs.** `openvr_api.dll`,
   `openxr_loader.dll`, `zmusic.dll`, `OpenAL32.dll` only sit beside
   RelWithDebInfo. Build RelWithDebInfo, or copy them.
