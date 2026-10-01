@@ -115,11 +115,12 @@ struct PendingDump
 	FString path;
 	bool screenshot;   // a picture for the eye, not an identity buffer
 	int settle;        // frames to let the view settle before shooting
+	int pitch = 0;     // ROTH pitch units, screenshots only
 };
 TArray<PendingDump> g_pending;
 
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
-void PlaceCamera(int px, int py, int pang);
+void PlaceCamera(int px, int py, int pang, int pitch = 0);
 } // namespace
 
 // Called once per tic from P_Ticker.
@@ -145,7 +146,7 @@ void RothDiff_RunPending()
 	// running normally in between.
 	if (front.screenshot)
 	{
-		PlaceCamera(front.x, front.y, front.ang);
+		PlaceCamera(front.x, front.y, front.ang, front.pitch);
 		if (front.settle > 0) { front.settle--; return; }
 		const FString path = front.path;
 		g_pending.Delete(0);
@@ -202,15 +203,18 @@ CCMD(rothdiff_dump)
 // numbers do not catch: lighting, framing, mood.
 CCMD(rothdiff_shot)
 {
-	if (argv.argc() != 5)
+	if (argv.argc() != 5 && argv.argc() != 6)
 	{
-		Printf("usage: rothdiff_shot <x> <y> <angle512> <file>\n");
+		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH]\n");
+		Printf("  pitchROTH: the original's view pitch (+-126, positive looks up); its shear\n");
+		Printf("  of pitch*FY/128 px is a real pitch of atan(pitch/128)\n");
 		return;
 	}
 	PendingDump d;
 	d.x = atoi(argv[1]); d.y = atoi(argv[2]); d.ang = atoi(argv[3]);
 	d.w = d.h = 0;
 	d.path = argv[4];
+	d.pitch = argv.argc() == 6 ? atoi(argv[5]) : 0;
 	d.screenshot = true;
 	// TWO SECONDS, not two tics. Two was enough for the camera move to take
 	// effect, but the startup console is still down over the view that early
@@ -243,13 +247,15 @@ void StandOnFloor(AActor *cam, int px, int py)
 // Put the camera exactly where it is asked for. Shared so a screenshot and an
 // identity buffer are taken from provably the same place -- the whole value of
 // a side-by-side is that only one thing differs between the two pictures.
-void PlaceCamera(int px, int py, int pang)
+void PlaceCamera(int px, int py, int pang, int pitch)
 {
 	AActor *cam = players[consoleplayer].mo;
 	if (cam == nullptr) return;
 	cam->SetOrigin(DVector3(px, py, cam->Z()), true);
 	StandOnFloor(cam, px, py);
 	cam->Angles.Yaw = RothAngleToDoom(pang);
+	// Doom pitch is positive looking DOWN.
+	cam->Angles.Pitch = DAngle::fromRad(-atan(pitch / 128.0));
 	// The renderer interpolates between the previous tic's viewpoint and this
 	// one, so without clearing that the shot is taken part-way through a very
 	// long jump from wherever the player was standing.

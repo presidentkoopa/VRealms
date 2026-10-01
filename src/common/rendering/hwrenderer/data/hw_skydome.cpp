@@ -167,9 +167,14 @@ static void CreateRothSky(TArray<FSkyVertex> &verts)
 		// pre-mirrored to come out the right way round.
 		const float u = -(deg - 90.f) / ROTH_SKY_DEGREES_PER_WRAP;
 
+		// REMAROTH stores every Realms picture QUARTER-TURNED: the engine
+		// texture's s axis is the picture's stored ROW and t its stored COLUMN
+		// (roth_surface.h; the walls and flats rely on it too). So the column
+		// law above lands on t and the row law on s. Checked against the
+		// original's own texel-per-pixel capture (REMAROTH_SKY_MEASURED.md).
 		FSkyVertex top, bot;
-		top.Set(-pos.X, pos.Y, scale * tanTop, u, vTop);
-		bot.Set(-pos.X, pos.Y, scale * tanBottom, u, vBottom);
+		top.Set(-pos.X, pos.Y, scale * tanTop, vTop, u);
+		bot.Set(-pos.X, pos.Y, scale * tanBottom, vBottom, u);
 		verts.Push(top);
 		verts.Push(bot);
 	}
@@ -566,7 +571,9 @@ void FSkyVertexBuffer::RenderRothSky(FRenderState& state, FGameTexture* tex)
 	// original smears its first and last source row rather than wrapping, and
 	// clamping the sampler is exactly that. X repeats, because the picture
 	// tiles four times per revolution.
-	state.SetMaterial(tex, UF_Texture, 0, CLAMP_Y, 0, -1);
+	// The picture's rows are on s (see CreateRothSky), so that is the axis to
+	// clamp; its columns, on t, repeat.
+	state.SetMaterial(tex, UF_Texture, 0, CLAMP_X, 0, -1);
 	// Neither matrix carries anything here -- both laws are already in the
 	// vertex UVs, which is what makes this exact.
 	state.EnableModelMatrix(false);

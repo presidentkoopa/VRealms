@@ -60,6 +60,13 @@ CVAR(Bool, roth_lighting, true, CVAR_ARCHIVE | CVAR_NOINITCALL)
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
+// The world-locked sky cylinder, defined in hw_skyportal.cpp.
+EXTERN_CVAR(Bool, r_skyband)
+// The player's own field of view. Setting the player's FOV fields is not
+// enough: the player SPAWN overwrites both from this cvar
+// (p_mobj.cpp:6566, `p->DesiredFOV = p->FOV = QzDoom_GetFOV()`), so a map that
+// wants its own field of view has to move the cvar or be silently overridden.
+EXTERN_CVAR(Float, fov)
 
 //==========================================================================
 //
@@ -656,12 +663,18 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// is in force, and setting only one lets the next think undo it.
 	{
 		const float ROTH_FOV_DEGREES = 91.82f;
+		// The CVAR as well as the fields. Setting only the fields does not
+		// survive: the player spawn overwrites both from the cvar
+		// (p_mobj.cpp:6566), so the view quietly reverted to the engine's 90 --
+		// about 2% too narrow, which skews EVERY comparison against the
+		// original, not only the ones about field of view.
+		if (fabs(fov - ROTH_FOV_DEGREES) > 0.001f) fov = ROTH_FOV_DEGREES;
 		for (int i = 0; i < MAXPLAYERS; i++)
 		{
 			players[i].DesiredFOV = ROTH_FOV_DEGREES;
 			players[i].FOV = ROTH_FOV_DEGREES;
 		}
-		log.Line("  field of view         %.2f degrees (Realms; engine default 90)",
+		log.Line("  field of view         %.2f degrees (Realms; cvar and players)",
 			ROTH_FOV_DEGREES);
 	}
 
@@ -690,6 +703,18 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		r_view_vstretch = ROTH_VIEW_VSTRETCH;
 		log.Line("  view vertical stretch %.4f  (Realms FY/FX; flat screen only)",
 			ROTH_VIEW_VSTRETCH);
+	}
+
+	//----------------------------------------------------------------------
+	// AND THE SKY, which Realms draws on a world-locked cylinder rather than a
+	// dome. Off by default in the engine so no other map changes; a Realms map
+	// turns it on here, for the same reason the two values above are set here.
+	// See FSkyVertexBuffer::RenderRothSky.
+	//----------------------------------------------------------------------
+	if (!r_skyband)
+	{
+		r_skyband = true;
+		log.Line("  sky                   world-locked cylinder (r_skyband)");
 	}
 
 	//----------------------------------------------------------------------

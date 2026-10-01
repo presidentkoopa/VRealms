@@ -339,7 +339,14 @@ bool TextureSet::ImageShape(int index, int &w, int &h, bool &translucent) const
 
 FTextureID TextureSet::Sky(int metadataSkyIndex, Log *log)
 {
-	return World(metadataSkyIndex, log, false);
+	FTextureID id = World(metadataSkyIndex, log, false);
+	// The sky is never palette-shaded (it draws through its own path in the
+	// original), and the palette material must not stay on it: a material
+	// shader forces the clamp mode to CLAMP_NONE (gametexture.h, GetClampMode),
+	// which would make the sky cylinder WRAP its rows instead of smearing the
+	// first and last one the way the original does.
+	if (auto *tex = TexMan.GetGameTexture(id)) tex->SetShaderIndex(0);
+	return id;
 }
 
 //==========================================================================

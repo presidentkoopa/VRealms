@@ -221,6 +221,34 @@ is phase 2's argument, and this file RECORDS such ideas rather than authorising 
 
 ---
 
+## 10. Props sunk into the floor
+
+**What Realms does.** A standing sprite's base sits at `objZ - shift`, where
+`shift = (int16)(2*(modifier & 0x0f) + u16[0x84aba])` — so a prop's base can be
+as much as 30 world units BELOW its own Z, and in STUDY1 68 of the 71 props
+carrying a non-zero nibble end up partly buried in the floor they stand on.
+Three independent readings of `renderer.c:7756-7760` and `:6553-6555` agree this
+is the only possible reading, and that both alternatives are worse: flipping the
+sign floats every prop up to 30 units above its floor, anchoring the top buries
+it by its entire height. *(verified)*
+
+**What we do.** The same thing, as of `8bc39fa`. 1:1 first.
+
+**Why it might be better not to.** The owner's earlier instinct was to leave the
+shift off so props sit cleanly on their floors — *"can't imagine the gaming gods
+being mad at me for fixing this"*. In a headset, at eye level and in stereo, a
+table leg disappearing into the floorboards is far more noticeable than it was on
+a 320-pixel screen with a shear for a camera. It may genuinely read as a bug to a
+player rather than as period charm.
+
+**Cost to flip:** one line in `roth_objects.cpp` — the `p.z +=` in the nibble
+block. The shift is already computed and counted either way.
+
+**Status: 1:1 FOR NOW.** Recorded here so the decision is not lost, not because
+it is authorised. Revisit in the VR pass with the headset on.
+
+---
+
 ## How to add to this
 
 One heading per idea. Say what Realms does, what we do, why theirs might be better, and what it would
