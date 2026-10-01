@@ -93,10 +93,25 @@ bool Pack::Load(const uint8_t *data, size_t size)
 		pal = data + paletteOffset;
 	mShade = nullptr;
 	mFogIndex = 0;
+	mGlow = nullptr;
 	if (paletteOffset != 0 && (size_t)paletteOffset + 768 + 2 + 0x4000 <= size)
 	{
 		mFogIndex = data[paletteOffset + 768];
 		mShade = data + paletteOffset + 768 + 2;
+	}
+	// THE GLOW TABLE, one 256-byte palette remap row.
+	//
+	// The original reads five blocks in a row after the palette
+	// (map_load.c:371-380): the 2-byte remap prefix, 0x4000 of shade ramps,
+	// a 0x10000 translucency LUT, 0x100 of something unrelated, and then this.
+	// So it lands at palette + 0x300 + 2 + 0x4000 + 0x10000 + 0x100.
+	//
+	// It is not a shade ramp and has no rows: a glowing surface is drawn as
+	// glow[texel] with NO depth term, NO sector light and NO flash bonus, so it
+	// ignores lighting entirely. See roth_palshade.
+	{
+		const size_t glowAt = (size_t)paletteOffset + 0x14402;
+		if (paletteOffset != 0 && glowAt + 256 <= size) mGlow = data + glowAt;
 	}
 	for (int i = 0; i < 256; i++)
 		mPalette[i] = { Expand6(pal[i * 3]), Expand6(pal[i * 3 + 1]),

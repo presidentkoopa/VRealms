@@ -1540,6 +1540,12 @@ public:
 	int			RothLanternShift = 5;
 	uint16_t	RothLightRng = 0;		// the original's flicker LCG (0x85328)
 	int			RothLightStep = 0;
+	// The storm/lightning phase (0x8a355), driven by the same LCG. A burst
+	// starts when the LCG's high byte is <= 2, then the phase accumulates until
+	// it overflows and the burst ends. A sector carrying the glow flag draws
+	// through the glow row for as long as (phase & 0x49) != 0.
+	uint8_t		RothStormPhase = 0;
+	int			RothStormStep = 0;
 
 	float		skyspeed1;				// Scrolling speed of sky textures, in pixels per ms
 	float		skyspeed2;

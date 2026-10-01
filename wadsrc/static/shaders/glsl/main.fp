@@ -503,10 +503,12 @@ float R_DoomColormap(float light, float z)
 // Inputs:
 //   light                 the sector's light BYTE / 255 (the loader stores it
 //                         raw in ROTH maps; 128 is neutral, 0 = unshaded)
-//   uDesaturationFactor   > 0 marks a "lantern" sector (sector byte +0x0a bit 1)
+//   uDesaturationFactor   a BITFIELD: bit 0 lantern (sector byte +0x0a bit 1),
+//                         bit 1 glow (that same byte's bit 6)
 //   uGlobVis              packed per-frame state, see hw_drawinfo.cpp:
 //                         bits 0-1 normal shade level, 2-3 lantern shade level,
-//                         4-10 E+64, 11-15 / 16-20 lantern jitter (rng 0..31)
+//                         4-9 E+32, 10 storm lit, 11-15 / 16-20 lantern
+//                         jitter (rng 0..31), 21-23 roth_shade_debug
 //
 // Normal:  row = (Z >> (5+Ln)) - bias          <=0 -> 0, min cap, >31 -> fog
 // Lantern: row = ((Z + 1024*max(|tx-jx|,|ty-jy|)) >> (5+Ll)) - bias - E
@@ -538,7 +540,25 @@ float R_RothShade(float light)
 	if (dbg == 2) gRothDbg = float(lb) / 255.0;
 	int Ln = pk & 3;
 	int Ll = (pk >> 2) & 3;
-	int E  = ((pk >> 4) & 127) - 64;
+	int E  = ((pk >> 4) & 63) - 32;		// six bits: E is only ever 8 or -5
+	bool storm = ((pk >> 10) & 1) != 0;	// the lightning phase is lit this frame
+
+	// uDesaturationFactor is a BITFIELD, not a flag: bit 0 lantern, bit 1 glow.
+	int desat = int(uDesaturationFactor * 255.0 + 0.5);
+	bool lantern = (desat & 1) != 0;
+	bool glowSector = (desat & 2) != 0;
+
+#ifdef ROTH_PALETTE
+	// GLOW. A glowing surface in a lit storm is drawn as glow[texel] with no
+	// depth term, no sector light and no flash -- it ignores lighting entirely,
+	// so this returns before any of it runs. Row 65 is the glow remap.
+	if (glowSector && storm)
+	{
+		gRothRow = 65;
+		return 0.0;
+	}
+#endif
+
 	float jx = float(((pk >> 11) & 31) - 16) / 256.0;
 	float jy = float(((pk >> 16) & 31) - 16) / 256.0;
 
@@ -550,12 +570,12 @@ float R_RothShade(float light)
 	float Z = max(dot(d.xz, fh), 1.0);
 
 	if (dbg == 3) gRothDbg = Z / 2048.0;
-	if (dbg == 5) gRothDbg = uDesaturationFactor > 0.5 / 255.0 ? 1.0 : 0.25;	// lantern flag
+	if (dbg == 5) gRothDbg = lantern ? 1.0 : 0.25;	// lantern flag
 	int off = lb - 128;
 	int bias = 8 + off;
 	int cap = 32 - (max(off + 4, 0) >> 2);
 	int row;
-	if (uDesaturationFactor > 0.5 / 255.0)
+	if (lantern)
 	{
 		float tx = (d.x * fh.y - d.z * fh.x) / Z;
 		float ty = d.y / Z;

@@ -1844,11 +1844,53 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 				const int rx = Level->RothLightRng & 31, ry = (Level->RothLightRng >> 8) & 31;
 				// E: the lantern bias. recA+0x1c (8) plus -13 when the viewer
 				// stands OUTSIDE a lantern sector (collision_physics.c:1774).
-				const bool viewInLantern = Viewpoint.sector != nullptr && Viewpoint.sector->Colormap.Desaturation != 0;
+				// Desaturation is a BITFIELD: bit 0 lantern, bit 1 glow. A
+				// non-zero test would read a glow-only sector as a lantern one.
+				const bool viewInLantern = Viewpoint.sector != nullptr && (Viewpoint.sector->Colormap.Desaturation & 1) != 0;
 				const int E = 8 + (viewInLantern ? 0 : -13);
 				const int Ln = clamp(Level->ShadeFalloffShift - 5, 0, 3);
 				const int Ll = clamp(Level->RothLanternShift - 5, 0, 3);
-				const int packed = Ln | (Ll << 2) | ((E + 64) << 4) | (rx << 11) | (ry << 16) | ((roth_shade_debug & 7) << 21);
+
+				// THE STORM, which gates the glow row:
+				//
+				//   al = (rng & 0xff) >> 1;  ah = rng >> 8
+				//   if phase: sum = phase + al; phase = sum & 0xff
+				//             sum <= 0xff -> settled for this step
+				//             otherwise   -> phase = 0, fall through
+				//   if not settled and ah <= 2: phase = 1    (a burst begins)
+				//
+				// The original steps this once per RENDERED frame, so its
+				// flicker ran at whatever frame rate the machine managed. That
+				// is not reproducible, so it is stepped here at a fixed 35 Hz
+				// off the level clock: same burst length as measured (7-14
+				// ticks), and the same on every machine.
+				{
+					const int starget = Level->maptime;
+					if (starget < Level->RothStormStep) { Level->RothStormStep = 0; Level->RothStormPhase = 0; }
+					while (Level->RothStormStep < starget)
+					{
+						const int al = (Level->RothLightRng & 0xff) >> 1;
+						const int ah = Level->RothLightRng >> 8;
+						bool settled = false;
+						if (Level->RothStormPhase != 0)
+						{
+							const int sum = (int)Level->RothStormPhase + al;
+							Level->RothStormPhase = (uint8_t)(sum & 0xff);
+							if (sum <= 0xff) settled = true;
+							else Level->RothStormPhase = 0;
+						}
+						if (!settled && ah <= 2) Level->RothStormPhase = 1;
+						Level->RothStormStep++;
+					}
+				}
+				const bool stormLit = (Level->RothStormPhase & 0x49) != 0;
+
+				// E is SIX bits, not seven: it only ever takes 8 or -5, and bit
+				// 10 is worth more as the storm flag than as a range nothing
+				// uses.
+				const int packed = Ln | (Ll << 2) | (((E + 32) & 63) << 4)
+					| (stormLit ? (1 << 10) : 0)
+					| (rx << 11) | (ry << 16) | ((roth_shade_debug & 7) << 21);
 				VPUniforms.mGlobVis = float(packed);
 				VPUniforms.mPalLightLevels |= 1 << 24;
 			}

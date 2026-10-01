@@ -106,10 +106,22 @@ Tables Build(const std::string &packName, const Pack &pack)
 	for (int c = 0; c < 256; c++) { grey.Palette[c] = PalEntry(255, c, c, c); grey.Remap[c] = (uint8_t)c; }
 
 	// rothcmap: row r, column i = palette[table[r][i]]. Rows 0-63 are the two
-	// ramps as the pack stores them; row 64 is the fog colour everywhere.
-	std::vector<uint8_t> cm(256 * 65);
+	// ramps as the pack stores them; row 64 is the fog colour everywhere; row
+	// 65 is the GLOW remap.
+	//
+	// The glow row is not a shade level and belongs to neither ramp. A glowing
+	// surface is drawn as glow[texel] with no depth term, no sector light and
+	// no flash bonus -- it ignores lighting completely, which is why the shader
+	// returns from that row before any lighting runs. A pack with no glow
+	// section gets an identity row, so selecting it changes nothing rather than
+	// painting the world black.
+	std::vector<uint8_t> cm(256 * 66);
 	memcpy(cm.data(), shade, 256 * 64);
 	memset(cm.data() + 256 * 64, pack.FogIndex() & 0xff, 256);
+	if (const uint8_t *glow = pack.GlowTable())
+		memcpy(cm.data() + 256 * 65, glow, 256);
+	else
+		for (int i = 0; i < 256; i++) cm[256 * 65 + i] = (uint8_t)i;
 	FRemapTable pal;
 	for (int c = 0; c < 256; c++) { pal.Palette[c] = PalEntry(255, palette[c].r, palette[c].g, palette[c].b); pal.Remap[c] = (uint8_t)c; }
 
@@ -117,7 +129,7 @@ Tables Build(const std::string &packName, const Pack &pack)
 	invName.Format("%s_PALINV", packName.c_str());
 	cmName.Format("%s_PALCMAP", packName.c_str());
 	t.inv = MakeTable(invName.GetChars(), std::move(inv), StoreRemap(grey), 512, 512);
-	t.cmap = MakeTable(cmName.GetChars(), std::move(cm), StoreRemap(pal), 256, 65);
+	t.cmap = MakeTable(cmName.GetChars(), std::move(cm), StoreRemap(pal), 256, 66);
 	return t;
 }
 

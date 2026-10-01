@@ -924,14 +924,24 @@ static void SyncSectorLight(int si)
 	if (g.level == nullptr || si < 0 || (size_t)si >= g.map.sectors.size()) return;
 	const Sector &rs = g.map.sectors[si];
 	const short ll = EngineLight(rs.light, g.level->ShadeFalloffShift);
+	// Desaturation carries TWO Realms flags, both from the sector's flags byte
+	// at +0x0a: bit 0 is the lantern/candle bit (that byte's bit 1), bit 1 is
+	// the GLOW bit (its bit 6), which draws the surface through the glow row
+	// for as long as the storm phase is lit. It is a bitfield, not a flag, so
+	// nothing may test it for non-zero -- see R_RothShade and the lantern test
+	// in hw_drawinfo.cpp, both of which were doing exactly that.
+	//
+	// 618 sectors across the 44 maps carry the glow bit, 335 of them in STUDY2.
 	const uint8_t lantern = (g.level->RothLighting && (rs.flags & 2)) ? 1 : 0;
+	const uint8_t glow = (g.level->RothLighting && (rs.flags & 0x40)) ? 2 : 0;
+	const uint8_t desat = (uint8_t)(lantern | glow);
 	auto apply = [&](int es)
 	{
 		if (es < 0 || (size_t)es >= g.level->sectors.Size()) return;
 		sector_t &sec = g.level->sectors[es];
-		const bool changed = sec.Colormap.Desaturation != lantern;
+		const bool changed = sec.Colormap.Desaturation != desat;
 		sec.lightlevel = ll;
-		sec.Colormap.Desaturation = lantern;
+		sec.Colormap.Desaturation = desat;
 		// 3D-floor light lists hold a COPY of the colormap (p_3dfloors.cpp:464),
 		// so a changed lantern bit must be pushed into them explicitly.
 		if (changed && sec.e != nullptr) P_RecalculateAttachedLights(&sec);

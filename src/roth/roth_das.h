@@ -174,6 +174,10 @@ public:
 	// +0x2000, the tint ramp. Row 0 brightest, 31 darkest. Null when the pack
 	// carries no palette of its own.
 	const uint8_t *ShadeTables() const { return mShade; }
+	// One 256-byte palette remap row. A glowing surface is drawn as
+	// glow[texel] with no depth, no sector light and no flash -- it ignores
+	// lighting entirely. Null when the pack has no such section.
+	const uint8_t *GlowTable() const { return mGlow; }
 	int FogIndex() const { return mFogIndex; }
 
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
@@ -219,6 +223,7 @@ private:
 	std::vector<Colour> mPalette;
 	uint16_t mUnknown0x22 = 0;   // header +0x22; see SkyMarkerIndex()
 	const uint8_t *mShade = nullptr;
+	const uint8_t *mGlow = nullptr;
 	int mFogIndex = 0;
 	// The directional-object block: header +0x1c is its file offset (0 means
 	// the pack has none) and +0x1a its byte size. The original reads it into
