@@ -185,6 +185,9 @@ struct Pending
 	int    renderFlags = 0;
 	int    rothSector = -1;    // where it came from, for diagnosis
 	int    rothIndex = -1;
+	// The object's own light, already combined with its sector's -- see where
+	// it is computed. -1 means "no light byte, use the sector's".
+	int    lightLevel = -1;
 	bool   isMesh = false;
 };
 
@@ -672,6 +675,42 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			p.rothIndex = (int)oi;
 			if (o.light != 0) lit++;
 
+			// THE OBJECT'S OWN LIGHT BYTE, which this loader read and ignored
+			// until 2026-10-01.
+			//
+			// It is a SIGNED OFFSET on the sector's light, not a brightness and
+			// not a radius -- there is no multiply and no distance term
+			// anywhere in the path. 0x80 is neutral, so an object carrying 0x80
+			// shades exactly as its sector does. Combined per drawn object at
+			// renderer.c:6180-6182 and :6659-6661, both in the VISIBLE pass:
+			//
+			//     L = object +0x08          S = the sector's effective light
+			//     L != 0 && S != 0  ->  clip = (uint8)((uint8)(L - 0x80) + S)
+			//     otherwise         ->  clip = L
+			//
+			// All of it is 8-bit and WRAPS; the original clamps nothing. The
+			// two guards are not symmetric and both matter: L == 0 DISCARDS the
+			// sector's contribution entirely, and S == 0 makes L an absolute
+			// row rather than an offset.
+			//
+			// S here is the sector's authored light. The original adds the
+			// global flash bonus at 0x853f6 to it first, but nothing in this
+			// port can raise that yet -- it is driven by weapon fire and
+			// creature attacks, which belong to the game layer -- so it is zero
+			// and the sum is unaffected.
+			//
+			// Only placed-object billboards take this. Not walls, floors,
+			// ceilings or doors, and not the player's weapon sprite, which the
+			// original hard-codes to a neutral 0x80 (renderer.c:7853).
+			{
+				const uint8_t L = o.light;
+				const uint8_t S = (si < rm.sectors.size())
+					? (uint8_t)rm.sectors[si].light : (uint8_t)0;
+				p.lightLevel = (L != 0 && S != 0)
+					? (int)(uint8_t)((uint8_t)(L - 0x80) + S)
+					: (int)L;
+			}
+
 			switch (entry->kind)
 			{
 			case EntryKind::Empty:
@@ -859,7 +898,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  top-anchored (HANG)   %d", hanging);
 		log->Line("  non-default draw size %d", scaled);
 		log->Count("objects: implausibly large (over 3x the player)", oversized);
-		log->Line("  carrying a light byte %d  (NOT applied yet)", lit);
+		log->Line("  carrying a light byte %d applied  (signed offset on the sector, 0x80 neutral; the 0x853f6 flash term needs the game layer)", lit);
 		log->Line("  artwork nibble shift  %d applied  (the 0x84aba second term is"
 			" still missing -- zero on this pack's own art, NOT on shared sprites)",
 			nibbleShift);
@@ -871,7 +910,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  object art registered %d pictures in %s, %d in %s",
 			levelArt.SpritesRegistered(), levelArt.Name().c_str(),
 			sharedArt.SpritesRegistered(), sharedName.c_str());
-		log->Count("objects: light byte not applied", lit);
+		log->Count("objects: carrying their own light byte", lit);
 	}
 
 	//------------------------------------------------------------------
@@ -972,6 +1011,12 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 		mo->Angles.Yaw = DAngle::fromDeg(p.yaw);
 		mo->Scale = DVector2(p.scaleX, p.scaleY);
 		mo->renderflags |= ActorRenderFlags::FromInt(p.renderFlags);
+		// The object's own light, already combined with its sector's. The
+		// Realms light byte goes into lightlevel unchanged for sectors
+		// (rothmap.cpp), so it goes in unchanged here too, and AActor's
+		// LightLevel overrides the sector for exactly this purpose
+		// (hw_sprites.cpp:1729).
+		if (p.lightLevel >= 0) mo->LightLevel = (int16_t)p.lightLevel;
 		// So a prop that overhangs its own sector is still drawn when the
 		// neighbouring sector is the visible one.
 		if (p.renderRadius > mo->radius) mo->renderradius = p.renderRadius;
