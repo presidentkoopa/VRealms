@@ -141,11 +141,28 @@ offset, flip or anchor. If you find a second copy, that is the bug.
    pillars are too tall"*.
 3. **Colour-key ceilings** — the three-way test exists in `roth_surface` but is
    not wired for ceilings/walls. This is the black side-aisle ceilings.
-4. **The sky.** Realms paints a flat strip above outdoor-flagged walls, drifting
-   with yaw and never with pitch; we draw GZDoom's dome, which pinches shut into
-   a grey disc overhead. Settled approach: a screen-space quad with no pitch
-   term, pitch clamped to the original's shear range so the zenith is never in
-   view. `ROTH_BETTER.md` §9 settles that the faithful band comes first and a
+4. **The sky.** Realms paints a flat strip above outdoor-flagged walls; we draw
+   GZDoom's dome, which pinches shut into a grey disc overhead. The rule, read
+   twice on 2026-10-01 by independent readers and not broken by either:
+
+   - **Column** `= (2 * (a(x) - viewAngle)) & 0xFF`, where `a(x)` is the ray
+     angle through screen column x in 1/512 turn, from the projection LUT at
+     `0x8c484`: `x = centre_x - hscale * tan(2*pi*a/512)`. **An arctangent of
+     screen x, not linear in it.** One source column is 1/1024 turn, so a
+     256-wide sky spans 90 degrees and tiles four times per revolution.
+   - **Row** starts at `viewport_top_margin - (pitch * vscale >> 7)`, so it
+     **SHEARS 1:1 WITH PITCH** — it does NOT stand still, and it **clamps and
+     smears at the bottom** rather than wrapping.
+   - Blitted **once per wall span, not per column**. The lift's own comment at
+     `renderer.c:5375` says per-column and is wrong.
+   - Never paints in the cursor-pick subpass (`renderer.c:5412` bails when
+     `0x90a48 != 0`).
+   - The image is **256 wide, row-major**, fetched `[row<<8 | col]`.
+
+   This replaces an earlier "no pitch term, clamp pitch so the zenith is never
+   visible" plan, which came from the two now-corrected lines in
+   `ROTH_BETTER.md`. `ROTH_BETTER.md` §9 settles that the faithful band comes
+   first and a
    real VR sky is phase 2. The rotated-dome attempt in `6b3d12f` does NOT work
    and is superseded.
 5. **Lighting, the parts not yet applied** — muzzle-flash brightening, object

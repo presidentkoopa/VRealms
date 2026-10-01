@@ -176,8 +176,20 @@ single 2D image in vertical columns straight into the framebuffer. *(verified)*
   animated entry, so the original genuinely has moving cloud.
 - The parallax is one line: the source column is offset by `view_angle * 2`. Turning
   scrolls the band horizontally. That is the whole effect.
-- **Vertically it does not move at all.** Fixed start row, wrapped on the block height.
-  Look up or down and the sky stays exactly where it was.
+- **Vertically it SHEARS 1:1 WITH PITCH.** *(Corrected 2026-10-01. This entry
+  said "it does not move at all", which is wrong, and the plan below was built
+  on it.)* The start row is
+  `[0x909f6] = viewport_top_margin - (pitch * vertical_scale >> 7)`
+  — `render_world.c:316-319` reads `[0x90a6c]`, which `render_world.c:66-70`
+  sets from the clamped view pitch at `0x89ee8` (`player.c:90-95`). Look up and
+  the band slides with everything else, which is consistent: Realms' look
+  up/down is a shear of the whole finished picture.
+- **At the bottom it CLAMPS, not wraps** — the last source row is smeared
+  downward, and there is no modulo anywhere in the vertical path
+  (`renderer.c:5560-5579`, `:5491-5519`). This entry previously said "wrapped on
+  the block height".
+- Found by two independent readers on 2026-10-01, the second one specifically
+  trying to refute the first. Neither could break either correction.
 
 That was fine on a 320-pixel screen. **In a headset a band with no vertical response
 and no positional parallax reads as flat wallpaper the instant you tilt your head**, and
