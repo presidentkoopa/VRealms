@@ -114,6 +114,68 @@ FSkyVertexBuffer::~FSkyVertexBuffer()
 //
 //-----------------------------------------------------------------------------
 
+//-----------------------------------------------------------------------------
+//
+// The world-locked sky cylinder -- see CreateRothSky in the header for why this
+// is a cylinder and not a dome.
+//
+// The three constants are MEASURED in the running original at 640x480, not
+// derived: the sky picture's row 0 sits at tanElev = 100.27/177.53 (elevation
+// +29.5 degrees) and its last row, 145, at tanElev = (100.27-145)/177.53
+// (elevation -14.1). 177.53 is half the vertical focal length, so the picture
+// is drawn two screen rows per source row.
+//
+//-----------------------------------------------------------------------------
+
+// row = ROTH_SKY_ROW0 - ROTH_SKY_ROWS_PER_TAN * tanElev, clamped to the picture
+static const float ROTH_SKY_ROW0 = 100.27f;
+static const float ROTH_SKY_ROWS_PER_TAN = 177.53f;
+static const float ROTH_SKY_ROWS = 146.f;     // rows 0..145
+// One source column is 1/1024 of a turn, so 256 columns span 90 degrees and the
+// picture tiles four times per revolution.
+static const float ROTH_SKY_DEGREES_PER_WRAP = 90.f;
+
+// Where the cylinder landed in the shared vertex array. File-static rather
+// than members: hw_skydome.h is included very widely, and this is nobody
+// else's business.
+static int gRothStart = 0, gRothCount = 0;
+
+static void CreateRothSky(TArray<FSkyVertex> &verts)
+{
+	const int cols = 256;              // 64 segments per texture wrap
+	const float scale = 10000.f;
+	// Far enough above and below that the clamp, not the geometry, decides what
+	// is drawn at steep angles: the picture itself only covers tanElev within
+	// about [-0.25, +0.56].
+	const float tanTop = 4.f, tanBottom = -4.f;
+
+	auto vOf = [](float tanElev) {
+		return (ROTH_SKY_ROW0 - ROTH_SKY_ROWS_PER_TAN * tanElev) / ROTH_SKY_ROWS;
+	};
+	const float vTop = vOf(tanTop), vBottom = vOf(tanBottom);
+
+	gRothStart = verts.Size();
+	for (int c = 0; c <= cols; c++)
+	{
+		const float deg = c * 360.f / (float)cols;
+		FAngle a = FAngle::fromDeg(deg);
+		FVector2 pos = a.ToVector(scale);
+
+		// u is NEGATED and x MIRRORED for the same reason the dome does both
+		// (SkyVertexDoom: "Doom mirrors the sky vertically"): the view matrix
+		// carries a scale(-1, ...) in x, so geometry and texture are both built
+		// pre-mirrored to come out the right way round.
+		const float u = -(deg - 90.f) / ROTH_SKY_DEGREES_PER_WRAP;
+
+		FSkyVertex top, bot;
+		top.Set(-pos.X, pos.Y, scale * tanTop, u, vTop);
+		bot.Set(-pos.X, pos.Y, scale * tanBottom, u, vBottom);
+		verts.Push(top);
+		verts.Push(bot);
+	}
+	gRothCount = verts.Size() - gRothStart;
+}
+
 void FSkyVertexBuffer::SkyVertexDoom(int r, int c, bool zflip)
 {
 	static const FAngle maxSideAngle = FAngle::fromDeg(60.f);
@@ -282,6 +344,10 @@ void FSkyVertexBuffer::CreateDome()
 	CreateSkyHemisphereBuild(SKYHEMI_LOWER);
 	mPrimStartBuild.Push(mVertices.Size());
 
+	// The Realms sky cylinder, appended after the dome and the box so neither
+	// of their index ranges moves. Inert unless something draws it.
+	CreateRothSky(mVertices);
+
 	mSideStart = mVertices.Size();
 	mFaceStart[0] = mSideStart + 10;
 	mFaceStart[1] = mFaceStart[0] + 4;
@@ -354,34 +420,12 @@ void FSkyVertexBuffer::CreateDome()
 //
 //-----------------------------------------------------------------------------
 
-void FSkyVertexBuffer::SetupMatrices(FGameTexture *tex, float x_offset, float y_offset, bool mirror, int mode, VSMatrix &modelMatrix, VSMatrix &textureMatrix, bool tiled, float xscale, float yscale, const BandSky &band)
+void FSkyVertexBuffer::SetupMatrices(FGameTexture *tex, float x_offset, float y_offset, bool mirror, int mode, VSMatrix &modelMatrix, VSMatrix &textureMatrix, bool tiled, float xscale, float yscale)
 {
 	float texw = tex->GetDisplayWidth();
 	float texh = tex->GetDisplayHeight();
 
 	modelMatrix.loadIdentity();
-
-	// A BAND SKY (see the struct in the header): turn the dome WITH the viewer
-	// so the texture stays put vertically on screen.
-	//
-	// The view matrix rotates this geometry by the viewer's yaw AND pitch. To
-	// undo only the pitch, rotate the dome the same way first, about the
-	// viewer's own right axis. In the dome's own space that axis depends on
-	// where the viewer is looking, so the rotation is conjugated by the yaw:
-	//
-	//     yaw  ->  pitch about X  ->  -yaw
-	//
-	// These are the first calls after the identity, which makes them the
-	// OUTERMOST part of the transform -- applied in the same space the view
-	// matrix works in, which is the whole point. Get that order wrong and the
-	// band slides vertically as you TURN, which is the first symptom to look
-	// for if this is misbehaving.
-	if (band.active)
-	{
-		modelMatrix.rotate(band.yaw, 0.f, 1.f, 0.f);
-		modelMatrix.rotate(band.pitch, 1.f, 0.f, 0.f);
-		modelMatrix.rotate(-band.yaw, 0.f, 1.f, 0.f);
-	}
 
 	modelMatrix.rotate(-180.0f + x_offset, 0.f, 1.f, 0.f);
 
@@ -498,11 +542,11 @@ void FSkyVertexBuffer::DoRenderDome(FRenderState& state, FGameTexture* tex, int 
 //
 //-----------------------------------------------------------------------------
 
-void FSkyVertexBuffer::RenderDome(FRenderState& state, FGameTexture* tex, float x_offset, float y_offset, bool mirror, int mode, bool tiled, float xscale, float yscale, PalEntry color, const BandSky &band)
+void FSkyVertexBuffer::RenderDome(FRenderState& state, FGameTexture* tex, float x_offset, float y_offset, bool mirror, int mode, bool tiled, float xscale, float yscale, PalEntry color)
 {
 	if (tex)
 	{
-		SetupMatrices(tex, x_offset, y_offset, mirror, mode, state.mModelMatrix, state.mTextureMatrix, tiled, xscale, yscale, band);
+		SetupMatrices(tex, x_offset, y_offset, mirror, mode, state.mModelMatrix, state.mTextureMatrix, tiled, xscale, yscale);
 	}
 	DoRenderDome(state, tex, mode, false, color);
 }
@@ -513,6 +557,24 @@ void FSkyVertexBuffer::RenderDome(FRenderState& state, FGameTexture* tex, float 
 //
 //
 //-----------------------------------------------------------------------------
+
+void FSkyVertexBuffer::RenderRothSky(FRenderState& state, FGameTexture* tex)
+{
+	if (tex == nullptr || !tex->isValid() || gRothCount < 4) return;
+
+	// CLAMP_Y is the whole point of the vertical half: beyond the picture the
+	// original smears its first and last source row rather than wrapping, and
+	// clamping the sampler is exactly that. X repeats, because the picture
+	// tiles four times per revolution.
+	state.SetMaterial(tex, UF_Texture, 0, CLAMP_Y, 0, -1);
+	// Neither matrix carries anything here -- both laws are already in the
+	// vertex UVs, which is what makes this exact.
+	state.EnableModelMatrix(false);
+	state.EnableTextureMatrix(false);
+	state.SetCulling(Cull_None);
+	state.Draw(DT_TriangleStrip, gRothStart, gRothCount);
+	state.SetCulling(Cull_None);
+}
 
 void FSkyVertexBuffer::RenderBox(FRenderState& state, FSkyBox* tex, float x_offset, bool sky2, float stretch, const FVector3& skyrotatevector, const FVector3& skyrotatevector2, PalEntry color)
 {

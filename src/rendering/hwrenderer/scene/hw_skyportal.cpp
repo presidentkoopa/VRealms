@@ -29,10 +29,17 @@
 
 std::pair<PalEntry, PalEntry>& R_GetSkyCapColor(FGameTexture* tex);
 
-// RS FORK -- draw the sky as a BAND rather than a dome. FSkyVertexBuffer::
-// BandSky says what the projection is and why an engine would want it. A cvar
-// rather than a map property so the two can be compared without a reload, and
-// off by default so no existing map changes.
+// RS FORK -- draw the sky on a world-locked CYLINDER instead of GZDoom's dome.
+// FSkyVertexBuffer::CreateRothSky says what the projection is, why an engine
+// would want it, and why a dome cannot express it.
+//
+// A cvar so the two can be compared without a reload, and off by default so no
+// existing map changes. A map that wants it sets it at load; Realms does.
+//
+// This replaces an earlier attempt that tried to cancel the viewer's pitch by
+// ROTATING the dome. It could never have worked: on a dome v is a function of
+// the sampled direction's elevation, so rotating it relocates the pole and its
+// grey cap disc without removing either, and leaves v non-linear in screen row.
 CVAR(Bool, r_skyband, false, CVAR_ARCHIVE)
 
 //-----------------------------------------------------------------------------
@@ -90,21 +97,20 @@ void HWSkyPortal::DrawContents(HWDrawInfo *di, FRenderState &state)
 	{
 		if (origin->texture[0]==origin->texture[1] && origin->doublesky) origin->doublesky=false;
 
-		// RS FORK -- the band takes the viewer's own angles, because cancelling
-		// the pitch is the whole mechanism. Built here rather than inside the
-		// vertex buffer, which has no viewpoint of its own.
-		FSkyVertexBuffer::BandSky band;
-		if (r_skyband)
-		{
-			band.active = true;
-			band.pitch = (float)vp.HWAngles.Pitch.Degrees();
-			band.yaw = (float)vp.HWAngles.Yaw.Degrees();
-		}
-
-		if (origin->texture[0])
+		// RS FORK -- the world-locked cylinder. It takes no viewpoint and no
+		// matrices: both of its laws are already in the vertex UVs, which is
+		// what makes it exact, and what makes it correct in VR for free, since
+		// nothing in it depends on where the camera is.
+		if (r_skyband && origin->texture[0])
 		{
 			state.SetTextureMode(TM_OPAQUE);
-			vertexBuffer->RenderDome(state, origin->texture[0], origin->x_offset[0], origin->y_offset, origin->mirrored, FSkyVertexBuffer::SKYMODE_MAINLAYER, !!(di->Level->flags & LEVEL_FORCETILEDSKY), 0, 0, 0xffffffff, band);
+			vertexBuffer->RenderRothSky(state, origin->texture[0]);
+			state.SetTextureMode(TM_NORMAL);
+		}
+		else if (origin->texture[0])
+		{
+			state.SetTextureMode(TM_OPAQUE);
+			vertexBuffer->RenderDome(state, origin->texture[0], origin->x_offset[0], origin->y_offset, origin->mirrored, FSkyVertexBuffer::SKYMODE_MAINLAYER, !!(di->Level->flags & LEVEL_FORCETILEDSKY));
 			state.SetTextureMode(TM_NORMAL);
 		}
 
