@@ -30,6 +30,7 @@
 #include <cmath>	// needed for std::floor on mac
 #include "maploader.h"
 #include "roth/roth_objects.h"
+#include "roth/roth_runtime.h"
 #include "c_cvars.h"
 #include "actor.h"
 #include "g_levellocals.h"
@@ -3258,6 +3259,15 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 
 	if (reloop) LoopSidedefs(false);
 	PO_Init();				// Initialize the polyobjs
+
+	// PO_Init zeroes line->special on every line it collected into a polyobject
+	// (polyobjects.cpp:431-433), which for a Realms map is every door leaf. A
+	// line with special 0 is never offered to P_ActivateLine, so re-mark now.
+	// The leaves cannot be marked any earlier either: SpawnPolyobj needs that
+	// same special to find them (:221). Idempotent and inert in a non-Realms
+	// map. See roth::MarkTriggerLines.
+	roth::MarkTriggerLines(Level);
+
 	if (!Level->IsReentering())
 		Level->FinalizePortals();	// finalize line portals after polyobjects have been initialized. This info is needed for properly flagging them.
 

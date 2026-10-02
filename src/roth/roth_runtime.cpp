@@ -198,6 +198,14 @@ struct Runtime
 
 	// Doorway sector -> the polyobject tag of the panel that fills it.
 	std::map<int, int> doorTag;
+	// Engine sidedef -> the polyobject tag of the door leaf it belongs to.
+	//
+	// A leaf is NOT a Realms face: the loader generates its four lines, so it
+	// has no face id, no mapping record and no entry in faceToSide. It is still
+	// the thing the player clicks -- GAME_core.md §4.5 sends a type-6 door
+	// straight to toggle_door_open_state with no trigger chain -- so the use
+	// path needs a way from the line it hit to the panel to swing.
+	std::map<int, int> doorLeafSide;
 	// Realms face -> engine sidedef, so a trigger's face can be found from a side.
 	std::map<int, int> faceToSide;
 	std::map<int, int> sideToFace;                 // and back again
@@ -3410,6 +3418,88 @@ static void InitLightSwitchesAtLoad(Log *log)
 // a lift.
 static const int ROTH_LINE_SPECIAL = 9000;
 
+// Which ways a player may touch a Realms line and have it mean something.
+//
+// NOT every way. GAME_core.md §5.2 gives the event for each face-keyed trigger
+// and all three are a click or a hit: 0x18 is left-click wall, 0x32 is
+// right-click wall, 0x1a is "attack or projectile hits" -- and it says of 0x1a
+// that "the player's POINT sweep never fires it". None of them is a walk-over
+// or a shove, so SPAC_Cross, SPAC_AnyCross and SPAC_Push are NOT asked for.
+// They were, and that made every face trigger in the game fire on brushing past
+// its wall.
+//
+// This is still coarser than the original, which picks ONE event per opcode.
+// Splitting the bindings per event is the next piece of work; until then a face
+// trigger fires on either a use or a hit, which over-fires 0x1a on use and
+// 0x18/0x32 on a bullet. Recorded rather than hidden.
+static const int ROTH_LINE_ACTIVATION =
+	SPAC_Use | SPAC_UseThrough | SPAC_UseBack | SPAC_Impact;
+
+// A door leaf answers the use key and nothing else. Shooting a door or walking
+// into it does not open it in the original.
+static const int ROTH_LEAF_ACTIVATION = SPAC_Use | SPAC_UseThrough | SPAC_UseBack;
+
+//==========================================================================
+//
+// MarkTriggerLines -- make the engine OFFER us the lines we care about.
+//
+// The Realms hook lives at the top of P_ActivateLine, which is the right place
+// to HANDLE a trigger and the wrong place to receive one: the engine decides
+// whether to call P_ActivateLine at the DISPATCH sites, and every one of them
+// gates on Doom's own `line->special != 0` first -- P_UseTraverse for the use
+// key (p_map.cpp:6554) and the cross-line test for walking over one (:2792)
+// among twelve such calls in that file alone. A Realms line has no Doom
+// special, so it was never offered and the hook never ran. Nothing reached the
+// level logic from PLAY at all. Only the roth_door console command worked,
+// because it calls Fire() directly and never goes near the engine -- which is
+// exactly why "thirty of thirty open" and "I cannot open a door" were both true
+// for a day.
+//
+// So give those lines a non-zero special and the activation bits. The special's
+// VALUE is never acted on: ActivateLine returns true for any line it owns, so
+// P_ActivateLine returns before P_TestActivateLine ever reads it. It has to be
+// non-zero and nothing more.
+//
+// CALLED TWICE, AND IT HAS TO BE. The engine's own loader passes run after
+// BeginLevel and some of them write `special`. PO_Init is the one that bites:
+// it zeroes every line whose special is Polyobj_ExplicitLine or
+// Polyobj_StartLine once the polyobject has been collected
+// (polyobjects.cpp:431-433), which is EVERY DOOR LEAF LINE IN THE MAP. And the
+// marking cannot simply be done earlier instead, because SpawnPolyobj requires
+// that same special to find the lines at all (polyobjects.cpp:221) -- overwrite
+// it before PO_Init and the leaf never spawns. So the leaves can only be marked
+// afterwards, and this function is idempotent so the second pass is safe.
+//
+// Idempotent by construction: it only ever writes a special that is 0, and ORs
+// activation bits that are already there on a second visit.
+//
+//==========================================================================
+
+int MarkTriggerLines(FLevelLocals *level)
+{
+	if (!g.active || level == nullptr) return 0;
+
+	int marked = 0;
+
+	auto mark = [&](int sideIdx, int activation)
+	{
+		if (sideIdx < 0 || (size_t)sideIdx >= level->sides.Size()) return;
+		line_t *ln = level->sides[sideIdx].linedef;
+		if (ln == nullptr) return;
+		if (ln->special == 0)
+		{
+			ln->special = ROTH_LINE_SPECIAL;
+			marked++;
+		}
+		ln->activation |= activation;
+	};
+
+	for (const auto &kv : g.bySide)   mark(kv.first, ROTH_LINE_ACTIVATION);
+	for (const auto &kv : g.doorLeafSide) mark(kv.first, ROTH_LEAF_ACTIVATION);
+
+	return marked;
+}
+
 void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 {
 	// NOT EndLevel() here: the loader registers its face-to-sidedef pairing and
@@ -3485,45 +3575,10 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		dst.insert(dst.end(), kv.second.begin(), kv.second.end());
 	}
 
-	// MAKE THE ENGINE OFFER US THESE LINES AT ALL.
-	//
-	// The Realms hook lives at the top of P_ActivateLine, which is the right
-	// place to HANDLE a trigger and the wrong place to receive one: the engine
-	// decides whether to call P_ActivateLine at the DISPATCH sites, and every
-	// one of them gates on Doom's own `line->special != 0` first --
-	// P_UseTraverse for the use key (p_map.cpp:6554) and the cross-line test
-	// for walking over one (:2792) among twelve such calls in that file alone.
-	// A Realms line has no Doom special, so it was never offered, and the hook
-	// never ran. Nothing reached the level logic from PLAY at all: not use, not
-	// walk-over, not shoot, not bump. Only the roth_door console command worked,
-	// because it calls Fire() directly and never goes near the engine -- which
-	// is exactly why "thirty of thirty open" and "I cannot open a door" were
-	// both true for a day.
-	//
-	// So give the lines that carry a Realms chain a non-zero special and the
-	// activation bits for every way a player can touch one. The engine then
-	// offers them through its own existing paths and the hook claims them. The
-	// special's VALUE is never acted on: ActivateLine returns true for any line
-	// it owns, so P_ActivateLine returns before P_TestActivateLine ever reads
-	// it. It has to be non-zero and nothing more.
-	int linesMarked = 0;
-	if (g.level != nullptr)
-	{
-		for (const auto &kv : g.bySide)
-		{
-			const int sideIdx = kv.first;
-			if (sideIdx < 0 || (size_t)sideIdx >= g.level->sides.Size()) continue;
-			line_t *ln = g.level->sides[sideIdx].linedef;
-			if (ln == nullptr) continue;
-			if (ln->special == 0)
-			{
-				ln->special = ROTH_LINE_SPECIAL;
-				linesMarked++;
-			}
-			ln->activation |= SPAC_Use | SPAC_UseThrough | SPAC_UseBack
-				| SPAC_Cross | SPAC_AnyCross | SPAC_Impact | SPAC_Push;
-		}
-	}
+	// Make the engine offer us these lines at all. See MarkTriggerLines: this is
+	// the FIRST of its two passes, and the second -- after PO_Init, which is
+	// what reaches the door leaves -- runs from the map loader.
+	const int linesMarked = MarkTriggerLines(level);
 
 	if (log)
 	{
@@ -3531,7 +3586,9 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		log->Line("  triggers bound   %d face-keyed, %d sector-keyed", faceBound, sectorBound);
 		log->Line("  doors reachable  %d   walls wired %d", (int)g.doorTag.size(), (int)g.bySide.size());
 		log->Line("  trigger lines    %d marked so the engine offers them"
-			" (use, cross, impact, push)", linesMarked);
+			" (use and impact; NOT cross or push -- GAME_core.md 5.2)", linesMarked);
+		log->Line("  door leaf lines  %d registered, markable only after PO_Init",
+			(int)g.doorLeafSide.size());
 		log->Count("logic: triggers whose key named no geometry", unbound);
 
 		//------------------------------------------------------------------
@@ -3579,6 +3636,7 @@ void EndLevel()
 	g.sideToFace.clear();
 	g.bySector.clear();
 	g.doorTag.clear();
+	g.doorLeafSide.clear();
 	// NOT gPendingDoors. EndLevel runs DURING a map load, before BeginLevel
 	// (rothmap.cpp:215, "drop the previous level's logic before anything
 	// registers against this one"), so clearing the queue here would throw away
@@ -3605,6 +3663,11 @@ void ResetProgressFlags()
 void RegisterDoor(int rothSector, int polyTag)
 {
 	g.doorTag[rothSector] = polyTag;
+}
+
+void RegisterDoorLeafSide(int sideIndex, int polyTag)
+{
+	if (sideIndex >= 0) g.doorLeafSide[sideIndex] = polyTag;
 }
 
 void RegisterFaceSide(int rothFace, int sideIndex)
@@ -3640,13 +3703,82 @@ void RegisterPlatformControl(int rothSector, int ctrlSector)
 CVAR(Bool, roth_trigger_debug, false, 0)
 
 
-bool ActivateLine(line_t *line, AActor *who, int side)
+bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
 {
 	if (!g.active || line == nullptr) return false;
 
+	// WHICH EVENT THIS IS. The engine knows -- P_ActivateLine is handed the
+	// activation type by each of its dispatch sites -- and this used to throw it
+	// away, so one binding answered a use, a walk-over, a bullet and a shove
+	// alike. GAME_core.md §5.2 gives one event per opcode, so most of those were
+	// wrong by definition.
+	const bool isUse = (activationType
+		& (SPAC_Use | SPAC_UseThrough | SPAC_UseBack)) != 0;
+
+	bool any = false, owned = false;
+
+	// A DOOR LEAF, WHICH IS NOT A TRIGGER AT ALL.
+	//
+	// GAME_core.md §4.5: left-clicking a type-6 door goes straight to
+	// toggle_door_open_state (E/input.c:1087-1098). No trigger, no chain, no
+	// command record -- the panel itself is the thing you click.
+	//
+	// This port only ever implemented the OTHER route, a 0x18 wall-face trigger
+	// whose chain happens to contain cmd_open_door, and the leaf was left as
+	// bare geometry. Being one-sided and ML_BLOCKING (rothmap.cpp:1771), a leaf
+	// with no special sends P_UseTraverse down its `blocked` path, where
+	// P_LineOpening on a line with no backsector gives range 0 and the traverse
+	// gives up with "can't use through a wall" (p_map.cpp:6608). So a closed
+	// door ATE the use ray and every trigger line behind it was unreachable --
+	// which is why the use key opened nothing while roth_door opened thirty of
+	// thirty.
+	auto leaf = g.doorLeafSide.end();
+	for (int s = 0; s < 2 && leaf == g.doorLeafSide.end(); s++)
+	{
+		side_t *sd = line->sidedef[s];
+		if (sd == nullptr) continue;
+		leaf = g.doorLeafSide.find((int)(sd - &g.level->sides[0]));
+	}
+	if (leaf != g.doorLeafSide.end())
+	{
+		// Printed BEFORE the swing as well as after, because this call is newly
+		// reachable from play and the first thing it has to prove is that it
+		// returns at all. Until the leaves were marked, nothing from the use
+		// path had ever entered SwingDoor -- roth_door reaches it from the
+		// console, outside any traversal -- so a crash inside it would
+		// otherwise look identical to never arriving here.
+		if (roth_trigger_debug)
+		{
+			Printf("roth_trigger: line %d is door leaf, poly tag %d, event 0x%x,"
+				" %s\n", line->Index(), leaf->second, (unsigned)activationType,
+				isUse ? "entering SwingDoor" : "not a use, no swing");
+		}
+
+		// Report the SWING'S OWN RESULT, not just that one was attempted. A
+		// door that is already open, or whose tag matches no polyobject, comes
+		// back CMD_NOTHING, and "swinging" printed before the call cannot tell
+		// those apart from a door that moved.
+		const int swung = isUse ? SwingDoor(leaf->second, 0, 0) : CMD_NOTHING;
+		if (roth_trigger_debug && isUse)
+		{
+			Printf("roth_trigger: line %d swing returned -> %s\n", line->Index(),
+				swung == CMD_ACTED ? "SWUNG"
+				                   : "use accepted but swing refused");
+		}
+		// Owned either way: the leaf carries ROTH_LINE_SPECIAL, and handing it
+		// back to Doom would have the engine try to execute that special.
+		//
+		// speedMul 0 is the original's own default -- SwingDoor reads M == 0 as
+		// M == 1 (doors.c:1043-1045) -- and dwell 0 leaves it open rather than
+		// self-closing, because a clicked door in the original waits for the
+		// player. This OPENS; toggle_door_open_state also CLOSES on the second
+		// click, which is the outstanding "closing, blocking, the second use"
+		// item and needs the door's own state word, not another argument here.
+		return true;
+	}
+
 	// A Doom line carries no Realms face index, so the binding is by the SIDE's
 	// own index, which the loader assigns in face order.
-	bool any = false, owned = false;
 	for (int s = 0; s < 2; s++)
 	{
 		side_t *sd = line->sidedef[s];
@@ -3663,8 +3795,9 @@ bool ActivateLine(line_t *line, AActor *who, int side)
 		auto it = g.bySide.find(idx);
 		if (roth_trigger_debug)
 		{
-			Printf("roth_trigger: line side %d (face %d) -> %s\n", idx,
+			Printf("roth_trigger: line side %d (face %d) event 0x%x -> %s\n", idx,
 				f != g.sideToFace.end() ? f->second : -1,
+				(unsigned)activationType,
 				it == g.bySide.end() ? "NO chain bound"
 				                     : "chain(s) bound, firing");
 		}

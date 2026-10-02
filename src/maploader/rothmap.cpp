@@ -1787,6 +1787,15 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				sd->linedef = ld;
 				sd->Flags = WALLF_NOFAKECONTRAST;   // Realms has no fake contrast
 				sd->UDMFIndex = (int)(sd - &Level->sides[0]);
+
+				// THE LEAF IS WHAT THE PLAYER CLICKS, so the level logic has to
+				// be able to get from this line back to the panel it swings.
+				// A leaf has no Realms face id -- these four lines are generated
+				// here, not read from the map -- so RegisterFaceSide cannot
+				// carry it and this pairing is by polyobject tag instead.
+				// GAME_core.md §4.5: a type-6 door goes straight to
+				// toggle_door_open_state, with no trigger and no chain.
+				roth::RegisterDoorLeafSide((int)(sd - &Level->sides[0]), tag);
 				for (int part = 0; part < 3; part++)
 				{
 					sd->SetTextureXScale(part, 1.);

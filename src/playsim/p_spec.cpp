@@ -126,7 +126,11 @@ bool P_ActivateLine (line_t *line, AActor *mo, int side, int activationType, DVe
 	// Realms of the Haunting's triggers are not Doom line specials, so they must
 	// be tested BEFORE the engine decides this line is inert. Inert itself when
 	// no Realms level is loaded. See roth_runtime.
-	if (roth::ActivateLine(line, mo, side))
+	//
+	// activationType goes WITH it: Realms binds one event per trigger opcode
+	// (GAME_core.md §5.2), and without the event every binding answered a use,
+	// a walk-over, a bullet and a shove alike.
+	if (roth::ActivateLine(line, mo, side, activationType))
 	{
 		return true;
 	}

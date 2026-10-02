@@ -100,12 +100,40 @@ void RegisterPlatformControl(int rothSector, int ctrlSector);
 // the load-time lights-out pass) reaching them too.
 void RegisterLightFollower(int rothSector, int engineSector);
 
-// The player used a wall. Returns true if a Realms chain fired, in which case
-// the engine's own line activation should not also run.
+// The player touched a wall or a door leaf. Returns true if this line belongs
+// to Realms, in which case the engine's own line activation must not also run.
 //
 // Hooked at the top of P_ActivateLine: Realms triggers are not Doom line
 // specials and must be tested before the engine decides the line is inert.
-bool ActivateLine(line_t *line, AActor *who, int side);
+//
+// `activationType` is the engine's own SPAC_* for the event that arrived, and it
+// MATTERS: one Realms line can be reached by a use, a walk-over, a bullet and a
+// shove, and GAME_core.md §5.2 gives exactly one of those per opcode. This used
+// to take the event and discard it, so every binding answered all four.
+bool ActivateLine(line_t *line, AActor *who, int side, int activationType);
+
+// Register one line of a door leaf, by sidedef, against the polyobject tag of
+// the panel it belongs to.
+//
+// A leaf is not a Realms FACE -- the loader generates its four lines, so there
+// is no face id and no entry in the face-to-sidedef pairing -- but it IS what
+// the player clicks to open the door (GAME_core.md §4.5: a type-6 door goes
+// straight to toggle_door_open_state, with no trigger and no command chain).
+// Without this the leaf is bare one-sided geometry that silently eats the use
+// ray, and nothing behind it can be reached either.
+void RegisterDoorLeafSide(int sideIndex, int polyTag);
+
+// Give every Realms line a non-zero `special` and its activation bits, so the
+// engine's own dispatch sites offer the line to ActivateLine instead of
+// deciding it is inert. Returns how many lines it newly marked.
+//
+// CALL THIS AFTER ANY ENGINE LOAD PASS THAT WRITES `line->special`. BeginLevel
+// runs it once, but PO_Init later zeroes the special of every line it collected
+// into a polyobject (polyobjects.cpp:431-433) -- which is every door leaf in
+// the map -- and the leaves cannot be marked before then either, because
+// SpawnPolyobj needs that same special to find them (:221). Idempotent, so
+// calling it again is always safe.
+int MarkTriggerLines(FLevelLocals *level);
 
 // Fire the SECTOR-keyed triggers bound to a sector -- the 0x19 and 0x31 marks.
 //
@@ -119,6 +147,18 @@ bool ActivateLine(line_t *line, AActor *who, int side);
 // binding and the firing are right, only the caller is missing. Wiring it to a
 // sector-entry event would fire these triggers on walking through a doorway,
 // which the original does not do; see IsSectorTrigger for the trace.
+//
+// DO NOT "FIX" THIS BY WIRING IT TO SECTOR ENTRY. A session handoff proposed
+// exactly that; it is wrong, and the authoritative spec agrees with this
+// comment rather than with the handoff. GAME_core.md §5.2 rows 6 and 12 give
+// 0x19 as "left-click floor / platform top" and 0x31 as "right-click
+// floor/ceiling/platform". They are CLICKS ON A FLOOR, matched by the sector's
+// command id. What this port is actually missing is a floor-click dispatch --
+// a use or examine ray that lands on a flat rather than a wall.
+//
+// The real enter/leave-sector trigger is 0x13 (§5.2 row 4), which the loader
+// does not classify or bind at all. That one needs a sector-transition event;
+// these two do not.
 void FireSectorTriggers(sector_t *sec, AActor *who);
 
 // One WORLD STEP of Realms' own level logic: the delay countdowns and the

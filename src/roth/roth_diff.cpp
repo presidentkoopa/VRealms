@@ -143,8 +143,36 @@ void DoSprites(int px, int py, int pang, const char *path);
 void RothDiff_RunPending()
 {
 	if (g_pending.Size() == 0) return;
-	if (gamestate != GS_LEVEL) return;
-	if (players[consoleplayer].mo == nullptr) return;
+
+	// SAY WHY THE QUEUE IS NOT DRAINING.
+	//
+	// Both of the guards below are silent, and a rig that queues six captures
+	// and then does nothing looks exactly like a frozen game -- which is how an
+	// hour went on a run whose queue was simply never eligible. The state is
+	// printed once a second while a queue is waiting, so a log always says
+	// whether the rig was blocked and on which condition, instead of leaving it
+	// to be guessed from the absence of output.
+	const bool ready = (gamestate == GS_LEVEL)
+		&& (players[consoleplayer].mo != nullptr);
+	static int lastReport = -1;
+	static bool everRan = false;
+	if (!ready)
+	{
+		if (lastReport != gametic / TICRATE)
+		{
+			lastReport = gametic / TICRATE;
+			Printf("rothdiff: %u queued, WAITING -- gamestate %d (want %d = GS_LEVEL),"
+				" player mobj %s\n", g_pending.Size(), (int)gamestate, (int)GS_LEVEL,
+				players[consoleplayer].mo != nullptr ? "present" : "NULL");
+		}
+		return;
+	}
+	if (!everRan)
+	{
+		everRan = true;
+		Printf("rothdiff: level is up, draining %u queued request(s)\n",
+			g_pending.Size());
+	}
 
 	// ONE capture per tic, never the whole queue.
 	//
