@@ -3348,28 +3348,57 @@ void ApplyPendingWarp()
 //
 //==========================================================================
 
-static void InitLightSwitchesAtLoad()
+// COUNTED, because "STUDY1 darkens 139 sectors" was measured against the
+// ORIGINAL and had no counterpart here: this pass logged nothing at all, so
+// whether our load reaches the same 139 was not a question the report could
+// answer. A lighting difference that survives into the picture looks the same
+// whether a sector was missed here or shaded wrongly later, and those want
+// opposite fixes.
+static void InitLightSwitchesAtLoad(Log *log)
 {
+	int records = 0, armed = 0, emptyGroup = 0, sectorsDarkened = 0, flagged = 0;
+	std::vector<int> deltas;
+
 	for (Command &c : g.map.commands)
 	{
 		if ((c.opcode & 0x7f) != 0x02) continue;
+		records++;
 		c.SetByte(0x0C, 0);
 		if (!(c.fireFlags & 0x20)) continue;
+		armed++;
 		c.fireFlags = (uint8_t)(c.fireFlags - 0x20);
 		c.SetByte(0x06, c.fireFlags);
 		const std::vector<int> group = CollectGeometryGroup(c.aux, true);
+		if (group.empty()) emptyGroup++;
 		if (!group.empty())
 		{
+			sectorsDarkened += (int)group.size();
+			deltas.push_back((int)(int8_t)c.subFlags);
 			const int8_t delta = (int8_t)c.subFlags;
 			ApplyLightDelta(group, delta);
 			c.fireFlags ^= 0x08;
 			c.SetByte(0x06, c.fireFlags);
 			c.modifier ^= 0x02;
 			if (c.fireFlags & 0x80)
+			{
 				ApplyFlagMask(group, (delta & 0x80) ? 0 : 2, (delta & 0x80) ? 2 : 0);
+				flagged += (int)group.size();
+			}
 		}
 		c.modifier &= 0xde;
 		SyncDisabled(&c);
+	}
+
+	if (log != nullptr)
+	{
+		FString ds;
+		for (size_t i = 0; i < deltas.size(); i++)
+			ds.AppendFormat("%s%d", i ? ", " : "", deltas[i]);
+		log->Line("  lights out at load %d type-0x02 record(s), %d armed, "
+			"%d with an empty group", records, armed, emptyGroup);
+		log->Line("                     %d sector slot(s) reached, %d given the "
+			"lights-out bit; deltas %s", sectorsDarkened, flagged,
+			ds.IsEmpty() ? "(none)" : ds.GetChars());
 	}
 }
 
@@ -3436,7 +3465,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		}
 	}
 
-	InitLightSwitchesAtLoad();
+	InitLightSwitchesAtLoad(log);
 
 	// Translate the face bindings into sidedef bindings now, so activation is a
 	// single lookup rather than a search.

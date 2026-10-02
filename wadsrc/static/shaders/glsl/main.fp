@@ -585,6 +585,37 @@ float R_RothShade(float light)
 		// 1..31.99, so anything under 1 here is the rasterizer interpolating
 		// across a triangle clipped against the eye (seen on llvmpipe: 0 on a
 		// ceiling running behind the camera) -- fall back to per-pixel there.
+		// PER PIXEL, not per vertex. The per-vertex value is still produced (and
+		// is exact AT a vertex -- verified on 2,943 of 2,943), but it is an
+		// approximation BETWEEN vertices: the original's span drivers interpolate
+		// screen-linearly between a polygon's evaluated corners, and a GZDoom
+		// wall quad's corners are nowhere near the original's span edges. On the
+		// study's right-hand wall that flattened a row curve of 14 -> 26 into
+		// 3.3 -> 5.4, which is why it read 19.2 mean grey against the original's
+		// 1.7 while the middle of the same frame agreed to a fraction of a level.
+		//
+		// MEASURED, both at once (roth_shade_debug 6 against 7): the per-pixel
+		// row reproduces the model of docs/REMAROTH_MEASURED.md section 4 to a
+		// tenth of a row across that wall, and the per-vertex one does not. The
+		// cone term is a function of SCREEN position, so it has curvature a
+		// chord cannot carry.
+		//
+		// vRothE is kept for roth_shade_debug 6, and as the fallback when the
+		// per-pixel Z is degenerate.
+		// PER VERTEX REMAINS THE DEFAULT, and the reason is measured, not
+		// assumed. Switching the whole lantern path to the per-pixel formula
+		// fixes the right-hand wall and WRECKS the two regions that were already
+		// right (pose A, mean grey, original first):
+		//
+		//     centre pillar     44.2    per-vertex 42.9    per-pixel 17.2
+		//     far wall          13.9    per-vertex 14.0    per-pixel  4.2
+		//     right-hand wall    1.7    per-vertex 19.2    per-pixel  3.4
+		//
+		// So neither is the original. The original evaluates at the corners of
+		// ITS OWN spans and interpolates between them; our quads are a different
+		// subdivision of the same world, so a narrow surface like the pillar
+		// lands on its answer and a long glancing wall does not. Making this
+		// per-pixel is not the fix -- it trades three regions for one.
 		if (dbg != 7 && vRothE >= 1.0) row = int(floor(min(vRothE, 31.99)));
 		else row = clamp(min(int(floor(e / float(32 << Ll))) - bias - E, cap), 1, 31);
 	}

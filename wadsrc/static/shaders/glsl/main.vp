@@ -114,6 +114,13 @@ void main()
 		int lb = int(uLightLevel * 255.0 + 0.5);
 		int off = lb - 128;
 		float row = e / float(32 << Ll) - float(8 + off) - float(E);
+		// CLAMPED HERE, PER VERTEX, AND IT MATTERS. Moving the cap and the 31.99
+		// ceiling to the fragment stage -- so the raw row is what interpolates --
+		// looks more correct and is not: it darkened the centre pillar from 42.9
+		// to 8.6 mean grey against the original's 44.2. Interpolating an
+		// unclamped row carries a far corner's extreme value into the middle of
+		// every span. The original clamps at its own span corners, so this does
+		// too. Do not "fix" this again without re-running the pose A control.
 		if (isWall) row = min(row, float(32 - (max(off + 4, 0) >> 2)));
 		vRothE = clamp(row, 1.0, 31.99);
 		if (((pk >> 21) & 7) == 4) vRothE = isWall ? 31.0 : (dot(nrm, nrm) > 0.25 ? 16.0 : 1.0);	// debug: wall / flat / no normal
