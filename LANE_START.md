@@ -169,10 +169,17 @@ frames of the same view can be laid over each other.
    stretch 1.1462`.
 3. ~~**Neutral post-processing.**~~ **Done** in `captures/pair2.cfg`, with the
    full §8 list, not only the four cvars named here.
-4. **Deal with the overlays.** STILL OPEN, and now the only thing between here
-   and a pixel comparison. The original's frame carries its health bar, hand
-   cursor and held-item icon, and both frames carry a green reticle. Mask them
-   or turn them off before counting pixels.
+4. ~~**Deal with the overlays.**~~ **Done — `tools/rothdiff/uimask.py`.** Masks
+   0.82% of the original's frame and 0.50% of ours. **This item's premise was
+   half wrong and the correction matters:** the green reticle is NOT an overlay.
+   It is world-anchored — left edge at pose A, right edge at pose C, where a
+   screen-fixed element would be in the same place in both — our engine has no
+   reticle code and draws it anyway, and both engines put it in the same place,
+   so it cancels. Masking it deletes real geometry. Nor can colour find it: the
+   crosshair and the green-jewelled item on the pose C wall share the palette
+   entry rgb(0,93,49) exactly. A hue rule was written, caught the world item,
+   and was removed; do not reintroduce one. The real overlays are the original's
+   three HUD pieces, and ours draws none of them.
 5. ~~**Run the control.**~~ **Done, and it passes.** The original's own three
    regions reproduced to the decimal through our reader, so the instrument is
    sound. Ours: pillar 42.9 against 44.2, far wall 14.0 against 13.9 — and the
