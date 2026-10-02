@@ -352,8 +352,38 @@ void DoSprites(int px, int py, int pang, const char *path)
 		const double zTop = mo->Z() + to, zBot = zTop - h;
 		const double xl = X0 + FX * (lat - lo) / depth, xr = X0 + FX * (lat - lo + w) / depth;
 		const double yt = Y0 - FY * (zTop - eyeZ) / depth, yb = Y0 - FY * (zBot - eyeZ) / depth;
-		fprintf(f, "S %.1f %.1f %.1f %.1f %.1f %s %.1f %.1f %.1f\n", xl, xr, yt, yb, depth,
-			tex->GetName().GetChars(), mo->X(), mo->Y(), mo->Z());
+		// HOW MANY DISTINCT VIEWS THIS PROP HAS, and which one this camera gets.
+		// A directional prop is one whose frame carries more than one distinct
+		// rotation texture; everything else repeats rotation 0. Printed because
+		// "which props are directional" is otherwise only answerable by reading
+		// the art tables offline and cross-referencing by entry id, and the
+		// whole question being asked of this dump is whether the view ORDER is
+		// right (HANDOFF_REMAROTH.md section 7).
+		// COUNT DISTINCT TEXTURES ACROSS ALL 16 SLOTS. Not Texture[0] against
+		// Texture[1]: an eight-view sprite fills the sixteen slots PAIRWISE, so
+		// those two are equal on a directional prop too and the first version of
+		// this check reported every prop in STUDY2 as non-directional.
+		int rots = 0;
+		for (int r = 0; r < 16; r++)
+		{
+			if (!sfr.Texture[r].isValid()) continue;
+			bool seen = false;
+			for (int q = 0; q < r; q++)
+				if (sfr.Texture[q] == sfr.Texture[r]) { seen = true; break; }
+			if (!seen) rots++;
+		}
+		// GZDoom's own choice for this view (hw_sprites.cpp:1436): the angle
+		// from the prop to the camera, biased by half a step, in 16ths.
+		const DAngle toCam = DVector2(px - mo->X(), py - mo->Y()).Angle();
+		const unsigned rot = (unsigned)((toCam - mo->Angles.Yaw
+			+ DAngle::fromDeg(45.0 / 2 * 9)).BAMs() >> 28) & 15u;
+		FGameTexture *rtex = TexMan.GetGameTexture(sfr.Texture[rots > 8 ? rot : (rot >> 1)]);
+
+		fprintf(f, "S %.1f %.1f %.1f %.1f %.1f %s %.1f %.1f %.1f rots=%d rot=%u view=%s\n",
+			xl, xr, yt, yb, depth,
+			tex->GetName().GetChars(), mo->X(), mo->Y(), mo->Z(),
+			rots, rots > 8 ? rot : (rot >> 1),
+			(rtex != nullptr && rtex->isValid()) ? rtex->GetName().GetChars() : "-");
 		n++;
 	}
 	fclose(f);

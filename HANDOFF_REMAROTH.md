@@ -456,13 +456,38 @@ art — all 26 entries are eight-view. And of the 53 placed directional objects,
 **none** also carries the fixed-angle flag or the x-flip, so those cases do not
 arise.
 
-**What is still open: the view ORDER.** Realms picks its frame with
-`((2*rot + 0x120 - viewAngle) >> 6) & 7`, a turn being 512 units, so its offset
-is 202.5° — which is exactly GZDoom's own `45.0/2*9` rounding offset
-(`hw_sprites.cpp:1436`). On that basis view *i* is mapped straight to rotation
-*i*. **That is a derivation, and §1 is blunt about derivations here.** If it is
-wrong every directional prop is rotated by a constant or reversed. One
-two-engine look settles it, and settles `ANGLE_SENSE` with it.
+**The view ORDER — SETTLED 2026-10-02; the derivation holds.** Realms picks its
+frame with `((2*rot + 0x120 - viewAngle) >> 6) & 7`, a turn being 512 units, so
+its offset is 202.5° — which is exactly GZDoom's own `45.0/2*9` rounding offset
+(`hw_sprites.cpp:1436`). On that basis view *i* was mapped straight to rotation
+*i*. That was a derivation, and §1 is blunt about derivations, so it was
+measured rather than trusted.
+
+**The two-engine look.** `ROTH_DEMO_O04358` in STUDY2 at (−1236, 2576) — DEMO
+entry 4125, whose eight frames are all DIFFERENT and none mirrored, so the view
+drawn is read off the picture instead of inferred. The camera orbits it at
+radius 300 in 45° steps and both engines capture the same eight poses
+(`captures/s2orbit.cfg` and `poses_study2_orbit.csv`; they must agree exactly).
+`tools/rothdiff/viewmatch.py` scores each of the original's views against all
+eight of ours on a mean-removed crop of the prop alone, because the backgrounds
+legitimately differ.
+
+**Result: the diagonal wins 8 of 8**, each time by a clear margin — 0.40, 0.49,
+0.76, 0.71, 0.46, 0.72, 0.76, 0.74 against runners-up of 0.26 to 0.60. Offset +0
+on every view. So view *i* → rotation *i*, and **`ANGLE_SENSE` is right as coded
+(`+1`)**; the designer's `-1` would have broken the diagonal.
+
+**The test could have failed**, which is the part worth keeping. This statue's
+own yaw is not zero: it resolves to rotation 0 from a bearing of 110.7°, putting
+its yaw near 270–313°, so negating the sense would have moved the chosen frame
+by about five views. Across STUDY2's 17 directional props our engine picks
+rotations 0, 1, 3, 5 and 7, so they genuinely face different ways.
+
+**Seen while comparing, both separate open items and neither a sprite fault:**
+the courtyard trees draw as green vertical streaks in ours where the original
+has full canopies (§4's inconclusive tree A/B), and orbit views 0 and 7 show a
+grey-blue smear where the original has a building — suspect the sky band
+(§4 item 4) before blaming geometry.
 
 ### The original brief, kept for the rule
 

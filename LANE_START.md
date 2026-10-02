@@ -229,8 +229,12 @@ made, or a measured miss that has not been fixed.
    in a run's first capture and −29.3 px in its second. A placement error and a
    drift look identical in one frame. `tools/rothdiff/sprcheck.py` with
    `captures/sprites.cfg` re-runs the whole table in one launch.
-3. Directional view order, and `ANGLE_SENSE` with it (`HANDOFF_REMAROTH.md` §7).
-   One two-engine look in STUDY2, which has 17 of them.
+3. ~~Directional view order, and `ANGLE_SENSE` with it.~~ **SETTLED 2026-10-02:
+   view *i* → rotation *i*, and `ANGLE_SENSE` is right as coded (`+1`).** The
+   diagonal wins 8 of 8 on an orbit of `ROTH_DEMO_O04358` in STUDY2, and the
+   statue's yaw is far from zero so the test could have failed.
+   `HANDOFF_REMAROTH.md` §7; `tools/rothdiff/viewmatch.py` re-runs the scoring,
+   `dirprops.py` finds the props and emits the orbit.
 4. The per-view lateral anchor (§10 item 1, last bullet). A real change; scope
    it first.
 
