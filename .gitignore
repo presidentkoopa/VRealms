@@ -70,3 +70,4 @@ gzdoom-crash.log
 # The offline rothdiff tools build in place; their objects are not source.
 /tools/rothdiff/obj_pc/
 /tools/rothdiff/obj_oc/
+/tools/rothdiff/obj_mc/

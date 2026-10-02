@@ -789,8 +789,23 @@ Outstanding, in the order to do them:
      when that light is non-zero). **BLOCKED, not pending**: it is raised only
      by weapon fire and creature attacks, so nothing can move it until the game
      layer exists. Do not schedule it before then.
-3. **Doors** (§4.8). The only item that blocks *playing* rather than looking.
-   Needs a mechanism other than polyobjects.
+3. ~~**Doors**~~ — **THEY OPEN, 2026-10-01 (`537b2928`).** STUDY1: 30 of 30
+   leaves built, hinged and swinging, `roth_door: 30 opened, 0 refused`.
+   Polyobjects were the right host after all; see §12 for the settled rule and
+   the three defects fixed. What is left on doors is narrow:
+
+   - **the swing DIRECTION is unverified.** `roth_door` calls `SwingDoor` with
+     no player context and GZDoom's `PODOOR_SWING` uses a fixed `swingdir`,
+     while the original decides the mirror from which room the player used the
+     door from (`doors.c:525`). The rule is derived (§12) but **not wired into
+     `OpenDoor`**. Nothing will exercise it properly until a trigger opens a
+     door with a player standing somewhere.
+   - **the swung leaf's visible face reads flat and pale**, not panelled, where
+     the closed leaf shows its texture. Consistent with seeing a different face
+     of the prism — possibly an unskinned thickness edge. Tied to the open
+     question in §12 about which surface lands on which quad.
+   - closing, blocking and the re-close on a second use are untested: nothing
+     has ever closed one either.
 4. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
 
    `ROTH_GAME_PORT.md` §1 says "fix before anything else: the trigger wiring is
