@@ -800,12 +800,22 @@ Outstanding, in the order to do them:
      door from (`doors.c:525`). The rule is derived (§12) but **not wired into
      `OpenDoor`**. Nothing will exercise it properly until a trigger opens a
      door with a player standing somewhere.
-   - **the swung leaf's visible face reads flat and pale**, not panelled, where
-     the closed leaf shows its texture. Consistent with seeing a different face
-     of the prism — possibly an unskinned thickness edge. Tied to the open
-     question in §12 about which surface lands on which quad.
+   - ~~the swung leaf's visible face reads flat and pale~~ — **DONE, 2026-10-02
+     (`09c664cf`).** It was an unskinned thickness edge, exactly as suspected,
+     and the §12 question it was tied to is settled with it. The two thin sides
+     were blank while carrying artwork in the files (166/167 and 162/167), which
+     is 10.4% of every door's surface drawing nothing. Seen on screen, closed /
+     mid-swing / open.
    - closing, blocking and the re-close on a second use are untested: nothing
      has ever closed one either.
+   - **NEW, and not a door bug**: the mesh `DEMO[4123]`, ~1700 units beyond
+     STUDY1's door 9, **draws in front of the closed leaf** and over the
+     swinging one. Found by the mid-swing control, not by looking for it. It is
+     the same object at the same screen position in all three frames, which is
+     what first made it look like a door texture failing to move. **Whether
+     meshes also draw through ORDINARY walls has not been tested**, and that
+     test decides whether this is a general depth fault in the mesh path or
+     something specific to the polyobject leaf. See §13.
 4. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
 
    `ROTH_GAME_PORT.md` §1 says "fix before anything else: the trigger wiring is
