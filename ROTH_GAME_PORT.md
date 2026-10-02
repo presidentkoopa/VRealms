@@ -43,6 +43,23 @@ reference manuals.
 
 ## 1. Fix before anything else: the trigger wiring is wrong in code
 
+> **STATUS 2026-10-01: DONE. The wiring was corrected in 2026-09, after this document was
+> written, so the last column below is the stale half and the rest stands.** The table's "what
+> it really is" column now matches the code on all six opcodes:
+> `roth_runtime.cpp` binds 0x18 / 0x1a / 0x32 as **face**-keyed (`IsFaceTrigger`) and
+> 0x19 / 0x31 as **sector**-keyed (`IsSectorTrigger`), and treats 0x13 as the third kind it
+> is — the sector `+0x17` mark read per frame by `twe_link_state`. The commit comment there
+> records the same two markers this section cites (`mark_raw_state_records_by_key`,
+> raw_commands.c:5032, writing `geom[rec+9]`, versus `mark_geometry_faces_by_key` writing the
+> sector's own `+0x16`). **Nothing here is blocking any more.**
+>
+> **What IS still missing on triggers**, and is a different thing from the wiring: the
+> **direction mask and bounding box** on the face channel. Both live in the object-table refs
+> the dispatcher scans, which this port does not build yet, so a face trigger fires whenever
+> its face is activated instead of only from the authored approach direction. That is a known
+> **over-fire**, recorded in the load report rather than silently approximated. See the
+> comment above `IsFaceTrigger` in `roth_runtime.cpp`.
+
 `src/roth/roth_runtime.cpp:54-55` binds the triggers to the wrong events. Verified in ROTH.C:
 
 | Opcode | What it really is | ROTH.C | Runtime currently treats it as |

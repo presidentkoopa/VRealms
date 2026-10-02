@@ -150,6 +150,23 @@ offset, flip or anchor. If you find a second copy, that is the bug.
      `0x8c484`: `x = centre_x - hscale * tan(2*pi*a/512)`. **An arctangent of
      screen x, not linear in it.** One source column is 1/1024 turn, so a
      256-wide sky spans 90 degrees and tiles four times per revolution.
+
+     As the code actually computes it (`renderer.c:5440-5469`), it is
+     `(lut[screenX] - 2*viewAngle) & 0xFF` — the LUT byte is already the
+     doubled angle, and `2*viewAngle` wraps the byte four times per revolution,
+     which is the same statement. Worth having in this form because of what it
+     rules out: **there is no column bias anywhere in the original's
+     arithmetic.** The index is `u16[0x90958] + u16[0x8a30e]`, which looks like
+     a hidden offset and is not — `0x8a30e` is just `max(0, view_bound_left -
+     span_left)` (`renderer.c:4896-4898`, zeroed at `:4782`), a LEFT-CLIP
+     amount, so the index is simply the first VISIBLE screen column and the
+     lookup is on absolute screen x.
+
+     So the suspected **one-column offset in our sky is not a missing term from
+     ROTH.C** — it can only be our cylinder's texel-centre convention against
+     the LUT's integer sampling. Do NOT "fix" it by nudging u on a guess: the
+     magnitude is one column either way and the direction is not derivable, so
+     it needs an oracle frame. (It was nearly nudged blind on 2026-10-01.)
    - **Row** starts at `viewport_top_margin - (pitch * vscale >> 7)`, so it
      **SHEARS 1:1 WITH PITCH** — it does NOT stand still, and it **clamps and
      smears at the bottom** rather than wrapping.
@@ -173,9 +190,31 @@ offset, flip or anchor. If you find a second copy, that is the bug.
    needs care before it goes on.
 7. **The rest of the `0x30998` load-time init table** — moving floors and
    ceilings, geometry effects, re-runs. Only type `0x02` is implemented.
-8. **Doors** — hinges verified 141/141 across 44 maps; the polyobject build was
-   reverted (`e1f7ba66ba`) because Realms slabs have two-sided faces and GZDoom
-   cannot render two-sided polyobject lines. Nothing opens.
+8. **Doors** — hinges verified 141/141 across 44 maps. Nothing opens yet, but
+   the host is already built and the rule is now settled. See §12.
+
+   **TWO CLAIMS THAT WERE IN THIS SECTION ARE FALSE. Both were believed earlier
+   on 2026-10-01 and both were corrected the same day by reading the tree and
+   the binary rather than the docs.**
+
+   - *"The polyobject build was reverted (`e1f7ba66ba`), so the next job is to
+     build four one-sided lines."* **No — it is LIVE IN HEAD.** `e1f7ba66ba` is
+     an ancestor, but the leaf builder was rebuilt after it: `rothmap.cpp:1720`
+     emits `Polyobj_ExplicitLine` and `roth_runtime.cpp:394` calls
+     `EV_OpenPolyDoor` with `PODOOR_SWING`. The four one-sided lines in a parked
+     void cell already exist (`rothmap.cpp:1676-1735`). `ROTH_STATE.md` §6 is
+     stale on this and this file inherited it. **Checking `git log` is not
+     enough — check the tree.**
+   - *"GZDoom cannot render two-sided polyobject lines, and that is why."*
+     Too strong, and irrelevant either way. GZDoom does handle them
+     (`hw_bsp.cpp:669`, `:704-707`, `hw_walls.cpp:2454`, `:2508`), and the port
+     does not need it: one-sided lines never raise the question. **No engine
+     change is needed for doors.**
+
+   What `6061695bab` recorded that IS true: a Realms slab's faces are shared
+   with the rooms either side, so the slab cannot be made a polyobject by
+   TAGGING existing faces — hence the parked void cell, which is the right
+   shape and is already there.
 9. **Level logic handlers** — 1,937 chains parse and execute; no handlers.
 10. **The game layer** — `ROTH_GAME_PORT.md`. Not started.
 
@@ -190,6 +229,24 @@ offset, flip or anchor. If you find a second copy, that is the bug.
 - **Corridor pose L1** is about 9 rows brighter than the original, and our Z
   there is about 8% short. Some of that may have been the vertical projection
   error fixed on 2026-10-01 — worth re-measuring before chasing it as lighting.
+- **`DEMO[4102]` sits 16 units high**, with `modifier = 0x88` — nibble 8, HANG
+  clear — so the shift should be −16 and the nibble looks like it is not
+  arriving. Two things now ruled out by measurement rather than argument
+  (`tools/rothdiff/prefixcheck.cpp`):
+  - it carries **no anchor offset** (flags_1 is 0x80, bit 3 clear, and no entry
+    in any map pack has one), so the "0x84aba second term" is not the
+    explanation and the two faults are independent;
+  - `0x88` also sets `IM_HALF_SIZE`, and with image_type `0x10` the exponent is
+    0, so this entry draws at **1.0 units per pixel, not 2.0**. The original
+    scales the sprite's extents by that modifier but does **not** scale the
+    nibble shift, which stays in raw world units (`renderer.c:6550-6555`
+    computes `edx` with no `cl` applied). Worth confirming the port agrees,
+    since a half-size entry is exactly where a size and a shift could get
+    multiplied together by mistake.
+
+  Settling it needs the oracle: `rothdiff_sprites` emits each prop's screen
+  rectangle in the same form as `ORACLE_WALLLOG`'s billboard lines, so the two
+  can be compared number for number. Both halves need a run.
 
 ---
 
@@ -622,6 +679,47 @@ Outstanding, in the order to do them:
    owner's "those pillars are too tall". Measure against the oracle before
    implementing — the documented rule, applied as written, sinks 68 of STUDY1's
    props through the floor they are standing on.
+
+   - ~~the nibble shift~~ — done (`8bc39fa`). The burial is real in the
+     original; both alternatives are plainly worse.
+   - ~~the art entry's own anchor~~ — done. This was the "0x84aba second term",
+     and it is not a mystery global: every write to it is a 32-bit store to
+     `0x84ab8` of `dword[block+4]`, and that dword is the four bytes sitting
+     **immediately before the entry in the file**, present only when flags_1
+     bit 3 is set (`das_assets.c:934-944` seeks to `fat.offset - 4` for exactly
+     those). The payload still lands at `fat.offset`, so the picture reader was
+     never affected by any of this. See `roth::AnchorOffset`.
+
+     The lift calls the dword a "size prefix"; that is a misnomer taken from
+     the read's shape rather than its use. **MEASURED: 0 of the 321 prefixed
+     entries hold the FAT size, size + 4, or width × height.** It is a pair of
+     signed words used for two different axes two instructions apart — the low
+     one a lateral slide in VIEW space, the high one the vertical term. Only
+     the shared pack carries them: 321 of its 778 entries, and **none at all in
+     DEMO, DEMO1, DEMO2, DEMO3 or DEMO4**, which is why omitting it looked
+     harmless for so long. Barely any *placed* object reaches one (1 of 4,973);
+     they arrive through the directional frame tables instead.
+   - **THE PILLARS ARE NOT TOO TALL, AND NOTHING EVER MEASURED THAT THEY WERE.**
+     See §13. `DEMO[4123]` and `DEMO[4128]` are `IT_OBJECT_DATA` meshes, the
+     mesh scale chain has a gain of **exactly 1.000000**, and **542 is their
+     true rendered height**. The "3.5x" came from this port's own warning at
+     `roth_objects.cpp:888` — `if (ey > 3.f * 154.f && log)` — which fires on
+     anything over 462 units and logs "542 tall"; `542 / 154 = 3.519`. A
+     warning fired and was read as a measurement. **Close this as a scale
+     question.** Whatever the owner saw is something else, and §13 says where
+     to look.
+   - **a per-view lateral anchor** is missing, and it is a structural gap rather
+     than an oversight. A directional object gets ONE `SpriteInfo` — view 0's —
+     but each view is a different art entry with its own anchor and its own
+     mirror bit, which the original negates and applies per view. MEASURED over
+     all 44 maps (`tools/rothdiff/prefixcheck.cpp`), of the 9 directional
+     entries whose every frame carries an anchor: the **vertical** anchor is
+     identical across views for 9 of 9, so taking it from view 0 is sound; the
+     **lateral** anchor differs across views for **8 of 9**; and all 9 mirror
+     some views and not others. So the lateral half is applied on the plain path
+     and counted-but-skipped on the directional one. Closing it means carrying a
+     per-view offset on the sprite definition beside the per-view flip already
+     there — a real change, deliberately not guessed at.
 2. **The remaining lighting terms.** Re-derived 2026-10-01 with three readers
    and a skeptic each; all four survived, against none on the first attempt.
 
@@ -633,8 +731,11 @@ Outstanding, in the order to do them:
      entirely. Gated on sector flags byte +0x0a bit 6 AND `(phase & 0x49) != 0`
      where phase is the byte at `0x8a355`. The table is 256 bytes at
      `palOff + 0x14402` in the map DAS. **618 sectors carry the bit, 335 of them
-     in STUDY2** — it is the storm in the courtyard. STILL NEEDED: how the phase
-     counter advances. Touches `roth_palshade` / `func_roth.fp`.
+     in STUDY2** — it is the storm in the courtyard. The phase is stepped at a
+     **fixed 35 Hz**, not once per rendered frame, so the flicker does not change
+     speed with the framerate. NOT YET SEEN ON SCREEN: it builds and the data is
+     measured, but no launch has confirmed the flicker looks right.
+     Touches `roth_palshade` / `func_roth.fp` / `hw_drawinfo`.
    - ~~tint ramp selection~~ — **NO CODE NEEDED, measured 2026-10-01.** Map
      metadata `+0x16` is not a ramp index, it is a per-map boolean deciding
      whether the tint ramp exists at all, and when it is zero the engine aliases
@@ -651,6 +752,58 @@ Outstanding, in the order to do them:
 3. **Doors** (§4.8). The only item that blocks *playing* rather than looking.
    Needs a mechanism other than polyobjects.
 4. **Level logic handlers**, then **the game layer** (`ROTH_GAME_PORT.md`).
+
+   `ROTH_GAME_PORT.md` §1 says "fix before anything else: the trigger wiring is
+   wrong in code". **That is stale — checked 2026-10-01 and the fix landed in
+   2026-09**, before this item was ever reached. The code now binds 0x18 / 0x1a
+   / 0x32 as face-keyed and 0x19 / 0x31 as sector-keyed, with 0x13 as the third
+   kind, which is exactly what the spec's own "what it really is" column asks
+   for; only its "runtime currently treats it as" column is out of date. A
+   status banner is now on that section. **So nothing blocks starting here.**
+
+   The real remaining gap on triggers is narrower and is already written down in
+   `roth_runtime.cpp` above `IsFaceTrigger`: the **direction mask and bounding
+   box** on the face channel are not implemented, because they live in
+   object-table refs this port does not build yet. A face trigger therefore
+   fires from any approach rather than only the authored one — a known
+   over-fire, reported at load rather than hidden.
+
+   **HOW FAR THE LEVEL LOGIC ACTUALLY IS, counted over all 44 retail maps
+   (`tools/rothdiff/opcodecensus.cpp`, no launch needed).** 5,531 command
+   records in the shipping game. 1,877 are trigger slots whose instruction is
+   the nop in the original too, and 66 are reserved nops, so **3,588 records
+   have to do something — and 2,250 of them already run: 62.7%.** The dispatcher
+   handles 26 opcodes; 1,338 records across 21 opcodes fall through.
+
+   Those 21 are not scattered. Grouped by the system each belongs to in
+   `GAME_core.md` §5.3, **two systems are 70% of everything missing**:
+
+   | System | Opcodes | Records | What it is |
+   |---|---|---|---|
+   | **Actors / spawning** | 0x3c (256), 0x16 (153), 0x3a (72) | **481** | `cmd_spawn_object_adv`, `cmd_spawn_object`, `cmd_change_object_id` |
+   | **Inventory** | 0x29 (239), 0x27 (161), 0x2a (56), 0x42 (2) | **458** | `cmd_give_item`, `cmd_if_not_item`, `cmd_remove_item`, the display filter |
+   | Ambient sound | 0x10 (94) | 94 | `cmd_activate_sfx_node` |
+   | Particles | 0x2d (76) | 76 | `cmd_particle_effect` |
+   | Loop counters | 0x15 (37), 0x1e (42), 0x1f (25), 0x22 (1) | 105 | the `cmd_count` family — pure flow, no new subsystem |
+   | Player effects | 0x33 (44), 0x3f (19), 0x35 (15), 0x41 (3) | 81 | damage, forced rotation, hazard walls, slowdown |
+   | Moving sectors | 0x09 (32) | 32 | `cmd_move_sector` — moves a sector's VERTICES, unlike 0x07 |
+   | Texture odds | 0x2e (9), 0x1c (1), 0x20 (1) | 11 | smash / cycle variants |
+
+   **So the honest answer to "when can the game go in" is: now, and the first
+   two things to build are inventory and actor spawning.** Neither is loader
+   work — both are squarely the game layer, which is what this item is. The
+   `cmd_count` family is worth doing early and cheaply: 105 records of pure
+   control flow that needs no new subsystem at all.
+
+   Per map, the least ready are DOPPLE 41.9%, VICAR 42.2%, CAVERNS 42.9%; the
+   most are CAVERNS2 and ABAGATE2 at 100%. **CHURCH1 is the one that matters**:
+   451 records, 260 of them live, and 120 unhandled — the largest single
+   concentration of missing logic in the game.
+
+   Caveat on the numbers: the census mirrors `IsImplemented` / `IsVerifiedNop`
+   by hand, because they are in an anonymous namespace in an engine translation
+   unit. The tool prints both tables every run so drift shows up instead of
+   lying; if you change the dispatcher, change them.
 
 **Before building any of 1-3, re-derive the rule.** All three were extracted
 from ROTH.C on 2026-10-01 and all three were REFUTED by an independent reader:
@@ -671,3 +824,249 @@ circulating on those three as unsafe.
 - **Do not report a fix without evidence.** "Parser counts alone don't count."
 - When a rule is contested, do not argue it — measure it. That has resolved
   every dispute in this project, usually in one run.
+
+---
+
+## 12. DOORS — the settled rule, 2026-10-01
+
+Re-derived by three independent readings, each attacked by its own skeptic.
+**All six agree on the corner ordering**, which is the detail that sank the
+previous attempt. Confidence: high.
+
+**CAVEAT ON LINE NUMBERS.** All three skeptics made the same complaint: a number
+of citations land roughly 11 lines early, inside a function's prose header
+comment rather than its code. The *rules* survived independent re-derivation;
+the *line numbers* below should be confirmed by eye before being quoted onward.
+
+### The corner ordering — FORWARD, not backward
+
+`pk = 0x24180c00` (`doors.c:491`). Its bytes from the least significant are
+`0x00, 0x0c, 0x18, 0x24`, and the Face stride is `0x0C`, so those are face
+slots 0/1/2/3 of the sector.
+
+The previous attempt's "walking BACKWARD (ror)" was inverted, and the diagnosis
+is specific: **the hinge SEARCH loop and the corner STORE loop use different
+rotations, and the search's was mistaken for the store's.**
+
+- Search (`doors.c:500`) uses `rol32` — byte3 into byte0, i.e. slot −1, so it
+  probes 0, 3, 2, 1: descending. It `break`s on a hit **before** the rol, so on
+  exit `pk & 0xff` is the hinge's own offset. That positioning is what makes the
+  store loop work.
+- Store (`doors.c:511`) uses `ror32` — byte1 into byte0, i.e. slot +1, so the
+  low byte ascends.
+
+**With the hinge at sector face slot `h`: `c_k = slot (h + k) & 3`.** `c0` is the
+hinge face; `c1` and `c3` are the two broad faces; `c2` is the far thickness
+edge. Independent corroboration from the consumer: the mirror decision
+(`doors.c:525`) compares the sector reached through `c3` against the room the
+player used the door from, which is the "swing away from the player" rule only
+under forward ordering.
+
+### The motion
+
+A **pure 2D rotation about the hinge vertex**. No translation, no easing, and a
+single byte of state at `rec+0x03`.
+
+- `g_sincos_table` is 512 × int16 Q14 — settled by reading its actual bytes
+  (`tab[128] = 0x4000 = 16384`, `obj3_owned.c:786-800`), which makes the lift's
+  swapped sin/cos *names* irrelevant. **Implement from the indices:** `tab[i]`
+  is sine, `tab[(i + 0x80) & 0x1ff]` cosine.
+- `rotate_quad` gives exactly `out = pivot + [[cos,−sin],[sin,cos]] · (px,py)`.
+- **1 angle unit = 1.40625° exactly. Full travel = 64 units = 90°**, so the
+  `DAngle::fromDeg(90.)` already in `roth_runtime.cpp:394` is correct.
+- **Time base is 70 Hz (70.31), not 120.** The lift's "120 Hz divisor" comment
+  at `dos_runtime.c:277-280` is arithmetically self-refuting: `1000/3863 =
+  0.2589 = 18.2/70.3`, not `18.2/120 = 0.1517`. Corroborated by the driver timer
+  registered at rate `0x46` = 70 (`audio.c:1835-1842`) and by `GAME_core.md:18`.
+- Speed: `step = dt × M`, or `min(dt, 8)` when `M == 0`. **`M == 0` is
+  equivalent to `M == 1`** above 8.75 fps — a per-frame overshoot cap, *not*
+  `M = 8`. Full open at `M=1` is 64 ticks = 0.914 s.
+- `dt` is whole ISR ticks since the previous rendered frame, clamped to 45, with
+  **no lower clamp** — `dt` can be 0 and then no door moves that frame.
+
+### What moves
+
+**Nothing in the shared map.** The slab is a four-point quad living inside the
+door-pool record. `rotate_quad` rewrites only the world-space corner array at
+`[rec+0x2e]+0x82`. The single map write is bit 0 of each adjoining sector's
+`+0x16` flags byte, and only at open/close boundaries — it must be kept in
+lockstep with the record's existence, including re-setting it on every survivor
+after the pool compacts.
+
+### The command record — both earlier hypotheses were wrong
+
+| Field | What it actually is |
+|---|---|
+| `+0x07` byte | **the swing speed multiplier `M`**, angle units per 70 Hz tick |
+| `+0x08` word | the resolve key: a FACE id; 0 = "the wall the player just used" |
+| `+0x0a` word | **the open dwell reload `A`**; the stored value is `(uint16)(A × M)` when `M != 0` |
+| `+0x0e` / `+0x10` | **not a target point.** Stashed by `register_door_swing` for other use |
+
+### The skin — PARTLY OPEN, do not guess
+
+Verified by reading `doors.c:553-559`: there are exactly four surface
+sub-structs, and **all four are built from `c1` and `c3` only**, each twice —
+`_a(ebx=c3, edx=c2)`, `_a(ebx=c1, edx=c0)`, `_b(ebx=c3)`, `_b(ebx=c1)`. In `_a`,
+`ebx` is the texture source and `edx` only contributes a stored extent, so
+**`c0` and `c2` are never a texture source.** Each broad face carrying two skins
+(its own and its sister's) is what "two-sided" actually meant.
+
+Also verified, from the binary: `g_door_vertex_template` + its body
+(`obj3_owned.c:866-872`) is 20 × u16 = **four quads of five indices**, closing
+cleanly, referencing vertex slots `0x00-0x30` **and** `0x40-0x70`. So array B is
+the slab's second ring and all four edges exist as geometry — and array B is not
+"never read" as one reading claimed.
+
+**What is open: which of the four surfaces lands on which of the four quads.**
+Four surfaces and four quads in a fixed order invites a 1:1 mapping, but that is
+an inference, and this is the single point the three readings disagreed on. It
+does not block the work below.
+
+### Mapping it onto GZDoom — the conversion is exactly 16
+
+No engine change. `EV_OpenPolyDoor`'s swing branch already does
+
+```
+m_Speed = speed * (90./64) / 8      // degrees per 35 Hz tic, po_man.cpp:674
+```
+
+and **`90/64 = 1.40625` is exactly Realms' degrees per angle unit** — Hexen's
+polyobject doors inherited the same 64-step quarter turn from the same era, so
+the two engines already agree on the unit. Equating the rates:
+
+```
+Realms   M * 1.40625 * 70        = 98.4375 * M   deg/s
+GZDoom   speed * 1.40625 / 8 * 35 = 6.15234 * speed deg/s
+=>       speed = 16 * M
+```
+
+Check: `M = 1` gives `m_Speed` = 2.8125 deg/tic, so 90° takes 32 tics = 0.914 s,
+against the original's 64 ticks at 70 Hz = 0.914 s. **Exact, not fitted.**
+
+**Dwell is `A` ticks whatever the speed.** The reload is `A × M`, but the counter
+is decremented by the same step as the swing — `M` per tick — so it runs for
+`A × M / M = A` ticks and does *not* scale with speed. `A` is in 70 Hz ticks and
+`m_WaitTics` is in 35 Hz tics, so `delay = A / 2`. A first pass of this code
+scaled the dwell by `M`, which would have made fast doors wait proportionally
+longer; the error is only visible by reading both engines' units side by side.
+
+### What was fixed on 2026-10-01
+
+All loader/runtime side, no engine change:
+
+1. **`rothmap.cpp` corner/line pairing.** It stored `face.vertex2` and then
+   paired vertex `j` with `j+1`, which reads like "the line reversed" and is
+   not: with the ring closing as `v2(c_k) == v1(c_(k+1))`, line `j` spanned
+   `v1(c_(j+1)) -> v1(c_(j+2))` — face `c_(j+1)` traversed **forward**. One
+   shift, two bugs: the one-sided fronts faced INTO the slab (so from outside
+   the player saw backs with no sidedef), and the `j == 1 || j == 3` skin
+   painted the two THICKNESS edges and left the broad faces blank. Now `P[k]`
+   is `c_k`'s own `vertex1` and line `j` runs `P[j+1] -> P[j]`.
+2. **The "flat panel, not a box" comment**, refuted by the binary's own
+   template. Replaced with what is verified and what is open.
+3. **`roth_runtime.cpp` speed field.** It read the speed from `args[3]` (the
+   command's `+0x0c`) while reading the dwell multiplier from `+0x07` — one
+   value cannot live at two offsets. Both are `+0x07`. The `M == 0` case also
+   used `8.0`, eight times too fast.
+
+**NONE OF THIS HAS BEEN SEEN.** It builds; no launch has confirmed a door is
+visible, let alone that one swings the right way. The first run should check, in
+this order: are all 25 of STUDY1's leaves present and solid; do the broad faces
+carry a texture; does the slab swing away from the player; does it take about
+0.9 s at `M = 1`.
+
+---
+
+## 13. MESHES — the scale is 1.0, and the "too tall" premise is dead
+
+Derived 2026-10-01 by three independent readings, each attacked by its own
+skeptic. All three survived, and — the trap that was set for exactly this — none
+of them reasoned backwards from the 3.5x symptom. Confidence: high.
+
+### The scale chain: gain exactly 1.000000
+
+**One stored int16 = one world unit = one map unit.** There is ONE shift in the
+whole path (`>> 14`, horizontal only) and it is exactly unity. No `>>2`, no
+`>>8`, no 256-grid factor, no missing or double shift.
+
+```
+vx = (int16) u16[v+0x00]   vup = (int16) u16[v+0x02]   vy = (int16) u16[v+0x04]
+ang = g_sprite_view_angle - 2 * (u8)record[+0x06]
+rx  = (vx*cos - vy*sin) >> 14      ry = (vx*sin + vy*cos) >> 14
+```
+
+The unity was **proven twice, by measurement rather than inference**: the
+512-entry `g_sincos_table` was extracted and computed — `T[128] = +16384`,
+`T[384] = -16384`, amplitude exactly `0x4000 = 2^14`, max deviation from
+`round(16384*sin(2*pi*i/512))` across all 512 entries = 1 — so
+`(unit * 2^14) >> 14 = unit`. Independently, `floorceil_rotation_sincos`
+early-returns the point *unchanged* at angle 0 while its body uses the same
+table and the same `>>14`, which forces `T[0] = 0` and `T[0x80] = 0x4000`.
+
+Corroborated from the other side: `rwss_sprite_side_entry` has to feed a mesh
+vertex into the *wall* projector and converts by `<< 8` on lateral and depth and
+nothing at all on height (`renderer.c:6597-6602`) — mesh view coords are x1,
+wall coords are x256. The port's existing "one mesh unit is one world unit"
+note was right all along.
+
+### So where did "3.5x too tall" come from
+
+**From this port's own log line, not from any measurement.**
+`roth_objects.cpp:888` is `if (ey > 3.f * 154.f && log)`, under a comment
+reasoning that Realms' player is 154 units so a prop over three times that is
+"either genuinely architectural or a scale we have got wrong". The threshold is
+462. A 542-unit mesh trips it and logs `542 tall`. And `542 / 154 = 3.519`.
+
+A session reading that log could manufacture "3.5x too tall" out of the prop's
+own ratio against the threshold's divisor. **Nothing measured an error — a
+warning fired.** Treat that log line as a prompt to measure, never as a finding.
+
+### What the two entries actually are
+
+`DEMO[4123]` and `DEMO[4128]` are **six-blade radial fans**, byte-identical in
+geometry, differing ONLY in texture ids. 14 vertices = 7 `(x,y)` positions each
+paired at `up = 0` and `up = 542`: a hub at `(0,2)` and six outer points at
+radius ~230 and bearings 0.5°, 65.4°, 121.9°, 179.5°, 245.9°, 306.9°. All six
+blades share the two axis vertices. `min(up) = 0`, so **the model stands on its
+origin**. 12 faces in 6 complementary pairs (`f0 = [0,1,2,3]`, `f1 = [1,0,3,2]`
+— the same quad pre-reversed), and the engine draws exactly 6 of the 12 from any
+viewpoint because faces are **one-sided, backface-culled in screen space, and
+depth-sorted painter-style**. Footprint 460 x 420 x 542.
+
+### The mesh path is bigger than anyone assumed
+
+MEASURED (`tools/rothdiff/meshcheck.cpp`): **935 of the 4,973 placed objects
+across all 44 maps are meshes — 19%**, spread over 33 distinct entries. 47 mesh
+entries exist in the five map packs and **none at all in the shared pack**.
+STUDY1 places one, `DEMO[4109]` at `(816, 264, 400)`, so meshes can be checked
+in the same map as the doors.
+
+### A port bug that is real but UNREACHABLE
+
+`DEMO.DAS[4097]` (56 verts, 47 faces) is the only entry in all five packs tagged
+**`EXPL`** rather than `EXP2`. The EXPL variant stores a face's texture id as a
+zero-extended BYTE at `+0x0c`, where the normal kind stores a byteswapped word
+(`renderer.c:817-821`). `roth_das.cpp:494` reads `RdU16BE(+0x0C)`
+unconditionally, so for an EXPL mesh every face would resolve to a huge id,
+which `MeshFace` treats as a flat colour — all 47 faces painted solid.
+
+**It is placed in NONE of the 44 retail maps** (measured, not assumed). So the
+bug cannot reach the screen and does not need fixing now. Do not spend time on
+it; do add the tag check if the mesh reader is touched for another reason.
+
+### Still open
+
+- **How a mesh face's texture maps to pixels — now the largest gap, and it GREW
+  during review.** All three readings asserted `face+0x24`/`+0x26` are the
+  face's world-unit extents and therefore the UV rule; the measured pair
+  contradicts that. Do not implement mesh UVs from those two fields.
+- The absolute world sense of the yaw. The *relative* rule is determinate (bias
+  0, rotation sign opposite to the view sign); which way `R(+a)` turns in
+  GZDoom's own convention is not settled.
+- Whether an `IT_OBJECT_DATA` entry ever reaches the **second** entry point,
+  `rwss_type04` (`renderer.c:6422-6453`), which feeds the same projector from a
+  different record whose rotation byte is at `+0x03`, not `+0x06`.
+- One skeptic challenged §2's visible-pass/subpass assignment, saying the lift's
+  own header for `0x28dbe` describes it as *building* the per-frame draw list.
+  §2's rule was established by measurement and stands until re-measured — but
+  the disagreement is recorded rather than buried.
