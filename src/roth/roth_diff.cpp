@@ -134,6 +134,21 @@ TArray<PendingDump> g_pending;
 // buffer, -1 already means "a sprite listing", so -2 means "press use here".
 static const int USE_MARKER = -2;
 
+// -3 means "stand in this SECTOR", with the sector number in `x`.
+//
+// Needed because a sector is not addressable any other way. The load report
+// names the sectors carrying a given trigger opcode -- 23 of them carry an 0x13
+// in STUDY1 -- but nothing offline turns a sector number into a point inside
+// it, and the rig only takes x,y. findspots finds places by SURFACE TYPE, not
+// by sector, so it cannot answer "put me in sector 174".
+//
+// It waits a few tics after arriving rather than moving straight on, because
+// the thing being tested fires from P_PlayerThink on a LATER tic than the move:
+// a queue that advanced immediately would quit before the last sector's trigger
+// had any tic to run in.
+static const int SECTOR_MARKER = -3;
+static const int SECTOR_SETTLE_TICS = 4;
+
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
 void PlaceCamera(int px, int py, int pang, int pitch = 0);
 void DoSprites(int px, int py, int pang, const char *path);
@@ -174,6 +189,36 @@ void RothDiff_RunPending()
 			g_pending.Size());
 	}
 
+	// ABANDON THE QUEUE IF THE MAP CHANGES UNDER IT.
+	//
+	// Every pose in a batch is authored against ONE map: a sector number or an
+	// x,y means something different in the next one, or nothing at all. And a
+	// map change is not hypothetical here -- the level logic can cause one.
+	// Standing in STUDY1's sector 174 fires an 0x13 whose chain warps to
+	// STUDY3, so a run that was probing 22 sectors found itself on its sixth
+	// probe in a different map and carried on teleporting through numbers that
+	// no longer referred to anything. It crashed several probes later, and the
+	// crash looked like the dispatch being at fault when the rig had simply
+	// driven off the end of its own instructions.
+	static FString lastMap;
+	const FString nowMap = players[consoleplayer].mo->Level->MapName;
+	if (lastMap.IsEmpty())
+	{
+		lastMap = nowMap;
+	}
+	else if (lastMap.Compare(nowMap) != 0)
+	{
+		Printf("rothdiff: MAP CHANGED %s -> %s with %u request(s) left."
+			" Abandoning them: poses are authored for one map.\n",
+			lastMap.GetChars(), nowMap.GetChars(), g_pending.Size());
+		Printf("rothdiff: a trigger chain did this, which is a RESULT, not a"
+			" fault -- re-run the rest against the new map on purpose.\n");
+		g_pending.Clear();
+		lastMap = nowMap;
+		AddCommandString("quit");
+		return;
+	}
+
 	// ONE capture per tic, never the whole queue.
 	//
 	// A 640x480 dump is 307,200 traces. Draining ten of those in a single tic
@@ -188,6 +233,44 @@ void RothDiff_RunPending()
 	// as it was at the start of the tic, so shooting immediately captures the
 	// old position. Counted down here rather than slept on, so the game keeps
 	// running normally in between.
+	if (front.w == SECTOR_MARKER)   // stand in this sector, see rothdiff_sector
+	{
+		if (front.settle == SECTOR_SETTLE_TICS)
+		{
+			const int secnum = front.x;
+			AActor *pm = players[consoleplayer].mo;
+			if (secnum < 0 || (size_t)secnum >= pm->Level->sectors.Size())
+			{
+				Printf("rothdiff_sector: %d is out of range (%u sectors)\n",
+					secnum, pm->Level->sectors.Size());
+				g_pending.Delete(0);
+				if (g_pending.Size() > 0) return;
+				Printf("rothdiff: all captures done; quitting\n");
+				AddCommandString("quit");
+				return;
+			}
+
+			// centerspot is the sector's own centre, which the engine already
+			// maintains for sound and for 3D-floor tests. Good enough to stand
+			// in; a concave sector could put it outside the floor, which is
+			// visible as a sector number that does not match the one asked for.
+			sector_t *sec = &pm->Level->sectors[secnum];
+			PlaceCamera((int)sec->centerspot.X, (int)sec->centerspot.Y, 0);
+			Printf("rothdiff_sector: asked for %d, standing in %d\n", secnum,
+				pm->Sector != nullptr ? pm->Sector->Index() : -1);
+		}
+
+		// Wait, so the sector-enter dispatch in P_PlayerThink gets tics to run
+		// in before the queue moves on or the game quits.
+		if (--front.settle > 0) return;
+
+		g_pending.Delete(0);
+		if (g_pending.Size() > 0) return;
+		Printf("rothdiff: all captures done; quitting\n");
+		AddCommandString("quit");
+		return;
+	}
+
 	if (front.w == USE_MARKER)   // press use here, see rothdiff_use
 	{
 		const PendingDump d = g_pending[0];
@@ -350,6 +433,38 @@ CCMD(rothdiff_sprites)
 	d.settle = 0;
 	g_pending.Push(d);
 	Printf("rothdiff_sprites: queued %s\n", argv[4]);
+}
+
+// Stand in a sector, named by number, one after another.
+//
+// A sector is not reachable any other way: the load report says WHICH sectors
+// carry a given trigger opcode, but turning a sector number into a point inside
+// it needs the built level, and the rest of the rig takes x,y. This is how an
+// enter-sector trigger gets tested on purpose instead of by driving past poses
+// and hoping one of them lands.
+//
+// Takes a list, because the interesting question is usually "any of these 23".
+CCMD(rothdiff_sector)
+{
+	if (argv.argc() < 2)
+	{
+		Printf("usage: rothdiff_sector <sector> [sector ...]\n");
+		Printf("  stands in each in turn, pausing %d tics so a per-tic dispatch\n",
+			SECTOR_SETTLE_TICS);
+		Printf("  has somewhere to run. See the load report for which sectors\n");
+		Printf("  carry which trigger opcode.\n");
+		return;
+	}
+	for (int i = 1; i < argv.argc(); i++)
+	{
+		PendingDump d;
+		d.x = atoi(argv[i]); d.y = 0; d.ang = 0;
+		d.w = SECTOR_MARKER; d.h = 0;
+		d.screenshot = false;
+		d.settle = SECTOR_SETTLE_TICS;
+		g_pending.Push(d);
+	}
+	Printf("rothdiff_sector: queued %d sector(s)\n", argv.argc() - 1);
 }
 
 // A picture, from the same camera spot as an identity buffer, for the things

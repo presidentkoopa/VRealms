@@ -67,6 +67,7 @@
 #include "serialize_obj.h" // IWYU pragma: keep
 #include "serializer_doom.h"
 #include "vm.h"
+#include "roth/roth_runtime.h"
 
 extern int paused;
 
@@ -1750,6 +1751,17 @@ void P_PlayerThink (player_t *player)
 	{
 		I_Error ("No player %td start\n", player - players + 1);
 	}
+
+	// Realms of the Haunting's enter-sector triggers (opcode 0x13) are a
+	// PER-FRAME POLL in the original -- twe_link_state looks at where the player
+	// is from the world tick, and there is no crossing callback to hook -- so
+	// they are noticed here, once a tic. Inert when no Realms level is loaded.
+	//
+	// AT THE TOP ON PURPOSE, so it runs on every tic rather than only the tics
+	// that reach the bottom of this function. It therefore sees the player's
+	// position as of the end of the previous tic, which is the same one-tic
+	// granularity the original polls at.
+	roth::NotifyPlayerSector((int)(player - players), player->mo);
 
 	// RS FORK -- SCRIPT-DRIVEN BUTTONS (player_t::ButtonInject / ButtonMask).
 	//

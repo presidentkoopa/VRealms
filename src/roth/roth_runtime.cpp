@@ -186,18 +186,83 @@ struct Effect
 	std::vector<ObjectRef> objects;
 };
 
+// TrigEvent -- what makes a trigger fire, as opposed to what it is bound to --
+// is declared in roth_runtime.h, because the dispatch sites outside this file
+// have to name an event when they call in. The derivation and the GAME_core.md
+// 5.2 citations are at EventForOpcode below.
+
+// One trigger bound to one piece of geometry: the chain to run, and the single
+// event that runs it. Before this carried an event, every chain on a given
+// sidedef answered every way the player could touch it.
+struct Binding
+{
+	uint16_t  chain = 0;                  // 1-based command index
+	TrigEvent event = TrigEvent::None;
+	uint8_t   opcode = 0;                 // kept for the load report only
+	uint8_t   fireFlags = 0;              // the record's +0x06: the facing mask
+};
+
+//==========================================================================
+//
+// THE FACING MASK at a trigger record's +0x06, read out of ROTH.C.
+//
+// fire_sector_trigger (E/raw_commands.c:2876-2878) does exactly this:
+//
+//     t   = (g_player_angle - 0x40) & 0x1ff
+//     bit = 1 << ((t >> 7) & 7)
+//     if (!(f6 & bit)) { ...fire... }
+//
+// So it is the PLAYER'S FACING, not the direction of travel; the angle is in
+// 512 units to the turn; subtracting 0x40 rotates the boundaries by 45 degrees
+// so the four 128-unit quadrants are centred on the cardinals rather than
+// straddling them; and -- the part that is easy to get backwards -- a SET bit
+// FORBIDS that quadrant. An all-clear mask fires from anywhere, which is why
+// ignoring the mask entirely looked right for so long: most records have one.
+//
+// Only bits 0-3 are facing. The upper bits are unrelated and are read after a
+// chain runs: 0x40 asks for the LEAVE refire, 0x20 drives the re-find latch,
+// 0x10 gates the spent bit. See NotifyPlayerSector for what is and is not
+// implemented of those.
+//
+//==========================================================================
+
+int DoomYawToRoth512(DAngle yaw)
+{
+	// The inverse of RothAngleToDoom (roth_diff.cpp:95), which is
+	// 90 + a512 * 360/512. Two's-complement `& 511` is the right modulo here
+	// and keeps a negative angle positive.
+	return (int)lround((yaw.Degrees() - 90.0) * (512.0 / 360.0)) & 511;
+}
+
+bool FacingAllows(uint8_t fireFlags, AActor *who)
+{
+	if (who == nullptr) return true;
+	const uint32_t t = ((uint32_t)DoomYawToRoth512(who->Angles.Yaw) - 0x40u) & 0x1ffu;
+	const uint8_t bit = (uint8_t)(1u << ((t >> 7) & 7));
+	return (fireFlags & bit) == 0;
+}
+
 struct Runtime
 {
 	bool active = false;
 	Map map;                       // the level's own copy of its logic
 	FLevelLocals *level = nullptr;
 
-	// Trigger bindings, built once at load. A face or sector can carry several.
-	std::map<int, std::vector<uint16_t>> byFace;     // Realms face  -> chain starts
-	std::map<int, std::vector<uint16_t>> bySector;   // Realms sector-> chain starts
+	// Trigger bindings, built once at load. A face or sector can carry several,
+	// and they need not share an event -- one wall can have a use trigger and an
+	// examine trigger on it.
+	std::map<int, std::vector<Binding>> byFace;     // Realms face  -> bindings
+	std::map<int, std::vector<Binding>> bySector;   // Realms sector-> bindings
 
 	// Doorway sector -> the polyobject tag of the panel that fills it.
 	std::map<int, int> doorTag;
+	// Player number -> the sector it was in when last looked at, so a crossing
+	// can be noticed. Realms' own enter-sector machinery is a per-frame poll of
+	// the same shape (twe_link_state, raw_commands.c:3202), not a collision
+	// callback, so a per-tic comparison is the faithful mechanism and not an
+	// approximation of one.
+	std::map<int, int> lastSectorByPlayer;
+
 	// Engine sidedef -> the polyobject tag of the door leaf it belongs to.
 	//
 	// A leaf is NOT a Realms face: the loader generates its four lines, so it
@@ -212,7 +277,7 @@ struct Runtime
 	// Realms texture-map record -> the faces that use it, for the scroll effect:
 	// its members are MAPPING records and the sidedefs hang off the faces.
 	std::map<int, std::vector<int>> texmapToFaces;
-	std::map<int, std::vector<uint16_t>> bySide;   // built from the two above
+	std::map<int, std::vector<Binding>> bySide;    // built from byFace
 
 	// "Whatever the player just used" -- the original's g_active_object /
 	// g_active_object_secondary (ROTH_COMMANDS.md, "key = 0 means the thing the
@@ -300,23 +365,74 @@ int g_warpArrivalSector = -1;
 // face-keyed like 0x1a, and binding them to a sector pointed them at the wrong
 // geometry entirely.
 //
-// AND THE EVENTS ARE NOT WHAT THE OLD NAMES CLAIMED. Tracing each bit to its
-// reader, there is no per-frame "player entered a sector" poll for any of these:
+// WHICH GEOMETRY and WHICH EVENT ARE TWO DIFFERENT QUESTIONS, and conflating
+// them is what went wrong here twice.
 //
-//   bit 2 (0x1a) is read in the WALL-COLLISION hit path
-//   (collision_physics.c:562) and fires fire_wall_object_trigger. It is a BUMP.
-//   bit 1 (0x18) is read by dispatch_entry_command_trigger's type-3 channel
-//   (raw_commands.c:3019), gated on a direction mask and a bounding box.
-//   bit 4 (0x32) is read by dispatch_entry_command_trigger_b (raw_commands.c:3114).
-//   sector 0x10/0x20 (0x19/0x31) gate that same dispatcher's use channels.
+// The markers above answer the first: they say which index space a trigger's
+// key lives in, so they decide what it is BOUND to. They say nothing about what
+// makes it fire. "Sector-keyed" is not "fires when you enter the sector" --
+// 0x19 is keyed by a sector and fired by a CLICK on that sector's floor.
 //
-// THE DIRECTION MASK AND BOUNDING BOX ARE NOT IMPLEMENTED HERE. Both live in the
-// object-table refs the dispatcher scans, which this port does not build yet, so
-// a face trigger fires whenever its face is activated rather than only from the
-// authored approach direction. That is a KNOWN over-fire, recorded in the load
-// report, not an approximation of the original's test.
+// The event comes from GAME_core.md 5.2, which gives the firer of each of the
+// 15 categories from the original's code and states that it "corrects
+// R/ROTH_COMMANDS.md and R/src/roth/roth_runtime.cpp:54-55" -- this file. The
+// correction is applied here. Its table, for the six that reach geometry:
+//
+//   0x18  left-click a wall face         face-keyed    5.2 row 5
+//   0x32  right-click (examine) a face   face-keyed    5.2 row 11
+//   0x1a  an ATTACK or projectile hits a face          5.2 row 7
+//         -- and 5.2 says of it: "the player's POINT sweep never fires it"
+//   0x19  left-click a floor / platform top   sector-keyed  5.2 row 6
+//   0x31  right-click a floor / ceiling / platform      5.2 row 12
+//   0x13  ENTER or LEAVE a sector        sector-keyed  5.2 row 4
+//         -- twe_link_state -> fire_sector_trigger, raw_commands.c:3202-3270
+//
+// 0x13 IS THE ENTER-SECTOR TRIGGER, and nothing in this file used to classify
+// it at all, so every one of those was bound to nothing and could never fire.
+// The comment that used to sit here dismissed it as "the water/lava machine ...
+// not one of these" on the strength of ONE of its three variants; 5.2 row 4
+// lists them as "plain, Z-below-floor (water), linked platform", so the water
+// machine is a variant of the enter-sector trigger rather than an alternative
+// to it.
+//
+// 0x1a WAS IN THE USE BUCKET and called a BUMP. It is neither: it is the weapon
+// -hit channel (collision_physics.c:556-568 -> fire_wall_object_trigger), and
+// the player walking into a wall does not fire it.
+//
+// THE DIRECTION MASK AND BOUNDING BOX ARE STILL NOT IMPLEMENTED. Every trigger
+// record carries an approach mask at +0x06 (`fireFlags`) and the dispatcher
+// checks it first (5.1, "check the direction mask"), so a trigger fires here
+// from any approach rather than only the authored one. A KNOWN over-fire,
+// counted in the load report, not an approximation.
+// What fires this trigger. GAME_core.md 5.2; see the comment above.
+TrigEvent EventForOpcode(uint8_t op)
+{
+	switch (op)
+	{
+	case 0x18: case 0x19: return TrigEvent::Use;
+	case 0x32: case 0x31: return TrigEvent::Examine;
+	case 0x1A:            return TrigEvent::Impact;
+	case 0x13:            return TrigEvent::SectorEnter;
+	default:              return TrigEvent::None;
+	}
+}
+
+// What the trigger's key names, which is what it is bound to. Read off the load
+// markers, not the opcode number.
 bool IsFaceTrigger(uint8_t op)   { return op == 0x18 || op == 0x1A || op == 0x32; }
-bool IsSectorTrigger(uint8_t op) { return op == 0x19 || op == 0x31; }
+bool IsSectorTrigger(uint8_t op) { return op == 0x13 || op == 0x19 || op == 0x31; }
+
+const char *TrigEventName(TrigEvent e)
+{
+	switch (e)
+	{
+	case TrigEvent::Use:         return "use";
+	case TrigEvent::Examine:     return "examine";
+	case TrigEvent::Impact:      return "impact";
+	case TrigEvent::SectorEnter: return "sector enter/leave";
+	default:                     return "none";
+	}
+}
 
 // A mutable record by 1-based index -- resolve_command_by_index (renderer.c:9830).
 // MUTABLE on purpose: command records are game STATE in the original, not read-
@@ -3418,22 +3534,15 @@ static void InitLightSwitchesAtLoad(Log *log)
 // a lift.
 static const int ROTH_LINE_SPECIAL = 9000;
 
-// Which ways a player may touch a Realms line and have it mean something.
-//
-// NOT every way. GAME_core.md §5.2 gives the event for each face-keyed trigger
-// and all three are a click or a hit: 0x18 is left-click wall, 0x32 is
-// right-click wall, 0x1a is "attack or projectile hits" -- and it says of 0x1a
-// that "the player's POINT sweep never fires it". None of them is a walk-over
-// or a shove, so SPAC_Cross, SPAC_AnyCross and SPAC_Push are NOT asked for.
-// They were, and that made every face trigger in the game fire on brushing past
-// its wall.
-//
-// This is still coarser than the original, which picks ONE event per opcode.
-// Splitting the bindings per event is the next piece of work; until then a face
-// trigger fires on either a use or a hit, which over-fires 0x1a on use and
-// 0x18/0x32 on a bullet. Recorded rather than hidden.
-static const int ROTH_LINE_ACTIVATION =
-	SPAC_Use | SPAC_UseThrough | SPAC_UseBack | SPAC_Impact;
+// WHICH WAYS A PLAYER MAY TOUCH A LINE is now asked per line, in
+// MarkTriggerLines, from the events its own triggers wait for. A single
+// ROTH_LINE_ACTIVATION constant used to stand here and it was wrong twice over:
+// first it included SPAC_Cross, SPAC_AnyCross and SPAC_Push, so every face
+// trigger fired on brushing past its wall; then, narrowed to use-or-impact, it
+// still woke an 0x1a trigger on a use and an 0x18 on a bullet, because one
+// constant cannot express "this line wants a click and that one wants a hit".
+// GAME_core.md §5.2 gives exactly one event per opcode, so the engine is asked
+// for exactly those.
 
 // A door leaf answers the use key and nothing else. Shooting a door or walking
 // into it does not open it in the original.
@@ -3494,7 +3603,41 @@ int MarkTriggerLines(FLevelLocals *level)
 		ln->activation |= activation;
 	};
 
-	for (const auto &kv : g.bySide)   mark(kv.first, ROTH_LINE_ACTIVATION);
+	// ASK FOR ONLY THE EVENTS THIS LINE'S OWN TRIGGERS WANT.
+	//
+	// A line carrying nothing but an 0x1a does not want to be offered a use, and
+	// a line carrying nothing but an 0x18 does not want to be offered a bullet.
+	// Asking for both on every line is how 0x1a came to fire when the player
+	// pressed use: the engine offered the line, the hook claimed it, and the
+	// event was not checked. ActivateLine checks it now, but there is no reason
+	// to be woken for an event no trigger on this line is waiting for.
+	for (const auto &kv : g.bySide)
+	{
+		int want = 0;
+		for (const Binding &b : kv.second)
+		{
+			switch (b.event)
+			{
+			case TrigEvent::Use:
+				want |= SPAC_Use | SPAC_UseThrough | SPAC_UseBack;
+				break;
+			case TrigEvent::Impact:
+				want |= SPAC_Impact;
+				break;
+			case TrigEvent::Examine:
+				// NOTHING. There is no examine input yet, and borrowing the use
+				// bits for it would put examine and use back in one bucket --
+				// the exact conflation 5.2 corrects. An 0x32 is bound and
+				// unreachable, which the load report states per opcode rather
+				// than leaving it to look like a working trigger.
+				break;
+			default:
+				break;
+			}
+		}
+		if (want != 0) mark(kv.first, want);
+	}
+
 	for (const auto &kv : g.doorLeafSide) mark(kv.first, ROTH_LEAF_ACTIVATION);
 
 	return marked;
@@ -3540,26 +3683,48 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	g.sideToFace.clear();
 	for (auto &kv : g.faceToSide) g.sideToFace[kv.second] = kv.first;
 
-	// Bind every trigger to the geometry it watches. The reader has already
-	// resolved each key to a sector and/or a set of faces; this only sorts them
-	// by what kind of event they wait for.
-	int faceBound = 0, sectorBound = 0, unbound = 0;
+	// Bind every trigger to the geometry it watches, WITH the one event that
+	// fires it. The reader has already resolved each key to a sector and/or a
+	// set of faces; this sorts them by key space and tags each with its event.
+	//
+	// A trigger whose opcode has no event is counted rather than dropped
+	// silently. That is how 0x13 went unnoticed: it matched neither classifier,
+	// so every enter-sector trigger in the game fell through this loop without
+	// appearing anywhere in the report.
+	int faceBound = 0, sectorBound = 0, unbound = 0, unclassified = 0;
+	std::map<uint8_t, int> boundByOp;
 	for (const Command &c : g.map.commands)
 	{
 		if (!c.isTrigger || c.disabled) continue;
 		if (c.chainStart == 0) continue;
 
+		const TrigEvent ev = EventForOpcode(c.opcode);
+		if (ev == TrigEvent::None)
+		{
+			// A trigger opcode this port has no event for. 0x08, 0x1b, 0x25,
+			// 0x30, 0x39, 0x37 and 0x3d are the object, texture-animation and
+			// timer channels (GAME_core.md 5.2 rows 1, 8, 9, 13, 14, 15); none
+			// of them is keyed to a face or a sector, so they belong to later
+			// work and not to this loop.
+			unclassified++;
+			continue;
+		}
+
+		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags };
+
 		if (IsFaceTrigger(c.opcode))
 		{
 			if (c.faces.empty()) { unbound++; continue; }
-			for (int fi : c.faces) g.byFace[fi].push_back(c.chainStart);
+			for (int fi : c.faces) g.byFace[fi].push_back(b);
 			faceBound++;
+			boundByOp[c.opcode]++;
 		}
 		else if (IsSectorTrigger(c.opcode))
 		{
 			if (c.sector < 0) { unbound++; continue; }
-			g.bySector[c.sector].push_back(c.chainStart);
+			g.bySector[c.sector].push_back(b);
 			sectorBound++;
+			boundByOp[c.opcode]++;
 		}
 	}
 
@@ -3586,10 +3751,80 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		log->Line("  triggers bound   %d face-keyed, %d sector-keyed", faceBound, sectorBound);
 		log->Line("  doors reachable  %d   walls wired %d", (int)g.doorTag.size(), (int)g.bySide.size());
 		log->Line("  trigger lines    %d marked so the engine offers them"
-			" (use and impact; NOT cross or push -- GAME_core.md 5.2)", linesMarked);
+			" (each line asks only for its own events -- GAME_core.md 5.2)", linesMarked);
 		log->Line("  door leaf lines  %d registered, markable only after PO_Init",
 			(int)g.doorLeafSide.size());
+
+		//------------------------------------------------------------------
+		// WHICH TRIGGER WAITS FOR WHAT, per opcode, with the event named and
+		// whether anything can currently deliver it.
+		//
+		// This table exists because the one number it replaces -- "31
+		// face-keyed, 12 sector-keyed" -- could not show that every 0x13 in
+		// the map was bound to nothing, nor that the 12 sector-keyed had no
+		// dispatch. A trigger that is bound and unreachable looked exactly
+		// like a trigger that works.
+		//------------------------------------------------------------------
+		log->Line("  triggers by opcode, with the event that fires them:");
+		for (auto &kv : boundByOp)
+		{
+			const TrigEvent ev = EventForOpcode(kv.first);
+			const char *reach;
+			switch (ev)
+			{
+			case TrigEvent::Use:
+				reach = IsFaceTrigger(kv.first)
+					? "LIVE -- the use key"
+					: "no dispatch: needs a use ray that lands on a flat";
+				break;
+			case TrigEvent::Examine:
+				reach = "no dispatch: there is no examine input yet";
+				break;
+			case TrigEvent::Impact:
+				reach = "LIVE -- a shot hitting the wall";
+				break;
+			case TrigEvent::SectorEnter:
+				reach = "no dispatch: needs a sector-transition event";
+				break;
+			default:
+				reach = "no event";
+				break;
+			}
+			log->Line("    0x%02x  %4d  %-18s  %s", (unsigned)kv.first, kv.second,
+				TrigEventName(ev), reach);
+		}
 		log->Count("logic: triggers whose key named no geometry", unbound);
+		log->Count("logic: trigger records whose opcode has no event here",
+			unclassified);
+		log->Line("  the approach mask at record +0x06 is NOT tested, so a trigger");
+		log->Line("  fires from any direction rather than the authored one (5.1)");
+
+		//------------------------------------------------------------------
+		// WHERE THE SECTOR-KEYED TRIGGERS ARE.
+		//
+		// In the LOAD REPORT and not behind a console command, because a
+		// command cannot see this: +exec runs before the deferred `map`, so
+		// anything typed from a capture script finds no level -- the same
+		// ordering the capture queue exists to work around. The report is
+		// written during the load, so it is the only place this can be stated
+		// without someone already standing in the level.
+		//
+		// Printed so a test can be AIMED. Standing on an 0x13 used to mean
+		// guessing a pose; these are the sectors that carry one.
+		//------------------------------------------------------------------
+		std::map<uint8_t, std::vector<int>> sectorsByOp;
+		for (const auto &kv : g.bySector)
+			for (const Binding &b : kv.second)
+				sectorsByOp[b.opcode].push_back(kv.first);
+
+		for (auto &kv : sectorsByOp)
+		{
+			FString list;
+			for (size_t i = 0; i < kv.second.size(); i++)
+				list.AppendFormat("%s%d", i ? " " : "", kv.second[i]);
+			log->Line("  0x%02x sectors (%d): %s", (unsigned)kv.first,
+				(int)kv.second.size(), list.GetChars());
+		}
 
 		//------------------------------------------------------------------
 		// The census. Every INSTRUCTION record in this map, by opcode, split
@@ -3637,6 +3872,7 @@ void EndLevel()
 	g.bySector.clear();
 	g.doorTag.clear();
 	g.doorLeafSide.clear();
+	g.lastSectorByPlayer.clear();
 	// NOT gPendingDoors. EndLevel runs DURING a map load, before BeginLevel
 	// (rothmap.cpp:215, "drop the previous level's logic before anything
 	// registers against this one"), so clearing the queue here would throw away
@@ -3714,6 +3950,15 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
 	// wrong by definition.
 	const bool isUse = (activationType
 		& (SPAC_Use | SPAC_UseThrough | SPAC_UseBack)) != 0;
+
+	// The Realms event this engine event corresponds to. Nothing maps to
+	// Examine: the original's examine channel is a right-click
+	// (dispatch_entry_command_trigger_b) and there is no such input here yet, so
+	// an 0x32 trigger is bound and waiting rather than quietly firing on a use.
+	const TrigEvent want =
+		isUse                              ? TrigEvent::Use
+		: (activationType & SPAC_Impact)   ? TrigEvent::Impact
+		                                   : TrigEvent::None;
 
 	bool any = false, owned = false;
 
@@ -3793,32 +4038,170 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
 		if (f != g.sideToFace.end()) g.activeFace = f->second;
 
 		auto it = g.bySide.find(idx);
-		if (roth_trigger_debug)
+		if (it == g.bySide.end())
 		{
-			Printf("roth_trigger: line side %d (face %d) event 0x%x -> %s\n", idx,
-				f != g.sideToFace.end() ? f->second : -1,
-				(unsigned)activationType,
-				it == g.bySide.end() ? "NO chain bound"
-				                     : "chain(s) bound, firing");
+			if (roth_trigger_debug)
+				Printf("roth_trigger: line side %d (face %d) event 0x%x -> NO chain bound\n",
+					idx, f != g.sideToFace.end() ? f->second : -1,
+					(unsigned)activationType);
+			continue;
 		}
-		if (it == g.bySide.end()) continue;
-		// OWNED, whether or not a chain fires. A chain that is spent or
-		// disabled returns false, and returning false here would hand the line
-		// back to Doom, which would then try to execute ROTH_LINE_SPECIAL.
+
+		// OWNED, whether or not a chain fires, and whether or not any chain
+		// wanted THIS event. A chain that is spent or disabled returns false,
+		// and returning false here would hand the line back to Doom, which
+		// would then try to execute ROTH_LINE_SPECIAL.
 		owned = true;
-		for (uint16_t chain : it->second) any |= Fire(chain);
+
+		// ONLY THE TRIGGERS WAITING FOR THIS EVENT.
+		//
+		// A wall can carry an 0x18 (use) and an 0x1a (a shot hits it) at once,
+		// and they are different triggers with different chains. Before the
+		// event reached here, both fired on whichever arrived first.
+		for (const Binding &b : it->second)
+		{
+			if (b.event != want) continue;
+			if (roth_trigger_debug)
+				Printf("roth_trigger: line side %d (face %d) 0x%02x %s -> firing\n",
+					idx, f != g.sideToFace.end() ? f->second : -1,
+					(unsigned)b.opcode, TrigEventName(b.event));
+			any |= Fire(b.chain);
+		}
 	}
 	(void)who; (void)side; (void)any;
 	return owned;
 }
 
-void FireSectorTriggers(sector_t *sec, AActor *who)
+//==========================================================================
+//
+// FireSectorTriggers -- the sector-keyed triggers on one sector, for one event.
+//
+// THE EVENT ARGUMENT IS THE WHOLE POINT. Three opcodes are keyed by a sector
+// and they are fired by three different things (GAME_core.md 5.2 rows 4, 6,
+// 12): 0x13 by entering or leaving it, 0x19 by a left-click on its floor, 0x31
+// by a right-click on its floor, ceiling or platform. Being "sector-keyed" is
+// about where the key is looked up and says nothing about the event, and
+// collapsing the three into one call is what made "wire a caller for
+// FireSectorTriggers" look like a sensible next step. It is not: a caller on
+// sector entry would fire the two floor-click triggers on walking through a
+// doorway.
+//
+// Still no caller for Use or Examine -- that needs a use ray that lands on a
+// flat, which P_UseLines structurally cannot give (it tests lines). The
+// SectorEnter caller is a sector-transition event.
+//
+//==========================================================================
+
+//==========================================================================
+//
+// NotifyPlayerSector -- the dispatch for 0x13, the enter-sector trigger.
+//
+// 23 of STUDY1's 66 bound triggers are 0x13, the second-largest category in the
+// map, and until this existed every one of them was bound to nothing: the
+// opcode matched neither classifier, so it fell through the binding loop in
+// silence. "12 sector-keyed" in the handoffs was really 35.
+//
+// A PER-TIC COMPARISON IS THE ORIGINAL'S OWN MECHANISM, not a stand-in for one.
+// twe_link_state (raw_commands.c:3202-3270) runs from the per-frame world tick
+// and looks at where the player is; there is no enter-sector callback to hook.
+// So this observes the sector once a tic and fires when it changes.
+//
+// TWO DELIBERATE LIMITS, both because the data to do better has not been read
+// yet rather than because this is the intended end state:
+//
+// THE FACING MASK IS IMPLEMENTED (see FacingAllows): a set bit in the record's
+// +0x06 bits 0-3 forbids that 90-degree quadrant of player facing, and
+// fire_sector_trigger tests it before anything else.
+//
+// ENTER ONLY, NOT LEAVE -- and ROTH.C says exactly what leave would take, so
+// this is a decision rather than an unknown. twe_link_state's first branch
+// (raw_commands.c:3205-3213) refires the LATCHED record when the player's
+// sector changes away from it, and the latch is only set at all for a record
+// with `f6 & 0x40` (fire_sector_trigger:2893). So **bit 0x40 of +0x06 IS the
+// "fire on leave too" flag**, and implementing leave means keeping the latched
+// (record, sector) pair and refiring it on the next change. Not built here
+// because it has not been measured against the running original, and a chain
+// that fires twice where it should fire once corrupts state in ways that are
+// much harder to see than one that never fires.
+//
+// NOR ARE THE THREE VARIANTS. twe_link_state gates on the SECTOR's +0x17 and
+// branches three ways (raw_commands.c:3220-3232):
+//
+//   0x80 alone   plain: no Z test, the trigger fires on entering the sector.
+//                This is the case this code implements.
+//   0x40 alone   a Z threshold against sector[+2] -- the water/lava variant.
+//                The player is inside the link only while BELOW the surface,
+//                so firing on mere entry is an OVER-FIRE for these.
+//   0xc0         follows the linked sector at +0x18 and tests a Z band against
+//                its [+8]. Not implemented; the loader does not carry the link.
+//
+// The port binds 0x13 by its key sector and fires on any entry, so a water
+// trigger fires on walking in rather than on submerging. Reading +0x17 through
+// to here is what fixes that, and it is a loader change, not a change here.
+//
+// Also unimplemented, and all three are gates the original applies FIRST
+// (fire_sector_trigger:2869-2871): the modifier byte +0x02 blocks on mask 0x29
+// (armed 0x01, spent 0x08, registered 0x20) where this port only tests the
+// spent bit at bind time; and `+0x07 & 4` requires the player to be MOVING,
+// checked against g_move_speed_accum, which has no equivalent here.
+//
+// NOTHING FIRES ON THE FIRST SIGHTING. The player spawns already standing in a
+// sector, and whether the original fires that sector's trigger at spawn has not
+// been measured. Firing it would run the starting room's script on load, which
+// is a loud thing to invent; so the first observation is recorded and nothing
+// else. If a map turns out to depend on it, that is a measurement to make
+// against the running original, not a default to flip here.
+//
+//==========================================================================
+
+void NotifyPlayerSector(int playerNum, AActor *mo)
+{
+	if (!g.active || mo == nullptr || mo->Sector == nullptr) return;
+
+	const int now = mo->Sector->sectornum;
+	auto it = g.lastSectorByPlayer.find(playerNum);
+	if (it == g.lastSectorByPlayer.end())
+	{
+		// First sighting: remember where the player is, fire nothing.
+		g.lastSectorByPlayer[playerNum] = now;
+		return;
+	}
+	if (it->second == now) return;
+
+	it->second = now;
+	if (roth_trigger_debug)
+		Printf("roth_trigger: player %d entered sector %d\n", playerNum, now);
+	FireSectorTriggers(mo->Sector, mo, TrigEvent::SectorEnter);
+}
+
+void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 {
 	if (!g.active || sec == nullptr) return;
 	g.activeSector = sec->sectornum;
 	auto it = g.bySector.find(sec->sectornum);
 	if (it == g.bySector.end()) return;
-	for (uint16_t chain : it->second) Fire(chain);
+	for (const Binding &b : it->second)
+	{
+		if (b.event != want) continue;
+
+		// The facing mask, from the record's own +0x06. fire_sector_trigger
+		// tests this before anything else runs (raw_commands.c:2876), so a
+		// trigger the player is facing the wrong way for does not fire at all.
+		if (!FacingAllows(b.fireFlags, who))
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: sector %d 0x%02x %s -> BLOCKED by facing"
+					" mask 0x%02x\n", sec->sectornum, (unsigned)b.opcode,
+					TrigEventName(b.event), (unsigned)b.fireFlags);
+			continue;
+		}
+
+		if (roth_trigger_debug)
+			Printf("roth_trigger: sector %d 0x%02x %s mask 0x%02x -> firing\n",
+				sec->sectornum, (unsigned)b.opcode, TrigEventName(b.event),
+				(unsigned)b.fireFlags);
+		Fire(b.chain);
+	}
 	(void)who;
 }
 
@@ -3896,6 +4279,60 @@ void TickLevelLogic(FLevelLocals *level)
 // mistyped tag does not look like a broken door.
 //
 //==========================================================================
+
+//==========================================================================
+//
+// roth_trigger_list -- every trigger binding, with the geometry it is on, the
+// opcode, and the event that fires it.
+//
+// The load report counts triggers per opcode; this says WHERE each one is, which
+// is what you need to stand on one. Finding a sector that carries an 0x13 used
+// to mean guessing a pose and hoping.
+//
+// Optional argument filters by opcode: `roth_trigger_list 13`, in hex, as the
+// specs write it.
+//
+//==========================================================================
+
+CCMD(roth_trigger_list)
+{
+	if (!g.active)
+	{
+		Printf("roth_trigger_list: no Realms level loaded\n");
+		return;
+	}
+
+	int filter = -1;
+	if (argv.argc() >= 2) filter = (int)strtol(argv[1], nullptr, 16);
+
+	Printf("Realms trigger bindings%s:\n",
+		filter >= 0 ? FStringf(" for opcode 0x%02x", (unsigned)filter).GetChars() : "");
+
+	int shown = 0;
+	for (const auto &kv : g.bySector)
+	{
+		for (const Binding &b : kv.second)
+		{
+			if (filter >= 0 && b.opcode != (uint8_t)filter) continue;
+			Printf("  sector %5d  0x%02x  %-18s  chain %d\n", kv.first,
+				(unsigned)b.opcode, TrigEventName(b.event), (int)b.chain);
+			shown++;
+		}
+	}
+	for (const auto &kv : g.bySide)
+	{
+		for (const Binding &b : kv.second)
+		{
+			if (filter >= 0 && b.opcode != (uint8_t)filter) continue;
+			auto f = g.sideToFace.find(kv.first);
+			Printf("  side   %5d  0x%02x  %-18s  chain %d  (face %d)\n", kv.first,
+				(unsigned)b.opcode, TrigEventName(b.event), (int)b.chain,
+				f != g.sideToFace.end() ? f->second : -1);
+			shown++;
+		}
+	}
+	Printf("  %d binding(s)\n", shown);
+}
 
 CCMD(roth_door)
 {

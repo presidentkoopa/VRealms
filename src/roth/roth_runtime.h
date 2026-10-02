@@ -135,31 +135,49 @@ void RegisterDoorLeafSide(int sideIndex, int polyTag);
 // calling it again is always safe.
 int MarkTriggerLines(FLevelLocals *level);
 
-// Fire the SECTOR-keyed triggers bound to a sector -- the 0x19 and 0x31 marks.
+// WHAT FIRES A REALMS TRIGGER, as opposed to what it is bound to.
 //
-// NOTHING CALLS THIS YET, DELIBERATELY. In the original these bits do not mean
-// "the player is in this sector": they are a fast-reject gate inside
-// dispatch_entry_command_trigger (raw_commands.c:3058), which runs from the USE
-// and cursor-probe paths and matches the sector against the object-table refs
-// this port does not build yet. There is no movement callback to hook it to.
+// The two are independent, and three opcodes keyed by a SECTOR are fired by
+// three different things (GAME_core.md §5.2 rows 4, 6, 12). Collapsing them is
+// what made "wire a caller for FireSectorTriggers" look like a sensible next
+// step; it would have fired two floor-click triggers on walking through a
+// doorway. Full derivation at EventForOpcode in roth_runtime.cpp.
+enum class TrigEvent : uint8_t
+{
+	None = 0,
+	Use,          // left-click: 0x18 on a wall face, 0x19 on a floor
+	Examine,      // right-click: 0x32 on a wall face, 0x31 on a floor/ceiling
+	Impact,       // an attack or projectile hits a face: 0x1a
+	SectorEnter,  // crossing into or out of a sector: 0x13
+};
+
+// Fire the sector-keyed triggers on one sector that are waiting for ONE event.
 //
-// It is left here rather than deleted because it is the correct half -- the
-// binding and the firing are right, only the caller is missing. Wiring it to a
-// sector-entry event would fire these triggers on walking through a doorway,
-// which the original does not do; see IsSectorTrigger for the trace.
+// 0x13 wants SectorEnter, 0x19 wants Use (a click on the floor), 0x31 wants
+// Examine (a right-click on floor, ceiling or platform). Passing the event is
+// mandatory precisely because they share a key space and nothing else.
 //
-// DO NOT "FIX" THIS BY WIRING IT TO SECTOR ENTRY. A session handoff proposed
-// exactly that; it is wrong, and the authoritative spec agrees with this
-// comment rather than with the handoff. GAME_core.md §5.2 rows 6 and 12 give
-// 0x19 as "left-click floor / platform top" and 0x31 as "right-click
-// floor/ceiling/platform". They are CLICKS ON A FLOOR, matched by the sector's
-// command id. What this port is actually missing is a floor-click dispatch --
-// a use or examine ray that lands on a flat rather than a wall.
+// WHICH CALLERS EXIST: none yet for any of the three. Use and Examine need a
+// ray that lands on a FLAT, which P_UseLines structurally cannot provide -- it
+// tests lines. SectorEnter needs a sector-transition event. Until those exist
+// the bindings are built and inert, and the load report says so per opcode
+// rather than letting a bound-but-unreachable trigger read as a working one.
+void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want);
+
+// Notice a player crossing into a new sector, and fire that sector's 0x13
+// triggers. Call once per tic per player; it compares against the sector seen
+// last time and does nothing when it has not changed.
 //
-// The real enter/leave-sector trigger is 0x13 (§5.2 row 4), which the loader
-// does not classify or bind at all. That one needs a sector-transition event;
-// these two do not.
-void FireSectorTriggers(sector_t *sec, AActor *who);
+// This is the dispatch for the largest unreachable trigger category in the
+// game: 23 of STUDY1's 66 bound triggers are 0x13 and none of them could fire
+// before. A per-tic comparison is the original's own mechanism -- twe_link_state
+// polls the player's position from the per-frame world tick -- so this is not a
+// stand-in for a callback that exists somewhere.
+//
+// Fires on ENTER only, and nothing on the first sighting after a load. Both
+// limits are explained at the definition; both are about data not yet read, not
+// about the intended design.
+void NotifyPlayerSector(int playerNum, AActor *mo);
 
 // One WORLD STEP of Realms' own level logic: the delay countdowns and the
 // deferred command queue the original drives from tick_world_effects
