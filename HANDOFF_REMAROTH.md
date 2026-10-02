@@ -972,10 +972,85 @@ cleanly, referencing vertex slots `0x00-0x30` **and** `0x40-0x70`. So array B is
 the slab's second ring and all four edges exist as geometry — and array B is not
 "never read" as one reading claimed.
 
-**What is open: which of the four surfaces lands on which of the four quads.**
-Four surfaces and four quads in a fixed order invites a 1:1 mapping, but that is
-an inference, and this is the single point the three readings disagreed on. It
-does not block the work below.
+### Which surface lands on which quad — SETTLED, 2026-10-02
+
+This was the last open point in the door work and the single thing the three
+readings disagreed on. It was stuck because it was being attacked as a
+list-matching problem: four surfaces, four quads, both in a fixed order, so any
+pairing looks as good as any other and all of them are inferences.
+
+It is not a list-matching problem. **Read what each argument is used for**
+(`setup_door_corner_surface_a`/`_b`, doors.c:281-297):
+
+```
+_a(ebx, edx):   [out+0x26] = fs:[ fs:[edx+4] ] & 0xfff
+                [out+0x0c] = fs:[ fs:[ebx+4] + 2 ]
+_b(ebx):        bx = fs:[ebx+8]  FIRST, then both of the above from there
+```
+
+`+0x00` of a mapping record is the fit word, so `& 0xfff` is the **stored
+extent** — and it comes from `edx`. `+0x02` is the mid texture, so the
+**picture** comes from `ebx`. `_b`'s `+8` is `sisterFaceOffset`, so `_b` reads
+the **sister's** mapping for both. The call order is `_a(c3,c2)`, `_a(c1,c0)`,
+`_b(c3)`, `_b(c1)` — doors.c:553-559.
+
+**The extent is the quad's width, so the extent argument names the quad.** And
+which corners are the narrow ones is now measured rather than assumed
+(`tools/rothdiff/doorgeom.cpp`, all 167 leaves in the retail maps):
+
+```
+j == 0  (thickness)  mean  13.9   min  2.0   max 64.0
+j == 1  (broad)      mean 124.2   min 42.0   max 192.0
+j == 2  (thickness)  mean  14.0   min  2.0   max 69.9
+j == 3  (broad)      mean 124.1   min 42.0   max 192.0
+
+long pair is {1,3}  167 / 167  (100.0%)   median aspect 10.67
+```
+
+So:
+
+| quad | width from | picture from |
+|---|---|---|
+| c0 — hinge thickness edge | c0 | **c1's own** mapping |
+| c2 — latch thickness edge | c2 | **c3's own** mapping |
+| c1 — broad face | c1's sister | c1's **sister** |
+| c3 — broad face | c3's sister | c3's **sister** |
+
+Two consequences beyond the table:
+
+- **The `_b` (sister) surface is the outward one**, which this section had
+  carried as UNVERIFIED. `_b` is the form whose extent comes from the broad
+  face, and the broad face is what a room sees. The broad faces were already
+  skinned correctly.
+- **"Each broad face carries two skins" was wrong.** Each broad face carries
+  one; the second `_a` surface per side is the *thickness edge beside it*.
+
+Note what the measurement does NOT settle: it confirms the broad faces sit at
+the ODD slots, which is true under either traversal direction, because the hinge
+is at a short edge and short/long alternate around the ring. The `ror`-vs-`rol`
+direction is settled separately, above, and decides only which broad face is c1
+and which is c3 — i.e. which way round the door's front and back art go. For the
+70.7% of leaves where `skin(c1) == skin(c3)` that is invisible; for the other
+29.3% it is not, and it has not been seen on screen.
+
+### What was fixed on 2026-10-02
+
+**The thickness edges were blank and should never have been.** They were left
+untextured on the reading that c0 and c2 "never contribute a texture" — true,
+but they *receive* one, from the broad face that follows them in the ring. The
+cost of the error, measured before fixing it:
+
+```
+painted (j 1,3)                         12769696 sq units
+blanked but textured in file (0,2)       1330659 sq units   (10.4% of painted)
+has a mid texture in the file:  j0  166/167     j2  162/167
+```
+
+So 10.4% of every door's surface drew nothing, on sides that have artwork in the
+player's own files — and the latch edge is exactly what faces you when a door
+stands 90° open, which is where the owner spotted it ("the texture looks bad").
+`leavesNoTexture` was also renamed `leafSidesNoTexture`, because it counts sides
+and can now count up to four per leaf.
 
 ### Mapping it onto GZDoom — the conversion is exactly 16
 

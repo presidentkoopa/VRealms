@@ -1574,7 +1574,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// and the faces that could clash are counted instead. If doors shimmer on
 	// screen, this counter is where to start and doors.c's flags2 bit is the
 	// thing to trace.
-	int leavesBuilt = 0, leavesNoTexture = 0, doorCapableNotBuilt = 0;
+	// Per SIDE, not per leaf: all four sides of the prism are skinned, so a leaf
+	// can contribute up to four. Named for what it counts -- the old
+	// "leavesNoTexture" read as a leaf count and was never one.
+	int leavesBuilt = 0, leafSidesNoTexture = 0, doorCapableNotBuilt = 0;
 	int leafCoplanarRisk = 0;
 	for (const auto &rs : rm.sectors)
 		if (rs.IsDoorCapable() && !leafBuildable(rs)) doorCapableNotBuilt++;
@@ -1716,6 +1719,12 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				va->set(double(rm.vertices[f.vertex1].x) + offX,
 				        double(rm.vertices[f.vertex1].y) + offY);
 			}
+			auto tmOf = [&](const roth::Face &ff) -> const roth::TextureMap *
+			{
+				return (ff.textureMap >= 0 && ff.textureMap < (int)rm.textureMaps.size())
+					? &rm.textureMaps[ff.textureMap] : nullptr;
+			};
+
 			for (int j = 0; j < 4; j++)
 			{
 				const int fi = f0 + ((hingeRel + j) & 3);
@@ -1778,20 +1787,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// A one-sided Doom line has one skin, so it takes the
 				// outward-facing one.
 				//
-				// UNVERIFIED: that the _b (sister) surface is the outward one
-				// rather than the _a. rotate_quad only produces positions; the
-				// surface-to-side association lives in the renderer and was not
-				// traced. The owning-sector rule above is what decides it here.
-				// ONLY c1 AND c3 ARE TEXTURE SOURCES, and that part is read out
-				// of ROTH.C: setup_door_swing_geometry fills the leaf's four
-				// surfaces from those two faces ONLY, each twice -- once from its
-				// own mapping record and once from its sister's, doors.c:553-559:
-				// `_a(ebx=c3, edx=c2)`, `_a(ebx=c1, edx=c0)`, `_b(c3)`, `_b(c1)`.
-				// In the `_a` form the FIRST argument is the texture source and
-				// the second only supplies a stored extent, so c0 (the hinge edge)
-				// and c2 (the other thickness edge) never contribute a texture.
-				// Each broad face carrying two skins is what "the slab is
-				// two-sided" actually meant.
+				// This was marked UNVERIFIED -- that the _b (sister) surface is the
+				// outward one rather than the _a -- and it is now settled, by the
+				// extent argument rather than by the renderer. See the mapping
+				// table below; the owning-sector rule and ROTH.C agree.
 				//
 				// WHAT WAS WRONG HERE BEFORE: this said "the leaf is a FLAT PANEL,
 				// NOT A BOX". The geometry half of that is refuted by the binary's
@@ -1802,34 +1801,75 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// the slab is a four-sided prism, and the second ring is the quad
 				// array a reading had written off as never used.
 				//
-				// STILL OPEN: which of the four surfaces lands on which of the
-				// four quads. Four and four in a fixed order invites a 1:1
-				// mapping, but that is an inference, and it is the one point three
-				// independent readings disagreed on. Until it is settled, skin the
-				// two faces ROTH.C definitely sources from -- c1 and c3, which
-				// after the corner fix above really are j == 1 and j == 3 -- and
-				// leave the thickness edges blank, which also keeps them from
-				// z-fighting the doorjamb reveal behind them. See
-				// HANDOFF_REMAROTH.md section 12.
+				// WHICH SURFACE LANDS ON WHICH QUAD -- SETTLED, 2026-10-02. This
+				// was the last open point in the door work and the one three
+				// readings disagreed on. It is decided not by matching two
+				// four-element lists in order, which is what made it look like an
+				// inference, but by reading what each argument is USED for
+				// (setup_door_corner_surface_a/_b, doors.c:281-297):
+				//
+				//   _a(ebx, edx):  [out+0x26] = fs:[fs:[edx+4]] & 0xfff
+				//                  [out+0x0c] = fs:[fs:[ebx+4] + 2]
+				//   _b(ebx):       bx = fs:[ebx+8] FIRST, then both from there
+				//
+				// +0x00 of a mapping record is the fit word, so `& 0xfff` is the
+				// STORED EXTENT, and it comes from edx. +0x02 is the mid texture,
+				// so the PICTURE comes from ebx. _b's `+8` is sisterFaceOffset, so
+				// _b reads the SISTER's mapping for both. The call order is
+				// _a(c3,c2), _a(c1,c0), _b(c3), _b(c1) -- doors.c:553-559.
+				//
+				// The extent IS the quad's width, so the extent argument is what
+				// names the quad. c0 and c2 are the thickness edges (measured:
+				// mean 13.9 and 14.0 units against 124.2 and 124.1 for c1 and c3,
+				// across all 167 leaves in the retail maps, tools/rothdiff/
+				// doorgeom.cpp). Therefore:
+				//
+				//   quad c0, thickness   width c0          picture c1's OWN
+				//   quad c2, thickness   width c2          picture c3's OWN
+				//   quad c1, broad       width c1's sister picture c1's SISTER
+				//   quad c3, broad       width c3's sister picture c3's SISTER
+				//
+				// That also settles what was flagged UNVERIFIED just above -- that
+				// the _b (sister) surface is the outward one. It is: _b is the form
+				// whose extent comes from the broad face, and the broad face is
+				// what a room sees. "Each broad face carries two skins" was wrong;
+				// each broad face carries ONE, and the second _a surface per side
+				// is the thickness edge beside it.
+				//
+				// WHAT WAS WRONG HERE BEFORE: the thickness edges were left blank,
+				// on the reading that c0 and c2 "never contribute a texture". They
+				// do not contribute one -- they RECEIVE one, from the broad face
+				// that follows them in the ring. Blank, they were 10.4% of every
+				// door's surface area drawing nothing, and they are exactly what
+				// faces the player when a door stands 90 degrees open, which is
+				// where it was noticed.
 				const bool isLongFace = (j == 1 || j == 3);
-				if (!isLongFace)
+
+				// texTm carries the picture AND the scale flags -- door_corner_tail
+				// reads `ch = fs:[si+8]`, the flag byte, off the TEXTURE source's
+				// mapping, not the extent source's.
+				const roth::TextureMap *texTm = nullptr;
+				const roth::TextureMap *extTm = nullptr;
+				if (isLongFace)
 				{
-					ld->AdjustLine();
-					continue;
+					int skinFace = fi;
+					if (f.sister >= 0 && f.sister < (int)rm.faces.size()) skinFace = f.sister;
+					else leafCoplanarRisk++;   // no sister to take the outward skin from
+					texTm = extTm = tmOf(rm.faces[skinFace]);
+				}
+				else
+				{
+					// c1 for the hinge edge c0, c3 for the latch edge c2: in both
+					// cases the broad face at j + 1, and its OWN mapping, not its
+					// sister's.
+					texTm = tmOf(rm.faces[f0 + ((hingeRel + j + 1) & 3)]);
+					extTm = tmOf(f);
 				}
 
-				int skinFace = fi;
-				if (f.sister >= 0 && f.sister < (int)rm.faces.size()) skinFace = f.sister;
-				else leafCoplanarRisk++;   // no sister to take the outward skin from
-				const roth::Face &sf = rm.faces[skinFace];
-				const roth::TextureMap *tm =
-					(sf.textureMap >= 0 && sf.textureMap < (int)rm.textureMaps.size())
-						? &rm.textureMaps[sf.textureMap] : nullptr;
-
-				FTextureID tex = tm ? worldTex(tm->midTexture) : FNullTextureID();
+				FTextureID tex = texTm ? worldTex(texTm->midTexture) : FNullTextureID();
 				if (!tex.isValid())
 				{
-					leavesNoTexture++;
+					leafSidesNoTexture++;
 				}
 				else
 				{
@@ -1837,9 +1877,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					// texture pixel unless FF_HALF_PIXEL, and the stored extent is
 					// authoritative horizontally.
 					const double unitsPerTexel =
-						(tm->flags & roth::FF_HALF_PIXEL) ? 1. : 2.;
+						(texTm->flags & roth::FF_HALF_PIXEL) ? 1. : 2.;
 					const double len = (ld->v2->fPos() - ld->v1->fPos()).Length();
-					const double stored = double(tm->StoredExtent());
+					const double stored = extTm ? double(extTm->StoredExtent()) : 0.;
 					double sx = 1. / unitsPerTexel;
 					if (stored > 0. && len > 0.) sx = stored / (len * unitsPerTexel);
 					sd->SetTexture(side_t::mid, tex);
@@ -1936,7 +1976,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  door leaves built %d of %d door sectors  (%d closed at load)",
 			leavesBuilt, leafCount, doorCount);
 		log.Line("  polyobject tags   1 .. %d  (the doorway sector carries the same tag)", leavesBuilt);
-		log.Count("doors: leaf surface had no artwork", leavesNoTexture);
+		log.Count("doors: leaf side had no artwork", leafSidesNoTexture);
 		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",
 			leafCoplanarRisk);
 		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",
