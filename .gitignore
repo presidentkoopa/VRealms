@@ -80,3 +80,8 @@ gzdoom-crash.log
 /tools/rothdiff/obj_fp/
 /tools/rothdiff/obj_pl/
 /tools/rothdiff/plugin_msvc.*
+
+# Run output, not source: the engine writes this beside the exe and at the repo
+# root. Swept into a commit by a git add -A on 2026-10-02.
+doomxr-log.txt
+perflog.txt
