@@ -46,6 +46,7 @@
 #include <math.h>
 #include "playsim/po_man.h"
 #include "printf.h"
+#include "c_dispatch.h"
 
 namespace roth
 {
@@ -344,6 +345,9 @@ void SyncDisabled(Command *c) { c->disabled = (c->modifier & 0x08) != 0; }
 //
 //==========================================================================
 
+// Defined just below; OpenDoor resolves the target and hands off to it.
+int SwingDoor(int tag, int speedMul, int dwellTicks);
+
 int OpenDoor(const Command &c)
 {
 	if (g.level == nullptr) return CMD_NOTHING;
@@ -376,21 +380,72 @@ int OpenDoor(const Command &c)
 	}
 	if (rothSector < 0) return CMD_NOTHING;
 
-	const int tag = g.doorTag[rothSector];
+	return SwingDoor(g.doorTag[rothSector], (int)c.subFlags, (int)c.aux);
+}
 
-	// Speed: the original multiplies the frame delta by byte[rec+0x0c], or
-	// clamps the delta to 8 when that is zero. GZDoom's swing speed is in its
-	// own units, so the multiplier is carried across proportionally and the
-	// zero case takes the same floor the original does.
-	const int speedMul = c.args.size() > 3 ? (int)(c.args[3] & 0xFF) : 0;
-	const double speed = speedMul > 0 ? double(speedMul) : 8.0;
+//==========================================================================
+//
+// The swing itself, by polyobject tag. Split out from OpenDoor so that the
+// `roth_door` console command exercises THIS code -- the real unit conversion
+// and the real arguments -- rather than a parallel copy that could drift from
+// it and quietly disagree.
+//
+// speedMul is the command's byte +0x07 and dwellTicks its word +0x0a, both RAW:
+// the conversions below are the whole point and belong in one place.
+//
+//==========================================================================
 
-	// Dwell, in tics. word[rec+0x0a] times byte[rec+7] when that is non-zero.
-	const int dwellRaw = c.aux;
-	const int dwellMul = c.subFlags != 0 ? c.subFlags : 1;
-	const int delay = dwellRaw > 0 ? dwellRaw * dwellMul : 0;
+int SwingDoor(int tag, int speedMul, int dwellTicks)
+{
+	if (g.level == nullptr) return CMD_NOTHING;
 
-	// The arc is always 90 degrees -- see the note above.
+	// SPEED AND DWELL COME FROM THE SAME COMMAND FIELD, +0x07.
+	//
+	// This used to read the speed from args[3], the command record's +0x0c --
+	// a confusion between the COMMAND record and the DOOR record. The chain is
+	// cmd_open_door (raw_commands.c:4071-4076) -> register_door_swing ->
+	// spawn_door_instance -> setup_door_swing_geometry: the COMMAND's byte
+	// +0x07 travels through [0x8b3c4] and lands in the DOOR record's dword
+	// +0x0c (doors.c:549), which is where the tick reads the multiplier. So the
+	// multiplier is +0x07, which roth::Command calls `subFlags`.
+	//
+	// That it is the same field the dwell is scaled by is the clearest sign the
+	// old reading was wrong: one value cannot live at two offsets.
+	const int speedMul = (int)c.subFlags;
+
+	// M == 0 IS M == 1, NOT M == 8. The original's step is `dt * M`, or
+	// `min(dt, 8)` when M is zero (doors.c:1043-1045). dt is whole 70 Hz ticks
+	// elapsed since the previous rendered frame, so `min(dt, 8)` is exactly one
+	// angle unit per tick at anything above 8.75 fps -- a per-frame OVERSHOOT
+	// CAP, not a speed of 8. Reading it as 8 ran those doors eight times too
+	// fast.
+	const int M = speedMul > 0 ? speedMul : 1;
+
+	// THE UNIT CONVERSION IS EXACTLY 16, and it falls out rather than being
+	// fitted. EV_OpenPolyDoor's swing branch sets
+	//     m_Speed = speed * (90./64) / 8      degrees per 35 Hz tic
+	// (po_man.cpp:674), and 90/64 = 1.40625 is EXACTLY the original's degrees
+	// per angle unit -- Hexen's polyobject doors inherited the same 64-step
+	// quarter turn from the same era, so the two engines already agree on the
+	// unit. Equating the rates:
+	//     Realms  M * 1.40625 * 70 = 98.4375 * M  deg/s
+	//     GZDoom  speed * 1.40625 / 8 * 35 = 6.15234 * speed  deg/s
+	//     => speed = 16 * M
+	// Check: M = 1 gives m_Speed = 2.8125 deg/tic, so 90 degrees takes 32 tics
+	// = 0.914 s, against the original's 64 ticks at 70 Hz = 0.914 s. Exact.
+	const double speed = 16.0 * double(M);
+
+	// DWELL IS `A` TICKS, WHATEVER THE SPEED. The reload is A*M (doors.c:749-
+	// 750) but the counter is decremented by the SAME step as the swing, M per
+	// tick (doors.c:1052) -- so it runs for A*M/M = A ticks and the dwell does
+	// NOT scale with speed. Scaling it by M here, as a first pass of this code
+	// did, would have made fast doors wait proportionally longer.
+	//
+	// A is in 70 Hz ticks and GZDoom's m_WaitTics is in 35 Hz tics, so halve.
+	const int delay = dwellTicks > 0 ? (dwellTicks + 1) / 2 : 0;
+
+	// The arc is always 90 degrees: 64 angle units of 1.40625 degrees, settled
+	// from the sincos table's own bytes. See HANDOFF_REMAROTH.md section 12.
 	return EV_OpenPolyDoor(g.level, nullptr, tag, speed, DAngle::fromDeg(90.),
 		delay, 0., PODOOR_SWING) ? CMD_ACTED : CMD_NOTHING;
 }
@@ -3516,6 +3571,57 @@ void TickLevelLogic(FLevelLocals *level)
 
 	DrainDeferred();
 	ApplyPendingWarp();
+}
+
+//==========================================================================
+//
+// roth_door -- swing a door leaf on demand.
+//
+// WHY THIS EXISTS. The leaves have been built, hinged and tagged for weeks and
+// NOTHING HAS EVER OPENED ONE: the only route in is a 0x2F command, which needs
+// a trigger to fire, which needs the player to use the right wall. So the swing
+// itself -- the geometry, the winding, the arc, the rate -- has never once been
+// watched. This is the shortest path to seeing it, and it deliberately goes
+// through SwingDoor so it tests the REAL conversion rather than a copy.
+//
+// It takes the command record's RAW fields, so the numbers here are the numbers
+// a map would supply:
+//   roth_door <tag|all> [speedM] [dwellTicks]
+// speedM is byte +0x07 (0 behaves as 1); dwellTicks is word +0x0a in 70 Hz
+// ticks. With no arguments it lists the tags instead of opening anything, so a
+// mistyped tag does not look like a broken door.
+//
+//==========================================================================
+
+CCMD(roth_door)
+{
+	if (g.level == nullptr) { Printf("roth_door: no Realms level loaded\n"); return; }
+	if (g.doorTag.empty()) { Printf("roth_door: this map has no door leaves\n"); return; }
+
+	if (argv.argc() < 2)
+	{
+		FString tags;
+		for (const auto &kv : g.doorTag) tags.AppendFormat("%d ", kv.second);
+		Printf("roth_door <tag|all> [speedM] [dwellTicks]\n");
+		Printf("  %d door leaves, tags: %s\n", (int)g.doorTag.size(), tags.GetChars());
+		return;
+	}
+
+	const int speedMul = argv.argc() > 2 ? atoi(argv[2]) : 0;
+	const int dwell    = argv.argc() > 3 ? atoi(argv[3]) : 0;
+	const bool all     = (strcmp(argv[1], "all") == 0);
+
+	int opened = 0, refused = 0;
+	for (const auto &kv : g.doorTag)
+	{
+		if (!all && kv.second != atoi(argv[1])) continue;
+		if (SwingDoor(kv.second, speedMul, dwell) == CMD_ACTED) opened++;
+		else refused++;
+	}
+	// A refusal is usually EV_OpenPolyDoor declining because the polyobject is
+	// already moving or blocked, which is information rather than a failure.
+	Printf("roth_door: %d opened, %d refused (speedM %d -> %.1f deg/s, dwell %d ticks)\n",
+		opened, refused, speedMul, 98.4375 * double(speedMul > 0 ? speedMul : 1), dwell);
 }
 
 } // namespace roth

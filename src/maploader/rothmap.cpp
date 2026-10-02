@@ -1683,16 +1683,29 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// the right -- and the leaf is solid, seen from outside. Reversing
 			// each line puts the front where it has to be.
 			//--------------------------------------------------------------
+			// THE CORNERS. P[k] is corner c_k's OWN first vertex, so P is the
+			// sector's corner loop with its start rotated to the hinge. This
+			// used to store face.vertex2 and then pair vertex j with vertex
+			// j+1, which looks like "the line reversed" and is not: because the
+			// ring closes with v2(c_k) == v1(c_(k+1)) (the gate above), that
+			// made line j span v1(c_(j+1)) -> v1(c_(j+2)), i.e. face c_(j+1)
+			// traversed FORWARD. One shift, two bugs -- the fronts faced INTO
+			// the slab, so from outside the player saw the backs, which have no
+			// sidedef at all; and the skin below, which textures j == 1 and
+			// j == 3, painted the two THICKNESS edges and left the broad faces
+			// blank. Keep the corners and the lines in the SAME indexing.
 			for (int j = 0; j < 4; j++)
 			{
-				// Cyclically from the hinge, matching ROTH.C's corner ordering.
+				// Cyclically from the hinge, matching ROTH.C's corner ordering:
+				// with the hinge at slot h, c_k is slot (h + k) & 3. FORWARD --
+				// see HANDOFF_REMAROTH.md section 12 for why the "backward"
+				// reading was wrong and how it was re-derived.
 				const int fi = f0 + ((hingeRel + j) & 3);
 				const roth::Face &f = rm.faces[fi];
 
 				vertex_t *va = &Level->vertexes[vVertex + (unsigned)j];
-				// Reversed: this line runs face.vertex2 -> face.vertex1.
-				va->set(double(rm.vertices[f.vertex2].x) + offX,
-				        double(rm.vertices[f.vertex2].y) + offY);
+				va->set(double(rm.vertices[f.vertex1].x) + offX,
+				        double(rm.vertices[f.vertex1].y) + offY);
 			}
 			for (int j = 0; j < 4; j++)
 			{
@@ -1702,8 +1715,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				line_t *ld = &Level->lines[vLine + (unsigned)j];
 				side_t *sd = &Level->sides[sideIndex++];
 
-				ld->v1 = &Level->vertexes[vVertex + (unsigned)j];
-				ld->v2 = &Level->vertexes[vVertex + (unsigned)((j + 1) & 3)];
+				// Line j IS face c_j, REVERSED: from c_j's second corner back
+				// to its first. Realms winds a face v1->v2 with its owning
+				// sector on the right and a one-sided Doom line's front is on
+				// the right of v1->v2, so running it backwards puts the front
+				// on the OUTSIDE, which is where the player sees the slab from.
+				ld->v1 = &Level->vertexes[vVertex + (unsigned)((j + 1) & 3)];
+				ld->v2 = &Level->vertexes[vVertex + (unsigned)j];
 				ld->alpha = 1.;
 				ld->portalindex = UINT_MAX;
 				ld->portaltransferred = UINT_MAX;
@@ -1755,20 +1773,35 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// rather than the _a. rotate_quad only produces positions; the
 				// surface-to-side association lives in the renderer and was not
 				// traced. The owning-sector rule above is what decides it here.
-				// THE LEAF IS A FLAT PANEL, NOT A BOX -- and this is read out of
-				// ROTH.C, not chosen for looks. setup_door_swing_geometry fills
-				// the leaf's four surfaces from corner1 and corner3 ONLY: two from
-				// their own mapping records (_a) and two from their sisters' (_b),
-				// doors.c:538-545. corner0 (the hinge edge) and corner2 (the other
-				// thickness edge) are passed in only to supply a stored extent --
-				// `[out+0x26] = fs:[textureMap] & 0xfff` -- and never contribute a
-				// texture at all.
+				// ONLY c1 AND c3 ARE TEXTURE SOURCES, and that part is read out
+				// of ROTH.C: setup_door_swing_geometry fills the leaf's four
+				// surfaces from those two faces ONLY, each twice -- once from its
+				// own mapping record and once from its sister's, doors.c:553-559:
+				// `_a(ebx=c3, edx=c2)`, `_a(ebx=c1, edx=c0)`, `_b(c3)`, `_b(c1)`.
+				// In the `_a` form the FIRST argument is the texture source and
+				// the second only supplies a stored extent, so c0 (the hinge edge)
+				// and c2 (the other thickness edge) never contribute a texture.
+				// Each broad face carrying two skins is what "the slab is
+				// two-sided" actually meant.
 				//
-				// So the two thickness edges of the leaf draw NOTHING. They still
-				// block, which is what makes the closed door solid. The doorjamb
-				// reveal the player sees there is the door SECTOR's own one-sided
-				// wall, which stays exactly where it was -- and leaving the leaf's
-				// edges blank is also what keeps them from z-fighting with it.
+				// WHAT WAS WRONG HERE BEFORE: this said "the leaf is a FLAT PANEL,
+				// NOT A BOX". The geometry half of that is refuted by the binary's
+				// own door template -- g_door_vertex_template and its body
+				// (obj3_owned.c:866-872) are 20 u16 = FOUR quads of five indices,
+				// closing cleanly, referencing vertex slots 0x00-0x30 AND
+				// 0x40-0x70. Two rings, eight vertices, all four edges present:
+				// the slab is a four-sided prism, and the second ring is the quad
+				// array a reading had written off as never used.
+				//
+				// STILL OPEN: which of the four surfaces lands on which of the
+				// four quads. Four and four in a fixed order invites a 1:1
+				// mapping, but that is an inference, and it is the one point three
+				// independent readings disagreed on. Until it is settled, skin the
+				// two faces ROTH.C definitely sources from -- c1 and c3, which
+				// after the corner fix above really are j == 1 and j == 3 -- and
+				// leave the thickness edges blank, which also keeps them from
+				// z-fighting the doorjamb reveal behind them. See
+				// HANDOFF_REMAROTH.md section 12.
 				const bool isLongFace = (j == 1 || j == 3);
 				if (!isLongFace)
 				{
