@@ -964,6 +964,40 @@ circulating on those three as unsafe.
 
 ## 12. DOORS — the settled rule, 2026-10-01
 
+> **UPDATE 2026-10-02 evening: the use key now opens doors, and this section was
+> missing the route it opens them by.**
+>
+> Everything below is about the SWING — the geometry, the corner ordering, the
+> motion, the unit conversion. It is intact. What it does not say is **how a
+> door is asked to open**, and the port had only half of that.
+>
+> The original has two routes, and `GAME_core.md` §4.5 gives both:
+>
+> 1. **Click the door.** A type-6 door goes straight to
+>    `toggle_door_open_state` (`E/input.c:1087-1098`) — no trigger, no chain, no
+>    command record. This is the one the player uses, and it did not exist here.
+> 2. **A chain containing `cmd_open_door`**, fired by an `0x18` wall-face
+>    trigger. This is the one the port implemented, and it is why 55 of 116 door
+>    commands carry `key == 0` meaning "the wall the player just used".
+>
+> Route 1 is now wired: door leaf lines are registered against their polyobject
+> tag (`RegisterDoorLeafSide`) and a use on one calls `SwingDoor`. It had to be
+> done at all because a leaf is one-sided `ML_BLOCKING` geometry that, with no
+> line special, **swallowed the use ray** and shadowed every trigger line behind
+> it. Six of six doors in STUDY1 now swing. Trace:
+> `docs/TRIGGERS_the_use_key_problem.md` §2.4; numbers:
+> `docs/REMAROTH_MEASURED.md` §9.
+>
+> **The ordering trap, if you touch the leaf's lines again:** `SpawnPolyobj`
+> needs their `Polyobj_ExplicitLine` special to collect them
+> (`polyobjects.cpp:221`), and `PO_Init` zeroes it afterwards (`:431-433`). A
+> leaf can therefore only be marked AFTER `PO_Init`, which is why
+> `MarkTriggerLines` is idempotent and runs twice.
+>
+> **Still open:** this OPENS. `toggle_door_open_state` toggles, so the second
+> click should close — that is the "closing, blocking, the second use" item in
+> the list below, now with a known caller waiting for it.
+
 Re-derived by three independent readings, each attacked by its own skeptic.
 **All six agree on the corner ordering**, which is the detail that sank the
 previous attempt. Confidence: high.

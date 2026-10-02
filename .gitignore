@@ -15,19 +15,30 @@ wadsrc/static/contributors.txt
 wadsrc/static/meta.xml
 /libs/*
 /obj/*
-/docs/*.md
-# ...but NOT ours. The rule above is upstream's, for GZDoom's own generated
-# docs, and it was silently swallowing the Realms specifications -- the six
-# GAME_*.md reference manuals that the whole game port is written against, plus
-# the NATIVE_*.md rules. They lived untracked for a while; a git clean would have
-# taken them with no history to recover from. Keep these tracked.
-!/docs/GAME_*.md
-!/docs/NATIVE_*.md
-# The same trap caught the documents written AFTER that rescue, which inherited
-# the hazard: REMAROTH_MEASURED.md is the authoritative record of everything
-# checked against the running original, and it had no history at all.
-!/docs/REMAROTH_*.md
-!/docs/SURF_*.md
+# NOTHING IN /docs IS IGNORED. Upstream's `/docs/*.md` rule used to live here,
+# for GZDoom's own generated docs, and it caught OUR specifications instead --
+# three times, each time silently, each time found only because someone went
+# looking for a file's history and there was none.
+#
+#   1. The six GAME_*.md reference manuals the whole game port is written
+#      against, plus the NATIVE_*.md rules. Rescued with !/docs/GAME_*.md and
+#      !/docs/NATIVE_*.md.
+#   2. REMAROTH_MEASURED.md, the authoritative record of everything checked
+#      against the running original, and the SURF_* rules. Rescued the same way.
+#   3. docs/TRIGGERS_the_use_key_problem.md, 2026-10-02. The commit named "The
+#      trigger layer is unreachable from play, for three separate reasons" does
+#      not contain it: `git show --stat` on 4155d44366 lists three sources and
+#      three capture files and no document. Meanwhile the evening handoff had
+#      elevated that page to "THE EXACT NEXT STEP" for the next lane -- so the
+#      most-cited new document in the project had no history and a `git clean`
+#      would have taken it.
+#
+# The exception list was the wrong shape: every rescue added the prefix that had
+# just been lost, and the next new prefix was always missed. There was never
+# anything to protect, either -- every .md in /docs is ours, and GZDoom's
+# generated docs have never been checked in here at all. So the rule is gone
+# rather than patched. If upstream docs ever do land in /docs, ignore them BY
+# NAME.
 
 # editor/tooling/os files
 *~

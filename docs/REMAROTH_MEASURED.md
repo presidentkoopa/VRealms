@@ -380,3 +380,63 @@ about 1.7% of the time.
   already off-default. The far wall reads 14.3 against 13.9. The right-hand
   wall is unmoved at 19.6 against 1.7, so that discrepancy is real and is not
   an artefact of this.
+
+---
+
+## 9. The use key and the door leaf — measured 2026-10-02 evening
+
+Six door poses in STUDY1, from `doorgeom -cam STUDY1 48`, replayed by
+`captures/usedoor.cfg`. Read `doomxr-log.txt`, not a `logfile` (see §10).
+
+| | before | after |
+|---|---|---|
+| Lines carrying `ROTH_LINE_SPECIAL` (9000) | 74 | **194** |
+| Marked lines within `USERANGE` (64) at a door pose | 2 | **4** |
+| Nearest marked line at a door pose | 40 units | **48 units** |
+| What the use ray met at the door | line 1669, `special 0` | line 1669, **`special 9000`** |
+| Activation event delivered to the hook | discarded | **`0x2` = `SPAC_Use`** |
+| Doors that swung | 0 of 6 | **6 of 6** |
+
+194 is 74 trigger walls plus 30 door leaves of four lines each — the leaves were
+previously invisible to the trigger layer entirely. `doors reachable 30` and
+`door leaf lines 120 registered` in the load report are the loader's own count of
+the same thing.
+
+**Line 1669 is a door leaf, poly tag 1.** It was recorded as a line that
+"carries no Realms chain" and read as a puzzle; it carries no chain because it
+is not a trigger line. Being one-sided and `ML_BLOCKING` with `special 0`, it
+stopped the use ray dead (`P_UseTraverse` → `blocked` → `P_LineOpening` range 0
+→ "can't use through a wall", `p_map.cpp:6608`), which is why the two marked
+lines at 40 units were never reached. Full trace in
+`docs/TRIGGERS_the_use_key_problem.md` §2.4.
+
+**`SPAC_*` bits now asked for on a trigger line:** `Use | UseThrough | UseBack |
+Impact`, reading `0x442` on the line. Cross, AnyCross and Push were dropped —
+`GAME_core.md` §5.2 makes every face-keyed opcode a click or a hit, so face
+triggers had been firing on brushing past their wall. Leaves take the use bits
+only.
+
+---
+
+## 10. Two instrument facts that cost a run each
+
+- **`logfile <path>` in a capture cfg does not work.** It closes
+  `doomxr-log.txt` and sends everything after it nowhere. No cfg that declares
+  one — `pair2.cfg`, `lantern.cfg`, `doorskin.cfg`, the `cone_*` set — has ever
+  produced the file it names. One run's entire output was lost to this before it
+  was noticed. The engine already logs to `doomxr-log.txt` beside the exe, live
+  and line by line; read that.
+
+- **A load report left unflushed is not a short load.** `roth_<MAP>.log` is
+  buffered, so a run that is killed rather than quitting leaves a ~350-byte stub
+  that looks exactly like a map that failed to load one stage in. Check the
+  console for `Realms: N objects spawned` before believing the file.
+
+- **The engine exits `0xC0000409` during shutdown**, after
+  `rothdiff: all captures done; quitting` and with no fatal error logged.
+  `captures/quit_control.cfg` is the control: the same rig and quit path at a
+  pose with no door in range, where `ActivateLine` never runs and the use line
+  reports `0 within 64`, exits the same way. It happens on the plain screenshot
+  path too, with the PNG already written — which is why no earlier lane noticed
+  it. Not diagnosed. It does not affect a capture or a measurement, but it means
+  **an exit code cannot be used to tell whether a run succeeded.**

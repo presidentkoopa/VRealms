@@ -3,14 +3,34 @@
 > **A SECOND LANE RAN ON 2026-10-02 (evening). Read
 > `HANDOFF_SESSION_2026-10-02_evening.md` before this file.** Most of Step 1 and
 > all of Step 2's sprites are done; the VR scale is fixed; the oracle now runs
-> unattended in any map. The live work is the TRIGGER LAYER -- the use key opens
-> no doors and `docs/TRIGGERS_the_use_key_problem.md` says why, in three parts.
+> unattended in any map.
+>
+> **A THIRD LANE RAN LATER THE SAME EVENING. The use key opens doors.** Six of
+> six in STUDY1. The cause was not the trigger layer: a door leaf is one-sided
+> blocking geometry with no line special, so it swallowed the use ray and
+> shadowed every trigger line behind it. `docs/TRIGGERS_the_use_key_problem.md`
+> §2.4, numbers in `docs/REMAROTH_MEASURED.md` §9.
+>
+> **Two documents mislead on this, and both are corrected in place rather than
+> deleted.** The evening handoff's "THE EXACT NEXT STEP" and
+> `TRIGGERS_the_use_key_problem.md` §2.2 both say to wire a caller for
+> `FireSectorTriggers`. **Do not** -- it has no caller deliberately, and
+> `GAME_core.md` §5.2 agrees with the code comment that says so. §2.3's
+> classification table is also narrower than it reads. The live work is now
+> §5.2 proper: bind `0x13` (the real enter-sector trigger, bound to nothing),
+> move `0x1a` off the use path, and split `0x32` from `0x18`.
 >
 > Two things in this file are now actively wrong:
 > `doorgeom -cam` and `meshcheck -v` print angles in the PRE-FIX convention
 > (negate them), and the neutral post-processing list is missing
 > `vid_fixgamma 0`, `vid_blackpoint 0`, `vid_whitepoint 0` -- without which
 > every picture comparison is wrong by a gamma of about 1.47.
+>
+> And two instrument traps worth knowing before your first run: a `logfile`
+> line in a capture cfg **does not work** and loses the run's output -- read
+> `doomxr-log.txt` -- and the engine exits `0xC0000409` on shutdown even on a
+> fully successful run, so **an exit code cannot tell you whether a run
+> worked.** `docs/REMAROTH_MEASURED.md` §10.
 
 **For a lane picking this up on 2026-10-02.** Most of this project is already
 worked out and written down. This page says which document holds what, which
@@ -48,8 +68,20 @@ only the parts listed in §2.
 Newest to oldest. When two disagree, the higher one wins. A measurement beats
 all of them (`HANDOFF_REMAROTH.md` §1).
 
+**And a document written yesterday is still a document.** The rule above is
+about distance from the running game, not about age: "our documents" in
+`HANDOFF_REMAROTH.md` §1 includes the one a lane wrote three hours ago. On
+2026-10-02 a page's own conclusion was quoted into a handoff as the exact next
+step, and it was wrong in a way that would have introduced a bug — while a code
+comment that disagreed with it was right. Where a page says "the likely reason",
+read an open question with a candidate attached. Where it reports a number,
+trust the number.
+
 | Document | Trust it for | Do NOT trust it for |
 |---|---|---|
+| `docs/REMAROTH_MEASURED.md` §9, §10 | the door/use numbers, the two instrument traps. **Newest, and measured.** | — |
+| `docs/TRIGGERS_the_use_key_problem.md` | §2.1 and §2.4 (the real cause), §3.1, §3.3, §3.7 | **§2.2's "wire a caller for `FireSectorTriggers`"** — would introduce a bug; it is uncalled deliberately. **§2.3's table** — overstates the disagreement; the key-space rows are not one. **§4's original verdict** that §2.3 was "the likely reason" a door would not open. All corrected in place. |
+| `HANDOFF_SESSION_2026-10-02_evening.md` | §1 what is settled, §3 what cost the most (the `vid_fixgamma` and stale-angle traps), §4 the instruments | **§2.1's "THE EXACT NEXT STEP"** — it names `FireSectorTriggers` and the classification as what stands between the owner and a door. Neither was. The door bug was the leaf; see the triggers doc §2.4. |
 | `HANDOFF_SESSION_2026-10-02.md` | doors §1, the mesh §2, the capture rules and build notes §3, owner rules §5 | **"The two engines AGREE on a pose"** — true only of pose A. Poses B and C look in opposite directions. `docs/REMAROTH_MEASURED.md` §1. |
 | `HANDOFF_REMAROTH.md` §10, §12, §13, §14 | the plan, doors, meshes, inventory. These are the current sections. | §12's closing "NONE OF THIS HAS BEEN SEEN": it has, see §10 item 3. |
 | `HANDOFF_REMAROTH.md` §3, §5, §7, §9 | what is done, the rules to cite, directional sprites, build and launch traps | — |
@@ -274,7 +306,10 @@ made, or a measured miss that has not been fixed.
     (session handoff §2).
 12. Front and back art on the 29.3% of leaves where they differ
     (`HANDOFF_REMAROTH.md` §12).
-13. Closing, blocking, the second use.
+13. Closing, blocking, the second use. **Half of this is now live:** opening by
+    the use key works (the leaf calls `SwingDoor`), so the second use has a
+    known caller waiting for it. Closing needs the door's own state word —
+    `toggle_door_open_state` toggles, and the port only opens.
 14. Swing direction: rule derived, not wired, probably an engine change
     (session handoff §1). Name the files and ask.
 15. Mesh face UVs: do not implement from `face+0x24`/`+0x26`
