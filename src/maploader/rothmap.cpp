@@ -1111,7 +1111,16 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					if (texW > 0. && wallLen > 0.) sx = texW / wallLen;
 					const double pieceHeight = heightOf(part);
 					if (texH > 0. && pieceHeight > 0.) sy = texH / pieceHeight;
-					else if (texH > 0.) imageFitVerticalUnhandled++;
+					// ONLY COUNT A PIECE THAT IS ACTUALLY DRAWN. This used to
+					// count every case where the fit could not be computed,
+					// which included every zero-height step -- and the upper and
+					// lower are attempted unconditionally on every two-sided
+					// wall, so a wall whose ceilings simply match scored one.
+					// That reported 572 "not expressible" fits in STUDY1 alone,
+					// all of them pieces Doom draws nothing for. A counter whose
+					// number is dominated by non-events is worse than no counter,
+					// because it reads as a backlog.
+					else if (pieceHeight > 0.) imageFitVerticalUnhandled++;
 				}
 				// FF_FLIP_X mirrors the art, which Doom expresses as a negative
 				// horizontal scale. NOT EXACTLY THE SAME THING: ROTH.C mirrors
