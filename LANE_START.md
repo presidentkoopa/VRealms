@@ -193,9 +193,19 @@ The order is `HANDOFF_REMAROTH.md` §10. Each line is a check that has never bee
 made, or a measured miss that has not been fixed.
 
 **Sprites (§10 item 1)**
-1. `DEMO[4102]` sits 16 units high. Diagnosis so far: `HANDOFF_REMAROTH.md` §4.
-   Target numbers: measured doc §6. Needs no oracle run.
-2. The shared-pack snake, `ADEMO 45`, about 3.5 units high. Same table.
+1. ~~`DEMO[4102]` sits 16 units high.~~ **FIXED 2026-10-02, and it was not a
+   placement bug.** Prop Z was not stable after load: a prop placed below its
+   floor by the modifier nibble satisfies `Z() != floorz`, so `P_ZMovement` ran
+   on it every tic and snapped it back up, `NOGRAVITY` notwithstanding. Fixed by
+   `+NOINTERACTION` on `LoaderProp`. Measured doc §6.
+2. ~~The shared-pack snake, `ADEMO 45`, about 3.5 units high.~~ **Same fault,
+   fixed by the same line.** It was drifting +4, not misplaced. Worst vertical
+   error over all four reference rectangles is now 1.4 px.
+
+   **Read this before trusting any prop number:** the same prop measured −0.2 px
+   in a run's first capture and −29.3 px in its second. A placement error and a
+   drift look identical in one frame. `tools/rothdiff/sprcheck.py` with
+   `captures/sprites.cfg` re-runs the whole table in one launch.
 3. Directional view order, and `ANGLE_SENSE` with it (`HANDOFF_REMAROTH.md` §7).
    One two-engine look in STUDY2, which has 17 of them.
 4. The per-view lateral anchor (§10 item 1, last bullet). A real change; scope

@@ -267,8 +267,8 @@ is higher on screen. Measured on the tree as of 2026-10-01 18:50.
 | ADEMO 141 | 428, 301, 212 | +1.1, +1.4, +0.6 | +0.9, +0.8, +1.3 | on |
 | ADEMO 230 | 366, 458 | +0.9, +0.9 | +1.0, +1.5 | on |
 | ADEMO 232 | 439, 319 | −0.5, −1.6 | +1.8, +3.7 | on |
-| **DEMO 4102** | 234, 193 | **−24.5, −29.3** | **−23.0, −28.6** | **16 world units too high** |
-| **ADEMO 45, the snake** | 184, 358 | −6.9, −2.6 | −7.1, −3.0 | **about 3.5 units too high** |
+| DEMO 4102 | 234, 193 | −24.5, −29.3 | −23.0, −28.6 | **was drifting; FIXED 2026-10-02** |
+| ADEMO 45, the snake | 184, 358 | −6.9, −2.6 | −7.1, −3.0 | **same cause, FIXED** |
 | DEMO 4163 | 108, 130 | — | — | directional; frame 0 is not the view shown |
 
 Widths agree within a pixel on everything that matched.
@@ -289,6 +289,38 @@ The original's rectangle is `x left–right, y top–bottom`.
 angle as written — 320 and 81 for the other two rows. The `(512 − angle) % 512`
 compensation these rows once needed is gone with the §1 fix; angle 256 is no
 longer a special case, it was only ever the one that needed no compensation.
+
+`tools/rothdiff/sprcheck.py` reads the three dumps and prints the differences
+against this table; `captures/sprites.cfg` takes them in one run.
+
+### Both misses were one fault, and it was not placement — 2026-10-02
+
+**Prop Z was not stable after load.** Realms routinely places a prop below its
+own floor, through the modifier nibble, so `Z() != floorz`; that makes
+`AActor::Tick` run `P_ZMovement` every tic (`p_mobj.cpp:5122`), and
+`P_ZMovement` snaps `Z() <= floorz` back up to `floorz` (`:3199`) regardless of
+`NOGRAVITY`. Props were placed correctly and then rose out of the floor over the
+next few tics. Fixed by `+NOINTERACTION` on `LoaderProp`.
+
+Found by capturing the same props twice in one run: **35 of 75 moved between the
+two captures**, by exactly the shifts applied to them (+4, +8, +16). Afterwards,
+0 of 75.
+
+| prop | pose | dy top before | after |
+|---|---|---|---|
+| DEMO 4102 | 256 | −0.2 | −0.2 |
+| DEMO 4102 | 320 | −29.3 | +0.1 |
+| ADEMO 45 | 81, depth 184 | −6.9 | +0.8 |
+| ADEMO 45 | 81, depth 358 | −2.6 | +1.4 |
+
+Worst vertical error over the four rectangles is now 1.4 px.
+
+**The snake was never a separate fault.** Its "about 3.5 units too high" was the
+same drift: its true Z is 396 and it had been rising to 400, the +4 of nibble 2.
+The "ours then" column above is therefore not a property of a prop at all — the
+same prop measured −0.2 px in a run's first capture and −29.3 px in its second.
+**A placement error and a drift are indistinguishable in a single frame.** Any
+future prop number should say which capture of the run it came from.
 
 ---
 

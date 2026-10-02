@@ -24,7 +24,26 @@ class LoaderProp : Actor
 		// clipping would move the thing away from where the format said it was,
 		// so they do not apply; a loader that wants a prop to fall or to block
 		// clears these itself after spawning it.
+		//
+		// NOGRAVITY IS NOT ENOUGH, and this was measured rather than reasoned.
+		// A prop whose format places it BELOW its floor -- which Realms does
+		// routinely, through the modifier nibble -- satisfies `Z() != floorz`,
+		// so AActor::Tick runs P_ZMovement on it every tic (p_mobj.cpp:5122),
+		// and P_ZMovement snaps `Z() <= floorz` back up to floorz (:3199) with
+		// no regard for NOGRAVITY. The prop is placed correctly and then rises
+		// out of its floor a few tics later.
+		//
+		// Found by capturing the same props twice in one run: 35 of 75 moved
+		// between the two captures, by exactly the shifts that had been applied
+		// to them (+4, +8, +16). The first capture matched the original to a
+		// pixel; the second did not. A placement bug and a drift look identical
+		// in a single frame, which is why the prop table disagreed with itself.
+		//
+		// NOINTERACTION cuts Tick down to "apply velocity, stay out of the
+		// blockmap" (:4719), which is the whole of what a thing that is only
+		// ever drawn needs. A loader that wants a prop to move clears it.
 		+NOGRAVITY;
+		+NOINTERACTION;
 		+NOTELEPORT;
 		+DONTSPLASH;
 		+NOTONAUTOMAP;
