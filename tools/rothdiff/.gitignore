@@ -1,6 +1,15 @@
 # Outputs, not sources. A stale capture silently compared against new code is
 # exactly the trap this tool exists to remove, so they are never committed.
-captures/
+# ...but the capture SCRIPTS in there are sources by that same test, and every
+# one of them was untracked -- including the pair.cfg LANE_START tells a lane to
+# run. A cfg records which cvars a frame was taken under, which is the
+# difference between a comparable pair and two unrelated pictures.
+#
+# This must exclude the CONTENTS (`captures/*`) and not the directory
+# (`captures/`): git does not descend into an excluded directory, so with
+# `captures/` the negation below silently does nothing.
+captures/*
+!captures/*.cfg
 *.ridb
 baseline.json
 
