@@ -1334,7 +1334,7 @@ void G_BuildTiccmd (usercmd_t *cmd)
 			VR_GetMultiplayerRoomscaleWorldOffset(&roomscaleOffsetX, &roomscaleOffsetY);
 
 			const float roomscaleDistanceSquared = roomscaleOffsetX * roomscaleOffsetX + roomscaleOffsetY * roomscaleOffsetY;
-			const float roomscaleRecenterThresholdUnits = 0.35f * vr_vunits_per_meter;
+			const float roomscaleRecenterThresholdUnits = 0.35f * VR_UnitsPerMeter();
 			if (roomscaleDistanceSquared >= roomscaleRecenterThresholdUnits * roomscaleRecenterThresholdUnits)
 			{
 				player_t* localPlayer = &players[consoleplayer];

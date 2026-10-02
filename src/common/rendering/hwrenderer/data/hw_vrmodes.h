@@ -324,3 +324,17 @@ bool VR_IsNetWaitShellActive();
 bool VR_CanUseNetWaitShell();
 bool VR_NetWaitLoop(bool (*timer_callback)(void*), void* userdata);
 void VR_RenderNetWaitShellContents(int width, int height, bool outside2D = false);
+
+// HOW MANY WORLD UNITS MAKE A METRE, which is not a constant across games.
+//
+// vr_vunits_per_meter is the player's own preference and is tuned for Doom's
+// 56-unit-tall player. A game whose units are a different size -- Realms of the
+// Haunting's player is 154 tall, 2.75x Doom's -- puts the headset in a world
+// that many times too large, and the player feels tiny. Every VR distance has
+// to agree on the answer, so they all ask here rather than reading the cvar.
+//
+// The override is 0 by default, which returns the cvar unchanged, so nothing
+// moves for any game that does not set it. A LOADER sets it; it is cleared at
+// the start of every level load so a game that says nothing gets the cvar back.
+float VR_UnitsPerMeter();
+void  VR_SetUnitsPerMeterOverride(float unitsPerMeter);   // 0 = use the cvar

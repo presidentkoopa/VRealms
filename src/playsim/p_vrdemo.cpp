@@ -524,7 +524,7 @@ void VRDemo_BeginTic(int player)
 		CopyMatrix(f.HmdBase, hmdBase);
 		f.HmdPixelStretch = pixelStretch;
 		f.HmdBodyYaw = bodyYaw;
-		f.HmdUnitsPerMeter = vr_vunits_per_meter;
+		f.HmdUnitsPerMeter = VR_UnitsPerMeter();
 		f.Flags |= VRF_HMD;
 	}
 

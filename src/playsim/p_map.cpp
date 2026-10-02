@@ -26,6 +26,7 @@
 */
 
 #include <QzDoom/VrCommon.h>
+#include "roth/roth_runtime.h"   // roth::ActivateLine
 
 #include <algorithm>
 #include <math.h>
@@ -6550,6 +6551,23 @@ bool P_UseTraverse(AActor *usething, const DVector2 &start, const DVector2 &end,
 		if (it.PortalRelocate(in, PT_ADDLINES | PT_ADDTHINGS, &xpos))
 		{
 			continue;
+		}
+
+		// REALMS TRIGGERS, BEFORE THE LINE IS JUDGED INERT. P_ActivateLine
+		// already tests them first, for exactly this reason -- a Realms trigger
+		// is not a Doom line special -- but the test below rejects a line with
+		// no special and RETURNS, so P_ActivateLine was never reached by the use
+		// key and no door could be opened by hand. The console command worked
+		// throughout, which is why "thirty of thirty open" and "I cannot open a
+		// door" were both true at once.
+		//
+		// Inert with no Realms level loaded, like the hook in p_spec.cpp.
+		{
+			const int rside = P_PointOnLineSide(xpos.XY(), in->d.line);
+			if (roth::ActivateLine(in->d.line, usething, rside))
+			{
+				return true;
+			}
 		}
 
 		FLineOpening open;

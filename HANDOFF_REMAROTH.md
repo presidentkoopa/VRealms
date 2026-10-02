@@ -671,6 +671,23 @@ scale, shift and mirror — which is the entire live problem.
   and cost most of an evening. Delete it when LNK1103 actually appears, and not
   before.
 
+  **WHEN IT APPEARS IS NOT RANDOM, though, and that is worth planning around.**
+  It hit three times on 2026-10-02, on `roth_runtime.obj`, `hw_drawinfo.obj` and
+  `p_setup.obj`, and every one followed a change that touched a widely included
+  HEADER rather than a single .cpp. A one-file edit relinks incrementally all
+  day; adding a field to `hw_viewpointuniforms.h`, or an `#include` to
+  `p_setup.cpp`, is the shape of change that invalidates the cache. Budget the
+  full pass when the change is of that shape, and do not read the first LNK1103
+  after one as a sign that something is wrong with the code.
+
+  **AND CHECK THE EXE, NOT THE EXIT CODE.** `cmake --build` returned 0 to the
+  shell on a build whose link had failed and whose exe CMake had then deleted --
+  "Delete any target whose recipe fails" is in this repo's own CMake comment. A
+  grep for `error C[0-9]` does not match `fatal error LNK1103` either. Grep for
+  `fatal error|error C[0-9]{4}|LNK[0-9]{4}` and confirm the TIMESTAMP on
+  `doomxr.exe`, which is what the note further up already says and what was
+  ignored anyway.
+
 - **NEVER RUN TWO BUILDS AT ONCE.** They fight over the build directory and both
   die partway, with the log ending mid-library and no error line anywhere — the
   failure looks like a mystery rather than a collision. Before starting a build,

@@ -38,6 +38,7 @@
 #include "roth/roth_log.h"
 #include "roth/roth_texture.h"
 #include "roth/roth_objects.h"
+#include "hw_vrmodes.h"   // VR_SetUnitsPerMeterOverride
 #include "roth/roth_runtime.h"
 #include "c_cvars.h"
 
@@ -194,6 +195,29 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		Level->ForcedPlayerHeight = ph + 10.;
 		log.Line("  player size    %.0f tall, eye at %.0f (Doom's default is 56 / 41)",
 			Level->ForcedPlayerHeight, Level->ForcedPlayerViewHeight);
+
+		// AND THE SAME FACT AGAIN, FOR THE HEADSET. Making the player the right
+		// number of UNITS tall fixes the flat-screen view, and does nothing at
+		// all in VR: there the world's size is set by how many units the engine
+		// calls a metre, and vr_vunits_per_meter is 34 because Doom's player is
+		// 56 units. Left alone, a 154-unit player stands 4.5 m tall and the
+		// manor reads as giant from inside the headset -- the same complaint the
+		// comment above is about, in the one place the fix above cannot reach.
+		//
+		// Derived, not tuned: keep the player's REAL-WORLD height what the cvar
+		// already implies for Doom, and scale by how much bigger Realms' units
+		// are. 34 * 154/56 = 93.5, which puts the eye at 144 units = 1.54 m.
+		//
+		// NOT the cvar itself. It is CVAR_ARCHIVE | CVAR_GLOBALCONFIG -- writing
+		// it would resize every other game this engine runs, permanently, from
+		// loading one Realms map. The override is per level and is cleared by
+		// P_SetupLevel. See VR_UnitsPerMeter in hw_vrmodes.h.
+		const double DOOM_PLAYER_HEIGHT = 56.0, DOOM_UNITS_PER_METRE = 34.0;
+		const double upm = DOOM_UNITS_PER_METRE
+			* (Level->ForcedPlayerHeight / DOOM_PLAYER_HEIGHT);
+		VR_SetUnitsPerMeterOverride((float)upm);
+		log.Line("  VR world scale %.1f units/metre (Realms; the cvar's %.0f is"
+			" Doom's, and is untouched)", upm, DOOM_UNITS_PER_METRE);
 	}
 
 	// Realms maps carry no BSP, blockmap or reject, so all of it is generated.

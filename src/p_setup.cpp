@@ -19,6 +19,7 @@
 */
 
 #include <math.h>
+#include "hw_vrmodes.h"   // VR_SetUnitsPerMeterOverride
 #include <QzDoom/VrCommon.h>
 #ifdef _MSC_VER
 #include <malloc.h>		// for alloca()
@@ -627,6 +628,12 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 	unsigned int i;
 
 	Level->ShaderStartTime = I_msTimeFS(); // indicate to the shader system that the level just started
+
+	// A LEVEL STATES ITS OWN WORLD SCALE, or says nothing and gets the player's
+	// cvar. Cleared here so a game that sets it cannot leak its unit size into
+	// the next map loaded -- see VR_UnitsPerMeter in hw_vrmodes.h. The Realms
+	// loader sets it again from the map's own player height.
+	VR_SetUnitsPerMeterOverride(0.f);
 
 	// This is motivated as follows:
 

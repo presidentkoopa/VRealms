@@ -815,7 +815,7 @@ static int mAngleFromRadians(double radians)
 static float GetRawHmdHeightInMapUnit()
 {
 	const double pixelstretch = level.info ? level.info->pixelstretch : 1.2;
-	return (float)(((double)hmdPosition[1] + (double)vr_height_adjust) * (double)vr_vunits_per_meter / pixelstretch);
+	return (float)(((double)hmdPosition[1] + (double)vr_height_adjust) * (double)VR_UnitsPerMeter() / pixelstretch);
 }
 
 static float GetHmdAdjustedHeightInMapUnit(bool applyLocalAnchor, float localHeightAnchor)
@@ -1788,7 +1788,7 @@ DVector3 VKOpenXRDeviceEyePose::GetViewShift(FRenderViewpoint& vp) const
 	float up[3];
 	AngleVectors(angles, forward, right, up);
 
-	const float stereoSeparation = (vr_ipd * 0.5f) * vr_vunits_per_meter * (eye == 0 ? -1.0f : 1.0f);
+	const float stereoSeparation = (vr_ipd * 0.5f) * VR_UnitsPerMeter() * (eye == 0 ? -1.0f : 1.0f);
 	return {
 		right[0] * stereoSeparation,
 		right[1] * stereoSeparation,
@@ -2056,10 +2056,10 @@ VSMatrix VKOpenXRDeviceEyePose::GetHUDProjection() const
 
 	const float hudStereo = getHUDValue<FFloatCVarRef>(vr_automap_stereo, vr_hud_stereo);
 	const float stereoSeparation =
-		(vr_ipd * 0.5f) * vr_vunits_per_meter * hudStereo * (eye == 1 ? -1.0f : 1.0f);
+		(vr_ipd * 0.5f) * VR_UnitsPerMeter() * hudStereo * (eye == 1 ? -1.0f : 1.0f);
 	hudProjection.translate(stereoSeparation, 0.0f, 0.0f);
 
-	hudProjection.scale(-vr_vunits_per_meter, vr_vunits_per_meter, -vr_vunits_per_meter);
+	hudProjection.scale(-VR_UnitsPerMeter(), VR_UnitsPerMeter(), -VR_UnitsPerMeter());
 
 	const double pixelstretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
 	hudProjection.scale(1.0, (FLOATTYPE)pixelstretch, 1.0);
@@ -3529,8 +3529,8 @@ void VKOpenXRDeviceMode::updateHmdPose(FRenderViewpoint& vp) const
 		if (multiplayer)
 		{
 			VR_AddMultiplayerRoomscaleWorldOffset(
-				positional_movementSideways * vr_vunits_per_meter,
-				positional_movementForward * vr_vunits_per_meter);
+				positional_movementSideways * VR_UnitsPerMeter(),
+				positional_movementForward * VR_UnitsPerMeter());
 		}
 	}
 
@@ -4585,7 +4585,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		double L[3] = { RS_Support.pinPos[0], RS_Support.pinPos[1], RS_Support.pinPos[2] };
 		const double pinLen = sqrt(L[0]*L[0] + L[1]*L[1] + L[2]*L[2]);
 		const bool offSliding = HandDrive_OffhandSlideMs != 0 && I_msTime() - HandDrive_OffhandSlideMs < 200;
-		const double slideMax = (offSliding && vr_vunits_per_meter > 0) ? HandDrive_OffhandSlideTravel / vr_vunits_per_meter : 0.0;
+		const double slideMax = (offSliding && VR_UnitsPerMeter() > 0) ? HandDrive_OffhandSlideTravel / VR_UnitsPerMeter() : 0.0;
 		if (slideMax > 0.0 && pinLen > 1e-4)
 		{
 			const double ax[3] = { L[0] / pinLen, L[1] / pinLen, L[2] / pinLen };
@@ -5213,9 +5213,9 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 					if (weaponVelValid)
 					{
 						const double velStretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
-						player->mo->AttackVel.X = -weaponLinearVel[0] * vr_vunits_per_meter;
-						player->mo->AttackVel.Y = -weaponLinearVel[2] * vr_vunits_per_meter;
-						player->mo->AttackVel.Z = weaponLinearVel[1] * vr_vunits_per_meter / velStretch;
+						player->mo->AttackVel.X = -weaponLinearVel[0] * VR_UnitsPerMeter();
+						player->mo->AttackVel.Y = -weaponLinearVel[2] * VR_UnitsPerMeter();
+						player->mo->AttackVel.Z = weaponLinearVel[1] * VR_UnitsPerMeter() / velStretch;
 						player->mo->AttackAngularVel.X = -weaponAngularVel[0];
 						player->mo->AttackAngularVel.Y = -weaponAngularVel[2];
 						player->mo->AttackAngularVel.Z = weaponAngularVel[1];
@@ -5245,9 +5245,9 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				{
 					// Same signs and scale as AttackVel above -- see there.
 					const double velStretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
-					player->mo->OffhandVel.X = -offhandLinearVel[0] * vr_vunits_per_meter;
-					player->mo->OffhandVel.Y = -offhandLinearVel[2] * vr_vunits_per_meter;
-					player->mo->OffhandVel.Z = offhandLinearVel[1] * vr_vunits_per_meter / velStretch;
+					player->mo->OffhandVel.X = -offhandLinearVel[0] * VR_UnitsPerMeter();
+					player->mo->OffhandVel.Y = -offhandLinearVel[2] * VR_UnitsPerMeter();
+					player->mo->OffhandVel.Z = offhandLinearVel[1] * VR_UnitsPerMeter() / velStretch;
 					player->mo->OffhandAngularVel.X = -offhandAngularVel[0];
 					player->mo->OffhandAngularVel.Y = -offhandAngularVel[2];
 					player->mo->OffhandAngularVel.Z = offhandAngularVel[1];
@@ -5269,9 +5269,9 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				{
 					FLineTraceData trace;
 					if (P_LineTrace(player->mo, yaw, 8192, pitch, TRF_ABSOFFSET | TRF_BLOCKUSE | TRF_BLOCKSELF | TRF_SOLIDACTORS,
-						((hmdPosition[1] + offhandoffset[1] + vr_height_adjust) * vr_vunits_per_meter) / pixelstretch,
-						-(offhandoffset[2] * vr_vunits_per_meter),
-						-(offhandoffset[0] * vr_vunits_per_meter), &trace))
+						((hmdPosition[1] + offhandoffset[1] + vr_height_adjust) * VR_UnitsPerMeter()) / pixelstretch,
+						-(offhandoffset[2] * VR_UnitsPerMeter()),
+						-(offhandoffset[0] * VR_UnitsPerMeter()), &trace))
 					{
 						m_TeleportTarget = trace.HitType;
 						m_TeleportLocation = trace.HitLocation;
@@ -5311,7 +5311,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				// Every frame, as before; the move itself lives in VR_ApplyRenderMove
 				// (p_vrdemo.cpp) so a VR demo can record it and replay it exactly.
 				VR_ApplyRenderMove(player, VRMOVE_ROOMSCALE,
-					DVector2(positional_movementSideways, positional_movementForward) * vr_vunits_per_meter);
+					DVector2(positional_movementSideways, positional_movementForward) * VR_UnitsPerMeter());
 			}
 
 		}
@@ -7140,7 +7140,7 @@ bool VKOpenXRDeviceMode::GetHmdTransform(VSMatrix* mat, DVector3 bodyOfs, float*
 
 	// The heading, THE SEAT and the hand-back to map units: VR_FinishHmdTransform
 	// (hw_vrmodes.cpp), which carries the notes on all three.
-	VR_FinishHmdTransform(mat, pixelstretch, bodyYawDeg, bodyOfs, vr_vunits_per_meter);
+	VR_FinishHmdTransform(mat, pixelstretch, bodyYawDeg, bodyOfs, VR_UnitsPerMeter());
 	return true;
 }
 
@@ -7154,7 +7154,7 @@ bool VKOpenXRDeviceMode::GetHmdBaseTransform(VSMatrix* mat, double* outPixelStre
 
 	mat->loadIdentity();
 	mat->translate((float)r_viewpoint.CenterEyePos.X, (float)r_viewpoint.CenterEyePos.Z - GetDoomPlayerHeightWithoutCrouch(player), (float)r_viewpoint.CenterEyePos.Y);
-	mat->scale((float)vr_vunits_per_meter, (float)vr_vunits_per_meter, (float)-vr_vunits_per_meter);
+	mat->scale((float)VR_UnitsPerMeter(), (float)VR_UnitsPerMeter(), (float)-VR_UnitsPerMeter());
 
 	mat->translate(0.f, (hmdPosition[1] + (float)vr_height_adjust) / (float)pixelstretch, 0.f);
 	mat->scale(1, 1 / (float)pixelstretch, 1);
@@ -7181,7 +7181,7 @@ bool VKOpenXRDeviceMode::GetHandTransform(int hand, VSMatrix* mat) const
 
 		mat->loadIdentity();
 		mat->translate((float)r_viewpoint.CenterEyePos.X, (float)r_viewpoint.CenterEyePos.Z - GetDoomPlayerHeightWithoutCrouch(player), (float)r_viewpoint.CenterEyePos.Y);
-		mat->scale((float)vr_vunits_per_meter, (float)vr_vunits_per_meter, (float)-vr_vunits_per_meter);
+		mat->scale((float)VR_UnitsPerMeter(), (float)VR_UnitsPerMeter(), (float)-VR_UnitsPerMeter());
 
 		mat->translate(-offset[0], (hmdPosition[1] + offset[1] + (float)vr_height_adjust) / (float)pixelstretch, offset[2]);
 		mat->scale(1, 1 / (float)pixelstretch, 1);

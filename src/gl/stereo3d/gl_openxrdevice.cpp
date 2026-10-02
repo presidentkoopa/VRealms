@@ -28,6 +28,7 @@
 #ifdef USE_OPENXR
 
 #include "gl_openxrdevice.h"
+#include "hw_vrmodes.h"   // VR_UnitsPerMeter
 
 #include <string>
 #include <map>
@@ -145,7 +146,7 @@ extern bool		automapactive;	// in AM_map.c
 float getHmdAdjustedHeightInMapUnit()
 {
     double pixelstretch = level.info ? level.info->pixelstretch : 1.2;
-    return ((hmdPosition[1] + vr_height_adjust) * vr_vunits_per_meter) / pixelstretch;
+    return ((hmdPosition[1] + vr_height_adjust) * VR_UnitsPerMeter()) / pixelstretch;
 }
 
 //bit of a hack, assume player is at "normal" height when not crouching
@@ -253,7 +254,7 @@ namespace s3d
         vec3_t v_forward, v_right, v_up;
         AngleVectors(angles, v_forward, v_right, v_up);
 
-        float stereo_separation = (vr_ipd * 0.5) * vr_vunits_per_meter * (eye == 0 ? -1.0 : 1.0);
+        float stereo_separation = (vr_ipd * 0.5) * VR_UnitsPerMeter() * (eye == 0 ? -1.0 : 1.0);
         vec3_t tmp;
         tmp[0] = v_right[0] * stereo_separation;
         tmp[1] = v_right[1] * stereo_separation;
@@ -306,14 +307,14 @@ namespace s3d
         VSMatrix new_projection;
         new_projection.loadIdentity();
 
-        float stereo_separation = (vr_ipd * 0.5) * vr_vunits_per_meter * getHUDValue<FFloatCVarRef>(vr_automap_stereo, vr_hud_stereo) * (eye == 1 ? -1.0 : 1.0);
+        float stereo_separation = (vr_ipd * 0.5) * VR_UnitsPerMeter() * getHUDValue<FFloatCVarRef>(vr_automap_stereo, vr_hud_stereo) * (eye == 1 ? -1.0 : 1.0);
         new_projection.translate(stereo_separation, 0, 0);
 
         // doom_units from meters
         new_projection.scale(
-                -vr_vunits_per_meter,
-                vr_vunits_per_meter,
-                -vr_vunits_per_meter);
+                -VR_UnitsPerMeter(),
+                VR_UnitsPerMeter(),
+                -VR_UnitsPerMeter());
         double pixelstretch = level.info ? level.info->pixelstretch : 1.2;
         new_projection.scale(1.0, pixelstretch, 1.0); // Doom universe is scaled by 1990s pixel aspect ratio
 
@@ -475,7 +476,7 @@ namespace s3d
             //We want to offset the weapon exactly from where we are seeing from
             mat->translate(r_viewpoint.CenterEyePos.X, r_viewpoint.CenterEyePos.Z - getDoomPlayerHeightWithoutCrouch(player), r_viewpoint.CenterEyePos.Y);
 
-            mat->scale(vr_vunits_per_meter, vr_vunits_per_meter, -vr_vunits_per_meter);
+            mat->scale(VR_UnitsPerMeter(), VR_UnitsPerMeter(), -VR_UnitsPerMeter());
 
             if ((vr_control_scheme < 10 && hand == 1)
                 || (vr_control_scheme >= 10 && hand == 0)) {
@@ -644,9 +645,9 @@ namespace s3d
                         // Same value, kept somewhere the playsim will not zero it.
                         player->mo->MainHandRoll = player->mo->AttackRoll;
 
-                        player->mo->AttackPos.X = player->mo->X() - (weaponoffset[0] * vr_vunits_per_meter);
-                        player->mo->AttackPos.Y = player->mo->Y() - (weaponoffset[2] * vr_vunits_per_meter);
-                        player->mo->AttackPos.Z = r_viewpoint.CenterEyePos.Z + (((hmdPosition[1] + weaponoffset[1] + vr_height_adjust) * vr_vunits_per_meter) / pixelstretch) -
+                        player->mo->AttackPos.X = player->mo->X() - (weaponoffset[0] * VR_UnitsPerMeter());
+                        player->mo->AttackPos.Y = player->mo->Y() - (weaponoffset[2] * VR_UnitsPerMeter());
+                        player->mo->AttackPos.Z = r_viewpoint.CenterEyePos.Z + (((hmdPosition[1] + weaponoffset[1] + vr_height_adjust) * VR_UnitsPerMeter()) / pixelstretch) -
                                 getDoomPlayerHeightWithoutCrouch(player); // Fixes wrong shot height when in water
                     }
                 }
@@ -659,9 +660,9 @@ namespace s3d
                     player->mo->OffhandAngle = DAngle::fromDeg(-90 + getViewpointYaw() + (offhandangles[YAW]- playerYaw));
                     player->mo->OffhandRoll = DAngle::fromDeg(offhandangles[ROLL]);
 
-                    player->mo->OffhandPos.X = player->mo->X() - (offhandoffset[0] * vr_vunits_per_meter);
-                    player->mo->OffhandPos.Y = player->mo->Y() - (offhandoffset[2] * vr_vunits_per_meter);
-                    player->mo->OffhandPos.Z = r_viewpoint.CenterEyePos.Z + (((hmdPosition[1] + offhandoffset[1] + vr_height_adjust) * vr_vunits_per_meter) / pixelstretch) -
+                    player->mo->OffhandPos.X = player->mo->X() - (offhandoffset[0] * VR_UnitsPerMeter());
+                    player->mo->OffhandPos.Y = player->mo->Y() - (offhandoffset[2] * VR_UnitsPerMeter());
+                    player->mo->OffhandPos.Z = r_viewpoint.CenterEyePos.Z + (((hmdPosition[1] + offhandoffset[1] + vr_height_adjust) * VR_UnitsPerMeter()) / pixelstretch) -
                             getDoomPlayerHeightWithoutCrouch(player); // Fixes wrong shot height when in water
                 }
 
@@ -676,9 +677,9 @@ namespace s3d
                         FLineTraceData trace;
                         if (P_LineTrace(player->mo, yaw, 8192, pitch, TRF_ABSOFFSET|TRF_BLOCKUSE|TRF_BLOCKSELF|TRF_SOLIDACTORS,
                                         ((hmdPosition[1] + offhandoffset[1] + vr_height_adjust) *
-                                         vr_vunits_per_meter) / pixelstretch,
-                                        -(offhandoffset[2] * vr_vunits_per_meter),
-                                        -(offhandoffset[0] * vr_vunits_per_meter), &trace))
+                                         VR_UnitsPerMeter()) / pixelstretch,
+                                        -(offhandoffset[2] * VR_UnitsPerMeter()),
+                                        -(offhandoffset[0] * VR_UnitsPerMeter()), &trace))
                         {
                             m_TeleportTarget = trace.HitType;
                             m_TeleportLocation = trace.HitLocation;
@@ -724,7 +725,7 @@ namespace s3d
                     // Roomscale/HMD positional locomotion stays local to single-player until it has
                     // an explicit deterministic netplay contract.
                     auto vel = player->mo->Vel;
-                    player->mo->Vel = DVector3((DVector2(hmd_side, hmd_forward) * vr_vunits_per_meter), 0);
+                    player->mo->Vel = DVector3((DVector2(hmd_side, hmd_forward) * VR_UnitsPerMeter()), 0);
                     bool wasOnGround = player->mo->Z() <= player->mo->floorz + 2;
                     double oldZ = player->mo->Z();
                     P_XYMovement(player->mo, DVector2(0, 0));

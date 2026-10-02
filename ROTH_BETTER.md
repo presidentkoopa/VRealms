@@ -249,6 +249,62 @@ it is authorised. Revisit in the VR pass with the headset on.
 
 ---
 
+## 11. The world's scale in a headset
+
+**What Realms does.** Nothing: it has no notion of a metre. Its player is 154
+units tall with the eye at 144, and on a flat screen that is a pure ratio -- it
+only matters relative to the geometry, which is why making the player the right
+number of UNITS tall was enough for the flat view.
+
+**What we do.** A headset asks a question the original never had to answer: how
+many world units is a real metre? `vr_vunits_per_meter` is 34, which is tuned
+for Doom's 56-unit player. Left at that, a Realms player stands 4.5 m tall and
+the manor is enormous from inside the headset -- the owner's words on
+2026-10-02 were "I am super super small, the world seems massive".
+
+`VR_UnitsPerMeter()` (hw_vrmodes.h) now answers it, and the Realms loader sets
+a per-level override of `34 * 154/56 = 93.5`, which puts the eye at 1.54 m.
+Derived from the player height rather than tuned by eye, so any map stating a
+different player height gets the matching scale for free.
+
+**Status: BUILT, 2026-10-02.** This is not a divergence from 1:1 -- the flat
+screen cannot reach the code path, and the geometry is untouched. It is the
+answer to a question 1:1 does not ask. The one judgement in it is that a Realms
+person is the same real-world height as a Doom person; if the owner wants to be
+taller or shorter in the manor, this constant is where that lives.
+
+**NOT the cvar.** It is `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`: writing it would
+resize every other game this engine runs, permanently, from loading one Realms
+map.
+
+---
+
+## 12. The candle cone follows the head, not the body
+
+**What Realms does.** Shades a lantern sector by a cone about the VIEW axis. On
+a desktop the view and the body are the same direction, so the original never
+had to tell them apart.
+
+**Why it is wrong in VR.** They are not the same in a headset. The lit pool
+swings to wherever the player looks, so turning your head re-lights the room
+around you. The owner's words on 2026-10-02: "motion sickness city when it is
+constantly reorienting itself around where I look, as opposed to what direction
+my body is facing".
+
+**What it would cost.** A per-frame axis the shaders measure the cone from,
+defaulting to the view so nothing else moves. Attempted on 2026-10-02 and
+REVERTED: the sign was confirmed correct by a +/-30 degree test (+30 swings the
+cone left, so `body - view` holds it still), and the uniform plumbing was
+verified across all three declarations -- but a trustworthy flat-screen control
+could not be obtained while `vid_fixgamma` was poisoning every capture, so it
+was pulled rather than shipped unverified. Re-applying it is cheap and the sign
+is known.
+
+**Status: WANTED, NOT BUILT.** The owner asked for it directly, which makes it
+the first deliberate VR divergence to be authorised rather than recorded.
+
+---
+
 ## How to add to this
 
 One heading per idea. Say what Realms does, what we do, why theirs might be better, and what it would

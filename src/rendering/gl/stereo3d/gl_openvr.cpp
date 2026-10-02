@@ -1082,7 +1082,7 @@ namespace s3d
 				0,  1,  0,  0, // Y-up in OpenVR -> Z-up in Doom
 				0,  0,  0,  1 };
 		doomInOpenVR.multMatrix(permute);
-		doomInOpenVR.scale(vr_vunits_per_meter, vr_vunits_per_meter, vr_vunits_per_meter); // Doom units are not meters
+		doomInOpenVR.scale(VR_UnitsPerMeter(), VR_UnitsPerMeter(), VR_UnitsPerMeter()); // Doom units are not meters
 		double pixelstretch = level.info ? level.info->pixelstretch : 1.2;
 		doomInOpenVR.scale(pixelstretch, pixelstretch, 1.0); // Doom universe is scaled by 1990s pixel aspect ratio
 		doomInOpenVR.rotate(deltaYawDegrees, 0, 0, 1);
@@ -1095,7 +1095,7 @@ namespace s3d
 			// We want to align those two heights here
 			const player_t& player = players[consoleplayer];
 			double vh = getDoomPlayerHeightWithoutCrouch(&player); // Doom thinks this is where you are
-			double hh = ((openvr_X_hmd[1][3] + vr_height_adjust) * vr_vunits_per_meter) / pixelstretch; // HMD is actually here
+			double hh = ((openvr_X_hmd[1][3] + vr_height_adjust) * VR_UnitsPerMeter()) / pixelstretch; // HMD is actually here
 			HmdHeight = hh;
 			doom_EyeOffset[2] += hh - vh;
 			// TODO: optionally allow player to jump and crouch by actually jumping and crouching
@@ -1430,14 +1430,14 @@ namespace s3d
 		VSMatrix new_projection;
 		new_projection.loadIdentity();
 
-		float stereo_separation = (vr_ipd * 0.5) * vr_vunits_per_meter * getHUDValue<FFloatCVarRef>(vr_automap_stereo, vr_hud_stereo) * (eye == 1 ? -1.0 : 1.0);
+		float stereo_separation = (vr_ipd * 0.5) * VR_UnitsPerMeter() * getHUDValue<FFloatCVarRef>(vr_automap_stereo, vr_hud_stereo) * (eye == 1 ? -1.0 : 1.0);
 		new_projection.translate(stereo_separation, 0, 0);
 
 		// doom_units from meters
 		new_projection.scale(
-			-vr_vunits_per_meter,
-			vr_vunits_per_meter,
-			-vr_vunits_per_meter);
+			-VR_UnitsPerMeter(),
+			VR_UnitsPerMeter(),
+			-VR_UnitsPerMeter());
 		double pixelstretch = level.info ? level.info->pixelstretch : 1.2;
 		new_projection.scale(1.0, pixelstretch, 1.0); // Doom universe is scaled by 1990s pixel aspect ratio
 
@@ -1965,7 +1965,7 @@ namespace s3d
 			//We want to offset the weapon exactly from where we are seeing from
 			mat->translate(r_viewpoint.CenterEyePos.X, r_viewpoint.CenterEyePos.Z - getDoomPlayerHeightWithoutCrouch(player), r_viewpoint.CenterEyePos.Y);
 
-			mat->scale(vr_vunits_per_meter, vr_vunits_per_meter, -vr_vunits_per_meter);
+			mat->scale(VR_UnitsPerMeter(), VR_UnitsPerMeter(), -VR_UnitsPerMeter());
 
 			if ((vr_control_scheme < 10 && hand == 1)
 				|| (vr_control_scheme >= 10 && hand == 0)) {
@@ -2503,8 +2503,8 @@ namespace s3d
 				if (multiplayer)
 				{
 					VR_AddMultiplayerRoomscaleWorldOffset(
-						positional_movementSideways * vr_vunits_per_meter,
-						positional_movementForward * vr_vunits_per_meter);
+						positional_movementSideways * VR_UnitsPerMeter(),
+						positional_movementForward * VR_UnitsPerMeter());
 				}
 			}
 
@@ -3329,9 +3329,9 @@ namespace s3d
 							FLineTraceData trace;
 							if (P_LineTrace(player->mo, yaw, 8192, pitch, TRF_ABSOFFSET|TRF_BLOCKUSE|TRF_BLOCKSELF|TRF_SOLIDACTORS,
 											((hmdPosition[1] + offhandoffset[1] + vr_height_adjust) *
-											vr_vunits_per_meter) / pixelstretch,
-											-(offhandoffset[2] * vr_vunits_per_meter),
-											-(offhandoffset[0] * vr_vunits_per_meter), &trace))
+											VR_UnitsPerMeter()) / pixelstretch,
+											-(offhandoffset[2] * VR_UnitsPerMeter()),
+											-(offhandoffset[0] * VR_UnitsPerMeter()), &trace))
 							{
 								m_TeleportTarget = trace.HitType;
 								m_TeleportLocation = trace.HitLocation;
@@ -3383,7 +3383,7 @@ namespace s3d
 						// Roomscale/HMD positional locomotion stays local to single-player until it has
 						// an explicit deterministic netplay contract.
 						auto vel = player->mo->Vel;
-						player->mo->Vel = DVector3((DVector2(hmd_side, hmd_forward) * vr_vunits_per_meter), 0);
+						player->mo->Vel = DVector3((DVector2(hmd_side, hmd_forward) * VR_UnitsPerMeter()), 0);
 						//player->mo->Vel = DVector3((DVector2(-openvr_dpos.x, openvr_dpos.z) * vr_vunits_per_meter).Rotated(openvr_to_doom_angle), 0);
 						bool wasOnGround = player->mo->Z() <= player->mo->floorz;
 						float oldZ = player->mo->Z();

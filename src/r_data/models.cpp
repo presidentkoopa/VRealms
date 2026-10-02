@@ -1655,7 +1655,7 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 			// RS_TestPistol, RS_WorldHands and RS_VRBody, corrected in the same
 			// change.
 			// [HANDUNITS] Map units, as the body path: see the note above vr_vunits_per_meter.
-			const float vuHand = (float)vr_vunits_per_meter;
+			const float vuHand = (float)VR_UnitsPerMeter();
 			const float followHandUnitScale = (vuHand > 1e-3f) ? 1.f / vuHand : 1.f / 34.f;
 			objectToWorldMatrix.scale(followHandUnitScale, followHandUnitScale, followHandUnitScale);
 

@@ -634,6 +634,23 @@ CVAR(Float, vr_overlayscreen_vpos, 0., CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Int, vr_overlayscreen_bg, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // default conversion between (vertical) DOOM units and meters
 CVAR(Float, vr_vunits_per_meter, 34.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // METERS
+
+// See VR_UnitsPerMeter in the header. Deliberately NOT a second cvar: the
+// player's preference stays the one archived value, and a game states its own
+// unit size in code, so nothing is written to a config that is shared with
+// every other game this engine runs.
+static float gVRUnitsPerMeterOverride = 0.f;
+
+float VR_UnitsPerMeter()
+{
+	return gVRUnitsPerMeterOverride > 0.f ? gVRUnitsPerMeterOverride
+	                                      : (float)VR_UnitsPerMeter();
+}
+
+void VR_SetUnitsPerMeterOverride(float unitsPerMeter)
+{
+	gVRUnitsPerMeterOverride = unitsPerMeter > 0.f ? unitsPerMeter : 0.f;
+}
 CVAR(Float, vr_height_adjust, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // METERS
 CVAR(Float, vr_openxr_fov_adjust_deg, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // DEGREES PER SIDE
 CVAR(Float, vr_openxr_eye_shift_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -1423,8 +1440,8 @@ DVector3 VREyeInfo::GetViewShift(FRenderViewpoint& vp) const
 	else
 	{
 		float yaw = vp.HWAngles.Yaw.Degrees();
-		double dx = -cos(DEG2RAD(yaw)) * vr_vunits_per_meter * getShift();
-		double dy = sin(DEG2RAD(yaw)) * vr_vunits_per_meter * getShift();
+		double dx = -cos(DEG2RAD(yaw)) * VR_UnitsPerMeter() * getShift();
+		double dy = sin(DEG2RAD(yaw)) * VR_UnitsPerMeter() * getShift();
 		return { dx, dy, 0 };
 	}
 }
