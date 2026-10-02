@@ -50,28 +50,243 @@ defaultmap
 	// instead; see rothmap.cpp, ROTH_FOV_DEGREES.
 }
 
+// ALL 44 LEVELS ARE DECLARED. They were not, and "most maps are not in
+// MAPINFO" was a standing trap: a capture in any map but three needed an
+// entry added and vrealms.pk3 rebuilt first, which is a slow way to discover
+// that a map exists. Every map loads through the same path, so an entry costs
+// nothing but the line -- as the note above already said.
+//
+// Generated from the names of the .RAW files in the player's own install, so
+// nothing here is derived from the game's content.
+
+map ABAGATE2 "ABAGATE2"
+{
+	next = "ABAGATE2"
+}
+
+map AELF "AELF"
+{
+	next = "AELF"
+}
+
+map ANUBIS "ANUBIS"
+{
+	next = "ANUBIS"
+}
+
+map AQUA1 "AQUA1"
+{
+	next = "AQUA1"
+}
+
+map AQUA2 "AQUA2"
+{
+	next = "AQUA2"
+}
+
+map CAVERNS "CAVERNS"
+{
+	next = "CAVERNS"
+}
+
+map CAVERNS2 "CAVERNS2"
+{
+	next = "CAVERNS2"
+}
+
+map CAVERNS3 "CAVERNS3"
+{
+	next = "CAVERNS3"
+}
+
+map CHURCH1 "CHURCH1"
+{
+	next = "CHURCH1"
+}
+
+map DOMINION "DOMINION"
+{
+	next = "DOMINION"
+}
+
+map DOPPLE "DOPPLE"
+{
+	next = "DOPPLE"
+}
+
+map ELOHIM1 "ELOHIM1"
+{
+	next = "ELOHIM1"
+}
+
+map GNARL1 "GNARL1"
+{
+	next = "GNARL1"
+}
+
+map GRAVE "GRAVE"
+{
+	next = "GRAVE"
+}
+
+map LRINTH "LRINTH"
+{
+	next = "LRINTH"
+}
+
+
+// LRINTH1 is the surface test map: one of only four carrying EVERY
+// property the flat rules are tested against in ONE place, including a
+// mirrored floor on each axis, and 226 wall pieces on the colour key.
+
+map LRINTH1 "The Labyrinth"
+{
+	next = "LRINTH1"
+}
+
+map MAS3 "MAS3"
+{
+	next = "MAS3"
+}
+
+map MAS4 "MAS4"
+{
+	next = "MAS4"
+}
+
+map MAS6 "MAS6"
+{
+	next = "MAS6"
+}
+
+map MAS7 "MAS7"
+{
+	next = "MAS7"
+}
+
+map MAUSO1EA "MAUSO1EA"
+{
+	next = "MAUSO1EA"
+}
+
+map MAUSO1EB "MAUSO1EB"
+{
+	next = "MAUSO1EB"
+}
+
+map MAZE "MAZE"
+{
+	next = "MAZE"
+}
+
+map OPTEMP1 "OPTEMP1"
+{
+	next = "OPTEMP1"
+}
+
+map RAQUIA1 "RAQUIA1"
+{
+	next = "RAQUIA1"
+}
+
+map RAQUIA2 "RAQUIA2"
+{
+	next = "RAQUIA2"
+}
+
+map RAQUIA3 "RAQUIA3"
+{
+	next = "RAQUIA3"
+}
+
+map RAQUIA4 "RAQUIA4"
+{
+	next = "RAQUIA4"
+}
+
+map RAQUIA5 "RAQUIA5"
+{
+	next = "RAQUIA5"
+}
+
+map SALVAT "SALVAT"
+{
+	next = "SALVAT"
+}
+
+map SOULST2 "SOULST2"
+{
+	next = "SOULST2"
+}
+
+map SOULST3 "SOULST3"
+{
+	next = "SOULST3"
+}
+
 map STUDY1 "The Study"
 {
 	next = "STUDY1"
 }
 
-// STUDY2 carries 17 directional objects, more than any other map in the game
-// (tools/rothdiff/dircheck), which makes it the place to look at view-dependent
-// art. Every map loads through the same path, so declaring one costs nothing
-// but the entry.
+
+// STUDY2 carries 17 directional objects, more than any other map in the
+// game (tools/rothdiff/dircheck), which makes it the place to look at
+// view-dependent art.
+
 map STUDY2 "The Study, Upper"
 {
 	next = "STUDY2"
 }
 
-// LRINTH1 is the surface test map. It is one of only four that carry EVERY
-// property the flat rules are tested against in ONE place -- including a
-// mirrored floor on each axis, which STUDY1 has none of -- and it has 226 wall
-// pieces sitting on the colour key, where STUDY1 has none at all. A map that
-// cannot exercise a rule cannot verify it.
-map LRINTH1 "The Labyrinth"
+map STUDY3 "STUDY3"
 {
-	next = "LRINTH1"
+	next = "STUDY3"
+}
+
+map STUDY4 "STUDY4"
+{
+	next = "STUDY4"
+}
+
+map TEMPLE1 "TEMPLE1"
+{
+	next = "TEMPLE1"
+}
+
+map TGATE1F "TGATE1F"
+{
+	next = "TGATE1F"
+}
+
+map TGATE1G "TGATE1G"
+{
+	next = "TGATE1G"
+}
+
+map TGATE1H "TGATE1H"
+{
+	next = "TGATE1H"
+}
+
+map TGATE1I "TGATE1I"
+{
+	next = "TGATE1I"
+}
+
+map TOWER1 "TOWER1"
+{
+	next = "TOWER1"
+}
+
+map VICAR "VICAR"
+{
+	next = "VICAR"
+}
+
+map VICAR1 "VICAR1"
+{
+	next = "VICAR1"
 }
 
 clusterdef 1

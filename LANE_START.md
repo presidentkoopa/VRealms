@@ -235,8 +235,13 @@ made, or a measured miss that has not been fixed.
    statue's yaw is far from zero so the test could have failed.
    `HANDOFF_REMAROTH.md` §7; `tools/rothdiff/viewmatch.py` re-runs the scoring,
    `dirprops.py` finds the props and emits the orbit.
-4. The per-view lateral anchor (§10 item 1, last bullet). A real change; scope
-   it first.
+4. ~~The per-view lateral anchor.~~ **NEEDS NO CODE — inert in every retail
+   map, measured 2026-10-02.** All ten maps with directional objects report
+   `0 applied, 0 with one on ANY view, 0 whose views DISAGREE`. The 9 prefixed
+   directional entries are shared-pack and nothing places them; every placed
+   directional prop is map-pack art, which carries no prefixes at all. The old
+   counter only looked at view 0 and was corrected before being believed.
+   `HANDOFF_REMAROTH.md` §10 item 1.
 
 **Lighting (§10 item 2)**
 5. The start-pose difference: the right-hand wall and the door leaf

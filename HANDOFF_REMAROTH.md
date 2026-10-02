@@ -785,6 +785,30 @@ Outstanding, in the order to do them:
      and counted-but-skipped on the directional one. Closing it means carrying a
      per-view offset on the sprite definition beside the per-view flip already
      there — a real change, deliberately not guessed at.
+
+     **NEEDS NO CODE — it is inert in every retail map. Measured 2026-10-02,
+     the same way the tint ramp closed (`dbec850`).** All ten maps carrying
+     directional objects report `0 applied, 0 with one on ANY view, 0 whose
+     views DISAGREE`.
+
+     **The first zero was not trustworthy and was fixed before being believed.**
+     The counter tested `info.lateralOffset`, which is *view 0's*, so an entry
+     whose view 0 is zero and whose other views are not would have read as
+     "nothing here" — and 59 of the 321 prefixes carry `x = 0`. The view loop
+     already fetched `frameInfo` for every view and discarded all but the first,
+     so it now tracks whether ANY view carries one and whether the views
+     DISAGREE. Still zero everywhere.
+
+     **Why it is zero, which is the part that makes it safe to close.** The 9
+     prefixed directional entries are all in the SHARED pack, and **no retail
+     map places them**: every placed directional prop is map-pack art, which
+     carries no prefixes at all (`prefixcheck`: none in DEMO, DEMO1, DEMO2,
+     DEMO3 or DEMO4). Confirmed on the art itself in two maps — STUDY2's 17 are
+     `ROTH_DEMO_*`, MAZE's 8 are `ROTH_DEMO4_*`. The structural change would be
+     dead code against the retail data.
+
+     Build it only if something ever places a shared-pack directional entry. The
+     counter will say so.
 2. **The remaining lighting terms.** Re-derived 2026-10-01 with three readers
    and a skeptic each; all four survived, against none on the first attempt.
 

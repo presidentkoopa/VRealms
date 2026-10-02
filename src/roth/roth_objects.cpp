@@ -521,7 +521,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	int hiddenFlag = 0, noArt = 0, emptyEntry = 0, creatures = 0;
 	int meshesBuilt = 0, flatFaces = 0, texturedFaces = 0;
 	int fixedAngle = 0, flipped = 0, hanging = 0, scaled = 0, lit = 0, nibbleShift = 0;
-	int lateralOffsets = 0, lateralPerView = 0;
+	int lateralOffsets = 0, lateralPerView = 0, lateralViewsDiffer = 0;
 	int fromShared = 0, sharedUnavailable = 0, noSpriteSlot = 0;
 	int oversized = 0;
 	int directionalPlaced = 0, directionalUnresolved = 0, directionalFrames = 0;
@@ -805,6 +805,14 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 				// the other pack -- the shared pack's directional entries point
 				// almost entirely into the map's own. Resolved the way the
 				// original's select_das_fat_entry does (renderer.c:730-733).
+				// EVERY VIEW'S LATERAL ANCHOR, not view 0's. The counter below used to
+				// test info.lateralOffset, which IS view 0's, so an entry whose view 0
+				// is zero and whose other views are not read as "no lateral anchor
+				// here" -- and 59 of the 321 prefixes in the files carry x = 0. A zero
+				// that cannot move is not a measurement, and whether a per-view offset
+				// is worth building at all rests on this number.
+				bool latAnyNonZero = false, latDiffer = false;
+				double lat0 = 0.0;
 				bool badFrame = false;
 				FTextureID views[16];
 				bool flips[16];
@@ -823,6 +831,9 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					// The views of one prop are the same artwork from different
 					// sides, so the first view's size and anchor speak for all.
 					if (v == 0) { info = frameInfo; first = views[v]; }
+					if (frameInfo.lateralOffset != 0.0) latAnyNonZero = true;
+					if (v == 0) lat0 = frameInfo.lateralOffset;
+					else if (frameInfo.lateralOffset != lat0) latDiffer = true;
 				}
 				if (badFrame)
 				{
@@ -831,6 +842,8 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					continue;
 				}
 				directionalFrames += dir.count;
+				if (latAnyNonZero) lateralPerView++;
+				if (latDiffer) lateralViewsDiffer++;
 
 				if (haveDir != dirSpriteByEntry.end())
 				{
@@ -949,9 +962,10 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  carrying a light byte %d applied  (signed offset on the sector, 0x80 neutral; the 0x853f6 flash term needs the game layer)", lit);
 		log->Line("  artwork anchor shift  %d applied  (both terms: the modifier"
 			" nibble and the art entry's own vertical anchor)", nibbleShift);
-		log->Line("  lateral anchor        %d applied, %d skipped as view-dependent"
-			" (a directional entry's views disagree on it -- see the comment)",
-			lateralOffsets, lateralPerView);
+		log->Line("  lateral anchor        %d applied, %d directional props with one"
+			" on ANY view, %d whose views DISAGREE"
+			" -- only the last would be fixed by a per-view offset",
+			lateralOffsets, lateralPerView, lateralViewsDiffer);
 		log->Line("  not spawned           %d  = %d not-drawn flag, %d empty art,"
 			" %d creature, %d directional unresolved, %d no art, %d shared pack missing,"
 			" %d no sprite slot",
