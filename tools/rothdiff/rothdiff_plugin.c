@@ -596,10 +596,40 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
     }
     else
     {
+    /* THE PICTURE, beside the measurement.
+     *
+     * This path runs with NO paint applied, so `pixels` is the frame the
+     * original would actually have shown -- which is exactly what a whole-frame
+     * comparison against REMAROTH needs, and what this plugin never kept. Only
+     * the UV path wrote a .pgm, and every frame it wrote was painted.
+     *
+     * Raw palette INDICES, not colours: the palette belongs to the map's pack
+     * and is applied offline by tools/rothdiff/framepng.cpp, which reads it with
+     * the loader's own reader. Doing it here would mean reaching for the palette
+     * from TICK_ISR context, where the SDK says no engine calls.
+     *
+     * Written unconditionally. It is 307 KB against the .ridb's 2.4 MB, the
+     * capture is deliberate either way, and a capture that cannot show what it
+     * measured has cost this project time more than once. */
+    {
+        char pg[600];
+        snprintf(pg, sizeof pg, "%s/%s.frame.pgm",
+                 g_outdir[0] ? g_outdir : ".", g_pose[g_cur].name);
+        FILE *pf = fopen(pg, "wb");
+        if (pf != NULL)
+        {
+            fprintf(pf, "P5%c%u %u%c255%c", 10, width, height, 10, 10);
+            fwrite(pixels, 1, (size_t)width * (size_t)height, pf);
+            fclose(pf);
+        }
+        else
+            fprintf(stderr, "[rothdiff] could not write %s\n", pg);
+    }
+
     pose_path(path, sizeof path, g_cur);
     if (id_write(path, g_pose[g_cur].x, g_pose[g_cur].y,
                  (int32_t)g_pose[g_cur].ang) == 0)
-        fprintf(stderr, "[rothdiff] %2d/%d  %-20s %ux%u  %llu px\n",
+        fprintf(stderr, "[rothdiff] %2d/%d  %-20s %ux%u  %llu px  +frame.pgm\n",
                 g_cur + 1, g_pose_n, g_pose[g_cur].name, g_id_w, g_id_h,
                 (unsigned long long)g_id_written);
     else

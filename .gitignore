@@ -72,3 +72,6 @@ gzdoom-crash.log
 /tools/rothdiff/obj_oc/
 /tools/rothdiff/obj_mc/
 /tools/rothdiff/obj_dg/
+/tools/rothdiff/obj_fp/
+/tools/rothdiff/obj_pl/
+/tools/rothdiff/plugin_msvc.*
