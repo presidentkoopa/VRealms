@@ -66,3 +66,7 @@ wadsrc/static/meta.xml
 /build__
 gzdoom-crash.log
 .cache/
+
+# The offline rothdiff tools build in place; their objects are not source.
+/tools/rothdiff/obj_pc/
+/tools/rothdiff/obj_oc/

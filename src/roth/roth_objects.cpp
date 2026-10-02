@@ -188,6 +188,9 @@ struct Pending
 	// The object's own light, already combined with its sector's -- see where
 	// it is computed. -1 means "no light byte, use the sector's".
 	int    lightLevel = -1;
+	// The art's own lateral anchor, a VIEW-space slide -- see
+	// SpriteInfo::lateralOffset. Zero for all but a handful of entries.
+	double spriteOffsetX = 0;
 	bool   isMesh = false;
 };
 
@@ -518,6 +521,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	int hiddenFlag = 0, noArt = 0, emptyEntry = 0, creatures = 0;
 	int meshesBuilt = 0, flatFaces = 0, texturedFaces = 0;
 	int fixedAngle = 0, flipped = 0, hanging = 0, scaled = 0, lit = 0, nibbleShift = 0;
+	int lateralOffsets = 0, lateralPerView = 0;
 	int fromShared = 0, sharedUnavailable = 0, noSpriteSlot = 0;
 	int oversized = 0;
 	int directionalPlaced = 0, directionalUnresolved = 0, directionalFrames = 0;
@@ -533,7 +537,8 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	// the plain and the directional paths end here, so a rule added to one is
 	// not silently missing from the other.
 	auto finishPictureSprite = [&](Pending &p, FTextureID tex, const SpriteInfo &info,
-		const roth::Object &o, const std::string &artName, int artIndex)
+		const roth::Object &o, const std::string &artName, int artIndex,
+		bool viewDependent)
 	{
 		// One texel is two world units, like a wall, unless the artwork
 		// carries its own size modifier.
@@ -564,30 +569,73 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		// sign floats every standing prop up to 30 units ABOVE its floor, and
 		// anchoring the top instead buries it by its entire height.
 		//
-		// THE SECOND TERM, still missing. The full shift is
+		// THE SECOND TERM, now present. The full shift is
 		//
 		//     shift = (int16)(2 * (modifier & 0x0f) + u16[0x84aba])
 		//
-		// added in 16 bits and then sign-extended. The old comment said no
-		// writer for 0x84aba could be found anywhere; that was a search
+		// added in 16 bits and then sign-extended. An older comment here said
+		// no writer for 0x84aba could be found anywhere; that was a search
 		// artefact -- nothing writes 16 bits there, every write is a 32-BIT
-		// store to 0x84ab8 whose high half lands on it. It is read in exactly
-		// two places, both this shift (renderer.c:6553, :7758), and it comes
-		// from the art entry's own size prefix (FAT flags bit 3 -> dword at
-		// block+4, das_assets.c:601).
+		// store to 0x84ab8 whose high half lands on it (renderer.c:5666, :5676,
+		// :5692, :5731, :5976, :6015, zeroed at :6663 and :7703). It is read in
+		// exactly two places, both this shift (renderer.c:6553, :7758), and it
+		// comes from the art entry's own anchor offset -- see roth::AnchorOffset
+		// for where that lives and what was measured about it.
 		//
-		// It is ZERO for every one of STUDY1's 243 objects, because DEMO.DAS
-		// has no entry carrying that flag -- which is why leaving it out looked
-		// harmless. It is NOT zero for the shared sprite pack: 321 of ADEMO's
-		// ~550 live entries carry a prefix, with values spanning roughly
-		// -10..130. So shared-pack sprites are still placed wrongly until the
-		// reader exposes it, and that is counted below rather than hidden.
+		// It is ZERO for every one of STUDY1's 243 objects, because no entry in
+		// any of the five map packs carries the flag -- which is why leaving it
+		// out looked harmless for so long. It is not zero in the shared pack,
+		// and that is now read.
+		//
+		// NOTE for whoever chases the DEMO[4102] discrepancy: that entry has
+		// flags_1 0x80 and NO anchor, so this term is not the explanation and
+		// the two faults are independent. Measured, not assumed --
+		// tools/rothdiff/prefixcheck.cpp prints it.
 		if (info.anchorShift != 0.0)
 		{
 			nibbleShift++;
 			// Standing: the bottom drops by the shift. Hanging (IM_HANG): the
 			// picture is anchored by its top, which rises by the same amount.
 			p.z += info.hang ? info.anchorShift : -info.anchorShift;
+		}
+
+		// THE ANCHOR'S LATERAL HALF. A view-space slide, so it belongs on the
+		// sprite and not on the position -- see SpriteInfo::lateralOffset for
+		// the sign, which is read out of both engines rather than guessed. The
+		// original negates it under the x-flip bit (renderer.c:5669), which
+		// here is the object's own HorizontalFlip, read from `o` because
+		// RF_XFLIP is not set on `p` until further down this same function.
+		//
+		// NOT APPLIED TO VIEW-DEPENDENT ART, and that is a measured decision
+		// rather than an omission. A directional object gets ONE SpriteInfo --
+		// view 0's -- but each view is a different art entry with its own
+		// anchor and its own mirror bit, and the original negates and applies
+		// them per view. MEASURED (tools/rothdiff/prefixcheck.cpp) over all 44
+		// maps, of the 9 directional entries whose every frame carries an
+		// anchor:
+		//
+		//   - the VERTICAL anchor is the same across all views for 9 of 9, so
+		//     taking it from view 0 above is sound;
+		//   - the LATERAL anchor DIFFERS across views for 8 of 9;
+		//   - all 9 mirror some views and not others.
+		//
+		// So one actor-level offset cannot express this for 8 of the 9. Doing
+		// it properly means carrying a per-view offset on the sprite
+		// definition, which is a bigger change than this one and is written up
+		// in the handoff rather than guessed at here. Counted so the number is
+		// visible instead of silently zero.
+		if (info.lateralOffset != 0.0)
+		{
+			if (viewDependent)
+			{
+				lateralPerView++;
+			}
+			else
+			{
+				lateralOffsets++;
+				p.spriteOffsetX = o.HorizontalFlip() ? -info.lateralOffset
+					: info.lateralOffset;
+			}
 		}
 
 		// renderType bit 7: the picture hangs at its own orientation instead of
@@ -813,7 +861,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 				if (o.FixedAngle()) directionalFixedAngle++;
 
 				directionalPlaced++;
-				finishPictureSprite(p, first, info, o, art.Name(), artIndex);
+				finishPictureSprite(p, first, info, o, art.Name(), artIndex, true);
 				break;
 			}
 
@@ -870,7 +918,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					spriteByTexture[tex.GetIndex()] = p.spriteNum;
 				}
 
-				finishPictureSprite(p, tex, info, o, art.Name(), artIndex);
+				finishPictureSprite(p, tex, info, o, art.Name(), artIndex, false);
 				break;
 			}
 			}
@@ -899,9 +947,11 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		log->Line("  non-default draw size %d", scaled);
 		log->Count("objects: implausibly large (over 3x the player)", oversized);
 		log->Line("  carrying a light byte %d applied  (signed offset on the sector, 0x80 neutral; the 0x853f6 flash term needs the game layer)", lit);
-		log->Line("  artwork nibble shift  %d applied  (the 0x84aba second term is"
-			" still missing -- zero on this pack's own art, NOT on shared sprites)",
-			nibbleShift);
+		log->Line("  artwork anchor shift  %d applied  (both terms: the modifier"
+			" nibble and the art entry's own vertical anchor)", nibbleShift);
+		log->Line("  lateral anchor        %d applied, %d skipped as view-dependent"
+			" (a directional entry's views disagree on it -- see the comment)",
+			lateralOffsets, lateralPerView);
 		log->Line("  not spawned           %d  = %d not-drawn flag, %d empty art,"
 			" %d creature, %d directional unresolved, %d no art, %d shared pack missing,"
 			" %d no sprite slot",
@@ -1017,6 +1067,10 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 		// LightLevel overrides the sector for exactly this purpose
 		// (hw_sprites.cpp:1729).
 		if (p.lightLevel >= 0) mo->LightLevel = (int16_t)p.lightLevel;
+		// The art's lateral anchor: a slide across the screen, which is what
+		// SpriteOffset is for. Only X -- the vertical half of the same anchor
+		// went into p.z, where it combines with the modifier nibble.
+		if (p.spriteOffsetX != 0) mo->SpriteOffset.X = p.spriteOffsetX;
 		// So a prop that overhangs its own sector is still drawn when the
 		// neighbouring sector is the visible one.
 		if (p.renderRadius > mo->radius) mo->renderradius = p.renderRadius;

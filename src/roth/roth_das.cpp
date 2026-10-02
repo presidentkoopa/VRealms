@@ -167,6 +167,33 @@ IndirectKind Pack::Indirect(int index) const
 
 //==========================================================================
 //
+// The four bytes before the entry, when it says it has them. See the comment
+// on `AnchorOffset` in the header for where the original reads these and what
+// the two halves are for.
+//
+// The bounds test is not defensive decoration: the offset is a file offset read
+// out of the FAT, so an entry claiming to start in the first four bytes of the
+// file would send this reader off the front of the mapping. MEASURED: no
+// retail entry does, but the reader does not get to assume that.
+//
+//==========================================================================
+
+AnchorOffset Pack::ReadAnchor(int index) const
+{
+	AnchorOffset a;
+	const FatEntry *e = Entry(index);
+	if (e == nullptr || (e->flags1 & FAT_ANCHOR) == 0) return a;
+	if (e->offset < 4 || (size_t)e->offset > mSize) return a;
+
+	const uint32_t dw = RdU32(mData + e->offset - 4);
+	a.x = (int16_t)(uint16_t)(dw & 0xffff);
+	a.y = (int16_t)(uint16_t)(dw >> 16);
+	a.present = true;
+	return a;
+}
+
+//==========================================================================
+//
 // Resolve a directional entry to one picture per view. See the comment on
 // `Directional` in the header for the original's frame pick.
 //

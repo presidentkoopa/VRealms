@@ -38,7 +38,58 @@ enum FatFlags
 {
 	FAT_SKY         = 1 << 1,
 	FAT_MONSTER     = 1 << 2, // an indirection, not an image
+	FAT_ANCHOR      = 1 << 3, // four anchor-offset bytes sit BEFORE the entry
 	FAT_DIRECTIONAL = 1 << 5, // an indirection, not an image
+};
+
+// A per-image placement offset, carried by the four bytes IMMEDIATELY BEFORE
+// the entry in the file -- and only when flags_1 has FAT_ANCHOR.
+//
+// WHERE IT COMES FROM. das_assets.c:934-944 is the whole mechanism. With the
+// bit set the loader seeks to `fat.offset - 4` and reads `size + 4` bytes to
+// `block + 6`, then copies the leading dword down to `block + 4`
+// (read_das_block_with_size_prefix, das_assets.c:614-625). Without it, it
+// seeks to `fat.offset`, reads `size` bytes to `block + 0xa`, and writes zero
+// to `block + 4` (das_assets.c:598-608). Either way the payload lands at
+// `block + 0xa`, so the image header still begins exactly at `fat.offset` and
+// the picture reader below is untouched by this.
+//
+// WHAT IT IS. The lift calls the dword a "size prefix", which is a misnomer
+// taken from the read's shape rather than its use: MEASURED over every retail
+// pack, 0 of the 321 prefixed entries hold a value equal to the FAT size, to
+// size + 4, or to width * height. It is a pair of signed words, and the
+// renderer uses the two halves for different axes two instructions apart
+// (renderer.c:5666-5671, and the same tail at :5676, :5692, :5731, :5976,
+// :6015; zeroed at :6663 and :7703):
+//
+//     [0x84ab8] = dword[block + 4]
+//     lateral  += (int16)(low word) << 8     // negated when the x-flip is set
+//     ...and the HIGH word is read as [0x84aba] by the vertical base.
+//
+// MEASURED over all 44 retail maps: only the shared pack carries these -- 321
+// of its 778 entries, and none at all in DEMO, DEMO1, DEMO2, DEMO3 or DEMO4.
+// 28 are Plain and 293 Animated. x spans -82..96, y spans -10..130, and no
+// entry has both words zero. The bit never coincides with FAT_SKY,
+// FAT_DIRECTIONAL or the 0x24 creature value, so it can be read on its own.
+//
+// WHO READS ONE: barely any PLACED object -- 1 of 4,973 across the retail maps
+// -- because these are reached through the frame tables instead. 9 directional
+// entries have every one of their frames prefixed, 72 of 208 frames in all,
+// touching 34 distinct entries. tools/rothdiff/prefixcheck.cpp measures all of
+// the above and writes nothing.
+struct AnchorOffset
+{
+	// Lateral, in world units, applied in VIEW space -- so it slides the
+	// picture across the screen rather than through the world.
+	int16_t x = 0;
+	// Vertical, in world units, added to the modifier nibble's shift before
+	// either is applied. MEASURED 315 even to 6 odd, so it is NOT a doubled
+	// half-unit like the `(modifier & 0xf) * 2` beside it -- just a plain
+	// offset that happens to be mostly even.
+	int16_t y = 0;
+	bool present = false;
+
+	bool ok() const { return present; }
 };
 
 enum class EntryKind
@@ -191,6 +242,10 @@ public:
 	// empty Directional when the entry is not directional, when the pack has
 	// no directional block, or when the record runs outside it.
 	Directional ReadDirectional(int index) const;
+
+	// The entry's own placement offset, or an absent one when it carries none.
+	// See AnchorOffset.
+	AnchorOffset ReadAnchor(int index) const;
 
 	// True when the pack carries a directional block at all.
 	bool HasDirectional() const { return mDirSize > 0; }

@@ -96,7 +96,8 @@ static FString ObjectFrameName(const std::string &pack, int index, int frame)
 //
 //==========================================================================
 
-static void ReadSpriteModifiers(const Image &img, SpriteInfo &out)
+static void ReadSpriteModifiers(const Image &img, const AnchorOffset &anchor,
+	SpriteInfo &out)
 {
 	// The word ROTH.C tests is (modifier | image_type << 8). Bit 0x80 of the
 	// modifier says a size modifier is present; bits 0x2000/0x4000 of the word
@@ -107,7 +108,19 @@ static void ReadSpriteModifiers(const Image &img, SpriteInfo &out)
 		out.unitsPerPixel = (s == 0) ? 1.0 : 2.0 * double(1 << s);
 	}
 	out.hang = (img.modifier & IM_HANG) != 0;
-	out.anchorShift = 2.0 * double(img.modifier & 0x0f);
+
+	// BOTH terms of the vertical shift. The original sums them in 16 bits and
+	// then sign-extends (renderer.c:6553), so the wrap is reproduced rather
+	// than left to double arithmetic: the nibble reaches 30 and the anchor
+	// reaches 130, which cannot overflow on retail data, but the reader does
+	// not get to depend on that.
+	const uint16_t shift16 = (uint16_t)((uint16_t)((img.modifier & 0x0f) * 2)
+		+ (uint16_t)anchor.y);
+	out.anchorShift = double((int16_t)shift16);
+
+	// The anchor's other half, which is a VIEW-space slide and so is kept
+	// apart from the vertical one. Absent on every entry in every map pack.
+	out.lateralOffset = double(anchor.x);
 }
 
 //==========================================================================
@@ -179,7 +192,7 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 			mSpriteInfo[index] = *info;
 			return FNullTextureID();
 		}
-		ReadSpriteModifiers(img, *info);
+		ReadSpriteModifiers(img, mPack->ReadAnchor(index), *info);
 
 		if (existing.isValid())
 		{

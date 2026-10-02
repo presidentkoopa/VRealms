@@ -50,15 +50,36 @@ struct SpriteInfo
 	// (renderer.c:6549-6561).
 	bool hang = false;
 
-	// An extra vertical shift in world units, from the modifier's low nibble:
-	// 2 * (modifier & 0xf), moving the anchor DOWN for a standing picture and UP
-	// for a hanging one (renderer.c:6552-6556).
+	// An extra vertical shift in world units, moving the anchor DOWN for a
+	// standing picture and UP for a hanging one (renderer.c:6552-6556). Two
+	// terms, summed in 16 bits and then sign-extended:
 	//
-	// REPORTED BUT NOT USED. The retail data contradicts that reading -- see the
-	// long comment at its one caller in roth_objects.cpp. Kept here rather than
-	// dropped, because it is what the original's code says and the question is
-	// not settled.
+	//     2 * (modifier & 0xf)  +  the art entry's own anchor offset
+	//
+	// The second comes from roth::AnchorOffset::y and is zero for every entry
+	// carrying no anchor, which is every entry in all five map packs. See the
+	// caller in roth_objects.cpp.
 	double anchorShift = 0.0;
+
+	// A lateral shift in world units, from the same anchor offset's other half
+	// (roth::AnchorOffset::x). The original applies it in VIEW space -- it
+	// slides the picture across the screen rather than through the world -- so
+	// it belongs on AActor::SpriteOffset and not on the object's position.
+	//
+	// POSITIVE IS RIGHTWARD, and that is read rather than assumed:
+	//   - the original adds it to the view-space lateral, whose `+ext` edge is
+	//     the one bounded as the RIGHT extent (renderer.c:6539-6548; the
+	//     rotated path's swap at :6115 puts `+cos` in the same slot), and the
+	//     projection's multiplier and divisor are both positive, so a larger
+	//     lateral is a larger screen x;
+	//   - here, HWAngles.Yaw is 270 - viewYaw (r_utility.cpp:845), so
+	//     HandleSpriteOffsets' `yaw` is the view angle itself, and its
+	//     FromAngles is a rotation about +Z (quaternion.h:345) carrying
+	//     (0,1,0) to (-sin,cos,0) -- camera-LEFT. GetSpriteOffset then negates
+	//     (actor.h:2274), so a positive SpriteOffset.X moves the sprite RIGHT.
+	// The two agree, so this passes through unnegated -- except under an
+	// x-flip, which the original negates it for (renderer.c:5669).
+	double lateralOffset = 0.0;
 
 	// True when nothing could be decoded; the caller should count it, not draw.
 	bool failed = false;
