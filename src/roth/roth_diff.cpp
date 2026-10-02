@@ -42,6 +42,7 @@
 #include "vectors.h"
 #include "gametexture.h"
 #include "r_data/sprites.h"
+#include "p_local.h"   // P_UseLines, for rothdiff_use
 
 #include <stdio.h>
 #include <stdint.h>
@@ -129,6 +130,10 @@ struct PendingDump
 };
 TArray<PendingDump> g_pending;
 
+// A queued request that is a USE, not a capture. `w` is the width of an identity
+// buffer, -1 already means "a sprite listing", so -2 means "press use here".
+static const int USE_MARKER = -2;
+
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
 void PlaceCamera(int px, int py, int pang, int pitch = 0);
 void DoSprites(int px, int py, int pang, const char *path);
@@ -155,6 +160,42 @@ void RothDiff_RunPending()
 	// as it was at the start of the tic, so shooting immediately captures the
 	// old position. Counted down here rather than slept on, so the game keeps
 	// running normally in between.
+	if (front.w == USE_MARKER)   // press use here, see rothdiff_use
+	{
+		const PendingDump d = g_pending[0];
+		g_pending.Delete(0);
+		PlaceCamera(d.x, d.y, d.ang);
+
+		// WHAT IS ACTUALLY THERE. Three separate things have to be true for a
+		// use to reach the Realms logic, and a silent failure looks identical
+		// for all three: the line must still carry the marker at play time, it
+		// must be within USERANGE (64) of the player, and the ray must hit it.
+		// Printed so the next guess is not needed.
+		AActor *pm = players[consoleplayer].mo;
+		int marked = 0, near64 = 0;
+		double nearest = 1e9;
+		for (auto &ln : pm->Level->lines)
+		{
+			if (ln.special != 9000) continue;
+			marked++;
+			const DVector2 mid = (ln.v1->fPos() + ln.v2->fPos()) * 0.5;
+			const double dist = (mid - pm->Pos().XY()).Length();
+			if (dist < nearest) nearest = dist;
+			if (dist <= 64.0) near64++;
+		}
+		Printf("rothdiff_use: at (%d,%d,%d) sector %d -- %d marked line(s) in"
+			" level, %d within 64, nearest %.0f units\n",
+			d.x, d.y, d.ang,
+			pm->Sector != nullptr ? pm->Sector->Index() : -1,
+			marked, near64, nearest);
+
+		P_UseLines(&players[consoleplayer]);
+		if (g_pending.Size() > 0) return;
+		Printf("rothdiff: all captures done; quitting\n");
+		AddCommandString("quit");
+		return;
+	}
+
 	if (front.w == -1)   // a sprite-rectangle listing, see rothdiff_sprites
 	{
 		const PendingDump d = g_pending[0];
@@ -200,6 +241,35 @@ void RothDiff_RunPending()
 	// a level -- which is exactly what it did.
 	Printf("rothdiff: all captures done; quitting\n");
 	AddCommandString("quit");
+}
+
+// PRESS USE, WITHOUT A HUMAN. Doors could be opened by the console command all
+// day and not by the use key, and the difference between those two paths was
+// invisible because only a person in a headset could exercise the second one.
+// This places the camera exactly as a capture does and then runs the REAL use
+// path -- P_UseLines, the same call the +use button makes -- so the thing that
+// was broken is the thing that gets tested.
+//
+// Camera spots aimed at every door: tools/rothdiff/doorgeom.exe <ROTH> -cam MAP
+CCMD(rothdiff_use)
+{
+	if (argv.argc() != 4)
+	{
+		Printf("usage: rothdiff_use <x> <y> <angle512>\n");
+		Printf("  places the camera and presses use, as the key does\n");
+		return;
+	}
+	// QUEUED, because `+exec` runs BEFORE `map` -- exec is immediate and map is
+	// deferred -- so a use asked for in a capture script arrives with no level
+	// and was simply dropped. Every other command in this file queues for the
+	// same reason; this one did not, and reported "no level" four times.
+	PendingDump d;
+	d.x = atoi(argv[1]); d.y = atoi(argv[2]); d.ang = atoi(argv[3]);
+	d.w = USE_MARKER; d.h = 0;
+	d.screenshot = false;
+	d.settle = 0;
+	g_pending.Push(d);
+	Printf("rothdiff_use: queued (%d,%d,%d)\n", d.x, d.y, d.ang);
 }
 
 CCMD(rothdiff_dump)

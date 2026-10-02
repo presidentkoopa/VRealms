@@ -26,7 +26,6 @@
 */
 
 #include <QzDoom/VrCommon.h>
-#include "roth/roth_runtime.h"   // roth::ActivateLine
 
 #include <algorithm>
 #include <math.h>
@@ -6513,6 +6512,11 @@ bool P_TalkFacing(AActor *player)
 //
 //==========================================================================
 
+// Its own cvar: roth_trigger_debug lives inside namespace roth and does not
+// link from here. This one reports what the use RAY meets, which is a
+// different question from what ActivateLine was handed.
+CVAR(Bool, roth_useray_debug, false, 0)
+
 bool P_UseTraverse(AActor *usething, const DVector2 &start, const DVector2 &end, bool &foundline)
 {
 	FPathTraverse it(usething->Level, start.X, start.Y, end.X, end.Y, PT_ADDLINES | PT_ADDTHINGS);
@@ -6553,21 +6557,13 @@ bool P_UseTraverse(AActor *usething, const DVector2 &start, const DVector2 &end,
 			continue;
 		}
 
-		// REALMS TRIGGERS, BEFORE THE LINE IS JUDGED INERT. P_ActivateLine
-		// already tests them first, for exactly this reason -- a Realms trigger
-		// is not a Doom line special -- but the test below rejects a line with
-		// no special and RETURNS, so P_ActivateLine was never reached by the use
-		// key and no door could be opened by hand. The console command worked
-		// throughout, which is why "thirty of thirty open" and "I cannot open a
-		// door" were both true at once.
-		//
-		// Inert with no Realms level loaded, like the hook in p_spec.cpp.
+		// What the use ray actually meets. Three separate things can stop a
+		// Realms trigger here and they all look the same from outside.
+		if (roth_useray_debug)
 		{
-			const int rside = P_PointOnLineSide(xpos.XY(), in->d.line);
-			if (roth::ActivateLine(in->d.line, usething, rside))
-			{
-				return true;
-			}
+			Printf("use-ray: line %d special %d activation 0x%x\n",
+				in->d.line->Index(), in->d.line->special,
+				(unsigned)in->d.line->activation);
 		}
 
 		FLineOpening open;

@@ -3402,6 +3402,14 @@ static void InitLightSwitchesAtLoad(Log *log)
 	}
 }
 
+// A non-zero `special` so the engine's dispatch gates offer us the line. The
+// value is never executed -- ActivateLine claims the line before
+// P_TestActivateLine reads it -- it only has to not be 0. Deliberately a high
+// number no Doom special uses, so that if it ever DOES reach the engine the
+// failure is a loud "unknown special" rather than a door quietly behaving like
+// a lift.
+static const int ROTH_LINE_SPECIAL = 9000;
+
 void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 {
 	// NOT EndLevel() here: the loader registers its face-to-sidedef pairing and
@@ -3477,11 +3485,53 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		dst.insert(dst.end(), kv.second.begin(), kv.second.end());
 	}
 
+	// MAKE THE ENGINE OFFER US THESE LINES AT ALL.
+	//
+	// The Realms hook lives at the top of P_ActivateLine, which is the right
+	// place to HANDLE a trigger and the wrong place to receive one: the engine
+	// decides whether to call P_ActivateLine at the DISPATCH sites, and every
+	// one of them gates on Doom's own `line->special != 0` first --
+	// P_UseTraverse for the use key (p_map.cpp:6554) and the cross-line test
+	// for walking over one (:2792) among twelve such calls in that file alone.
+	// A Realms line has no Doom special, so it was never offered, and the hook
+	// never ran. Nothing reached the level logic from PLAY at all: not use, not
+	// walk-over, not shoot, not bump. Only the roth_door console command worked,
+	// because it calls Fire() directly and never goes near the engine -- which
+	// is exactly why "thirty of thirty open" and "I cannot open a door" were
+	// both true for a day.
+	//
+	// So give the lines that carry a Realms chain a non-zero special and the
+	// activation bits for every way a player can touch one. The engine then
+	// offers them through its own existing paths and the hook claims them. The
+	// special's VALUE is never acted on: ActivateLine returns true for any line
+	// it owns, so P_ActivateLine returns before P_TestActivateLine ever reads
+	// it. It has to be non-zero and nothing more.
+	int linesMarked = 0;
+	if (g.level != nullptr)
+	{
+		for (const auto &kv : g.bySide)
+		{
+			const int sideIdx = kv.first;
+			if (sideIdx < 0 || (size_t)sideIdx >= g.level->sides.Size()) continue;
+			line_t *ln = g.level->sides[sideIdx].linedef;
+			if (ln == nullptr) continue;
+			if (ln->special == 0)
+			{
+				ln->special = ROTH_LINE_SPECIAL;
+				linesMarked++;
+			}
+			ln->activation |= SPAC_Use | SPAC_UseThrough | SPAC_UseBack
+				| SPAC_Cross | SPAC_AnyCross | SPAC_Impact | SPAC_Push;
+		}
+	}
+
 	if (log)
 	{
 		log->Section("Level logic");
 		log->Line("  triggers bound   %d face-keyed, %d sector-keyed", faceBound, sectorBound);
 		log->Line("  doors reachable  %d   walls wired %d", (int)g.doorTag.size(), (int)g.bySide.size());
+		log->Line("  trigger lines    %d marked so the engine offers them"
+			" (use, cross, impact, push)", linesMarked);
 		log->Count("logic: triggers whose key named no geometry", unbound);
 
 		//------------------------------------------------------------------
@@ -3582,13 +3632,21 @@ void RegisterPlatformControl(int rothSector, int ctrlSector)
 	if (rothSector >= 0 && ctrlSector >= 0) g.platformCtrl[rothSector] = ctrlSector;
 }
 
+// Trace what the use key actually reaches. "Thirty of thirty open" from the
+// console and "I cannot open a door" in play were both true for a whole day,
+// because nothing printed which lines the use ray touched or whether any of
+// them carried a Realms chain. roth_trigger_debug 1 prints one line per side
+// looked at; it is off by default and costs nothing.
+CVAR(Bool, roth_trigger_debug, false, 0)
+
+
 bool ActivateLine(line_t *line, AActor *who, int side)
 {
 	if (!g.active || line == nullptr) return false;
 
 	// A Doom line carries no Realms face index, so the binding is by the SIDE's
 	// own index, which the loader assigns in face order.
-	bool any = false;
+	bool any = false, owned = false;
 	for (int s = 0; s < 2; s++)
 	{
 		side_t *sd = line->sidedef[s];
@@ -3603,11 +3661,22 @@ bool ActivateLine(line_t *line, AActor *who, int side)
 		if (f != g.sideToFace.end()) g.activeFace = f->second;
 
 		auto it = g.bySide.find(idx);
+		if (roth_trigger_debug)
+		{
+			Printf("roth_trigger: line side %d (face %d) -> %s\n", idx,
+				f != g.sideToFace.end() ? f->second : -1,
+				it == g.bySide.end() ? "NO chain bound"
+				                     : "chain(s) bound, firing");
+		}
 		if (it == g.bySide.end()) continue;
+		// OWNED, whether or not a chain fires. A chain that is spent or
+		// disabled returns false, and returning false here would hand the line
+		// back to Doom, which would then try to execute ROTH_LINE_SPECIAL.
+		owned = true;
 		for (uint16_t chain : it->second) any |= Fire(chain);
 	}
-	(void)who; (void)side;
-	return any;
+	(void)who; (void)side; (void)any;
+	return owned;
 }
 
 void FireSectorTriggers(sector_t *sec, AActor *who)
