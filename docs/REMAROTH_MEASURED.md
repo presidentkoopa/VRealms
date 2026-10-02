@@ -363,3 +363,20 @@ about 1.7% of the time.
   `vid_contrast 1`, `vid_brightness 0`, `vid_saturation 1`, `gl_bloom 0`,
   `gl_tonemap 0`, `gl_ssao 0`, `gl_lens 0`, `gl_fxaa 0`. The fork's defaults
   change every pixel.
+
+  **THAT LIST WAS INCOMPLETE, and the missing three are archived and global.**
+  Add `vid_fixgamma 0`, `vid_blackpoint 0`, `vid_whitepoint 0`. `vid_fixgamma`
+  is `CVAR_ARCHIVE | CVAR_GLOBALCONFIG` with a default of 0, so a human turning
+  the gamma down in the headset writes it into the config and silently darkens
+  **every capture afterwards**, in this game and every other the engine runs.
+  On 2026-10-02 it sat at −1 and took the whole frame down by a gamma of about
+  1.47 — mean 25.3 to 8.9 — which read for an hour as a shader regression,
+  survived a full revert of the tree, and was still there with the source back
+  at HEAD. A capture is only comparable if these are neutral too.
+
+  **It also corrects the control.** Fully neutralised, the centre pillar at
+  pose A reads **44.2 against the original's 44.2**, where the figure recorded
+  here as 44.1 and re-measured all day as 42.9 was taken with `vid_fixgamma`
+  already off-default. The far wall reads 14.3 against 13.9. The right-hand
+  wall is unmoved at 19.6 against 1.7, so that discrepancy is real and is not
+  an artefact of this.
