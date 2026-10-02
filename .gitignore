@@ -23,6 +23,11 @@ wadsrc/static/meta.xml
 # taken them with no history to recover from. Keep these tracked.
 !/docs/GAME_*.md
 !/docs/NATIVE_*.md
+# The same trap caught the documents written AFTER that rescue, which inherited
+# the hazard: REMAROTH_MEASURED.md is the authoritative record of everything
+# checked against the running original, and it had no history at all.
+!/docs/REMAROTH_*.md
+!/docs/SURF_*.md
 
 # editor/tooling/os files
 *~
