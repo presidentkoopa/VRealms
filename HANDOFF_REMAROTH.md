@@ -229,6 +229,19 @@ offset, flip or anchor. If you find a second copy, that is the bug.
 - **Corridor pose L1** is about 9 rows brighter than the original, and our Z
   there is about 8% short. Some of that may have been the vertical projection
   error fixed on 2026-10-01 — worth re-measuring before chasing it as lighting.
+- **The courtyard trees render as near-black silhouettes** while the grass
+  beside them is lit green (STUDY1, camera `1128 1560 128`, captured
+  2026-10-01, `tools/rothdiff/captures/m_fan4123_side.png`). The trees are the
+  `IT_OBJECT_DATA` fans of §13, drawn as models.
+
+  **THIS IS AN OBSERVATION, NOT A DIAGNOSIS.** It may simply be night. An A/B of
+  `roth_palette_shading` 1 against 0 at the same pose produced **byte-identical
+  PNGs**, which would be a striking result — except the `logfile` line in the
+  exec script never produced a console log, so there is no evidence the CVAR was
+  applied at all. **The test is INCONCLUSIVE and must be redone** with the
+  setting on the command line (`+roth_palette_shading 0`) and the console output
+  actually captured, before anyone reasons from it. Recorded so the next session
+  does not re-run the same inconclusive experiment and believe it.
 - **`DEMO[4102]` sits 16 units high**, with `modifier = 0x88` — nibble 8, HANG
   clear — so the shift should be −16 and the nibble looks like it is not
   arriving. Two things now ruled out by measurement rather than argument
@@ -624,6 +637,33 @@ scale, shift and mirror — which is the entire live problem.
 
   A serial build (no `-m`) is still worth having for legibility, but it is not
   the fix.
+
+- **DO NOT DELETE `doomxr.iobj` PROPHYLACTICALLY.** Deleting it forces a full
+  LTCG pass — the log says so outright: *"All 123333 functions were compiled
+  because no usable IPDB/IOBJ from previous compilation was found."* That is
+  about **20 minutes of linking** on this machine against a couple of minutes
+  incrementally. On 2026-10-01 it was deleted before every build "to be safe"
+  and cost most of an evening. Delete it when LNK1103 actually appears, and not
+  before.
+
+- **NEVER RUN TWO BUILDS AT ONCE.** They fight over the build directory and both
+  die partway, with the log ending mid-library and no error line anywhere — the
+  failure looks like a mystery rather than a collision. Before starting a build,
+  check nothing is running:
+
+  ```
+  Get-Process cmake,MSBuild,cl,link -ErrorAction SilentlyContinue
+  ```
+
+  and prefer ONE invocation left completely alone until it finishes. Killing a
+  build mid-LTCG also orphans a `link.exe` that keeps running for a while
+  afterwards and will be mistaken for the next build making progress.
+
+- **A build log redirected to a fixed filename can silently fail to open** if a
+  previous build still holds the handle — the batch then reports an exit code
+  for a command that never ran, while the exe sits untouched at its old
+  timestamp. Use a per-run log name, and confirm progress by the TIMESTAMP ON
+  THE EXE rather than by an exit code.
 
 - **The Debug output directory has no DLLs.** `openvr_api.dll`,
   `openxr_loader.dll`, `zmusic.dll`, `OpenAL32.dll` only sit beside
@@ -1070,3 +1110,81 @@ it; do add the tag check if the mesh reader is touched for another reason.
   own header for `0x28dbe` describes it as *building* the per-frame draw list.
   §2's rule was established by measurement and stands until re-measured — but
   the disagreement is recorded rather than buried.
+
+---
+
+## 14. INVENTORY — the spec is sound; here is what it is missing
+
+Inventory is the largest single missing system: **458 of the 1,338 unhandled
+records** (§10 item 4). `docs/GAME_inventory.md` was audited against ROTH.C on
+2026-10-01 by three independent readers, each attacked by its own skeptic.
+
+**READ THIS BEFORE ACTING ON ANY CLAIM THAT THE SPEC IS WRONG.** All three
+audits INVENTED errors in that document, and two of the three were refuted
+outright on exactly that ground. The spec is substantially correct and the
+failure mode here is not "the spec is stale", it is "a reader misreads it and
+reports a fault that is not there". A false accusation against it is worse than
+silence, because someone will act on it. Every item below was confirmed by
+opening both sides.
+
+### The one omission that matters most, verified by hand
+
+**The in-memory table pointer is pre-biased by minus four, so inventory ids are
+1-BASED.** `game_core.c:412-414`:
+
+```
+g_dbase100_inventory_table = ptr + (*(base + 0x14) - 4)
+g_dbase100_dialogue_table  = ptr + (*(base + 0x1c) - 4)
+```
+
+So `table[id]` at a 4-byte stride reads file offset entry `id - 1`, and the
+consumers index with the raw id (`inventory.c:389`,
+`esi = base + table[di * 4]`). The file-level rule is
+`record(id) = base + fileInventoryOffsets[id - 1]`, ids 1..281, with the
+`id <= 0` and `offset == 0` guards the original has. The spec never states the
+bias. **Everything downstream is off by one without it.**
+
+### The second, also verified by hand
+
+**Weapon ammo is set BEFORE the stackable test, not after** (`inventory.c:392-397`
+then `:398`). `give_item` parses the WeaponAction attributes and writes
+`quantity` from them, then the stackable branch overwrites `quantity = 1`.
+Reversing the order costs every weapon its ammo. (Measured by the audit: no
+retail record is both a weapon and stackable, so the two never collide — but
+the order is still what makes the weapon path right.)
+
+### A REAL BUG IN CODE THAT ALREADY "WORKS", found on the way
+
+`RunIndexedCommand` — opcode 0x40, 76 records across 10 maps — dispatched its
+sub-chain through `RunCommand` instead of `RunCommandWithChain`. The five
+opcodes that need the chain (**0x28, 0x36, 0x38, 0x2b and a nested 0x40**)
+therefore did nothing at all inside a 0x40 sub-chain and were counted as
+unhandled. The original has no such split: its 0x40 loop dispatches through the
+same `0x30780` table as the top level (`raw_commands.c:3968-3975`). **Fixed
+2026-10-01**, with a nesting depth guard, since a sub-chain can now recurse
+rather than merely loop.
+
+### The implementation order
+
+Steps 0-2 and 5-6 and 8 need no new file reading; the rest wait on a
+DBASE100.DAT reader, **which the port does not have at all** — verified, the
+only occurrences of the name in `src/` are comments.
+
+| # | Step | Needs DBASE100? |
+|---|---|---|
+| 0 | Fix the shared chain state: the autoselect flag and the two shared tails | no |
+| 1 | The slot array and its five primitives. `find_free_inventory_slot` **increments the count itself** (`renderer.c:10035`, the only increment in the program) — `give_item` must not also | no |
+| 2 | ~~Close the 0x40 divergence~~ — **done, see above** | no |
+| 3 | **A DBASE100.DAT reader sized to four fields.** The gate; do it early | — |
+| 4 | `0x29` give, key != 0 — **187 of 239 records, 34 maps, the largest single win** | yes |
+| 5 | `0x27` if-not-item, single-query and compare-last — 132 of 161 | no, but after 4 |
+| 6 | `0x2a` remove — 56 records, ~15 lines | no |
+| 7 | `0x42` filter — 2 records, ~10 lines | mode 0 only |
+| 8 | `0x27`'s list forms — 29 records, 7 real decision points | no |
+| 9 | The 52 key-0 `0x29` records | **blocked on the object-click trigger channel**, not on inventory |
+| 10 | The examine data path (DBASE200/300/400) | yes |
+
+Step 9 is worth noting: those 52 records are blocked on `g_command_active_chain`
+(`0x8a134`), the clicked-world-object latch — the object table and the
+object-click trigger channel, which is the same missing machinery the face
+trigger's direction mask needs (§10 item 4).

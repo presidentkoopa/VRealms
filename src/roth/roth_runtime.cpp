@@ -33,6 +33,7 @@
 #include <vector>
 #include <string>
 #include <string.h>
+#include <stdlib.h>
 
 #include "g_levellocals.h"
 #include "p_3dfloors.h"
@@ -380,6 +381,14 @@ int OpenDoor(const Command &c)
 	}
 	if (rothSector < 0) return CMD_NOTHING;
 
+	// SPEED AND DWELL COME FROM THE SAME COMMAND FIELD, +0x07.
+	//
+	// This used to read the speed from args[3], the command record's +0x0c -- a
+	// confusion between the COMMAND record and the DOOR record. The COMMAND's
+	// byte +0x07 travels through [0x8b3c4] and lands in the DOOR record's dword
+	// +0x0c (doors.c:549), which is where the tick reads the multiplier. That it
+	// is also the field the dwell is scaled by is the clearest sign the old
+	// reading was wrong: one value cannot live at two offsets.
 	return SwingDoor(g.doorTag[rothSector], (int)c.subFlags, (int)c.aux);
 }
 
@@ -399,19 +408,11 @@ int SwingDoor(int tag, int speedMul, int dwellTicks)
 {
 	if (g.level == nullptr) return CMD_NOTHING;
 
-	// SPEED AND DWELL COME FROM THE SAME COMMAND FIELD, +0x07.
-	//
-	// This used to read the speed from args[3], the command record's +0x0c --
-	// a confusion between the COMMAND record and the DOOR record. The chain is
-	// cmd_open_door (raw_commands.c:4071-4076) -> register_door_swing ->
-	// spawn_door_instance -> setup_door_swing_geometry: the COMMAND's byte
-	// +0x07 travels through [0x8b3c4] and lands in the DOOR record's dword
-	// +0x0c (doors.c:549), which is where the tick reads the multiplier. So the
-	// multiplier is +0x07, which roth::Command calls `subFlags`.
-	//
-	// That it is the same field the dwell is scaled by is the clearest sign the
-	// old reading was wrong: one value cannot live at two offsets.
-	const int speedMul = (int)c.subFlags;
+	// Both arguments come from the SAME command field, +0x07, which is why they
+	// arrive together. The caller reads them; see OpenDoor for the chain
+	// (cmd_open_door raw_commands.c:4071-4076 -> register_door_swing ->
+	// spawn_door_instance -> setup_door_swing_geometry, where the COMMAND's byte
+	// +0x07 lands in the DOOR record's dword +0x0c, doors.c:549).
 
 	// M == 0 IS M == 1, NOT M == 8. The original's step is `dt * M`, or
 	// `min(dt, 8)` when M is zero (doors.c:1043-1045). dt is whole 70 Hz ticks
@@ -743,6 +744,56 @@ int MapTransition(Command *rec)
 //==========================================================================
 
 int RunCommand(const Map &m, const Command &cc, int index);
+int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h);
+int SwingDoor(int tag, int speedMul, int dwellTicks);
+
+// A door open asked for before the level exists. `roth_door` is normally typed
+// from an +exec script, and exec runs BEFORE the deferred `map` -- so the
+// command would otherwise always find no level and do nothing. Queued here and
+// drained from the level tick, exactly as roth_diff.cpp queues its captures and
+// for the same reason. `after` lets a test watch a door mid-swing.
+struct PendingDoor
+{
+	int tag = 0;          // 0 = every door
+	int speedMul = 0;
+	int dwell = 0;
+	int after = 0;        // tics still to wait
+};
+std::vector<PendingDoor> gPendingDoors;
+
+void DrainPendingDoors()
+{
+	for (size_t i = 0; i < gPendingDoors.size(); )
+	{
+		if (gPendingDoors[i].after > 0) { gPendingDoors[i].after--; i++; continue; }
+		const PendingDoor d = gPendingDoors[i];
+		gPendingDoors.erase(gPendingDoors.begin() + i);
+
+		int opened = 0, refused = 0;
+		for (const auto &kv : g.doorTag)
+		{
+			if (d.tag != 0 && kv.second != d.tag) continue;
+			if (SwingDoor(kv.second, d.speedMul, d.dwell) == CMD_ACTED) opened++;
+			else refused++;
+		}
+		Printf("roth_door: %d opened, %d refused (speedM %d -> %.1f deg/s, dwell %d)\n",
+			opened, refused, d.speedMul,
+			98.4375 * double(d.speedMul > 0 ? d.speedMul : 1), d.dwell);
+	}
+}
+
+// How deep 0x40 may nest. The original has no limit and relies on the data
+// being sane; now that a sub-chain dispatches through the chain dispatcher, a
+// 0x40 naming itself would recurse rather than merely loop, so this bounds the
+// stack the same way the iteration guard below bounds the loop.
+//
+// The retail maps carry 76 0x40 records across 10 maps (measured,
+// tools/rothdiff/opcodecensus.cpp). How deeply they actually nest has NOT been
+// measured, so 16 is a bound chosen to be far above any plausible authored
+// depth rather than a number read off the data -- if it ever fires, measure
+// before raising it.
+int gIndexedDepth = 0;
+const int MAX_INDEXED_DEPTH = 16;
 
 //==========================================================================
 //
@@ -765,6 +816,13 @@ int RunIndexedCommand(const Command &rec, Handlers &h)
 {
 	uint16_t ax = rec.args.empty() ? 0 : rec.args[0];
 	if (ax == 0) return CMD_NOTHING;
+	if (gIndexedDepth >= MAX_INDEXED_DEPTH) return CMD_NOTHING;
+
+	struct DepthGuard
+	{
+		DepthGuard()  { gIndexedDepth++; }
+		~DepthGuard() { gIndexedDepth--; }
+	} depth;
 
 	int last = CMD_NOTHING;
 	// The original is unbounded and relies on the data being sane; a malformed
@@ -777,7 +835,14 @@ int RunIndexedCommand(const Command &rec, Handlers &h)
 
 		if (!(r->modifier & 0x08))
 		{
-			last = RunCommand(g.map, *r, (int)ax);
+			// THROUGH THE CHAIN DISPATCHER, not the bare one. This used to call
+			// RunCommand, which silently dropped every opcode that needs the
+			// chain -- 0x28, 0x36, 0x38, 0x2b and a nested 0x40 -- so a
+			// conditional branch inside a 0x40 sub-chain did nothing at all and
+			// was counted as unhandled. The original has no such split: its 0x40
+			// loop dispatches through the SAME 0x30780 table as the top level
+			// (raw_commands.c:3968-3975), so those five run there.
+			last = RunCommandWithChain(g.map, *r, (int)ax, h);
 			if (h.interrupt != Interrupt::None) break;
 		}
 		if (r->opcode == 0x12) break;                  // a delay stops it
@@ -3435,6 +3500,13 @@ void EndLevel()
 	g.sideToFace.clear();
 	g.bySector.clear();
 	g.doorTag.clear();
+	// NOT gPendingDoors. EndLevel runs DURING a map load, before BeginLevel
+	// (rothmap.cpp:215, "drop the previous level's logic before anything
+	// registers against this one"), so clearing the queue here would throw away
+	// exactly the request roth_door exists to serve -- one typed from an +exec
+	// script, which runs before the deferred map. A tag left over from a
+	// previous level simply fails to match the new level's tags and falls out of
+	// the queue on its first drain.
 	g.map = Map();
 	g.delays.clear();
 	g.deferred.clear();
@@ -3571,6 +3643,7 @@ void TickLevelLogic(FLevelLocals *level)
 
 	DrainDeferred();
 	ApplyPendingWarp();
+	DrainPendingDoors();
 }
 
 //==========================================================================
@@ -3595,33 +3668,27 @@ void TickLevelLogic(FLevelLocals *level)
 
 CCMD(roth_door)
 {
-	if (g.level == nullptr) { Printf("roth_door: no Realms level loaded\n"); return; }
-	if (g.doorTag.empty()) { Printf("roth_door: this map has no door leaves\n"); return; }
-
 	if (argv.argc() < 2)
 	{
-		FString tags;
-		for (const auto &kv : g.doorTag) tags.AppendFormat("%d ", kv.second);
-		Printf("roth_door <tag|all> [speedM] [dwellTicks]\n");
-		Printf("  %d door leaves, tags: %s\n", (int)g.doorTag.size(), tags.GetChars());
+		Printf("roth_door <tag|all> [speedM] [dwellTicks] [afterTics]\n");
+		if (g.level != nullptr && !g.doorTag.empty())
+		{
+			FString tags;
+			for (const auto &kv : g.doorTag) tags.AppendFormat("%d ", kv.second);
+			Printf("  %d door leaves, tags: %s\n", (int)g.doorTag.size(), tags.GetChars());
+		}
+		else Printf("  (no Realms level loaded yet)\n");
 		return;
 	}
 
-	const int speedMul = argv.argc() > 2 ? atoi(argv[2]) : 0;
-	const int dwell    = argv.argc() > 3 ? atoi(argv[3]) : 0;
-	const bool all     = (strcmp(argv[1], "all") == 0);
-
-	int opened = 0, refused = 0;
-	for (const auto &kv : g.doorTag)
-	{
-		if (!all && kv.second != atoi(argv[1])) continue;
-		if (SwingDoor(kv.second, speedMul, dwell) == CMD_ACTED) opened++;
-		else refused++;
-	}
-	// A refusal is usually EV_OpenPolyDoor declining because the polyobject is
-	// already moving or blocked, which is information rather than a failure.
-	Printf("roth_door: %d opened, %d refused (speedM %d -> %.1f deg/s, dwell %d ticks)\n",
-		opened, refused, speedMul, 98.4375 * double(speedMul > 0 ? speedMul : 1), dwell);
+	PendingDoor d;
+	d.tag      = (strcmp(argv[1], "all") == 0) ? 0 : atoi(argv[1]);
+	d.speedMul = argv.argc() > 2 ? atoi(argv[2]) : 0;
+	d.dwell    = argv.argc() > 3 ? atoi(argv[3]) : 0;
+	d.after    = argv.argc() > 4 ? atoi(argv[4]) : 0;
+	gPendingDoors.push_back(d);
+	Printf("roth_door: queued (tag %d, speedM %d, dwell %d, after %d tics)\n",
+		d.tag, d.speedMul, d.dwell, d.after);
 }
 
 } // namespace roth
