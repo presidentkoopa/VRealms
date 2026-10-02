@@ -102,6 +102,17 @@ missing piece "decoding the oracle framebuffer dump to an image on Windows".
 `da92a4de5b` that they disagreed was wrong — that oracle frame was captured
 before the pose pin took hold. Corrected in `ed163a61ea`.
 
+> **This paragraph claims too much; corrected later on 2026-10-02.** The pose it
+> verified is pose A, which is angle **0** — one of the two angles where the
+> viewer and object conventions coincide, so the test could not fail. The settle
+> finding is real and stands. The convention bug it was taken to retract is also
+> real: `roth_diff.cpp` pinned the capture camera with the *object* rule while
+> `rothmap.cpp:2044` places the player with the *viewer* rule, 180° apart at
+> angle 128. Poses B and C had been captured in both engines and never paired;
+> pairing them from the files on disk shows the original in the long hall and
+> ours facing a panelled wall. Fixed in `RothAngleToDoom`. See
+> `docs/REMAROTH_MEASURED.md` §1.
+
 ### THE NEXT STEP, which is where I stopped
 
 **Our capture must render at ROTH's frame size and projection.** ROTH draws

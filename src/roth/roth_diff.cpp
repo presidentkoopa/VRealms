@@ -80,12 +80,20 @@ const uint16_t FLAGS_SPRITE_PATH = 0x0020;
 // kind of thing that reads as "the projection is wrong" when it is only the FOV.
 const double ROTH_FOCAL_NUM = 124.0, ROTH_FOCAL_DEN = 256.0;
 
-// ROTH angle units: 512 per full turn, and 0 points along +Y with 128 at +X
-// (clockwise, +Y up) -- see ROTH_SURFACES_FIX.md 3.4 and renderer.c:6093-6126.
-// Doom angles run counter-clockwise from +X, hence the negation.
+// ROTH angle units: 512 per full turn, 0 along +Y. This converts a VIEWER
+// angle, and Realms measures the viewer COUNTER-CLOCKWISE from +Y -- the same
+// convention rothmap.cpp:2044 uses for the player start, and the one the pose
+// files carry, because the ROTH.C plugin writes their angle straight into the
+// original's own player angle.
+//
+// OBJECTS use the opposite (clockwise) sense -- ROTH_SURFACES_FIX.md 3.4,
+// renderer.c:6093-6126. This function used to apply that object rule to the
+// camera, so a capture pair only showed the same place at angle 0 and 256,
+// where the two senses coincide. At 128 the two engines looked opposite ways:
+// pose A agreed, poses B and C did not. Do not "simplify" the sign back.
 inline DAngle RothAngleToDoom(int a512)
 {
-	return DAngle::fromDeg(90.0 - (double)a512 * (360.0 / 512.0));
+	return DAngle::fromDeg(90.0 + (double)a512 * (360.0 / 512.0));
 }
 
 bool WriteRidb(const char *path, int w, int h, int px, int py, int pang,
@@ -162,11 +170,17 @@ void RothDiff_RunPending()
 	{
 		PlaceCamera(front.x, front.y, front.ang, front.pitch);
 		if (front.settle > 0) { front.settle--; return; }
-		const FString path = front.path;
+		// COPY THE WHOLE RECORD, not just the path. `front` is a reference into
+		// g_pending, so after Delete(0) it names the NEXT queued capture --
+		// which made every shot report the pose of the one after it, and the
+		// last one report whatever was left in freed storage. The path was
+		// already being rescued for this reason; the three numbers were not,
+		// and a two-shot run logged both shots at the second shot's angle.
+		const PendingDump shot = front;
 		g_pending.Delete(0);
-		M_ScreenShot(path.GetChars());
-		Printf("rothdiff_shot: %s at (%d,%d,%d)\n", path.GetChars(),
-			front.x, front.y, front.ang);
+		M_ScreenShot(shot.path.GetChars());
+		Printf("rothdiff_shot: %s at (%d,%d,%d)\n", shot.path.GetChars(),
+			shot.x, shot.y, shot.ang);
 		if (g_pending.Size() > 0) return;
 		Printf("rothdiff: all captures done; quitting\n");
 		AddCommandString("quit");

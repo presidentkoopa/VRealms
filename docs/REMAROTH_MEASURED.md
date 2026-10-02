@@ -38,7 +38,13 @@ faces −X. `rothmap.cpp` converts the player start this way and is right.
 **Fixed** in `RothAngleToDoom` (`src/roth/roth_diff.cpp:86`), which now adds the
 angle rather than subtracting it, matching the player start. The compensation
 described below is no longer needed; pose lines are passed as written.
-**Not yet proven on screen** — that wants a pose-C pair, which wants a launch.
+
+**PROVEN on screen, 11:47.** `REMA2_poseC.png` against `ORACLE_poseC.png`: ours
+now shows the long hall — the chandelier, the pillars down the left, the blue
+carpet, and the recessed door at the far end between its two red sconces. Before
+the fix the same pose line drew a panelled wall. The pose A control
+(`REMA2_poseA.png`) is unchanged and still matches, so the fix did not disturb
+the pose that already worked.
 
 On `ed163a61` ("The two engines DO agree on a pose"): its settle finding is real
 and stands — `ROTHDIFF_SETTLE` 60 was capturing mid-fade. But it retracted the
@@ -187,11 +193,20 @@ STUDY1 (864, 3840) angle 0. The original's frame is
 `captures/ORACLE_poseA.png`; ours is a Linux build at 640×480 with neutral
 post-processing. Mean grey level of matching regions (x0–x1, y0–y1):
 
-| region | original | ours |
-|---|---|---|
-| centre pillar (240–335, 60–400) | 44.2 | 44.1 |
-| far wall left of the pillar (120–225, 60–300) | 13.9 | 13.7 |
-| **right-hand wall with the painting (440–620, 60–400)** | **1.7** | **19.1** |
+| region | original | ours | ours, Windows 11:47 |
+|---|---|---|---|
+| centre pillar (240–335, 60–400) | 44.2 | 44.1 | 42.9 |
+| far wall left of the pillar (120–225, 60–300) | 13.9 | 13.7 | 14.0 |
+| **right-hand wall with the painting (440–620, 60–400)** | **1.7** | **19.1** | **19.2** |
+
+The fourth column is `REMA2_poseA.png`, the Windows build at 640×480 with the
+neutral post-processing of §8, read back through the same regions on 2026-10-02.
+The original's own three numbers reproduced to the decimal, so the instrument
+reads what it did on Linux. **The right-hand wall reproduces at 19.2 against
+1.7** — two builds, two platforms, the correct frame size and neutral post. It
+is not a capture artefact and it is not the projection. The pillar is 1.2 grey
+levels darker than the Linux build measured; unexplained, and small beside the
+17.5 it is sitting next to.
 
 The middle of the picture agrees to a fraction of a grey level. The right-hand
 wall is near black in the original and lit in ours. It shows in the Windows
