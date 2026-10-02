@@ -671,14 +671,18 @@ scale, shift and mirror — which is the entire live problem.
   and cost most of an evening. Delete it when LNK1103 actually appears, and not
   before.
 
-  **WHEN IT APPEARS IS NOT RANDOM, though, and that is worth planning around.**
-  It hit three times on 2026-10-02, on `roth_runtime.obj`, `hw_drawinfo.obj` and
-  `p_setup.obj`, and every one followed a change that touched a widely included
-  HEADER rather than a single .cpp. A one-file edit relinks incrementally all
-  day; adding a field to `hw_viewpointuniforms.h`, or an `#include` to
-  `p_setup.cpp`, is the shape of change that invalidates the cache. Budget the
-  full pass when the change is of that shape, and do not read the first LNK1103
-  after one as a sign that something is wrong with the code.
+  **IT IS FREQUENT — four times on 2026-10-02 alone**, on `roth_runtime.obj`,
+  `hw_drawinfo.obj`, `p_setup.obj` and `roth_runtime.obj` again. Budget the full
+  pass as a normal cost of a day's work rather than treating each one as a
+  symptom, and do not read an LNK1103 as a sign that something is wrong with the
+  code: it is the cache, and the fix is always the same two deletes.
+
+  **A THEORY WRITTEN HERE EARLIER THE SAME DAY WAS WRONG, and is left in place
+  as a warning about this file.** After the first three it said every occurrence
+  "followed a change that touched a widely included HEADER rather than a single
+  .cpp", which fitted three samples and read as a rule. The fourth came from
+  editing two .cpp files and nothing else. Three points are not a pattern, and a
+  pattern asserted in a handoff gets believed by the next lane.
 
   **AND CHECK THE EXE, NOT THE EXIT CODE.** `cmake --build` returned 0 to the
   shell on a build whose link had failed and whose exe CMake had then deleted --

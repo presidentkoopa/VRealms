@@ -1,5 +1,17 @@
 # REMAROTH — start here
 
+> **A SECOND LANE RAN ON 2026-10-02 (evening). Read
+> `HANDOFF_SESSION_2026-10-02_evening.md` before this file.** Most of Step 1 and
+> all of Step 2's sprites are done; the VR scale is fixed; the oracle now runs
+> unattended in any map. The live work is the TRIGGER LAYER -- the use key opens
+> no doors and `docs/TRIGGERS_the_use_key_problem.md` says why, in three parts.
+>
+> Two things in this file are now actively wrong:
+> `doorgeom -cam` and `meshcheck -v` print angles in the PRE-FIX convention
+> (negate them), and the neutral post-processing list is missing
+> `vid_fixgamma 0`, `vid_blackpoint 0`, `vid_whitepoint 0` -- without which
+> every picture comparison is wrong by a gamma of about 1.47.
+
 **For a lane picking this up on 2026-10-02.** Most of this project is already
 worked out and written down. This page says which document holds what, which
 parts of those documents are out of date, and what to do in what order. It

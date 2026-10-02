@@ -1,0 +1,7 @@
+Log started
+ game iwad not found: E:\DOOMWork\REMAROTH\vrealms.pk3
+
+**** DIED WITH FATAL ERROR:
+Cannot find game iwad 'E:\DOOMWork\REMAROTH\vrealms.pk3'
+To ignore this error and continue, set cvar i_exit_on_not_found to 2
+
