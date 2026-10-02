@@ -40,6 +40,8 @@
 #include "m_misc.h"
 #include "cmdlib.h"
 #include "vectors.h"
+#include "gametexture.h"
+#include "r_data/sprites.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -121,6 +123,7 @@ TArray<PendingDump> g_pending;
 
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
 void PlaceCamera(int px, int py, int pang, int pitch = 0);
+void DoSprites(int px, int py, int pang, const char *path);
 } // namespace
 
 // Called once per tic from P_Ticker.
@@ -144,6 +147,17 @@ void RothDiff_RunPending()
 	// as it was at the start of the tic, so shooting immediately captures the
 	// old position. Counted down here rather than slept on, so the game keeps
 	// running normally in between.
+	if (front.w == -1)   // a sprite-rectangle listing, see rothdiff_sprites
+	{
+		const PendingDump d = g_pending[0];
+		g_pending.Delete(0);
+		DoSprites(d.x, d.y, d.ang, d.path.GetChars());
+		if (g_pending.Size() > 0) return;
+		Printf("rothdiff: all captures done; quitting\n");
+		AddCommandString("quit");
+		return;
+	}
+
 	if (front.screenshot)
 	{
 		PlaceCamera(front.x, front.y, front.ang, front.pitch);
@@ -197,6 +211,33 @@ CCMD(rothdiff_dump)
 
 	DoDump(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]),
 		atoi(argv[4]), atoi(argv[5]), argv[6]);
+}
+
+// Where every prop's picture lands on the ORIGINAL's 640x480 screen, computed
+// from what the loader built -- position, scale, offsets -- through the
+// original's measured camera (focal 309.77 x 355.06, centre 320.48, 240.54,
+// eye 144 above the floor). One line per actor:
+//
+//     S xl xr ytop ybot depth tex x y z
+//
+// which is the same rectangle ROTH.C's wall driver is handed for a billboard
+// (tools/oracle: ORACLE_WALLLOG, the lines with flags 0019), so the two can be
+// compared number for number, without rendering and without anyone's eyes.
+CCMD(rothdiff_sprites)
+{
+	if (argv.argc() != 5)
+	{
+		Printf("usage: rothdiff_sprites <x> <y> <angle512> <file>\n");
+		return;
+	}
+	PendingDump d;
+	d.x = atoi(argv[1]); d.y = atoi(argv[2]); d.ang = atoi(argv[3]);
+	d.w = -1; d.h = 0;
+	d.path = argv[4];
+	d.screenshot = false;
+	d.settle = 0;
+	g_pending.Push(d);
+	Printf("rothdiff_sprites: queued %s\n", argv[4]);
 }
 
 // A picture, from the same camera spot as an identity buffer, for the things
@@ -260,6 +301,49 @@ void PlaceCamera(int px, int py, int pang, int pitch)
 	// one, so without clearing that the shot is taken part-way through a very
 	// long jump from wherever the player was standing.
 	cam->ClearInterpolation();
+}
+
+void DoSprites(int px, int py, int pang, const char *path)
+{
+	AActor *cam = players[consoleplayer].mo;
+	if (cam == nullptr) return;
+	PlaceCamera(px, py, pang);
+	FILE *f = fopen(path, "w");
+	if (f == nullptr) { Printf("rothdiff_sprites: could not write %s\n", path); return; }
+
+	const double FX = 309.77, FY = 355.06, X0 = 320.48, Y0 = 240.54;
+	const DAngle ang = RothAngleToDoom(pang);
+	const DVector2 fwd = ang.ToVector();
+	const DVector2 right(fwd.Y, -fwd.X);
+	const double eyeZ = cam->Z() + 144.0;
+	int n = 0;
+
+	auto it = cam->Level->GetThinkerIterator<AActor>();
+	while (AActor *mo = it.Next())
+	{
+		if (mo == cam || mo->player != nullptr) continue;
+		if (mo->sprite < 0 || (unsigned)mo->sprite >= sprites.Size()) continue;
+		const spritedef_t &sdef = sprites[mo->sprite];
+		if (sdef.numframes == 0) continue;
+		const spriteframe_t &sfr = SpriteFrames[sdef.spriteframes + (mo->frame < sdef.numframes ? mo->frame : 0)];
+		FGameTexture *tex = TexMan.GetGameTexture(sfr.Texture[0]);
+		if (tex == nullptr || !tex->isValid()) continue;
+
+		const DVector2 rel(mo->X() - px, mo->Y() - py);
+		const double depth = rel.X * fwd.X + rel.Y * fwd.Y;
+		if (depth < 16.0) continue;
+		const double lat = rel.X * right.X + rel.Y * right.Y;
+		const double w = tex->GetDisplayWidth() * mo->Scale.X, h = tex->GetDisplayHeight() * mo->Scale.Y;
+		const double lo = tex->GetDisplayLeftOffset() * mo->Scale.X, to = tex->GetDisplayTopOffset() * mo->Scale.Y;
+		const double zTop = mo->Z() + to, zBot = zTop - h;
+		const double xl = X0 + FX * (lat - lo) / depth, xr = X0 + FX * (lat - lo + w) / depth;
+		const double yt = Y0 - FY * (zTop - eyeZ) / depth, yb = Y0 - FY * (zBot - eyeZ) / depth;
+		fprintf(f, "S %.1f %.1f %.1f %.1f %.1f %s %.1f %.1f %.1f\n", xl, xr, yt, yb, depth,
+			tex->GetName().GetChars(), mo->X(), mo->Y(), mo->Z());
+		n++;
+	}
+	fclose(f);
+	Printf("rothdiff_sprites: %s  %d props at (%d,%d,%d)\n", path, n, px, py, pang);
 }
 
 void DoDump(int px, int py, int pang, int w, int h, const char *path)

@@ -14,6 +14,8 @@
 static int g_shade = 0;
 static int g_pass = 0, g_paint = 1, g_target = 120, g_frames, g_done;
 static const char *g_out = "/tmp/oracle_frame.bin";
+static int g_pitch_set = 0, g_pitch = 0;
+static FILE *g_phaselog;
 static int g_pose = 0; static int g_px, g_py, g_pa, g_psec = -1, g_pz = -9999;
 static uint8_t g_cap[640 * 480]; static uint32_t g_w, g_h; static volatile int g_have;
 static FILE *g_texlog;
@@ -238,6 +240,8 @@ static void frame(const struct roth_api_v1 *api)
         ident(api->game_ram->u32(0x86d1c), 0x2000);
         ident(api->game_ram->u32(0x86d18), 0x200);
     }
+    if (g_phaselog) fprintf(g_phaselog, "%d %u %u %u\n", g_frames, api->game_ram->u8(0x8a355), api->game_ram->u16(0x85328), api->game_ram->u16(0x90bcc));
+    if (g_pitch_set) api->game_ram->set_u32(0x90a74, (uint32_t)g_pitch);   /* g_view_pitch, clamped to +-0x7e by the game */
     if (g_pose) {
         api->game_ram->set_u16(0x90a8e, (uint16_t)g_px);
         api->game_ram->set_u16(0x90a96, (uint16_t)g_py);
@@ -335,6 +339,8 @@ static void on_load(const struct roth_api_v1 *api)
     if ((s = getenv("ORACLE_FRAMES"))) g_target = atoi(s);
     if ((s = getenv("ORACLE_OUT"))) g_out = s;
     if ((s = getenv("ORACLE_POSE"))) { int n = sscanf(s, "%d %d %d %d %d", &g_px, &g_py, &g_pa, &g_psec, &g_pz); if (n >= 3) g_pose = 1; }
+    if ((s = getenv("ORACLE_PHASELOG"))) g_phaselog = fopen(s, "w");
+    if ((s = getenv("ORACLE_PITCH"))) { g_pitch = atoi(s); g_pitch_set = 1; }
     if ((s = getenv("ORACLE_WALLLOG"))) g_walllog = fopen(s, "w");
     if ((s = getenv("ORACLE_CMDLOG"))) g_cmdlog = fopen(s, "w");
     if ((s = getenv("ORACLE_SHLOG"))) g_shlog = fopen(s, "w");
