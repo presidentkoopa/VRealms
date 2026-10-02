@@ -19,6 +19,9 @@
  *
  *     set ROTHDIFF_POSEFILE=poses.csv   lines of  name,x,y,angle
  *     set ROTHDIFF_OUTDIR=captures      writes <outdir>/<name>.roth.ridb
+ *     set ROTHDIFF_MAP=STUDY2           warp here first -- see VA_WARP_DEST.
+ *                                       Removes the one-quicksave-slot limit:
+ *                                       any map, no human, no save to make.
  *     set ROTHDIFF_SETTLE=40            ticks before the FIRST capture
  *     set ROTHDIFF_HOLD=3               ticks to hold each later pose
  *     rothc.exe --headless --game-dir ... --c-root ...
@@ -60,6 +63,45 @@
 #define VA_POS_Y       0x90a94u   /* 16.16 */
 #define VA_ANGLE       0x90a8au   /* 512 units per turn */
 #define VA_TICK        0x90bccu   /* g_frame_tick_counter, the 70 Hz heartbeat */
+
+/* ---- the map warp, so a capture is not limited to the one quicksave slot ----
+ *
+ * ROTH.C has no "start in map X" switch, and its single quicksave slot made the
+ * map a scarce resource: making a save in a new map destroyed the previous
+ * map's capturability, and a human had to press W, pick the map and press F9
+ * for every one. This drives the game's OWN warp path instead -- the same path
+ * a quickload takes. No menu, no keyboard, and no dev mode, which gates only
+ * the UI's warp screen and not this.
+ *
+ * Read out of the original rather than guessed:
+ *   game_core.c:947-953   the play loop tests bit 0 of g_pending_game_action,
+ *                         computes g_warp_dest_a[0] + g_map_first_load_flag,
+ *                         and if non-zero calls process_map_warp_or_load.
+ *   map_load.c:584-620    that compares the requested name against the loaded
+ *                         one and either relocates in place (same map) or does
+ *                         a full reload, then clears the name byte.
+ *   savegame.c:1474-1486  a successful quickload does exactly this: copy the
+ *                         level name in, truncated at '.', then zero the flag.
+ *
+ * The name buffer is longer than g_warp_dest_a's declared 4 bytes -- the
+ * compare walks 8 -- so a 7 or 8 character name runs into g_map_first_load_flag
+ * at 0x85484. That is not something to route around: savegame.c writes the name
+ * first and the flag SECOND for exactly this reason, and so does warp_request().
+ */
+#define VA_GEOM_BUF    0x90aa8u   /* g_map_geometry_buffer: non-zero = a level */
+/* g_player_movement_enabled, the game MODE: 0 off, 1 gameplay, 3 inventory,
+ * 4/5 dialogue, 8 transitional, 0x20 dead. A level existing is not the same as
+ * the play loop running, and both the savegame request and the warp request are
+ * consumed by that loop: armed any earlier they are dropped, the load fails, and
+ * game_core.c falls back to reset_and_start_new_game -- which is the CD prompt
+ * and the main menu, not a bad flag. */
+#define VA_MODE        0x7674au
+#define VA_WARP_DEST   0x8547cu   /* g_warp_dest_a, the requested map NAME */
+#define VA_WARP_FLAG   0x85484u   /* g_map_first_load_flag, warp-target sector */
+#define VA_PENDING_ACT 0x7fea8u   /* g_pending_game_action, bit 0 = warp,
+                                   * bit 1 = savegame request, bit 2 = res change */
+#define VA_SAVE_MODE   0x7feacu   /* +0x4: 1 = load, 2 = save */
+#define VA_SAVE_SLOT   0x7feb0u   /* +0x8: slot index; 0 is the quicksave */
 
 /* ---- the keyboard ring, for pressing quickload without a human -------------
  * Layout and enqueue semantics are the original's own, from input.c:13 and the
@@ -114,6 +156,11 @@ static int      g_quickload_sent;
 static int      g_quickload_tries;
 static int      g_uv_warmup;   /* frames skipped so the paint can take effect */
 static int      g_loaded;
+
+static char     g_map[16];         /* ROTHDIFF_MAP: warp here before capturing */
+static int      g_warp_sent;
+static int      g_warped;
+static uint16_t g_warp_tick;       /* when the request went in, for the timeout */
 
 static int      g_settle = 40;     /* ticks before the first capture */
 static int      g_hold = 3;        /* ticks to hold each pose after the first */
@@ -250,6 +297,20 @@ static void on_load(const struct roth_api_v1 *api)
         if (g_quickload_at < 1) g_quickload_at = 1;
     }
 
+    /* The map to capture in. Safe to leave set to the map the save is already
+     * in: process_map_warp_or_load compares the names itself and relocates in
+     * place rather than reloading when they match. */
+    {
+        const char *mp = getenv("ROTHDIFF_MAP");
+        if (mp != NULL && *mp != '\0')
+        {
+            size_t n = strlen(mp);
+            if (n > sizeof(g_map) - 1) n = sizeof(g_map) - 1;
+            memcpy(g_map, mp, n);
+            g_map[n] = '\0';
+        }
+    }
+
     const char *hd = getenv("ROTHDIFF_HOLD");
     if (hd != NULL) g_hold = atoi(hd);
     if (g_hold < 1) g_hold = 1;
@@ -275,6 +336,56 @@ static void pin_pose(const struct roth_api_v1 *api, int i)
     m->set_u32(VA_POS_X, (uint32_t)(g_pose[i].x << 16));
     m->set_u32(VA_POS_Y, (uint32_t)(g_pose[i].y << 16));
     m->set_u16(VA_ANGLE, g_pose[i].ang);
+}
+
+/* START FROM THE QUICKSAVE, without touching a key or a menu.
+ *
+ * key_quickload (input.c:548) is nothing but three global writes -- mode 1,
+ * slot 0, request bit 1 -- which the savegame subsystem consumes on the next
+ * frame. So the rig arms them itself. It used to push F10 into the keyboard
+ * ring instead and then retry every half second for twenty seconds, because a
+ * key pressed before the menu exists is simply dropped; with the movies running
+ * that pushed the whole run past the pose watchdog and the capture came back
+ * empty. There is no menu to navigate and nothing to time.
+ *
+ * The slot is 0 because that is the quicksave: SAVE0.<MAP>.SAV. game_core.c:988
+ * takes the same path for F9 in the death loop, through load_savegame_file.
+ */
+static void quickload_request(const struct roth_api_v1 *api)
+{
+    const struct roth_game_ram_api_v1 *m = api->game_ram;
+    m->set_u32(VA_SAVE_MODE, 1);          /* load */
+    m->set_u32(VA_SAVE_SLOT, 0);          /* the quicksave slot */
+    m->set_u8(VA_PENDING_ACT, (uint8_t)(m->u8(VA_PENDING_ACT) | 2u));
+}
+
+/* Ask the game to change level, the way its own quickload does.
+ *
+ * ORDER MATTERS. The name is written first and g_map_first_load_flag second,
+ * because the compare in map_load.c walks 8 bytes and a 7 or 8 character name
+ * plus its terminator reaches 0x85484, which IS that flag. savegame.c:1474-1486
+ * writes them in this order for the same reason. Writing the flag first would
+ * leave the last byte of a long map name sitting in it.
+ *
+ * The name is truncated at '.' by the original when it comes from a save; the
+ * names here never carry an extension, but the loop keeps the rule so a caller
+ * that passes "STUDY2.RAW" gets what it meant.
+ */
+static void warp_request(const struct roth_api_v1 *api, const char *name)
+{
+    const struct roth_game_ram_api_v1 *m = api->game_ram;
+    uint32_t a = VA_WARP_DEST;
+    int i;
+
+    for (i = 0; i < 8 && name[i] != '\0' && name[i] != '.'; i++)
+        m->set_u8(a + (uint32_t)i, (uint8_t)name[i]);
+    m->set_u8(a + (uint32_t)i, 0);
+
+    m->set_u32(VA_WARP_FLAG, 0);          /* AFTER the name -- see above */
+
+    /* Bit 0 is the warp request the play loop acts on (game_core.c:947). The
+     * other bits are other pending actions and are left alone. */
+    m->set_u8(VA_PENDING_ACT, (uint8_t)(m->u8(VA_PENDING_ACT) | 1u));
 }
 
 /* TAKE OVER A RUNNING GAME. With ROTHDIFF_TRIGGER set the plugin sits idle in a
@@ -369,24 +480,13 @@ static void on_frame_game(const struct roth_api_v1 *api)
      * where it stands inside it does not matter. */
     if (g_quickload && !g_quickload_sent)
     {
-        const uint16_t t = api->game_ram->u16(VA_TICK);
-        if (!g_have_tick) { g_pose_tick = t; g_have_tick = 1; }
-        if ((uint16_t)(t - g_pose_tick) < (uint16_t)g_quickload_at) return;
-        if (!ring_push(api, SC_QUICKLOAD)) return;   /* ring full: try next tick */
-        /* NOT ONCE. The menu is not necessarily up at a fixed tick, and a
-         * single F10 sent before it exists is simply lost -- which left a run
-         * parked on the Options menu with nothing captured. Keep pressing,
-         * every half second, until world spans actually draw. */
-        g_quickload_tries++;
-        g_pose_tick = api->game_ram->u16(VA_TICK);
-        if (g_uv_world_spans == 0 && g_quickload_tries < 40)
-        {
-            g_quickload_at = 35;                     /* retry in half a second */
-            return;
-        }
+        /* WAIT FOR GAMEPLAY, not merely for a level. See VA_MODE. */
+        if (api->game_ram->u32(VA_GEOM_BUF) == 0) return;
+        if (api->game_ram->u8(VA_MODE) != 1) return;
+        quickload_request(api);
         g_quickload_sent = 1;
         g_have_tick = 0;
-        fprintf(stderr, "[rothdiff] pressed F10 (quickload)\n");
+        fprintf(stderr, "[rothdiff] quickload requested (slot 0)\n");
         return;
     }
     /* Give the load time to finish before the camera is pinned or anything is
@@ -398,6 +498,70 @@ static void on_frame_game(const struct roth_api_v1 *api)
         if ((uint16_t)(t - g_pose_tick) < (uint16_t)g_settle) return;
         g_loaded = 1;
         g_have_tick = 0;
+    }
+
+    /* WARP TO THE REQUESTED MAP, once, before anything is pinned or captured.
+     * After the quicksave has put us in SOME map -- the warp path needs a loaded
+     * level to compare against and a running play loop to service the request.
+     *
+     * The game clears the name byte when it has processed the request
+     * (map_load.c:565, :621, :671), so that byte going back to 0 is the
+     * completion signal, and it is the game's own rather than a guess at how
+     * long a load takes. A fresh settle follows it because a full reload rebuilds
+     * the geometry and the first frames after it are not the level yet. */
+    if (g_map[0] != '\0' && !g_warped)
+    {
+        const struct roth_game_ram_api_v1 *m = api->game_ram;
+        const uint16_t t = m->u16(VA_TICK);
+
+        /* A LEVEL HAS TO EXIST FIRST. process_map_warp_or_load compares the
+         * request against the loaded map, and its first-load branch reads a
+         * different source entirely; asking before anything is loaded is asking
+         * a question about nothing. This also covers the no-quicksave route,
+         * where oraclelog presses Play and the game starts a new game in
+         * STUDY1 -- the warp then just moves us on from there. */
+        if (m->u32(VA_GEOM_BUF) == 0) return;
+        if (m->u8(VA_MODE) != 1) return;      /* see VA_MODE */
+
+        /* DO NOT CLOBBER A REQUEST ALREADY IN FLIGHT. A quicksave load arms the
+         * SAME globals: load_savegame_file copies the saved level's name into
+         * g_warp_dest_a and stamps the load-pending flags (savegame.c:1474).
+         * Writing STUDY2 over that mid-flight left both requests unserviced and
+         * the run spun until the watchdog -- 24 re-requests and no capture.
+         * Wait for the name byte to clear and the request bits to drop. */
+        if (!g_warp_sent && m->u8(VA_WARP_DEST) != 0) return;
+        if (!g_warp_sent && (m->u8(VA_PENDING_ACT) & 3u) != 0) return;
+
+        if (!g_warp_sent)
+        {
+            warp_request(api, g_map);
+            g_warp_sent = 1;
+            g_warp_tick = t;
+            g_have_tick = 0;      /* the settle below starts at COMPLETION */
+            fprintf(stderr, "[rothdiff] warp requested -> %s\n", g_map);
+            return;
+        }
+
+        if (m->u8(VA_WARP_DEST) != 0)
+        {
+            /* Not serviced yet. If it never is, say so rather than hanging:
+             * the play loop only looks at bit 0 while it is running, so a
+             * request made on a frame where it is not is simply dropped. */
+            if ((uint16_t)(t - g_warp_tick) > 420)
+            {
+                fprintf(stderr, "[rothdiff] warp to %s was not serviced in 6s"
+                                " -- re-requesting\n", g_map);
+                g_warp_sent = 0;
+            }
+            return;
+        }
+
+        if (!g_have_tick) { g_pose_tick = t; g_have_tick = 1; }
+        if ((uint16_t)(t - g_pose_tick) < (uint16_t)g_settle) return;
+        g_warped = 1;
+        g_have_tick = 0;
+        fprintf(stderr, "[rothdiff] warp to %s complete\n", g_map);
+        return;
     }
 
     /* PAINT THE WHOLE CACHE ONCE, then never again. After this every frame is a

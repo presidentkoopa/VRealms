@@ -114,21 +114,44 @@ any other map see `HANDOFF_REMAROTH.md` §9, "Most maps are not in MAPINFO".
 `oraclelog` skips the movies and presses Play; `rothdiff` pins the pose and
 writes the frame. `captures/oracle2.err` is the log of a good run.
 
+**Use `tools/rothdiff/run_oracle.ps1`. Do not hand-roll the command line.**
+
 ```
-set ROTHDIFF_POSEFILE=E:\DOOMWork\REMAROTH\tools\rothdiff\poses_frame.csv
-set ROTHDIFF_OUTDIR=E:\DOOMWork\REMAROTH\tools\rothdiff\captures
-set ROTHDIFF_SETTLE=200
-set ROTHDIFF_HOLD=20
-set ROTHDIFF_QUIT=1
-cd /d E:\DOOMWork\_oracle
-rothc.exe --headless --game-dir E:\DOOMWork\_oracle --c-root E:\DOOMWork\_croot
+.\run_oracle.ps1 -Map STUDY2 -PoseFile poses_study2.csv
 ```
 
-Without `ROTHDIFF_QUIT` the game stays running after the last capture and has
-to be closed. The run writes `<pose>.frame.pgm`. Then
-`framepng <ROTH folder> <in.pgm> STUDY1 <out.png>` and `sidebyside.ps1`.
-A new game starts in STUDY1. Any other map needs a quicksave made in it by hand
-(`tools/rothdiff/warp_and_save.bat`; saves exist for STUDY1 and LRINTH1).
+It runs unattended: no intro movies, no "insert CD", no main menu, and **no
+quicksave in the target map**. Three things it gets right that cost most of
+2026-10-02 to learn, all of which look like a frozen or broken game:
+
+- **Never pass `--skip-gdv`.** It HIDES the `.GDV` files (`dos.c:152`), the open
+  then fails, and a failed open raises the CD-swap retry prompt
+  (`file_config.c:913`) that nothing headless can answer. Answering it "retry"
+  re-opens a file that is still hidden — that is the 163,973-call loop an
+  earlier lane recorded against the message box in general. The movies are
+  skipped by `oraclelog` refusing to PLAY the cutscene instead, so nothing is
+  hidden and no prompt is ever raised.
+- **The main menu blocks.** Forging mode=1 does not leave the menu's own loop.
+  `oraclelog` answers that box with 1 = Play, bounded to before gameplay and to
+  four boxes so it cannot spin.
+- **`-Map` replaces the quicksave entirely.** `rothdiff_plugin.c` drives the
+  game's own warp path (see `VA_WARP_DEST`), so any of the 44 maps can be
+  captured with nobody at the keyboard. The single quicksave slot used to mean
+  that making a save in a new map destroyed the previous map's capturability.
+
+**`-Quickload` is opt-in and currently HANGS**, so only reach for it if the
+capture genuinely needs a saved game's state. Arming the savegame request leaves
+the game rendering but not advancing the `0x90bcc` tick, and `on_frame_game` is
+deduped on that tick, so the rig stops being called and nothing is captured. It
+looks exactly like a frozen game. Not diagnosed further; `-Map` made it
+unnecessary.
+
+The run writes `<pose>.frame.pgm`. Then
+`framepng <ROTH folder> <in.pgm> <MAP> <out.png>` and `sidebyside.ps1`.
+
+Rebuild either mod with its own `build_plugin.cmd` (32-bit MSVC; there is no
+mingw on this machine, and `rothc.exe` itself therefore cannot be rebuilt here —
+it needs `i686-w64-mingw32-gcc`).
 
 **Three settings stick between runs** because they are archived:
 `roth_lighting`, `roth_pattern`, `roth_palette_shading`. An old capture script

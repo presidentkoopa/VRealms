@@ -134,11 +134,72 @@ static uint32_t ROTH_CDECL ov_show_message_box(struct roth_chain *chain,
      * the only way to find out what it is asking, since headless shows no screen.
      * So this now observes and gets out of the way.
      */
+    /* ANSWER THE MAIN MENU, PASS EVERYTHING ELSE.
+     *
+     * The pass-through above was right when it was written and is wrong now.
+     * Both earlier forged answers failed against the CD-SWAP RETRY prompt, not
+     * against the menu: 1 there means "retry" and re-opens a file that
+     * --skip-gdv had hidden, which is where the 163,973 calls came from. That
+     * prompt no longer exists -- ov_play_record_gdv_cutscene stops the GDV being
+     * opened at all, so nothing fails to open and nothing asks for the CD.
+     *
+     * What is left is the main menu, and it blocks: forging mode=1 below does
+     * not move the engine out of the menu's own loop, so the play loop never
+     * runs, and a savegame or warp request armed by the rig is never consumed.
+     * The game sits at the menu waiting for a human.
+     *
+     * run_main_menu treats any result <= 1 as "Play" (menu_hud_ui.c:2088, its
+     * own comment: "Esc/row 1 both start the game"), so 1 is a value the real
+     * menu produces and the engine does the rest itself.
+     *
+     * BOUNDED TWICE so this can never become a spin: only before gameplay has
+     * been reached, and only a few times. Once the play loop is running, every
+     * box passes through untouched -- a save prompt or a real error must work.
+     */
+    const struct roth_game_ram_api_v1 *m = api->game_ram;
+    const int in_game = (m != NULL && m->u8(VA_MODE) == 1);
+
     g_play_answered++;
+    if (!in_game && g_play_answered <= 4)
+    {
+        fprintf(stderr, "[oraclelog] message box #%d (desc=%08x flags=%08x)"
+                        " answered 1 = Play\n", g_play_answered, desc, flags);
+        return 1;
+    }
     if (g_play_answered <= 8)
         fprintf(stderr, "[oraclelog] message box #%d (desc=%08x flags=%08x) passed through\n",
                 g_play_answered, desc, flags);
     return roth_next_show_message_box(chain, desc, flags);
+}
+
+/* NO INTRO MOVIES, AND NO CD PROMPT EITHER.
+ *
+ * The obvious way to lose the movies is rothc's --skip-gdv, and it is a trap:
+ * dos.c:152 makes that flag HIDE the .GDV files, so the open fails, and a failed
+ * open goes to the CD-swap retry prompt (file_config.c:913). Headless there is
+ * nobody to answer it, so the run hangs asking for the CD -- and answering
+ * "retry" re-opens a file that is still hidden, which is the 163,973-call
+ * infinite loop an earlier lane hit and blamed on the message box itself.
+ *
+ * So leave the files alone and refuse to PLAY instead. The GDV is never opened,
+ * no open can fail, and no prompt is raised. Returning 0 is what the caller
+ * already copes with: dbase100.c:224 returns this straight back and the
+ * aborted-intro path bails to the title by itself.
+ *
+ * DO NOT PASS --skip-gdv WITH THIS INSTALLED. It is unnecessary and it brings
+ * the CD prompt back.
+ */
+static int g_gdv_skipped;
+
+static uint32_t ROTH_CDECL ov_play_record_gdv_cutscene(struct roth_chain *chain,
+                                                       const struct roth_api_v1 *api,
+                                                       uint32_t rec)
+{
+    (void)chain; (void)api;
+    g_gdv_skipped++;
+    if (g_gdv_skipped <= 4)
+        fprintf(stderr, "[oraclelog] GDV cutscene %u not played (rig)\n", rec);
+    return 0;
 }
 
 static void on_register_overrides(const struct roth_api_v1 *api,
@@ -147,6 +208,10 @@ static void on_register_overrides(const struct roth_api_v1 *api,
     (void)api;
     if (roth_override(reg, ROTH_FN_show_message_box, ov_show_message_box, 0) != 0)
         fprintf(stderr, "[oraclelog] could not override show_message_box\n");
+
+    if (roth_override(reg, ROTH_FN_play_record_gdv_cutscene,
+                      ov_play_record_gdv_cutscene, 0) != 0)
+        fprintf(stderr, "[oraclelog] could not override play_record_gdv_cutscene\n");
 
     /* WORLD FLATS. Hooked at the DRIVER, not at the span emitters: the fill
      * word carries 0x20, so the dispatch at R:13314 sends them here, and by

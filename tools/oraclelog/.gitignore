@@ -1,1 +1,6 @@
 plugin.dll
+# MSVC link leavings -- new since the plugin stopped being a mingw cross-build.
+# See build_plugin.cmd; there is no mingw on this machine.
+*.obj
+*.lib
+*.exp

@@ -13,9 +13,13 @@ captures/*
 *.ridb
 baseline.json
 
-# Build products.
+# Build products. The MSVC link leavings (.obj/.lib/.exp) are new since the
+# plugin stopped being a mingw cross-build -- see build_plugin.cmd.
 *.exe
 *.dll
+*.obj
+*.lib
+*.exp
 __pycache__/
 
 # Savegames are GAME-DERIVED DATA and never go in the repo -- the same rule
