@@ -201,7 +201,34 @@ struct Binding
 	TrigEvent event = TrigEvent::None;
 	uint8_t   opcode = 0;                 // kept for the load report only
 	uint8_t   fireFlags = 0;              // the record's +0x06: the facing mask
+	uint8_t   subFlags = 0;               // the record's +0x07: the 0x13 variant
 };
+
+// Which link test an 0x13 record wants, from its +0x07. See NotifyPlayerSector
+// for the derivation (mark_geometry_records_by_id, raw_commands.c:4994-5005).
+enum class LinkVariant : uint8_t
+{
+	Water = 0,   // marker 0x40: inside the link only while at or below the floor
+	Plain,       // marker 0x80: no Z test at all
+	Linked,      // marker 0xc0: standing on the linked mid-platform's top
+};
+
+LinkVariant VariantOf(uint8_t subFlags)
+{
+	if (subFlags & 1) return LinkVariant::Plain;
+	if (subFlags & 2) return LinkVariant::Linked;
+	return LinkVariant::Water;
+}
+
+const char *VariantName(LinkVariant v)
+{
+	switch (v)
+	{
+	case LinkVariant::Plain:  return "plain";
+	case LinkVariant::Linked: return "linked platform";
+	default:                  return "water (Z)";
+	}
+}
 
 //==========================================================================
 //
@@ -3723,6 +3750,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// appearing anywhere in the report.
 	int faceBound = 0, sectorBound = 0, unbound = 0, unclassified = 0;
 	std::map<uint8_t, int> boundByOp;
+	// opcode -> (fireFlags << 8 | subFlags) -> how many RECORDS carry that pair
+	std::map<uint8_t, std::map<int, int>> flagHist;
 	for (const Command &c : g.map.commands)
 	{
 		if (!c.isTrigger || c.disabled) continue;
@@ -3740,7 +3769,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			continue;
 		}
 
-		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags };
+		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags, c.subFlags };
 
 		if (IsFaceTrigger(c.opcode))
 		{
@@ -3748,6 +3777,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			for (int fi : c.faces) g.byFace[fi].push_back(b);
 			faceBound++;
 			boundByOp[c.opcode]++;
+			flagHist[c.opcode][(c.fireFlags << 8) | c.subFlags]++;
 		}
 		else if (IsSectorTrigger(c.opcode))
 		{
@@ -3755,6 +3785,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			g.bySector[c.sector].push_back(b);
 			sectorBound++;
 			boundByOp[c.opcode]++;
+			flagHist[c.opcode][(c.fireFlags << 8) | c.subFlags]++;
 		}
 	}
 
@@ -3804,17 +3835,17 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			{
 			case TrigEvent::Use:
 				reach = IsFaceTrigger(kv.first)
-					? "LIVE -- the use key"
-					: "no dispatch: needs a use ray that lands on a flat";
+					? "LIVE -- the use key, but fires from ANY approach"
+					: "LIVE -- a use ray that lands on a flat";
 				break;
 			case TrigEvent::Examine:
 				reach = "no dispatch: there is no examine input yet";
 				break;
 			case TrigEvent::Impact:
-				reach = "LIVE -- a shot hitting the wall";
+				reach = "LIVE -- a shot hitting the wall, never yet observed";
 				break;
 			case TrigEvent::SectorEnter:
-				reach = "no dispatch: needs a sector-transition event";
+				reach = "LIVE -- a per-tic sector check, with the link variant";
 				break;
 			default:
 				reach = "no event";
@@ -3854,6 +3885,36 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 				list.AppendFormat("%s%d", i ? " " : "", kv.second[i]);
 			log->Line("  0x%02x sectors (%d): %s", (unsigned)kv.first,
 				(int)kv.second.size(), list.GetChars());
+		}
+
+		// WHICH RECORD FLAGS ACTUALLY OCCUR, so a rule read out of ROTH.C can
+		// be checked against the data instead of assumed to matter. +0x06 is
+		// the facing mask on an 0x13 and the surface selector on an 0x19; +0x07
+		// picks the 0x13 link variant. Several of the bits read so far turn out
+		// to be absent from this map entirely, which is worth knowing before
+		// building anything that depends on them.
+		// PER RECORD, not per binding. Counting the bindings inflates every
+		// face-keyed opcode, because one record binds to every face its key
+		// resolves to -- 0x18's 26 records read as 68 that way, which looks
+		// like a disagreement with the table above it.
+		log->Line("  record flags present, by opcode (one count per RECORD):");
+		for (auto &op : flagHist)
+		{
+			for (auto &fl : op.second)
+			{
+				const uint8_t f6 = (uint8_t)(fl.first >> 8);
+				const uint8_t f7 = (uint8_t)(fl.first & 0xff);
+				FString note;
+				if (op.first == 0x13)
+					note.Format("variant %s%s%s", VariantName(VariantOf(f7)),
+						(f6 & 0x40) ? ", wants the LEAVE refire" : "",
+						(f6 & 0x0f) ? ", facing-RESTRICTED" : "");
+				else if (op.first == 0x19 || op.first == 0x31)
+					note = (f6 & 1) ? "the platform TOP" : "the sector floor";
+				log->Line("    0x%02x  +0x06 0x%02x  +0x07 0x%02x  x%-3d %s",
+					(unsigned)op.first, (unsigned)f6, (unsigned)f7, fl.second,
+					note.GetChars());
+			}
 		}
 
 		//------------------------------------------------------------------
@@ -4154,20 +4215,51 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
 // that fires twice where it should fire once corrupts state in ways that are
 // much harder to see than one that never fires.
 //
-// NOR ARE THE THREE VARIANTS. twe_link_state gates on the SECTOR's +0x17 and
-// branches three ways (raw_commands.c:3220-3232):
+// THE THREE VARIANTS ARE IMPLEMENTED, and they need no sector byte: the
+// variant is selected by the RECORD, which this port already carries.
 //
-//   0x80 alone   plain: no Z test, the trigger fires on entering the sector.
-//                This is the case this code implements.
-//   0x40 alone   a Z threshold against sector[+2] -- the water/lava variant.
-//                The player is inside the link only while BELOW the surface,
-//                so firing on mere entry is an OVER-FIRE for these.
-//   0xc0         follows the linked sector at +0x18 and tests a Z band against
-//                its [+8]. Not implemented; the loader does not carry the link.
+// mark_geometry_records_by_id (raw_commands.c:4994-5005) derives the sector's
+// +0x17 marker from the record's own +0x07 -- our `Command::subFlags`:
 //
-// The port binds 0x13 by its key sector and fires on any entry, so a water
-// trigger fires on walking in rather than on submerging. Reading +0x17 through
-// to here is what fixes that, and it is a loader change, not a change here.
+//     mask = 0x40;
+//     if (b7 & 3) { mask = 0xc0; if (b7 & 1) mask = 0x80; }
+//
+// and twe_link_state (:3220-3232) branches on that marker:
+//
+//   0x80  PLAIN    (subFlags bit 0 set)       no Z test; fires on entry.
+//   0x40  WATER    (subFlags bits 0-1 clear)  inside the link only while
+//                  `player_z <= sector[+2]`, the sector's floorHeight.
+//                  NOT "only while submerged", which this file claimed before
+//                  the convention was checked: g_player_z is the player's FEET,
+//                  not the eye -- collision_physics.c:65 builds the player's
+//                  extent as [qZ, qZ + height + 0xa] -- so a player standing
+//                  normally on the floor has feet AT floorHeight and is INSIDE
+//                  the link. The test only excludes being ABOVE the floor:
+//                  mid-jump, or stood on a platform within the sector. The
+//                  "water trigger fires on walking in instead of on going
+//                  under" claim was an overstatement from reading the branch
+//                  without checking which end of the player Z measures.
+//   0xc0  LINKED   (subFlags bit 1, bit 0 clear)  reads the linked record at
+//                  the sector's +0x18 -- the MID-PLATFORM -- and requires
+//                  `player_z <= topZ && player_z + 2 >= topZ`, i.e. standing ON
+//                  the platform top. `cell+8` is the platform's topZ.
+//
+// Z needs no conversion: the loader takes `floorZ = double(rs.floorHeight)`
+// (rothmap.cpp:465), so engine Z and Realms Z are the same number.
+//
+// KNOWN DIFFERENCE, deliberate. The original ORs the mask per SECTOR, so two
+// 0x13 records of different variants on one sector combine -- 0x40|0x80 becomes
+// 0xc0, "linked". STUDY1's sector 430 does carry two. This evaluates the
+// variant PER RECORD instead, which is what each record asks for; the
+// combination is an artefact of storing the variant in shared geometry. Noted
+// rather than reproduced, because reproducing it needs a reason beyond "the
+// original does it", and nothing has been measured there.
+//
+// ALSO A DIFFERENCE: the original fires exactly ONE record per entry. It finds
+// it with `find_object_record_by_id(word[sector+0x14])` (:3264-3267), which
+// returns the first match for the sector's command id. This fires every 0x13
+// bound to the sector, so sector 430's two both run where the original runs
+// one. Unmeasured; left as it is rather than guessing which one "first" is.
 //
 // Also unimplemented, and all three are gates the original applies FIRST
 // (fire_sector_trigger:2869-2871): the modifier byte +0x02 blocks on mask 0x29
@@ -4370,6 +4462,47 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 	for (const Binding &b : it->second)
 	{
 		if (b.event != want) continue;
+
+		// THE LINK TEST, for 0x13 only. A water record is inside its link only
+		// while the player is at or below the sector's floor, and a linked one
+		// only while standing on the mid-platform's top. Without this a water
+		// trigger fires on walking into the sector instead of on going under.
+		if (want == TrigEvent::SectorEnter && who != nullptr)
+		{
+			const LinkVariant var = VariantOf(b.subFlags);
+			if (var != LinkVariant::Plain)
+			{
+				const double pz = who->Z();
+				bool inLink = false;
+				if (var == LinkVariant::Water)
+				{
+					// exit_link = player_z > sector[+2]; sector[+2] is floorHeight.
+					const int rs = sec->sectornum;
+					if (rs >= 0 && rs < (int)g.map.sectors.size())
+						inLink = pz <= double(g.map.sectors[rs].floorHeight);
+				}
+				else
+				{
+					// exit_link = (pz > topZ) || (pz + 2 < topZ): standing ON it.
+					const int rs = sec->sectornum;
+					const int pi = (rs >= 0 && rs < (int)g.map.sectors.size())
+						? g.map.sectors[rs].platformIndex : -1;
+					if (pi >= 0 && pi < (int)g.map.platforms.size())
+					{
+						const double topZ = double(g.map.platforms[pi].topZ);
+						inLink = (pz <= topZ) && (pz + 2.0 >= topZ);
+					}
+				}
+				if (!inLink)
+				{
+					if (roth_trigger_debug)
+						Printf("roth_trigger: sector %d 0x%02x %s variant -> OUTSIDE"
+							" the link at z %.1f, not firing\n", sec->sectornum,
+							(unsigned)b.opcode, VariantName(var), pz);
+					continue;
+				}
+			}
+		}
 
 		// The facing mask, from the record's own +0x06. fire_sector_trigger
 		// tests this before anything else runs (raw_commands.c:2876), so a

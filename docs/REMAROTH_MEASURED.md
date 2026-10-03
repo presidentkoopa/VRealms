@@ -551,6 +551,47 @@ rendered frame, so its reachable aim is far wider than a centre ray — and in V
 it will be a hand pointer, wider still. Any judgement about whether a floor
 trigger is "reachable" that is made with a centre-screen ray is pessimistic.
 
+### Which record flags actually occur in STUDY1 — measured 2026-10-03
+
+From the load report's `record flags present, by opcode` line, **one count per
+record** (counting bindings instead inflates every face-keyed opcode, since one
+record binds to each face its key resolves to — `0x18`'s 26 reads as 68).
+
+| opcode | `+0x06` | `+0x07` | records | meaning |
+|---|---|---|---|---|
+| `0x13` | `0x00` | `0x00` | 1 | water variant |
+| `0x13` | `0x00` | `0x01` | 12 | plain |
+| `0x13` | `0x10` | `0x00` | 2 | water variant |
+| `0x13` | `0x10` | `0x01` | 7 | plain |
+| `0x13` | `0x20` | `0x04` | 1 | water variant |
+| `0x18` | `0x01` | `0x00` | 24 | |
+| `0x18` | `0x02` | `0x00` | 1 | |
+| `0x18` | `0x06` | `0x00` | 1 | |
+| `0x19` | `0x10` | `0x00` | 12 | the sector floor |
+| `0x1a` | `0x00` | `0x00` | 4 | |
+| `0x32` | `0x06` | `0x00` | 1 | |
+
+Totals reconcile with the opcode table: 23, 26, 12, 4, 1.
+
+**What this settles, and it changes what is worth building:**
+
+- **The leave refire cannot be tested in this map.** No `0x13` record has
+  `+0x06 & 0x40`, the bit that asks for it. Building it would be building blind.
+- **The facing mask's blocking half cannot be tested either.** Every `0x13`
+  mask is `0x00`, `0x10` or `0x20` — none has any of bits 0-3, so nothing can be
+  refused by it here.
+- **The linked-platform variant does not occur.** `+0x07` is `0x00` or `0x01`
+  except for one `0x04`, and `VariantOf` makes that water too (bits 0 and 1
+  clear). So 19 plain, 4 water, **0 linked** — that branch is implemented and
+  unexercised.
+- **No platform-top `0x19` exists.** All 12 have `+0x06 & 1` clear.
+- **The FACE direction mask is present on every `0x18`, and it matters.** The
+  values `0x01`, `0x02`, `0x06` are exactly `dir_mask1`-shaped (`{1,4,2,1}`;
+  `0x06 = 0x02|0x04`). All 26 `0x18` records and the single `0x32` carry a
+  non-zero mask, so the port currently fires **every one of them from any
+  approach** where the original restricts them. This is the largest remaining
+  fidelity gap in the trigger layer.
+
 ### What ROTH.C says and the port does not do
 
 Recorded so none of it is re-derived.
@@ -558,13 +599,32 @@ Recorded so none of it is re-derived.
 - **`+0x06 & 0x40` is the "fire on leave too" flag.** `twe_link_state:3205-3213`
   refires the latched record when the player leaves its sector, and the latch is
   set only for a record with that bit (`fire_sector_trigger:2893`). So
-  enter-vs-leave was never ambiguous, only unread. Not built.
-- **The sector's `+0x17` picks one of three variants** (`twe_link_state:3220-3232`):
-  `0x80` alone is plain, which is what is implemented; `0x40` alone adds a Z
-  threshold against `sector[+2]` — the water/lava variant, where the player is
-  inside the link only while **below** the surface, so firing on entry is an
-  **over-fire**; `0xc0` follows the linked sector at `+0x18` with a Z band.
-  Carrying `+0x17` through is a loader change.
+  enter-vs-leave was never ambiguous, only unread. **Not built, and now known
+  to be untestable in STUDY1** — no record there carries the bit.
+- **The three link variants ARE implemented**, and they need no sector byte: the
+  variant comes from the **record's `+0x07`**, which `mark_geometry_records_by_id`
+  (`raw_commands.c:4994-5005`) turns into the sector marker —
+  `mask = 0x40; if (b7 & 3) { mask = 0xc0; if (b7 & 1) mask = 0x80; }`. So bit 0
+  set is **plain**, bit 1 alone is **linked platform**, neither is **water**.
+  `twe_link_state:3220-3232` then branches on it. The linked variant's `cell+8`
+  is the mid-platform's **topZ**, so its test is "standing on the platform top".
+  Z needs no conversion — the loader takes `floorZ = double(rs.floorHeight)`
+  (`rothmap.cpp:465`).
+
+  **The "water triggers over-fire" claim this file previously made was wrong.**
+  `g_player_z` is the player's **feet**, not the eye — `collision_physics.c:65`
+  builds the extent as `[qZ, qZ + height + 0xa]` — so a player standing normally
+  on the floor has feet *at* `floorHeight` and is **inside** the link. The test
+  only excludes being *above* the floor: mid-jump, or stood on a platform within
+  the sector. The overstatement came from reading the branch without checking
+  which end of the player Z measures.
+
+  Two **deliberate differences** remain. The original ORs the marker per
+  *sector*, so two `0x13` records of different variants on one sector combine
+  (`0x40|0x80` → `0xc0`, "linked") — STUDY1's sector 430 carries two. This
+  evaluates per *record* instead. And the original fires exactly **one** record
+  per entry, found by `find_object_record_by_id(word[sector+0x14])`
+  (`:3264-3267`); this fires every `0x13` bound to the sector. Both unmeasured.
 - **Two gates the original applies first** (`fire_sector_trigger:2869-2871`): the
   modifier byte `+0x02` blocks on mask `0x29` (armed `0x01`, spent `0x08`,
   registered `0x20`) where the port tests only the spent bit, at bind time; and
