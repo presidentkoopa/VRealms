@@ -891,3 +891,34 @@ pixel and is lighting-independent. That is what it is for.
   the LTCG pass as a normal cost. `HANDOFF_REMAROTH.md` §9's "do not delete
   `doomxr.iobj` unless LNK1103 has actually appeared" still holds — it does
   appear, constantly.
+
+### Door leaf: what the 2026-10-03 pass settled
+
+| checked | result |
+|---|---|
+| polyobject placement | **0 of 30** in a `SSECF_POLYORG` subsector — all in real doorway sectors (462, 458, 394, 336, …). The skip rule at `hw_bsp.cpp:1227` is **not** it |
+| light source at render time | `AddLines` sets `currentsector` from the subsector, so a leaf lights from the sector it **occupies** — and both candidates measure 160 |
+| open vs closed | **identical black.** The slab is invisible in both positions, so this is not z-fighting with the doorway's own wall pieces, and the load report's "leaf faces coplanar with a drawn wall piece" is not the cause |
+
+**Polyobject segs take the TWO-SIDED wall path.** `hw_bsp.cpp:707` forces
+`backsector = currentsector`, and that value reaches
+`HWWall::Process(seg, currentsector, backsector)`. With front == back there is
+no upper and no lower, so **only `DoMidTexture` can draw a leaf**. The
+`isPolyobj && seg->backsector` branch in `Process` (`hw_walls.cpp:2452`) does
+*not* apply, because our leaf lines are genuinely one-sided — `seg->backsector`
+is null.
+
+That path is also what Hexen polyobject doors use, and they render, so the
+mechanism works in general and something about ours differs.
+
+**Next:** `DoMidTexture` with this sidedef. Its mid texture is set with
+`SetTextureXScale(mid, stored/(len*unitsPerTexel))` and
+`SetTextureYScale(mid, 1/unitsPerTexel)` (`rothmap.cpp`), and a two-sided
+midtexture is subject to pegging, the `ML_WRAP_MIDTEX` rule and clipping to the
+opening — none of which a one-sided wall's texture would face. Compare what a
+Hexen poly door's sidedef carries that ours does not.
+
+Do not re-check: the art (real and named on all 120 sides), the colour key (0),
+the sector light (160), `R_RothShade` (cannot output black), polyobject spawn
+(30/30, no errors), presence (the use ray hits and swings it), or placement
+(above).
