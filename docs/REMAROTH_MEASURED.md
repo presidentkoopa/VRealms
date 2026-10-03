@@ -775,6 +775,41 @@ in the owner's file are known to work. `vr_mode` is `CVAR_GLOBALCONFIG`, so
 checking it once early says nothing about later runs — the owner can change it
 between them, and did.
 
+### Two things that make a run look hung, and neither is the rig
+
+**`i_pauseinbackground` defaults to true, and `capture.ini` inherits it.** The
+game then **pauses the moment its window loses focus** — which is every time the
+owner clicks back to their own work — so the capture queue stops draining and
+the run sits there forever. This was mistaken for a frozen game more than once
+and cost a launch to diagnose. `capture.ini` now sets it **false**. Set it in
+any new capture config too.
+
+**A launch steals keyboard focus.** The window comes up focused, so whatever the
+owner types next goes into the game — a capture came back showing GZDoom's
+`SAY:` chat prompt with their keystrokes in it. A modal prompt also blocks
+`P_Ticker`, so this produces the same "hung" symptom by a second route. Worth
+saying before a run, and worth not running while they are mid-sentence.
+
+Note the WAITING diagnostic in `RothDiff_RunPending` **cannot report either**:
+it only prints when the function is called, and nothing calls it while the
+ticker is stopped. Silence from it means the ticker is not running at all,
+which is a different fault from the queue being ineligible.
+
+**`vid_setsize` in a cfg hangs the run.** The video mode change leaves the game
+not ticking; the shots queue and never drain. `pair2.cfg` carries one and
+`LANE_START.md` §5 records it as working, so either it regressed or it never
+did. Capture at the window's own size instead.
+
+### A lit screenshot cannot answer "is there a texture here"
+
+Realms is dark enough that a 48-unit-away door photographs as near-black, and
+`roth_lighting 0` does not flatten it — the candle cone still shows as a faint
+circular gradient. Two attempts produced unreadable frames.
+
+For "what surface is at this pixel", use the **identity buffer**
+(`rothdiff_dump` plus `tools/rothdiff/ridb.py`), which records the surface per
+pixel and is lighting-independent. That is what it is for.
+
 ### Other rig facts
 
 - **`+exec` runs before the deferred `map`.** A console command in a cfg that
