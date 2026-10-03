@@ -529,7 +529,13 @@ bool FTraceInfo::LineCheck(intercept_t *in, double dist, DVector3 hit, bool spec
 			hit.Z >= bc ? TIER_Upper : TIER_Middle;
 		if ((TraceFlags & TRACE_Impact) && !special3dpass)
 		{
-			P_ActivateLine(in->d.line, IgnoreThis, lineside, SPAC_Impact);
+			// `hit` goes with it. Realms face triggers select WHICH BAND of the
+			// wall they answer on -- mid, lower or upper -- from the record's
+			// +0x06, and that cannot be known without the hit height. The tier
+			// computed three lines above uses the identical rule. See
+			// roth::WallPartBit. The other SPAC_Impact sites in this file pass
+			// no position, and the band gate reports itself skipped there.
+			P_ActivateLine(in->d.line, IgnoreThis, lineside, SPAC_Impact, &hit);
 		}
 	}
 	else

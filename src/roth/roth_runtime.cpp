@@ -283,6 +283,64 @@ const char *VariantName(LinkVariant v)
 //
 //==========================================================================
 
+//==========================================================================
+//
+// WHICH PART OF A WALL, and why +0x06 on a FACE record is not a direction mask.
+//
+// dispatch_entry_command_trigger gates a face trigger on
+// `record[+6] & dir_mask1[byte[pick+0x1a] & 3]`, with
+// dir_mask1 = { 0x01, 0x04, 0x02, 0x01 } (E/raw_commands.c:3012). ROTH.C's
+// author named it dir_mask and called the index "the approach", and that is
+// wrong: tracing the index to where it is written shows it is the WALL SPAN
+// KIND, not a direction.
+//
+// The pick record is the deferred-surface descriptor at 0x90a48, and its +0x1a
+// is 0x90a62 == g_subpass_reflect_param_b + 0x6, which exit_f_writeout fills
+// from byte[g_turn_view_scale_state + 2] (E/renderer.c:4500). That byte is set
+// by the span builders, one value per part of the wall:
+//
+//   0  the main face span          build_world_face_spans, renderer.c:8716
+//   1  the TOP edge span           renderer.c:8673
+//   2  the BOTTOM edge span        renderer.c:8694
+//   3  mid base+overlay multipass  renderer.c:8772
+//
+// Through dir_mask1 that gives the bits:
+//
+//   0x01  the MID texture   (span 0, and span 3 which is the mid drawn in two
+//                            passes -- both map to the same bit, which is the
+//                            clearest sign this is about wall PARTS)
+//   0x02  the LOWER section (span 2, below the opening)
+//   0x04  the UPPER section (span 1, above the opening)
+//
+// and a SET bit ALLOWS that part. So +0x06 on a face record says WHICH BAND OF
+// THE WALL the trigger answers on -- a switch on the mid texture, a panel in
+// the lower section -- and has nothing to do with where the player stands.
+//
+// The authored data says the same thing plainly. STUDY1's 26 0x18 records carry
+// 0x01 twenty-four times (mid only), 0x02 once (lower only) and 0x06 once
+// (lower and upper, but NOT the mid); its single 0x32 carries 0x06. Those are
+// choices about wall sections, not about approach angles.
+//
+// IMPLEMENTING IT AS A DIRECTION GATE WOULD HAVE BEEN WRONG AND QUIET: 24 of 26
+// records would have been restricted to one quadrant of player facing, and the
+// triggers would simply have stopped working from most directions.
+//
+// GZDoom classifies the same three bands, and p_trace.cpp:526-529 already does
+// it with the identical rule, so this only needs the hit height.
+//
+//==========================================================================
+
+uint8_t WallPartBit(line_t *line, double z)
+{
+	if (line == nullptr || line->backsector == nullptr) return 0x01;   // one-sided: mid
+
+	const double bf = line->backsector->floorplane.ZatPoint(line->v1->fPos());
+	const double bc = line->backsector->ceilingplane.ZatPoint(line->v1->fPos());
+	if (z <= bf) return 0x02;   // below the opening -> lower
+	if (z >= bc) return 0x04;   // above it -> upper
+	return 0x01;                // the opening itself -> mid
+}
+
 int DoomYawToRoth512(DAngle yaw)
 {
 	// The inverse of RothAngleToDoom (roth_diff.cpp:95), which is
@@ -4073,7 +4131,8 @@ void RegisterPlatformControl(int rothSector, int ctrlSector)
 CVAR(Bool, roth_trigger_debug, false, 0)
 
 
-bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
+bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
+	DVector3 *hitpos)
 {
 	if (!g.active || line == nullptr) return false;
 
@@ -4202,13 +4261,37 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
 	// A wall can carry an 0x18 (use) and an 0x1a (a shot hits it) at once, and
 	// they are different triggers with different chains. Before the event
 	// reached here, both fired on whichever arrived first.
+	// WHICH BAND OF THE WALL was touched. A face record's +0x06 names the parts
+	// it answers on -- mid 0x01, lower 0x02, upper 0x04 -- so a switch on the
+	// mid texture does not fire when the lower section is hit. See WallPartBit.
+	//
+	// Needs the hit height, which only some callers have: P_UseTraverse passes
+	// one and the tracer's impact sites were given one, but a push or a cross
+	// has none. Without it the part cannot be known, so the gate is skipped
+	// rather than guessed -- an over-fire, reported, not a silent pass.
+	const uint8_t part = (hitpos != nullptr) ? WallPartBit(line, hitpos->Z) : 0;
+
 	for (const Binding &b : it->second)
 	{
 		if (b.event != want) continue;
+
+		if (part != 0 && b.fireFlags != 0 && !(b.fireFlags & part))
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: line side %d 0x%02x wants wall part(s)"
+					" 0x%02x, hit the %s (0x%02x) -- not firing\n", idx,
+					(unsigned)b.opcode, (unsigned)(b.fireFlags & 0x07),
+					part == 0x02 ? "lower" : part == 0x04 ? "upper" : "mid",
+					(unsigned)part);
+			continue;
+		}
+
 		if (roth_trigger_debug)
-			Printf("roth_trigger: line side %d (face %d) 0x%02x %s -> firing\n",
-				idx, f != g.sideToFace.end() ? f->second : -1,
-				(unsigned)b.opcode, TrigEventName(b.event));
+			Printf("roth_trigger: line side %d (face %d) 0x%02x %s part 0x%02x"
+				" of 0x%02x -> firing\n", idx,
+				f != g.sideToFace.end() ? f->second : -1,
+				(unsigned)b.opcode, TrigEventName(b.event), (unsigned)part,
+				(unsigned)(b.fireFlags & 0x07));
 		any |= Fire(b.chain);
 	}
 

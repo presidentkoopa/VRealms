@@ -32,6 +32,7 @@
 #include <vector>      // SidesWithOpcode
 
 #include "textureid.h"
+#include "vectors.h"   // DVector3, for ActivateLine's hit point
 
 struct line_t;
 struct sector_t;
@@ -111,7 +112,12 @@ void RegisterLightFollower(int rothSector, int engineSector);
 // MATTERS: one Realms line can be reached by a use, a walk-over, a bullet and a
 // shove, and GAME_core.md §5.2 gives exactly one of those per opcode. This used
 // to take the event and discard it, so every binding answered all four.
-bool ActivateLine(line_t *line, AActor *who, int side, int activationType);
+// `hitpos`, where the caller has one, is the point on the line that was
+// touched. It decides WHICH BAND OF THE WALL the hit belongs to -- mid, lower
+// or upper -- which a face record's +0x06 selects between. Pass nullptr when
+// there is no hit point; the band gate is then skipped rather than guessed.
+bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
+	DVector3 *hitpos = nullptr);
 
 // Every sidedef carrying a trigger of one opcode, for aiming a test at one.
 // The load report prints the same list, but a capture script cannot read it:

@@ -507,11 +507,64 @@ suppressed a real trigger.
 | channel | index from | sense | state |
 |---|---|---|---|
 | `0x13` enter sector | the **player angle**, `(angle − 0x40) >> 7`, four quadrants | a **set bit BLOCKS** | implemented |
-| `0x18`/`0x32` wall face | the **pick**, `dir_mask1[byte[pick+0x1a] & 3]` where `dir_mask1 = {1,4,2,1}` (`:3012`) | a **set bit ALLOWS** | **not implemented** |
+| `0x18`/`0x32` wall face | the **pick**, `dir_mask1[byte[pick+0x1a] & 3]` where `dir_mask1 = {1,4,2,1}` (`:3012`) | a **set bit ALLOWS** | implemented — and it is **not a direction**, see below |
 | `0x19`/`0x31` floor | **no direction mask at all** | bit 0 selects the **surface** | implemented |
 
+### `dir_mask1` is NOT a direction mask. It selects a BAND OF THE WALL.
+
+This is the single most misleading name in the trigger layer, and it is ROTH.C's
+own: the author called the array `dir_mask` and the index "the approach". The
+code says otherwise, and **code beats comments**.
+
+Tracing the index to where it is written:
+
+- the pick record is the deferred-surface descriptor at `0x90a48`;
+- its `+0x1a` is address `0x90a62`, which is
+  `g_subpass_reflect_param_b + 0x6` (`g_names.h:623`, extent `0xc`);
+- `exit_f_writeout` fills that from `byte[g_turn_view_scale_state + 2]`
+  (`renderer.c:4500`);
+- and that byte is set by the **span builders**, one value per part of the wall:
+
+| value | written by | `dir_mask1` bit | means |
+|---|---|---|---|
+| 0 | main face span, `renderer.c:8716` | `0x01` | the **mid** texture |
+| 1 | **top** edge span, `:8673` | `0x04` | the **upper** section |
+| 2 | **bottom** edge span, `:8694` | `0x02` | the **lower** section |
+| 3 | mid base+overlay multipass, `:8772` | `0x01` | the mid again |
+
+So `+0x06` on a face record says **which band of the wall the trigger answers
+on** — a switch on the mid texture, a panel in the lower section — and has
+nothing to do with where the player stands. Values 0 and 3 mapping to the same
+bit is the clearest tell: both are the mid texture, drawn in one pass or two.
+
+**The authored data agrees plainly.** STUDY1's 26 `0x18` records carry `0x01`
+twenty-four times (mid only), `0x02` once (lower only) and `0x06` once (lower
+and upper but *not* the mid). The single `0x32` carries `0x06`. Those are
+choices about wall sections.
+
+**Implementing it as a direction gate would have been wrong and silent:** 24 of
+26 records would have been restricted to one quadrant of player facing, and
+those triggers would simply have stopped working from most directions.
+
+GZDoom classifies the same three bands by the same rule
+(`p_trace.cpp:526-529`), so this needs only the hit height — `roth::WallPartBit`.
+
+**It is live but currently has nothing to bite on**, and that is worth stating
+rather than discovering later:
+
+- On the **use** path there is no hit height to classify with. `P_UseTraverse`
+  builds `optpos` as `{ start.X, start.Y, usething->Z() }` (`p_map.cpp:6525`) —
+  the player's **feet** — because the whole path is 2D. Feeding that in would
+  classify by where the player stands: in a doorway the feet sit at the back
+  floor, so a mid-texture switch reads as a LOWER hit and is refused. So
+  `p_spec.cpp` passes `nullptr` and the gate skips itself. Driving it properly
+  needs one aimed pick, the same thing the floor probe wanted.
+- On the **impact** path the tracer has a real hit point and one site now passes
+  it (`p_trace.cpp:532`), but every `0x1a` in STUDY1 carries mask `0x00`, so
+  nothing is restricted.
+
 - The face index comes from the pick, not the player's angle, and index 3
-  repeats index 0 — so three directions, not four (`:3029`).
+  repeats index 0.
 - On a floor record, `(record[+6] & 1) ? (type == 8) : (type == 2)` chooses the
   **mid-platform top** over the **sector floor** (`:3068`) — §4.5's "record flag
   bit0 selects the platform-top". The port tells them apart by the trace's

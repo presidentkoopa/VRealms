@@ -130,7 +130,15 @@ bool P_ActivateLine (line_t *line, AActor *mo, int side, int activationType, DVe
 	// activationType goes WITH it: Realms binds one event per trigger opcode
 	// (GAME_core.md §5.2), and without the event every binding answered a use,
 	// a walk-over, a bullet and a shove alike.
-	if (roth::ActivateLine(line, mo, side, activationType))
+	// NO POSITION IS FORWARDED FROM HERE, deliberately. `optpos` is not a hit
+	// point on the path that matters: P_UseTraverse builds it as
+	// `{ start.X, start.Y, usething->Z() }` (p_map.cpp:6525), the player's FEET,
+	// because that whole path is two-dimensional and has no hit height to give.
+	// Handing it to the wall-band gate would classify by where the player is
+	// standing -- in a doorway the feet sit at the back floor, so a mid-texture
+	// switch would be read as a LOWER hit and refused. The band gate gets a
+	// real hit point from the tracer instead, and skips itself here.
+	if (roth::ActivateLine(line, mo, side, activationType, nullptr))
 	{
 		return true;
 	}

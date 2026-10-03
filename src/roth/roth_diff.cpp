@@ -184,6 +184,17 @@ static const int SHOOT_SETTLE_TICS = 3;
 // cfg unable to read the load report.
 static const int SHOOT_OP_MARKER = -6;
 
+// -7 / -8: the same stand-off placement, but press USE instead of shooting.
+//
+// 0x18 is the left-click-wall trigger and the busiest category in the map (26
+// records), and it had NEVER been observed firing: every door pose in every
+// test so far hit a door LEAF, which short-circuits to SwingDoor before the
+// trigger path is reached. "LIVE -- the use key" in the load report was a label
+// derived from the wiring, not an observation, which is exactly the kind of
+// claim this project keeps catching.
+static const int USEWALL_MARKER = -7;
+static const int USEWALL_OP_MARKER = -8;
+
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
 void PlaceCamera(int px, int py, int pang, int pitch = 0);
 void DoSprites(int px, int py, int pang, const char *path);
@@ -268,8 +279,9 @@ void RothDiff_RunPending()
 	// as it was at the start of the tic, so shooting immediately captures the
 	// old position. Counted down here rather than slept on, so the game keeps
 	// running normally in between.
-	if (front.w == SHOOT_OP_MARKER)   // shoot every side carrying opcode `x`
+	if (front.w == SHOOT_OP_MARKER || front.w == USEWALL_OP_MARKER)
 	{
+		const bool useIt = (front.w == USEWALL_OP_MARKER);
 		const uint8_t op = (uint8_t)front.x;
 		g_pending.Delete(0);
 
@@ -285,7 +297,7 @@ void RothDiff_RunPending()
 		{
 			PendingDump d;
 			d.x = sides[i]; d.y = 0; d.ang = 0;
-			d.w = SHOOT_MARKER; d.h = 0;
+			d.w = useIt ? USEWALL_MARKER : SHOOT_MARKER; d.h = 0;
 			d.screenshot = false;
 			d.settle = SHOOT_SETTLE_TICS;
 			g_pending.Insert(i, d);
@@ -296,8 +308,9 @@ void RothDiff_RunPending()
 		return;
 	}
 
-	if (front.w == SHOOT_MARKER)   // shoot this sidedef, see rothdiff_shoot
+	if (front.w == SHOOT_MARKER || front.w == USEWALL_MARKER)
 	{
+		const bool useIt = (front.w == USEWALL_MARKER);
 		AActor *pm = players[consoleplayer].mo;
 		if (front.settle == SHOOT_SETTLE_TICS)
 		{
@@ -362,10 +375,18 @@ void RothDiff_RunPending()
 		// just set rather than from wherever the player was.
 		if (--front.settle > 0) return;
 
-		// A hitscan with TRACE_Impact behind it. Damage 0 and no puff: the
-		// point is the line activation, not hurting anything.
-		P_LineAttack(pm, pm->Angles.Yaw, SHOOT_STANDOFF * 2.0, pm->Angles.Pitch,
-			0, NAME_None, NAME_BulletPuff);
+		if (useIt)
+		{
+			// The use key, the same function +use calls.
+			P_UseLines(&players[consoleplayer]);
+		}
+		else
+		{
+			// A hitscan with TRACE_Impact behind it. Damage 0 and no puff: the
+			// point is the line activation, not hurting anything.
+			P_LineAttack(pm, pm->Angles.Yaw, SHOOT_STANDOFF * 2.0,
+				pm->Angles.Pitch, 0, NAME_None, NAME_BulletPuff);
+		}
 
 		g_pending.Delete(0);
 		if (g_pending.Size() > 0) return;
@@ -704,6 +725,50 @@ CCMD(rothdiff_shoot)
 		g_pending.Push(d);
 	}
 	Printf("rothdiff_shoot: queued %d sidedef(s)\n", argv.argc() - 1);
+}
+
+// Press use against a wall, by sidedef -- the 0x18 test.
+//
+// Same placement as rothdiff_shoot, the use key instead of a shot. This exists
+// because 0x18 is the busiest trigger category in the map and had never been
+// seen to fire: every door pose used for testing hits a door LEAF, which
+// short-circuits to SwingDoor before the trigger path is reached, so the use
+// key had only ever been proven against doors.
+CCMD(rothdiff_usewall)
+{
+	if (argv.argc() < 2)
+	{
+		Printf("usage: rothdiff_usewall <sidedef> [sidedef ...]\n");
+		Printf("         rothdiff_usewall op <opcodeHex>\n");
+		Printf("  stands %g units off the wall, faces it and presses use.\n",
+			SHOOT_STANDOFF);
+		Printf("  `op 18` resolves every side carrying that opcode.\n");
+		return;
+	}
+
+	if (argv.argc() == 3 && stricmp(argv[1], "op") == 0)
+	{
+		PendingDump d;
+		d.x = (int)strtol(argv[2], nullptr, 16); d.y = 0; d.ang = 0;
+		d.w = USEWALL_OP_MARKER; d.h = 0;
+		d.screenshot = false;
+		d.settle = 0;
+		g_pending.Push(d);
+		Printf("rothdiff_usewall: queued every side with opcode 0x%02x\n",
+			(unsigned)d.x);
+		return;
+	}
+
+	for (int i = 1; i < argv.argc(); i++)
+	{
+		PendingDump d;
+		d.x = atoi(argv[i]); d.y = 0; d.ang = 0;
+		d.w = USEWALL_MARKER; d.h = 0;
+		d.screenshot = false;
+		d.settle = SHOOT_SETTLE_TICS;
+		g_pending.Push(d);
+	}
+	Printf("rothdiff_usewall: queued %d sidedef(s)\n", argv.argc() - 1);
 }
 
 // A picture, from the same camera spot as an identity buffer, for the things
