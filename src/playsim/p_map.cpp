@@ -59,6 +59,7 @@
 #include "p_spec.h"
 #include "p_terrain.h"
 #include "p_trace.h"
+#include "roth/roth_runtime.h"
 #include "r_sky.h"
 #include "r_utility.h"
 #include "shadowinlines.h"
@@ -6735,6 +6736,17 @@ void P_UseLines(player_t *player)
 			end = start + aimAngle.ToVector(useRange);
 			used = P_UseTraverse(player->mo, start, end, foundline);
 		}
+	}
+
+	// A Realms floor-click trigger (0x19), which no line-based path can reach:
+	// everything above is two-dimensional -- start and end are DVector2 and
+	// P_UseTraverse walks lines out of the blockmap -- so a floor is not
+	// something it can hit, and there is no pitch in it either. Inert when no
+	// Realms level is loaded. See roth::UseFlat for why this is a fallback
+	// rather than the first thing tried.
+	if (!used)
+	{
+		used = roth::UseFlat(player->mo, roth::TrigEvent::Use);
 	}
 
 	// old code:

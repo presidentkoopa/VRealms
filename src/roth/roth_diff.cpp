@@ -149,6 +149,17 @@ static const int USE_MARKER = -2;
 static const int SECTOR_MARKER = -3;
 static const int SECTOR_SETTLE_TICS = 4;
 
+// -4 means "stand in this sector, look at the FLOOR, and press use", with the
+// sector number in `x`.
+//
+// A floor-click trigger (0x19) needs the aim pointed DOWN, and nothing else in
+// this rig can do that: rothdiff_use is a yaw and a position, and the engine's
+// own use path has no pitch in it at all. -126 is the original's full-down view
+// pitch, a real pitch of atan(126/128) or about 44 degrees, which from eye
+// height reaches the floor well inside the 64-unit use range.
+static const int SECTOR_USE_MARKER = -4;
+static const int FLOOR_LOOK_PITCH = -126;
+
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
 void PlaceCamera(int px, int py, int pang, int pitch = 0);
 void DoSprites(int px, int py, int pang, const char *path);
@@ -233,8 +244,9 @@ void RothDiff_RunPending()
 	// as it was at the start of the tic, so shooting immediately captures the
 	// old position. Counted down here rather than slept on, so the game keeps
 	// running normally in between.
-	if (front.w == SECTOR_MARKER)   // stand in this sector, see rothdiff_sector
+	if (front.w == SECTOR_MARKER || front.w == SECTOR_USE_MARKER)
 	{
+		const bool pressUse = (front.w == SECTOR_USE_MARKER);
 		if (front.settle == SECTOR_SETTLE_TICS)
 		{
 			const int secnum = front.x;
@@ -255,14 +267,21 @@ void RothDiff_RunPending()
 			// in; a concave sector could put it outside the floor, which is
 			// visible as a sector number that does not match the one asked for.
 			sector_t *sec = &pm->Level->sectors[secnum];
-			PlaceCamera((int)sec->centerspot.X, (int)sec->centerspot.Y, 0);
-			Printf("rothdiff_sector: asked for %d, standing in %d\n", secnum,
-				pm->Sector != nullptr ? pm->Sector->Index() : -1);
+			PlaceCamera((int)sec->centerspot.X, (int)sec->centerspot.Y, 0,
+				pressUse ? FLOOR_LOOK_PITCH : 0);
+			Printf("rothdiff_sector: asked for %d, standing in %d%s\n", secnum,
+				pm->Sector != nullptr ? pm->Sector->Index() : -1,
+				pressUse ? ", looking down" : "");
 		}
 
 		// Wait, so the sector-enter dispatch in P_PlayerThink gets tics to run
 		// in before the queue moves on or the game quits.
 		if (--front.settle > 0) return;
+
+		// The use goes LAST, after the camera has settled: the view direction
+		// the trace reads is the one set above, and a use on the tic of the move
+		// would be aiming from the old pose.
+		if (pressUse) P_UseLines(&players[consoleplayer]);
 
 		g_pending.Delete(0);
 		if (g_pending.Size() > 0) return;
@@ -465,6 +484,33 @@ CCMD(rothdiff_sector)
 		g_pending.Push(d);
 	}
 	Printf("rothdiff_sector: queued %d sector(s)\n", argv.argc() - 1);
+}
+
+// Stand in a sector, look at its FLOOR, and press use -- the 0x19 test.
+//
+// Separate from rothdiff_sector because that one must NOT press use: it tests
+// the enter-sector trigger, and a use there would fire whatever 0x18 happened
+// to be on a nearby wall and muddy the log with triggers the test is not about.
+CCMD(rothdiff_usefloor)
+{
+	if (argv.argc() < 2)
+	{
+		Printf("usage: rothdiff_usefloor <sector> [sector ...]\n");
+		Printf("  stands in each, pitches down %d (about 44 degrees) and uses.\n",
+			FLOOR_LOOK_PITCH);
+		Printf("  See the load report's `0x19 sectors` line for which to pass.\n");
+		return;
+	}
+	for (int i = 1; i < argv.argc(); i++)
+	{
+		PendingDump d;
+		d.x = atoi(argv[i]); d.y = 0; d.ang = 0;
+		d.w = SECTOR_USE_MARKER; d.h = 0;
+		d.screenshot = false;
+		d.settle = SECTOR_SETTLE_TICS;
+		g_pending.Push(d);
+	}
+	Printf("rothdiff_usefloor: queued %d sector(s)\n", argv.argc() - 1);
 }
 
 // A picture, from the same camera spot as an identity buffer, for the things

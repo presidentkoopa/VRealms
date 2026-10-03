@@ -164,6 +164,23 @@ enum class TrigEvent : uint8_t
 // rather than letting a bound-but-unreachable trigger read as a working one.
 void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want);
 
+// Fire the floor-click triggers under the player's aim: 0x19 for a use, 0x31
+// for an examine. Returns true if a chain acted, so the caller can treat the
+// use as consumed.
+//
+// This exists because P_UseLines structurally cannot reach these: its path is
+// two-dimensional (start and end are DVector2, walking lines out of the
+// blockmap), so there is no flat in it to hit and no pitch to ask about. That
+// is why 12 of STUDY1's triggers had no caller, and why "wire FireSectorTriggers
+// to sector entry" looked like the only way to reach them -- it was the only way
+// through that path.
+//
+// Call it as a FALLBACK, after the line path has found nothing. The original
+// picks whatever is under the cursor and a floor there wins outright, but the
+// line path is verified for doors and wall faces and a probe running first
+// could steal a use from a door the player aimed slightly below.
+bool UseFlat(AActor *who, TrigEvent want);
+
 // Notice a player crossing into a new sector, and fire that sector's 0x13
 // triggers. Call once per tic per player; it compares against the sector seen
 // last time and does nothing when it has not changed.

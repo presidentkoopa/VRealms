@@ -46,6 +46,7 @@
 #include "d_player.h"
 #include <math.h>
 #include "playsim/po_man.h"
+#include "p_trace.h"       // Trace, for the floor-click probe in UseFlat
 #include "printf.h"
 #include "c_dispatch.h"
 
@@ -4172,6 +4173,97 @@ void NotifyPlayerSector(int playerNum, AActor *mo)
 	if (roth_trigger_debug)
 		Printf("roth_trigger: player %d entered sector %d\n", playerNum, now);
 	FireSectorTriggers(mo->Sector, mo, TrigEvent::SectorEnter);
+}
+
+//==========================================================================
+//
+// UseFlat -- the dispatch for 0x19 and 0x31, the FLOOR-CLICK triggers.
+//
+// GAME_core.md 5.2 rows 6 and 12: 0x19 is a left-click on a floor or
+// platform top, 0x31 a right-click on a floor, ceiling or platform. STUDY1
+// binds 12 of the former -- six of them on sector 221 alone -- and none of the
+// latter.
+//
+// WHY P_UseLines CANNOT DO THIS. Its whole path is two-dimensional: start and
+// end are DVector2 and P_UseTraverse walks lines out of the blockmap. There is
+// no floor in it to hit, and no pitch either, so "the player is looking down at
+// the floor" is not a question it can be asked. That is the structural reason
+// these 12 triggers had no caller and why wiring FireSectorTriggers to sector
+// entry looked like the only option -- it was the only option THROUGH THAT
+// PATH. A ray that can hit a flat is a different instrument.
+//
+// ORDER DIFFERS FROM THE ORIGINAL, DELIBERATELY. activate_targeted_object picks
+// whatever is under the cursor and classifies it, so a floor under the cursor
+// wins outright even with a wall further along the ray (GAME_core.md 4.5).
+// Here the line path runs first and this is the fallback, because the line path
+// is verified working for doors and wall faces and a probe that ran first could
+// steal a use from a door the player was aiming slightly below. The cost is an
+// under-fire: a floor trigger in front of a usable wall will not fire. Matching
+// the original properly means one pick that classifies face / floor / object /
+// door together, which is a bigger change and wants the object channels too.
+//
+//==========================================================================
+
+bool UseFlat(AActor *who, TrigEvent want)
+{
+	if (!g.active || who == nullptr || who->Sector == nullptr) return false;
+
+	// From the eye, along the view direction, as far as the use key reaches.
+	const double range = who->FloatVar(NAME_UseRange);
+	const DVector3 start = who->PosPlusZ(who->Height * 0.5);
+	const DAngle pitch = who->Angles.Pitch;
+	const DVector3 dir(
+		who->Angles.Yaw.Cos() * pitch.Cos(),
+		who->Angles.Yaw.Sin() * pitch.Cos(),
+		-pitch.Sin());
+
+	FTraceResults res;
+	if (!Trace(start, who->Sector, dir, range, ActorFlags::FromInt(0), 0,
+		who, res, TRACE_NoSky))
+	{
+		// SAY SO. A silent false here is indistinguishable from "the sector had
+		// no 0x19 bound", and that cost a wrong reading already: sector 409
+		// carries both an 0x13 and an 0x19, the 0x13 fired, the 0x19 did not,
+		// and with nothing printed there was no way to tell whether the trace
+		// failed or the binding was missing.
+		if (roth_trigger_debug)
+			Printf("roth_trigger: flat probe -- Trace() found nothing within"
+				" %.0f units\n", range);
+		return false;
+	}
+	if (res.HitType != TRACE_HitFloor && res.HitType != TRACE_HitCeiling)
+	{
+		if (roth_trigger_debug)
+			Printf("roth_trigger: use ray hit no flat (type %d)\n", (int)res.HitType);
+		return false;
+	}
+	if (res.Sector == nullptr) return false;
+
+	// Stage "what the player just used" as the SECTOR, because a key of 0 in the
+	// chain resolves to it the same way a face does on a wall.
+	g.activeSector = res.Sector->sectornum;
+
+	auto it = g.bySector.find(res.Sector->sectornum);
+	if (it == g.bySector.end())
+	{
+		if (roth_trigger_debug)
+			Printf("roth_trigger: flat in sector %d -- NO chain bound\n",
+				res.Sector->sectornum);
+		return false;
+	}
+
+	bool any = false;
+	for (const Binding &b : it->second)
+	{
+		if (b.event != want) continue;
+		if (!FacingAllows(b.fireFlags, who)) continue;
+		if (roth_trigger_debug)
+			Printf("roth_trigger: %s sector %d 0x%02x %s -> firing\n",
+				res.HitType == TRACE_HitFloor ? "floor" : "ceiling",
+				res.Sector->sectornum, (unsigned)b.opcode, TrigEventName(b.event));
+		any |= Fire(b.chain);
+	}
+	return any;
 }
 
 void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
