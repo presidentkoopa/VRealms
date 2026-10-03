@@ -158,6 +158,8 @@ int main(int argc, char **argv)
 		return EmitCameras(argv[3], argc > 4 ? atoi(argv[4]) : 220);
 
 	long long leaves = 0;
+	// The vertical tallies -- see the comment at the measurement site.
+	std::map<int,int> vHeight, vOverride;
 	long long longPair13 = 0, longPair02 = 0, longPairOther = 0, squarish = 0;
 	long long skinnedSideHasArt[4] = {0, 0, 0, 0};
 	long long sideBlankInFile[4] = {0, 0, 0, 0};
@@ -197,6 +199,23 @@ int main(int argc, char **argv)
 			const int f0 = rs.firstFaceIndex;
 			const int hingeRel = rs.hingeFace - f0;
 			const double height = double(rs.ceilingHeight) - double(rs.floorHeight);
+
+			// THE VERTICAL, which this tool has never measured and the loader
+			// has never derived. rothmap.cpp builds a leaf spanning the doorway
+			// sector's whole floor-to-ceiling, so a leaf drives up through the
+			// masonry above the opening (owner-reported 2026-10-03). Nothing
+			// here, and nothing in HANDOFF_REMAROTH 12, says where a door's real
+			// height comes from -- which is why it went unnoticed: every
+			// measurement this tool makes is in PLAN.
+			//
+			// TEXTURE_MAP_OVERRIDE is the candidate. roth_raw.h calls it an
+			// override of "the position and SIZE of the MID_TEXTURE on
+			// double-sided faces in this sector that carry TRANSPARENT", and a
+			// door's picture IS that transparent mid piece -- the one the
+			// loader drops in favour of the leaf. Sign picks the anchor, 0
+			// means fit-to-size. If these are all 0 the candidate is dead.
+			vHeight[(int)height]++;
+			vOverride[(int)rs.textureMapOverride]++;
 
 			double L[4];
 			uint16_t T[4];
@@ -273,6 +292,21 @@ int main(int argc, char **argv)
 	printf("leaves the loader builds            %lld   (across %zu maps)\n",
 	       leaves, perMapLeaves.size());
 	if (leaves == 0) { printf("nothing to measure\n"); return 1; }
+
+	// THE VERTICAL. Every other measurement in this tool is in PLAN, which is
+	// how a wrong door HEIGHT survived unnoticed: the loader gives a leaf the
+	// doorway sector's whole floor-to-ceiling span, so it drives up through the
+	// masonry above the opening. See the measurement site for why
+	// TEXTURE_MAP_OVERRIDE is the candidate for the real height.
+	printf("\nthe vertical -- never measured before 2026-10-03\n");
+	printf("  door sector height (ceiling - floor), which is what a leaf"
+	       " currently gets:\n");
+	for (auto &kv : vHeight)
+		printf("    height %-6d x%d\n", kv.first, kv.second);
+	printf("  TEXTURE_MAP_OVERRIDE (+0x0c), the candidate for the real height"
+	       " (0 == fit-to-size):\n");
+	for (auto &kv : vOverride)
+		printf("    override %-6d x%d\n", kv.first, kv.second);
 
 	printf("\nedge length by j (cyclic from the hinge)\n");
 	for (int j = 0; j < 4; j++)

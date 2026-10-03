@@ -1619,6 +1619,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	std::map<FString, int> leafTexNames;
 	int leafSidesOnColourKey = 0;
 	std::map<int, int> leafLightHist;   // doorway sector lightlevel -> how many leaves
+	std::map<int, int> leafOverrideHist;// door sector TEXTURE_MAP_OVERRIDE (+0x0c)
+	std::map<int, int> leafSpanHist;    // the full span a leaf is currently given
 	int leafCoplanarRisk = 0;
 	for (const auto &rs : rm.sectors)
 		if (rs.IsDoorCapable() && !leafBuildable(rs)) doorCapableNotBuilt++;
@@ -1722,6 +1724,24 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// is exactly the kind of sector that may carry no light of its own.
 			// Tallied rather than assumed.
 			leafLightHist[(int)door->lightlevel]++;
+			// THE LEAF'S HEIGHT IS NOT DERIVED FROM ANYTHING -- it is the
+			// doorway sector's whole floor-to-ceiling span, which is why a leaf
+			// drives through the masonry above the opening (owner-reported,
+			// 2026-10-03). Nothing in the handoff's door work settles where a
+			// door's real height comes from.
+			//
+			// The candidate is TEXTURE_MAP_OVERRIDE, the door sector's +0x0c,
+			// which the Sector comment describes as overriding "the position
+			// and SIZE of the MID_TEXTURE on double-sided faces in this sector
+			// that carry TRANSPARENT" -- and the door's picture IS exactly that
+			// transparent mid piece, the one dropped above in favour of this
+			// leaf. The same comment ends "Still unused by the loader."
+			//
+			// Tallied rather than assumed: if these are 0 across the board the
+			// candidate is dead and the height is elsewhere.
+			leafOverrideHist[(int)rs.textureMapOverride]++;
+			leafSpanHist[(int)(door->GetPlaneTexZ(sector_t::ceiling)
+				- door->GetPlaneTexZ(sector_t::floor))]++;
 			vs->Colormap.Desaturation = door->Colormap.Desaturation;
 			roth::RegisterLightFollower((int)i, (int)vSector);
 			// The doorway's own heights, so the leaf is exactly as tall as the
@@ -2064,6 +2084,14 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  light each leaf inherits from its DOORWAY sector:");
 		for (auto &kv : leafLightHist)
 			log.Line("    lightlevel %-4d x%d", kv.first, kv.second);
+		log.Line("  leaf vertical span CURRENTLY used (the doorway sector's whole"
+			" height -- this is what drives a leaf through the masonry above):");
+		for (auto &kv : leafSpanHist)
+			log.Line("    span %-5d x%d", kv.first, kv.second);
+		log.Line("  door sector TEXTURE_MAP_OVERRIDE (+0x0c), the candidate for"
+			" the real height -- 0 means fit-to-size, sign is the anchor:");
+		for (auto &kv : leafOverrideHist)
+			log.Line("    override %-5d x%d", kv.first, kv.second);
 		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",
 			leafCoplanarRisk);
 		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",

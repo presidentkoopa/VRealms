@@ -4025,11 +4025,19 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		log->Line("  totals: %d implemented, %d verified no-ops, %d not implemented",
 			done, nop, todo);
 		log->Count("logic: instruction records whose opcode is not implemented", todo);
-		log->Line("  the not-implemented set is almost entirely ACTIVE-EFFECT REGISTRARS");
-		log->Line("  (light, texture, height, sector move): they need the effect pool and its");
-		log->Line("  per-frame tick, not a handler each. See the roth_runtime.h header.");
-		log->Line("  0x2b dialogue needs DBASE100; the item and object opcodes need the");
-		log->Line("  inventory and object-state systems. None of it is approximated.");
+		// CORRECTED 2026-10-03. This block used to say the gap was "almost
+		// entirely ACTIVE-EFFECT REGISTRARS ... they need the effect pool and
+		// its per-frame tick". That stopped being true when the pool was built,
+		// and the line stayed -- it sent a reader at work already finished.
+		log->Line("  THE EFFECT POOL EXISTS: 14 of its 15 ticks are done");
+		log->Line("  (ROTH_COMMANDS.md, 'The active-effect pool, and the 15 ticks').");
+		log->Line("  Only 0x09 is outstanding there, and it needs an ENGINE capability --");
+		log->Line("  it slides a sector by moving its vertices, and GZDoom's BSP is");
+		log->Line("  static. 32 records game-wide.");
+		log->Line("  What is left above is GAME LOGIC, not effects: the conditional");
+		log->Line("  cluster 0x27/0x29/0x2a, dialogue 0x2b and the item opcodes (no");
+		log->Line("  DBASE100 reader exists), object spawn 0x16, SFX nodes 0x10.");
+		log->Line("  None of it is approximated.");
 	}
 }
 
