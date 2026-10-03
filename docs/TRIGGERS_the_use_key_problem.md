@@ -42,7 +42,11 @@ chain-firing code directly and never goes near the engine's input or dispatch.
 ### 2.1 The engine never offered us the line
 
 Realms' level logic is a list of TRIGGER records, each bound to geometry and
-waiting for an event. STUDY1 binds 31 face-keyed and 12 sector-keyed triggers,
+waiting for an event. STUDY1 binds 31 face-keyed and 12 sector-keyed triggers
+(**the second figure is wrong: it is 35.** The 23 `0x13` records were being
+dropped by the binding loop without appearing in any counter, so every count of
+"sector-keyed" in this page and in the handoffs undercounts by them.
+`docs/REMAROTH_MEASURED.md` §11),
 and the interpreter executes 62.7% of the opcodes the retail maps use.
 
 The port hooks this into GZDoom at the top of `P_ActivateLine`, with a comment:
@@ -79,6 +83,7 @@ any line it owns, so `P_TestActivateLine` never reads it.
 declared in `roth_runtime.h`. **It has zero callers anywhere in the tree.**
 
 Nothing in the playsim calls it, so all 12 sector-keyed triggers in STUDY1 have
+<!-- 12 is an undercount; it is 35, see the note in section 2 above. -->
 never fired, in any build, ever. The handler was written and the dispatch was
 never wired.
 
@@ -353,8 +358,8 @@ it got wrong is the useful part of this page.
 | | |
 |---|---|
 | §2.1 engine never offered the line | **fixed**, 74 lines marked, verified present at play time |
-| §2.2 `FireSectorTriggers` has no caller | **true, and correct as it stands.** Not a defect. What is missing is a floor-click dispatch; do NOT wire sector entry |
-| §2.3 trigger classification | **narrowed.** Three real errors: `0x13` unbound, `0x1a` on use, `0x32` conflated with `0x18`. The key-space rows were not a disagreement. Cross and push removed from trigger lines; `activationType` now reaches the hook |
+| §2.2 `FireSectorTriggers` has no caller | **resolved, and not the way this page said.** It is uncalled deliberately. The missing piece was a floor-click dispatch, and `P_UseLines` structurally could not be it: that path is 2D, so it has no flat to hit and no pitch to aim with. `roth::UseFlat` traces instead. `0x19` now fires in 6 sectors, 11 of 12 records |
+| §2.3 trigger classification | **done.** Every trigger carries its event. `0x13` bound (23 records, firing), `0x1a` moved to impact, `0x32` split from `0x18` and left honestly unreachable. The key-space rows were never a disagreement. `docs/REMAROTH_MEASURED.md` §11 |
 | §2.4 the door leaf ate the use ray | **fixed.** This was the bug |
 | A door opening by the use key | **works.** Six of six in STUDY1, `SWUNG` at each |
 | A door CLOSING on the second use | **not done** — needs the door's state word |

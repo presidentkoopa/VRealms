@@ -997,6 +997,14 @@ circulating on those three as unsafe.
 > **Still open:** this OPENS. `toggle_door_open_state` toggles, so the second
 > click should close — that is the "closing, blocking, the second use" item in
 > the list below, now with a known caller waiting for it.
+>
+> **And the trigger layer around it now runs too**, which this section predates:
+> every trigger carries its own event, `0x13` enter-sector is bound and firing
+> (23 records in STUDY1, which had been bound to nothing at all), and `0x19`
+> floor clicks fire through a ray that can hit a flat. One `0x13` chain warps the
+> map to STUDY3. The per-opcode table, the ROTH.C citations for the facing mask
+> at a record's `+0x06`, and the list of what is deliberately not built are in
+> `docs/REMAROTH_MEASURED.md` §11. Read §12 of that file before any run.
 
 Re-derived by three independent readings, each attacked by its own skeptic.
 **All six agree on the corner ordering**, which is the detail that sank the

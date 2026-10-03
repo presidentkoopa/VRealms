@@ -440,3 +440,158 @@ only.
   path too, with the PNG already written — which is why no earlier lane noticed
   it. Not diagnosed. It does not affect a capture or a measurement, but it means
   **an exit code cannot be used to tell whether a run succeeded.**
+
+---
+
+## 11. The trigger layer, per opcode — measured 2026-10-02 night
+
+`GAME_core.md` §5.2 gives one event per trigger opcode and states that it
+"corrects R/ROTH_COMMANDS.md and R/src/roth/roth_runtime.cpp:54-55". That
+correction is applied. The counts below are STUDY1, from the load report's new
+per-opcode table.
+
+| opcode | records | event (§5.2) | dispatch | fires? |
+|---|---|---|---|---|
+| `0x18` | 26 | left-click wall face | the use key, via `P_ActivateLine` | **yes** |
+| `0x13` | **23** | enter/leave sector | `NotifyPlayerSector`, per tic from `P_PlayerThink` | **yes** |
+| `0x19` | 12 | left-click floor / platform top | `roth::UseFlat`, a ray that can hit a flat | **yes, 11 of 12** |
+| `0x1a` | 4 | attack or projectile hits a face | `SPAC_Impact` | wired, untested |
+| `0x32` | 1 | right-click (examine) a face | none — no examine input exists | no |
+| `0x31` | **0** | right-click floor/ceiling | `UseFlat`, but no examine input | n/a in this map |
+
+**"12 sector-keyed" was really 35.** `0x13` matched neither classifier, so all 23
+fell through the binding loop in silence — no counter, no warning, nothing in
+the report. It is the second-largest trigger category in the map and none of
+them had ever fired in any build.
+
+**Confirmed fired:** `0x13` in sectors 26, 42, 51, 108, 174, 193, 409. `0x19` in
+221 (all six of its records), 320, 322, 413, 414, 415.
+
+**Entering sector 174 warps the map to STUDY3** (349 sectors, 1135 lines, 60
+objects). Its `0x13` chain carries an `0x3b`, which was implemented and had
+simply never been reachable. First Realms scripted map transition this port has
+executed from play. Whether the original warps from that spot on that approach
+is NOT established — see the facing mask below.
+
+### The facing mask at a record's +0x06 — read out of ROTH.C
+
+`fire_sector_trigger`, `E/raw_commands.c:2876-2878`:
+
+```c
+t   = (g_player_angle - 0x40) & 0x1ff
+bit = 1 << ((t >> 7) & 7)
+if (!(f6 & bit)) { ...fire... }
+```
+
+The player's **facing**, not the direction of travel. 512 units to the turn; the
+`- 0x40` rotates the boundaries 45° so the four 128-unit quadrants are centred
+on the cardinals; and **a SET bit FORBIDS that quadrant**. Most records carry an
+all-clear mask, which is why ignoring it looked harmless.
+
+Implemented for the sector path. **Measured only in the negative:** records with
+masks `0x00` (sector 409) and `0x10` (26, 42) all still fire, so the gate is not
+inverted and is not silently blocking the 23. Nothing has yet been *refused* by
+it — no record in the sample has any of bits 0-3 set — so the blocking half is
+unproven.
+
+The face path gates through `dispatch_entry_command_trigger` instead, which has
+**not** been read. Nothing is claimed about it.
+
+### What ROTH.C says and the port does not do
+
+Recorded so none of it is re-derived.
+
+- **`+0x06 & 0x40` is the "fire on leave too" flag.** `twe_link_state:3205-3213`
+  refires the latched record when the player leaves its sector, and the latch is
+  set only for a record with that bit (`fire_sector_trigger:2893`). So
+  enter-vs-leave was never ambiguous, only unread. Not built.
+- **The sector's `+0x17` picks one of three variants** (`twe_link_state:3220-3232`):
+  `0x80` alone is plain, which is what is implemented; `0x40` alone adds a Z
+  threshold against `sector[+2]` — the water/lava variant, where the player is
+  inside the link only while **below** the surface, so firing on entry is an
+  **over-fire**; `0xc0` follows the linked sector at `+0x18` with a Z band.
+  Carrying `+0x17` through is a loader change.
+- **Two gates the original applies first** (`fire_sector_trigger:2869-2871`): the
+  modifier byte `+0x02` blocks on mask `0x29` (armed `0x01`, spent `0x08`,
+  registered `0x20`) where the port tests only the spent bit, at bind time; and
+  `+0x07 & 4` requires the player to be **moving**, against
+  `g_move_speed_accum`, which has no equivalent here.
+- **Record flag bit0 selects the platform top** instead of the sector floor
+  (`GAME_core.md` §4.5). Not implemented: a mid-platform top reports its own
+  sector, so a probe landing on one reads as a sector with no binding.
+
+### Why these had no caller, which is not "nobody wired it"
+
+`P_UseLines` is entirely two-dimensional — `start` and `end` are `DVector2` and
+`P_UseTraverse` walks lines out of the blockmap. There is no flat in that path to
+hit and no pitch in it to aim with, so a floor click is not a question it can be
+asked. That is the structural reason `0x19` had no dispatch, and why "wire a
+caller for `FireSectorTriggers`" kept looking like the only option: it was the
+only option *through that path*.
+
+`UseFlat` runs as a **fallback**, after the line path finds nothing. The original
+picks whatever is under the cursor, so a floor there wins outright even with a
+wall further along the ray. The port's order costs an under-fire — a floor
+trigger in front of a usable wall will not fire — and was chosen because the
+line path is verified for doors and faces and a probe running first could steal
+a use from a door the player aimed slightly below. Matching the original means
+one pick classifying face / floor / object / door together.
+
+### Open
+
+- **Sector 409's `0x19` does not fire** while its `0x13` does. The use ray
+  reports lines 1386 and 1387 (both `special 0`) and the probe returns without a
+  flat. A diagnostic for the `Trace()`-failed case is now in place and has not
+  been run.
+- `0x1a` on impact is wired and has never been fired by an actual shot.
+
+---
+
+## 12. Running a test without touching the owner's config
+
+**Always pass `-config tools/rothdiff/captures/capture.ini`.** Without it a run
+reads *and writes* the owner's `doomxr.ini`, which is the whole of §8/§3.5's
+archived-cvar leak — `vr_mode`, `roth_lighting`, `roth_pattern`, `vid_fixgamma`.
+
+`capture.ini` is **a copy of the owner's ini with `vr_mode` forced to 0**, and it
+is a copy on purpose. It is not committed (`tools/rothdiff/.gitignore` excludes
+`captures/*` except `*.cfg`, correctly — it holds the owner's own paths).
+Recreate it with:
+
+```
+cp "$USERPROFILE/Documents/My Games/DoomXR/doomxr.ini" \
+   tools/rothdiff/captures/capture.ini
+sed -i 's/^vr_mode=.*/vr_mode=0/' tools/rothdiff/captures/capture.ini
+```
+
+**Do not write a minimal one.** Two attempts cost the owner a disrupted session
+each: the first inherited `vr_mode=15` from their config and **took over the
+headset while they were wearing it**; the second defaulted to **fullscreen at
+3840×2160 on the OpenGL backend** and never loaded the map. The display settings
+in the owner's file are known to work. `vr_mode` is `CVAR_GLOBALCONFIG`, so
+checking it once early says nothing about later runs — the owner can change it
+between them, and did.
+
+### Other rig facts
+
+- **`+exec` runs before the deferred `map`.** A console command in a cfg that
+  inspects the level finds none — `roth_trigger_list` printed "no Realms level
+  loaded". Anything needing the built level belongs in the **load report**, which
+  is written during the load.
+- **A pose batch is authored for one map, and the level logic can change the
+  map.** The rig now abandons its queue and quits on a map change. Before that,
+  the sector-174 warp left a 22-sector probe running in STUDY3 against STUDY1's
+  numbers; it crashed several probes later and looked like the dispatch failing.
+- **`rothdiff_sector <n...>`** stands in each sector in turn; **`rothdiff_usefloor
+  <n...>`** does the same but pitches down 126 ROTH units (≈44°) and presses use.
+  Kept separate deliberately: the enter-sector test must not press use, or it
+  fires whatever `0x18` is on a nearby wall and muddies the log. A sector was not
+  addressable at all before these — the report says which sectors carry a
+  trigger, but nothing offline turns a sector number into a point inside it, and
+  `findspots` works by surface type.
+- **LNK1103 follows the `.cpp` you edited**, not header changes. It hit on five
+  of six builds in one session, each time naming the object just recompiled. The
+  remedy is deleting that `.obj` plus `doomxr.iobj` and building again; budget
+  the LTCG pass as a normal cost. `HANDOFF_REMAROTH.md` §9's "do not delete
+  `doomxr.iobj` unless LNK1103 has actually appeared" still holds — it does
+  appear, constantly.

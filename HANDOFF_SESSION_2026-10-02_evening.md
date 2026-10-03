@@ -54,9 +54,37 @@ add a binding for `0x13`, and separate use from examine. Then wire a caller for
 `FireSectorTriggers`. Do NOT patch outward from the symptom; the table is
 authoritative and names the lines.
 
+> **ALL OF THIS IS DONE, AND THE ONE SENTENCE ABOVE THAT WAS WRONG IS THE ONE
+> MOST LIKELY TO BE OBEYED.** Later the same night, 2026-10-02:
+>
+> **"Then wire a caller for `FireSectorTriggers`" would have introduced a bug.**
+> It is uncalled deliberately, and the comment on it in `roth_runtime.h` said so
+> with the trace. `0x19`/`0x31` are floor CLICKS -- which §49 of this very list
+> gets right -- so a caller on sector entry would fire them on walking through a
+> doorway. What was missing was a floor-click dispatch, and `P_UseLines` could
+> not be it: that path is two-dimensional, with no flat to hit and no pitch to
+> aim with. `roth::UseFlat` traces instead.
+>
+> **(2)'s premise is also an undercount.** "All 12 sector-keyed" is 35: the 23
+> `0x13` records were dropped by the binding loop without reaching any counter.
+>
+> **And none of the three was why a door would not open.** The door leaf itself
+> ate the use ray. See `docs/TRIGGERS_the_use_key_problem.md` §2.4.
+>
+> Done: every trigger carries its event, `0x13` is bound and firing (23 records),
+> `0x19` fires in 6 sectors, `0x1a` is off the use path, `0x32` is split and
+> honestly unreachable. The facing mask at `+0x06` is implemented from ROTH.C.
+> Numbers and the remaining gaps: `docs/REMAROTH_MEASURED.md` §11.
+
 Measured at the door poses, so the next lane need not redo it: 74 marked lines
 present, 2 within `USERANGE` of the player, nearest 40 units, and the use ray
 DOES reach a line — 1669, which carries no Realms chain. The ray works.
+
+> **Line 1669 is a door leaf, poly tag 1.** It carries no chain because it is
+> not a trigger line. Being one-sided and `ML_BLOCKING` with `special 0` it
+> stopped the ray dead, which is why the two marked lines at 40 units were never
+> reached. Every number here was right; "the ray works" was the wrong reading of
+> them.
 
 ### 2.2 Furniture angles — narrowed to one candidate, oracle already captured
 

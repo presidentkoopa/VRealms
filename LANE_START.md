@@ -16,9 +16,25 @@
 > `TRIGGERS_the_use_key_problem.md` §2.2 both say to wire a caller for
 > `FireSectorTriggers`. **Do not** -- it has no caller deliberately, and
 > `GAME_core.md` §5.2 agrees with the code comment that says so. §2.3's
-> classification table is also narrower than it reads. The live work is now
-> §5.2 proper: bind `0x13` (the real enter-sector trigger, bound to nothing),
-> move `0x1a` off the use path, and split `0x32` from `0x18`.
+> classification table is also narrower than it reads.
+>
+> **THE §5.2 CLASSIFICATION IS NOW DONE, AND THE TRIGGER LAYER RUNS.** Every
+> trigger carries its event; `0x13` is bound and firing; `0x19` fires through a
+> ray that can hit a flat; `0x1a` is off the use path. Entering STUDY1's sector
+> 174 **warps the map to STUDY3** -- the first Realms scripted map transition
+> this port has run from play. `docs/REMAROTH_MEASURED.md` §11 has the per-opcode
+> table, the ROTH.C citations for the facing mask, and the list of what is
+> deliberately not built.
+>
+> **`0x13` had been bound to NOTHING: 23 records in STUDY1, 35% of its
+> triggers.** It matched neither classifier and fell through the binding loop in
+> silence. "12 sector-keyed", in every handoff including this file's own §5, was
+> really 35. If a count in an older document looks authoritative, check whether
+> anything was counting the thing it claims to count.
+>
+> The live work now: the four items under §11's "Open" and "What ROTH.C says and
+> the port does not do" -- sector 409's `0x19`, the water-variant Z test, the
+> leave refire (`+0x06 & 0x40`), and the platform-top flag.
 >
 > Two things in this file are now actively wrong:
 > `doorgeom -cam` and `meshcheck -v` print angles in the PRE-FIX convention
@@ -26,11 +42,16 @@
 > `vid_fixgamma 0`, `vid_blackpoint 0`, `vid_whitepoint 0` -- without which
 > every picture comparison is wrong by a gamma of about 1.47.
 >
-> And two instrument traps worth knowing before your first run: a `logfile`
-> line in a capture cfg **does not work** and loses the run's output -- read
-> `doomxr-log.txt` -- and the engine exits `0xC0000409` on shutdown even on a
-> fully successful run, so **an exit code cannot tell you whether a run
-> worked.** `docs/REMAROTH_MEASURED.md` §10.
+> **BEFORE YOUR FIRST RUN, read `docs/REMAROTH_MEASURED.md` §12.** Always pass
+> `-config tools/rothdiff/captures/capture.ini`, which is a COPY of the owner's
+> ini with `vr_mode` forced to 0, so a run cannot read or write their settings.
+> Two attempts at writing a minimal one instead cost the owner a disrupted
+> session each -- one took over the headset while they were wearing it. Also:
+> a `logfile` line in a capture cfg **does not work** and loses the run's output
+> (read `doomxr-log.txt`); `+exec` runs BEFORE the deferred `map`, so a console
+> command in a cfg finds no level; and the engine exits `0xC0000409` on shutdown
+> even on a wholly successful run, so **an exit code cannot tell you whether a
+> run worked.** §10 and §12.
 
 **For a lane picking this up on 2026-10-02.** Most of this project is already
 worked out and written down. This page says which document holds what, which
@@ -79,9 +100,9 @@ trust the number.
 
 | Document | Trust it for | Do NOT trust it for |
 |---|---|---|
-| `docs/REMAROTH_MEASURED.md` §9, §10 | the door/use numbers, the two instrument traps. **Newest, and measured.** | — |
+| `docs/REMAROTH_MEASURED.md` §9, §10, §11, §12 | the door/use numbers, the per-opcode trigger table, the ROTH.C citations for the facing mask and the three sector variants, the rig and config rules. **Newest, and measured.** | — |
 | `docs/TRIGGERS_the_use_key_problem.md` | §2.1 and §2.4 (the real cause), §3.1, §3.3, §3.7 | **§2.2's "wire a caller for `FireSectorTriggers`"** — would introduce a bug; it is uncalled deliberately. **§2.3's table** — overstates the disagreement; the key-space rows are not one. **§4's original verdict** that §2.3 was "the likely reason" a door would not open. All corrected in place. |
-| `HANDOFF_SESSION_2026-10-02_evening.md` | §1 what is settled, §3 what cost the most (the `vid_fixgamma` and stale-angle traps), §4 the instruments | **§2.1's "THE EXACT NEXT STEP"** — it names `FireSectorTriggers` and the classification as what stands between the owner and a door. Neither was. The door bug was the leaf; see the triggers doc §2.4. |
+| `HANDOFF_SESSION_2026-10-02_evening.md` | §1 what is settled, §3 what cost the most (the `vid_fixgamma` and stale-angle traps), §4 the instruments | **§2.1's "THE EXACT NEXT STEP"** — all of it is now done, and its last instruction ("wire a caller for `FireSectorTriggers`") would have introduced a bug. Its "all 12 sector-keyed" is an undercount of 35. And none of its three reasons was why a door would not open. Corrected in place at that section. |
 | `HANDOFF_SESSION_2026-10-02.md` | doors §1, the mesh §2, the capture rules and build notes §3, owner rules §5 | **"The two engines AGREE on a pose"** — true only of pose A. Poses B and C look in opposite directions. `docs/REMAROTH_MEASURED.md` §1. |
 | `HANDOFF_REMAROTH.md` §10, §12, §13, §14 | the plan, doors, meshes, inventory. These are the current sections. | §12's closing "NONE OF THIS HAS BEEN SEEN": it has, see §10 item 3. |
 | `HANDOFF_REMAROTH.md` §3, §5, §7, §9 | what is done, the rules to cite, directional sprites, build and launch traps | — |
