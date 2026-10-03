@@ -1618,6 +1618,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// whatever that returns -- or be the thing that is not appearing.
 	std::map<FString, int> leafTexNames;
 	int leafSidesOnColourKey = 0;
+	std::map<int, int> leafLightHist;   // doorway sector lightlevel -> how many leaves
 	int leafCoplanarRisk = 0;
 	for (const auto &rs : rm.sectors)
 		if (rs.IsDoorCapable() && !leafBuildable(rs)) doorCapableNotBuilt++;
@@ -1710,6 +1711,17 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			vs->Colormap.LightColor = PalEntry(255, 255, 255);
 			vs->Colormap.FadeColor.SetRGB(Level->fadeto);
 			vs->lightlevel = door->lightlevel;
+			// WHAT LIGHT A LEAF ACTUALLY INHERITS.
+			//
+			// Door leaves render BLACK while the wall around them draws fine,
+			// and the art is not the cause -- every leaf side is given real
+			// named Realms door art. R_RothShade cannot be the cause either:
+			// its light-0 case returns 0.0, which is "unshaded, raw texels",
+			// i.e. BRIGHT. So a black leaf points at the light this line
+			// copies, and the doorway sector is a thin slot in a wall, which
+			// is exactly the kind of sector that may carry no light of its own.
+			// Tallied rather than assumed.
+			leafLightHist[(int)door->lightlevel]++;
 			vs->Colormap.Desaturation = door->Colormap.Desaturation;
 			roth::RegisterLightFollower((int)i, (int)vSector);
 			// The doorway's own heights, so the leaf is exactly as tall as the
@@ -2049,6 +2061,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  door leaf skins actually assigned, by name:");
 		for (auto &kv : leafTexNames)
 			log.Line("    %-24s x%d", kv.first.GetChars(), kv.second);
+		log.Line("  light each leaf inherits from its DOORWAY sector:");
+		for (auto &kv : leafLightHist)
+			log.Line("    lightlevel %-4d x%d", kv.first, kv.second);
 		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",
 			leafCoplanarRisk);
 		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",

@@ -827,9 +827,31 @@ void sector does not have, rather than from `lightlevel`. The packed word in
 `hw_drawinfo.cpp:1891` is **not** it — that is a global viewpoint uniform
 (`VPUniforms.mGlobVis`), the same for every surface in the frame.
 
-**Next step:** find what the Realms wall shader reads per surface, and what it
-gets for a sector with no Realms index. Do not "fix" it by raising the void
-sector's `lightlevel`; that is already set and is evidently not the input.
+**What has been eliminated, each by measurement, so none of it is re-chased:**
+
+| candidate | ruled out by |
+|---|---|
+| no art assigned | all 120 leaf sides carry real named art |
+| art on the colour key | new counter reads **0** |
+| the leaf's inherited light | **every leaf inherits lightlevel 160** — normal and bright, not 0 |
+| `R_RothShade` darkening it | its light-0 case `return 0.0` means *unshaded raw texels*, i.e. **bright**. It cannot produce black |
+| the polyobject failing to spawn | 30 built, 30 spawn + 30 anchor spots, **no spawn errors in the console** |
+| the leaf being absent | `rothdiff_use` at the 48-unit pose hits **line 1669, door leaf poly tag 1**, and swings it |
+
+So **the leaf is physically present and collidable, and the renderer draws it
+black** — with correct art and a normal light level.
+
+**Next step:** the polyobject wall render path specifically. Everything that
+draws correctly in a Realms map is ordinary geometry in a Realms sector; the
+leaf is the only polyobject, and its sidedefs are the only ones in a synthetic
+sector. Do not "fix" it by raising the void sector's `lightlevel` — measured at
+160 — and do not look at `R_RothShade`, which cannot output black.
+
+**A trap that wasted three captures:** `roth_lighting 0` and `roth_shade_debug`
+**fight each other**. The debug mode is packed into `uGlobVis` only inside
+`if (Level->RothLighting)` (`hw_drawinfo.cpp:1831`), so turning Realms lighting
+off disables the path the debug mode lives in, and the frames come back as
+plain Doom lighting with the debug mode silently inert. Capture with neither.
 
 Also worth knowing before anyone re-runs this: a capture at the 48-unit door
 pose is useless. The leaf fills the frame, so the picture is uniformly black
