@@ -6705,6 +6705,33 @@ void P_UseLines(player_t *player)
 {
 	bool foundline = false;
 	bool used = false;
+
+	// A Realms floor-click trigger (0x19), FIRST, because nothing below can
+	// reach one and because "under the aim" is what the original dispatches on.
+	//
+	// Everything below is two-dimensional -- start and end are DVector2 and
+	// P_UseTraverse walks lines out of the blockmap -- so a floor is not
+	// something it can hit and the player's pitch does not enter into it.
+	//
+	// THIS WAS A FALLBACK AFTER THE LINE PATH AND THAT WAS WRONG, in a way worth
+	// keeping: P_UseTraverse's blocked path ends in `return true` ("can't use
+	// through a wall", with the *usefail sound), so an OBSTRUCTED ray reports
+	// the use as consumed. Guarding the probe on `!used` therefore skipped it in
+	// exactly the case it was needed. Standing in sector 409 looking down at its
+	// floor, the 2D ray met a wall, the use was eaten, and the floor trigger
+	// under the crosshair never got a look.
+	//
+	// Running first also matches the original more closely, not less:
+	// activate_targeted_object picks whatever is under the cursor and
+	// classifies it, so a floor there wins outright. It does not steal uses from
+	// doors either -- at a shallow pitch the trace reaches a door's wall long
+	// before the floor, and roth::UseFlat only claims the use when the hit is
+	// actually a flat carrying a matching trigger.
+	if (roth::UseFlat(player->mo, roth::TrigEvent::Use))
+	{
+		return;
+	}
+
 	// If the player is transitioning a portal, use the group that is at its vertical center.
 	DVector2 start = player->mo->GetPortalTransition(player->mo->Height / 2).XY();
 	// [NS] Now queries the Player's UseRange.
@@ -6736,17 +6763,6 @@ void P_UseLines(player_t *player)
 			end = start + aimAngle.ToVector(useRange);
 			used = P_UseTraverse(player->mo, start, end, foundline);
 		}
-	}
-
-	// A Realms floor-click trigger (0x19), which no line-based path can reach:
-	// everything above is two-dimensional -- start and end are DVector2 and
-	// P_UseTraverse walks lines out of the blockmap -- so a floor is not
-	// something it can hit, and there is no pitch in it either. Inert when no
-	// Realms level is loaded. See roth::UseFlat for why this is a fallback
-	// rather than the first thing tried.
-	if (!used)
-	{
-		used = roth::UseFlat(player->mo, roth::TrigEvent::Use);
 	}
 
 	// old code:

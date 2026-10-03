@@ -175,10 +175,11 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want);
 // to sector entry" looked like the only way to reach them -- it was the only way
 // through that path.
 //
-// Call it as a FALLBACK, after the line path has found nothing. The original
-// picks whatever is under the cursor and a floor there wins outright, but the
-// line path is verified for doors and wall faces and a probe running first
-// could steal a use from a door the player aimed slightly below.
+// Call it BEFORE the line path, not after. P_UseTraverse returns true for "can't
+// use through a wall", so an obstructed ray reports the use as consumed and a
+// `!used` guard skips this in the very case it is needed. It claims the use only
+// when the ray really hits a flat carrying a trigger that wants it, so it does
+// not steal uses from doors.
 bool UseFlat(AActor *who, TrigEvent want);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13

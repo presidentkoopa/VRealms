@@ -454,7 +454,7 @@ per-opcode table.
 |---|---|---|---|---|
 | `0x18` | 26 | left-click wall face | the use key, via `P_ActivateLine` | **yes** |
 | `0x13` | **23** | enter/leave sector | `NotifyPlayerSector`, per tic from `P_PlayerThink` | **yes** |
-| `0x19` | 12 | left-click floor / platform top | `roth::UseFlat`, a ray that can hit a flat | **yes, 11 of 12** |
+| `0x19` | 12 | left-click floor / platform top | `roth::UseFlat`, a ray that can hit a flat | **yes, 12 of 12** |
 | `0x1a` | 4 | attack or projectile hits a face | `SPAC_Impact` | wired, untested |
 | `0x32` | 1 | right-click (examine) a face | none — no examine input exists | no |
 | `0x31` | **0** | right-click floor/ceiling | `UseFlat`, but no examine input | n/a in this map |
@@ -465,7 +465,11 @@ the report. It is the second-largest trigger category in the map and none of
 them had ever fired in any build.
 
 **Confirmed fired:** `0x13` in sectors 26, 42, 51, 108, 174, 193, 409. `0x19` in
-221 (all six of its records), 320, 322, 413, 414, 415.
+all 12 of its records — 221 (six), 320, 322, 409, 413, 414, 415.
+
+**Every `0x19` in STUDY1 carries flags `0x10`**, so bit 0 is clear on all of
+them and there is **no platform-top record in this map**. That path is
+implemented (§below) and untested.
 
 **Entering sector 174 warps the map to STUDY3** (349 sectors, 1135 lines, 60
 objects). Its `0x13` chain carries an `0x3b`, which was implemented and had
@@ -488,14 +492,64 @@ The player's **facing**, not the direction of travel. 512 units to the turn; the
 on the cardinals; and **a SET bit FORBIDS that quadrant**. Most records carry an
 all-clear mask, which is why ignoring it looked harmless.
 
-Implemented for the sector path. **Measured only in the negative:** records with
-masks `0x00` (sector 409) and `0x10` (26, 42) all still fire, so the gate is not
-inverted and is not silently blocking the 23. Nothing has yet been *refused* by
-it — no record in the sample has any of bits 0-3 set — so the blocking half is
-unproven.
+Implemented for the sector-enter path **and nowhere else**. **Measured only in
+the negative:** records with masks `0x00` and `0x10` all still fire, so the gate
+is not inverted and is not silently blocking the 23. Nothing has yet been
+*refused* by it — no record in the sample has any of bits 0-3 set — so the
+blocking half is unproven.
 
-The face path gates through `dispatch_entry_command_trigger` instead, which has
-**not** been read. Nothing is claimed about it.
+### `+0x06` is read three different ways, with two different polarities
+
+This is the trap. The three channels do not share a convention, and assuming
+they did put the sector-enter gate into the floor path, where it silently
+suppressed a real trigger.
+
+| channel | index from | sense | state |
+|---|---|---|---|
+| `0x13` enter sector | the **player angle**, `(angle − 0x40) >> 7`, four quadrants | a **set bit BLOCKS** | implemented |
+| `0x18`/`0x32` wall face | the **pick**, `dir_mask1[byte[pick+0x1a] & 3]` where `dir_mask1 = {1,4,2,1}` (`:3012`) | a **set bit ALLOWS** | **not implemented** |
+| `0x19`/`0x31` floor | **no direction mask at all** | bit 0 selects the **surface** | implemented |
+
+- The face index comes from the pick, not the player's angle, and index 3
+  repeats index 0 — so three directions, not four (`:3029`).
+- On a floor record, `(record[+6] & 1) ? (type == 8) : (type == 2)` chooses the
+  **mid-platform top** over the **sector floor** (`:3068`) — §4.5's "record flag
+  bit0 selects the platform-top". The port tells them apart by the trace's
+  `ffloor` being non-null.
+- The category-B (examine) twin uses a **third** table, `dir_mask2 = {1,2,4,8}`
+  (`:3100`). Not implemented.
+
+**Also unimplemented on both click channels: the authored bounding box.** A
+record whose `+0x0c` is non-zero additionally requires the player's x/z inside
+`[+0x0c..+0x0e] × [+0x10..+0x12]` (`:3034-3038`, `:3075-3079`). Most records
+leave it unset and fire from anywhere.
+
+### The probe runs BEFORE the line path, and must
+
+`P_UseTraverse`'s blocked path ends in `return true` — "can't use through a
+wall", with the `*usefail` sound — so an **obstructed ray reports the use as
+consumed**. Guarding the flat probe on `!used` skipped it in exactly the case it
+was needed: standing in sector 409 looking at its floor, the 2D ray met a wall,
+the use was eaten, and the floor trigger under the crosshair was never offered.
+Nothing in the log said so, because the guard was outside the function.
+
+Running first is also *closer* to the original: `activate_targeted_object` picks
+whatever is under the cursor and a floor there wins outright (§4.5). It does not
+steal uses from doors — at a shallow pitch the trace reaches a door's wall long
+before the floor.
+
+### A centre-screen ray is the narrowest case, not the real one
+
+Sector 409 looked like a dispatch failure and was a **probe aiming** problem.
+The rig looked down at the original's full-down view pitch, about 44°, and in a
+cramped room that is not steep enough: the ray met a **wall** at z −0.6 some 27
+units out before reaching the floor. At 80° all 12 fire.
+
+Worth keeping, because it bears on the eventual design: **the original does not
+aim with the view centre at all.** It picks under a free cursor over the
+rendered frame, so its reachable aim is far wider than a centre ray — and in VR
+it will be a hand pointer, wider still. Any judgement about whether a floor
+trigger is "reachable" that is made with a centre-screen ray is pessimistic.
 
 ### What ROTH.C says and the port does not do
 
@@ -539,11 +593,13 @@ one pick classifying face / floor / object / door together.
 
 ### Open
 
-- **Sector 409's `0x19` does not fire** while its `0x13` does. The use ray
-  reports lines 1386 and 1387 (both `special 0`) and the probe returns without a
-  flat. A diagnostic for the `Trace()`-failed case is now in place and has not
-  been run.
 - `0x1a` on impact is wired and has never been fired by an actual shot.
+- The **platform-top** path (`+0x06` bit 0 set) is implemented and untested —
+  STUDY1 has no such record.
+- The **face direction mask** and the **bounding box** on both click channels
+  are unimplemented, so a face trigger fires from any approach and from
+  anywhere. Both are quoted above with line numbers.
+- The facing mask's **blocking** half is unproven; nothing has been refused yet.
 
 ---
 

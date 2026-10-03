@@ -225,6 +225,35 @@ struct Binding
 // 0x10 gates the spent bit. See NotifyPlayerSector for what is and is not
 // implemented of those.
 //
+// THIS RULE IS FOR THE SECTOR-ENTER CHANNEL ONLY. DO NOT REUSE IT.
+//
+// +0x06 means different things per channel, and the three readings do not even
+// share a polarity. Assuming they did is what put this function in the floor
+// path, where it silently suppressed a real trigger.
+//
+//   0x13, enter sector      (fire_sector_trigger:2876)
+//       index computed from the PLAYER ANGLE, (angle - 0x40) >> 7, four
+//       quadrants; a SET bit BLOCKS. This function.
+//
+//   0x18/0x32, a wall face  (dispatch_entry_command_trigger:3029)
+//       `record[+6] & dir_mask1[byte[pick+0x1a] & 3]`, where
+//       dir_mask1[4] = { 0x01, 0x04, 0x02, 0x01 } (:3012). The index comes from
+//       the PICK, not from the player's angle, and a SET bit ALLOWS -- the
+//       opposite sense. Index 3 repeats index 0, so it is three directions, not
+//       four. NOT IMPLEMENTED.
+//
+//   0x19/0x31, a floor      (dispatch_entry_command_trigger:3068)
+//       NO direction mask at all. Bit 0 instead selects WHICH SURFACE:
+//       `(record[+6] & 1) ? (type == 8) : (type == 2)`, the mid-platform top
+//       versus the sector floor. Implemented in UseFlat.
+//       The category-B twin (:3100) uses a third table, dir_mask2 = { 1, 2, 4,
+//       8 }, with four distinct bits. NOT IMPLEMENTED.
+//
+// Also unimplemented on both click channels: the AUTHORED BOUNDING BOX. A
+// record whose +0x0c is non-zero additionally requires the player's x/z inside
+// [+0x0c..+0x0e] x [+0x10..+0x12] (:3034-3038, :3075-3079). Records with it
+// unset fire from anywhere, which is most of them.
+//
 //==========================================================================
 
 int DoomYawToRoth512(DAngle yaw)
@@ -4192,15 +4221,24 @@ void NotifyPlayerSector(int playerNum, AActor *mo)
 // entry looked like the only option -- it was the only option THROUGH THAT
 // PATH. A ray that can hit a flat is a different instrument.
 //
-// ORDER DIFFERS FROM THE ORIGINAL, DELIBERATELY. activate_targeted_object picks
-// whatever is under the cursor and classifies it, so a floor under the cursor
-// wins outright even with a wall further along the ray (GAME_core.md 4.5).
-// Here the line path runs first and this is the fallback, because the line path
-// is verified working for doors and wall faces and a probe that ran first could
-// steal a use from a door the player was aiming slightly below. The cost is an
-// under-fire: a floor trigger in front of a usable wall will not fire. Matching
-// the original properly means one pick that classifies face / floor / object /
-// door together, which is a bigger change and wants the object channels too.
+// THIS RUNS BEFORE THE LINE PATH, and it was a fallback after it until that
+// proved wrong. P_UseTraverse's blocked path ends in `return true` -- "can't
+// use through a wall", with the *usefail sound -- so an OBSTRUCTED ray reports
+// the use as consumed. Guarding this on `!used` skipped it in exactly the case
+// it was needed: standing in sector 409 looking down at its floor, the 2D ray
+// met a wall, the use was eaten, and the floor trigger under the crosshair was
+// never offered. Nothing in the log said so either, because the guard was
+// outside this function.
+//
+// Running first is also closer to the original, not further from it:
+// activate_targeted_object picks whatever is under the cursor and classifies
+// it, so a floor there wins outright (GAME_core.md 4.5). It does not steal a
+// use from a door, because at a shallow pitch the trace reaches the door's wall
+// long before the floor, and this claims the use only when the hit really is a
+// flat carrying a trigger that wants it.
+//
+// Still not the original's shape: that is ONE pick classifying face / floor /
+// object / door together, which wants the object channels too.
 //
 //==========================================================================
 
@@ -4231,13 +4269,32 @@ bool UseFlat(AActor *who, TrigEvent want)
 				" %.0f units\n", range);
 		return false;
 	}
+	// REPORT THE WHOLE RESULT, not just the rejection. Three of this function's
+	// four exits used to be silent or nearly so, and they are not
+	// distinguishable from outside: sector 409 carries both an 0x13 and an
+	// 0x19, the 0x13 fired and the 0x19 did not, and the log said nothing about
+	// which exit was taken.
+	if (roth_trigger_debug)
+	{
+		Printf("roth_trigger: flat probe -- hit type %d, sector %d, z %.1f,"
+			" from z %.1f pitch %.1f\n", (int)res.HitType,
+			res.Sector != nullptr ? res.Sector->sectornum : -1,
+			res.HitPos.Z, start.Z, pitch.Degrees());
+	}
+
 	if (res.HitType != TRACE_HitFloor && res.HitType != TRACE_HitCeiling)
 	{
 		if (roth_trigger_debug)
-			Printf("roth_trigger: use ray hit no flat (type %d)\n", (int)res.HitType);
+			Printf("roth_trigger: not a flat (TRACE_HitNone 0, HitFloor %d,"
+				" HitCeiling %d)\n", (int)TRACE_HitFloor, (int)TRACE_HitCeiling);
 		return false;
 	}
-	if (res.Sector == nullptr) return false;
+	if (res.Sector == nullptr)
+	{
+		if (roth_trigger_debug)
+			Printf("roth_trigger: flat probe hit a flat with NO sector\n");
+		return false;
+	}
 
 	// Stage "what the player just used" as the SECTOR, because a key of 0 in the
 	// chain resolves to it the same way a face does on a wall.
@@ -4252,15 +4309,53 @@ bool UseFlat(AActor *who, TrigEvent want)
 		return false;
 	}
 
+	// WHICH SURFACE THE RECORD WANTS. Not a direction mask -- this channel has
+	// none, and applying the sector-enter one here was wrong.
+	//
+	// dispatch_entry_command_trigger's type-2/8 branch (E/raw_commands.c:3068):
+	//
+	//     fire = (record[+6] & 1) ? (type == 8) : (type == 2)
+	//
+	// type 2 is the sector floor, type 8 the mid-platform top. So bit 0 of
+	// +0x06 SELECTS BETWEEN THEM -- GAME_core.md 4.5's "record flag bit0
+	// selects the platform-top instead of the sector floor" -- and the branch
+	// carries no dir_mask at all, unlike the type-3 face branch beside it.
+	//
+	// THIS CODE USED TO CALL FacingAllows HERE, which reads bits 0-3 as
+	// facing-BLOCK bits. On a floor record bit 0 means "platform top", so a
+	// platform record was being suppressed or not depending on which way the
+	// player happened to face. It was inert for every 0x19 in STUDY1 because
+	// they all carry mask 0x00, and the one place it was not inert is the one
+	// place a trigger went missing: the silent `continue` it caused is the
+	// unprinted exit that made sector 409's 0x19 look like it had no binding.
+	//
+	// A mid-platform here is a 3D floor, so the trace saying it hit one (ffloor
+	// non-null) is the type-8 case.
+	const bool hitPlatformTop = (res.ffloor != nullptr);
+
 	bool any = false;
 	for (const Binding &b : it->second)
 	{
 		if (b.event != want) continue;
-		if (!FacingAllows(b.fireFlags, who)) continue;
+
+		const bool wantsPlatformTop = (b.fireFlags & 1) != 0;
+		if (wantsPlatformTop != hitPlatformTop)
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: sector %d 0x%02x wants the %s, ray hit the"
+					" %s -- not firing\n", res.Sector->sectornum,
+					(unsigned)b.opcode,
+					wantsPlatformTop ? "platform top" : "sector floor",
+					hitPlatformTop ? "platform top" : "sector floor");
+			continue;
+		}
+
 		if (roth_trigger_debug)
-			Printf("roth_trigger: %s sector %d 0x%02x %s -> firing\n",
-				res.HitType == TRACE_HitFloor ? "floor" : "ceiling",
-				res.Sector->sectornum, (unsigned)b.opcode, TrigEventName(b.event));
+			Printf("roth_trigger: %s sector %d 0x%02x %s flags 0x%02x -> firing\n",
+				res.HitType == TRACE_HitFloor
+					? (hitPlatformTop ? "platform top" : "floor") : "ceiling",
+				res.Sector->sectornum, (unsigned)b.opcode, TrigEventName(b.event),
+				(unsigned)b.fireFlags);
 		any |= Fire(b.chain);
 	}
 	return any;

@@ -269,6 +269,24 @@ void RothDiff_RunPending()
 			sector_t *sec = &pm->Level->sectors[secnum];
 			PlaceCamera((int)sec->centerspot.X, (int)sec->centerspot.Y, 0,
 				pressUse ? FLOOR_LOOK_PITCH : 0);
+
+			// LOOK NEARLY STRAIGHT DOWN for the floor test, overriding the ROTH
+			// pitch just set.
+			//
+			// FLOOR_LOOK_PITCH is the original's full-down view pitch, which is
+			// only about 44 degrees, and that is not steep enough to clear
+			// nearby geometry: in sector 409 the ray met a WALL at z -0.6 about
+			// 27 units out before it ever reached the floor, which reads as a
+			// broken dispatch and is really a cramped room.
+			//
+			// Steeper than the game can look is correct HERE and nowhere else.
+			// This probe is not modelling the player's view, it is aiming a test
+			// ray at a specific sector's floor. The original does not aim with
+			// the view centre at all -- it picks under a free CURSOR over the
+			// rendered frame, so its reachable aim is far wider than a
+			// centre-screen ray, and in VR it will be a hand pointer, which is
+			// wider still. A centre ray is the narrowest case, not the real one.
+			if (pressUse) pm->Angles.Pitch = DAngle::fromDeg(80.);
 			Printf("rothdiff_sector: asked for %d, standing in %d%s\n", secnum,
 				pm->Sector != nullptr ? pm->Sector->Index() : -1,
 				pressUse ? ", looking down" : "");
