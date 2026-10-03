@@ -800,6 +800,42 @@ not ticking; the shots queue and never drain. `pair2.cfg` carries one and
 `LANE_START.md` §5 records it as working, so either it regressed or it never
 did. Capture at the window's own size instead.
 
+### Door leaves render BLACK — reproduced 2026-10-03, cause narrowed
+
+The owner reported "no textures on doors". Reproduced from a 200-unit pose at
+STUDY1's door01 (`doorgeom -cam STUDY1 200`): the surrounding wall draws its
+stonework and carved arch correctly, and **the doorway is a solid black
+rectangle**.
+
+**The loader is not at fault, and this is now measured rather than assumed.**
+The load report's new lines say every one of the 120 leaf sides got real,
+named Realms door art — `ROTH_DEMO_T00100` ×23, `T00177` ×24, `T00176` ×21 and
+so on — with `leaf side had no artwork 0` and `leaf side whose skin sits on the
+COLOUR KEY 0`. The texture is assigned, is real, and is not the key.
+
+So it is the render path. What makes a leaf unlike everything else that draws
+correctly:
+
+- it is a **polyobject**, the only one in a Realms map;
+- its sidedefs belong to a **synthetic void sector** with **no Realms
+  counterpart** — every other sector in the map is Realms sector *i*;
+- `rothmap.cpp` gives that sector `vs->lightlevel = door->lightlevel` and
+  registers a light follower, so its *GZDoom* light is right.
+
+That points at the Realms shader taking its per-surface light from something the
+void sector does not have, rather than from `lightlevel`. The packed word in
+`hw_drawinfo.cpp:1891` is **not** it — that is a global viewpoint uniform
+(`VPUniforms.mGlobVis`), the same for every surface in the frame.
+
+**Next step:** find what the Realms wall shader reads per surface, and what it
+gets for a sector with no Realms index. Do not "fix" it by raising the void
+sector's `lightlevel`; that is already set and is evidently not the input.
+
+Also worth knowing before anyone re-runs this: a capture at the 48-unit door
+pose is useless. The leaf fills the frame, so the picture is uniformly black
+and looks like a broken capture rather than a black door. 200 units shows the
+wall beside it, which is what makes the fault legible.
+
 ### A lit screenshot cannot answer "is there a texture here"
 
 Realms is dark enough that a 48-unit-away door photographs as near-black, and

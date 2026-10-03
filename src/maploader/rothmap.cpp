@@ -27,6 +27,7 @@
 #include "p_setup.h"
 #include "g_levellocals.h"
 #include "texturemanager.h"
+#include <map>   // the door-leaf skin tally in the load report
 #include "printf.h"
 #include "rendering/r_sky.h"
 #include "playsim/p_lnspec.h"    // Sector_Outside, for the outside-fog test
@@ -1602,6 +1603,21 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// can contribute up to four. Named for what it counts -- the old
 	// "leavesNoTexture" read as a leaf count and was never one.
 	int leavesBuilt = 0, leafSidesNoTexture = 0, doorCapableNotBuilt = 0;
+	// WHAT ART THE LEAVES ACTUALLY GOT, by name and count.
+	//
+	// The owner reports doors looking untextured while this loader reports
+	// `leaf side had no artwork 0` -- the two cannot both be describing the same
+	// thing, and a lit screenshot cannot separate them because Realms is dark
+	// enough that a door 48 units away photographs as near-black. The texture is
+	// known HERE, at the moment it is chosen, where no lighting can hide it.
+	//
+	// Counted on the colour key as well: the wall path skips a piece whose
+	// stored index is the key, because the original draws nothing there
+	// (IsSkySurface, :1118), and the leaf path has no such test. A leaf whose
+	// skin is on the key would therefore be handed to World() and painted with
+	// whatever that returns -- or be the thing that is not appearing.
+	std::map<FString, int> leafTexNames;
+	int leafSidesOnColourKey = 0;
 	int leafCoplanarRisk = 0;
 	for (const auto &rs : rm.sectors)
 		if (rs.IsDoorCapable() && !leafBuildable(rs)) doorCapableNotBuilt++;
@@ -1900,6 +1916,23 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				}
 
 				FTextureID tex = texTm ? worldTex(texTm->midTexture) : FNullTextureID();
+
+				// Record what was chosen, before anything can hide it.
+				if (texTm && haveArt && art.IsSkySurface(texTm->midTexture))
+					leafSidesOnColourKey++;
+				{
+					auto *gt = tex.isValid()
+						? TexMan.GetGameTexture(tex, true) : nullptr;
+					FString nm;
+					if (gt != nullptr && gt->GetName().GetChars() != nullptr
+						&& gt->GetName().GetChars()[0] != '\0')
+						nm = gt->GetName().GetChars();
+					else
+						nm.Format("(index %u, no name)",
+							texTm ? (unsigned)texTm->midTexture : 0u);
+					leafTexNames[nm]++;
+				}
+
 				if (!tex.isValid())
 				{
 					leafSidesNoTexture++;
@@ -2010,6 +2043,12 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			leavesBuilt, leafCount, doorCount);
 		log.Line("  polyobject tags   1 .. %d  (the doorway sector carries the same tag)", leavesBuilt);
 		log.Count("doors: leaf side had no artwork", leafSidesNoTexture);
+		log.Count("doors: leaf side whose skin sits on the COLOUR KEY"
+			" (the wall path skips these; the leaf path does not)",
+			leafSidesOnColourKey);
+		log.Line("  door leaf skins actually assigned, by name:");
+		for (auto &kv : leafTexNames)
+			log.Line("    %-24s x%d", kv.first.GetChars(), kv.second);
 		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",
 			leafCoplanarRisk);
 		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",
