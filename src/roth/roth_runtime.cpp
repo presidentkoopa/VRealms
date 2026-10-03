@@ -4083,6 +4083,56 @@ void RegisterDoor(int rothSector, int polyTag)
 // `map`, so a cfg that wanted to shoot an 0x1a would have to carry sidedef
 // numbers copied by hand from a previous run's log. This lets the rig ask at
 // drain time instead, when the level is up.
+//==========================================================================
+//
+// ReportPolyobjects -- where each door leaf actually ENDED UP after PO_Init.
+//
+// Door leaves render as pure black holes: not a dark surface, but the clear
+// colour, with the wall beside them drawing correctly. Art, colour key, sector
+// light, R_RothShade and polyobject spawn are all eliminated by measurement,
+// and the leaf is provably present -- the use ray hits it and swings it.
+//
+// That leaves placement. The hardware renderer SKIPS a subsector flagged
+// SSECF_POLYORG outright -- "never render polyobject origin subsectors because
+// their vertices no longer are where one may expect" (hw_bsp.cpp:1227) -- so a
+// polyobject still sitting in its own origin subsector is invisible while
+// remaining solid, which is exactly the symptom.
+//
+// Printed from the map loader, after PO_Init, because that is the only place
+// the polyobjects exist AND a console command cannot reach: +exec runs before
+// the deferred `map`.
+//
+//==========================================================================
+
+void ReportPolyobjects(FLevelLocals *level)
+{
+	if (!g.active || level == nullptr) return;
+
+	int inOrigin = 0, total = 0;
+	FString firstFew;
+	for (unsigned i = 0; i < level->Polyobjects.Size(); i++)
+	{
+		FPolyObj *po = &level->Polyobjects[i];
+		subsector_t *sub = po->CenterSubsector;
+		const bool org = (sub != nullptr) && (sub->flags & SSECF_POLYORG);
+		total++;
+		if (org) inOrigin++;
+		if (i < 6)
+		{
+			firstFew.AppendFormat("%stag %d -> sub %d sector %d%s", i ? ", " : "",
+				po->tag,
+				sub != nullptr ? (int)sub->Index() : -1,
+				(sub != nullptr && sub->sector != nullptr)
+					? (int)sub->sector->Index() : -1,
+				org ? " [POLYORG, NOT RENDERED]" : "");
+		}
+	}
+
+	Printf("roth: %d polyobject(s), %d sitting in a POLYORG subsector"
+		" (those are never rendered -- hw_bsp.cpp:1227)\n", total, inOrigin);
+	if (!firstFew.IsEmpty()) Printf("roth: %s\n", firstFew.GetChars());
+}
+
 std::vector<int> SidesWithOpcode(uint8_t opcode)
 {
 	std::vector<int> out;

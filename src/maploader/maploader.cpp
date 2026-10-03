@@ -3268,6 +3268,11 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 	// map. See roth::MarkTriggerLines.
 	roth::MarkTriggerLines(Level);
 
+	// Where the door leaves ended up, and whether the renderer will draw them.
+	// Here because this is after PO_Init and because a console command cannot
+	// reach it: `+exec` runs before the deferred `map`.
+	roth::ReportPolyobjects(Level);
+
 	if (!Level->IsReentering())
 		Level->FinalizePortals();	// finalize line portals after polyobjects have been initialized. This info is needed for properly flagging them.
 

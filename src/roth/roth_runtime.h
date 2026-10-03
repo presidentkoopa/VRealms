@@ -125,6 +125,11 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 // numbers copied by hand out of a previous run's log.
 std::vector<int> SidesWithOpcode(uint8_t opcode);
 
+// Report where each door leaf ended up after PO_Init, and whether it is sitting
+// in a subsector the renderer skips. Call it right after PO_Init; a console
+// command cannot do this job, because `+exec` runs before the deferred `map`.
+void ReportPolyobjects(FLevelLocals *level);
+
 // Register one line of a door leaf, by sidedef, against the polyobject tag of
 // the panel it belongs to.
 //
