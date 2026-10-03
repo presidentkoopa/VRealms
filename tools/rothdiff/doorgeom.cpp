@@ -159,7 +159,8 @@ int main(int argc, char **argv)
 
 	long long leaves = 0;
 	// The vertical tallies -- see the comment at the measurement site.
-	std::map<int,int> vHeight, vOverride;
+	std::map<int,int> vHeight, vOverride, vOpening;
+	long long vOpeningShorter = 0, vOpeningSame = 0;
 	long long longPair13 = 0, longPair02 = 0, longPairOther = 0, squarish = 0;
 	long long skinnedSideHasArt[4] = {0, 0, 0, 0};
 	long long sideBlankInFile[4] = {0, 0, 0, 0};
@@ -239,6 +240,35 @@ int main(int argc, char **argv)
 				if (T[j] != 0) skinnedSideHasArt[j]++; else sideBlankInFile[j]++;
 			}
 
+			// THE OPENING THE DOOR SITS IN, across its two broad faces.
+			//
+			// TEXTURE_MAP_OVERRIDE answers the height for about a quarter of
+			// leaves and is ZERO -- "fit-to-size" -- for 116 of 167. So the
+			// DEFAULT is geometric, and a fit-to-size transparent mid piece on a
+			// two-sided face is drawn in that face's OPENING: from the higher of
+			// the two floors to the lower of the two ceilings. j == 1 and j == 3
+			// are the broad faces, and each one's sister sector is the room the
+			// door shows into.
+			//
+			// If this comes out materially shorter than the door sector's own
+			// height, it is the missing default and the leaf should be built to
+			// it. If it comes out equal, the default is somewhere else again.
+			for (int j = 1; j <= 3; j += 2)
+			{
+				const roth::Face &f = m.faces[f0 + ((hingeRel + j) & 3)];
+				if (f.sister < 0 || f.sister >= (int)m.faces.size()) continue;
+				const int ns = m.faces[f.sister].sector;
+				if (ns < 0 || ns >= (int)m.sectors.size()) continue;
+				const roth::Sector &rn = m.sectors[ns];
+				const double openTop =
+					std::min(double(rs.ceilingHeight), double(rn.ceilingHeight));
+				const double openBot =
+					std::max(double(rs.floorHeight), double(rn.floorHeight));
+				vOpening[(int)(openTop - openBot)]++;
+				if ((openTop - openBot) < height - 0.5) vOpeningShorter++;
+				else vOpeningSame++;
+			}
+
 			if (T[1] == T[3]) skin13Same++; else skin13Differ++;
 			for (int j = 0; j <= 2; j += 2)
 			{
@@ -307,6 +337,14 @@ int main(int argc, char **argv)
 	       " (0 == fit-to-size):\n");
 	for (auto &kv : vOverride)
 		printf("    override %-6d x%d\n", kv.first, kv.second);
+	printf("  the OPENING across each broad face (higher floor to lower"
+	       " ceiling), where a\n  fit-to-size transparent mid piece is drawn:\n");
+	for (auto &kv : vOpening)
+		printf("    opening %-6d x%d\n", kv.first, kv.second);
+	printf("  broad faces whose opening is SHORTER than the door sector: %lld\n",
+	       vOpeningShorter);
+	printf("  broad faces whose opening EQUALS the door sector:          %lld\n",
+	       vOpeningSame);
 
 	printf("\nedge length by j (cyclic from the hinge)\n");
 	for (int j = 0; j < 4; j++)
