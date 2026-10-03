@@ -1744,10 +1744,43 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				- door->GetPlaneTexZ(sector_t::floor))]++;
 			vs->Colormap.Desaturation = door->Colormap.Desaturation;
 			roth::RegisterLightFollower((int)i, (int)vSector);
-			// The doorway's own heights, so the leaf is exactly as tall as the
-			// opening it fills.
-			const double lfZ = door->GetPlaneTexZ(sector_t::floor);
-			const double lcZ = door->GetPlaneTexZ(sector_t::ceiling);
+			// THE LEAF'S HEIGHT.
+			//
+			// This used to be the doorway sector's whole floor-to-ceiling span,
+			// with the comment "so the leaf is exactly as tall as the opening it
+			// fills". That is true and is the bug: a Realms door is SHORTER than
+			// its doorway sector, so a full-height slab drives up through the
+			// masonry above the opening (owner-reported 2026-10-03).
+			//
+			// TEXTURE_MAP_OVERRIDE (+0x0c) carries the real size where it is
+			// set: roth_raw.h describes it as overriding "the position and SIZE
+			// of the MID_TEXTURE on double-sided faces in this sector that carry
+			// TRANSPARENT" -- and a door's picture IS that transparent mid piece,
+			// the one dropped above in favour of this leaf. Sign is the anchor,
+			// negative to the floor. Measured over 167 leaves in 17 maps
+			// (doorgeom, "the vertical"): 43 carry one, values -100, -87, -75,
+			// -55, -50 and so on against door sectors 200-220 tall -- door
+			// shaped. 116 are 0, which the same comment calls fit-to-size, and
+			// the opening is NOT that default: 0 of 330 broad faces have an
+			// opening shorter than their door sector.
+			//
+			// So this applies the override where there is one and leaves the
+			// rest alone. It is deliberately the SMALLER half of the problem
+			// first, because it is the half that is measured -- and because it
+			// doubles as the experiment that settles whether a leaf's rendered
+			// height comes from these planes at all. Polyobject walls are drawn
+			// with front == back == the sector the leaf OCCUPIES
+			// (hw_bsp.cpp:707), which may mean these planes never reach the
+			// renderer. If the 43 overridden doors visibly shorten, they do.
+			const double doorFullTop = door->GetPlaneTexZ(sector_t::ceiling);
+			const double doorFullBot = door->GetPlaneTexZ(sector_t::floor);
+			const int ovr = (int)rs.textureMapOverride;
+			double lfZ = doorFullBot;
+			double lcZ = doorFullTop;
+			if (ovr < 0)       lcZ = doorFullBot - double(ovr);   // sized up from the floor
+			else if (ovr > 0)  lfZ = doorFullTop - double(ovr);   // sized down from the ceiling
+			if (lcZ > doorFullTop) lcZ = doorFullTop;
+			if (lfZ < doorFullBot) lfZ = doorFullBot;
 			vs->SetPlaneTexZ(sector_t::floor, lfZ);
 			vs->SetPlaneTexZ(sector_t::ceiling, lcZ);
 			vs->floorplane.set(0., 0., 1., -lfZ);

@@ -1,5 +1,18 @@
 # REMAROTH — start here
 
+> **A LANE RAN OVERNIGHT INTO 2026-10-03. Read
+> `HANDOFF_SESSION_2026-10-03.md` before anything else in this file.** The use
+> key opens doors, and all four reachable trigger channels are verified firing
+> — including 23 enter-sector triggers that had been bound to nothing at all.
+>
+> **Before your first run**, read its §3: two rig faults were corrupting results
+> all session (the window pauses when it loses focus, and a launch steals the
+> owner's keyboard), and `-config tools/rothdiff/captures/capture.ini` is not
+> optional.
+>
+> **The previous evening's handoff is wrong about the door**, and its "THE EXACT
+> NEXT STEP" would have introduced a bug. Corrected in place at that section.
+
 > **A SECOND LANE RAN ON 2026-10-02 (evening). Read
 > `HANDOFF_SESSION_2026-10-02_evening.md` before this file.** Most of Step 1 and
 > all of Step 2's sprites are done; the VR scale is fixed; the oracle now runs
