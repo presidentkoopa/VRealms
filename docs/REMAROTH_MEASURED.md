@@ -455,7 +455,7 @@ per-opcode table.
 | `0x18` | 26 | left-click wall face | the use key, via `P_ActivateLine` | **yes** |
 | `0x13` | **23** | enter/leave sector | `NotifyPlayerSector`, per tic from `P_PlayerThink` | **yes** |
 | `0x19` | 12 | left-click floor / platform top | `roth::UseFlat`, a ray that can hit a flat | **yes, 12 of 12** |
-| `0x1a` | 4 | attack or projectile hits a face | `SPAC_Impact` | wired, untested |
+| `0x1a` | 4 | attack or projectile hits a face | `SPAC_Impact`, from a hitscan | **yes, 16 of 16 landed shots** |
 | `0x32` | 1 | right-click (examine) a face | none — no examine input exists | no |
 | `0x31` | **0** | right-click floor/ceiling | `UseFlat`, but no examine input | n/a in this map |
 
@@ -651,9 +651,43 @@ line path is verified for doors and faces and a probe running first could steal
 a use from a door the player aimed slightly below. Matching the original means
 one pick classifying face / floor / object / door together.
 
+### A line fires only the side that was touched — fixed 2026-10-03
+
+`ActivateLine` used to fire the chains on **both** sidedefs and discard the
+`side` the engine passes; the loop ended in `(void)side`. A Realms two-sided
+wall is **two faces**, sisters, each paired to one sidedef, so one hitscan at
+side 91 fired both side 91 (face 85) *and* side 92 (face 1366) — and where both
+sisters resolve from the same record, **the chain ran twice for one shot**.
+
+The original has no such ambiguity: `dispatch_entry_command_trigger` resolves
+**one** texmap from the pick (`word[p1+8]`, `:3019`) and matches that face alone.
+
+Now one firing per shot, measured: 16 firings across 22 shots, **no shot firing
+twice**. The six that fired nothing are placement, not dispatch — see below.
+
+The door path is the regression control for this, because the loader could have
+paired a face to the opposite sidedef from the one Doom calls front. **6 of 6
+doors still swing.** `captures/impact_and_doors.cfg` runs both together, doors
+first, for exactly that reason.
+
+### `SPAC_Push` reaches the hook and correctly fires nothing
+
+Our lines no longer request `SPAC_Push`, but `CheckForPushSpecial`
+(`p_map.cpp:2327`) calls `P_ActivateLine` with it anyway, and the Realms hook
+sits at the **top** of `P_ActivateLine` — before `P_TestActivateLine` consults
+the activation bits. So the hook sees events the line never asked for. That is
+fine because it gates on the event itself; the log shows `event 0x8 -> NO chain
+bound`. Worth knowing: **the activation bits do not filter what reaches the
+hook**, only which dispatch sites bother to offer the line.
+
 ### Open
 
-- `0x1a` on impact is wired and has never been fired by an actual shot.
+- The **shoot rig misses in tight spots.** A 40-unit stand-off from a wall's
+  midpoint can land inside neighbouring geometry; the player is shoved before
+  the shot and the hitscan goes elsewhere. It showed only as a stray
+  `SPAC_Push` on an adjacent sidedef — 6 of 22 shots. The rig now warns when
+  the stand-off lands in a different sector than the side belongs to, so such a
+  shot says it proves nothing instead of reading as a dead trigger.
 - The **platform-top** path (`+0x06` bit 0 set) is implemented and untested —
   STUDY1 has no such record.
 - The **face direction mask** and the **bounding box** on both click channels

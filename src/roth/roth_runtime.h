@@ -29,6 +29,7 @@
 //
 
 #include <stdint.h>
+#include <vector>      // SidesWithOpcode
 
 #include "textureid.h"
 
@@ -111,6 +112,12 @@ void RegisterLightFollower(int rothSector, int engineSector);
 // shove, and GAME_core.md §5.2 gives exactly one of those per opcode. This used
 // to take the event and discard it, so every binding answered all four.
 bool ActivateLine(line_t *line, AActor *who, int side, int activationType);
+
+// Every sidedef carrying a trigger of one opcode, for aiming a test at one.
+// The load report prints the same list, but a capture script cannot read it:
+// `+exec` runs before the deferred `map`, so a cfg would have to carry sidedef
+// numbers copied by hand out of a previous run's log.
+std::vector<int> SidesWithOpcode(uint8_t opcode);
 
 // Register one line of a door leaf, by sidedef, against the polyobject tag of
 // the panel it belongs to.

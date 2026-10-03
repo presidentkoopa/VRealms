@@ -43,6 +43,7 @@
 #include "gametexture.h"
 #include "r_data/sprites.h"
 #include "p_local.h"   // P_UseLines, for rothdiff_use
+#include "roth_runtime.h"   // SidesWithOpcode, to aim a shot at a trigger
 
 #include <stdio.h>
 #include <stdint.h>
@@ -160,6 +161,29 @@ static const int SECTOR_SETTLE_TICS = 4;
 static const int SECTOR_USE_MARKER = -4;
 static const int FLOOR_LOOK_PITCH = -126;
 
+// -5 means "shoot this SIDEDEF", with the sidedef index in `x`.
+//
+// 0x1a is the attack-hits-a-wall trigger (GAME_core.md 5.2 row 7, which says of
+// it "the player's POINT sweep never fires it" -- it is the weapon channel and
+// not a bump). It has been wired to SPAC_Impact since the per-event split and
+// has never been seen to fire, because nothing in this rig could fire a weapon.
+//
+// A hitscan is the right instrument: SPAC_Impact is raised from inside the
+// trace machinery, gated on the opt-in TRACE_Impact flag (p_trace.cpp:472), and
+// P_LineAttack is the path that passes it. The flat probe in roth::UseFlat does
+// NOT -- it traces with TRACE_NoSky only -- so a use cannot raise an impact
+// trigger as a side effect, which was worth checking before trusting either.
+static const int SHOOT_MARKER = -5;
+static const double SHOOT_STANDOFF = 40.0;   // units out from the wall
+static const int SHOOT_SETTLE_TICS = 3;
+
+// -6 means "shoot every side carrying the trigger opcode in `x`", expanded into
+// SHOOT_MARKER entries at drain time. It has to be resolved then and not in the
+// console command, because +exec runs before the deferred `map` and a command
+// asking the runtime anything finds no level -- the same ordering that makes a
+// cfg unable to read the load report.
+static const int SHOOT_OP_MARKER = -6;
+
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
 void PlaceCamera(int px, int py, int pang, int pitch = 0);
 void DoSprites(int px, int py, int pang, const char *path);
@@ -244,6 +268,112 @@ void RothDiff_RunPending()
 	// as it was at the start of the tic, so shooting immediately captures the
 	// old position. Counted down here rather than slept on, so the game keeps
 	// running normally in between.
+	if (front.w == SHOOT_OP_MARKER)   // shoot every side carrying opcode `x`
+	{
+		const uint8_t op = (uint8_t)front.x;
+		g_pending.Delete(0);
+
+		// Resolved HERE and not in the command, because the command runs from
+		// +exec before the deferred `map` and would find no level.
+		const std::vector<int> sides = roth::SidesWithOpcode(op);
+		Printf("rothdiff_shoot: opcode 0x%02x is on %u side(s)\n",
+			(unsigned)op, (unsigned)sides.size());
+
+		// Pushed to the FRONT, in order, so they run before anything queued
+		// after this marker.
+		for (size_t i = 0; i < sides.size(); i++)
+		{
+			PendingDump d;
+			d.x = sides[i]; d.y = 0; d.ang = 0;
+			d.w = SHOOT_MARKER; d.h = 0;
+			d.screenshot = false;
+			d.settle = SHOOT_SETTLE_TICS;
+			g_pending.Insert(i, d);
+		}
+		if (g_pending.Size() > 0) return;
+		Printf("rothdiff: all captures done; quitting\n");
+		AddCommandString("quit");
+		return;
+	}
+
+	if (front.w == SHOOT_MARKER)   // shoot this sidedef, see rothdiff_shoot
+	{
+		AActor *pm = players[consoleplayer].mo;
+		if (front.settle == SHOOT_SETTLE_TICS)
+		{
+			const int sideIdx = front.x;
+			if (sideIdx < 0 || (size_t)sideIdx >= pm->Level->sides.Size()
+				|| pm->Level->sides[sideIdx].linedef == nullptr)
+			{
+				Printf("rothdiff_shoot: side %d is out of range or has no line\n",
+					sideIdx);
+				g_pending.Delete(0);
+				if (g_pending.Size() > 0) return;
+				Printf("rothdiff: all captures done; quitting\n");
+				AddCommandString("quit");
+				return;
+			}
+
+			// STAND OFF THE WALL ON THE SIDE THAT OWNS THIS SIDEDEF, facing it.
+			//
+			// A Doom line's FRONT side (sidedef[0]) lies to the RIGHT of v1->v2,
+			// so the outward normal there is (dy, -dx); the back side is the
+			// other way. Shooting from the wrong side would hit the far face of
+			// the wall, or nothing, and read as the trigger not firing.
+			line_t *ln = pm->Level->sides[sideIdx].linedef;
+			const DVector2 v1 = ln->v1->fPos(), v2 = ln->v2->fPos();
+			const DVector2 mid = (v1 + v2) * 0.5;
+			DVector2 d = v2 - v1;
+			const double len = d.Length();
+			if (len <= 0) { g_pending.Delete(0); return; }
+			d /= len;
+			DVector2 n(d.Y, -d.X);                       // right of v1->v2
+			if (ln->sidedef[1] == &pm->Level->sides[sideIdx]) n = -n;
+
+			const DVector2 from = mid + n * SHOOT_STANDOFF;
+			const DAngle face = (mid - from).Angle();
+			PlaceCamera((int)from.X, (int)from.Y, 0);
+			pm->Angles.Yaw = face;
+			pm->Angles.Pitch = nullAngle;
+			Printf("rothdiff_shoot: side %d (line %d), standing at (%d,%d)"
+				" facing %.1f\n", sideIdx, ln->Index(), (int)from.X, (int)from.Y,
+				face.Degrees());
+
+			// SAY WHEN THE STAND-OFF LANDED SOMEWHERE ELSE.
+			//
+			// 40 units out from a wall's midpoint is inside the neighbouring
+			// geometry in a tight spot -- a corner, a narrow nook -- and the
+			// player is then shoved before the shot, so the hitscan goes
+			// somewhere unintended and the trigger looks dead. It shows in the
+			// log only as a stray SPAC_Push (event 0x8) on an adjacent sidedef,
+			// which is not obviously a placement failure unless you already
+			// know to look for it. Six of 22 shots did this.
+			sector_t *want = pm->Level->sides[sideIdx].sector;
+			if (pm->Sector != want)
+			{
+				Printf("rothdiff_shoot: WARNING side %d belongs to sector %d but"
+					" the stand-off landed in %d -- this shot proves nothing\n",
+					sideIdx, want != nullptr ? want->Index() : -1,
+					pm->Sector != nullptr ? pm->Sector->Index() : -1);
+			}
+		}
+
+		// Let the move settle before firing, so the shot leaves from the pose
+		// just set rather than from wherever the player was.
+		if (--front.settle > 0) return;
+
+		// A hitscan with TRACE_Impact behind it. Damage 0 and no puff: the
+		// point is the line activation, not hurting anything.
+		P_LineAttack(pm, pm->Angles.Yaw, SHOOT_STANDOFF * 2.0, pm->Angles.Pitch,
+			0, NAME_None, NAME_BulletPuff);
+
+		g_pending.Delete(0);
+		if (g_pending.Size() > 0) return;
+		Printf("rothdiff: all captures done; quitting\n");
+		AddCommandString("quit");
+		return;
+	}
+
 	if (front.w == SECTOR_MARKER || front.w == SECTOR_USE_MARKER)
 	{
 		const bool pressUse = (front.w == SECTOR_USE_MARKER);
@@ -529,6 +659,51 @@ CCMD(rothdiff_usefloor)
 		g_pending.Push(d);
 	}
 	Printf("rothdiff_usefloor: queued %d sector(s)\n", argv.argc() - 1);
+}
+
+// Shoot a wall, by sidedef -- the 0x1a test.
+//
+// The load report's `0x1a sides` line says which sidedefs carry one, with the
+// line index beside each. Nothing else in this rig can fire a weapon, which is
+// why the impact channel has been wired and unobserved since it was split off
+// the use path.
+CCMD(rothdiff_shoot)
+{
+	if (argv.argc() < 2)
+	{
+		Printf("usage: rothdiff_shoot <sidedef> [sidedef ...]\n");
+		Printf("         rothdiff_shoot op <opcodeHex>\n");
+		Printf("  stands %g units off each wall on the side that owns the\n",
+			SHOOT_STANDOFF);
+		Printf("  sidedef, faces it and fires a hitscan. `op 1a` resolves every\n");
+		Printf("  side carrying that opcode once the level is up, so a script\n");
+		Printf("  need not carry sidedef numbers copied out of a previous log.\n");
+		return;
+	}
+
+	if (argv.argc() == 3 && stricmp(argv[1], "op") == 0)
+	{
+		PendingDump d;
+		d.x = (int)strtol(argv[2], nullptr, 16); d.y = 0; d.ang = 0;
+		d.w = SHOOT_OP_MARKER; d.h = 0;
+		d.screenshot = false;
+		d.settle = 0;
+		g_pending.Push(d);
+		Printf("rothdiff_shoot: queued every side with opcode 0x%02x\n",
+			(unsigned)d.x);
+		return;
+	}
+
+	for (int i = 1; i < argv.argc(); i++)
+	{
+		PendingDump d;
+		d.x = atoi(argv[i]); d.y = 0; d.ang = 0;
+		d.w = SHOOT_MARKER; d.h = 0;
+		d.screenshot = false;
+		d.settle = SHOOT_SETTLE_TICS;
+		g_pending.Push(d);
+	}
+	Printf("rothdiff_shoot: queued %d sidedef(s)\n", argv.argc() - 1);
 }
 
 // A picture, from the same camera spot as an identity buffer, for the things

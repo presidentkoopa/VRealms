@@ -3887,6 +3887,34 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 				(int)kv.second.size(), list.GetChars());
 		}
 
+		// WHERE THE FACE-KEYED TRIGGERS ARE, by sidedef and by the line that
+		// carries it. The sector listing above has had a counterpart missing:
+		// an 0x1a cannot be tested without knowing which wall to shoot, and
+		// there was no way to find one short of guessing a pose.
+		std::map<uint8_t, std::vector<int>> sidesByOp;
+		for (const auto &kv : g.bySide)
+			for (const Binding &b : kv.second)
+				sidesByOp[b.opcode].push_back(kv.first);
+
+		for (auto &kv : sidesByOp)
+		{
+			FString list;
+			for (size_t i = 0; i < kv.second.size(); i++)
+			{
+				const int sideIdx = kv.second[i];
+				int lineIdx = -1;
+				if (g.level != nullptr && sideIdx >= 0
+					&& (size_t)sideIdx < g.level->sides.Size()
+					&& g.level->sides[sideIdx].linedef != nullptr)
+				{
+					lineIdx = g.level->sides[sideIdx].linedef->Index();
+				}
+				list.AppendFormat("%s%d(line %d)", i ? " " : "", sideIdx, lineIdx);
+			}
+			log->Line("  0x%02x sides (%d): %s", (unsigned)kv.first,
+				(int)kv.second.size(), list.GetChars());
+		}
+
 		// WHICH RECORD FLAGS ACTUALLY OCCUR, so a rule read out of ROTH.C can
 		// be checked against the data instead of assumed to matter. +0x06 is
 		// the facing mask on an 0x13 and the surface selector on an 0x19; +0x07
@@ -3990,6 +4018,21 @@ void ResetProgressFlags()
 void RegisterDoor(int rothSector, int polyTag)
 {
 	g.doorTag[rothSector] = polyTag;
+}
+
+// Every sidedef carrying a trigger of one opcode. The load report prints this,
+// but a capture script cannot read the report: +exec runs before the deferred
+// `map`, so a cfg that wanted to shoot an 0x1a would have to carry sidedef
+// numbers copied by hand from a previous run's log. This lets the rig ask at
+// drain time instead, when the level is up.
+std::vector<int> SidesWithOpcode(uint8_t opcode)
+{
+	std::vector<int> out;
+	if (!g.active) return out;
+	for (const auto &kv : g.bySide)
+		for (const Binding &b : kv.second)
+			if (b.opcode == opcode) { out.push_back(kv.first); break; }
+	return out;
 }
 
 void RegisterDoorLeafSide(int sideIndex, int polyTag)
@@ -4113,53 +4156,63 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType)
 		return true;
 	}
 
-	// A Doom line carries no Realms face index, so the binding is by the SIDE's
-	// own index, which the loader assigns in face order.
+	// OWN THE LINE IF EITHER SIDE CARRIES A CHAIN, so Doom never falls through
+	// to executing ROTH_LINE_SPECIAL -- but FIRE ONLY THE SIDE THE ENGINE
+	// NAMED.
+	//
+	// This used to fire both sidedefs' chains and discard the `side` argument
+	// outright: the loop ended in `(void)side`. A Realms two-sided wall is TWO
+	// faces, sisters, and the loader pairs each to one sidedef, so shooting one
+	// face also fired the face on the other side of the wall -- and where both
+	// sisters resolve from the SAME record, the chain ran TWICE for one shot.
+	// The impact test made it plain: one hitscan at side 91 printed firing for
+	// both side 91 (face 85) and side 92 (face 1366).
+	//
+	// The original has no such ambiguity. dispatch_entry_command_trigger
+	// resolves ONE texmap from the pick (`word[p1+8]`, raw_commands.c:3019) and
+	// matches against that face alone.
 	for (int s = 0; s < 2; s++)
 	{
 		side_t *sd = line->sidedef[s];
 		if (sd == nullptr) continue;
-		const int idx = (int)(sd - &g.level->sides[0]);
-
-		// Stage "what the player just used" BEFORE firing, because a key of 0
-		// resolves to it (ROTH_COMMANDS.md). Set for every side looked at, so
-		// even a side with no trigger of its own leaves the right context behind
-		// for the chain the other side fires.
-		auto f = g.sideToFace.find(idx);
-		if (f != g.sideToFace.end()) g.activeFace = f->second;
-
-		auto it = g.bySide.find(idx);
-		if (it == g.bySide.end())
-		{
-			if (roth_trigger_debug)
-				Printf("roth_trigger: line side %d (face %d) event 0x%x -> NO chain bound\n",
-					idx, f != g.sideToFace.end() ? f->second : -1,
-					(unsigned)activationType);
-			continue;
-		}
-
-		// OWNED, whether or not a chain fires, and whether or not any chain
-		// wanted THIS event. A chain that is spent or disabled returns false,
-		// and returning false here would hand the line back to Doom, which
-		// would then try to execute ROTH_LINE_SPECIAL.
-		owned = true;
-
-		// ONLY THE TRIGGERS WAITING FOR THIS EVENT.
-		//
-		// A wall can carry an 0x18 (use) and an 0x1a (a shot hits it) at once,
-		// and they are different triggers with different chains. Before the
-		// event reached here, both fired on whichever arrived first.
-		for (const Binding &b : it->second)
-		{
-			if (b.event != want) continue;
-			if (roth_trigger_debug)
-				Printf("roth_trigger: line side %d (face %d) 0x%02x %s -> firing\n",
-					idx, f != g.sideToFace.end() ? f->second : -1,
-					(unsigned)b.opcode, TrigEventName(b.event));
-			any |= Fire(b.chain);
-		}
+		if (g.bySide.count((int)(sd - &g.level->sides[0]))) owned = true;
 	}
-	(void)who; (void)side; (void)any;
+
+	side_t *hit = line->sidedef[(side == 1 && line->sidedef[1] != nullptr) ? 1 : 0];
+	if (hit == nullptr) return owned;
+	const int idx = (int)(hit - &g.level->sides[0]);
+
+	// Stage "what the player just used" BEFORE firing, because a key of 0
+	// resolves to it (ROTH_COMMANDS.md).
+	auto f = g.sideToFace.find(idx);
+	if (f != g.sideToFace.end()) g.activeFace = f->second;
+
+	auto it = g.bySide.find(idx);
+	if (it == g.bySide.end())
+	{
+		if (roth_trigger_debug)
+			Printf("roth_trigger: line side %d (face %d) event 0x%x -> NO chain bound\n",
+				idx, f != g.sideToFace.end() ? f->second : -1,
+				(unsigned)activationType);
+		return owned;
+	}
+
+	// ONLY THE TRIGGERS WAITING FOR THIS EVENT.
+	//
+	// A wall can carry an 0x18 (use) and an 0x1a (a shot hits it) at once, and
+	// they are different triggers with different chains. Before the event
+	// reached here, both fired on whichever arrived first.
+	for (const Binding &b : it->second)
+	{
+		if (b.event != want) continue;
+		if (roth_trigger_debug)
+			Printf("roth_trigger: line side %d (face %d) 0x%02x %s -> firing\n",
+				idx, f != g.sideToFace.end() ? f->second : -1,
+				(unsigned)b.opcode, TrigEventName(b.event));
+		any |= Fire(b.chain);
+	}
+
+	(void)who; (void)any;
 	return owned;
 }
 
