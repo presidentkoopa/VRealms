@@ -305,6 +305,167 @@ the first deliberate VR divergence to be authorised rather than recorded.
 
 ---
 
+## 13. The line between 1:1 and free — the owner's framing, 2026-10-09
+
+Status: `decision`. Not an idea to weigh; the rule the rest of this file hangs off.
+
+Every entry here used to carry an unspoken worry: how far are we allowed to depart from 1996? The
+owner settled it. **What must be 1:1 is the LOGIC.** What is free is the **presentation and the
+interface**.
+
+| must match the original | free to diverge |
+|---|---|
+| which triggers fire, and when | how you reach for a thing |
+| item state, what a thing does when used | how it is lit |
+| dialogue branching, the story flags | whether it is a sprite or a voxel |
+| save state, combat rules | what a coat does when you open it |
+
+This cuts work both ways and it is worth saying plainly: a door being the wrong *height* is still a
+**bug** — wrong-looking is wrong. "Presentation is free" means free to be *better*, not free to be
+broken.
+
+And the companion rule, which is about respect as much as method: **ROTH.C is not to be made
+obsolete.** Chillex's lift is the desktop reference implementation; REMAROTH is the same logic with a
+VR front end. The two coexist. It is also the only way we can ever *prove* the logic matches —
+`HANDOFF_REMAROTH.md` §0 notes that editing it "costs it its authority as an oracle", and an oracle
+is exactly what it is.
+
+---
+
+## 14. The interface is already a pointer — the hand beam
+
+Status: `idea`, with the groundwork `verified`. Owner's call, 2026-10-09.
+
+**What Realms does.** It is a hybrid adventure/FPS driven by a cursor over the world. Left-click
+uses, right-click examines, and the engine classifies whatever is under the cursor as wall face,
+floor, mid-platform, object or door and routes each differently (`GAME_core.md` §4.5;
+`dispatch_entry_command_trigger`, `E/raw_commands.c:3008`).
+
+**Why that matters for VR.** Most 1996 adventure interfaces need reinventing for a headset. This one
+does not — it needs *connecting*. A controller beam with two buttons is the same interface described
+in 1996 terms. Primary fire is use, secondary is examine, and that mapping is the original's own, not
+an invention.
+
+**What we have already.** `RS_WorldHands` has a tuned pointer — `RS_Cone` in `rs_distance.zs`, which
+builds the ray from `AttackAngle`/`OffhandAngle` plus pitch and roll, scores candidates angle-first
+then distance, and already draws a beam and a highlight. REMAROTH carries the same hand fields
+(`p_vrdemo.cpp` records `AttackPos`, `AttackAngle`, `MainHandRoll` and the off-hand set), so the mod
+and this engine already agree on where a hand points.
+
+**The gap.** `RS_WorldHands` points at **actors**. Realms' interactivity is mostly on **surfaces** —
+a light switch is a patch of wall with a script bound to it, a floor trigger is a sector. Only props
+and pickups are actors. So the hand mod supplies the ray; the engine has to classify what the ray
+hits in Realms' own terms and route it. One pick, like the original's.
+
+**Cost.** Moderate engine work in REMAROTH, and it *deletes* three existing half-measures that each
+approximate part of it: the hook on Doom's line-use, the separate floor probe, and the door-leaf
+special case.
+
+---
+
+## 15. A coat you open, instead of a grid on a screen
+
+Status: `idea`. Owner's, 2026-10-09.
+
+**What Realms does.** The inventory is a grid on a flat screen. It is also central — this is an
+adventure game, and you carry keys, documents and junk as much as weapons.
+
+**The idea.** A player body (`RS_Avatar`) wearing a trenchcoat. You open the coat with your hands and
+the inside is the inventory — weapons selectable from it, and by extension the rest of what you are
+carrying.
+
+**Why it fits Realms specifically.** This is not a generic VR flourish. The README already says the
+original's grid "should be something you reach into" in a headset. A coat *is* that, and Realms'
+inventory is large and used constantly, so the payoff is bigger here than in a shooter.
+
+**What it needs first.** The inventory has to exist as logic before it can have a body: DBASE100, the
+item records, pickup and use. §13 applies — the *contents and behaviour* must be 1:1, the way you
+reach into them is free.
+
+---
+
+## 16. Voxelising the sprite content, and where the source data already is
+
+Status: `idea`, with one strong `verified` lead. Owner's, 2026-10-09.
+
+**The problem.** Flat billboards are the thing that gives a sprite game away in a headset. Stereo
+vision makes cardboard obvious in a way a monitor never does, and it is worst for an object held at
+arm's length.
+
+**Scope, narrower than it first looks.** Realms is not purely sprite-based — it already has real 3D
+mesh furniture through the DAS mesh path. The voxel target is the sprite content: items, some props,
+characters.
+
+**The lead that makes this tractable.** The examine close-up is **a GDV video from DBASE300**, played
+in a framed window (`GAME_inventory.md` §5; `E/dialogue_ui.c:1299-1541`), and the close-up mode flags
+include `0x00 = loop`. A looping close-up of an object is **a turntable** — a full rotation, at
+close-up resolution, per item, already authored by the original's artists. That is far better voxel
+input than the 8-view world sprites, and Realms' colour-key transparency means the frames should key
+to clean silhouettes.
+
+**Two things converge.** Those GDVs have to be decoded anyway — Examine is a real feature we owe the
+player. And DBASE300 is one of the files the `_oracle` mirror does **not** contain; it lives in the
+retail `DATA` directory (the CD content). See §18.
+
+**Where to spend it, in order:**
+
+1. **Items you pick up and hold.** Small set, biggest payoff, best source data, pairs with §15.
+2. **Static props you walk around.** Auto-generated from the 8 directional views.
+3. **Characters — be careful.** Realms' expressiveness lives in digitised performances. Voxelising a
+   photographed actor tends to look *worse*. Flat-but-right may beat solid-but-wrong.
+4. **Distant scenery — leave it.** Billboards read fine at range.
+
+**A cheaper middle worth trying first:** cross-billboards or depth-offset sprites fix most of the
+flatness for a fraction of the work. Try one object before committing to a pipeline.
+
+**The constraint it brushes.** §0's hard rule says nothing derived from the game is "written to disk,
+cached, converted or shipped". Voxelising is converting. Per §13 the owner's line is *logic* 1:1, and
+the half of that rule that genuinely protects us is **shipped** — the fork is never distributed. A
+baked voxel cache is therefore the owner's to choose, but it should be chosen deliberately, and the
+README's "nothing is extracted or converted" would need to stop claiming otherwise.
+
+---
+
+## 17. Atmosphere, bodies and the few guns — the mod shelf
+
+Status: `idea`. Owner's, 2026-10-09. Recorded so they are not lost, not because they are next.
+
+- **`RS_Radiance`** — fog, darkness and atmosphere. Realms *is* darkness and what is in it; the
+  candle cone (§12) and the lights-out pass are already faithful, and this is where the deliberate
+  improvements on top would live.
+- **`RS_Avatar`** — the player body, and the coat of §15.
+- **`RS_WorldHands`** — the interaction layer of §14.
+- **`RS_Reloading`** — Realms has only two or three guns, so this is a small job. **The staves are
+  the open question**: they are not guns and will not reload like guns, so what a stave *does* in
+  your hands needs deciding before anyone models one. Models for them do not exist yet.
+
+---
+
+## 18. The retail install we read is not the whole game
+
+Status: `measured` 2026-10-09. Not a "better" idea — a correction, filed here because it changes
+what several of the ideas above can use.
+
+`E:\DOOMWork\_oracle` mirrors the **hard-disk install** the 1996 installer made. The installer left
+the large content on the CD, so that mirror has `DBASE100`, `200` and `400` and is missing:
+
+| | `_oracle` | retail `DATA` directory |
+|---|---|---|
+| `DBASE300` (music **and item close-up GDVs**) | no | yes |
+| `DBASE500` (speech) | no | yes |
+| `.GDV` movies | none | **164** |
+| maps in `M/` | 50 | 51 |
+
+The retail `DATA` directory is the CD root and is complete. **Point `-rothpath` at it.** Leave
+`_oracle` alone: it is the oracle rig's working directory, with `rothc.exe`, its mods, savegames and
+several hundred `.ppm` dumps in it, and repointing it would break the comparison rig.
+
+This matters beyond tidiness. Speech, music, every cutscene and the item turntables of §16 are all in
+the half we were not reading, and we would have built a Realms with no voices and no movies without
+noticing until late.
+
+---
+
 ## How to add to this
 
 One heading per idea. Say what Realms does, what we do, why theirs might be better, and what it would
