@@ -466,6 +466,33 @@ noticing until late.
 
 ---
 
+## 19. Doorknobs you actually turn — the end state the beam stands in for
+
+Status: `idea`, explicitly **long term**. Owner's, 2026-10-09, with "that is a long, long time from
+now" attached to it.
+
+**The idea.** Voxel doorknobs and handles, and an IK body (§17's `RS_Avatar`) that reaches out,
+takes hold and turns them. Opening a door becomes a thing you *do* with your hand rather than a
+thing you aim at.
+
+**Why it is worth writing down now.** The hand beam of §14 is the right first move and also an
+honest placeholder: pointing at a door is how the 1996 cursor worked, so it is faithful *and*
+shippable. But it is not what a door is like. This entry exists so the beam is understood as a
+stepping stone rather than the destination, and so nobody later treats "we already did doors" as
+closing the question.
+
+**What it would need, roughly, and none of it soon.** A knob as addressable geometry rather than
+part of a wall texture — which is where §16's voxel work and this one meet. Grab targets on it. An
+IK arm that can reach a point in space and rotate about an axis. And the door itself driven by hand
+rotation rather than a trigger, which means the swing stops being a scripted animation and starts
+being something the player drives.
+
+**The one thing to be careful of**, per §13: the *logic* must stay 1:1. A door that opens because
+you turned its handle must fire exactly the same Realms chain, in the same order, as a door that
+opened because you clicked it in 1996. The input changes; what the game does about it must not.
+
+---
+
 ## How to add to this
 
 One heading per idea. Say what Realms does, what we do, why theirs might be better, and what it would
