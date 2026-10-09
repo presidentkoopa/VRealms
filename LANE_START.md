@@ -1,5 +1,33 @@
 # REMAROTH — start here
 
+> # THE GOAL
+>
+> ## Realms running in VR with sprite weapons and the WorldHands beam, playable start to finish.
+>
+> The owner's words, 2026-10-09. Read it before anything else in this file, and
+> measure what you are about to do against it.
+>
+> **What that means in practice.** He wants to put a headset on, point a
+> controller beam at a door, press a trigger, open it — and then play Realms of
+> the Haunting through to the end. Sprite weapons are fine. The original's own
+> interface is already a pointer with two buttons, so this is connecting it, not
+> reinventing it.
+>
+> **In scope:** the beam reaching Realms' doors, switches, floors and objects;
+> items you can pick up and use; dialogue; the few guns; save/load; level flow.
+>
+> **NOT in scope yet, and parked in `ROTH_BETTER.md`:** voxels, the trenchcoat
+> inventory, the player avatar, Radiance, elaborate reloading. They are good
+> ideas and they come *after* the game is playable.
+>
+> **The line that decides arguments** (`ROTH_BETTER.md` §13): the **logic** must
+> be 1:1 — what fires when, item state, dialogue branching, flags, saves, combat
+> rules. **Presentation and interface are free** — free to be *better*, not free
+> to be broken. A door at the wrong height is still a bug.
+>
+> If you find yourself deep in something that does not move that sentence
+> forward, stop and say so.
+
 > **A LANE RAN OVERNIGHT INTO 2026-10-03. Read
 > `HANDOFF_SESSION_2026-10-03.md` before anything else in this file.** The use
 > key opens doors, and all four reachable trigger channels are verified firing
