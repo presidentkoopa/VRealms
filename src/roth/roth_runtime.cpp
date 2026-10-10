@@ -50,6 +50,12 @@
 #include "printf.h"
 #include "c_dispatch.h"
 
+// Declared in p_map.cpp at GLOBAL scope, next to the use path it reports on.
+// It cannot live in namespace roth beside roth_trigger_debug, because p_map.cpp
+// is where the use ray is built and a namespaced cvar does not link from there
+// -- the same reason the comment above its definition gives.
+EXTERN_CVAR(Bool, roth_useray_debug)
+
 namespace roth
 {
 
@@ -368,6 +374,10 @@ struct Runtime
 	// examine trigger on it.
 	std::map<int, std::vector<Binding>> byFace;     // Realms face  -> bindings
 	std::map<int, std::vector<Binding>> bySector;   // Realms sector-> bindings
+	// Realms OBJECT id (Object::commandID, the field at +0x0e) -> bindings.
+	// Keyed by the record's key because the original searches for a matching
+	// id at every activation rather than resolving an index at load.
+	std::map<int, std::vector<Binding>> byObject;
 
 	// Doorway sector -> the polyobject tag of the panel that fills it.
 	std::map<int, int> doorTag;
@@ -400,6 +410,11 @@ struct Runtime
 	// which is how ONE command record serves many doors.
 	int activeFace = -1;
 	int activeSector = -1;
+	// The object the player just acted on, as (sector, index). Staged the same
+	// way activeFace and activeSector are, so a chain command whose own key is
+	// 0 resolves to it. -1 / -1 when the last action was not on an object.
+	int activeObjectSector = -1;
+	int activeObjectIndex = -1;
 
 	// The 0x36 latch: g_pending_command_record (0x8a0dc), held as a 1-based
 	// index here rather than the original's record pointer.
@@ -445,6 +460,10 @@ struct Runtime
 	// What ran and what could not, for the report and for the console.
 	int fired = 0;
 	std::map<uint8_t, int> unhandledOps;
+	// Realms sound ids a chain asked for and this port had no way to play.
+	// Sound is step 3 of the game port and no SFX path exists yet, so these
+	// are recorded rather than approximated with an engine sound.
+	std::map<uint16_t, int> unhandledSfx;
 };
 
 Runtime g;
@@ -528,6 +547,26 @@ TrigEvent EventForOpcode(uint8_t op)
 	case 0x32: case 0x31: return TrigEvent::Examine;
 	case 0x1A:            return TrigEvent::Impact;
 	case 0x13:            return TrigEvent::SectorEnter;
+
+	// THE OBJECT CHANNEL. 0x08 and 0x02 are both category 1 -- left-clicking an
+	// object -- and 0x30 is category 13, examining one. Verified in ROTH.C, not
+	// taken from the opcode tables:
+	//
+	//   run_leftclick_object_trigger (E/raw_commands.c:2920) finds the record by
+	//   matching the record's key at +0x08 against the OBJECT's own id at +0x0e,
+	//   then branches on the base byte at +0x03: base 2 is a light switch, base
+	//   8 runs the chain. So "0x08 / 0x02" in GAME_core.md 5.2's row 1 is two
+	//   BASES in one category, not two opcodes in two.
+	//
+	//   The examine side is dispatch_entry_command_trigger_b's channel 2
+	//   (:3145-3164), type 4: the same key-against-id match, and explicitly NO
+	//   direction mask and NO bounding box, unlike the face channel beside it.
+	//
+	// Both are keyed to an object, which is a third key space beside faces and
+	// sectors -- see IsObjectTrigger and g.byObject.
+	case 0x08: case 0x02: return TrigEvent::Use;
+	case 0x30:            return TrigEvent::Examine;
+
 	default:              return TrigEvent::None;
 	}
 }
@@ -536,6 +575,15 @@ TrigEvent EventForOpcode(uint8_t op)
 // markers, not the opcode number.
 bool IsFaceTrigger(uint8_t op)   { return op == 0x18 || op == 0x1A || op == 0x32; }
 bool IsSectorTrigger(uint8_t op) { return op == 0x13 || op == 0x19 || op == 0x31; }
+
+// THE THIRD KEY SPACE. An object trigger's key at +0x08 is matched against the
+// object's own id at +0x0e -- Object::commandID, which roth_raw.h already names
+// as exactly that field -- so it resolves to neither a face nor a sector and
+// fell through the binding loop entirely until this existed.
+//
+// 0x08 and 0x02 are the two BASES of category 1 (left-click) and 0x30 is
+// category 13 (examine); see EventForOpcode for the ROTH.C citations.
+bool IsObjectTrigger(uint8_t op) { return op == 0x08 || op == 0x02 || op == 0x30; }
 
 const char *TrigEventName(TrigEvent e)
 {
@@ -3806,7 +3854,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// silently. That is how 0x13 went unnoticed: it matched neither classifier,
 	// so every enter-sector trigger in the game fell through this loop without
 	// appearing anywhere in the report.
-	int faceBound = 0, sectorBound = 0, unbound = 0, unclassified = 0;
+	int faceBound = 0, sectorBound = 0, objectBound = 0, unbound = 0, unclassified = 0;
 	std::map<uint8_t, int> boundByOp;
 	// opcode -> (fireFlags << 8 | subFlags) -> how many RECORDS carry that pair
 	std::map<uint8_t, std::map<int, int>> flagHist;
@@ -3818,11 +3866,14 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		const TrigEvent ev = EventForOpcode(c.opcode);
 		if (ev == TrigEvent::None)
 		{
-			// A trigger opcode this port has no event for. 0x08, 0x1b, 0x25,
-			// 0x30, 0x39, 0x37 and 0x3d are the object, texture-animation and
-			// timer channels (GAME_core.md 5.2 rows 1, 8, 9, 13, 14, 15); none
-			// of them is keyed to a face or a sector, so they belong to later
-			// work and not to this loop.
+			// A trigger opcode this port has no event for. 0x1b, 0x25, 0x39,
+			// 0x37 and 0x3d are the attack-hits-object, texture-animation,
+			// walk-into-object and timer channels (GAME_core.md 5.2 rows 8, 9,
+			// 14, 15), none of which is keyed to a face, a sector or an object,
+			// so they belong to later work and not to this loop.
+			//
+			// 0x08, 0x02 and 0x30 USED TO LAND HERE and no longer do: they are
+			// the object channel, which is now a third key space below.
 			unclassified++;
 			continue;
 		}
@@ -3842,6 +3893,22 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			if (c.sector < 0) { unbound++; continue; }
 			g.bySector[c.sector].push_back(b);
 			sectorBound++;
+			boundByOp[c.opcode]++;
+			flagHist[c.opcode][(c.fireFlags << 8) | c.subFlags]++;
+		}
+		else if (IsObjectTrigger(c.opcode))
+		{
+			// BY THE RECORD'S OWN KEY, not by a resolved index. The original
+			// SEARCHES for the object whose id matches, every time it fires
+			// (run_leftclick_object_trigger walks the category list), so the
+			// binding is stored under the key and the match happens at
+			// activation against the picked object's commandID.
+			//
+			// A key of 0 would mean "the object the player just used", which on
+			// this channel cannot happen: the key IS how the record is found.
+			if (c.key == 0) { unbound++; continue; }
+			g.byObject[c.key].push_back(b);
+			objectBound++;
 			boundByOp[c.opcode]++;
 			flagHist[c.opcode][(c.fireFlags << 8) | c.subFlags]++;
 		}
@@ -3867,7 +3934,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	if (log)
 	{
 		log->Section("Level logic");
-		log->Line("  triggers bound   %d face-keyed, %d sector-keyed", faceBound, sectorBound);
+		log->Line("  triggers bound   %d face-keyed, %d sector-keyed, %d object-keyed",
+			faceBound, sectorBound, objectBound);
 		log->Line("  doors reachable  %d   walls wired %d", (int)g.doorTag.size(), (int)g.bySide.size());
 		log->Line("  trigger lines    %d marked so the engine offers them"
 			" (each line asks only for its own events -- GAME_core.md 5.2)", linesMarked);
@@ -4055,6 +4123,7 @@ void EndLevel()
 	g.faceToSide.clear();
 	g.sideToFace.clear();
 	g.bySector.clear();
+	g.byObject.clear();
 	g.doorTag.clear();
 	g.doorLeafSide.clear();
 	g.lastSectorByPlayer.clear();
@@ -4568,6 +4637,18 @@ bool UseFlat(AActor *who, TrigEvent want)
 			res.HitPos.Z, start.Z, pitch.Degrees());
 	}
 
+	// EVERYTHING PAST THE TRACE IS NOW UseFlatAt, so a pick made from a VR hand
+	// applies the same flat rules to its OWN ray instead of tracing a second
+	// time from the eye. Two rays answering one question is how the eye and the
+	// hand came to disagree about what the player was pointing at. The half
+	// below is what this function used to do from here on, unchanged.
+	return UseFlatAt(who, res, want);
+}
+
+bool UseFlatAt(AActor *who, const FTraceResults &res, TrigEvent want)
+{
+	if (!g.active || who == nullptr) return false;
+
 	if (res.HitType != TRACE_HitFloor && res.HitType != TRACE_HitCeiling)
 	{
 		if (roth_trigger_debug)
@@ -4645,6 +4726,402 @@ bool UseFlat(AActor *who, TrigEvent want)
 		any |= Fire(b.chain);
 	}
 	return any;
+}
+
+//==========================================================================
+//
+// POINTING AT THINGS -- ONE RAY, ASKED ONCE
+//
+// The header says why this exists. The two things worth repeating at the code:
+//
+// 1. TRACE_Continue IS NOT OPTIONAL. The loader gives a Realms face a sister
+//    with ML_TWOSIDED and no ML_BLOCKING, and p_trace.cpp never REPORTS a
+//    two-sided line the ray passes through -- it is crossed, not hit. A
+//    stop-at-first trace therefore cannot see a mid-band wall trigger on any
+//    interior wall, at any mask value. Continuing past each hit gets the same
+//    offer P_UseTraverse gave, which is the only reason those triggers ever
+//    fired.
+//
+// 2. HITS ARRIVE NEAREST FIRST, so the first one that means something in
+//    Realms terms IS the answer and the scan stops there. Anything the port
+//    cannot act on is stepped over rather than ending the search, which is the
+//    whole difference between this and the trace UseFlat used to run.
+//
+//==========================================================================
+
+// mid 0x01, lower 0x02, upper 0x04 -- the same three bits a face record's
+// +0x06 names, taken from the tracer's own classification instead of being
+// re-derived from a hit height. TIER_FFloor is a 3D floor's side, which is a
+// mid-platform here and answers as the mid band.
+static uint8_t BandFromTier(uint8_t tier)
+{
+	switch (tier)
+	{
+	case TIER_Lower: return 0x02;
+	case TIER_Upper: return 0x04;
+	default:         return 0x01;   // TIER_Middle, TIER_FFloor
+	}
+}
+
+struct PickScan
+{
+	Pick best;
+	bool found = false;
+};
+
+static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
+{
+	PickScan &s = *(PickScan *)data;
+
+	switch (res.HitType)
+	{
+	case TRACE_HitWall:
+	{
+		if (res.Line == nullptr || g.level == nullptr) break;
+
+		// Which sidedef the ray actually met, in the engine's own numbering.
+		side_t *sd = res.Line->sidedef[res.Side];
+		if (sd == nullptr) break;
+		const int idx = (int)(sd - &g.level->sides[0]);
+
+		// A DOOR LEAF FIRST. It is one-sided blocking geometry with no line
+		// special, so it would otherwise read as scenery and swallow the ray
+		// -- which is exactly how it used to shadow every trigger behind it.
+		auto leaf = g.doorLeafSide.find(idx);
+		if (leaf != g.doorLeafSide.end())
+		{
+			s.best = Pick{};
+			s.best.kind    = Pick::DoorLeaf;
+			s.best.line    = res.Line;
+			s.best.side    = res.Side;
+			s.best.leafTag = leaf->second;
+			s.best.hitPos  = res.HitPos;
+			s.best.band    = BandFromTier(res.Tier);
+			s.best.dist    = res.Distance;
+			s.found = true;
+			return TRACE_Stop;
+		}
+
+		if (g.bySide.count(idx))
+		{
+			s.best = Pick{};
+			s.best.kind   = Pick::WallFace;
+			s.best.line   = res.Line;
+			s.best.side   = res.Side;
+			s.best.hitPos = res.HitPos;
+			s.best.band   = BandFromTier(res.Tier);
+			s.best.dist   = res.Distance;
+			s.found = true;
+			return TRACE_Stop;
+		}
+		break;   // a wall with nothing bound to it: step over, keep looking
+	}
+
+	case TRACE_HitFloor:
+		if (res.Sector == nullptr) break;
+		s.best = Pick{};
+		s.best.kind   = Pick::Flat;
+		s.best.sector = res.Sector;
+		s.best.hitPos = res.HitPos;
+		s.best.dist   = res.Distance;
+		s.found = true;
+		return TRACE_Stop;
+
+	// CEILINGS ARE GATED OUT, deliberately. 0x31 covers ceilings as well as
+	// floors, but nothing in the goal needs a ceiling press and a hand pointed
+	// up at one is far more likely to be an accident than an instruction.
+	case TRACE_HitCeiling:
+		break;
+
+	// A PROP, if it is a Realms object with something bound to it. A Doom actor,
+	// or a Realms prop that is pure scenery, is stepped over rather than ending
+	// the search -- so a chair in front of a wall switch does not eat the press.
+	case TRACE_HitActor:
+	{
+		if (res.Actor == nullptr) break;
+		int rs = -1, ri = -1;
+		if (!ObjectForActor(res.Actor, rs, ri)) break;
+		s.best = Pick{};
+		s.best.kind   = Pick::Prop;
+		s.best.actor  = res.Actor;
+		s.best.hitPos = res.HitPos;
+		s.best.dist   = res.Distance;
+		s.found = true;
+		return TRACE_Stop;
+	}
+
+	default:
+		break;
+	}
+
+	return TRACE_Continue;
+}
+
+bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
+	double range, Pick &out)
+{
+	out = Pick{};
+	if (!g.active || who == nullptr) return false;
+
+	// The sector the ray STARTS in, which for a hand is not always the one the
+	// pawn is in -- an arm can reach across a line. PointInSector costs a BSP
+	// descent and is the honest answer; who->Sector would quietly mis-seed the
+	// trace for exactly the poses this exists to serve.
+	sector_t *from = g.level != nullptr
+		? g.level->PointInSector(start.XY()) : who->Sector;
+	if (from == nullptr) from = who->Sector;
+	if (from == nullptr) return false;
+
+	PickScan scan;
+	FTraceResults res;
+	Trace(start, from, dir, range, ActorFlags::FromInt(0), 0, who, res,
+		TRACE_NoSky, PickScanCallback, &scan);
+
+	if (!scan.found)
+	{
+		if (roth_useray_debug)
+			Printf("roth_pick: nothing in %.0f units from (%.0f %.0f %.0f)\n",
+				range, start.X, start.Y, start.Z);
+		return false;
+	}
+
+	out = scan.best;
+	if (roth_useray_debug)
+	{
+		static const char *kindName[] = { "nothing", "wall face", "flat", "door leaf" };
+		Printf("roth_pick: %s at %.1f units, band 0x%02x, z %.1f\n",
+			kindName[(int)out.kind], out.dist, (unsigned)out.band, out.hitPos.Z);
+	}
+	return true;
+}
+
+bool Activate(const Pick &p, AActor *who, TrigEvent want)
+{
+	if (!g.active || who == nullptr) return false;
+
+	switch (p.kind)
+	{
+	case Pick::DoorLeaf:
+		// A leaf is not a trigger and has no chain: it IS the door. Examining
+		// one is not a thing the original does, so only a use swings it.
+		if (want != TrigEvent::Use) return false;
+		return SwingDoor(p.leafTag, 0, 0) == CMD_ACTED;
+
+	case Pick::WallFace:
+		// WITH THE HIT POSITION, which is the entire point. ActivateLine's one
+		// existing caller passes nullptr, so the wall-band gate has never run
+		// on any channel; handing it a real hit point is what turns that rule
+		// on for the first time.
+		{
+			DVector3 hit = p.hitPos;
+			return ActivateLine(p.line, who, p.side,
+				want == TrigEvent::Examine ? SPAC_UseBack : SPAC_Use, &hit);
+		}
+
+	case Pick::Prop:
+		return ActivateObject(p.actor, want);
+
+	case Pick::Flat:
+	{
+		// UseFlatAt wants a trace result. Fill in the fields it reads rather
+		// than tracing again -- the ray has already been walked once and a
+		// second walk down a slightly different line is how two answers to one
+		// question get created.
+		FTraceResults res{};
+		res.HitType = TRACE_HitFloor;
+		res.Sector  = p.sector;
+		res.HitPos  = p.hitPos;
+		res.ffloor  = nullptr;
+		return UseFlatAt(who, res, want);
+	}
+
+	default:
+		return false;
+	}
+}
+
+//==========================================================================
+//
+// THE OBJECT CHANNEL
+//
+// Transcribed from run_leftclick_object_trigger (E/raw_commands.c:2920) and
+// dispatch_entry_command_trigger_b's channel 2 (:3145-3164) -- the only two
+// places the original acts on a clicked object. In order, both do:
+//
+//   1. the object's id is word[obj + 0x0e], which roth_raw.h already names
+//      Object::commandID. Id 0 means the object is not addressable at all.
+//   2. walk the category's list and take the FIRST record whose key at +0x08
+//      equals that id and whose +0x02 does NOT carry bit 3 (spent).
+//   3. left-click only: +0x06 bit 1 means destroy-on-use, and the chain is
+//      meant to run with the object already gone.
+//   4. left-click only: branch on the BASE at +0x03 -- base 2 is a light
+//      switch, base 8 runs the chain, anything else acts but does nothing.
+//      The examine channel has no base branch: it just walks the chain.
+//   5. the examine channel carries NO direction mask and NO bounding box. The
+//      original says so in its own comment on that branch.
+//
+// THE LIGHT SWITCH IS THE POINT. LightSwitch() and its effect tick have been
+// here for weeks; what was missing was any route from clicking an object to
+// them -- so a switch authored as an object could not work while the identical
+// switch authored as a wall face could, and nothing about that was visible
+// from outside the engine.
+//
+//==========================================================================
+
+// word[obj + 4] ^= 1, which is NOT a state flag: +0x04 is the texture pair
+// (index in the low byte, source in the high one), so flipping bit 0 swaps the
+// object to its neighbouring sprite. That IS how a lever shows which way it is
+// thrown -- the two positions are two pieces of art. Done the same way opcode
+// 0x0d repaints a prop, so both land on one convention.
+static void FlipObjectTexture(int rothSector, int rothIndex)
+{
+	if (rothSector < 0 || rothSector >= (int)g.map.objects.size()) return;
+	std::vector<Object> &group = g.map.objects[rothSector];
+	if (rothIndex < 0 || rothIndex >= (int)group.size()) return;
+
+	Object &o = group[rothIndex];
+	const uint16_t word = (uint16_t)((o.textureIndex | (o.textureSource << 8)) ^ 1);
+	o.textureIndex  = (uint8_t)(word & 0xFF);
+	o.textureSource = (uint8_t)(word >> 8);
+
+	AActor *mo = FindObjectActor(rothSector, rothIndex);
+	if (mo == nullptr) return;
+	const int sn = FindLogicSprite(word);
+	if (sn >= 0) mo->sprite = sn;
+	else g.unhandledOps[0x02]++;    // no sprite built for the flipped word
+}
+
+bool ActivateObject(AActor *mo, TrigEvent want)
+{
+	if (!g.active || mo == nullptr) return false;
+
+	int rothSector = -1, rothIndex = -1;
+	if (!ObjectForActor(mo, rothSector, rothIndex)) return false;
+	if (rothSector < 0 || rothSector >= (int)g.map.objects.size()) return false;
+	const std::vector<Object> &group = g.map.objects[rothSector];
+	if (rothIndex < 0 || rothIndex >= (int)group.size()) return false;
+
+	const uint16_t id = group[rothIndex].commandID;
+	if (id == 0)
+	{
+		if (roth_trigger_debug)
+			Printf("roth_trigger: object %d/%d carries id 0 -- not addressable\n",
+				rothSector, rothIndex);
+		return false;
+	}
+
+	auto it = g.byObject.find((int)id);
+	if (it == g.byObject.end())
+	{
+		if (roth_trigger_debug)
+			Printf("roth_trigger: object %d/%d (id %u) -- NO chain bound\n",
+				rothSector, rothIndex, (unsigned)id);
+		return false;
+	}
+
+	// Stage "what the player just acted on" as the OBJECT, the same way a face
+	// and a sector are staged, so a chain command carrying key 0 finds it.
+	g.activeObjectSector = rothSector;
+	g.activeObjectIndex  = rothIndex;
+
+	bool any = false;
+	for (const Binding &b : it->second)
+	{
+		if (b.event != want) continue;
+
+		Command *rec = Rec(b.chain);
+		if (rec == nullptr) continue;
+
+		// BASE 2: a light switch. The record IS the switch -- there is no chain
+		// to walk -- so this branch returns without firing one, as the original
+		// does. Use only; the examine channel has no base branch.
+		if (want == TrigEvent::Use && b.opcode == 0x02)
+		{
+			if (LightSwitch(rec, (int)b.chain) != CMD_ACTED) continue;
+
+			// The sound at +0x0e, stored one higher so 0 can mean silence.
+			// COUNTED, NOT PLAYED: Realms' sound effects are step 3 of the game
+			// port and no SFX path exists here yet, so inventing an engine
+			// sound would be a different noise in the right place, which is
+			// worse than silence and harder to notice.
+			const uint16_t snd = rec->Word(0x0E);
+			if (snd != 0) g.unhandledSfx[(uint16_t)(snd - 1)]++;
+
+			FlipObjectTexture(rothSector, rothIndex);
+
+			if (roth_trigger_debug)
+				Printf("roth_trigger: object %d/%d (id %u) LIGHT SWITCH -> acted"
+					" (sfx %u not played, no sound path yet)\n",
+					rothSector, rothIndex, (unsigned)id, (unsigned)snd);
+			any = true;
+			continue;
+		}
+
+		if (roth_trigger_debug)
+			Printf("roth_trigger: object %d/%d (id %u) base 0x%02x %s -> firing\n",
+				rothSector, rothIndex, (unsigned)id, (unsigned)b.opcode,
+				TrigEventName(b.event));
+
+		// DESTROY ON USE, before the chain runs, which is the order the original
+		// uses -- the chain is written expecting the object to be gone.
+		const bool destroys = (want == TrigEvent::Use) && (b.fireFlags & 2) != 0;
+		if (destroys)
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: object %d/%d destroyed on use\n",
+					rothSector, rothIndex);
+			mo->Destroy();
+		}
+
+		any |= Fire(b.chain);
+		if (destroys) break;    // the actor is gone; nothing else may touch it
+	}
+	return any;
+}
+
+bool UseByHand(player_t *player, TrigEvent want)
+{
+	if (!g.active || player == nullptr || player->mo == nullptr) return false;
+
+	// NOT in a netgame and not without a controller. AttackPos and its offhand
+	// pair are written by the VR backend every frame and are local state; with
+	// no device they are the pawn's own position and the ray would be a
+	// confusing duplicate of the eye probe rather than a hand.
+	if (!player->mo->OverrideAttackPosDir) return false;
+
+	AActor *const mo = player->mo;
+
+	// THE HAND'S OWN RANGE, not the weapon's 48 units. A press is meant to
+	// reach what the beam is visibly touching, and the beam crosses rooms.
+	// UseRange on the pawn is the player's configured reach and is what the eye
+	// probe already uses, so the two agree about how far a press carries.
+	const double range = mo->FloatVar(NAME_UseRange);
+
+	struct HandRay { DVector3 pos; DAngle pitch; DAngle yaw; const char *name; };
+	const HandRay hands[2] = {
+		{ mo->AttackPos,  mo->AttackPitch,  mo->AttackAngle,  "main" },
+		{ mo->OffhandPos, mo->OffhandPitch, mo->OffhandAngle, "off"  },
+	};
+
+	for (const HandRay &h : hands)
+	{
+		// THE +90 IS THE ENGINE'S, NOT THE CONTROLLER'S. P_UseLines builds its
+		// hand ray as AttackAngle + 90 and that is the convention the stored
+		// angle carries, so it is kept here rather than "corrected" -- the
+		// drawn laser disagreeing with it is a separate fault in the laser.
+		const DAngle yaw = h.yaw + DAngle::fromDeg(90.);
+		const DVector3 dir(
+			yaw.Cos() * h.pitch.Cos(),
+			yaw.Sin() * h.pitch.Cos(),
+			-h.pitch.Sin());
+
+		Pick p;
+		if (!PickFrom(mo, h.pos, dir, range, p)) continue;
+		if (roth_useray_debug)
+			Printf("roth_pick: %s hand -> ", h.name);
+		if (Activate(p, mo, want)) return true;
+	}
+	return false;
 }
 
 void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)

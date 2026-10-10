@@ -38,6 +38,8 @@ struct line_t;
 struct sector_t;
 class AActor;
 struct FLevelLocals;
+struct FTraceResults;   // UseFlatAt / Pick -- by reference only, no layout needed
+class  player_t;        // declared as a class in d_player.h:348
 
 namespace roth
 {
@@ -199,6 +201,87 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want);
 // when the ray really hits a flat carrying a trigger that wants it, so it does
 // not steal uses from doors.
 bool UseFlat(AActor *who, TrigEvent want);
+
+// The same thing, from a trace somebody else already ran. UseFlat above is now
+// a wrapper that traces from the eye and calls this -- split out so a pick made
+// from a VR hand can reuse the flat rules without a second trace down a
+// different ray, which is how the eye and the hand came to disagree about what
+// the player was pointing at.
+bool UseFlatAt(AActor *who, const FTraceResults &res, TrigEvent want);
+
+//==========================================================================
+//
+// POINTING AT THINGS
+//
+// ONE RAY, ASKED ONCE, AND IT MAY BE A HAND'S.
+//
+// Everything above reaches Realms geometry down a ray the engine chose for its
+// own reasons: P_UseLines walks a two-dimensional path out of the blockmap, and
+// UseFlat traces from the eye. Neither can answer "what is this controller
+// pointing at", because a hand ray has a pitch and those do not.
+//
+// WHY A PLAIN STOP-AT-FIRST TRACE IS NOT ENOUGH, measured: the loader gives a
+// Realms face with a sister ML_TWOSIDED and no ML_BLOCKING (rothmap.cpp), and
+// Trace() never reports a two-sided line the ray passes THROUGH. So a wall
+// trigger on the mid band of any interior wall is invisible to a stop-at-first
+// trace at every mask value -- no mask fixes it. P_UseTraverse found them only
+// because it offers every line it crosses. This uses Trace's ETraceStatus
+// callback with TRACE_Continue to get the same offer, which p_trace.cpp already
+// does for SPAC_Impact.
+//
+// The band comes from FTraceResults::Tier, which the tracer has worked out
+// properly, rather than from re-deriving it off a hit height.
+//
+//==========================================================================
+
+struct Pick
+{
+	enum Kind : uint8_t
+	{
+		Nothing,
+		WallFace,   // a Realms face -- line + side, with a band
+		Flat,       // a floor (ceilings are deliberately not picked)
+		DoorLeaf,   // a hinged door slab; swings rather than dispatching
+		Prop,       // a Realms object -- the 0x08 / 0x30 channel
+	};
+
+	Kind      kind   = Nothing;
+	line_t   *line   = nullptr;   // WallFace, DoorLeaf
+	int       side   = 0;         // which side of it was met
+	sector_t *sector = nullptr;   // Flat
+	AActor   *actor  = nullptr;   // Prop
+	int       leafTag = 0;        // DoorLeaf: the polyobject tag to swing
+	DVector3  hitPos = DVector3(0, 0, 0);
+	uint8_t   band   = 0;         // mid 0x01, lower 0x02, upper 0x04; 0 = unknown
+	double    dist   = 0;
+};
+
+// Trace one ray and say what Realms thing is at the end of it. Nearest wins,
+// and a hit with no Realms meaning is passed over rather than stopping the
+// search. False when the ray meets nothing this port can act on.
+bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
+	double range, Pick &out);
+
+// Act on a pick: faces go to the face dispatch WITH the hit position (which is
+// what finally lets the wall-band gate run), flats to UseFlatAt, leaves to
+// SwingDoor. Returns true if something acted, so the caller can treat the
+// press as consumed.
+bool Activate(const Pick &p, AActor *who, TrigEvent want);
+
+// Act on a Realms object: find the record whose key matches the object's own
+// id, then do what the original does with it -- run its chain, or, for a light
+// switch, throw the switch, play its sound and flip the object's state bit.
+//
+// This is the channel that did not exist. A light switch authored as an OBJECT
+// could not work at all, while one authored as a wall face could, and nothing
+// about that asymmetry was visible from outside the engine.
+bool ActivateObject(AActor *mo, TrigEvent want);
+
+// Pick from a player's main hand, then from the off hand, and act on the first
+// that finds something. The hand pose is AttackPos/AttackPitch/AttackAngle and
+// its offhand pair, which is where the VR backend writes the controller every
+// frame. Inert unless a Realms level is loaded and roth_pick is set.
+bool UseByHand(player_t *player, TrigEvent want);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13
 // triggers. Call once per tic per player; it compares against the sector seen

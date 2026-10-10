@@ -1041,9 +1041,26 @@ AActor *FindObjectActor(int rothSector, int rothIndex)
 	return it == gObjectActors.end() ? nullptr : it->second;
 }
 
+// The reverse index, built beside the forward one at spawn. A map rather than a
+// field on the actor because LoaderProp is shared with anything else that wants
+// a posed prop, and an engine class should not grow a Realms-shaped member for
+// one caller's benefit.
+static std::map<const AActor *, uint32_t> gActorObjects;
+
+bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex)
+{
+	if (mo == nullptr) return false;
+	auto it = gActorObjects.find(mo);
+	if (it == gActorObjects.end()) return false;
+	rothSector = (int)(it->second >> 16);
+	rothIndex  = (int)(it->second & 0xFFFF);
+	return true;
+}
+
 void SpawnPreparedObjects(FLevelLocals *Level)
 {
 	gObjectActors.clear();
+	gActorObjects.clear();
 	if (gPending.empty() || Level == nullptr) return;
 
 	PClassActor *cls = PropClass();
@@ -1067,6 +1084,9 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 
 		// So the level logic can find this prop again. See FindObjectActor.
 		gObjectActors[ObjectKey(p.rothSector, p.rothIndex)] = mo;
+		// And the reverse, for anything starting from the world: a ray that hits
+		// this prop, or a hand that closes on it. See ObjectForActor.
+		gActorObjects[mo] = ObjectKey(p.rothSector, p.rothIndex);
 
 		// After the spawn, not before: the spawn state sets the sprite, and
 		// LoaderProp's spawn state has tics -1 so nothing ever sets it again.

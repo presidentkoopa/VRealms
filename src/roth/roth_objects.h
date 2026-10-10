@@ -55,6 +55,16 @@ void SpawnPreparedObjects(FLevelLocals *Level);
 // whose spawn failed, is simply absent rather than an error at every use.
 AActor *FindObjectActor(int rothSector, int rothIndex);
 
+// AND THE OTHER WAY ROUND: which Realms object an actor is. The counterpart of
+// FindObjectActor, needed by anything that starts from the WORLD rather than
+// from the map -- a ray that hits a prop, a hand that closes on one -- because
+// all of those know an actor and need the object the logic addresses.
+//
+// False, with both outputs untouched, when the actor is not a Realms object.
+// That is the ordinary answer for every Doom actor in the level, so callers
+// test it rather than treating it as a fault.
+bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex);
+
 // A sprite for a texture the LOGIC can ask for, looked up by the packed texture
 // word a command record carries -- the object's +0x04 pair, texture index in the
 // low byte and source in the high one.

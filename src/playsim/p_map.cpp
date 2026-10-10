@@ -6518,6 +6518,16 @@ bool P_TalkFacing(AActor *player)
 // different question from what ActivateLine was handed.
 CVAR(Bool, roth_useray_debug, false, 0)
 
+// THE HAND PICK, off by default. Archived so it survives a restart once the
+// owner turns it on, and gated inside roth::UseByHand on a Realms level being
+// loaded, so setting it changes nothing in any other game this engine runs.
+//
+// NOT a use_mode value, deliberately: use_mode is CVAR_ARCHIVE|CVAR_GLOBALCONFIG
+// and both forks share a single doomxr.ini, so a value only this fork
+// understands would be read by the hands build on its next launch and take its
+// head ray away with no visible cause.
+CVAR(Bool, roth_pick, false, CVAR_ARCHIVE)
+
 bool P_UseTraverse(AActor *usething, const DVector2 &start, const DVector2 &end, bool &foundline)
 {
 	FPathTraverse it(usething->Level, start.X, start.Y, end.X, end.Y, PT_ADDLINES | PT_ADDTHINGS);
@@ -6706,6 +6716,21 @@ void P_UseLines(player_t *player)
 	bool foundline = false;
 	bool used = false;
 
+	// POINTING AT IT, FIRST OF ALL, when a Realms level is loaded and the pick
+	// is switched on. One 3D ray from the hand, which is the only path here
+	// that can reach a door across the room or a floor plate underfoot -- every
+	// branch below is two-dimensional and 48 units long.
+	//
+	// Default OFF, and not a use_mode value: use_mode is
+	// CVAR_ARCHIVE|CVAR_GLOBALCONFIG and both forks share one doomxr.ini, so a
+	// new value here would be read by the hands build next launch, where the
+	// head ray would silently vanish. roth::UseByHand is inert unless a Realms
+	// level is loaded, so this cannot affect any other game.
+	if (roth_pick && roth::UseByHand(player, roth::TrigEvent::Use))
+	{
+		return;
+	}
+
 	// A Realms floor-click trigger (0x19), FIRST, because nothing below can
 	// reach one and because "under the aim" is what the original dispatches on.
 	//
@@ -6742,26 +6767,32 @@ void P_UseLines(player_t *player)
 		used |= P_UseTraverse(player->mo, start, end, foundline);
 	}
 
+	// THE HAND BRANCHES USE THEIR OWN RAY AND LEAVE start/end ALONE.
+	//
+	// They used to assign start and end, and the *usefail tail below reads both
+	// -- so after an unsuccessful press the "can't use that" test ran against
+	// whichever hand wrote last, which is the OFFHAND, never the eye ray the
+	// player was looking down. Each branch now keeps its ray local.
 	if (!multiplayer && player->mo->OverrideAttackPosDir && use_mode > 0)
 	{
 		DAngle aimAngle;
 		float useRange;
 		if (!used)
 		{
-			start = player->mo->AttackPos.XY();
+			const DVector2 hstart = player->mo->AttackPos.XY();
 			aimAngle = player->mo->AttackAngle + DAngle::fromDeg(90.);
 			useRange = player->ReadyWeapon != nullptr ? player->ReadyWeapon->FloatVar(NAME_UseRange) : 48;
-			end = start + aimAngle.ToVector(useRange);
-			used = P_UseTraverse(player->mo, start, end, foundline);
+			used = P_UseTraverse(player->mo, hstart,
+				hstart + aimAngle.ToVector(useRange), foundline);
 		}
 
 		if (!used)
 		{
-			start = player->mo->OffhandPos.XY();
+			const DVector2 hstart = player->mo->OffhandPos.XY();
 			aimAngle = player->mo->OffhandAngle + DAngle::fromDeg(90.);
 			useRange = player->OffhandWeapon != nullptr ? player->OffhandWeapon->FloatVar(NAME_UseRange) : 48;
-			end = start + aimAngle.ToVector(useRange);
-			used = P_UseTraverse(player->mo, start, end, foundline);
+			used = P_UseTraverse(player->mo, hstart,
+				hstart + aimAngle.ToVector(useRange), foundline);
 		}
 	}
 
