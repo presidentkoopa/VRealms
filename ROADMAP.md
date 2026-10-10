@@ -65,9 +65,25 @@ Each milestone ends with a **headset check**: a short list the owner can do
 himself in ten minutes. A milestone is done when he has done it, not when it
 compiles.
 
-### M0 — The tree builds again *(hours)*
+### M0 — The tree builds again ✅ DONE 2026-10-10
 
-The tree **does not link right now**: `LNK1103` on `roth_runtime.obj`
+**All four steps verified. See `HANDOFF_SESSION_2026-10-10_M0.md`.** The LTO
+diagnosis below was exactly right. `build-dxr` is now configured with
+`FORCE_NO_LTO=ON` and produced the first `build-dxr\RelWithDebInfo\doomxr.exe`
+this tree has ever had; it loads STUDY1 in about 4 seconds. The band count
+prints and is committed (`468b6a17f2`): **74 STUDY1 bindings can be refused by
+the band gate**, 65 of them on two-sided lines. The report truncation is fixed
+(`b9115b02ae`) — step 4's stated cause was wrong; nothing loads the map twice,
+the existence probes were truncating it.
+
+> One number moved that was **not** the port: `opcodecensus` was counting the
+> 371 dialogue records as implemented because the dispatcher has a `case` for
+> them, though the handler is a stub that counts itself as a hole. The tool
+> said 62.7%. Fixed in `f465448f1f`; it now reports **52.4%**, exactly as §1
+> above states. M5's "0x2b no longer appears in the census" was passing before
+> any dialogue existed.
+
+The tree **did not link**: `LNK1103` on `roth_runtime.obj`
 (`build-band.log`).
 
 1. **Turn link-time optimisation off for the working build.** It is switched on
@@ -92,7 +108,9 @@ the report or gone.
 
 ### M1 — Point and press *(owner, one headset session)*
 
-Already built (`84d54c5c33`), never run. Launch with **`RothHands.cmd`**, then
+Already built (`84d54c5c33`), never run. **Nothing needs building first — M0 is
+done and the exe is current.** Launch with **`RothHands.cmd`, which is on the
+owner's Desktop, not in the tree**, then
 `roth_pick 1 ; roth_useray_debug 1 ; roth_trigger_debug 1`
 (`HANDOFF_SESSION_2026-10-10.md` §3).
 
@@ -102,7 +120,7 @@ Already built (`84d54c5c33`), never run. Launch with **`RothHands.cmd`**, then
 - [ ] point down at a floor plate, press: it fires
 - [ ] a light switch: the light changes and the switch art flips
 - [ ] the beam you see and the thing that reacts are the same thing
-- [ ] note any trigger that worked before and now refuses (that is the band gate; M0's count says how many to expect)
+- [ ] note any trigger that worked before and now refuses (that is the band gate; **M0 measured it: expect up to 74 in STUDY1**)
 
 Fix what fails. Then, and only if the beam and the pick disagree, do
 `HANDOFF_SESSION_2026-10-09.md` §4 step 3 (one hand ray per tic). Once the pick

@@ -166,11 +166,19 @@ now and that is the trade.
   layout mismatch does **not** fail shader compilation — it reads the wrong
   bytes. Verified visually afterwards (lighting and the beam are correct), but
   it would have been silent corruption.
-- **`roth_<MAP>.log` cannot be trusted as written.** It reported 1 ms and
-  "nothing counted" for a STUDY1 load that the main log shows as 552 sectors,
-  1908 lines, 2754 sides. Something loads the map twice and the second, empty
-  pass truncates the report — so the file every handoff points you at is the
-  useless one. **Unfixed. Read `doomxr-log.txt` instead.**
+- **`roth_<MAP>.log` could not be trusted as written. FIXED 2026-10-10
+  (`b9115b02ae`); the diagnosis in this bullet was wrong.** The symptom was
+  right — 1 ms and "nothing counted" for a real STUDY1 load — but nothing loads
+  the map twice. `P_IsRothMap` opened the report, and `P_OpenMapData` calls it
+  for the real load *and* for `P_CheckMapData`'s existence probes: menus
+  validating episodes, MAPINFO redirects, the secret-exit lookup. `Log::Begin`
+  opens with `"w"`, so every probe truncated that map's report. One run left a
+  0 ms stub for **all 44 maps**. `justcheck` cannot separate load from probe —
+  `P_SetupLevel` passes it as `true` too, because all it means is "do not
+  require the map lumps". The report now opens in `MapLoader::LoadRothMap`, the
+  first point reached only on a genuine load. Verified: a STUDY1 load writes one
+  complete 13,670-byte report and no stub for any other map; sitting at the menu
+  writes none at all.
 - **ZDL's `iwad=` field overrides anything in its extra-args box.** `Roth.zdl`
   and a first attempt at `RothHands.zdl` both loaded `doom2.wad`, which gives
   Doom's menu, Doom's difficulty screen, and a hang on New Game because STUDY1
