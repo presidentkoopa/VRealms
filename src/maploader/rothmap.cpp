@@ -406,7 +406,16 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// above walls is still not modelled -- that is the FF_EDGE_MAP counter.
 		Level->skytexture1 = Level->skytexture2 = skyTex;
 		Level->skyspeed1 = Level->skyspeed2 = 0.f;
-		log.Line("  sky image      stored index %d", rm.metadata.skyTexture);
+		// NAMED AND MEASURED, not just "there is one". A sky that resolves to a
+		// black or degenerate picture is indistinguishable from a hole: every
+		// sky surface in the map, floor and ceiling alike, draws it.
+		if (auto *gt = TexMan.GetGameTexture(skyTex))
+			log.Line("  sky image      stored index %d -> '%s'  %dx%d",
+				rm.metadata.skyTexture, gt->GetName().GetChars(),
+				(int)gt->GetDisplayWidth(), (int)gt->GetDisplayHeight());
+		else
+			log.Line("  sky image      stored index %d -> NO GAME TEXTURE",
+				rm.metadata.skyTexture);
 	}
 	else
 	{
@@ -672,6 +681,15 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			const bool isSky = haveArt && art.IsSkySurface(index);
 			FTextureID tex = isSky ? FNullTextureID() : worldTex(index);
 			if (isSky) skyFlats++;
+
+			// WHICH SECTORS, not just how many. A sky flat indoors is how a
+			// black hole appears in a floor or a ceiling: the surface resolves
+			// to the sky, and whatever the sky picture is gets drawn there --
+			// solid black if it is dark or unset. Naming the sector turns "the
+			// ceiling has a hole in it" into a lookup.
+			if (isSky)
+				log.Line("  sky flat       sector %d %s", (int)i,
+					which == sector_t::ceiling ? "ceiling" : "floor");
 
 			// A flat must draw SOMETHING or the sector renders hall of mirrors,
 			// so "nothing here" also becomes the sky.
@@ -1539,6 +1557,23 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			const FTextureID slabBot = undTex.isValid() ? undTex : topTex;
 			cs->SetTexture(sector_t::ceiling, slabTop.isValid() ? slabTop : FNullTextureID(), false);
 			cs->SetTexture(sector_t::floor, slabBot.isValid() ? slabBot : FNullTextureID(), false);
+
+			// EVERY SLAB, NAMED. A slab that resolves to no texture is drawn as
+			// a solid black quad hanging in the room -- the "black holes in the
+			// floor and ceiling" an owner reports, which look like missing
+			// geometry and are actually a mid-platform with no art. Logging the
+			// stored indices makes that a lookup instead of a hunt.
+			if (!slabTop.isValid() || !slabBot.isValid())
+			{
+				log.Line("  platform sector %d  top idx %u %s, underside idx %u %s"
+					"  z %.0f..%.0f  <-- DRAWS BLACK",
+					(int)i, (unsigned)mp.topTexture,
+					topTex.isValid() ? "ok" : "UNRESOLVED",
+					(unsigned)mp.undersideTexture,
+					undTex.isValid() ? "ok" : "UNRESOLVED", undZ, topZ);
+				log.Count("mid-platforms: no art on either face -- draws black",
+					1);
+			}
 
 			// THROUGH roth_surface, like every other flat. These slabs are the
 			// rugs and table tops, so they are exactly the surfaces people look
