@@ -89,25 +89,56 @@ steps 1-9 himself. **The rest of the order stands as written.**
 
 ## 5. THE NATIVES PORT (step 7) — measured
 
-`RS_WorldHands` **cannot load on REMAROTH**. Its ZScript calls engine functions
-this fork does not have; ZScript compiles at startup, so it is a fatal script
-error and the session refuses to start with a cause that looks unrelated.
+> **DONE 2026-10-09, and the table below was wrong twice. Corrected in place.**
+> It was **six** natives, not four, and `HandPos` was marked present when it is
+> not there at all — only a comment in `doombase.zs` mentions it. The owner
+> pulled step 7 to the front, which is why this is the first thing built.
+> All six are in as of `b7a1e67f0a`, and **`RS_WorldHands.pk3` now loads**:
+> 40 lumps, then `Init complete`, no script error. ZScript compiles at startup,
+> so that is the whole mod and its ~30 classes compiling here for the first
+> time. Still unproven, both needing a headset: hand behaviour (the check ran
+> at `vr_mode 0`) and the uniform offsets, which corrupt pictures rather than
+> erroring. See the commit message; it carries the traps.
 
-| native | REMAROTH | UZDXREMA | called from |
+`RS_WorldHands` **could not load on REMAROTH**. Its ZScript calls engine
+functions this fork did not have; ZScript compiles at startup, so it was a
+fatal script error and the session refused to start with a cause that looked
+unrelated.
+
+| native | REMAROTH (before) | UZDXREMA | called from |
 |---|---|---|---|
-| `HandPos` | ✅ | ✅ | — |
+| `HandPos` | ❌ **not ✅** | ✅ | `doombase.zs:1407` upstream; absent here |
 | `HandVelAtPoint` | ❌ | ✅ | `rs_held.zs:1270`, `rs_telemetry.zs:73` |
 | `HandPeakAgeMs` | ❌ | ✅ | `rs_throw.zs:217`, `rs_telemetry.zs:74` |
 | `GetRawStickTurn` | ❌ | ✅ | `rs_ovaledit.zs:301` |
 | `SetBeamStyleScroll` | ❌ | ✅ | `rs_grabviz.zs:560` — **the beam itself** |
+| `GetModelPlacementPrefix` | ❌ | ✅ | **was not on this list at all** |
 
-All four exist in UZDXREMA, so this is a copy, not an invention. The grip
-contract is **already fully exported** in REMAROTH — `GrabClaimMain`
+**How the real list was got, because "the ones found so far" is not a method.**
+Diff every `native` declaration in both forks — 1,445 here against 1,535
+upstream, **109 absent in total** — then intersect that set with every name
+`RS_WorldHands` calls. Native **fields** need the same treatment separately,
+since a missing one breaks compilation identically: four names matched and all
+four turned out to be comments or the mod's own, so none was needed.
+
+All six exist in UZDXREMA, so this was a port, not an invention — but **not a
+copy of thunks**, which is what "a copy" implied. The thunks are five lines
+each; the `VR_*` backend they call (`VR_HandWorldPos`, `VR_HandVelAtPoint`,
+`VR_HandPeakAgeMs`) did not exist in this fork at all, and that machinery is
+most of the ~815 lines.
+
+The grip contract was **already fully exported** in REMAROTH — `GrabClaimMain`
 (`actor.zs:681`), `GripContextMain` (`:703`), `GripHeldMain` (`:713`),
 `GripClaimMain` (`:758`), `GripSubjectMain` (`:760`), `MainHandRoll` (`:618`),
-`OffhandRoll` (`:645`). Four natives, not a merge.
+`OffhandRoll` (`:645`). That part of the claim held.
 
-**Unchecked:** whether four is the whole list. Those are the ones found so far.
+**What is still genuinely missing, and is a bigger job than this was:**
+`src/r_data/vr_rig.cpp`, `vr_rig.h`, `vr_avatar.cpp`, `vr_avatar.h` and
+`vr_avatar_pose.cpp` **do not exist in this fork.** Anything in the RS_ fleet
+that needs the rig or avatar subsystem (RS_Avatar, RS_VRBody) needs those
+ported first. `HandPos` does **not** — its setter is in `vk_openxrdevice.cpp`,
+which we have, and the rig hunks were a separate concern riding in the same
+upstream commit.
 
 ---
 

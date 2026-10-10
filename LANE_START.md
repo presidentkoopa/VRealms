@@ -380,12 +380,34 @@ made, or a measured miss that has not been fixed.
 **Then:** the rest of the `0x30998` load-time table (`HANDOFF_REMAROTH.md` §4
 item 7).
 
-### Step 3 — the game layer: NOT YET
+### Step 3 — the game layer: ~~NOT YET~~ **GO, as of 2026-10-09**
 
-The owner has deferred it and will need convincing. Do not raise it. When they
-say go, the order is already written: `HANDOFF_REMAROTH.md` §10 item 4 (the
-census), §14 (the inventory steps), `ROTH_GAME_PORT.md` §4. Muzzle flash waits
-for it too.
+> **THIS SECTION WAS WRONG FROM 2026-10-09 AND IS CORRECTED IN PLACE.** It said
+> the owner had deferred the game layer and told you not to raise it. **He
+> un-deferred it the same day**, in the goal block at the top of this file:
+> *Realms running in VR with sprite weapons and the WorldHands beam, playable
+> start to finish.* "Playable start to finish" **is** the game layer. A lane
+> reading this file in order used to hit "do not raise it" after having just
+> read the goal that requires it. §7's decision table had the same stale row.
+>
+> The order is unchanged and already written: `HANDOFF_REMAROTH.md` §10 item 4
+> (the census), §14 (the inventory steps), then `ROTH_GAME_PORT.md` §4 steps
+> 0-9. Muzzle flash still waits for it.
+>
+> **One deviation, the owner's, and it is already done:** `ROTH_GAME_PORT.md`
+> §4 puts flat play first and VR second. He pulled the hands forward instead,
+> so he can check the steps himself rather than take a lane's word for it —
+> see `HANDOFF_SESSION_2026-10-09.md` §4 and §5. The rest of the order stands.
+>
+> **And do not read §2.2's puppet rule as a ban on hands touching things.**
+> What it protects is game *state* — carried, used, flags, saves. Where a prop
+> floats while the player holds it is presentation, which the same documents
+> call free to be better. The seam is that a grab reports outcomes to the core,
+> not that it asks permission to move a mesh. Stated by the owner 2026-10-09:
+> *"we DO want ROTH working 1:1 ... but our Doom engine is built for VR, so
+> many things need to be 1:1 but keep VR in mind."* ROTH props are already
+> real Actors (`roth_objects.cpp:1065` spawns each as `LoaderProp : Actor`),
+> so the RS_ fleet does not need rewriting to grab them.
 
 ---
 
@@ -426,11 +448,12 @@ They are right that something is wrong; verify what.
 | Decision | State |
 |---|---|
 | Target | PC VR, Vulkan. Flat play exists to compare against the original. |
-| 1:1 first | Anything "better in VR" is recorded in `ROTH_BETTER.md`, not built. |
+| 1:1 first | The **logic** is 1:1. Presentation and interface are free to be *better*, and object interaction is interface — see §5 Step 3. Rule changes still go in `ROTH_BETTER.md` rather than being built. |
 | RAQUIA2 | Re-centred at load. |
 | Props sinking into the floor | **On**, as the original does it. The owner's earlier instinct was to leave it off; it is one line to flip. `ROTH_BETTER.md` §10. Ask before changing it. |
 | The sky | The faithful band first; a real VR sky is phase 2. `ROTH_BETTER.md` §9. |
-| The game layer | Deferred by the owner. |
+| The game layer | ~~Deferred by the owner.~~ **GO as of 2026-10-09** — the goal is "playable start to finish". §5 Step 3. |
+| The hands | `RS_WorldHands` **loads** as of `b7a1e67f0a` (six natives ported). Launch it with `RothHands.zdl`. Hand behaviour and the new uniform offsets are both still unproven in a headset. |
 
 ---
 
