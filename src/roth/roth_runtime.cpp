@@ -3980,6 +3980,58 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			log->Line("    0x%02x  %4d  %-18s  %s", (unsigned)kv.first, kv.second,
 				TrigEventName(ev), reach);
 		}
+		//------------------------------------------------------------------
+		// WHAT THE WALL-BAND GATE WILL REFUSE, counted before trusting it.
+		//
+		// HANDOFF_SESSION_2026-10-09.md section 6 asked for exactly these two
+		// numbers BEFORE the gate was switched on, and the gate went on first
+		// (roth_pick, 84d54c5c33) -- so they are reported here instead, to make
+		// a surprise into a measurement at the next load.
+		//
+		// 1. HOW MANY FACE BINDINGS CARRY A NON-ZERO +0x06. Those are the only
+		//    ones the band gate can refuse: a record with 0x00 answers on any
+		//    band, so turning the gate on cannot change it. A high count means
+		//    roth_pick alters a lot of behaviour at once.
+		//
+		// 2. HOW MANY SIT ON A TWO-SIDED LINE. This sizes the OTHER risk, the
+		//    one that made TRACE_Continue mandatory: p_trace.cpp never reports
+		//    a two-sided line the ray passes through, so every binding counted
+		//    here is one a stop-at-first trace would silently lose. If a later
+		//    change replaces the continue-callback with a plain trace, this
+		//    number is what goes dark.
+		//------------------------------------------------------------------
+		{
+			int banded = 0, bandedTwoSided = 0, openBand = 0, twoSidedTotal = 0;
+			for (const auto &kv : g.bySide)
+			{
+				const int sideIdx = kv.first;
+				bool twoSided = false;
+				if (g.level != nullptr && sideIdx >= 0
+					&& sideIdx < (int)g.level->sides.Size())
+				{
+					const line_t *ln = g.level->sides[sideIdx].linedef;
+					twoSided = ln != nullptr && (ln->flags & ML_TWOSIDED) != 0;
+				}
+				if (twoSided) twoSidedTotal++;
+				for (const Binding &b : kv.second)
+				{
+					if (b.fireFlags == 0) { openBand++; continue; }
+					banded++;
+					if (twoSided) bandedTwoSided++;
+				}
+			}
+			log->Line("  wall-band gate   %d binding(s) carry a non-zero +0x06"
+				" and CAN be refused once a hit position is supplied;"
+				" %d answer on any band", banded, openBand);
+			log->Line("                   of the %d, %d sit on a two-sided line",
+				banded, bandedTwoSided);
+			log->Line("  two-sided sides  %d of %d wired sides -- every binding on"
+				" one is invisible to a stop-at-first trace, which is why the"
+				" pick uses TRACE_Continue", twoSidedTotal, (int)g.bySide.size());
+			log->Count("logic: face bindings the band gate can refuse", banded);
+			log->Count("logic: of those, on two-sided lines", bandedTwoSided);
+		}
+
 		log->Count("logic: triggers whose key named no geometry", unbound);
 		log->Count("logic: trigger records whose opcode has no event here",
 			unclassified);
