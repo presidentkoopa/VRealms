@@ -1531,6 +1531,17 @@ public:
 	// default alone, so this is inert for every level that does not set it.
 	double		ForcedPlayerMaxStepHeight = 0;	// step-up limit, 0 = class default
 
+	// And how WIDE he is. A person the right height still carrying Doom's
+	// 16-unit radius walks through gaps his own level was built to stop him in.
+	// Applied through an unlink/relink, because radius is what decides which
+	// blockmap cells an actor occupies.
+	double		ForcedPlayerRadius = 0;			// collision radius, 0 = class default
+
+	// And how far he can reach to use something. Doom's 64 is a 56-unit
+	// player's arm; it is not a 154-unit player's, and both the eye probe and
+	// the hand pick read it.
+	double		ForcedPlayerUseRange = 0;		// +use reach, 0 = class default
+
 	// How fast darkness closes in with distance, for ELightMode::DistanceShade.
 	// A surface's shade step is (distance >> ShadeFalloffShift), so a LARGER
 	// shift means a slower fade and a brighter world. Zero disables the mode's

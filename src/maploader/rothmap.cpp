@@ -234,6 +234,56 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			" meta[0x0c]=%d, doubled +1", Level->ForcedPlayerMaxStepHeight,
 			(int)rm.metadata.maxClimb);
 
+		// AND HOW WIDE HE IS. Not from the map: the original hardcodes the
+		// player's collision dimensions, unlike height and climb which the map
+		// states. move_player_with_collision (E/collision_physics.c:1687-1692)
+		// writes the whole block as fixed player dims.
+		//
+		// IT IS 0x1c = 28, NOT the 0x70 that docs/GAME_core.md 3.3 quotes as
+		// "radius". 0x70 is the derived 4r. The same function builds every
+		// other entity's block from one radius r (:1592-1600) as
+		//
+		//     box_max = r,  box_min = -r,  radius = 4r,
+		//     radius_sq = 64r^2,  radius_sq+4 = 65r^2
+		//
+		// and the player's hardcoded values satisfy all five at r = 28:
+		// 0x1c = 28, 0x70 = 4*28, 0xc400 = 64*28^2, 0xc710 = 65*28^2. Setting
+		// the radius to 0x70 would make him four times too wide.
+		//
+		// No doubling: that applies to the three METADATA fields at map_load.c
+		// :206-209, and this is not one of them.
+		const double ROTH_PLAYER_RADIUS = 28.;
+		Level->ForcedPlayerRadius = ROTH_PLAYER_RADIUS;
+		log.Line("  radius         %.0f units (Doom's default is 16) -- fixed by"
+			" the original at 0x1c; 0x70 is its 4r", Level->ForcedPlayerRadius);
+
+		// AND HOW FAR HE CAN REACH. PROVISIONAL -- read the next paragraph
+		// before changing it, and before trusting it.
+		//
+		// The original gates "use" on the renderer's PICK DEPTH, not on world
+		// distance: < 0x258 (600) is use range, < 0x7d0 is the "too far"
+		// cursor, < 0x1388 is the examine probe (E/input.c:1031, :1112-1258;
+		// docs/GAME_core.md 4.4). Those depth units are marked [open] in the
+		// spec, which says in as many words that the 600 has to be recalibrated
+		// to world units by measuring in ROTH.C. GAME_core.md 5.2 step 8 is the
+		// measurement: find the depth where the cursor changes, confirm 599
+		// fires and 601 does not.
+		//
+		// THE 600 BELOW IS THAT BAND NUMBER READ AS WORLD UNITS. It is NOT the
+		// calibrated answer and must not be quoted as one. It is here because
+		// the alternative is worse: Doom's 64 is a 56-unit player's arm, and at
+		// 93.5 units to the metre it gives this 154-unit player 0.68 m of
+		// reach, while UseFlat and the hand pick BOTH read this field and the
+		// hand pick is documented to let the beam "cross rooms". 600 is 6.4 m,
+		// which does. Reach is interface, which ROTH_BETTER.md 13 leaves free;
+		// WHICH records a press may fire is logic, and that is untouched.
+		const double ROTH_USE_RANGE_PROVISIONAL = 600.;
+		Level->ForcedPlayerUseRange = ROTH_USE_RANGE_PROVISIONAL;
+		log.Line("  use range      %.0f units PROVISIONAL (Doom's default is 64"
+			" = 0.68 m here) -- the original's band is a PICK DEPTH of 600,"
+			" units still uncalibrated: GAME_core.md 5.2 step 8",
+			Level->ForcedPlayerUseRange);
+
 		// AND THE SAME FACT AGAIN, FOR THE HEADSET. Making the player the right
 		// number of UNITS tall fixes the flat-screen view, and does nothing at
 		// all in VR: there the world's size is set by how many units the engine

@@ -6514,9 +6514,18 @@ AActor *FLevelLocals::SpawnPlayer (FPlayerStart *mthing, int playernum, int flag
 	// by scaling the world: the map's other measurements (step heights, door
 	// widths, how far a table sits off the floor) are all correct relative to
 	// ITS player, so the player is the thing that has to change.
-	if (ForcedPlayerHeight > 0)
+	if (ForcedPlayerHeight > 0 || ForcedPlayerRadius > 0)
 	{
-		mobj->Height = ForcedPlayerHeight;
+		// Through an unlink/relink, not a bare assignment. radius decides which
+		// blockmap cells and sector lists an actor is filed under, so changing
+		// it in place leaves the world holding the OLD extent and collision
+		// quietly keeps using it. This is what A_SetSize does for the same
+		// reason -- see p_actionfunctions.cpp.
+		FLinkContext ctx;
+		mobj->UnlinkFromWorld(&ctx);
+		if (ForcedPlayerHeight > 0) mobj->Height = ForcedPlayerHeight;
+		if (ForcedPlayerRadius > 0) mobj->radius = ForcedPlayerRadius;
+		mobj->LinkToWorld(&ctx);
 	}
 	if (ForcedPlayerViewHeight > 0)
 	{
@@ -6525,6 +6534,10 @@ AActor *FLevelLocals::SpawnPlayer (FPlayerStart *mthing, int playernum, int flag
 	if (ForcedPlayerMaxStepHeight > 0)
 	{
 		mobj->MaxStepHeight = ForcedPlayerMaxStepHeight;
+	}
+	if (ForcedPlayerUseRange > 0)
+	{
+		mobj->FloatVar(NAME_UseRange) = ForcedPlayerUseRange;
 	}
 	state = p->playerstate;
 	const auto heldWeap = state == PST_REBORN && (dmflags3 & DF3_REMEMBER_LAST_WEAP) ? p->ReadyWeapon : nullptr;
