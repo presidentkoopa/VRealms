@@ -236,12 +236,45 @@ pick was broken.** 600 is the original's band number read as world units; it is
 **not** the calibration `GAME_core.md` §4.4 asks for, and the load report labels
 it PROVISIONAL. §5.2 step 8 is the measurement that replaces it.
 
-**min fit needs a decision, not just a value.** Realms fits the player through a
-96-unit headroom span independent of his 154-unit height, and **GZDoom has no
-fit-height separate from actual height**. Expect low lintels and passages to
-block where the original let you through. Crouch (step-up drops to 16,
-`GAME_core.md` §5) needs the crouch state and belongs with the movement rules,
-not the loader.
+**min fit — done (`68610d094a`), and it needed no engine change after all.**
+What the original tests to let the player through an opening is a SPAN
+THRESHOLD loaded from `g_min_fit` (`E/collision_physics.c:1693`), and every
+passage check is the same shape — `if (ceiling - floor) < span, blocked`
+(`:1048`, portals at `:604-633`). It is `2*meta[0x0e]` = **96**, while the eye
+sits at 144: a Realms player walks through a 96-unit gap **standing up**.
+
+The loader had been using `ph + 10` as the collision height. **That was never a
+Realms measurement** — it is the eye height plus a guess — and it made every
+opening between 96 and 154 impassable that the original walks straight through.
+Collision height is now `MinFit()`; the eye stays 144.
+
+The original also *squashes* rather than stopping: `g_player_height` is dynamic,
+clamped to `(ceiling - pos)` and eased back to its resting target at 4 a tic
+(`E/player.c:313`, `:318-326`) — a hard landing squashes it toward `0x30`.
+GZDoom's `viewz` clamp in `P_CalcHeight` gives the same duck for free once the
+collision height is the span, so **the original's auto-crouch is reproduced
+without new engine code.**
+
+> **THE TRAP THIS NEARLY SET.** The VR units-per-metre was derived from
+> `ForcedPlayerHeight`, which was the same number until this change. Left alone
+> it would have rescaled the headset's entire world from **93.5 to 58.3** units
+> a metre as a side effect of a collision fix. It now reads a named
+> `standingHeight`. Verified unchanged at 93.5 in the load report.
+
+### Crouch
+
+**Natural crouch already exists and was switched off.** The OpenXR device sets
+`player->crouchfactor = hmdHeight / defaultViewHeight` from the real headset
+height — but only when `vr_crouch_use_button` is false, and
+`CVAR(Bool, vr_crouch_use_button, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)`
+defaults to **true**, so it waits for the button instead. Added
+`+vr_crouch_use_button false` to the owner's `RothHands.cmd`.
+
+**Still not ported:** the crouched step-up limit. The original drops
+`g_max_climb` to `0x10` = 16 while crouched (`E/collision_physics.c:1698-1701`,
+`GAME_core.md` §5); `ForcedPlayerMaxStepHeight` is a constant 65 regardless of
+crouch state. Needs the crouch state at move time, so it belongs in the movement
+rules rather than the loader.
 
 ## 3c. VR_UnitsPerMeter called itself
 
