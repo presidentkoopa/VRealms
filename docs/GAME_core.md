@@ -242,11 +242,37 @@ The depth units are **[open]**: they are the projection's perspective step, not 
   - load-time init **0x30998** (E/map_load.c:1088-1098; `init_loaded_object_table` :1134-1196; re-visits suppress init via `set_state_record_count(handle)`, E/map_load.c:651-660).
 
 ### 5.2 The 15 trigger categories
+> **NOTE ADDED 2026-10-10, from implementing row 1.** Two things in this
+> section read wrongly, and each cost a reading of ROTH.C to settle.
+>
+> **"0x08 / 0x02" in row 1 are two BASES of one category, not two opcodes in
+> two categories.** `run_leftclick_object_trigger` (E/raw_commands.c:2920) finds
+> its record by matching the record's key at `+0x08` against the object's own id
+> at `+0x0e`, skipping records whose `+0x02` carries bit 3, and then branches on
+> the **base byte at `+0x03`**: base 2 is a light switch, base 8 runs the
+> command chain, any other base acts and does nothing. Both bases live in
+> category 1 and are reached through the same search.
+>
+> **`word[obj + 4] ^= 1`, which that handler does after a successful light
+> switch, is NOT a state flag.** `+0x04` is the object's texture pair -- index
+> in the low byte, source in the high one -- so flipping bit 0 swaps the object
+> to its **neighbouring sprite**. That is how a lever shows which way it is
+> thrown: the two positions are two pieces of art, not a flag plus a redraw.
+>
+> The examine side -- channel 2 of `dispatch_entry_command_trigger_b`
+> (:3145-3164, type 4) -- uses the same key-against-id match, carries **no
+> direction mask and no bounding box** (stated in the original's own comment on
+> that branch), and has no base branch at all: it simply walks the chain.
+>
+> Implemented as `roth::ActivateObject`; see `HANDOFF_SESSION_2026-10-10.md`
+> section 5. Nothing above is deleted -- the row's citations are all correct, it
+> is the column heading that misleads.
+
 They are object-table header `{offset, count}` pairs at `hdr + 0x08 + 4·i` (RAW.md "Entry Command Counts"). The consumer and firer of each is taken from code; this **corrects R/ROTH_COMMANDS.md and R/src/roth/roth_runtime.cpp:54-55**.
 
 | # | hdr | Opcode | Fires when (firer) | Load marker |
 |---|---|---|---|---|
-| 1 | +0x08 | 0x08 / 0x02 | **Left-click object**, by object id (`run_leftclick_object_trigger` E/raw_commands.c:2920; `find_unflagged_object_by_key` E/renderer.c:11078). DBASE100 op 0x36 fires these by id (`run_object_commands_by_id` :1735) | 0x02 → `tick_cmd_45` light pulse (E/raw_commands.c:1868) |
+| 1 | +0x08 | 0x08 / 0x02 **(two BASES, not two opcodes -- see the note under this table)** | **Left-click object**, by object id (`run_leftclick_object_trigger` E/raw_commands.c:2920; `find_unflagged_object_by_key` E/renderer.c:11078). DBASE100 op 0x36 fires these by id (`run_object_commands_by_id` :1735) | 0x02 → `tick_cmd_45` light pulse (E/raw_commands.c:1868) |
 | 2 | +0x0c | none | unused (RAW.md); `init_loaded_object_table` pass 1 walks it (E/map_load.c:1150) **[open]** | |
 | 3 | +0x10 | 0x03 | No firer found. The init entry runs the floor/ceiling mover at load (`tick_move_floorceil` E/raw_commands.c:5933) **[open]** | |
 | 4 | +0x14 | 0x13 | **Enter/leave sector** (`twe_link_state` → `fire_sector_trigger`, E/raw_commands.c:3202-3270; lookup `find_object_record_by_id` :5398). Variants: plain, Z-below-floor (water), linked platform | sector +0x17 \|= 0x80/0x40/0xc0 (:4994-5011) |

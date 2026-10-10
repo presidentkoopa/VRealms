@@ -453,7 +453,8 @@ They are right that something is wrong; verify what.
 | Props sinking into the floor | **On**, as the original does it. The owner's earlier instinct was to leave it off; it is one line to flip. `ROTH_BETTER.md` §10. Ask before changing it. |
 | The sky | The faithful band first; a real VR sky is phase 2. `ROTH_BETTER.md` §9. |
 | The game layer | ~~Deferred by the owner.~~ **GO as of 2026-10-09** — the goal is "playable start to finish". §5 Step 3. |
-| The hands | `RS_WorldHands` **loads** as of `b7a1e67f0a` (six natives ported). Launch it with `RothHands.zdl`. Hand behaviour and the new uniform offsets are both still unproven in a headset. |
+| The hands | `RS_WorldHands` **loads** as of `b7a1e67f0a` (six natives ported). Launch with **`RothHands.cmd`** — ZDL's own `iwad=` field overrides its extra-args box and loads doom2. Lighting and the beam are verified correct by eye; hand *behaviour* is not. |
+| Pointing at things | `roth_pick` (archived, **default off**) gives one 3D ray from the hand and routes wall faces, floors, door leaves and props. `84d54c5c33`. It also turns the wall-band gate on for the first time, so expect some working triggers to refuse. Untested in a headset. |
 
 ---
 

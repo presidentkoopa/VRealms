@@ -65,6 +65,26 @@ This is step 6 below, and it is a large step.
 
 ## 4. THE PLAN — the seam, in seven steps
 
+> **PROGRESS 2026-10-10. The owner changed the order: step 7 went FIRST.**
+> Reason worth keeping — nothing else in this plan is checkable by him without
+> a hand ray to check it with.
+>
+> | step | state |
+> |---|---|
+> | 1 measure the hand branch | **not done** — only he can do it |
+> | 2 three standalone fixes | **part** — the `*usefail` offhand-ray bug is fixed (`84d54c5c33`); `GetLaserBeamEndpoints`' sector argument is not |
+> | 3 one hand ray per tic | **not done** |
+> | 4 the pick | **DONE** `84d54c5c33` |
+> | 5 delete the three half-measures | **not done**, and correctly so — this step waits until 4 is *trusted*, which needs the headset |
+> | 6 the object channel | **DONE** `84d54c5c33` |
+> | 7 port the natives | **DONE** `b7a1e67f0a` — and it was six, not four; §5 is corrected |
+>
+> Read `HANDOFF_SESSION_2026-10-10.md` before acting on the rows below. Two
+> things there change how you read this section: the wall-band gate now RUNS
+> (so some working triggers may start refusing, which is the rule, not a
+> regression), and the §6 headless counts that would have made that a measured
+> decision were never taken.
+
 From the review. Each step says what the owner can *do* afterwards.
 
 | # | what | proves |
