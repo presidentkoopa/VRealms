@@ -643,8 +643,16 @@ static float gVRUnitsPerMeterOverride = 0.f;
 
 float VR_UnitsPerMeter()
 {
+	// The fallback is the CVAR, vr_vunits_per_meter. It used to read
+	// VR_UnitsPerMeter() -- this function -- so with no override set it called
+	// itself forever, and the archived player preference it is supposed to
+	// return could never be reached. Every VR frame goes through here (IPD and
+	// stereo separation, the HUD projection, head height, positional movement,
+	// thrown-weapon velocity), so the only reason it was survivable is that a
+	// loaded Realms map always sets the override and takes the other branch.
+	// Do not reintroduce the recursion by "simplifying" the name below.
 	return gVRUnitsPerMeterOverride > 0.f ? gVRUnitsPerMeterOverride
-	                                      : (float)VR_UnitsPerMeter();
+	                                      : (float)vr_vunits_per_meter;
 }
 
 void VR_SetUnitsPerMeterOverride(float unitsPerMeter)
