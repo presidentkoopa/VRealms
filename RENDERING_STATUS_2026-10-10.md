@@ -79,35 +79,57 @@ Two things to read carefully here:
    floor, a ceiling or a wall" is the same question in both engines.
    **35,914 pixels where the original draws floor or ceiling, we draw wall.**
 
-That second number is the holes. We are painting wall over floor and ceiling that
-should be visible, and the wall we paint has no texture on it, so you see through
-it into nothing.
+### CORRECTION — that second number was the rig, not the renderer
 
-It was then narrowed to its cause:
+**This section originally concluded that two linedefs, 87 and 88, were painting
+untextured wall over the floor and ceiling. That conclusion was wrong, and it was
+disproved by rendering an actual frame.** It is left here, corrected rather than
+deleted, because the way it went wrong is the point of §5.
 
-- **two linedefs**, numbered 87 and 88, account for **all 36,096** of those pixels
-- they are the **west wall of the room**, from (256,396) to (256,716), split at
-  y=556, with sectors 404 and 405 behind them
-- they carry **texture index 0 with no mid, upper or lower texture**
-- for this map's artwork pack, **index 0 is the pack's "draw nothing" key** — the
-  index that means *paint no pixels at all*
+Lines 87 and 88 are an **open doorway** from the landing into the corridor beyond,
+and **our renderer draws straight through them** — in a rendered frame the corridor
+carries on past x = 256 with its walls, carpet and paintings, as it should.
 
-Six other explanations were tested and **ruled out by measurement, not argument**:
+The 35,914 "we draw wall" pixels were an artefact of how our half of the
+comparison is built. `rothdiff_dump` casts one `Trace()` ray per pixel; that is a
+raycast, not a picture, and it **stops on a two-sided line that the renderer
+passes through**. So the rig was reporting a wall that is not drawn.
+
+**Consequence: the rig's "kind" numbers cannot be trusted either**, until that
+`Trace()` behaviour is understood. Both halves of §3 are now suspect — the
+texture numbers for the ID-space reason above, and the kind numbers for this one.
+That makes fixing the rig the first task, not an aside.
+
+Six other explanations were tested and ruled out by measurement before that:
 intermediate floors (all 15 resolve valid art), Realms' own lighting model (the
 black regions are pixel-identical with it switched off), sky surfaces, degenerate
-sectors (only 4 in the map, none of them these), mismatched sector heights (both
-sides are 400..720), and broken face pairings (zero non-mutual links in the map).
+sectors (only 4 in the map, none of them these), mismatched sector heights, and
+broken face pairings (zero non-mutual links in the map). Those remain valid.
 
-A third wall in the same room — line 90 — has **identical data in every field**
-and renders correctly. So the defect is not in the wall record. It is in how we
-turn that record into geometry.
+### Where the holes actually are
 
-**The most likely cause, and it is already written down in our own docs:** we
-build every wall from floor to ceiling, because our loader does not carry the
-per-face wall height the original stores. `ROTH_STATE.md` §7 says this in as many
-words and calls it "geometry work, not texturing". A wall that should stop partway
-up, stretched to the ceiling and carrying a "draw nothing" texture, is exactly a
-see-through hole across the ceiling.
+At the **far end of the corridor, x = −256** — in the original, a painting between
+two candle stands; in ours, a black rectangle with black triangles in the floor
+and ceiling in front of it.
+
+That end of the corridor is built from a stack of **2-unit-thick sectors** (56 and
+57, each two units deep, with mid texture `0x8000` on their sides and the painting
+carried on a 2-unit-tall upper). Thin-sliver geometry of that kind is a plausible
+source of both the black face and the missing triangles in nearby flats — a
+mis-built BSP looks exactly like triangles missing from a floor.
+
+Two things are already established about it:
+
+- **It is not new.** A build from 2026-10-01 shows the same black end and the same
+  flat triangles, so nothing changed recently caused it.
+- **The door polyobjects are involved but are not the cause.** With their spots
+  turned off the triangles change shape; the black end stays.
+
+**Explicitly not the cause: wall heights.** An earlier draft of this document
+proposed that we build every wall floor-to-ceiling and that this was the bug. The
+note in `ROTH_STATE.md` §7 that says so is about the parallax sky above EDGE_MAP
+walls, and has nothing to do with this geometry. Do not change wall heights for
+this.
 
 ---
 
@@ -148,20 +170,27 @@ it is the reason defects of this size reached the headset at all.
 
 ## 6. What should happen next
 
-1. **Make the comparison the gate.** Pick a pose set — say 8–12 camera positions
-   across STUDY1, plus a handful in an outdoor map and a map with water — and
-   require a match percentage, per pose, before any loader change lands. The rig
-   already supports a saved baseline and exits non-zero on a regression.
+There is now a worked plan for this — `RENDERING_PLAN.md`, with the detail for the
+holes in `RENDERING_NEXT_STEP.md`. In summary:
 
-2. **Fix the texture-ID mapping in the rig first** (§3 item 1), or the headline
-   number stays uninformative and only the "kind" mismatches can be trusted.
+1. **Make the gate RENDERED FRAMES, not the identity buffer.** A pose set, our
+   frame against the original's real-art frame at the same pose, side by side,
+   with neutral post-processing. Start with a control pose whose centre is known
+   to match; if the control fails, the rig is wrong rather than the port.
 
-3. **Then work the defect classes in this order**, because they are roughly in
-   descending order of "makes the room unreadable":
-   - wall heights (the holes — §3)
-   - door leaf orientation and door textures
+2. **Do not trust the identity rig until both of its faults are fixed** — the
+   texture IDs being in different spaces, and our half stopping on open doorways
+   the renderer draws through (§3). Until then it can mislead a whole session, as
+   it did this one.
+
+3. **Then work the defects in order**, each as *one* change with a rendered pair
+   image before and after:
+   - the holes — test by leaving sectors 56 and 57 out of one build; if they come
+     back, the thin-sliver geometry is the bug (node builder, and mid `0x8000`)
+   - doors: untextured leaves and leaves facing the wrong way
+   - the chandelier and the stretched trees — both are 3D meshes on the same code
+     path, and mesh face texture mapping is the largest open item in that area
    - wall texture alignment
-   - sprite scaling (the trees) and prop placement (the chandelier)
 
 4. **Do not start the dialogue or inventory milestones until a room renders
    correctly.** They are large, they are invisible, and they will be built on
