@@ -59,6 +59,12 @@
 //==========================================================================
 CVAR(Bool, roth_lighting, true, CVAR_ARCHIVE | CVAR_NOINITCALL)
 
+// One line per wall in the load report, so an engine line index from rothdiff
+// can be turned back into the Realms face it was built from. NOT archived: it
+// is a diagnostic for one load, and 1,908 extra lines in every report is not
+// something anyone should inherit by accident.
+CVAR(Bool, roth_logwalls, false, CVAR_NOINITCALL)
+
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
@@ -1465,6 +1471,41 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		else
 		{
 			ld->flags |= ML_BLOCKING;
+		}
+
+		// EVERY WALL, NAMED, when roth_logwalls is on.
+		//
+		// rothdiff answers "which surface is wrong" with an ENGINE line index,
+		// and nothing in the tree could turn that number back into the Realms
+		// face it came from -- so a per-pixel diff that correctly blamed two
+		// linedefs still left a hunt through 1,908 of them. One line per wall
+		// closes that loop: index, the face behind it, its sector and the
+		// texture-mapping flags that decide how (and whether) it draws.
+		if (roth_logwalls)
+		{
+			const roth::TextureMap *tmL =
+				(f.textureMap >= 0 && f.textureMap < (int)rm.textureMaps.size())
+					? &rm.textureMaps[f.textureMap] : nullptr;
+			// BOTH sides' heights. An engine line only draws an upper or a
+			// lower band where the two sectors' ceilings or floors disagree,
+			// so the pair of spans is what says whether a two-sided line can
+			// put anything across a ceiling or a floor at all.
+			const int sis = pending[li].sister;
+			const int ssec = sis >= 0 ? rm.faces[sis].sector : -1;
+			log.Line("  wall line %-5d face %-5d sector %-4d z %d..%d |"
+				" sister %-5d sector %-4d z %s | map %-5d flags 0x%02x",
+				(int)li, pending[li].face, f.sector,
+				(int)rm.sectors[f.sector].floorHeight,
+				(int)rm.sectors[f.sector].ceilingHeight,
+				sis, ssec,
+				ssec >= 0
+					? [&]{ static char b[32];
+						snprintf(b, sizeof(b), "%d..%d",
+							(int)rm.sectors[ssec].floorHeight,
+							(int)rm.sectors[ssec].ceilingHeight);
+						return b; }()
+					: "-",
+				f.textureMap, tmL ? (unsigned)tmL->flags : 0u);
 		}
 
 		if (hasUpper) ld->flags |= ML_DONTPEGTOP;
