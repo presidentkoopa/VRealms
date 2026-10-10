@@ -812,6 +812,37 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Line("  flats on the 256x256-opaque scale exception  %d", flatOpaque256);
 	log.Line("  DRAW_FROM_BOTTOM pieces  %d  (explicit offset, not a peg flag)", pinBottomFaces);
 
+	// EVERY BROKEN SECTOR AS THE ENGINE ENDED UP WITH IT, when roth_logwalls
+	// is on. The wall dump prints the REALMS heights a line was built from;
+	// this prints what the engine will actually render, which is the only
+	// thing that can explain looking through a two-sided line into nothing. A
+	// sector whose ceiling is not above its floor, or whose flats resolved to
+	// no texture, draws nothing at all -- and through a portal that is
+	// indistinguishable from a hole in the world.
+	if (roth_logwalls)
+	{
+		int broken = 0;
+		for (unsigned si = 0; si < rm.sectors.size() && si < Level->sectors.Size(); si++)
+		{
+			sector_t &es = Level->sectors[si];
+			const double ef = es.floorplane.ZatPoint(es.centerspot);
+			const double ec = es.ceilingplane.ZatPoint(es.centerspot);
+			const bool degenerate = ec <= ef;
+			const bool noFloor = !es.GetTexture(sector_t::floor).isValid();
+			const bool noCeil = !es.GetTexture(sector_t::ceiling).isValid();
+			if (degenerate || noFloor || noCeil) broken++;
+			log.Line("  sector %-4d engine z %.0f..%.0f%s%s%s  (roth z %d..%d)",
+				(int)si, ef, ec,
+				degenerate ? "  DEGENERATE" : "",
+				noFloor ? "  NO FLOOR TEX" : "",
+				noCeil ? "  NO CEILING TEX" : "",
+				(int)rm.sectors[si].floorHeight,
+				(int)rm.sectors[si].ceilingHeight);
+		}
+		log.Line("  sectors that render nothing: %d of %d", broken,
+			(int)rm.sectors.size());
+	}
+
 	//----------------------------------------------------------------------
 	// REALMS' FIELD OF VIEW. We were not setting one at all, so every level has
 	// rendered at GZDoom's default 90 degrees.
@@ -1471,9 +1502,20 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// put anything across a ceiling or a floor at all.
 			const int sis = pending[li].sister;
 			const int ssec = sis >= 0 ? rm.faces[sis].sector : -1;
-			log.Line("  wall line %-5d face %-5d sector %-4d z %d..%d |"
-				" sister %-5d sector %-4d z %s | map %-5d flags 0x%02x",
-				(int)li, pending[li].face, f.sector,
+			// IS THE PAIRING MUTUAL? A sister link that the other face does not
+			// return is not a shared wall between two rooms -- it is a portal
+			// to somewhere else in the map, and the renderer shows the far
+			// room through it like a hole in the world.
+			const bool mutualSis = sis >= 0 && sis < (int)rm.faces.size()
+				&& rm.faces[sis].sister == pending[li].face;
+			log.Line("  wall line %-5d (%d,%d)-(%d,%d) len %.0f | face %-5d"
+				" sector %-4d z %d..%d |"
+				" sister %-5d sector %-4d z %s%s | map %-5d flags 0x%02x",
+				(int)li,
+				(int)ld->v1->fX(), (int)ld->v1->fY(),
+				(int)ld->v2->fX(), (int)ld->v2->fY(),
+				(ld->v2->fPos() - ld->v1->fPos()).Length(),
+				pending[li].face, f.sector,
 				(int)rm.sectors[f.sector].floorHeight,
 				(int)rm.sectors[f.sector].ceilingHeight,
 				sis, ssec,
@@ -1484,7 +1526,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 							(int)rm.sectors[ssec].ceilingHeight);
 						return b; }()
 					: "-",
+				(sis >= 0 && !mutualSis) ? "  NOT MUTUAL" : "",
 				f.textureMap, tmL ? (unsigned)tmL->flags : 0u);
+
+			// AND THE FAR SIDE'S OWN MAPPING. Either side of a two-sided wall
+			// can ask for a mid piece, and only the near one was being printed
+			// -- so a line whose BACK face wants a see-through panel looked
+			// blameless here while drawing nothing at all in the world.
+			if (sis >= 0)
+			{
+				const roth::Face &sf = rm.faces[sis];
+				const roth::TextureMap *tmS =
+					(sf.textureMap >= 0 && sf.textureMap < (int)rm.textureMaps.size())
+						? &rm.textureMaps[sf.textureMap] : nullptr;
+				log.Line("      back face %-5d map %-5d flags 0x%02x  mid %u"
+					" upper %u lower %u", sis, sf.textureMap,
+					tmS ? (unsigned)tmS->flags : 0u,
+					tmS ? (unsigned)tmS->midTexture : 0u,
+					tmS ? (unsigned)tmS->upperTexture : 0u,
+					tmS ? (unsigned)tmS->lowerTexture : 0u);
+			}
 		}
 
 		if (hasUpper) ld->flags |= ML_DONTPEGTOP;
