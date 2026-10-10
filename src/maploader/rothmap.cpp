@@ -681,47 +681,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			//
 			// Measured across all 44 retail maps: 36 of them carry flats on
 			// their pack's marker, 6,208 in total, from 2 in OPTEMP1 to 594
-			// ceilings in TOWER1.
-			//
-			// A FLAT ON THE MARKER IS STILL JUST A PICTURE. It is NOT drawn as
-			// the sky, and mapping it to skyflatnum is the bug this comment
-			// used to describe as the fix.
-			//
-			// In ROTH.C the sky is a WALL feature and only a wall feature.
-			// g_parallax_sky_active is written in exactly two places
-			// (renderer.c:9020 and :9281), both inside the world-FACE span
-			// loops, both guarded by g_current_surface_render_flags & 0x40 --
-			// that is FF_EDGE_MAP, a face flag -- and both clear it again the
-			// moment the face has been drawn. The sector-flat and mid-platform
-			// span paths (:9229/:9249, :9339/:9354) never mention it. Realms'
-			// sky fills the open region ABOVE A WALL TOP; it is never a ceiling
-			// and it is never a floor.
-			//
-			// The marker index is a real painted entry in every pack -- DEMO's
-			// is an opaque 256x146 picture -- so the original simply draws it,
-			// and TOWER1's "sky painted on its ceilings", which is what
-			// prompted the change to skyflatnum, is what TOWER1 is supposed to
-			// look like.
-			//
-			// What the change cost: 29 of STUDY1's flats became GZDoom sky,
-			// nine sectors (309-312, 339, 340, 342-344) carrying it on BOTH
-			// planes at once, which in the headset is a black hole punched
-			// through the floor and the ceiling of the manor's upper landing.
-			const bool onSkyMarker = haveArt && art.IsSkySurface(index);
-			FTextureID tex = worldTex(index);
-			if (onSkyMarker) skyFlats++;
+			// ceilings in TOWER1 -- whose sky picture is an ANIMATED entry, so
+			// it is moving cloud. Drawing those as an ordinary flat paints the
+			// sky onto the ceiling, which is exactly what TOWER1 looked like.
+			const bool isSky = haveArt && art.IsSkySurface(index);
+			FTextureID tex = isSky ? FNullTextureID() : worldTex(index);
+			if (isSky) skyFlats++;
 
-			// Named, not just counted, so the next report of a hole is a lookup
-			// rather than the hunt this one was.
-			if (onSkyMarker)
-				log.Line("  sky-marker flat  sector %d %s -- drawn as the"
-					" picture, as the original does", (int)i,
+			// WHICH SECTORS, not just how many. A sky flat indoors is how a
+			// black hole appears in a floor or a ceiling: the surface resolves
+			// to the sky, and whatever the sky picture is gets drawn there --
+			// solid black if it is dark or unset. Naming the sector turns "the
+			// ceiling has a hole in it" into a lookup.
+			if (isSky)
+				log.Line("  sky flat       sector %d %s", (int)i,
 					which == sector_t::ceiling ? "ceiling" : "floor");
 
 			// A flat must draw SOMETHING or the sector renders hall of mirrors,
 			// so "nothing here" also becomes the sky.
 			sec->SetTexture(which, tex.isValid() ? tex : skyflatnum, false);
-			if (!tex.isValid()) flatsToSky++;
+			if (!isSky && !tex.isValid()) flatsToSky++;
 
 			//----------------------------------------------------------
 			// THE FLAT TRANSFORM, and the ONLY place a sector plane gets one.
@@ -2521,21 +2500,17 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				advSlots, advKeysHit, advKeysHit + advKeysMiss);
 
 		// And the FLATS opcodes 0x0a / 0x0b can swap onto a floor or ceiling,
-		// which the record names at +0x0a.
-		//
-		// The pack's sky marker gets no special treatment here either, for the
-		// reason given where the sector flats are built: in ROTH.C a flat is
-		// never the sky, so a swapped flat resolves to its picture exactly like
-		// the one it replaces. Registering the marker AS sky put skyflatnum on
-		// any ceiling the level logic swapped, which is the same black hole
-		// arriving later instead of at load.
+		// which the record names at +0x0a. A flat index may be the pack's sky
+		// marker, so that is registered with it rather than resolved to a
+		// texture -- the runtime cannot tell the two apart by itself.
 		int flats = 0;
 		for (const roth::Command &c : rm.commands)
 		{
 			const uint8_t op = (uint8_t)(c.opcode & 0x7f);
 			if (op != 0x0A && op != 0x0B) continue;
 			const int fi = (int)c.Word(0x0A);
-			roth::RegisterFlat(fi, worldTex(fi), false, flatOpaque256For(fi));
+			const bool isSky = haveArt && art.IsSkySurface(fi);
+			roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky, flatOpaque256For(fi));
 			flats++;
 		}
 		// Every flat the GEOMETRY wears, too: a swap puts the sector's previous
@@ -2544,7 +2519,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			for (int pass = 0; pass < 2; pass++)
 			{
 				const int fi = pass == 0 ? rs.floorTexture : rs.ceilingTexture;
-				roth::RegisterFlat(fi, worldTex(fi), false, flatOpaque256For(fi));
+				const bool isSky = haveArt && art.IsSkySurface(fi);
+				roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky, flatOpaque256For(fi));
 			}
 		if (flats > 0)
 			log.Line("  logic flats      %d record(s) for opcodes 0x0a/0x0b", flats);
