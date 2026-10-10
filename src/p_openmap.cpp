@@ -113,15 +113,22 @@ static bool P_IsRothMap(const char *mapname, MapData *map)
 	map->rothFile = install.MapFile(mapname).c_str();
 	map->rothPack = install.PackFor(mapname).c_str();
 
-	// Every load gets its own report. Loading a foreign format off someone
-	// else's disk fails in ways that are hard to diagnose after the fact.
-	auto &log = roth::TheLog();
-	log.Begin(mapname);
-	log.Section("Source");
-	log.Line("  install   %s", install.Path().c_str());
-	log.Line("  map file  %s", map->rothFile.GetChars());
-	log.Line("  artwork   %s  (shared: %s)", map->rothPack.GetChars(),
-		install.SharedPack().c_str());
+	// THE LOAD REPORT IS NOT OPENED HERE, and must not be put back.
+	//
+	// This function answers one question -- "is this name a Realms map" -- and
+	// P_OpenMapData asks it from the real load AND from P_CheckMapData's
+	// existence probes (menus validating episodes, MAPINFO redirects, the
+	// secret-exit lookup). `justcheck` cannot separate the two: P_SetupLevel
+	// passes it as true as well, because all it means is "do not require the
+	// map lumps".
+	//
+	// Log::Begin opens with "w", so it truncates. Opening the report here gave
+	// every map that was merely ASKED ABOUT a 0 ms "(nothing counted)" report,
+	// and destroyed the real one whenever a probe landed after a load -- one
+	// run left a stub report for all 44 maps.
+	//
+	// It is opened by MapLoader::LoadRothMap instead: the first point that is
+	// reached only when the map is genuinely being loaded. See rothmap.cpp.
 	return true;
 }
 

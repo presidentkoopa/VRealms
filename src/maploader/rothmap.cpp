@@ -83,6 +83,27 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 {
 	auto &log = roth::TheLog();
 
+	// ONE REPORT PER REAL LOAD, OPENED HERE AND NOWHERE ELSE.
+	//
+	// Loading a foreign format off someone else's disk fails in ways that are
+	// hard to diagnose after the fact, so every load writes a full report.
+	// This is the first point reached ONLY when the map is really being
+	// loaded, which is why the report starts here instead of in P_IsRothMap:
+	// P_OpenMapData is also how the engine asks whether a map merely EXISTS
+	// (P_CheckMapData, from menus, MAPINFO redirects and the secret-exit
+	// lookup), and Log::Begin opens with "w". Opening it there stamped a 0 ms
+	// "(nothing counted)" report over every map that was asked about -- one
+	// run produced a stub for all 44 -- and destroyed the real report whenever
+	// a probe arrived after the load. That is why the per-map report could not
+	// be trusted as written.
+	auto &install = roth::TheInstall();
+	log.Begin(Level->MapName.GetChars());
+	log.Section("Source");
+	log.Line("  install   %s", install.Path().c_str());
+	log.Line("  map file  %s", map->rothFile.GetChars());
+	log.Line("  artwork   %s  (shared: %s)", map->rothPack.GetChars(),
+		install.SharedPack().c_str());
+
 	log.StageBegin("read file");
 	auto bytes = roth::Install::ReadWholeFile(map->rothFile.GetChars());
 	if (bytes.empty())
