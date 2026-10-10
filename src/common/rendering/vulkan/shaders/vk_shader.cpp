@@ -641,6 +641,13 @@ static const char *shaderBindings = R"(
 		// scene depth. uGpuParticleParams2.x: soft distance, map units, 0 = off.
 		vec4 uLinearizeDepth;
 		vec4 uGpuParticleParams2;
+
+		// [BEAMSCROLL] APPENDED LAST, matching HWViewpointUniforms::mBeamScroll by
+		// offset: per uploaded beam line, x scroll speed, y scroll depth. The other
+		// half of uBeamLook -- the beading was the last thing about a beam that was
+		// still scene-wide, so a solid lance and a beaded grab laser could not both
+		// exist. z and w are unused.
+		vec4 uBeamScroll[128];
 	};
 
 	layout(set = 1, binding = 0, std140) uniform readonly ViewpointUBO {
@@ -734,6 +741,8 @@ static const char *shaderBindings = R"(
 	// [2a] and these
 	#define uLinearizeDepth viewpoints[HW_VIEWPOINT_INDEX].uLinearizeDepth
 	#define uGpuParticleParams2 viewpoints[HW_VIEWPOINT_INDEX].uGpuParticleParams2
+	// [BEAMSCROLL] and this
+	#define uBeamScroll viewpoints[HW_VIEWPOINT_INDEX].uBeamScroll
 
 	layout(set = 1, binding = 1, std140) uniform readonly MatricesUBO {
 		mat4 ModelMatrix;

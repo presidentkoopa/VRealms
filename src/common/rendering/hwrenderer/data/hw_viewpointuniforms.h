@@ -586,6 +586,34 @@ struct HWViewpointUniforms
 	FVector4 mLinearizeDepth = { 0.f, 1.f, 0.f, 0.f };
 	FVector4 mGpuParticleParams2 = { 0.f, 0.f, 0.f, 0.f };
 
+	// [BEAMSCROLL] EACH LINE'S OWN SCROLLING, the other half of mBeamLook.
+	//
+	//   mBeamScroll[u]  x scroll speed, y scroll depth, z and w unused
+	//
+	// u is the same compacted upload index mBeamA/B/Col/Look use. Filled from the slot's
+	// SetBeamStyleScroll, or from the scene values (BeamScrollSpeed, BeamScrollDepth) when it
+	// has none -- the numbers main.fp used to read from mBeamFX.x/.y -- so an unstyled line
+	// is drawn exactly as before.
+	//
+	// WHY IT HAD TO BE PER LINE. Scroll depth is the beading, and it is the only repeating
+	// term in the whole beam shader. The scene default of 0.25 puts about ten bright/dark
+	// bands across a room. RS_Lance needs 0, because a capital-ship lance is a solid bar;
+	// RS_WorldHands' grab lasers want 0.25, because beads are what a grab laser should look
+	// like. With one scene value those two could not both be right and whoever wrote last
+	// won -- the same fight over a global that ClaimBeam and mBeamLook were added to end,
+	// left half-finished.
+	//
+	// APPENDED LAST, and last in both GLSL copies (gl_shader.cpp's ViewpointUBO,
+	// vk_shader.cpp's ViewpointData plus its #defines). Anything added after this
+	// goes after IT, in all three places.
+	//
+	// PORT NOTE (REMAROTH): upstream added this straight after mSweepPassedColor,
+	// because mLinearizeDepth and mGpuParticleParams2 did not exist there yet. Here
+	// they do and they come first, so the member is placed at the real end of the
+	// struct instead -- the GLSL blocks agree with the C++ struct BY OFFSET, so
+	// copying upstream's position would have silently shifted two vec4s.
+	FVector4 mBeamScroll[128];
+
 	void CalcDependencies()
 	{
 		mNormalViewMatrix.computeNormalMatrix(mViewMatrix);

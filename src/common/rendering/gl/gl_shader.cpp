@@ -446,6 +446,12 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 			// after these. No GL shader reads them.
 			vec4 uLinearizeDepth;
 			vec4 uGpuParticleParams2;
+
+			// [BEAMSCROLL] APPENDED LAST, matching HWViewpointUniforms::mBeamScroll by
+			// offset: per uploaded beam line, x scroll speed, y scroll depth. main.fp
+			// names it on GL as well as Vulkan, so without this the GL shader fails to
+			// compile and the block stops agreeing with the C++ struct.
+			vec4 uBeamScroll[128];
 		};
 
 		uniform int uTextureMode;

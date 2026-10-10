@@ -1008,6 +1008,13 @@ struct LevelLocals native
 	// the right target; do not turn it around.
 	native Vector2 GetRawStickMove();
 
+	// [BB] The TURN stick's raw deflection -- (x, y), x being the axis that turns
+	// you. Same contract as GetRawStickMove above in every respect, including that
+	// it is THIS MACHINE'S stick and must never decide anything the playsim cares
+	// about. It exists because SuppressVRInput stops snap turn too, which left a
+	// mod holding a stick it could not read.
+	native Vector2 GetRawStickTurn();
+
 	// Force the laser sight on for as long as a script-side menu is up. An
 	// override, not a settings change -- the archived cvars are untouched and the
 	// player gets their own preference back the moment it is dropped.
@@ -1029,6 +1036,50 @@ struct LevelLocals native
 	// physical side; the handedness swap happens engine-side. intensity 0..1,
 	// duration in milliseconds, both clamped. Honours vr_enable_haptics.
 	native void VRHaptic(int hand, double intensity, double durationMs);
+
+	// WHAT A POINT ON THE HAND IS DOING, in map units per second, wrist
+	// included. `offsetMapUnits` is the point relative to the controller
+	// origin, in MAP UNITS -- literally the object's Pos minus the hand's, as
+	// it stands. Do NOT convert it to metres first: the map's vertical is
+	// scaled differently from its horizontals, so that conversion is the exact
+	// mistake this call exists to prevent. (0,0,0) asks about the controller.
+	//
+	// `when` is RS_HAND_NOW, RS_HAND_PEAK or RS_HAND_THROW. THROW is the one a
+	// throw wants: speed from the fastest instant, heading from what came just
+	// after it, because the hand travels an arc and its fastest instant points
+	// somewhere else along that curve.
+	//
+	// ONE CALL, NOT TWO, and that is the design. A separate "peak" and
+	// "lever" would let a caller combine the peak (80ms ago) with the wrist
+	// (now) and be silently wrong -- it would read as bad tracking rather than
+	// as a bug. The sample is chosen once, inside, and no caller ever sees a
+	// raw angular velocity.
+	//
+	// LOCAL. Controller-derived, never serialised. Read it on the machine that
+	// has the controller and SEND the answer; see RS_WorldHands rs_handnet.zs.
+	// WHERE THE HAND ACTUALLY IS, in map units, on this machine only.
+	//
+	// USE THIS, NOT AttackPos, for anything a hand DECIDES -- what is within
+	// reach, what a grip closed on, where a thrown thing leaves from.
+	//
+	// In a netgame AttackPos is canonical playsim state: the engine rebuilds it
+	// for every player from the replicated usercmd so that aiming is the same
+	// on every peer, and the renderer is deliberately gated out of writing it.
+	// It is therefore the SHOOTING POINT and not the hand, and in co-op it is
+	// nowhere near the hand. This is the real one.
+	//
+	// It is local: never serialised, never sent, only ever this machine's own
+	// player. A decision made from it must TRAVEL as a command afterwards --
+	// see RS_WorldHands rs_handnet.zs for the shape of that.
+	//
+	// (0,0,0) with no controller. Check it rather than trusting the origin.
+	native vector3 HandPos(int hand);
+
+	native vector3 HandVelAtPoint(int hand, vector3 offsetMapUnits, int when);
+
+	// Milliseconds since that fastest instant, or -1 if there is none. What
+	// says whether the fast bit belongs to THIS release.
+	native double HandPeakAgeMs(int hand);
 
 	// Named JSON profiles -- a flat key/double document per name, saved under
 	// the same directory doomxr.ini itself lives in (a "rs_profiles"
@@ -1880,6 +1931,16 @@ struct LevelLocals native
 	// Any slot, claimed or not. Scroll speed/depth and fog scatter stay
 	// scene-wide. ClearBeamStyle puts the line back on the scene look.
 	native clearscope void SetBeamStyle(int index, double airGlow, double halo, double taper, double flare);
+	// The same, plus THIS line's scrolling, which the four-argument form leaves scene-wide.
+	//
+	// Scroll depth is the beading -- the only repeating term in the beam shader, about ten
+	// bright/dark bands across a room at the scene default of 0.25. Two mods wanted opposite
+	// answers and could not both have them: RS_Lance needs 0 because a capital-ship lance is a
+	// solid bar, and RS_WorldHands' grab lasers want 0.25 because beads are what a grab laser
+	// should look like. Whoever wrote last won. Now neither has to.
+	//
+	// Say nothing and you still get the scene's scrolling, so no existing caller changes.
+	native clearscope void SetBeamStyleScroll(int index, double airGlow, double halo, double taper, double flare, double scrollSpeed, double scrollDepth);
 	native clearscope void ClearBeamStyle(int index);
 
 	// [DRAWNLINES] MANY glowing lines. The same look as a beam's glow in the air

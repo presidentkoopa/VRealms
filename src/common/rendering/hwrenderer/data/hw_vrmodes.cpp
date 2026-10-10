@@ -1921,6 +1921,322 @@ CCMD(vr_haptictest)
 // backwards buzzes the wrong wrist, which is a maddening thing to debug because
 // it still works -- just on the other arm. Same swap the native wheel does in
 // hw_vrwheel.cpp.
+// ---------------------------------------------------------------------------
+// THE HAND RING -- see the long note in hw_vrmodes.h for why this is here and
+// not in script.
+//
+// A quarter of a second of history per hand, at whatever the headset renders
+// at. 48 slots covers 250ms at 192fps and is a few hundred bytes; the write is
+// a struct copy in the pose path.
+//
+// LIVES HERE, NOT IN THE OPENXR DEVICE, so the accessors link whether or not
+// this build has that device compiled in. With nothing pushing, the ring stays
+// empty and every read below returns false, which is the honest answer.
+
+struct VRHandSample
+{
+	double t = 0;            // seconds
+	float  pos[3] = {0,0,0}; // post-yaw, HMD-relative, metres
+	float  lin[3] = {0,0,0}; // metres/second, same frame
+	float  ang[3] = {0,0,0}; // radians/second, same frame
+	float  vunits = 34.0f;
+	float  stretch = 1.2f;
+	bool   valid = false;
+};
+
+static constexpr int VRHAND_RING = 48;
+static VRHandSample vrHandRing[2][VRHAND_RING];
+static int  vrHandHead[2] = { -1, -1 };   // newest slot, -1 = nothing yet
+static int  vrHandCount[2] = { 0, 0 };
+
+CVAR(Float, vr_hand_window_ms, 250.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Float, vr_hand_throw_window_ms, 40.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// THE ONE SIGN THAT CANNOT BE SETTLED ON PAPER.
+//
+// The chain from OpenXR tracking space to map space is a yaw rotation, a
+// component swap and two negations, and at least one step of it was arrived at
+// EMPIRICALLY -- the comment beside AttackVel records that publishing the
+// linear velocity without those negations made every throw fly mirrored. The
+// permutation as written has determinant -1, which means it flips handedness,
+// which means a cross product taken on one side of it comes out negated on the
+// other. Whether that is a real handedness flip or two of them cancelling
+// cannot be decided by reading the code, because the code was fitted to
+// observation rather than derived.
+//
+// The magnitude and the axis of the lever are certain. Only this sign is not.
+// So it is a cvar, and checking it is one second in a headset: hold the arm
+// still, rotate the wrist, and see whether the far end of a held object moves
+// the way the wrist sends it. Flip this if it does not.
+CVAR(Float, vr_hand_lever_sign, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// ---------------------------------------------------------------------------
+// WHERE THE HAND ACTUALLY IS, on this machine, for this machine's own player.
+//
+// AttackPos CANNOT BE THIS, and the reason is worth writing down because it
+// looks exactly like an oversight.
+//
+// In a netgame AttackPos, AttackAngle and AttackPitch are CANONICAL playsim
+// state. UpdateCanonicalMainHandPose (p_user.cpp) rebuilds them every tic for
+// EVERY player from the replicated usercmd, and mirrors them into the offhand
+// fields too, so that every peer computes the same aim for the same player.
+// That is what makes shooting deterministic in co-op. The !multiplayer gate
+// around the renderer's own writes exists to stop the local machine stomping
+// them -- it is not a limitation anybody forgot to lift, it is the thing
+// holding netplay together, and lifting it would put this machine's idea of
+// where you are aiming at odds with every peer's.
+//
+// But a hand system needs the REAL hand, not the canonical shooting point: to
+// decide what is within reach, what a grip closed on, where a thrown thing
+// leaves from. Those are LOCAL decisions, made on the machine that has the
+// controller, and they travel as commands afterwards (see RS_WorldHands
+// rs_handnet.zs). They were unreachable in co-op only because there was no
+// channel for them that was not the canonical one.
+//
+// This is that channel. It is render state: never serialised, never sent,
+// written only for the player this machine is, and read only by code that is
+// about to make a local decision. A peer's hand does not appear here and is
+// not supposed to.
+static double vrHandWorld[2][3] = { {0,0,0}, {0,0,0} };
+static bool   vrHandWorldValid[2] = { false, false };
+
+void VR_SetHandWorldPos(int hand, double x, double y, double z)
+{
+	if (hand < 0 || hand > 1) return;
+	vrHandWorld[hand][0] = x;
+	vrHandWorld[hand][1] = y;
+	vrHandWorld[hand][2] = z;
+	vrHandWorldValid[hand] = true;
+}
+
+void VR_ClearHandWorldPos()
+{
+	vrHandWorldValid[0] = vrHandWorldValid[1] = false;
+}
+
+bool VR_HandWorldPos(int hand, double *out)
+{
+	if (hand < 0 || hand > 1 || out == nullptr) return false;
+	if (!vrHandWorldValid[hand]) return false;
+	out[0] = vrHandWorld[hand][0];
+	out[1] = vrHandWorld[hand][1];
+	out[2] = vrHandWorld[hand][2];
+	return true;
+}
+
+void VR_ClearHandSamples()
+{
+	for (int h = 0; h < 2; ++h) { vrHandHead[h] = -1; vrHandCount[h] = 0; }
+}
+
+void VR_PushHandSample(int hand, double timeSec, const float *pos,
+                       const float *lin, const float *ang, bool velValid,
+                       float vunits, float stretch)
+{
+	if (hand < 0 || hand > 1 || pos == nullptr) return;
+
+	const int slot = (vrHandHead[hand] + 1) % VRHAND_RING;
+	VRHandSample &s = vrHandRing[hand][slot];
+	s.t = timeSec;
+	for (int i = 0; i < 3; ++i)
+	{
+		s.pos[i] = pos[i];
+		// AN HONEST ZERO RATHER THAN A STALE READING, the same choice the
+		// AttackVel path makes and for the same reason: a velocity left over
+		// from the last frame the runtime answered is worse than none at all
+		// for anything that gates a throw on crossing a speed.
+		s.lin[i] = (velValid && lin) ? lin[i] : 0.0f;
+		s.ang[i] = (velValid && ang) ? ang[i] : 0.0f;
+	}
+	s.vunits  = vunits > 0 ? vunits : 34.0f;
+	s.stretch = stretch > 0 ? stretch : 1.2f;
+	s.valid   = velValid;
+
+	vrHandHead[hand] = slot;
+	if (vrHandCount[hand] < VRHAND_RING) vrHandCount[hand]++;
+}
+
+// The point's velocity in the sample's OWN frame -- isotropic metres, where a
+// cross product still means what it says. Mapping to map units happens once,
+// at the very end, and only ever on a LINEAR velocity.
+static void VRHandPointVel(const VRHandSample &s, const double *offXr, double *outXr)
+{
+	const double wx = s.ang[0], wy = s.ang[1], wz = s.ang[2];
+	const double rx = offXr[0], ry = offXr[1], rz = offXr[2];
+	const double sign = vr_hand_lever_sign;
+
+	outXr[0] = s.lin[0] + sign * (wy * rz - wz * ry);
+	outXr[1] = s.lin[1] + sign * (wz * rx - wx * rz);
+	outXr[2] = s.lin[2] + sign * (wx * ry - wy * rx);
+}
+
+// MAP UNITS -> THE POST-YAW XR FRAME.
+//
+// GetHandTransform puts the hand at eye - vu*offset[0] on map X and
+// eye - vu*offset[2] on map Y, with height vu*offset[1] / pixelstretch. So:
+//
+//     mapX = -vu*o0          ->  o0 = -mapX / vu
+//     mapY = -vu*o2          ->  o2 = -mapY / vu
+//     mapZ =  vu*o1/stretch  ->  o1 =  mapZ * stretch / vu
+//
+// MAP UNITS, NOT METRES, and that is deliberate. A caller works out its offset
+// by subtracting two map positions -- the object's centre minus the hand's --
+// and converting THAT to metres means dividing the vertical by a different
+// number from the horizontals. Which is the exact trap this whole file exists
+// to close. So the caller hands over the difference as it stands and the
+// stretch is met here, once, by the only code that knows both numbers.
+static void VRHandMapUnitsToXr(const VRHandSample &s, const double *m, double *xr)
+{
+	const double vu = s.vunits > 0 ? s.vunits : 34.0;
+	xr[0] = -m[0] / vu;
+	xr[1] =  m[2] * s.stretch / vu;
+	xr[2] = -m[1] / vu;
+}
+
+static void VRHandXrVelToMap(const VRHandSample &s, const double *vXr, double *out)
+{
+	out[0] = -vXr[0] * s.vunits;
+	out[1] = -vXr[2] * s.vunits;
+	out[2] =  vXr[1] * s.vunits / s.stretch;
+}
+
+static const VRHandSample *VRHandNewest(int hand)
+{
+	if (hand < 0 || hand > 1 || vrHandHead[hand] < 0) return nullptr;
+	return &vrHandRing[hand][vrHandHead[hand]];
+}
+
+// Walks newest-first. `n` counts back from the head.
+static const VRHandSample *VRHandAt(int hand, int n)
+{
+	if (n < 0 || n >= vrHandCount[hand]) return nullptr;
+	const int slot = ((vrHandHead[hand] - n) % VRHAND_RING + VRHAND_RING) % VRHAND_RING;
+	return &vrHandRing[hand][slot];
+}
+
+// Which sample in the window has the fastest POINT velocity -- the point's, not
+// the controller origin's, because with a lever those are different samples and
+// it is the object that is being thrown.
+static int VRHandPeakIndex(int hand, const double *offXr, double *bestVelXr)
+{
+	const VRHandSample *newest = VRHandNewest(hand);
+	if (newest == nullptr) return -1;
+
+	const double window = vr_hand_window_ms / 1000.0;
+	int best = -1;
+	double bestSpeed = -1.0;
+
+	for (int n = 0; n < vrHandCount[hand]; ++n)
+	{
+		const VRHandSample *s = VRHandAt(hand, n);
+		if (s == nullptr || !s->valid) continue;
+		if (newest->t - s->t > window) break;   // the ring is in time order
+
+		double v[3];
+		VRHandPointVel(*s, offXr, v);
+		const double sp = sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+		if (sp > bestSpeed)
+		{
+			bestSpeed = sp;
+			best = n;
+			if (bestVelXr) { bestVelXr[0] = v[0]; bestVelXr[1] = v[1]; bestVelXr[2] = v[2]; }
+		}
+	}
+	return best;
+}
+
+double VR_HandPeakAgeMs(int hand)
+{
+	if (hand < 0 || hand > 1) return -1.0;
+	const VRHandSample *newest = VRHandNewest(hand);
+	if (newest == nullptr) return -1.0;
+
+	const double zero[3] = { 0, 0, 0 };
+	const int n = VRHandPeakIndex(hand, zero, nullptr);
+	if (n < 0) return -1.0;
+	const VRHandSample *s = VRHandAt(hand, n);
+	if (s == nullptr) return -1.0;
+	return (newest->t - s->t) * 1000.0;
+}
+
+bool VR_HandVelAtPoint(int hand, const double *offsetMapUnits, int when, double *out)
+{
+	if (hand < 0 || hand > 1 || out == nullptr) return false;
+	const VRHandSample *newest = VRHandNewest(hand);
+	if (newest == nullptr) return false;
+
+	// vu and stretch are captured per sample, so the conversion is done against
+	// the newest one. They do not change inside a 250ms window in any way that
+	// matters -- vr_vunits_per_meter is a menu setting and pixelstretch is a
+	// property of the level.
+	double offXr[3] = { 0, 0, 0 };
+	if (offsetMapUnits) VRHandMapUnitsToXr(*newest, offsetMapUnits, offXr);
+
+	if (when == VRHAND_NOW)
+	{
+		if (!newest->valid) return false;
+		double v[3];
+		VRHandPointVel(*newest, offXr, v);
+		VRHandXrVelToMap(*newest, v, out);
+		return true;
+	}
+
+	double peakVel[3] = { 0, 0, 0 };
+	const int peak = VRHandPeakIndex(hand, offXr, peakVel);
+	if (peak < 0) return false;
+	const VRHandSample *ps = VRHandAt(hand, peak);
+	if (ps == nullptr) return false;
+
+	if (when == VRHAND_PEAK)
+	{
+		VRHandXrVelToMap(*ps, peakVel, out);
+		return true;
+	}
+
+	// VRHAND_THROW: SPEED FROM THE PEAK, HEADING FROM WHAT CAME AFTER IT.
+	//
+	// The hand travels an ARC, and its fastest instant is some way before the
+	// fingers open and is pointing somewhere else along that curve. Taking both
+	// numbers from the peak sends the object where the hand was going a fifth
+	// of a second ago rather than where it was aimed at release -- which is why
+	// throwing felt WRONG rather than merely weak.
+	//
+	// The heading is the mean of the samples from the peak up to
+	// vr_hand_throw_window_ms after it. Not all the way to the newest sample:
+	// past about 40ms that is follow-through, the arm is decelerating, and an
+	// overhand follow-through points at the floor.
+	const double after = vr_hand_throw_window_ms / 1000.0;
+	double sum[3] = { 0, 0, 0 };
+	int used = 0;
+	for (int n = peak; n >= 0; --n)
+	{
+		const VRHandSample *s = VRHandAt(hand, n);
+		if (s == nullptr || !s->valid) continue;
+		if (s->t - ps->t > after) break;
+		double v[3];
+		VRHandPointVel(*s, offXr, v);
+		sum[0] += v[0]; sum[1] += v[1]; sum[2] += v[2];
+		used++;
+	}
+
+	const double peakSpeed = sqrt(peakVel[0]*peakVel[0] + peakVel[1]*peakVel[1] + peakVel[2]*peakVel[2]);
+	double dir[3] = { sum[0], sum[1], sum[2] };
+	const double dlen = sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+
+	// A mean that cancels itself out -- a flick that reversed inside the window
+	// -- has no heading to give. The peak's own direction is the honest
+	// fallback, and it is what this would have done before the mean existed.
+	if (used == 0 || dlen <= 1e-9)
+	{
+		VRHandXrVelToMap(*ps, peakVel, out);
+		return true;
+	}
+
+	const double v[3] = { dir[0] / dlen * peakSpeed, dir[1] / dlen * peakSpeed, dir[2] / dlen * peakSpeed };
+	VRHandXrVelToMap(*ps, v, out);
+	return true;
+}
+
 void VR_ScriptHaptic(int hand, double intensity, double durationMs)
 {
 	const VRMode *vrmode = VRMode::GetVRModeCached();

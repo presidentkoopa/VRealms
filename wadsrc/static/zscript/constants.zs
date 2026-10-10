@@ -1660,6 +1660,15 @@ enum EGripContext
 	GRIPCTX_Hardpoint,  // hand is at a body hardpoint, not a weapon holster
 }
 
+// Which sample LevelLocals.HandVelAtPoint should answer from. Mirrors
+// EVRHandWhen in hw_vrmodes.h -- keep the two in step.
+enum EVRHandWhen
+{
+	RS_HAND_NOW   = 0,   // the newest sample
+	RS_HAND_PEAK  = 1,   // the fastest sample in the window
+	RS_HAND_THROW = 2,   // speed from the peak, heading from just after it
+}
+
 enum EGripSubject
 {
 	GRIPSUBJ_None = 0,

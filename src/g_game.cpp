@@ -579,6 +579,13 @@ static uint32_t buttons = 0;
 float g_wheelStickForward = 0.0f;
 float g_wheelStickSide    = 0.0f;
 
+// The TURN stick, same contract, filled by the OpenXR device (vk_openxrdevice.cpp)
+// where that stick is actually read. Lives here so the two halves of "the raw
+// sticks" sit together rather than one being hidden in a renderer file. Stays 0
+// on any input path that does not set it, so reading it is always safe.
+float g_vrStickTurnX = 0.0f;
+float g_vrStickTurnY = 0.0f;
+
 // CODE --------------------------------------------------------------------
 
 CCMD (turnspeeds)

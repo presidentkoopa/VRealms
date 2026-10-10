@@ -308,6 +308,85 @@ double VR_GetScriptLaserRange();
 // empty stub on this platform. VRMode::Vibrate is the path that actually
 // reaches the controller.
 void VR_ScriptHaptic(int hand, double intensity, double durationMs);
+
+// ---------------------------------------------------------------------------
+// WHAT A POINT ON YOUR HAND IS DOING, at render rate.
+//
+// WHY THIS EXISTS AT ALL. A thrown object is not at the controller's origin.
+// Its centre sits away from the hand, and a frisbee or a newspaper flick is
+// mostly WRIST -- so the speed that matters is the speed of the OBJECT, which
+// is the hand's linear velocity plus omega x r. Script cannot compute that:
+//
+//   1. MAP SPACE IS ANISOTROPIC. AttackVel's horizontal axes are metres/second
+//      times vr_vunits_per_meter, but its vertical is additionally divided by
+//      pixelstretch, while AttackAngularVel is not scaled at all. A cross
+//      product is only a rotation in a uniformly scaled space, so omega x r
+//      computed in map units comes out wrong in Z by up to a fifth -- and the
+//      error varies with wrist orientation, which is exactly the axis a
+//      frisbee flick lives on.
+//
+//   2. THE PLAYSIM RUNS AT 35Hz AND A FLICK DOES NOT. The fastest instant of a
+//      throw falls between two tics, so a peak sampled on the tic grid is both
+//      weaker and less repeatable than the arm that made it.
+//
+// Both are solved here, in the frame where the numbers are still isotropic
+// metres, and the answer comes out already in map units per second with the
+// same signs and stretch AttackVel gets.
+//
+// ONE CALL OVER ONE RING, DELIBERATELY. Exposing the ring and the lever as two
+// natives lets a caller take the peak (80ms ago) and the wrist (now) and add
+// them: two different instants, silently combined, no error, and it reads in a
+// headset as bad tracking rather than as a bug. The sample is chosen once,
+// inside, and nothing downstream ever sees a raw angular velocity.
+//
+// `offsetMapUnits` is the point of interest relative to the controller origin,
+// in MAP UNITS -- literally the object's position minus the hand's, as it
+// stands. Not metres: converting that difference to metres means dividing the
+// vertical by a different number from the horizontals, which is the exact trap
+// this exists to close. Pass (0,0,0) for the controller itself.
+enum EVRHandWhen
+{
+	VRHAND_NOW   = 0,   // the newest sample
+	VRHAND_PEAK  = 1,   // the fastest sample in the window
+	VRHAND_THROW = 2,   // speed from the peak, heading from the peak onwards
+};
+
+// Called once per rendered frame per hand, from the device's own pose update.
+// pos/lin/ang are in the post-yaw HMD-relative frame updateHandPose produces:
+// metres, and metres or radians per second. vunits and stretch are captured
+// with the sample so the mapping out is exactly the one that frame used.
+void VR_PushHandSample(int hand, double timeSec, const float *pos,
+                       const float *lin, const float *ang, bool velValid,
+                       float vunits, float stretch);
+
+// Map units per second, in AttackVel's frame. False and an untouched `out`
+// when the ring holds nothing usable for that hand.
+bool VR_HandVelAtPoint(int hand, const double *offsetMapUnits, int when, double *out);
+
+// Milliseconds since the peak sample, or -1 if there is none. What tells a
+// caller whether the fast bit belongs to THIS release or to a flick made
+// before the object was even picked up.
+double VR_HandPeakAgeMs(int hand);
+
+// Thrown away on level change and on losing tracking: a window that spans a
+// teleport is a throw nobody made.
+void VR_ClearHandSamples();
+
+// WHERE THE HAND ACTUALLY IS, in map units, on this machine only.
+//
+// NOT AttackPos, and not a substitute for it. In a netgame AttackPos is
+// canonical playsim state rebuilt for every player from the usercmd
+// (UpdateCanonicalMainHandPose, p_user.cpp) so that aiming is deterministic;
+// the renderer is gated out of writing it there on purpose. This is the
+// separate, purely local channel a hand system needs to decide what is within
+// reach and where a thrown thing leaves from -- decisions that are made on the
+// machine holding the controller and then TRAVEL as commands.
+//
+// Render state: never serialised, never sent, only ever this machine's own
+// player. A peer's hand does not appear here.
+void VR_SetHandWorldPos(int hand, double x, double y, double z);
+bool VR_HandWorldPos(int hand, double *out);
+void VR_ClearHandWorldPos();
 void QzDoom_GetScreenRes(uint32_t *width, uint32_t *height);
 
 extern bool weaponStabilised;

@@ -209,6 +209,20 @@ static FVector4 BeamSlotLook(const FLevelLocals *Level, int i)
 		(float)Level->BeamTaper, (float)Level->BeamFlare };
 }
 
+// [BEAMSCROLL] x scroll speed, y scroll depth: the slot's own, or the scene's. The scene
+// branch produces exactly the floats StartScene used to put in mBeamFX.x/.y, so a line that
+// never called SetBeamStyleScroll scrolls exactly as it always did.
+//
+// Separate from BeamSlotLook because the opt-in is separate: a line may have its own air
+// glow and still want the scene's beading, which is what SetBeamStyle (four arguments) means.
+static FVector4 BeamSlotScroll(const FLevelLocals *Level, int i)
+{
+	if (Level->BeamStyleHasScroll[i])
+		return { (float)Level->BeamStyleScrollSpeed[i], (float)Level->BeamStyleScrollDepth[i],
+			0.f, 0.f };
+	return { (float)Level->BeamScrollSpeed, (float)Level->BeamScrollDepth, 0.f, 0.f };
+}
+
 // [13e] The smoke volume's beam list (hw_smokevolume.h, hw_smokevolume.cpp GatherBeams) resolves a slot through the two
 // functions above, so the light a beam scatters in the smoke, and the glow the smoke drawing restores, sit exactly where
 // the per-pixel upload (StartScene) and the drawn-line path (SyncDrawnLines) put the beam. Read-only.
@@ -317,9 +331,14 @@ static void SyncDrawnLines(FLevelLocals *Level, double viewTicFrac)
 
 			DVector3 a, b;
 			ResolveBeamSlot(Level, i, ticFrac, a, b);
+			// [BEAMSCROLL] the slot's own scrolling here too, or routing a beam to the drawn
+			// path would quietly hand it the scene's beading back. REMAROTH's
+			// ResolveBeamSlot predates [BEAMONMODEL], so it has no viewTicFrac and
+			// no result to test -- the scroll lookup is the only part taken here.
+			const FVector4 bscroll = BeamSlotScroll(Level, i);
 			WriteDrawnLineRecord(DrawnLineScratch[n++], a, b,
 				Level->BeamThick[i], Level->BeamSoft[i], Level->BeamColor[i], Level->BeamIntensity[i],
-				look, Level->BeamScrollSpeed, Level->BeamScrollDepth, timerSec, depthBias);
+				look, bscroll.X, bscroll.Y, timerSec, depthBias);
 			if (markPinnedLight)
 				DrawnLineScratch[n - 1].g[3] += DrawnLineBuffer::LIGHT_MASK_PINNED_MARK;	// [LIGHTMASK]
 			routed++;
@@ -1991,6 +2010,7 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 				FVector4 look = BeamSlotLook(Level, i);
 				if (routeDrawn) look.X = 0.f;
 				VPUniforms.mBeamLook[nb] = look;
+				VPUniforms.mBeamScroll[nb] = BeamSlotScroll(Level, i);	// [BEAMSCROLL]
 				maxAirGlow = (nb == 0) ? look.X : std::max(maxAirGlow, look.X);
 				nb++;
 			}

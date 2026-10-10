@@ -2977,7 +2977,21 @@ public:
 	//                    nothing is claimed. The renderer's lerp test and the
 	//                    snapshot's forget-the-anchor rule both read it.
 	//
-	// Scroll speed/depth and fog scatter stay scene-wide: one user each so far.
+	// Fog scatter stays scene-wide: one user so far.
+	//
+	// SCROLL DEPTH AND SPEED ARE PER-SLOT TOO, SINCE 2026-10-01, and they had to be. The
+	// beading those two make is the one thing in the beam shader that repeats, and the scene
+	// default is 0.25 -- about ten bright/dark bands across a room. A capital-ship lance is a
+	// solid bar and RS_Lance sets the scene depth to 0 to get one; the grab lasers in
+	// RS_WorldHands set 0.25 because beads are what a grab laser should look like. With depth
+	// scene-wide those two cannot both be right, and whoever wrote last won -- which is the
+	// same fight over one global that ClaimBeam and BeamHasStyle were added to end, left
+	// half-finished. A claimed slot with its own air glow but the scene's beading is still at
+	// the mercy of another mod.
+	//
+	// BeamStyleHasScroll[i] is separate from BeamHasStyle[i] on purpose: the four-argument
+	// SetBeamStyle stays exactly what it was, so every existing caller keeps the scene's
+	// scrolling and nothing about their beams moves. Only the six-argument form opts in.
 	bool     BeamClaimed[MAX_BEAMS] = {};
 	// The actor a claim belongs to, if the claimer named one (ClaimBeam(owner)).
 	// P_Ticker releases the slot on the tic that actor is destroyed -- the same
@@ -2991,6 +3005,9 @@ public:
 	double   BeamStyleHalo[MAX_BEAMS] = {};
 	double   BeamStyleTaper[MAX_BEAMS] = {};
 	double   BeamStyleFlare[MAX_BEAMS] = {};
+	bool     BeamStyleHasScroll[MAX_BEAMS] = {};
+	double   BeamStyleScrollSpeed[MAX_BEAMS] = {};
+	double   BeamStyleScrollDepth[MAX_BEAMS] = {};
 	bool     PrevBeamLive[MAX_BEAMS] = {};
 	bool     BeamClaimFullLogged = false;   // ClaimBeam's "no free slot" line: once per map
 	bool     BeamCountOverClaimLogged = false;   // SetBeamCount grew over a claim: once per map
@@ -3051,10 +3068,24 @@ public:
 		BeamStyleFlare[index] = flare;
 	}
 
+	// The same, plus this line's own scrolling. Separate setter rather than defaulted
+	// arguments on the one above, so a caller that does not say cannot accidentally be given
+	// "depth 0" and lose the scene's beading: not saying still means "whatever the scene says".
+	void SetBeamStyleScroll(int index, double airGlow, double halo, double taper, double flare,
+		double scrollSpeed, double scrollDepth)
+	{
+		SetBeamStyle(index, airGlow, halo, taper, flare);
+		if (index < 0 || index >= MAX_BEAMS) return;
+		BeamStyleHasScroll[index] = true;
+		BeamStyleScrollSpeed[index] = scrollSpeed;
+		BeamStyleScrollDepth[index] = scrollDepth;
+	}
+
 	void ClearBeamStyle(int index)
 	{
 		if (index < 0 || index >= MAX_BEAMS) return;
 		BeamHasStyle[index] = false;
+		BeamStyleHasScroll[index] = false;
 	}
 
 	// [DRAWNLINES] MANY GLOWING LINES -- the renderer-agnostic half.

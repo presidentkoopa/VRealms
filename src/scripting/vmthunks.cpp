@@ -6687,6 +6687,25 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetBeamStyle, SetBeamStyle)
 	return 0;
 }
 
+// The same, plus this line's own scrolling. A separate entry rather than defaulted
+// arguments on the one above, so a caller that says nothing keeps the scene's beading
+// instead of silently being given depth 0.
+static void SetBeamStyleScroll(FLevelLocals *self, int index, double airGlow, double halo,
+	double taper, double flare, double scrollSpeed, double scrollDepth)
+{
+	self->SetBeamStyleScroll(index, airGlow, halo, taper, flare, scrollSpeed, scrollDepth);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetBeamStyleScroll, SetBeamStyleScroll)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(index);
+	PARAM_FLOAT(airGlow); PARAM_FLOAT(halo); PARAM_FLOAT(taper); PARAM_FLOAT(flare);
+	PARAM_FLOAT(scrollSpeed); PARAM_FLOAT(scrollDepth);
+	SetBeamStyleScroll(self, index, airGlow, halo, taper, flare, scrollSpeed, scrollDepth);
+	return 0;
+}
+
 static void ClearBeamStyle(FLevelLocals *self, int index)
 {
 	self->ClearBeamStyle(index);
@@ -7433,6 +7452,29 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, GetRawStickMove, GetRawStickMove)
 	ACTION_RETURN_VEC2(result);
 }
 
+// [BB] The TURN stick, the other half of the pair. Everything said above about
+// GetRawStickMove applies here word for word -- including that it is LOCAL, so
+// it may steer a menu or decide whether to SEND, and may never decide anything
+// the playsim cares about.
+//
+// It exists because SuppressVRInput kills snap turn as well as walking, and a
+// mod that claimed the sticks to adjust something could read one of them and not
+// the other. x is the turning axis.
+extern float g_vrStickTurnX, g_vrStickTurnY;
+
+static void GetRawStickTurn(FLevelLocals *self, DVector2 *result)
+{
+	*result = DVector2(g_vrStickTurnX, g_vrStickTurnY);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, GetRawStickTurn, GetRawStickTurn)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	DVector2 result;
+	GetRawStickTurn(self, &result);
+	ACTION_RETURN_VEC2(result);
+}
+
 // [BB] Let a mod turn the laser sight on for as long as its own menu is open.
 //
 // vr_laser_sight and vr_laser_beam are CVAR_ARCHIVE|CVAR_GLOBALCONFIG, and the
@@ -7493,6 +7535,85 @@ DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, SetVRLaserRange, SetVRLaserRange)
 static void VRHaptic(FLevelLocals *self, int hand, double intensity, double durationMs)
 {
 	VR_ScriptHaptic(hand, intensity, durationMs);
+}
+
+// [BB] WHAT A POINT ON THE HAND IS DOING, wrist included.
+//
+// The whole argument for this living in C++ is in hw_vrmodes.h. The short of
+// it: map space is anisotropic (the vertical is divided by pixelstretch and the
+// angular velocity is not scaled at all), so omega x r computed in map units is
+// wrong in Z by up to a fifth, in a way that varies with wrist orientation --
+// which is the axis a frisbee flick lives on. And the playsim runs at 35Hz
+// while a flick does not.
+//
+// Returns map units per second, in AttackVel's frame. (0,0,0) when there is no
+// usable history -- a desktop player, a headset that has just lost tracking, or
+// a build with no OpenXR device at all.
+//
+// LOCAL READ ONLY. This is controller-derived, the same as AttackVel, and
+// nothing serialises it. A netplay caller measures on the machine that has the
+// controller and SENDS the answer; see rs_handnet.zs for the shape of that.
+static void HandVelAtPoint(FLevelLocals *self, int hand, double ox, double oy, double oz, int when, DVector3 *out)
+{
+	const double off[3] = { ox, oy, oz };   // MAP UNITS -- see hw_vrmodes.h
+	double v[3] = { 0, 0, 0 };
+	if (!VR_HandVelAtPoint(hand, off, when, v)) { *out = DVector3(0, 0, 0); return; }
+	*out = DVector3(v[0], v[1], v[2]);
+}
+
+// [BB] WHERE THE HAND ACTUALLY IS, on this machine, in map units.
+//
+// NOT a replacement for AttackPos and must not be used as one. In a netgame
+// AttackPos is canonical playsim state, rebuilt for every player from the
+// usercmd so that aiming is deterministic; this is the separate local channel
+// for deciding what a hand can REACH and where a throw leaves from. Those are
+// local decisions that travel afterwards as commands.
+//
+// (0,0,0) when there is no controller -- a desktop player, tracking lost, or a
+// build with no VR device. Callers must check rather than assume the origin is
+// a real answer.
+static void HandPos(FLevelLocals *self, int hand, DVector3 *out)
+{
+	double p[3] = { 0, 0, 0 };
+	if (!VR_HandWorldPos(hand, p)) { *out = DVector3(0, 0, 0); return; }
+	*out = DVector3(p[0], p[1], p[2]);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HandPos, HandPos)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(hand);
+	DVector3 out;
+	HandPos(self, hand, &out);
+	ACTION_RETURN_VEC3(out);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HandVelAtPoint, HandVelAtPoint)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(hand);
+	PARAM_FLOAT(ox);
+	PARAM_FLOAT(oy);
+	PARAM_FLOAT(oz);
+	PARAM_INT(when);
+	DVector3 out;
+	HandVelAtPoint(self, hand, ox, oy, oz, when, &out);
+	ACTION_RETURN_VEC3(out);
+}
+
+// Milliseconds since the fastest sample in the window, or -1 if there is none.
+// What tells a caller whether the fast bit belongs to THIS release or to a
+// flick made before the object was ever picked up.
+static double HandPeakAgeMs(FLevelLocals *self, int hand)
+{
+	return VR_HandPeakAgeMs(hand);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, HandPeakAgeMs, HandPeakAgeMs)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FLevelLocals);
+	PARAM_INT(hand);
+	ACTION_RETURN_FLOAT(HandPeakAgeMs(self, hand));
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(FLevelLocals, VRHaptic, VRHaptic)

@@ -81,6 +81,7 @@ extern float doomYaw;
 extern float previousPitch;
 extern float playerYaw;
 extern float snapTurn;
+extern float g_vrStickTurnX, g_vrStickTurnY;   // raw turn stick, see g_game.cpp
 extern vec3_t positionDeltaThisFrame;
 extern float remote_movementSideways;
 extern float remote_movementForward;
@@ -3737,6 +3738,15 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		? handInput[turnHand].trackpad
 		: handInput[turnHand].thumbstick;
 
+	// [BB] The TURN stick's raw deflection, the counterpart of g_wheelStickForward/Side
+	// in g_game.cpp -- captured here, unconditionally, BEFORE the suppression check
+	// below, for exactly the same reason. A mod that claims the sticks could read which
+	// way the locomotion stick was pushed but had no way to read this one, so a
+	// suppressed turn stick was simply dead in script's hand. Both axes, since the
+	// second costs nothing and the next caller will want it.
+	g_vrStickTurnX = rightTurnState.x;
+	g_vrStickTurnY = rightTurnState.y;
+
 		// [BB] Script can claim the stick. While a mod's in-world selector is
 		// open the same thumbstick is picking an item, and snap turn firing
 		// underneath it spins the player mid-choice -- which is the single most
@@ -3952,6 +3962,24 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 			angVelOut[0] = (float)avRotated.Y;
 			angVelOut[1] = av[1];
 			angVelOut[2] = (float)avRotated.X;
+		}
+
+		// INTO THE RING, EVERY FRAME. What a point on the hand is doing --
+		// wrist included -- can only be worked out where these numbers are
+		// still isotropic metres, and only at render rate: the fastest instant
+		// of a flick falls between two 35Hz tics. Both are somebody else's
+		// problem from here (hw_vrmodes.cpp, VR_HandVelAtPoint).
+		//
+		// OUTSIDE the multiplayer gate that gates AttackVel further down, and
+		// deliberately: the ring is read only on the machine that owns the
+		// controller, so there is nothing here for netplay to disagree about,
+		// and a build where hand pose is published one day gets its history
+		// for free.
+		{
+			const double sampleStretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
+			VR_PushHandSample(hand, I_nsTime() / 1000000000.0, offset,
+			                  linVelOut, angVelOut, linVelValid,
+			                  (float)vr_vunits_per_meter, (float)sampleStretch);
 		}
 
 		// Apply vr_weaponRotate as a pure pitch-domain adjustment
@@ -5181,6 +5209,14 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 			LSMatrix44 mat;
 			if (GetWeaponTransform(&mat, VR_MAINHAND))
 			{
+				// THE LOCAL CHANNEL, PUBLISHED IN EVERY MODE. See
+				// VR_SetHandWorldPos: AttackPos below is canonical playsim
+				// state in a netgame and the gate under this line is what
+				// keeps it that way, so a hand system that needs the REAL hand
+				// gets it from here instead. Never serialised, never sent, only
+				// ever this machine's own player.
+				VR_SetHandWorldPos(VR_MAINHAND, mat[3][0], mat[3][2], mat[3][1]);
+
 				if (!multiplayer)
 				{
 					player->mo->AttackPos.X = mat[3][0];
@@ -5228,7 +5264,20 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				}
 			}
 
+			// THE OFF HAND, AND THE GATE MOVED RATHER THAN LIFTED.
+			//
+			// GetWeaponTransform is now called in every mode, because the local
+			// channel needs it and it costs a matrix fetch. The FIELD writes
+			// below stay gated exactly as they were: in a netgame
+			// UpdateCanonicalMainHandPose mirrors the canonical main-hand pose
+			// into OffhandPos/Pitch/Angle/Roll so that any offhand code path
+			// consulting them stays deterministic across peers, and writing a
+			// real controller pose over that is the desync, not the fix.
 			LSMatrix44 matOffhand;
+			if (GetWeaponTransform(&matOffhand, VR_OFFHAND))
+			{
+				VR_SetHandWorldPos(VR_OFFHAND, matOffhand[3][0], matOffhand[3][2], matOffhand[3][1]);
+			}
 			if (!multiplayer && GetWeaponTransform(&matOffhand, VR_OFFHAND))
 			{
 				player->mo->OffhandPos.X = matOffhand[3][0];

@@ -5330,7 +5330,27 @@ FModel * SetGetBoneSharedIndex(AActor * self, int model_index, int &bone_index, 
 		bone_index = mdl->FindJoint(*bone_name);
 		if(bone_index < 0 || bone_index >= mdl->NumJoints())
 		{
-			Printf(PRINT_NONOTIFY, "Could not find bone '%s'", bone_name->GetChars());
+			// SAID ONCE PER NAME, NOT ONCE PER FRAME.
+			//
+			// A bone lookup that misses is almost always in per-tic code, so this printed
+			// thousands of identical lines an hour and buried everything else in the log --
+			// which in a VR session is the ONLY diagnostic there is, because nobody wearing
+			// a headset can read a console. One mod naming one wrong joint made the log
+			// useless for every other mod in the load order.
+			//
+			// The name is what identifies the fault, so remembering the names already
+			// complained about says everything the flood said, once. Unbounded only in the
+			// sense that a mod would have to invent new wrong names forever to grow it.
+			static TArray<FName> moaned;
+			bool said = false;
+			for (unsigned i = 0; i < moaned.Size(); ++i)
+				if (moaned[i] == *bone_name) { said = true; break; }
+			if (!said)
+			{
+				moaned.Push(*bone_name);
+				Printf(PRINT_NONOTIFY, "Could not find bone '%s' (said once; this model has %d joints)",
+				       bone_name->GetChars(), mdl->NumJoints());
+			}
 			return nullptr;
 		}
 	}
@@ -5521,6 +5541,41 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetModelSurfaceCount, GetModelSurfaceCount
 	PARAM_SELF_PROLOGUE(AActor);
 	PARAM_INT(model_index);
 	ACTION_RETURN_INT(GetModelSurfaceCountNative(self, model_index));
+}
+
+// RS FORK -- WHICH CVAR PREFIX PLACES THIS MODEL (MODELDEF PlacementCVars).
+//
+// The placement cvars are the ONE channel whose sliders move a model while you are looking
+// at it: they are read on the render path, every frame, and the render path does not stop
+// for a menu (ObjectToWorldMatrix). So they are what anything tuning a model's fit has to
+// write -- and until now script had no way to learn their NAME.
+//
+// AActor::PlacementPrefix is script-visible but is the per-actor OVERRIDE, and is almost
+// always None; the name actually in effect usually comes from the MODELDEF block, which
+// script could not see at all. So a tool that lets a player nudge a gun into place had to
+// either hardcode one name per gun -- which is how 1,451 near-identical sliders came to
+// exist in one package -- or invent its own channel and lose whatever the MODELDEF set.
+//
+// Answers the prefix IN EFFECT, resolved exactly as the renderer resolves it: the actor's
+// override when it is set to something real, otherwise the model definition's own. 'None'
+// as a literal name counts as unset, for the reason given at that resolution site.
+//
+// Read-only and additive: no existing caller changes, and an actor with no model frame
+// answers 'None' rather than failing.
+static int GetModelPlacementPrefixNative(AActor * self, int model_index)
+{
+	FSpriteModelFrame *smf = FindModelFrame(self, self->sprite, self->frame, false);
+	if (smf == nullptr) return NAME_None;
+	FName over = self->PlacementPrefix;
+	if (over != NAME_None && stricmp(over.GetChars(), "None") != 0) return over.GetIndex();
+	return smf->placementCVars.GetIndex();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetModelPlacementPrefix, GetModelPlacementPrefixNative)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_INT(model_index);
+	ACTION_RETURN_INT(GetModelPlacementPrefixNative(self, model_index));
 }
 
 static int GetModelSurfaceNameNative(AActor * self, int model_index, int surface)

@@ -2527,11 +2527,18 @@ vec3 BeamAirGlow(vec3 fragPos)
 		// is completely static and the eye stops believing it is carrying
 		// anything -- this is the single thing that makes it read as a beam
 		// under load rather than a stick of light.
-		if (uBeamFX.y > 0.0)
+		//
+		// [BEAMSCROLL] PER LINE, not scene-wide. uBeamScroll[i] is this line's
+		// own speed and depth, filled from its SetBeamStyleScroll or from the
+		// scene values when it has none -- so an unstyled line is identical to
+		// what uBeamFX.x/.y gave it before. Depth is the beading, and it is the
+		// only repeating term in here: a solid lance wants 0 and a grab laser
+		// wants 0.25, and with one scene value they could not both have it.
+		if (uBeamScroll[i].y > 0.0)
 		{
 			float along = tc * length(v);
-			float s = sin(along * 0.06 - timer * uBeamFX.x);
-			bright *= 1.0 + uBeamFX.y * s;
+			float s = sin(along * 0.06 - timer * uBeamScroll[i].x);
+			bright *= 1.0 + uBeamScroll[i].y * s;
 		}
 
 		// IMPACT FLARE. A beam that simply stops looks unfinished; the far

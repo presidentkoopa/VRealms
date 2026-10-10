@@ -376,6 +376,7 @@ void FLevelLocals::ClearLevelData(bool fullgc)
 		BeamClaimOwned[b] = false;
 		BeamClaimOwner[b] = nullptr;
 		BeamHasStyle[b] = false;
+		BeamStyleHasScroll[b] = false;	// [BEAMSCROLL] with the rest of the per-slot style
 		PrevBeamLive[b] = false;
 	}
 	BeamClaimFullLogged = false;

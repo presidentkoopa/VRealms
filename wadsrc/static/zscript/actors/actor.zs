@@ -2008,6 +2008,16 @@ class Actor : Thinker native
 	// Case-insensitive. -1 / 0 / None when that model has no such joint, there is no model at that index, or its
 	// format has no joints (only a rigged IQM has any).
 	native int  FindModelJointIndex(int modelindex, Name joint);
+
+	// RS fork -- which cvar prefix places this model? The name a MODELDEF block's
+	// PlacementCVars line gives it, or this actor's PlacementPrefix override when it is set.
+	// 'None' when there is none, or when the actor has no model frame.
+	//
+	// The placement cvars are read on the RENDER path, so they are the only channel whose
+	// values move a model while a menu is open -- which makes them the only ones a live
+	// fitting tool can use. This is how such a tool finds them without one hardcoded name
+	// per gun.
+	native Name GetModelPlacementPrefix(int modelIndex = 0);
 	native int  GetModelJointCount(int modelindex);
 	native Name GetModelJointName(int modelindex, int joint);
 
