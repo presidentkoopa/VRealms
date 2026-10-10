@@ -218,6 +218,22 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  player size    %.0f tall, eye at %.0f (Doom's default is 56 / 41)",
 			Level->ForcedPlayerHeight, Level->ForcedPlayerViewHeight);
 
+		// AND THE STAIRS, which is the same fact a third time. A person 154
+		// units tall has stairs built to match; Doom's step-up limit is 24 and
+		// the map's own is g_max_climb = 2*meta[0x0C]+1 (GAME_core.md 2.1,
+		// :208). Left at 24 the manor's staircases simply cannot be walked up
+		// -- the geometry is right and the player is wrong, exactly as with the
+		// height above. ROADMAP.md section 2 puts step height on the "these are
+		// rules, port them" side of the movement split.
+		//
+		// NOT ported here: the crouched limit, which the original drops to 16
+		// (GAME_core.md 5, 0x819cd). That needs the crouch state, so it belongs
+		// with the rest of the movement rules rather than in the loader.
+		Level->ForcedPlayerMaxStepHeight = double(rm.metadata.MaxClimb());
+		log.Line("  step up        %.0f units (Doom's default is 24) -- map says"
+			" meta[0x0c]=%d, doubled +1", Level->ForcedPlayerMaxStepHeight,
+			(int)rm.metadata.maxClimb);
+
 		// AND THE SAME FACT AGAIN, FOR THE HEADSET. Making the player the right
 		// number of UNITS tall fixes the flat-screen view, and does nothing at
 		// all in VR: there the world's size is set by how many units the engine

@@ -148,7 +148,13 @@ struct Metadata
 	// The original doubles these at load (handoff 2.1). Sizing the player from
 	// the raw values makes the whole world read as twice its intended size.
 	int PlayerHeight() const { return playerHeight * 2; }
-	int MaxClimb() const     { return maxClimb * 2; }
+	// 2*meta[0x0C] + 1, NOT 2*meta[0x0C]. The +1 is the original's
+	// (C/map_load.c:206-209; docs/GAME_core.md 2.1 and GAME_engine_hooks.md):
+	// a step of exactly max_climb is walked up and max_climb+1 blocks, and
+	// GAME_core.md 5.2's acceptance test names 65/66 as the pair to try. With
+	// the +1 dropped, the tallest authored step in the game is the one you
+	// cannot climb.
+	int MaxClimb() const     { return maxClimb * 2 + 1; }
 	int MinFit() const       { return minFit * 2; }
 };
 

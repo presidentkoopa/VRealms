@@ -1525,6 +1525,12 @@ public:
 	double		ForcedPlayerHeight = 0;			// total height, 0 = class default
 	double		ForcedPlayerViewHeight = 0;		// eye height,   0 = class default
 
+	// How tall a step the player can walk up, for the same reason: a level
+	// authored for a person 154 units tall has stairs to match, and Doom's
+	// 24-unit limit stops you dead at the bottom of them. Zero leaves the class
+	// default alone, so this is inert for every level that does not set it.
+	double		ForcedPlayerMaxStepHeight = 0;	// step-up limit, 0 = class default
+
 	// How fast darkness closes in with distance, for ELightMode::DistanceShade.
 	// A surface's shade step is (distance >> ShadeFalloffShift), so a LARGER
 	// shift means a slower fade and a brighter world. Zero disables the mode's
