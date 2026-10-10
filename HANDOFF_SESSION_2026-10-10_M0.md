@@ -174,6 +174,67 @@ After M1: **M2, the Realms core and the DBASE100 reader.** `DBASE100.DAT` is
 
 ---
 
+## 3b. The owner could not walk up stairs — found and fixed
+
+Reported from the headset, after M0: *"the scale is so fucking off, I can't walk
+up stairs."* The scale is not the cause and the world is not wrong.
+
+`g_max_climb` — the map's own step-up limit — **was parsed and then used by
+nothing.** The player kept Doom's `MaxStepHeight` of **24** in a manor whose
+stairs are cut for **65**.
+
+```
+step up   65 units (Doom's default is 24) -- map says meta[0x0c]=32, doubled +1
+```
+
+Read from the retail STUDY1: `meta[0x0c] = 32`, so `2*32+1 = 65`, which is
+exactly the 65/66 pair `docs/GAME_core.md` §5.2 names as the acceptance test.
+`Metadata::MaxClimb()` was also returning `2*meta[0x0c]` with the **+1
+dropped** — on its own that made the tallest authored step in the game the one
+step you cannot climb.
+
+`FLevelLocals::ForcedPlayerMaxStepHeight` (`994ca3318b`) is the sibling of
+`ForcedPlayerHeight`/`ForcedPlayerViewHeight`, applied in the same place at
+player spawn, `0` = class default so it is inert for every non-Realms level.
+
+### Still Doom's, and next
+
+`ROADMAP.md` §2 says to port the parts of movement that are rules. Of the
+player's four measurements, **only height was ever ported.** Now two:
+
+| | the original | this port |
+|---|---|---|
+| height | 144, doubled from meta[0x0a] | ✅ 154 / eye 144 |
+| **max step-up** | `2*meta[0x0c]+1` = 65 | ✅ **65** (was 24) |
+| **min fit** (headroom) | `2*meta[0x0e]` = 96 | ❌ `MinFit()` parsed, **used by nothing** |
+| **radius** | fixed at `0x70` (`GAME_core.md` §3.3) | ❌ never set, still Doom's **16** |
+
+A player 2.75× Doom's height still carrying Doom's 16-unit radius will slip
+through gaps the original would stop him in, and the 96-unit headroom span is
+what decides whether he fits under a lintel at all — separate from his 154-unit
+height. **Verify `0x70`'s units against ROTH.C before setting the radius**; the
+spec line quotes `box ±0x1c` and `radius 0x70` together and they are not in the
+same scale. Crouch (step-up drops to 16, `GAME_core.md` §5) needs the crouch
+state and belongs with the movement rules, not the loader.
+
+## 3c. VR_UnitsPerMeter called itself
+
+```c
+return gVRUnitsPerMeterOverride > 0.f ? gVRUnitsPerMeterOverride
+                                      : (float)VR_UnitsPerMeter();   // itself
+```
+
+The fallback is supposed to be the `vr_vunits_per_meter` cvar. Every VR frame
+goes through this function — IPD, stereo separation, HUD projection, head
+height, positional movement — so the only reason it was survivable is that a
+loaded Realms map always sets the override and takes the other branch. The
+archived player preference could never be reached. Fixed in `a5087ca27c`.
+
+**REMAROTH-only**: UZDXREMA has no `gVRUnitsPerMeterOverride` at all, so no
+other lane inherits it. **Known and not changed:** nothing ever clears the
+override, so 93.5 persists for the rest of the run once a Realms map has
+loaded. Harmless while this tree only loads Realms maps.
+
 ## 4. Commits
 
 | | |
@@ -182,6 +243,9 @@ After M1: **M2, the Realms core and the DBASE100 reader.** `DBASE100.DAT` is
 | `b9115b02ae` | One load report per real load, not per map lookup |
 | `f465448f1f` | The census counted dialogue as implemented; it is a stub |
 | `1d4f1608fb` | The roadmap to playable, and the lane docs behind it |
+| `e752b84d95` | M0 done: the tree builds, STUDY1 loads, and the census was lying |
+| `994ca3318b` | Let the player climb the stairs the map built for him |
+| `a5087ca27c` | VR_UnitsPerMeter called itself instead of reading the cvar |
 
 Branch `workingbuild`. Working tree clean. `build-dxr` is now configured with
 `FORCE_NO_LTO=ON` and stays that way until someone reconfigures it.
