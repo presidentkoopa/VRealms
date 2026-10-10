@@ -55,9 +55,25 @@ static const uint8_t kImplemented[] = {
 	0x02, 0x03, 0x06, 0x07, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
 	0x11, 0x12, 0x17, 0x1D, 0x23, 0x24, 0x26, 0x28, 0x2F, 0x34,
 	0x36, 0x38, 0x3B, 0x3E, 0x40,
-	// Reached only through RunCommandWithChain, so it is dispatched but is not
-	// in IsImplemented's list -- counted here because the player gets it.
-	0x2B,
+	// 0x2B IS NOT IN THIS LIST, AND MUST NOT BE PUT BACK until dialogue runs.
+	//
+	// It was here once, on the grounds that RunCommandWithChain dispatches it
+	// "so the player gets it". The player does not get it. The handler is
+	// RunDbase100Record (roth_runtime.cpp), which does
+	//
+	//     g.unhandledOps[0x2B]++;  return CMD_NOTHING;
+	//
+	// -- it reproduces the original's early-out for an unloaded DBASE100 and
+	// counts ITSELF as a hole, as its own comment says, "so it does not look
+	// like a success". Having a case in the switch is not the same as doing
+	// the work, and IsImplemented() is the thing this table mirrors.
+	//
+	// Counting it cost three things: the headline read 62.7% instead of 52.4%
+	// (371 records of dialogue, the biggest single hole in the game), 0x2b
+	// vanished from "the holes, biggest first", and the dialogue milestone's
+	// acceptance test -- "0x2b no longer appears in the census" -- was already
+	// passing before a line of it was written. Put it back only when
+	// eval_dialogue_record_by_id is built and IsImplemented() lists it too.
 };
 
 // Mirrors roth_runtime.cpp IsVerifiedNop(). The triggers in it are not "missing":
