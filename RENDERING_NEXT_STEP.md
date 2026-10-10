@@ -64,6 +64,49 @@ upper** (600 against 598), with mid `0x8000` on the sliver sides.
 
 ---
 
+## 2b. CONFIRMED by rendering, 2026-10-10 — it is sectors 56 and 57
+
+Step 1 below was run. A new cvar `roth_skip_sectors 56,57` leaves those sectors'
+faces out of the build entirely (7 faces), and the same pose was rendered with
+and without, real art, neutral post-processing:
+
+| | ceiling | floor |
+|---|---|---|
+| with 56/57 | black wedge across the coffering | black wedge across the carpet |
+| **without** | **coffering unbroken** | **carpet clean to the far wall** |
+
+**Both flat holes are the thin-sliver geometry.** The narrow black strip still at
+the far end of the test frame is only the painting, which the test deleted.
+
+Frames: `scratchpad/r1/base.png`, `scratchpad/r1/skip5657.png`.
+
+`roth_skip_sectors` takes a comma list of Realms sector numbers. Not archived — a
+build with sectors missing is a test, never a load. It exists so that "is this
+the geometry that breaks the picture" is settled by rendering, not by argument.
+
+### Mid `0x8000` is NOT the cause — checked against ROTH.C
+
+`renderer.c:9222-9225` is a SIGN test, not an `0xFFxx` test:
+
+```c
+if ((int16_t)a6 < 0)        /* any top-bit index -> solid palette colour */
+else if (a6 != colorkey)    /* -> textured */
+else                        /* -> draw nothing */
+```
+
+`0x8000` is negative, so the original **does** make it a solid colour, and
+`0x8000 - 0x8000` is palette entry 0 — exactly what `TEX_COLOUR_BASE_LO`
+(`roth_texture.h:274`) already does. Our two bases, `0xFF00` and `0x8000`, both
+reduce to the index's low byte, as the original does. **Rule this out; do not
+"fix" it.**
+
+That leaves **the node builder on 2-unit lines and sectors** as the live
+hypothesis. Roth maps set `ForceNodeBuild` (`rothmap.cpp:356`), so every sliver
+goes through `FNodeBuilder`, and triangles missing from the flats of the room in
+FRONT of the slivers is precisely what a bad BSP looks like.
+
+---
+
 ## 3. Do these in order, with a rendered frame each time
 
 Each step: `rothdiff_shot` at this pose against the oracle's real-art frame.

@@ -65,6 +65,12 @@ CVAR(Bool, roth_lighting, true, CVAR_ARCHIVE | CVAR_NOINITCALL)
 // something anyone should inherit by accident.
 CVAR(Bool, roth_logwalls, false, CVAR_NOINITCALL)
 
+// A comma list of Realms sector numbers to leave out of the geometry, so that
+// "is this the geometry that breaks the picture" can be answered by rendering
+// the same pose with and without it instead of by argument. Not archived: a
+// build with sectors missing is a test, never a load anyone should keep.
+CVAR(String, roth_skip_sectors, "", CVAR_NOINITCALL)
+
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
@@ -928,11 +934,51 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	std::vector<PendingLine> pending;
 	pending.reserve(rm.faces.size());
 
-	int twoSided = 0, oneSided = 0, orphaned = 0;
+	// BISECTING GEOMETRY BY SECTOR. roth_skip_sectors is a comma list of Realms
+	// sector numbers whose faces are left out of the build entirely, on either
+	// side. It exists because "is this geometry what is breaking the picture"
+	// is otherwise answered by argument, and on this map it has been answered
+	// wrongly more than once: the only honest test is to remove the suspect and
+	// render the same pose again. Empty by default and not archived.
+	std::vector<int> skipSectors;
+	{
+		const char *s = roth_skip_sectors;
+		while (s != nullptr && *s != 0)
+		{
+			while (*s == ' ' || *s == ',') s++;
+			if (*s == 0) break;
+			skipSectors.push_back(atoi(s));
+			while (*s != 0 && *s != ',') s++;
+		}
+		if (!skipSectors.empty())
+		{
+			FString list;
+			for (int sx : skipSectors) list.AppendFormat("%d ", sx);
+			log.Line("  SKIPPING SECTORS  %s -- this build is a geometry test,"
+				" not a shippable load", list.GetChars());
+		}
+	}
+	auto sectorSkipped = [&](int sec)
+	{
+		for (int sx : skipSectors) if (sx == sec) return true;
+		return false;
+	};
+
+	int twoSided = 0, oneSided = 0, orphaned = 0, skippedFaces = 0;
 	for (size_t i = 0; i < rm.faces.size(); i++)
 	{
 		if (consumed[i]) continue;
 		const roth::Face &f = rm.faces[i];
+
+		if (!skipSectors.empty()
+			&& (sectorSkipped(f.sector)
+				|| (f.sister >= 0 && sectorSkipped(rm.faces[f.sister].sector))))
+		{
+			skippedFaces++;
+			consumed[i] = true;
+			if (f.sister >= 0) consumed[f.sister] = true;
+			continue;
+		}
 
 		if (f.sector < 0)
 		{
@@ -961,6 +1007,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		(int)pending.size(), twoSided, oneSided);
 	if (orphaned) log.Warn("%d faces belonged to no sector and were dropped", orphaned);
 	log.Count("faces with no sector", orphaned);
+	if (skippedFaces > 0)
+		log.Line("  faces left out by roth_skip_sectors  %d", skippedFaces);
 
 	// The tails of both arrays are reserved for the 3D floor control geometry
 	// built after this loop -- see the platform count above.
