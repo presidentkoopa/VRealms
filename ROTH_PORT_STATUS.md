@@ -73,6 +73,12 @@ Two ways forward, and they cost very differently:
 **This has not been decided.** It should be, before step 1 is finished, because
 step 1 is the thing that would have to move.
 
+> **DECIDED 2026-10-10, `ROADMAP.md` §2:** build the core for **new** state only.
+> The DBASE100 reader, flags, inventory, dialogue and then actors live in
+> `src/roth/core/`, which has no engine headers. The existing world code in
+> `roth_runtime.cpp` stays where it is and moves only when someone has to change
+> it anyway. The owner can overrule this.
+
 ---
 
 ## Step 1 in detail — what the interpreter already does

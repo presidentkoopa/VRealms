@@ -28,6 +28,13 @@
 > If you find yourself deep in something that does not move that sentence
 > forward, stop and say so.
 
+> # THE PLAN IS `ROADMAP.md` (2026-10-10)
+>
+> Milestones M0-M8, in order, each ending in a check the owner does in the
+> headset, with the open decisions already made. Start there. Everything below
+> this block is reference: which document to trust, where things are, how to
+> run the original. It is not the order of work.
+
 > **A LANE RAN OVERNIGHT INTO 2026-10-03. Read
 > `HANDOFF_SESSION_2026-10-03.md` before anything else in this file.** The use
 > key opens doors, and all four reachable trigger channels are verified firing
