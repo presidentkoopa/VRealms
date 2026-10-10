@@ -200,22 +200,48 @@ player spawn, `0` = class default so it is inert for every non-Realms level.
 ### Still Doom's, and next
 
 `ROADMAP.md` §2 says to port the parts of movement that are rules. Of the
-player's four measurements, **only height was ever ported.** Now two:
+player's five measurements, **only height had ever been ported.** Now four:
 
 | | the original | this port |
 |---|---|---|
 | height | 144, doubled from meta[0x0a] | ✅ 154 / eye 144 |
 | **max step-up** | `2*meta[0x0c]+1` = 65 | ✅ **65** (was 24) |
+| **radius** | `0x1c` = 28, hardcoded | ✅ **28** (was 16) |
+| **use range** | pick depth < 600, units **[open]** | ⚠️ **600 PROVISIONAL** (was 64) |
 | **min fit** (headroom) | `2*meta[0x0e]` = 96 | ❌ `MinFit()` parsed, **used by nothing** |
-| **radius** | fixed at `0x70` (`GAME_core.md` §3.3) | ❌ never set, still Doom's **16** |
 
-A player 2.75× Doom's height still carrying Doom's 16-unit radius will slip
-through gaps the original would stop him in, and the 96-unit headroom span is
-what decides whether he fits under a lintel at all — separate from his 154-unit
-height. **Verify `0x70`'s units against ROTH.C before setting the radius**; the
-spec line quotes `box ±0x1c` and `radius 0x70` together and they are not in the
-same scale. Crouch (step-up drops to 16, `GAME_core.md` §5) needs the crouch
-state and belongs with the movement rules, not the loader.
+**The radius is `0x1c`, not the `0x70` that `GAME_core.md` §3.3 calls "radius".
+Read ROTH.C before this one.** `move_player_with_collision` builds every
+*other* entity's block from a single `r` (`E/collision_physics.c:1592-1600`):
+
+```
+box_max = r    box_min = -r    radius = 4r    radius_sq = 64r²    +4 = 65r²
+```
+
+and the player's hardcoded block (`:1687-1692`) satisfies **all five** at
+`r = 28`: `0x1c`, `0x70 = 4·28`, `0xc400 = 64·28²`, `0xc710 = 65·28²`. `0x70`
+is the derived `4r`. Taking the doc at its word would have made him **four
+times too wide**.
+
+Applied through `UnlinkFromWorld`/`LinkToWorld` — what `A_SetSize` does, because
+radius decides which blockmap cells an actor is filed under and a bare
+assignment leaves the world holding the old extent. `ForcedPlayerHeight` was
+assigning in place and now goes through the same relink.
+
+**Use range was the quiet one.** Doom's 64 is **0.68 m** at 93.5 units/metre,
+for a player 1.65 m tall. `UseFlat` *and* the hand pick both read it, and the
+pick's own comment says the beam "crosses rooms" — it could not. **M1's first
+check, "point at a door across the room", would have failed and looked like the
+pick was broken.** 600 is the original's band number read as world units; it is
+**not** the calibration `GAME_core.md` §4.4 asks for, and the load report labels
+it PROVISIONAL. §5.2 step 8 is the measurement that replaces it.
+
+**min fit needs a decision, not just a value.** Realms fits the player through a
+96-unit headroom span independent of his 154-unit height, and **GZDoom has no
+fit-height separate from actual height**. Expect low lintels and passages to
+block where the original let you through. Crouch (step-up drops to 16,
+`GAME_core.md` §5) needs the crouch state and belongs with the movement rules,
+not the loader.
 
 ## 3c. VR_UnitsPerMeter called itself
 
@@ -246,6 +272,7 @@ loaded. Harmless while this tree only loads Realms maps.
 | `e752b84d95` | M0 done: the tree builds, STUDY1 loads, and the census was lying |
 | `994ca3318b` | Let the player climb the stairs the map built for him |
 | `a5087ca27c` | VR_UnitsPerMeter called itself instead of reading the cvar |
+| `44d80c54aa` | Give the player his own width and his own reach |
 
 Branch `workingbuild`. Working tree clean. `build-dxr` is now configured with
 `FORCE_NO_LTO=ON` and stays that way until someone reconfigures it.
