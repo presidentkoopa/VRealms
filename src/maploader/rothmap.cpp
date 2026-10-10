@@ -214,9 +214,33 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	{
 		const double ph = double(rm.metadata.PlayerHeight());
 		Level->ForcedPlayerViewHeight = ph;
-		Level->ForcedPlayerHeight = ph + 10.;
-		log.Line("  player size    %.0f tall, eye at %.0f (Doom's default is 56 / 41)",
-			Level->ForcedPlayerHeight, Level->ForcedPlayerViewHeight);
+
+		// THE COLLISION HEIGHT IS g_min_fit, NOT THE EYE HEIGHT. They are two
+		// different numbers in the original and this used to use one for both.
+		//
+		// What the original actually tests to let you through an opening is a
+		// SPAN THRESHOLD: move_player_with_collision loads it from g_min_fit
+		// (E/collision_physics.c:1693) and every passage check is the same
+		// shape -- "if (ceiling - floor) < span, blocked" (:1048, and the
+		// portal tests at :604-633). g_min_fit is 2*meta[0x0e] = 96, while the
+		// eye sits at 144. So a Realms player walks through a 96-unit gap
+		// standing up; he does not have to be 96 units tall to do it.
+		//
+		// The old `ph + 10` was not a Realms measurement at all -- it was the
+		// eye height plus a guess -- and using it as the collision height made
+		// every opening between 96 and 154 impassable that the original walks
+		// straight through.
+		//
+		// The original ALSO squashes the player under a low ceiling rather than
+		// stopping him: g_player_height is dynamic, clamped to (ceiling - pos)
+		// and eased back toward its resting target at 4 a tic (E/player.c:313,
+		// :318-326). GZDoom's own viewz clamp in P_CalcHeight gives the same
+		// duck for free once the collision height is the span.
+		Level->ForcedPlayerHeight = double(rm.metadata.MinFit());
+		log.Line("  player size    %.0f eye, %.0f collision (Doom's is 41 / 56)"
+			" -- collision is g_min_fit = 2*meta[0x0e], the span the original"
+			" tests to let you through", Level->ForcedPlayerViewHeight,
+			Level->ForcedPlayerHeight);
 
 		// AND THE STAIRS, which is the same fact a third time. A person 154
 		// units tall has stairs built to match; Doom's step-up limit is 24 and
@@ -300,9 +324,17 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// it would resize every other game this engine runs, permanently, from
 		// loading one Realms map. The override is per level and is cleared by
 		// P_SetupLevel. See VR_UnitsPerMeter in hw_vrmodes.h.
+		// FROM THE STANDING HEIGHT, NOT ForcedPlayerHeight. Those were the same
+		// number until the collision height became g_min_fit (96) above, and
+		// reading the field here would quietly rescale the whole world from
+		// 93.5 to 58.3 units a metre -- the headset's idea of how big the manor
+		// is, changed by a collision fix. How tall the player STANDS is the
+		// human-scale anchor, so it is spelled out here and the two uses can no
+		// longer drift into each other.
+		const double standingHeight = ph + 10.;
 		const double DOOM_PLAYER_HEIGHT = 56.0, DOOM_UNITS_PER_METRE = 34.0;
 		const double upm = DOOM_UNITS_PER_METRE
-			* (Level->ForcedPlayerHeight / DOOM_PLAYER_HEIGHT);
+			* (standingHeight / DOOM_PLAYER_HEIGHT);
 		VR_SetUnitsPerMeterOverride((float)upm);
 		log.Line("  VR world scale %.1f units/metre (Realms; the cvar's %.0f is"
 			" Doom's, and is untouched)", upm, DOOM_UNITS_PER_METRE);
