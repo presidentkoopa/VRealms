@@ -16,11 +16,14 @@ g++ $FLAGS -o "$OUT/dbase100_test" "$HERE/dbase100_test.cpp" $CORE
 g++ $FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all \
 	-o "$OUT/dbase100_test_san" "$HERE/dbase100_test.cpp" $CORE
 g++ $FLAGS -o "$OUT/dbase100_dump" "$HERE/dbase100_dump.cpp" $CORE
+g++ $FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all \
+	-o "$OUT/inventory_test" "$HERE/inventory_test.cpp" "$SRC/roth_inventory.cpp" $CORE
 
 TMP=$(mktemp -d)
 "$OUT/dbase100_test" "$TMP"
 "$OUT/dbase100_test_san" "$TMP"
 rm -rf "$TMP"
+"$OUT/inventory_test"
 
 # Exercise the dump tool on the synthetic fixture (no retail data here).
 FIX=$(mktemp -d)

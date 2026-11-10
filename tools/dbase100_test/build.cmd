@@ -24,7 +24,13 @@ cl /nologo /std:c++17 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /Fo:"%OUT%\\" /Fd:"%OU
    /Fe:"%OUT%\dbase100_test.exe" "%HERE%dbase100_test.cpp" %CORE%
 if errorlevel 1 exit /b 1
 
+cl /nologo /std:c++17 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /Fo:"%OUT%\\" /Fd:"%OUT%\inv.pdb" ^
+   /Fe:"%OUT%\inventory_test.exe" "%HERE%inventory_test.cpp" "%SRC%roth_inventory.cpp" %CORE%
+if errorlevel 1 exit /b 1
+
 "%OUT%\dbase100_test.exe" "%TEMP%"
+if errorlevel 1 exit /b 1
+"%OUT%\inventory_test.exe"
 if errorlevel 1 exit /b 1
 
 if "%~1"=="" (
