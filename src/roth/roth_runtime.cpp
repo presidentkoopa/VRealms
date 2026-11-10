@@ -28,6 +28,8 @@
 #include "roth_raw.h"
 #include "roth_surface.h"
 #include "roth_log.h"
+#include "roth_dbase100.h"
+#include "roth_install.h"
 
 #include <map>
 #include <vector>
@@ -3823,6 +3825,14 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	g.fired = 0;
 	g.unhandledOps.clear();
 
+	// DBASE100 is game-global, not per map: ROTH.C loads it once at startup
+	// (game_core.c:1060). Loaded on the first map, and its report written into
+	// that map's log. A failure is retried, and so reported, on every map
+	// until it loads. Nothing reads it yet -- the interpreter is the next step
+	// (ROTH_GAME_PORT.md §4 step 1). NOT COMPILED in the lane that wrote it.
+	if (!TheDbase100().IsLoaded())
+		LoadDbase100FromInstall(TheInstall(), TheDbase100(), log);
+
 	// The arrival point the map we came FROM asked for.
 	g.pendingArrivalSector = -1;
 	if (g_warpArrivalSector >= 0 && level != nullptr
@@ -4155,8 +4165,9 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		log->Line("  it slides a sector by moving its vertices, and GZDoom's BSP is");
 		log->Line("  static. 32 records game-wide.");
 		log->Line("  What is left above is GAME LOGIC, not effects: the conditional");
-		log->Line("  cluster 0x27/0x29/0x2a, dialogue 0x2b and the item opcodes (no");
-		log->Line("  DBASE100 reader exists), object spawn 0x16, SFX nodes 0x10.");
+		log->Line("  cluster 0x27/0x29/0x2a, dialogue 0x2b and the item opcodes (the");
+		log->Line("  DBASE100 reader exists; its interpreter does not), object spawn");
+		log->Line("  0x16, SFX nodes 0x10.");
 		log->Line("  None of it is approximated.");
 	}
 }
