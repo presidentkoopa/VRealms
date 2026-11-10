@@ -44,6 +44,12 @@ public:
 
 	std::vector<std::string> MapNames() const;
 
+	// A file that sits beside ROTH.RES -- DBASE100.DAT and its siblings in the
+	// retail DATA directory (ROTH_BETTER.md §18). Tries the name as given, then
+	// upper case, then lower case, because a copy taken off the CD onto a
+	// case-sensitive file system may have either. Empty when none exists.
+	std::string DataFile(const char *name) const;
+
 	// Whole-file read; empty on failure.
 	static std::vector<uint8_t> ReadWholeFile(const std::string &path);
 
