@@ -965,6 +965,10 @@ set (PCH_SOURCES
 	roth/roth_palette.cpp
 	roth/roth_install.cpp
 	roth/roth_log.cpp
+	# DBASE100.DAT, the game database (items, dialogue records, cutscenes).
+	# Engine-free; tested standalone in tools/dbase100_test.
+	roth/roth_dbase100.cpp
+	roth/roth_dbase100_install.cpp
 	# The exception: roth_texture is the boundary file that hands decoded
 	# artwork to the texture manager, so it does use engine types.
 	roth/roth_texture.cpp

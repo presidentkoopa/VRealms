@@ -15,6 +15,7 @@
 #include "roth_commands.h"
 #include "roth_das.h"
 #include "roth_install.h"
+#include "roth_dbase100.h"
 
 #include <stdio.h>
 #include <string>
@@ -201,6 +202,18 @@ int main(int argc, char **argv)
 		if (!ok) packFails++;
 	}
 
+	// ---- DBASE100 ----------------------------------------------------------
+	// The game database, through the same adapter the engine uses. Counts are
+	// the table sizes ROTH_COMMANDS.md quotes as the bounds the map key ranges
+	// land inside. tools/dbase100_test/dbase100_dump prints the detail.
+	const int EXPECT_DB_ITEMS = 281;
+	const int EXPECT_DB_ACTIONS = 694;
+	roth::Dbase100 db;
+	const bool dbLoaded = roth::LoadDbase100FromInstall(install, db, nullptr);
+	if (!dbLoaded)
+		printf("  DBASE100 FAILED TO LOAD: %s\n",
+			db.Error().empty() ? "DBASE100.DAT not found or unreadable" : db.Error().c_str());
+
 	printf("\n");
 	printf("maps parsed     %6d   expected %6d  %s\n", nMaps, EXPECT_MAPS,
 		nMaps == EXPECT_MAPS ? "OK" : "MISMATCH");
@@ -245,7 +258,16 @@ int main(int argc, char **argv)
 	printf("pack checks     %6s   expected     ok  %s\n",
 		packFails ? "failed" : "ok", packFails == 0 ? "OK" : "MISMATCH");
 
-	bool pass = nMaps == EXPECT_MAPS && nSectors == EXPECT_SECTORS
+	printf("dbase100 items  %6d   expected %6d  %s\n", db.ItemCount(), EXPECT_DB_ITEMS,
+		db.ItemCount() == EXPECT_DB_ITEMS ? "OK" : "MISMATCH");
+	printf("dbase100 actions%6d   expected %6d  %s\n", db.ActionCount(), EXPECT_DB_ACTIONS,
+		db.ActionCount() == EXPECT_DB_ACTIONS ? "OK" : "MISMATCH");
+	printf("dbase100 anomal.%6d   expected      0  %s\n", db.AnomalyTotal(),
+		dbLoaded && db.AnomalyTotal() == 0 ? "OK" : "MISMATCH");
+	const bool dbPass = dbLoaded && db.ItemCount() == EXPECT_DB_ITEMS
+		&& db.ActionCount() == EXPECT_DB_ACTIONS && db.AnomalyTotal() == 0;
+
+	bool pass = dbPass && nMaps == EXPECT_MAPS && nSectors == EXPECT_SECTORS
 		&& nFaces == EXPECT_FACES && nObjects == EXPECT_OBJECTS
 		&& nPlatforms == EXPECT_PLATFORMS && nOpenLoops == 0 && nFailed == 0
 		&& packFails == 0
