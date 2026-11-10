@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 namespace roth
 {
@@ -146,6 +147,21 @@ std::string Install::PackFile(const char *pack) const
 {
 	if (!mOpen || !pack || !*pack) return "";
 	return mPath + "/M/" + ToUpper(pack) + ".DAS";
+}
+
+std::string Install::DataFile(const char *name) const
+{
+	if (!mOpen || !name || !*name) return "";
+	std::string lower = name;
+	for (auto &c : lower) c = (char)tolower((unsigned char)c);
+	const std::string tries[] = { name, ToUpper(name), lower };
+	for (const auto &t : tries)
+	{
+		std::string path = mPath + "/" + t;
+		FILE *f = fopen(path.c_str(), "rb");
+		if (f) { fclose(f); return path; }
+	}
+	return "";
 }
 
 std::vector<std::string> Install::MapNames() const
