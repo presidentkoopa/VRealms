@@ -52,6 +52,9 @@
 #include "p_trace.h"       // Trace, for the floor-click probe in UseFlat
 #include "printf.h"
 #include "c_dispatch.h"
+#include "c_cvars.h"
+#include "v_font.h"
+#include "sbar.h"          // C_MidPrint, for the stopgap dialogue line
 
 // Declared in p_map.cpp at GLOBAL scope, next to the use path it reports on.
 // It cannot live in namespace roth beside roth_trigger_debug, because p_map.cpp
@@ -128,6 +131,13 @@ uint8_t g_progressFlags[FLAG_BITS / 8];
 int32_t HostResetCommandChainNoSource(uint16_t index);
 int32_t HostRunObjectCommandsById(uint16_t id);
 
+// Show each dialogue line in the middle of the screen as well as in the
+// console. A STOPGAP so a conversation can be seen without the console open:
+// it is the engine's own centred message, not the original's dialogue window,
+// and choices still cannot be picked. Not archived (GAMENAME is shared with
+// the hands build, so nothing here may follow the owner into it).
+CVAR(Bool, roth_dialogue_onscreen, true, 0)
+
 class CoreHost : public Dbase100Sink
 {
 public:
@@ -169,17 +179,23 @@ public:
 	void Say(const char *what, const uint8_t *t, uint32_t bytes)
 	{
 		// The builder's buffer is NUL-separated lines; print each.
-		std::string line;
-		for (uint32_t i = 0; i < bytes; i++)
+		std::string line, all;
+		for (uint32_t i = 0; i <= bytes; i++)
 		{
-			if (t[i] == 0)
+			const uint8_t c = i < bytes ? t[i] : 0;
+			if (c == 0)
 			{
-				if (!line.empty()) Printf("%s: %s\n", what, line.c_str());
+				if (!line.empty())
+				{
+					Printf("%s: %s\n", what, line.c_str());
+					if (!all.empty()) all += "\n";
+					all += line;
+				}
 				line.clear();
 			}
-			else if (t[i] >= 0x20 && t[i] < 0x7f) line += (char)t[i];
+			else if (c >= 0x20 && c < 0x7f) line += (char)c;
 		}
-		if (!line.empty()) Printf("%s: %s\n", what, line.c_str());
+		if (roth_dialogue_onscreen && !all.empty()) C_MidPrint(SmallFont, all.c_str());
 	}
 
 	uint32_t Dbase100OpenDialogueWindow(const uint8_t *t, uint32_t bytes) override
