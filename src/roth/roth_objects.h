@@ -1,4 +1,6 @@
 #pragma once
+
+#include <stdint.h>
 //
 // Placing Realms of the Haunting's objects -- the furniture, the decoration, the
 // suit of armour, the chairs and the desks -- into a level the engine reads
