@@ -71,6 +71,12 @@ CVAR(Bool, roth_logwalls, false, CVAR_NOINITCALL)
 // build with sectors missing is a test, never a load anyone should keep.
 CVAR(String, roth_skip_sectors, "", CVAR_NOINITCALL)
 
+// "sector=height" pairs, comma separated, forcing a sector's CEILING. The
+// sibling of roth_skip_sectors: skipping answers "is this geometry the
+// problem", and this answers "is it the geometry or the 2-unit band on it",
+// which skipping alone cannot separate. Not archived, same reason.
+CVAR(String, roth_sector_ceiling, "", CVAR_NOINITCALL)
+
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
@@ -605,6 +611,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// zero or negative height; almost all are 218 units tall.
 		double floorZ = double(rs.floorHeight);
 		double ceilZ = double(rs.ceilingHeight);
+
+		// roth_sector_ceiling overrides, for geometry bisection only.
+		{
+			const char *s = roth_sector_ceiling;
+			while (s != nullptr && *s != 0)
+			{
+				while (*s == ' ' || *s == ',') s++;
+				if (*s == 0) break;
+				const int which = atoi(s);
+				const char *eq = strchr(s, '=');
+				if (eq != nullptr && which == (int)i)
+				{
+					ceilZ = atof(eq + 1);
+					log.Line("  SECTOR CEILING OVERRIDE  sector %d -> %.0f"
+						" (was %d) -- geometry test, not a shippable load",
+						(int)i, ceilZ, (int)rs.ceilingHeight);
+				}
+				while (*s != 0 && *s != ',') s++;
+			}
+		}
 		if (rs.IsDoor())
 		{
 			doorCount++;
