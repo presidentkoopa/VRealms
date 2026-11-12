@@ -176,8 +176,13 @@ void RuntimeInvSink::EquipWeapon(int slot, int32_t itemId)
 void RuntimeInvSink::RightHandChanged(int slot)
 {
 	if (U.core == nullptr || U.db == nullptr) return;
+	// The original refreshes the hand icon every frame (update_selected_item_icon,
+	// inventory.c:1676); the log line is only for a change.
+	static int32_t lastLogged = INT32_MIN;
+	const int32_t id = slot < 0 ? -1 : (int16_t)U.core->Items().Slot(slot).id;
+	if (id == lastLogged) return;
+	lastLogged = id;
 	if (slot < 0) { Printf("[roth_ui] right hand: empty\n"); return; }
-	const int32_t id = (int16_t)U.core->Items().Slot(slot).id;
 	const DbItem *rec = U.db->Item(id);
 	Printf("[roth_ui] right hand: item %d (%s)\n", (int)id,
 		rec ? U.dialogue.LineText(rec->name, 0x61).c_str() : "?");
