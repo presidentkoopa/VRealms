@@ -43,6 +43,9 @@ void MovieFinished(const char *name, int records, int recordCount, bool skipped)
 
 // The game flow's request (gdv_cutscene.c:2840): queued, played on the next tic.
 void MovieQueue(const char *name, uint32_t subtitleOffset, int32_t subtitleSize);
+// While set, MovieQueue drops movies (logged). Used around the boot's action 1
+// (GREMLOGO, INTRO) unless roth_intro_movies is on.
+void MovieSetSuppressed(bool on);
 
 // Once per level tic (roth_runtime.cpp TickLevelLogic): start what is queued.
 void MoviePump();

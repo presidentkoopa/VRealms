@@ -145,6 +145,7 @@ int32_t HostResetCommandChainNoSource(uint16_t index);
 int32_t HostRunObjectCommandsById(uint16_t id);
 
 CVAR(Bool, roth_newgame_on_start, true, 0)
+CVAR(Bool, roth_intro_movies, false, 0)   // the boot's GREMLOGO + INTRO; off until a release build (owner)
 
 void CmdHealHealth(uint32_t amount, uint32_t max);
 void CmdZeroHealth();
@@ -5333,7 +5334,12 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		// restored brings its own state, so neither runs under it.
 		if (roth_newgame_on_start && !savegamerestore)
 		{
+			// The owner's call (2026-11-12): the boot's logo and INTRO are skipped
+			// until a release build; CHPTR1 and every in-game cutscene still play.
+			// The boot's state changes happen either way.
+			MovieSetSuppressed(!roth_intro_movies);
 			g_flow.Boot();
+			MovieSetSuppressed(false);
 			g_flow.NewGame();
 			g_cmd.NewGame();                    // the RAW command core's own new-game state
 			g_cmd.health = g_flow.Health();     // one health (see CoreHost)

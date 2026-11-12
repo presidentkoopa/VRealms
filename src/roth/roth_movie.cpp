@@ -63,8 +63,16 @@ bool AddMovieJob(DObject *runner, const std::string &name)
 // game state a movie causes is set by the flow either way.
 CVAR(Bool, roth_movies, true, 0)
 
+static bool gSuppressed = false;
+void MovieSetSuppressed(bool on) { gSuppressed = on; }
+
 void MovieQueue(const char *name, uint32_t subtitleOffset, int32_t subtitleSize)
 {
+	if (gSuppressed)
+	{
+		Printf("Realms: movie %s.GDV not played (intro movies off: roth_intro_movies 0)\n", name != nullptr ? name : "");
+		return;
+	}
 	if (!roth_movies)
 	{
 		Printf("Realms: movie %s.GDV not played (roth_movies 0)\n", name != nullptr ? name : "");
