@@ -1181,6 +1181,7 @@ struct PendingDoor
 	int after = 0;        // tics still to wait
 };
 std::vector<PendingDoor> gPendingDoors;
+void DrainPendingDialogue();      // roth_dialogue / roth_inventory, at the end of this file
 
 void DrainPendingDoors()
 {
@@ -5467,6 +5468,7 @@ void TickLevelLogic(FLevelLocals *level)
 	DrainDeferred();
 	ApplyPendingWarp();
 	DrainPendingDoors();
+	DrainPendingDialogue();
 }
 
 //==========================================================================
@@ -5579,30 +5581,50 @@ CCMD(roth_door)
 //
 //==========================================================================
 
+// Typed from an +exec script these run BEFORE the deferred `map`, so, like
+// roth_door, they are queued and drained from the level tick, in order, once
+// the core is attached. A negative id asks for the inventory listing.
+std::vector<int> gPendingDialogue;
+
+void DrainPendingDialogue()
+{
+	if (gPendingDialogue.empty() || !g_core.IsAttached()) return;
+	std::vector<int> batch;
+	batch.swap(gPendingDialogue);
+	for (int id : batch)
+	{
+		if (id < 0)
+		{
+			Inventory &inv = g_core.Items();
+			Printf("roth_inventory: %d item(s), left hand slot %d, right hand slot %d\n",
+				inv.Count(), inv.LeftHand(), inv.RightHand());
+			for (int i = 0; i < inv.Count(); i++)
+				Printf("  slot %d: item %d x%d\n", i, (int)inv.Slot(i).id, (int)inv.Slot(i).quantity);
+			continue;
+		}
+		const std::map<std::string, int> before = g_coreHost.calls;
+		const uint32_t r = g_core.RunAction((uint32_t)id);
+		Printf("roth_dialogue: action %d returned %d\n", id, (int)r);
+		for (const auto &kv : g_coreHost.calls)
+		{
+			const auto it = before.find(kv.first);
+			const int was = it == before.end() ? 0 : it->second;
+			if (kv.second != was) Printf("  asked for, not built: %s x%d\n", kv.first.c_str(), kv.second - was);
+		}
+	}
+}
+
 CCMD(roth_dialogue)
 {
-	if (argv.argc() < 2) { Printf("roth_dialogue <action id 1..%d>\n", TheDbase100().ActionCount()); return; }
-	if (!g_core.IsAttached()) { Printf("roth_dialogue: no game core (DBASE100 not loaded -- load a Realms map first)\n"); return; }
+	if (argv.argc() < 2) { Printf("roth_dialogue <action id>\n"); return; }
 	const int id = atoi(argv[1]);
-	const std::map<std::string, int> before = g_coreHost.calls;
-	const uint32_t r = g_core.RunAction((uint32_t)id);
-	Printf("roth_dialogue: action %d returned %d\n", id, (int)r);
-	for (const auto &kv : g_coreHost.calls)
-	{
-		const auto it = before.find(kv.first);
-		const int was = it == before.end() ? 0 : it->second;
-		if (kv.second != was) Printf("  asked for, not built: %s x%d\n", kv.first.c_str(), kv.second - was);
-	}
+	if (id < 1) { Printf("roth_dialogue: ids start at 1\n"); return; }
+	gPendingDialogue.push_back(id);
 }
 
 CCMD(roth_inventory)
 {
-	if (!g_core.IsAttached()) { Printf("roth_inventory: no game core\n"); return; }
-	Inventory &inv = g_core.Items();
-	Printf("roth_inventory: %d item(s), left hand slot %d, right hand slot %d\n",
-		inv.Count(), inv.LeftHand(), inv.RightHand());
-	for (int i = 0; i < inv.Count(); i++)
-		Printf("  slot %d: item %d x%d\n", i, (int)inv.Slot(i).id, (int)inv.Slot(i).quantity);
+	gPendingDialogue.push_back(-1);
 }
 
 } // namespace roth
