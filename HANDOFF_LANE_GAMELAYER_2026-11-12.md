@@ -85,11 +85,16 @@ Every agent runs these before handing back:
   - The main menu panel draws, but its red text is small and soft at test resolution.
   - The dialogue line draws as one long thin strip across the room, which is not readable. It needs layout work: wrap to the panel width, at a readable size and distance.
   - The options and save-slot panels and the choice menu have not been seen yet (see the early quit above).
-- **Weapons:** an agent was still working at the pause: the actors agent, whose next patch goes to `/tmp/actors3.patch` in the cloud workspace.
-  - Its task: the fire state machine (WC:747-912) proven against the original.
-  - Then a per-tic weapon presentation state, and one ZScript weapon actor per Realms weapon attached to the main hand (VR) or the view (flat). Its frames map 1:1 to the original's weapon frames, and it also exposes named states with a 0..1 progress for mesh animation.
-  - Then a fallback card in the hand with the original's picture, firing from the hand ray, and a README with an example MODELDEF.
-  - **The owner's rule: weapons are 3D meshes in the world, not the sprite/HUD layer.**
+- **Weapons: done by the agent, NOT merged.** The patch is `patches/actors3_weapons_UNMERGED.patch` (a `git diff` against `5924e859`; it applied cleanly there).
+  - **Logic, proven against the original:** the fire state machine (WC:747-912, 773-910), bursts, ammo use and reload, recharging weapons, out-of-ammo, "equip the first usable weapon", unequip to Adam's item (0x81054). All 15 weapons, 25 pulls each at the STUDY1 ghoul: 107,780 weapon states with 0 differences, and 15 x 456 ticks of actors, bullets, damage and kills with 0 differences.
+  - **Presentation, the owner's way:** world actors `RealmsHeld` / `RealmsWeapon<item>` (`realmsheld.zs`). They publish state, frame, progress, charge and event tics. Two mesh mappings are documented in `docs/REALMS_WEAPONS.md` with an example MODELDEF. VR: `FollowHandMode = 1`, the main hand. Fallback: the original's DBASE200 picture on a card.
+  - **Why it is not merged:** its ZScript has never been compiled, and a ZScript error stops the engine at startup.
+  - **To land it:**
+    1. Apply it, build through the bridge, and read `doomxr-log.txt` for ZScript errors.
+    2. Run `tools/claude_bridge/cfg/actors_weapon9.cfg` and `actors_weapon12.cfg`, and compare with the original's frames. Those frames are in the cloud workspace (`/home/claude/evidence/actors3/`), which may be gone; re-render them with `oracle_shot.sh` if so.
+    3. Re-run the whole regression suite.
+  - **Known risk:** the VR card's orientation in the hand frame is assumed. If the card shows edge-on, that is where to fix it.
+  - **Not ported:** `build_weapon_billboard_record`. It is the player's own body as a world object (seen in mirrors), not the held-item view.
 - **Parked by the owner (cosmetic, later):**
   - outdoor trees too dark;
   - Adam not in the mirror;
@@ -107,7 +112,7 @@ Every agent runs these before handing back:
 ## 4. Plan forward, in order
 
 1. **Read the queued UI test and fix what the shots show.** The dialogue line layout comes first; it is gameplay, because you cannot read the game otherwise. Make every panel readable in VR and flat.
-2. **Land weapons:** merge `actors3`, re-run the whole suite, and take shots against the original.
+2. **Land weapons:** `patches/actors3_weapons_UNMERGED.patch`, as described in section 3.
 3. **Hands and interaction (owner, 2026-11-12):**
    - **Use the owner's highly animated FBX hands for now.** They are in the private repo `presidentkoopa/DXR` (archived) under `models/hands`.
      - **TAKE THE FBX HANDS. DO NOT TAKE THE EXISTING IQM HANDS.** If the engine needs another format, re-export from the FBX; never use the existing IQMs.
