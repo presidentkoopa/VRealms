@@ -156,17 +156,6 @@ public:
 	// in the pixels or the tiling seams stop meeting.
 	FTextureID World(int index, Log *log, bool masked = false, bool flipped = false);
 
-	// A BAKED wall image: column i of the result is the picture's column
-	// colMap[i], row j its row rowMap[j] (0xFFFF = outside the picture, drawn
-	// as a hole). For the wall pieces whose picture the engine cannot produce
-	// from the plain image with a scale and an offset -- the original's
-	// non-power-of-two masks, and see-through mid pieces that tile, start
-	// part-way down or stop short. roth_surface.h (WallToEngine, WallBakeMaps)
-	// decides when and with which maps; this only builds what it is told.
-	// Registered once per distinct (picture, blend, maps).
-	FTextureID WorldBaked(int index, Log *log, bool masked,
-		const uint16_t *colMap, int cols, const uint16_t *rowMap, int rows);
-
 	// Counters, so a load report can say what was not understood.
 	int Registered() const { return mRegistered; }
 	int Animated() const { return mAnimated; }
@@ -246,8 +235,7 @@ private:
 	// A world surface's art is stored rotated a quarter turn, so the decoded
 	// bytes go in as column-major with the dimensions exchanged. See
 	// FPalettedMemoryImage.
-	struct BakeMaps { const uint16_t *colMap; int cols; const uint16_t *rowMap; int rows; };
-	FTextureID Build(int index, Log *log, bool masked, bool flipped, const BakeMaps *bake = nullptr);
+	FTextureID Build(int index, Log *log, bool masked, bool flipped);
 	FTextureID SolidColour(int paletteIndex, Log *log);
 
 	std::string mName, mError;

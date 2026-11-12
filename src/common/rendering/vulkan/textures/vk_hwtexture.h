@@ -68,9 +68,6 @@ struct VkCompressedPixels
 	bool Read(FImageSource* src);
 };
 
-// [RS] The text of the zero-size-texture fatal error, naming the texture (vk_hwtexture.cpp).
-FString DescribeZeroSizeTexture(FTexture *tex, int w, int h);
-
 class VkHardwareTexture : public IHardwareTexture
 {
 	friend class VkMaterial;

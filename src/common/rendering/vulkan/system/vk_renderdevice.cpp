@@ -200,11 +200,8 @@ bool VkTexLoadThread::loadResource(VkTexLoadIn& input, VkTexLoadOut& output)
 		output.width = texBuffer.mWidth;
 		output.height = texBuffer.mHeight;
 	}
-	output.source = input.texture;
 
-	// [RS] An empty buffer is not uploaded here: a throw on this thread would end the
-	// process without a word. The main thread names the texture (UploadLoadedTextures).
-	if (uploadedCompressed || (canUploadInThread && output.pixels != nullptr && output.width > 0 && output.height > 0))
+	if (uploadedCompressed || (canUploadInThread && output.pixels != nullptr))
 	{
 		if (!uploadedCompressed)
 		{
@@ -1061,8 +1058,6 @@ void VulkanRenderDevice::UploadLoadedTextures(bool flush)
 		else if (loaded.pixels != nullptr)
 		{
 			const bool indexed = !!(loaded.scaleFlags & CTF_Indexed);
-			if (loaded.width <= 0 || loaded.height <= 0)
-				throw CVulkanError(DescribeZeroSizeTexture(loaded.source, loaded.width, loaded.height).GetChars());
 			loaded.hardwareTexture->BackgroundCreateTexture(
 				mCommands.get(),
 				loaded.width,
