@@ -233,6 +233,27 @@ public:
 	FTextureID MeshSkin(int index, int sub, bool masked, Log *log,
 		int *texW = nullptr, int *texH = nullptr);
 
+	// EVERY FRAME OF ONE OBJECT PICTURE, each its own texture and none of
+	// them animated by the texture manager, for a picture whose frame is
+	// chosen by game state: a creature's walking, attacking, pain and dying
+	// pictures, an impact picture. Sprite() hands back frame 0 and lets
+	// TexAnim run the rest at a fixed rate, which is right for a placed prop
+	// and wrong for these: the original picks an attack's frame from the
+	// actor's counter (render_world.c:392-430) and steps a walking picture
+	// once a tick it is drawn (das_assets.c:1450-1490). The timing fields say
+	// which rule applies. Registered under names of their own, so a picture
+	// used both ways is both. `ok` false when the index is not a picture.
+	struct PictureFrames
+	{
+		bool ok = false;
+		std::vector<FTextureID> frames;
+		SpriteInfo info;
+		bool rle = false;             // the 0xfffe kind: frame chosen by its owner
+		int ticksPerFrame = 0;        // rle: block+0x14
+		uint8_t rate = 0;             // otherwise: block+0x1b
+	};
+	const PictureFrames &Frames(int index, Log *log);
+
 	// The decoded pack, for callers that need something other than a picture out
 	// of it -- a 3D mesh, or just the kind of an entry. Null until Open succeeds.
 	const Pack *PackData() const { return mPack; }
@@ -273,6 +294,7 @@ private:
 	// Mesh skins, keyed (index, sub-picture, masked) packed into one int.
 	struct MeshSkinEntry { FTextureID id; int w = 0, h = 0; };
 	std::map<int, MeshSkinEntry> mMeshSkins;
+	std::map<int, PictureFrames> mPictureFrames;
 	int mSpritesRegistered = 0, mSpritesFailed = 0;
 	int mRegistered = 0, mAnimated = 0, mSolidColours = 0, mFailed = 0;
 	int mOutOfRange = 0;

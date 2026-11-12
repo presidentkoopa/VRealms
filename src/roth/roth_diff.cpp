@@ -779,13 +779,15 @@ CCMD(rothdiff_usewall)
 // numbers do not catch: lighting, framing, mood.
 CCMD(rothdiff_shot)
 {
-	if (argv.argc() < 5 || argv.argc() > 7)
+	if (argv.argc() < 5 || argv.argc() > 8)
 	{
-		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH] [z]\n");
+		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH] [z] [settle]\n");
 		Printf("  x y: a REALMS position. Where rooms are stacked, z (any height inside the\n");
 		Printf("  room meant) picks the storey; without it the room that was not set aside.\n");
 		Printf("  pitchROTH: the original's view pitch (+-126, positive looks up); its shear\n");
 		Printf("  of pitch*FY/128 px is a real pitch of atan(pitch/128)\n");
+		Printf("  settle: tics to stand there before the picture (default 70), so a run\n");
+		Printf("  of shots from one spot can catch moving things at chosen times\n");
 		return;
 	}
 	PendingDump d;
@@ -793,13 +795,14 @@ CCMD(rothdiff_shot)
 	d.w = d.h = 0;
 	d.path = argv[4];
 	d.pitch = argv.argc() >= 6 ? atoi(argv[5]) : 0;
-	if (argv.argc() == 7) d.z = atoi(argv[6]);
+	if (argv.argc() >= 7) d.z = atoi(argv[6]);
 	d.screenshot = true;
 	// TWO SECONDS, not two tics. Two was enough for the camera move to take
 	// effect, but the startup console is still down over the view that early
 	// and lands in the picture -- which makes the shot useless for the one job
 	// it has, being compared against ROTH.C's.
 	d.settle = 70;
+	if (argv.argc() == 8 && atoi(argv[7]) > 0) d.settle = atoi(argv[7]);
 	g_pending.Push(d);
 	Printf("rothdiff_shot: queued %s\n", argv[4]);
 }

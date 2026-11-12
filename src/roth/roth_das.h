@@ -156,6 +156,14 @@ struct Image
 	uint8_t modifier = 0, imageType = 0;
 	// frames[0] is the still image; later entries exist only for animations.
 	std::vector<std::vector<uint8_t>> frames;
+	// Animation timing, as the original's cache block holds it:
+	//   rle    the 0xFFFE variant (decode_das_anim_frame, das_assets.c:1503):
+	//          frames are chosen by the caller, ticksPerFrame = block+0x14
+	//   else   advance_das_sprite_animation_frame (das_assets.c:1451): a
+	//          timer at block+0x1a and a rate at block+0x1b
+	bool rle = false;
+	int ticksPerFrame = 0;          // rle: block+0x14
+	uint8_t timer = 0, rate = 0;    // otherwise: block+0x1a, block+0x1b
 
 	bool ok() const { return width > 0 && height > 0 && !frames.empty(); }
 	// Index 0 reads as a hole unless the entry says otherwise.
@@ -293,7 +301,11 @@ public:
 	int FogIndex() const { return mFogIndex; }
 
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
-	Image ReadImage(int index, bool allFrames = false) const;
+	// `runLength` also decodes the run-length animated kind (frame word
+	// 0xfffe): its frames, ticks a frame and repaired frame count. Off for
+	// every caller that predates it, which keeps treating such an entry as
+	// no picture; TextureSet::Frames turns it on.
+	Image ReadImage(int index, bool allFrames = false, bool runLength = false) const;
 	Mesh ReadMesh(int index) const;
 
 	// One picture out of an IMAGE PACK entry, chosen the way a mesh face chooses

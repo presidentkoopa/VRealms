@@ -326,7 +326,7 @@ void Pack::ApplyFrameDelta(std::vector<uint8_t> &frame, size_t p) const
 	}
 }
 
-Image Pack::ReadImage(int index, bool allFrames) const
+Image Pack::ReadImage(int index, bool allFrames, bool runLength) const
 {
 	Image img;
 	const FatEntry *e = Entry(index);
@@ -388,6 +388,93 @@ Image Pack::ReadImage(int index, bool allFrames) const
 		// cleanly inside the entry, and 334 of the 346 consecutive stream pairs
 		// end exactly where the next one starts.
 		//------------------------------------------------------------------
+		// THE OTHER VARIANT (frame count word 0xFFFE): run-length frames,
+		// each chosen by its owner rather than by a timer -- a creature's
+		// attack, pain and death, an impact. decode_das_anim_frame
+		// (das_assets.c:1503-1580): the frame records start at block+0x1a
+		// (entry+16, magic 0x17); each has +4 stride, +6 height, +8 the
+		// frame count (first record), +0xc the offset of the next record,
+		// +0x10 left margin, +0x12 span, +0x14 top margin, +0x16 rows, and
+		// the run-length stream at +0x18 (a byte below 0xf1 is a pixel,
+		// otherwise (b - 0xf0) copies of the next byte). A record with one
+		// row or a one-pixel span is an empty frame.
+		if (runLength && e->offset + 18 <= mSize && RdU16(mData + e->offset + 12) == 0xFFFE)
+		{
+			const size_t base = e->offset;
+			size_t p = base + 16;
+			if (p + 0x18 <= mSize && RdU16(mData + p) == 0x17)
+			{
+				int count = RdU16(mData + p + 8);
+				// THE LOADER'S REPAIR (repair_das_rle_frame_count, renderer.c
+				// :10187, called from postprocess_loaded_das_block, das_assets.c
+				// :792-794, when the picture word has 0x100 and the frame word
+				// 0xfffe): it counts the frames whose record says the same frame
+				// count and links on to a next record inside the block, and
+				// writes that count back. The last record's link is 0, so a
+				// list of N frames is played as N - 1 -- the ghoul's attack has
+				// 20 records and the original shows 19 (measured: its
+				// select_surface_anim_frame reads 19). The block is the FAT size
+				// word times 2 (select_das_fat_entry, renderer.c:742-744), times 8
+				// more for the frame kinds (das_assets.c:893-898).
+				if ((RdU16(mData + base) & 0x100) && (RdU16(mData + p) & 0x10))
+				{
+					const size_t bytes = (size_t)e->size * 2u * ((e->flags2 & 3) ? 8u : 1u);
+					const size_t end = p + (bytes > 0x20 ? bytes - 0x20 : 0);
+					int valid = 0;
+					size_t q = p;
+					while (valid < count && q + 0x10 <= mSize)
+					{
+						if (RdU16(mData + q + 8) != (uint16_t)count) break;
+						const int32_t next = (int32_t)RdU32(mData + q + 0xc);
+						if (next < 1) break;
+						q += (size_t)next;
+						if (q > end) break;
+						valid++;
+					}
+					count = valid;
+				}
+				const int W = RdU16(mData + p + 4), H = RdU16(mData + p + 6);
+				img.modifier = mData[base];
+				img.imageType = mData[base + 1];
+				img.width = W; img.height = H;
+				img.rle = true;
+				img.ticksPerFrame = RdU16(mData + base + 10);
+				for (int f = 0; f < count && f < 256 && W > 0 && H > 0; f++)
+				{
+					if (p + 0x18 > mSize) break;
+					std::vector<uint8_t> out((size_t)W * H, 0);
+					const int left = RdU16(mData + p + 0x10), span = RdU16(mData + p + 0x12);
+					const int top = RdU16(mData + p + 0x14), rows = RdU16(mData + p + 0x16);
+					if (rows != 1 && span != 1)
+					{
+						size_t o = (size_t)top * W + left, src = p + 0x18;
+						for (int r = 0; r < rows; r++)
+						{
+							int n = span;
+							while (n > 0 && src < mSize)
+							{
+								const uint8_t a = mData[src++];
+								if (a < 0xf1) { if (o < out.size()) out[o] = a; o++; n--; }
+								else
+								{
+									const int c = a - 0xf0;
+									n -= c;
+									const uint8_t v = src < mSize ? mData[src++] : 0;
+									for (int k = 0; k < c; k++) { if (o < out.size()) out[o] = v; o++; }
+								}
+							}
+							o += (size_t)(W - span);
+						}
+					}
+					img.frames.push_back(std::move(out));
+					if (!allFrames) break;
+					const uint32_t next = RdU32(mData + p + 0xc);
+					if (next == 0) break;
+					p += next;
+				}
+			}
+			break;
+		}
 		for (int attempt = 0; attempt < 2 && !img.ok(); attempt++)
 		{
 			size_t base = e->offset + (attempt ? 4 : 0);
@@ -395,6 +482,8 @@ Image Pack::ReadImage(int index, bool allFrames) const
 			uint16_t firstOff = RdU16(mData + base + 10);
 			uint16_t frameCount = RdU16(mData + base + 12);
 			if (frameCount == 0xFFFE) continue;     // the other variant
+			img.timer = mData[base + 16];
+			img.rate = mData[base + 17];
 			if (!readPlainAt(base + firstOff)) continue;
 
 			// THE FLAGS BELONG TO THE ENTRY, NOT TO THE FRAME. readPlainAt has

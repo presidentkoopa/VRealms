@@ -5963,6 +5963,16 @@ bool FireObjectChain(int rothSector, int rothIndex)
 	return false;
 }
 
+bool RealmsDoorOpen(int rothSector)
+{
+	if (!g.active || g.level == nullptr) return false;
+	auto it = g.doorTag.find(rothSector);
+	if (it == g.doorTag.end()) return false;
+	FPolyObj *po = g.level->GetPolyobj(it->second);
+	if (po == nullptr) return false;
+	return po->specialdata != nullptr || po->Angle != nullAngle;
+}
+
 void StageObjectChainSound(uint16_t soundPlusOne, int x, int y)
 {
 	StageChainSoundAt(soundPlusOne, x, y);

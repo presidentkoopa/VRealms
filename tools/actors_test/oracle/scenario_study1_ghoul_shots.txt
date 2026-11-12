@@ -1,0 +1,7 @@
+1 ticktrace 1
+100001 dump start
+250 fire 61
+270 fire 61
+290 fire 61
+310 fire 61
+599 quit

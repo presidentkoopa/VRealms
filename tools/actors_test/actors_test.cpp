@@ -23,6 +23,8 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <map>
+#include <algorithm>
 #include <strings.h>
 #include <dirent.h>
 
@@ -56,6 +58,8 @@ struct TestHost : ActorHost
 {
 	void SoundAt(int sound, int x, int y) override { printf("SND %d at %d,%d\n", sound, (int16_t)x, (int16_t)y); }
 	void RunObjectChain(ObjectUid) override { printf("CHAIN\n"); }
+	std::vector<int> doors;    // the original's door pool, by sector index
+	bool DoorInPool(int sector) override { return std::find(doors.begin(), doors.end(), sector) != doors.end(); }
 	int selected = 0;
 	int SelectedItem() override { return selected; }
 };
@@ -82,6 +86,48 @@ int main(int argc, char **argv)
 	// --gen: write the command script for this map -- every 0x16 / 0x3c / 0x3a
 	// record in index order, each with a known command source, each followed
 	// by a full dump.
+	if (!strcmp(argv[3], "--posegen") || !strcmp(argv[3], "--posegen-creatures"))
+	{
+		const bool nearCreatures = !strcmp(argv[3], "--posegen-creatures");
+		std::vector<std::pair<int, int>> cre;
+		for (const auto &list : map.objects)
+			for (const Object &o : list)
+				if (!(o.flags & 0x80) && tables.CreatureIndexForId((uint16_t)(o.textureIndex | (o.textureSource << 8))) >= 0)
+					cre.push_back(std::make_pair((int)o.x, (int)o.y));
+		if (nearCreatures && cre.empty()) { fprintf(stderr, "no visible creatures\n"); return 1; }
+		// Random camera poses inside random sectors, one per frame, for the
+		// visibility differential: "<frame> pose x y angle sectorOffset".
+		ActorWorld pw; pw.Begin(&map, &db, &tables, nullptr);
+		uint32_t rng = 12345;
+		auto rnd = [&]() { rng = rng * 1103515245u + 12345u; return (rng >> 8) & 0xffffff; };
+		int made = 0, frame = 3;
+		printf("1 vistrace 1\n1 ticktrace 1\n");
+		for (int tries = 0; made < 150 && tries < 200000; tries++)
+		{
+			const int sct = (int)(rnd() % map.sectors.size());
+			const Sector &sc = map.sectors[sct];
+			if (sc.firstFaceIndex < 0 || sc.ceilingHeight - sc.floorHeight < 100) continue;
+			int minx = 32767, maxx = -32768, miny = 32767, maxy = -32768;
+			for (int k = 0; k < sc.faceCount; k++)
+			{
+				const Vertex &v = map.vertices[map.faces[sc.firstFaceIndex + k].vertex1];
+				minx = std::min(minx, (int)v.x); maxx = std::max(maxx, (int)v.x); miny = std::min(miny, (int)v.y); maxy = std::max(maxy, (int)v.y);
+			}
+			if (maxx - minx < 40 || maxy - miny < 40) continue;
+			int x = minx + 16 + (int)(rnd() % (unsigned)(maxx - minx - 32)), y = miny + 16 + (int)(rnd() % (unsigned)(maxy - miny - 32));
+			if (nearCreatures)
+			{
+				// within 1200 units of a visible creature
+				const std::pair<int, int> &c = cre[rnd() % cre.size()];
+				if (abs(x - c.first) > 1200 || abs(y - c.second) > 1200) continue;
+			}
+			if (pw.LocateSector((int16_t)x, (int16_t)y, sc.floorHeight, -1) != sct) continue;
+			printf("%d pose %d %d %d %x\n", frame, x, y, (int)(rnd() % 512), pw.SectorOffset(sct));
+			frame += 2; made++;
+		}
+		printf("%d quit\n", frame + 2);
+		return 0;
+	}
 	if (!strcmp(argv[3], "--gen") || !strcmp(argv[3], "--census"))
 	{
 		int n16 = 0, n3c = 0, n3a = 0, creatures = 0, fs = -1;
@@ -383,6 +429,7 @@ int main(int argc, char **argv)
 		w.SetCollision(nullptr);
 	};
 
+	static char l2[1 << 17];
 	FILE *sf = fopen(argv[3], "r");
 	if (!sf) { fprintf(stderr, "no script\n"); return 1; }
 	char ln[256];
@@ -439,6 +486,204 @@ int main(int argc, char **argv)
 			int x, y, z, h = -1; sscanf(args, "%d %d %d %d", &x, &y, &z, &h);
 			printf("LOC %d %d %d %d = %04x\n", x, y, z, h, w.SectorOffset(w.LocateSector((int16_t)x, (int16_t)y, (int16_t)z, h)));
 		}
+		else if (!strcmp(op, "viscmp"))
+		{
+			// Every main-view tree the original logged (VIS lines of the oracle
+			// log in argv[4]): the same view through RenderView, sectors compared.
+			FILE *f = fopen(argv[4], "r"); static char l[1 << 17];
+			int frames = 0, same = 0, skipped = 0;
+			while (f && fgets(l, sizeof l, f))
+			{
+				if (!strncmp(l, "SECH ", 5))
+				{
+					// the original's live heights at this frame
+					const char *q = strchr(l, ':');
+					for (size_t i = 0; q && i < map.sectors.size(); i++)
+					{
+						int c2, f2, k;
+						if (sscanf(q + 1, " %d,%d%n", &c2, &f2, &k) != 2) break;
+						map.sectors[i].ceilingHeight = (int16_t)c2; map.sectors[i].floorHeight = (int16_t)f2;
+						q += k;
+					}
+					continue;
+				}
+				if (!strncmp(l, "DOORS ", 6))
+				{
+					host.doors.clear();
+					for (const char *q = strchr(l, ':') + 1; *q; ) { unsigned v; int k; if (sscanf(q, " %x%n", &v, &k) != 1) break; host.doors.push_back((int)((v - map.header.sectorsOffset) / 0x1a)); q += k; }
+					continue;
+				}
+				if (strncmp(l, "VIS ", 4)) continue;
+				unsigned psec, root, ang; int px, py, wl, wr, vox, voy, xs, xc, n;
+				const char *p = strstr(l, "px=");
+				if (!p || sscanf(p, "px=%d py=%d pa=%*u psec=%x tree=%*d root=%x win=%d,%d ang=%u vo=%d,%d xs=%d xc=%d n=%d", &px, &py, &psec, &root, &wl, &wr, &ang, &vox, &voy, &xs, &xc, &n) != 12) continue;
+				std::vector<unsigned> want;
+				for (const char *q = strchr(l, ':') + 1; *q; ) { unsigned v; int k; if (sscanf(q, " %x%n", &v, &k) != 1) break; want.push_back(v); q += k; }
+				ActorWorld::RothViewParams vp;
+				vp.camX = (int16_t)-vox; vp.camY = (int16_t)-voy; vp.viewAngle = (uint16_t)ang; vp.xscale = xs; vp.xcenter = xc;
+				vp.left = (int16_t)wl; vp.right = (int16_t)wr; vp.rootSector = (int)((root - map.header.sectorsOffset) / 0x1a);
+				std::vector<std::string> tr;
+				if (getenv("VISTRACE")) vp.trace = &tr;
+				// Only views whose camera stands inside its root sector, as in play.
+				// (A pose written straight into the original's memory can leave the
+				// player outside the sector recorded for him for a frame.)
+				if (vp.rootSector < 0 || (size_t)vp.rootSector >= map.sectors.size()) { skipped++; continue; }   // a sector the original adds at run time (a door leaf)
+				if (!getenv("VISALL") && w.LocateSector(vp.camX, vp.camY, map.sectors[vp.rootSector].floorHeight, vp.rootSector) != vp.rootSector) { skipped++; continue; }
+				const ActorWorld::RothViewResult r = w.RenderView(vp);
+				for (const std::string &t : tr) printf("  %s\n", t.c_str());
+				std::vector<unsigned> got;
+				for (int s : r.visits) { const unsigned o = w.SectorOffset(s); if (std::find(got.begin(), got.end(), o) == got.end()) got.push_back(o); }
+				std::sort(got.begin(), got.end());
+				frames++;
+				if (got == want) same++;
+				else if (frames - same <= 5)
+				{
+					printf("VISDIFF root=%04x win=%d,%d ang=%u cam=%d,%d got %zu want %zu:", root, wl, wr, ang, -vox, -voy, got.size(), want.size());
+					for (unsigned v : want) if (std::find(got.begin(), got.end(), v) == got.end()) printf(" -%04x", v);
+					for (unsigned v : got) if (std::find(want.begin(), want.end(), v) == want.end()) printf(" +%04x", v);
+					printf("\n");
+				}
+			}
+			if (f) fclose(f);
+			printf("VISCMP %d of %d trees identical (%d skipped: camera outside its root sector)\n", same, frames, skipped);
+		}
+		else if (!strcmp(op, "wakecmp"))
+		{
+			// First wake of every creature: the original's (WAKE lines) against the
+			// port's, the port waking from each main view the original rendered.
+			FILE *f = fopen(argv[4], "r");
+			std::map<std::string, int> orig, port;
+			int frame = 0, lastPortFrame = -1; unsigned envSec = 0;
+			while (f && fgets(l2, sizeof l2, f))
+			{
+				int s2, i2, fr;
+				if (!strncmp(l2, "ENV", 3)) { const char *q = strstr(l2, "psec="); if (q) sscanf(q, "psec=%x", &envSec); continue; }
+				if (sscanf(l2, "WAKE %d.%d", &s2, &i2) == 2)
+				{
+					char k[32]; snprintf(k, sizeof k, "%d.%d", s2, i2);
+					if (!orig.count(k)) orig[k] = frame;
+					continue;
+				}
+				if (!strncmp(l2, "SECH ", 5))
+				{
+					const char *q = strchr(l2, ':');
+					for (size_t i = 0; q && i < map.sectors.size(); i++)
+					{ int c2, f2, k; if (sscanf(q + 1, " %d,%d%n", &c2, &f2, &k) != 2) break; map.sectors[i].ceilingHeight = (int16_t)c2; map.sectors[i].floorHeight = (int16_t)f2; q += k; }
+					continue;
+				}
+				if (!strncmp(l2, "DOORS ", 6))
+				{
+					host.doors.clear();
+					for (const char *q = strchr(l2, ':') + 1; *q; ) { unsigned v; int k; if (sscanf(q, " %x%n", &v, &k) != 1) break; host.doors.push_back((int)((v - map.header.sectorsOffset) / 0x1a)); q += k; }
+					continue;
+				}
+				unsigned root, ang; int wl, wr, vox, voy;
+				const char *p = strstr(l2, "root=");
+				if (strncmp(l2, "VIS ", 4) || !p || sscanf(l2, "VIS frame=%d", &fr) != 1) continue;
+				frame = fr;
+				if (sscanf(p, "root=%x win=%d,%d ang=%u vo=%d,%d", &root, &wl, &wr, &ang, &vox, &voy) != 6) continue;
+				ActorWorld::RothViewParams vp;
+				vp.camX = (int16_t)-vox; vp.camY = (int16_t)-voy; vp.viewAngle = (uint16_t)ang; vp.left = (int16_t)wl; vp.right = (int16_t)wr;
+				vp.rootSector = (int)((root - map.header.sectorsOffset) / 0x1a);
+				if ((size_t)vp.rootSector >= map.sectors.size()) continue;
+				if (!getenv("WAKE_ALLTREES") && (wl != 0 || wr != 639)) continue;   // the main view only
+				std::vector<ObjectUid> res;
+				if (getenv("WAKE_PORTROOTS"))
+				{
+					// the port's whole pipeline: its own roots from the player
+					int ppx, ppy; unsigned ps; sscanf(strstr(l2, "px="), "px=%d py=%d", &ppx, &ppy); sscanf(strstr(l2, "psec="), "psec=%x", &ps);
+					if (ppx != vp.camX || ppy != vp.camY || fr == lastPortFrame) continue;   // once a frame, the main view's camera
+					lastPortFrame = fr;
+					if (envSec) ps = envSec;   // the sector the player was in when the frame was drawn
+					const int psi = (int)((ps - map.header.sectorsOffset) / 0x1a);
+					if (psi < 0 || (size_t)psi >= map.sectors.size()) continue;
+					for (const auto &rp2 : w.ViewRoots(vp.camX, vp.camY, vp.viewAngle, psi))
+						for (ObjectUid u : w.RenderView(rp2).resolved) res.push_back(u);
+				}
+				else res = w.RenderView(vp).resolved;
+				for (ObjectUid u : res)
+				{
+					int s3, i3; const Object *o = w.Find(u, &s3, &i3);
+					if (!o || tables.CreatureIndexForId((uint16_t)(o->textureIndex | (o->textureSource << 8))) < 0) continue;
+					char k[32]; snprintf(k, sizeof k, "%d.%d", s3, i3);
+					if (!port.count(k)) port[k] = frame;
+				}
+			}
+			if (f) fclose(f);
+			int same = 0, total = 0;
+			std::map<std::string, int> all = orig; for (auto &e : port) all[e.first] = 0;
+			for (auto &e : all)
+			{
+				total++;
+				const int a = orig.count(e.first) ? orig[e.first] : -1, b = port.count(e.first) ? port[e.first] : -1;
+				// The original wakes at the render of frame F and reports it before the next tick.
+				// A wake before the first traced view (the map's opening frames) is
+				// compared with the port's first traced view.
+				const bool ok = (a < 0 && b < 0) || (a >= 0 && b >= 0 && (abs(a - b) <= 1 || (a <= 1 && b <= 3)));
+				if (ok) same++;
+				printf("WAKECMP %s original %d port %d %s\n", e.first.c_str(), a, b, ok ? "ok" : "DIFF");
+			}
+			printf("WAKECMP %d of %d creatures woke on the same frame\n", same, total);
+		}
+		else if (!strcmp(op, "rootcmp"))
+		{
+			// The original's roots and windows per frame against ViewRoots.
+			FILE *f = fopen(argv[4], "r");
+			int frames = 0, same = 0, curFrame = -1;
+			std::vector<std::string> want; int px = 0, py = 0; unsigned psec = 0, ang = 0;
+			auto finish = [&]()
+			{
+				if (curFrame < 0 || want.empty()) return;
+				const int ps = (int)((psec - map.header.sectorsOffset) / 0x1a);
+				if (ps < 0 || (size_t)ps >= map.sectors.size()) { want.clear(); return; }
+				std::vector<std::string> got;
+				for (const auto &r : w.ViewRoots((int16_t)px, (int16_t)py, (uint16_t)ang, ps))
+				{ char b[64]; snprintf(b, sizeof b, "%04x:%d,%d", w.SectorOffset(r.rootSector), r.left, r.right); got.push_back(b); }
+				std::sort(got.begin(), got.end()); std::sort(want.begin(), want.end());
+				want.erase(std::unique(want.begin(), want.end()), want.end());
+				frames++;
+				if (got == want) same++;
+				else if (frames - same <= 8)
+				{
+					printf("ROOTDIFF frame %d want", curFrame); for (auto &x : want) printf(" %s", x.c_str());
+					printf("  got"); for (auto &x : got) printf(" %s", x.c_str()); printf("\n");
+				}
+				want.clear();
+			};
+			while (f && fgets(l2, sizeof l2, f))
+			{
+				int fr, wl, wr, vox, voy; unsigned root, a2;
+				if (strncmp(l2, "VIS ", 4) || sscanf(l2, "VIS frame=%d", &fr) != 1) continue;
+				const char *p = strstr(l2, "root=");
+				if (!p || sscanf(p, "root=%x win=%d,%d ang=%u vo=%d,%d", &root, &wl, &wr, &a2, &vox, &voy) != 6) continue;
+				if (fr != curFrame) { finish(); curFrame = fr; }
+				const char *q = strstr(l2, "psec="); sscanf(q, "psec=%x", &psec);
+				// the main view's trees: camera at the player (not a mirror's)
+				px = -vox; py = -voy; ang = a2;
+				int ppx, ppy; sscanf(strstr(l2, "px="), "px=%d py=%d", &ppx, &ppy);
+				if (ppx != px || ppy != py) continue;
+				char b[64]; snprintf(b, sizeof b, "%04x:%d,%d", root, wl, wr); want.push_back(b);
+			}
+			finish();
+			if (f) fclose(f);
+			printf("ROOTCMP %d of %d frames: same roots and windows\n", same, frames);
+		}
+		else if (!strcmp(op, "wakecheck"))
+		{
+			// The creatures the player's view would wake: "x y angle512".
+			int x, y, a; sscanf(args, "%d %d %d", &x, &y, &a);
+			w.player.x = (int16_t)x; w.player.y = (int16_t)y; w.player.angle = (uint16_t)a;
+			w.player.sector = w.LocateSector((int16_t)x, (int16_t)y, -32768, -1);
+			ActorWorld::RothViewParams vp; vp.camX = (int16_t)x; vp.camY = (int16_t)y; vp.viewAngle = (uint16_t)(0 - a); vp.rootSector = w.player.sector;
+			const ActorWorld::RothViewResult r = w.RenderView(vp);
+			printf("WAKECHECK %d %d %d sector %d visits %zu creatures:", x, y, a, w.player.sector, r.visits.size());
+			for (ObjectUid u : r.resolved)
+			{
+				int s2, i2; const Object *o = w.Find(u, &s2, &i2);
+				if (o && tables.CreatureIndexForId((uint16_t)(o->textureIndex | (o->textureSource << 8))) >= 0) printf(" %d.%d", s2, i2);
+			}
+			printf("\n");
+		}
 		else if (!strcmp(op, "creatures"))
 		{
 			for (size_t si = 0; si < map.objects.size(); si++)
@@ -452,6 +697,131 @@ int main(int argc, char **argv)
 					printf("CRE %zu.%zu x=%d y=%d z=%d id=%04x mon=%d flags=%02x hp=%u rate=%u turn=%u b1=%04x b2=%04x atk=%u modes=%02x h=%u r=%u valid=%d\n", si, oi, o.x, o.y, o.z, id, c, o.flags,
 						d.Health(), d.MoveRate(), d.TurnLimit(), d.Bullet(0), d.Bullet(1), d.AttackRate(), d.ModeBits(), tables.DimHeight(id), tables.DimRadius(id), (int)d.valid);
 				}
+		}
+		else if (!strcmp(op, "facecmp"))
+		{
+			// Every FACE line of the oracle log (the probe's trace of
+			// resolve_face_surface_id, renderer.c:12700): the slot's state,
+			// flags and pain, the object's facing, the view angle, the
+			// object's view x and depth, the view index the original passed
+			// and the picture and pain byte it came back with. The port must
+			// make the same view index from the same inputs, and the same
+			// picture and pain byte from the same slot.
+			if (argc <= 4) { printf("facecmp needs the oracle log\n"); continue; }
+			FILE *f = fopen(argv[4], "r");
+			char l[600]; int n = 0, badCi = 0, badPic = 0, badPain = 0;
+			while (f && fgets(l, sizeof l, f))
+			{
+				int s2, i2, mon; unsigned st, f9, fa, pain, ci, rot, va, pic, pain2; int xv, dep;
+				if (sscanf(l, "FACE obj=%d.%d mon=%d st=%x f9=%x fa=%x pain=%x ci=%u rot=%x va=%x xv=%d dep=%d -> %x pain=%x",
+					&s2, &i2, &mon, &st, &f9, &fa, &pain, &ci, &rot, &va, &xv, &dep, &pic, &pain2) != 14) continue;
+				const ObjectUid uid = w.UidAt(s2, i2);
+				Object *o = w.Find(uid);
+				if (o == nullptr) continue;
+				if (o->unk0C == 0 || !(o->renderType & 1)) { o->flags &= 0x7f; w.WakeOnFirstDraw(uid); }
+				if (o->unk0C == 0) continue;
+				ActorSlot &a = w.actors[(o->unk0C - 1) / 0x22];
+				a.creature = mon; a.state = (uint8_t)st; a.bits = (uint8_t)f9; a.move = (uint8_t)fa; a.pain = (uint8_t)pain;
+				const int myCi = ActorWorld::ViewIndex((uint8_t)rot, (uint16_t)va, dep, xv);
+				const uint16_t myPic = w.CreaturePicture(uid, (int)ci, true);
+				n++;
+				if (myCi != (int)ci) { if (badCi++ < 5) printf("FACE ci: %s   port %d\n", l, myCi); }
+				if (myPic != pic) { if (badPic++ < 5) printf("FACE picture: %s   port %04x\n", l, myPic); }
+				if (a.pain != pain2) { if (badPain++ < 5) printf("FACE pain: %s   port %02x\n", l, a.pain); }
+			}
+			if (f) fclose(f);
+			printf("FACECMP %d draws: view index %d differ, picture %d differ, pain byte %d differ\n", n, badCi, badPic, badPain);
+		}
+		else if (!strcmp(op, "advcmp"))
+		{
+			// Every ADV line of the oracle log (the probe's trace of
+			// advance_das_sprite_animation_frame, das_assets.c:1450): the
+			// picture's frame and timer before and after one drawn step,
+			// its rate and frame count and the frame's tick scale. The
+			// port's StepPictureClock must make the same step.
+			if (argc <= 4) { printf("advcmp needs the oracle log\n"); continue; }
+			FILE *f = fopen(argv[4], "r");
+			char l[600]; int n = 0, bad = 0, gated = 0;
+			while (f && fgets(l, sizeof l, f))
+			{
+				unsigned blk, count, rate, t0, t1, fts, gate = 0, now = 1; int f0, f1;
+				if (sscanf(l, "ADV blk=%x count=%u rate=%x frame %d->%d timer %x->%x fts=%u gate=%u now=%u", &blk, &count, &rate, &f0, &f1, &t0, &t1, &fts, &gate, &now) < 8) continue;
+				// The block's own once-a-frame gate (das_assets.c:1466-1468): a
+				// second draw of the same picture in one frame changes nothing.
+				// The port steps each picture once a frame (StepDrawnPictures),
+				// which is this gate; the gated calls are counted, not stepped.
+				if (f0 >= 0 && rate != 0xff && gate == now) { gated++; if (f1 != f0 || t1 != t0) bad++; continue; }
+				if (count == 0xfffe) continue;                     // the static kind returns at once
+				ActorWorld::PictureClock c; c.frame = f0 < 0 ? -1 : f0; c.timer = (uint8_t)t0;
+				const bool fresh = f0 < 0;
+				if (f0 < -1) continue;                             // a held frame: republished as is
+				ActorWorld::StepPictureClock(c, (uint8_t)rate, (int)count, (int)fts);
+				n++;
+				if (c.frame != f1 || (!fresh && c.timer != (uint8_t)t1) || (fresh && !(rate & 0x80) && c.timer != (uint8_t)t1))
+					if (bad++ < 8) printf("ADV differs: %s   port frame %d timer %02x\n", l, c.frame, c.timer);
+			}
+			if (f) fclose(f);
+			printf("ADVCMP %d steps (and %d repeat draws in the same frame), %d differ\n", n, gated, bad);
+		}
+		else if (!strcmp(op, "weaponcmp"))
+		{
+			// Every WEAP line of the oracle log: the four-slot table the
+			// original's apply_weapon_action_attributes filled for an item,
+			// from a buffer prefilled with 0xaa. ParseWeaponActions must fill
+			// the same bytes from the same prefill.
+			if (argc <= 4) { printf("weaponcmp needs the oracle log\n"); continue; }
+			FILE *f = fopen(argv[4], "r");
+			static char l[4096]; int n = 0, bad = 0, slots = 0, soundKeyFields = 0, beyond = 0;
+			while (f && fgets(l, sizeof l, f))
+			{
+				int idx; unsigned cnt; int used = 0;
+				if (sscanf(l, "WEAP %d n=%u%n", &idx, &cnt, &used) != 2) continue;
+				// Past the end of DBASE100's item table the original reads on
+				// into whatever memory follows it; no data names such an item.
+				if (idx > db.ItemCount()) { beyond++; continue; }
+				WeaponAction t[4];
+				for (auto &a : t) memset(a.b, 0xaa, sizeof a.b);
+				const int mine = ParseWeaponActions(db, idx, t, 4);
+				// Ops 0x19 and 0x21 are SOUND KEYS: at start-up the original
+				// rewrites them in DBASE100, in place, with the sample row each
+				// resolves to (resolve_dbase100_sound_ids, audio.c:1896-1919);
+				// the engine's sound lane does the same to TheDbase100(). The
+				// headless oracle has its own sample table, so the two fields
+				// those ops fill (+0x10, +0x34) are taken from it and counted,
+				// and everything else must match byte for byte.
+				{
+					const char *q = l + used;
+					for (int k = 0; k < (int)cnt && k < 4; k++)
+					{
+						while (*q == ' ') q++;
+						for (int off : { 0x10, 0x34 })
+							for (int j = 0; j < 4; j++)
+							{
+								unsigned byte = 0; sscanf(q + 2 * (off + j), "%2x", &byte);
+								if (t[k].b[off + j] != (uint8_t)byte) soundKeyFields++;
+								t[k].b[off + j] = (uint8_t)byte;
+							}
+						q += 0xa0;
+					}
+				}
+				std::string hex;
+				for (int k = 0; k < 4; k++) { hex += ' '; for (int j = 0; j < 0x50; j++) { char h[3]; snprintf(h, sizeof h, "%02x", t[k].b[j]); hex += h; } }
+				std::string theirs = l + used; theirs.erase(theirs.find_last_not_of("\r\n") + 1);
+				n++; slots += (int)cnt;
+				if (mine != (int)cnt || hex != theirs) { if (bad++ < 3) printf("WEAP %d differs: count %u vs port %d\n  orig%s\n  port%s\n", idx, cnt, mine, theirs.c_str(), hex.c_str()); }
+			}
+			if (f) fclose(f);
+			printf("WEAPONCMP %d weapon items (%d action slots), %d differ (sound-key bytes taken from the original's resolution: %d; indices past the item table skipped: %d)\n", n, slots, bad, soundKeyFields, beyond);
+		}
+		else if (!strcmp(op, "creaturerec"))
+		{
+			// The picture words of one creature record (R:12700-12745 reads
+			// them): eight-view tables at +0x04 +0x14 +0x24 +0x34 +0x44, single
+			// pictures from +0x54.
+			int c = 0; sscanf(args, "%d", &c);
+			printf("REC %d", c);
+			for (int off = 0; off < 0x68; off += 2) printf("%s%02x:%04x", off % 16 ? " " : "\n  ", off, tables.CreatureWord(c, off));
+			printf("\n");
 		}
 		else if (!strcmp(op, "bullets"))
 		{

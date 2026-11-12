@@ -10,6 +10,7 @@
 //
 
 #include "roth_interface.h"
+#include "roth_actors_engine.h"
 #include "roth_gamecore.h"
 #include "roth_dialogue.h"
 #include "roth_invscreen.h"
@@ -92,7 +93,7 @@ class RuntimeInvSink : public InventorySink
 public:
 	std::map<std::string, int> notBuilt;
 
-	void UnequipWeapon() override { notBuilt["weapon unequip"]++; }
+	void UnequipWeapon() override { ActorsUnequipWeapon(); }
 	void EquipWeapon(int slot, int32_t itemId) override;
 	void RebuildWeaponList() override { notBuilt["weapon list"]++; }
 	void ResetWeaponHud() override { notBuilt["weapon HUD"]++; }
@@ -169,8 +170,14 @@ Ui U;
 
 void RuntimeInvSink::EquipWeapon(int slot, int32_t itemId)
 {
-	(void)slot; (void)itemId;
-	notBuilt["weapon equip"]++;     // activate_weapon_item: the weapon system (M6)
+	// activate_weapon_item (weapon_combat.c:426): the actor rules parse the
+	// weapon and say which ammo item it takes; the count comes from the
+	// inventory, through Query, whose side effect (it clears the
+	// auto-selected flag) the original has here too (weapon_combat.c:450).
+	(void)slot;
+	const int ammoItem = ActorsEquipWeapon((int)itemId);
+	if (ammoItem != 0 && U.core != nullptr && U.db != nullptr)
+		ActorsSetWeaponAmmo(U.core->Items().Query(*U.db, (uint16_t)ammoItem, 0, this));
 }
 
 void RuntimeInvSink::RightHandChanged(int slot)

@@ -28,6 +28,7 @@
 #include "roth_texture.h"
 #include "roth_das.h"
 #include "roth_log.h"
+#include <math.h>
 
 #include "bitmap.h"
 #include "textures.h"
@@ -253,6 +254,68 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 	mByIndexSprite[index] = id;
 	mSpriteInfo[index] = *info;
 	return id;
+}
+
+//==========================================================================
+//
+// Frames -- see roth_texture.h.
+//
+//==========================================================================
+
+const TextureSet::PictureFrames &TextureSet::Frames(int index, Log *log)
+{
+	auto found = mPictureFrames.find(index);
+	if (found != mPictureFrames.end())
+	{
+		bool live = true;
+		for (FTextureID t : found->second.frames)
+			if (t.isValid() && TexMan.GetGameTexture(t, false) == nullptr) { live = false; break; }
+		if (live) return found->second;
+		mPictureFrames.erase(found);
+	}
+	PictureFrames &pf = mPictureFrames[index];
+	if (!mPack || index < 0 || index >= (int)TEX_PICTURE_LIMIT) return pf;
+	Image img = mPack->ReadImage(index, true, true);
+	if (!img.ok() || img.frames.empty())
+	{
+		mSpritesFailed++;
+		if (log) log->Count("objects: state picture could not be decoded");
+		return pf;
+	}
+	ReadSpriteModifiers(img, mPack->ReadAnchor(index), pf.info);
+	pf.rle = img.rle;
+	pf.ticksPerFrame = img.ticksPerFrame;
+	pf.rate = img.rate;
+
+	const bool translucent = (img.imageType & IT_TRANSLUCENT) != 0;
+	FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard,
+		translucent && mTranslucentTranslation >= 0 ? mTranslucentTranslation : mTranslation);
+	// The quarter turn, as Sprite() does it.
+	const int w = img.height, h = img.width;
+	// Where the picture hangs off the actor's z, both terms of the vertical
+	// shift included (see ReadSpriteModifiers): standing, the bottom drops
+	// by the shift; hanging, the top rises by it. Baked into the offset
+	// rather than the actor's z, because one actor wears many pictures.
+	const double upp = pf.info.unitsPerPixel > 0 ? pf.info.unitsPerPixel : 2.0;
+	const int shiftTexels = (int)lround(pf.info.anchorShift / upp);
+	const int top = pf.info.hang ? shiftTexels : h - shiftTexels;
+	for (size_t f = 0; f < img.frames.size(); f++)
+	{
+		FString name = FStringf("ROTH_%s_F%05d_%03d", mName.c_str(), index, (int)f);
+		FTextureID id = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
+		if (!id.isValid())
+		{
+			auto *image = new FPalettedMemoryImage(KeepObjectPixels(img.frames[f]), remap, w, h, true, true);
+			auto *tex = MakeGameTexture(new FImageTexture(image), name.GetChars(), ETextureType::Override);
+			tex->SetOffsets(w / 2, top);
+			tex->SetOffsetsNotForFont();
+			id = TexMan.AddGameTexture(tex);
+			mSpritesRegistered++;
+		}
+		pf.frames.push_back(id);
+	}
+	pf.ok = true;
+	return pf;
 }
 
 //==========================================================================

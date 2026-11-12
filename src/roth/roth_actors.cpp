@@ -222,6 +222,9 @@ void ActorWorld::Begin(Map *map, const Dbase100 *db, const CreatureTables *table
 
 	mUids.clear();
 	mNextUid = 0x80000000u;
+	mPictureLast.clear();
+	pictureClocks.clear();
+	frameClock = 0;
 	if (map != nullptr)
 	{
 		mUids.resize(map->objects.size());

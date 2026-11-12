@@ -1454,6 +1454,26 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 //
 //==========================================================================
 
+AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z)
+{
+	if (Level == nullptr || rothSector < 0 || rothIndex < 0) return nullptr;
+	PClassActor *cls = PropClass();
+	if (cls == nullptr) return nullptr;
+	AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(x, y, z), NO_REPLACE);
+	if (mo == nullptr) return nullptr;
+	const uint32_t key = ObjectKey(rothSector, rothIndex);
+	gObjectActors[key] = mo;
+	gActorObjects[mo] = key;
+	mo->special2 = (int)key + 1;
+	mo->SetZ(z);
+	return mo;
+}
+
+int MakeObjectSprite(const FTextureID *tex, const bool *flip, int views, Log *log)
+{
+	return MakeRuntimeSprite(tex, flip, views, log);
+}
+
 AActor *SpawnLogicSpriteActor(FLevelLocals *Level, uint16_t textureWord, double x, double y, double z, int lightLevel)
 {
 	if (Level == nullptr) return nullptr;

@@ -53,6 +53,7 @@
 //
 
 #include <stdint.h>
+#include <map>
 #include <vector>
 #include <string>
 
@@ -136,6 +137,27 @@ struct ActorDef
 	uint8_t  ModeBits() const    { return b[0x69]; }
 	uint8_t  AttackRate() const  { return b[0x6a]; }
 };
+
+// A weapon's action: one 0x50-byte slot of the table
+// apply_weapon_action_attributes (WC:338-424) fills from an item's
+// WeaponAction blocks (code 5), at most four. Kept as the bytes at the
+// offsets the original's fire code reads, because that code reads them as a
+// table: +0x00 / +0x08 / +0x2c the three commits' values, +0x04 a signed
+// scalar, +0x0c (1 unless set) and +0x10, +0x14 / +0x18, +0x1c / +0x20,
+// +0x24 / +0x28 the accumulators each commit took, +0x30 / +0x34, +0x38 the
+// item (first slot only), +0x3c / +0x40 the latch each commit took, +0x44,
+// +0x48, +0x4c flag bits (1: value 5, 2: value 6).
+struct WeaponAction
+{
+	uint8_t b[0x50] = {};
+	int32_t D(int off) const { return (int32_t)((uint32_t)b[off] | ((uint32_t)b[off + 1] << 8) | ((uint32_t)b[off + 2] << 16) | ((uint32_t)b[off + 3] << 24)); }
+	void SetD(int off, int32_t v) { for (int k = 0; k < 4; k++) b[off + k] = (uint8_t)((uint32_t)v >> (8 * k)); }
+};
+// apply_weapon_action_attributes(index, table, maxSlots): the slot count, 0
+// when the item has no weapon flag (+4 & 0x10) or no record. Only the first
+// slot is cleared first, as in the original; the caller's later slots keep
+// whatever they held, so pass a table it owns.
+int ParseWeaponActions(const Dbase100 &db, int itemIndex, WeaponAction *table, int maxSlots);
 
 // The 0x0c-byte descriptor init_inventory_item_object fills from an item's
 // AsBullet block (INV:147-190).
@@ -246,6 +268,17 @@ public:
 	virtual void ObjectChanged(ObjectUid uid) { (void)uid; }
 	virtual void ObjectCreated(ObjectUid uid) { (void)uid; }
 	virtual void ObjectDestroyed(ObjectUid uid) { (void)uid; }
+	// Whether the original's door pool holds a record for this door sector
+	// (find_record_by_id, renderer.c:1394): an opening or open door. A closed
+	// door sector blocks the view; one in the pool is looked through.
+	virtual bool DoorInPool(int sector) { (void)sector; return false; }
+	// A picture by its das id (bit 15 clear): how many frames it has and how
+	// they are timed. `rle` the run-length kind (frame word 0xfffe,
+	// decode_das_anim_frame, das_assets.c:1503): its ticks a frame (block
+	// +0x14); otherwise the rate byte of advance_das_sprite_animation_frame
+	// (block +0x1b, das_assets.c:1450). `ok` false when it is no picture.
+	struct PictureTiming { bool ok = false, rle = false; uint16_t ticksPerFrame = 0, frameCount = 0; uint8_t rate = 0; };
+	virtual PictureTiming Timing(uint16_t id) { (void)id; return PictureTiming(); }
 	// A sector's object list was edited (a record added, removed or moved to
 	// another list), so the (sector, index) of other records may have changed.
 	virtual void ListsChanged() {}
@@ -419,6 +452,118 @@ public:
 	// the same tic is a no-op by that same rule, so per-eye calls would be
 	// harmless only by accident.
 	void AnimationDrawn(ObjectUid uid, uint32_t picture, uint16_t ticksPerFrame, uint16_t frameCount);
+
+	// ---- what the original's renderer would draw (roth_actor_view.cpp) ----
+	// One view as the original renders it: the camera (g_view_offset = -pos,
+	// g_sprite_view_angle), the projection (310 / 320 at 640x480 full view,
+	// read from the running original) and the screen window to clip portals to.
+	struct RothViewParams
+	{
+		int16_t  camX = 0, camY = 0;
+		uint16_t viewAngle = 0;     // 0x909f8
+		int32_t  xscale = 310, xcenter = 320;
+		int16_t  left = 0, right = 639;
+		int      rootSector = -1;
+		std::vector<std::string> *trace = nullptr;   // tests: one line per wall node of the root
+	};
+	struct RothViewResult
+	{
+		std::vector<int> visits;            // every visit of build_sector_render_tree_recursive, in order
+		std::vector<ObjectUid> resolved;    // the objects the draw list resolves (renderer.c:8035-8105)
+		std::vector<uint8_t> viewIndex;     // beside each: the view index (0, 2 .. 14) a creature or
+		                                    // directional picture is chosen with (renderer.c:5843-5864)
+	};
+	// build_sector_render_tree_recursive (renderer.c:7319-7505) from the root,
+	// then the per-sector object pass of build_scene_draw_list (8022-8105).
+	RothViewResult RenderView(const RothViewParams &v) const;
+	// The roots and windows of the player's view (walk_visible_sectors,
+	// renderer.c:7113-7175): normally the player's sector across the whole
+	// screen; when the eye is within the near plane (16 units) of a portal the
+	// screen is split between the sectors the near plane passes through.
+	std::vector<RothViewParams> ViewRoots(int16_t camX, int16_t camY, uint16_t viewAngle, int playerSector) const;
+	// The player's view, the way the original renders it every frame, and the
+	// wake it causes: every creature placeholder the view resolves gets a slot
+	// (renderer.c:5826-5840). Once a tic; the rule has nothing to do with how
+	// many eyes the engine draws.
+	int WakeFromPlayerView();
+
+	// ---- what the drawn objects wear (roth_actor_view.cpp) ----
+	// The view index of an object the view resolves: (2 * rotation + 0x120 -
+	// the view angle - (viewX << 6) / depth) >> 5, even values 0 .. 14
+	// (renderer.c:5843-5864). Index 2v is the picture of view v.
+	static int ViewIndex(uint8_t rotation, uint16_t viewAngle, int32_t depth, int32_t viewX);
+	// The picture a creature placeholder wears from view index `ci`, bit 15
+	// the mirror: the creature's walking picture for that view while it has
+	// no slot (renderer.c:5843-5852), otherwise resolve_face_surface_id
+	// (renderer.c:12700-12745) on its slot -- pain, dying, rising, attacking,
+	// the special idle, flying, walking, each falling back as the original
+	// does. 0 when the object is not a creature placeholder.
+	//
+	// `clearPain`: the resolver's one side effect. A slot in pain whose pain
+	// picture for this view is missing or the walking one has its pain byte
+	// cleared by being drawn. Pass true only for the player's own view, once
+	// a tic (DrawnPass does); the engine asks about the other seven views
+	// with false to dress the sprite.
+	uint16_t CreaturePicture(ObjectUid uid, int ci, bool clearPain);
+	// The same for a record already in hand (no search by uid).
+	uint16_t CreaturePictureOf(const Object &o, int ci, bool clearPain);
+	// The host answers for a picture: whether it is the run-length animated
+	// kind (frame word 0xfffe) and its ticks a frame and frame count.
+	struct DrawnObject { ObjectUid uid; uint8_t viewIndex; uint16_t picture; };
+	// THE FRAME'S DRAW, once a tic after the tic's rules: the player's view
+	// as WakeFromPlayerView walks it, and for every object it resolves, in
+	// draw order and once each, what the original's renderer does to game
+	// state while drawing it -- the first-draw wake (renderer.c:5826), the
+	// pain byte (renderer.c:12706-12709), and for a run-length animated
+	// picture worn by a slot that is attacking, dying, staggering or an
+	// impact, AnimationDrawn (render_world.c:392-430). Returns the drawn
+	// objects with the picture each wears from the player's view, as a das
+	// id with bit 15 the mirror (an object that is no creature wears its own
+	// art word, 0x1000 + its low ten bits). `woke` counts the wakes.
+	std::vector<DrawnObject> DrawnPass(int *woke = nullptr);
+
+	// ---- the frame a picture shows (roth_actor_view.cpp) ----
+	// A standard animated picture's own clock, shared by every object that
+	// wears it, as the original keeps it in the picture's cache block (+0x18
+	// frame, -1 freshly loaded; +0x1a timer).
+	struct PictureClock { int frame = -1; uint8_t timer = 0; };
+	// advance_das_sprite_animation_frame (das_assets.c:1450-1490): one step
+	// of a drawn picture, `scale` ticks after the last frame
+	// (g_frame_time_scale).
+	static void StepPictureClock(PictureClock &c, uint8_t rate, int frameCount, int scale);
+	// After DrawnPass: every standard animated picture drawn this frame takes
+	// its step, once however many objects wear it.
+	void StepDrawnPictures(const std::vector<DrawnObject> &drawn, int scale);
+	// The frame of picture `das` that object `o` shows now: a standard
+	// animated picture its clock's; a run-length one counter / ticks a frame
+	// (clamped to the last) while its slot attacks, dies or staggers or its
+	// impact counts down, otherwise (clock / ticks a frame) % count
+	// (select_surface_anim_frame, render_world.c:392-430).
+	int PictureFrame(const Object &o, uint16_t das);
+	// g_anim_clock (0x8532a): the frame tick counter the run-length default
+	// path divides (render_world.c:74, 404). The caller keeps it.
+	uint32_t frameClock = 0;
+	std::map<uint16_t, PictureClock> pictureClocks;
+
+	// ---- the player's weapon (roth_actor_weapon.cpp) ----
+	// activate_weapon_item (WC:426-464): the item's actions parsed into the
+	// four-slot table (WC:434-436), the item word, and the ammo model --
+	// actions slot 0's byte +0x31 bit 7 says the weapon needs no ammo (ammo
+	// 0, cap 0x100); otherwise cap 1 and the ammo is the inventory's count of
+	// the ammo item (slot 0's word +0x30), which the caller asks the
+	// inventory for (query_player_inventory, WC:450) and hands to
+	// SetWeaponAmmo. EquipWeapon returns that ammo item, 0 for none.
+	// `item` 0 is fists (WC:432-441: no record, nothing parsed).
+	struct PlayerWeapon
+	{
+		WeaponAction actions[4];
+		int slots = 0;            // 0x812f4
+		int32_t item = 0;         // 0x83e70
+		int32_t ammo = 0, ammoCap = 0;   // 0x83e6c, 0x83e74
+		int equips = 0;           // 0x810c4, the HUD's redraw counter
+	} weapon;
+	int16_t EquipWeapon(int itemIndex);
+	void SetWeaponAmmo(int32_t count) { weapon.ammo = count; }
 
 	// spawn_object_from_das_resource (DAS:208).
 	bool SpawnFromResource(ObjectUid uid, uint16_t id, int variant);

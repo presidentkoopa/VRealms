@@ -161,6 +161,10 @@ void SetPlayerPainFlash(int32_t v);
 // trigger keyed to its command id runs (the "hit by an attack" channel). Used
 // when a creature dies and when a shot lands on a shootable object.
 bool FireObjectChain(int rothSector, int rothIndex);
+// Whether a Realms door sector's leaf is away from its closed place (swinging
+// or open) -- what the original's door pool holds (find_record_by_id,
+// renderer.c:1394), which decides whether its renderer looks through it.
+bool RealmsDoorOpen(int rothSector);
 // A 0x3c record's +0x0e sound, played at the object by the chain's tail.
 void StageObjectChainSound(uint16_t soundPlusOne, int x, int y);
 

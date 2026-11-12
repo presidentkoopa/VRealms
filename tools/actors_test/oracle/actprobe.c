@@ -12,7 +12,7 @@
 #define U8(a)  (*(volatile uint8_t  *)(uintptr_t)(a))
 static const struct roth_game_ram_api_v1 *g;
 static FILE *out;
-static int g_frames, g_trace, g_ticktrace;
+static int g_frames, g_trace, g_ticktrace, g_vistrace;
 struct line { int frame; char op[16]; char args[200]; };
 static struct line g_script[4096]; static int g_nscript, g_pc;
 static char *g_syms;
@@ -96,6 +96,9 @@ static void run(struct line *l)
         uint32_t f = sym(name); if (f) { uint32_t r = ((fn4)(uintptr_t)f)(a, b, c, d); fprintf(out, "CALL %s(%x,%x,%x,%x)=%x\n", name, a, b, c, d, r); } }
     else if (!strcmp(l->op, "unhide")) { int s2 = 0, i2 = 0; sscanf(l->args, "%d %d", &s2, &i2); uint32_t o = objptr(s2, i2); if (o) U8(o + 7) &= 0x7f; }
     else if (!strcmp(l->op, "ticktrace")) g_ticktrace = atoi(l->args);
+    else if (!strcmp(l->op, "vistrace")) g_vistrace = atoi(l->args);
+    else if (!strcmp(l->op, "pose")) { int x, y, a, sc; if (sscanf(l->args, "%d %d %d %x", &x, &y, &a, &sc) == 4) {
+        g->set_u16(0x90a8e, (uint16_t)x); g->set_u16(0x90a96, (uint16_t)y); g->set_u16(0x90a8a, (uint16_t)a); g->set_u16(0x90c12, (uint16_t)sc); } }
     else if (!strcmp(l->op, "fire")) { typedef uint32_t (*f3)(uint32_t, uint32_t, uint32_t); uint32_t item = strtoul(l->args, 0, 0);
         uint32_t r = ((f3)(uintptr_t)sym("spawn_projectile_from_aim"))(item, 0, 0); fprintf(out, "FIRE %u %d\n", item, r != 0); }
     else if (!strcmp(l->op, "fall")) { int fl, ce, st; sscanf(l->args, "%d %d %d", &fl, &ce, &st); typedef uint32_t (*f3)(uint32_t, uint32_t, uint32_t);
@@ -113,6 +116,13 @@ static void run(struct line *l)
         fb f = (fb)(uintptr_t)sym("atan2_bearing"); fn1 sq = (fn1)(uintptr_t)sym("isqrt_fixed");
         fprintf(out, "ATN"); for (int i = 0; i < 512; i++) fprintf(out, " %03x", f(0, (int16_t)((int16_t)g->u16(0x72080 + ((i * 2 + 0x100) & 0x3fe)) / 16), 0, (int16_t)((int16_t)g->u16(0x72080 + i * 2) / 16))); fprintf(out, "\n");
         fprintf(out, "SQR"); for (uint32_t v = 1; v < 0x40000000u; v = v * 3 + 7) fprintf(out, " %x", sq(v)); fprintf(out, "\n"); }
+    else if (!strcmp(l->op, "weapons")) {      /* apply_weapon_action_attributes for every item: the 4-slot table it fills */
+        static uint8_t wb[4 * 0x50]; typedef uint32_t (*f3)(uint32_t, uint32_t, uint32_t); f3 f = (f3)(uintptr_t)sym("apply_weapon_action_attributes");
+        for (int idx = 1; idx < 1200 && f; idx++) { memset(wb, 0xaa, sizeof wb); uint32_t n = f((uint32_t)idx, (uint32_t)(uintptr_t)wb, 4);
+            if (n == 0) continue; fprintf(out, "WEAP %d n=%u", idx, n); for (unsigned k = 0; k < sizeof wb; k++) fprintf(out, "%s%02x", k % 0x50 ? "" : " ", wb[k]); fprintf(out, "\n"); } }
+    else if (!strcmp(l->op, "dbrec")) {          /* an item record's bytes as the running game holds them */
+        int idx = atoi(l->args); uint32_t off = U32(g->u32(0x81e20) + idx * 4); uint32_t rec = g->u32(0x81e1c) + off;
+        fprintf(out, "DBREC %d off=%x", idx, off); for (int k = 0; k < 0x60 && off; k++) fprintf(out, "%s%02x", k % 4 ? "" : " ", U8(rec + k)); fprintf(out, "\n"); }
     else if (!strcmp(l->op, "quit")) { fflush(out); _Exit(0); }
     else fprintf(stderr, "[actprobe] unknown op %s\n", l->op);
 }
@@ -196,8 +206,79 @@ static uint32_t ov_anim(struct roth_chain *c, const struct roth_api_v1 *api, uin
     if (idx) slot = (U8(rec + 9) & 1) ? P(0x91e03) + idx : P(0x90fe3) + idx;
     uint16_t before = slot ? U16(slot + 0x1a) : 0, last = U16(surf + 0x18);
     uint32_t r = roth_next_select_surface_anim_frame(c, rec, surf);
-    fprintf(out, "ANIM obj=%s key=%x tpf=%u cnt=%u last=%u magic=%u ctr=%u -> %u\n", b, surf, U16(surf + 0x14), U16(surf + 0x22), last, U16(surf + 0x1a), before, slot ? U16(slot + 0x1a) : 0);
+    uint32_t W = U16(surf + 0x1a + 4), H = U16(surf + 0x1a + 6), hsh = 2166136261u;
+    for (uint32_t k = 0; k < W * H && r; k++) { hsh ^= U8(r + 0x10 + k); hsh *= 16777619u; }
+    fprintf(out, "ANIM obj=%s key=%x tpf=%u cnt=%u last=%u magic=%u ctr=%u -> %u shown=%u W=%u H=%u fnv=%08x\n", b, surf, U16(surf + 0x14), U16(surf + 0x22), last, U16(surf + 0x1a), before, slot ? U16(slot + 0x1a) : 0,
+        U16(surf + 0x18), W, H, hsh);
     return r;
+}
+/* resolve_face_surface_id: what a slotted creature wears from view index `off`, with its inputs */
+static uint32_t ov_face(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t rec, uint32_t base, uint32_t off)
+{
+    g = api->game_ram;
+    if (!g_ticktrace) return roth_next_resolve_face_surface_id(c, rec, base, off);
+    char b[32]; objref(U32(rec + 4), b);
+    uint32_t mt = g->u32(0x85cf4); uint8_t pain = U8(rec + 0x21);
+    uint32_t obj = U32(rec + 4);
+    fprintf(out, "FACE obj=%s mon=%d st=%02x f9=%02x fa=%02x pain=%02x ci=%u rot=%02x va=%04x xv=%d dep=%d", b, (int)((base - mt) / 0x68), U8(rec + 8), U8(rec + 9), U8(rec + 10), pain, off,
+        obj ? U8(obj + 6) : 0, g->u16(0x909f8), (int32_t)g->u32(0x85224 + 0x3c), (int32_t)g->u32(0x85264));
+    uint32_t r = roth_next_resolve_face_surface_id(c, rec, base, off);
+    fprintf(out, " -> %04x pain=%02x\n", r & 0xffff, U8(rec + 0x21));
+    return r;
+}
+/* advance_das_sprite_animation_frame: a standard animated picture's step when drawn */
+static void ov_adv(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t blk)
+{
+    g = api->game_ram;
+    if (!g_ticktrace) { roth_next_advance_das_sprite_animation_frame(c, blk); return; }
+    uint16_t f0 = U16(blk + 0x18); uint8_t t0 = U8(blk + 0x1a); uint16_t gate = U16(blk + 0x10), now = g->u16(0x90c0a);
+    roth_next_advance_das_sprite_animation_frame(c, blk);
+    fprintf(out, "ADV blk=%x count=%u rate=%02x frame %d->%d timer %02x->%02x fts=%u gate=%u now=%u\n", blk, U16(blk + 0x16), U8(blk + 0x1b), (int16_t)f0, (int16_t)U16(blk + 0x18), t0, U8(blk + 0x1a), g->u32(0x85324), gate, now);
+}
+/* ---- visibility trace: every tree the renderer builds in a frame: its root, window, camera, sectors ---- */
+#define VMAX 8
+static char g_vgroup[VMAX][8192]; static int g_nvg; static uint16_t g_cur[1024]; static int g_ncur; static char g_curhdr[256];
+static void vis_close(void)
+{
+    if (g_curhdr[0] == 0) return;
+    for (int i = 1; i < g_ncur; i++) { uint16_t v = g_cur[i]; int j = i - 1; while (j >= 0 && g_cur[j] > v) { g_cur[j + 1] = g_cur[j]; j--; } g_cur[j + 1] = v; }
+    char buf[8192]; int n = snprintf(buf, sizeof buf, "%s n=%d :", g_curhdr, g_ncur);
+    for (int i = 0; i < g_ncur && n < 8150; i++) n += snprintf(buf + n, sizeof buf - n, " %04x", g_cur[i]);
+    int dup = 0; for (int i = 0; i < g_nvg; i++) if (!strcmp(g_vgroup[i], buf)) { dup = 1; break; }
+    if (!dup && g_nvg < VMAX) strcpy(g_vgroup[g_nvg++], buf);
+    g_curhdr[0] = 0; g_ncur = 0;
+}
+static void ov_tree(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t esi, uint32_t fsb, uint32_t esb, uint32_t gsb)
+{
+    g = api->game_ram;
+    if (g_vistrace) {
+        if (g->u16(0x852cc + 0x20) == 0) {      /* depth 0: a new tree */
+            vis_close();
+            snprintf(g_curhdr, sizeof g_curhdr, "root=%04x win=%d,%d ang=%u vo=%d,%d xs=%d xc=%d",
+                esi, (int16_t)g->u16(0x852fa + 4), (int16_t)g->u16(0x852fa + 2), g->u16(0x909f8), (int16_t)g->u16(0x90a04), (int16_t)g->u16(0x90a06),
+                (int32_t)g->u32(0x85270 + 0xc), (int32_t)g->u32(0x9097c + 0x24));
+        }
+        int seen = 0; for (int i = 0; i < g_ncur; i++) if (g_cur[i] == (uint16_t)esi) { seen = 1; break; }
+        if (!seen && g_ncur < 1024) g_cur[g_ncur++] = (uint16_t)esi;
+    }
+    roth_next_build_sector_render_tree_recursive(c, esi, fsb, esb, gsb);
+}
+static void vis_flush(void)
+{
+    if (!g_vistrace) return;
+    vis_close();
+    if (g_nvg > 0) {                 /* the live sector heights the walk tested (doors, lifts and stairs move them) */
+        uint32_t gb = g->u32(0x90aa8); uint16_t first = U16(gb + 4); int cnt = U16(gb + first - 2);
+        fprintf(out, "SECH frame=%d n=%d :", g_frames, cnt);
+        for (int i = 0; i < cnt; i++) fprintf(out, " %d,%d", (int16_t)U16(gb + first + i * 0x1a), (int16_t)U16(gb + first + i * 0x1a + 2));
+        fprintf(out, "\n");
+        fprintf(out, "DOORS frame=%d :", g_frames);
+        for (int i = 0; i < g->u8(0x8b3f4); i++) fprintf(out, " %04x", g->u16(0x8b3f8 + i * 0x1f6));
+        fprintf(out, "\n");
+    }
+    for (int i = 0; i < g_nvg; i++)
+        fprintf(out, "VIS frame=%d px=%d py=%d pa=%u psec=%04x tree=%d %s\n", g_frames, (int16_t)g->u16(0x90a8e), (int16_t)g->u16(0x90a96), g->u16(0x90a8a), g->u16(0x90c12), i, g_vgroup[i]);
+    g_nvg = 0;
 }
 static void on_overrides(const struct roth_api_v1 *api, struct roth_registrar_v1 *reg)
 {
@@ -209,12 +290,16 @@ static void on_overrides(const struct roth_api_v1 *api, struct roth_registrar_v1
     roth_override(reg, ROTH_FN_play_entity_sound, ov_sound, 0);
     roth_override(reg, ROTH_FN_begin_object_command_chain, ov_chain, 0);
     roth_override(reg, ROTH_FN_select_surface_anim_frame, ov_anim, 0);
+    roth_override(reg, ROTH_FN_build_sector_render_tree_recursive, ov_tree, 0);
+    roth_override(reg, ROTH_FN_resolve_face_surface_id, ov_face, 0);
+    roth_override(reg, ROTH_FN_advance_das_sprite_animation_frame, ov_adv, 0);
 }
 static void frame(const struct roth_api_v1 *api)
 {
     g = api->game_ram;
     if (g->u8(0x7674a) != 1) return;
     g_frames++;
+    vis_flush();
     while (g_pc < g_nscript && g_script[g_pc].frame < 100000 && g_script[g_pc].frame <= g_frames) { run(&g_script[g_pc]); g_pc++; fflush(out); }
     if (g_trace) { dump_env(); dump_globals(); dump_pools(); }
     fflush(out);

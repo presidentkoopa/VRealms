@@ -29,6 +29,7 @@ struct FLevelLocals;
 class AActor;
 class PClassActor;
 struct FMemoryMeshData;
+class FTextureID;
 
 namespace roth
 {
@@ -124,5 +125,17 @@ double ObjectActorYaw(const AActor *mo, uint8_t rotation);
 AActor *SpawnLogicSpriteActor(FLevelLocals *Level, uint16_t textureWord, double x, double y, double z, int lightLevel);
 // Move one to where its particle now is, with the same anchor shift.
 bool MoveLogicSpriteActor(AActor *mo, uint16_t textureWord, double x, double y, double z);
+
+// AN OBJECT THE LOADER DID NOT SPAWN, given an actor at run time by the actor
+// rules' presentation (roth_actors_engine.cpp): a creature placeholder, a prop
+// hidden at load and later shown, a record a command or a shot created. The
+// actor is findable by (sector, index) like a loaded one -- FindObjectActor,
+// ObjectForActor, a restore -- and wears whatever sprite its caller gives it.
+AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z);
+// A sprite definition of one frame, `views` 1 or 8 pictures (each 8-view
+// picture fills two of the sixteen rotation slots, as for directional props);
+// `flip` may be null. -1 when the sprite table is full. The table is rebuilt
+// on every map load, so a caller's memo of these must be dropped with it.
+int MakeObjectSprite(const FTextureID *tex, const bool *flip, int views, Log *log);
 
 } // namespace roth

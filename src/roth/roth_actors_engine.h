@@ -41,4 +41,12 @@ int ActorsCommand(uint8_t op, Command &rec, int &activeObjectSector, int &active
 // Whether 0x16 / 0x3a / 0x3c are served (true while a level is active).
 bool ActorsActive();
 
+// The inventory's weapon hooks (InventorySink::EquipWeapon / UnequipWeapon):
+// activate_weapon_item on the actor rules' player weapon. Equip returns the
+// ammo item the caller must count in the inventory (0 for none), and the
+// count goes back through ActorsSetWeaponAmmo.
+int ActorsEquipWeapon(int itemIndex);
+void ActorsSetWeaponAmmo(int count);
+void ActorsUnequipWeapon();
+
 } // namespace roth
