@@ -25,13 +25,24 @@ void GameCore::Attach(const Dbase100 *db, Dbase100Sink *interpHost, InventorySin
 uint32_t GameCore::NewGame()
 {
 	if (mDb == nullptr) return 0;
-	// Attach re-zeroes the flag bitmap and the dialogue state, exactly as
-	// init_game_databases leaves them (game_core.c:420-432). The generator is
-	// NOT reseeded: its state is fixed from program start, not from a new game
-	// (roth_inventory.h, RothIndexRng).
+	// The new-game block of the main loop, game_core.c:821-833, as far as these
+	// two systems go. In its order:
+	//   clear_dual_array_80afc, reset_inventory            :822-823
+	//   eval_dialogue_record_by_id(3), finish               :824-826
+	//   restore_active_held_item                            :827
+	//   (health = 0x800 when unset -- the player's, not here) :828-830
+	//   activate_weapon_item(0, 0)                           :832
+	// The flag bitmap is zeroed at a new game too (game_core.c:459); Attach
+	// does that and resets the dialogue state. The generator is NOT reseeded:
+	// its state is fixed from program start (roth_inventory.h, RothIndexRng).
 	mInterp.Attach(mDb, &mInterpBridge);
+	mInvBridge.ClearTabCursors();
 	mInventory.Reset();
-	return RunAction(ACTION_NEW_GAME);
+	const uint32_t r = RunAction(ACTION_NEW_GAME);
+	mInventory.RestoreActiveHeldItem(*mDb, &mInvBridge);
+	mInventory.SetLeftHand(-1);
+	mInvBridge.UnequipWeapon();
+	return r;
 }
 
 uint32_t GameCore::RunAction(uint32_t id)

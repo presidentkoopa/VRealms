@@ -72,6 +72,8 @@ int main(int argc, char **argv)
 	CHECK(inv.Slot(2).id == 15);    // Lamp
 	CHECK(inv.Slot(3).id == 16);    // Matchbox
 	CHECK(inv.RightHand() == 3);
+	CHECK(inv.LeftHand() == -1);    // activate_weapon_item(0,0), game_core.c:832
+	CHECK(inv.AdamSlot() == 0);     // restore_active_held_item, game_core.c:827
 	printf("new game: %d items:", inv.Count());
 	for (int i = 0; i < inv.Count(); i++) printf(" %u", inv.Slot(i).id);
 	printf("  right hand slot %d, left hand slot %d\n", inv.RightHand(), inv.LeftHand());

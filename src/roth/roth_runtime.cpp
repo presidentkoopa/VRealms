@@ -137,6 +137,7 @@ int32_t HostRunObjectCommandsById(uint16_t id);
 // and choices still cannot be picked. Not archived (GAMENAME is shared with
 // the hands build, so nothing here may follow the owner into it).
 CVAR(Bool, roth_dialogue_onscreen, true, 0)
+CVAR(Bool, roth_newgame_on_start, true, 0)
 
 class CoreHost : public Dbase100Sink
 {
@@ -4152,12 +4153,16 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		LoadDbase100FromInstall(TheInstall(), TheDbase100(), log);
 
 	// The game core is attached once: its flags and items are the game's, not
-	// the map's. A new game (action 3) is NOT run here -- that belongs to game
-	// flow, which is not built, so the player starts with an empty inventory.
+	// the map's. There is no menu or save yet, so the first level this session
+	// loads IS the new game: the original's new-game block runs (action 3 and
+	// its tail, game_core.c:821-833) and the player starts with what Adam
+	// starts with. When game flow exists this call moves there.
+	// roth_newgame_on_start 0 leaves the inventory empty, for tests.
 	if (TheDbase100().IsLoaded() && !g_core.IsAttached())
 	{
 		const bool haveText = g_coreHost.LoadText(TheInstall());
 		g_core.Attach(&TheDbase100(), &g_coreHost, nullptr);
+		if (roth_newgame_on_start) g_core.NewGame();
 		if (log != nullptr) log->Line("game core: attached (%d items, %d actions, flag bitmap %d bytes, DBASE400 text %s)",
 			TheDbase100().ItemCount(), TheDbase100().ActionCount(),
 			(int)g_core.Interp().State().g_dbase100_record_bitmap.size(),

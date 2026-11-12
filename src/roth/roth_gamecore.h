@@ -45,11 +45,10 @@ public:
 	// The four fixed action records (game_core.c:757, 802, 825, 971).
 	enum { ACTION_BOOT = 1, ACTION_QUIT = 2, ACTION_NEW_GAME = 3, ACTION_DEATH = 4 };
 
-	// A new game as far as these two systems go: an empty inventory, cleared
-	// flags and dialogue state, then action 3. [unverified]: the order and the
-	// full list of what ROTH.C resets around action 3 (game_core.c:825) has
-	// not been transcribed -- the player, the map and the weapon state are
-	// other systems and are not touched here.
+	// A new game as far as these two systems go, in the original's order
+	// (game_core.c:821-833): cleared flags and dialogue state, an empty
+	// inventory, action 3, the Adam latch restored, back to fists. The
+	// player's health and position and the map are other systems.
 	uint32_t NewGame();
 
 	// RAW 0x2b: run an action record by id, then finish the evaluation.
