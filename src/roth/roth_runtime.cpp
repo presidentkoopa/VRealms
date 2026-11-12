@@ -1545,6 +1545,7 @@ struct PendingDoor
 };
 std::vector<PendingDoor> gPendingDoors;
 void DrainPendingDialogue();      // roth_dialogue / roth_inventory, at the end of this file
+void DrainTimedCommands(FLevelLocals *level);   // roth_at, at the end of this file
 
 void DrainPendingDoors()
 {
@@ -7108,6 +7109,7 @@ void TickLevelLogic(FLevelLocals *level)
 		InterfaceTick(level);
 		SoundTick(level);
 		MoviePump();
+		DrainTimedCommands(level);   // tests drive menus with roth_at
 		return;
 	}
 
@@ -7156,6 +7158,7 @@ void TickLevelLogic(FLevelLocals *level)
 	ApplyPendingWarp();
 	DrainPendingDoors();
 	DrainPendingDialogue();
+	DrainTimedCommands(level);
 	// The dialogue window and the inventory screen: after the chains, as the
 	// original's text pass follows its logic in the frame.
 	InterfaceTick(level);
@@ -7661,6 +7664,40 @@ CCMD(roth_menu)
 	else if (v == "choose" && argv.argc() > 2) g_menus.Choose(atoi(argv[2]));
 	Printf("[roth_menu] %s, %d row(s)%s\n", g_menus.Describe().c_str(), (int)g_menus.Rows().size(),
 		g_menus.HasOutcome() ? ", a choice is pending" : "");
+}
+
+//==========================================================================
+//
+// roth_at <tic> <command ...> -- TEST TOOL. Runs any console command at a given
+// level tic (the level's own maptime), in order. A +exec config runs before
+// the map exists, so without this a test cannot say "open the panel, wait,
+// then screenshot". Several entries for one tic run in the order given.
+// Cleared on every level change; does nothing outside a Realms level.
+//
+//==========================================================================
+
+static std::vector<std::pair<int, std::string>> gTimedCommands;
+
+CCMD(roth_at)
+{
+	if (argv.argc() < 3) { Printf("roth_at <level tic> <console command ...>\n"); return; }
+	std::string cmd;
+	for (int i = 2; i < argv.argc(); i++) { if (i > 2) cmd += ' '; cmd += argv[i]; }
+	gTimedCommands.emplace_back(atoi(argv[1]), cmd);
+}
+
+void DrainTimedCommands(FLevelLocals *level)
+{
+	if (gTimedCommands.empty() || level == nullptr) return;
+	const int now = level->maptime;
+	std::vector<std::pair<int, std::string>> due, keep;
+	for (auto &e : gTimedCommands) (e.first <= now ? due : keep).push_back(e);
+	gTimedCommands.swap(keep);
+	for (auto &e : due)
+	{
+		Printf("roth_at %d (now %d): %s\n", e.first, now, e.second.c_str());
+		C_DoCommand(e.second.c_str());
+	}
 }
 
 //==========================================================================
