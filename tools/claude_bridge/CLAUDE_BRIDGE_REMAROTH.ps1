@@ -219,14 +219,21 @@ public static class RothDesktop {
 				$dn = 'remaroth_' + (Get-Date -Format 'HHmmssfff')
 				$procId = [RothDesktop]::Start($exe, $al, $exeDir, $dn)
 				"hidden desktop $dn, pid $procId"
-				$p = Get-Process -Id $procId -ErrorAction SilentlyContinue
-				$exited = $true
-				if ($p) { $exited = $p.WaitForExit($timeout * 1000) }
+				# Poll rather than WaitForExit: a process started with CreateProcess is not a
+				# child PowerShell holds a handle to, and WaitForExit on it returned at once.
+				$deadline = (Get-Date).AddSeconds($timeout); $exited = $false
+				while ((Get-Date) -lt $deadline) {
+					if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { $exited = $true; break }
+					Start-Sleep -Milliseconds 500
+				}
 				if ($exited) { "exited by itself"; $code = 0 }
 				else {
 					"windows on the hidden desktop: " + [RothDesktop]::WindowTitles()
-					try { Stop-Process -Id $procId -Force } catch {}; "still running at ${timeout}s: killed"; $code = 0
+					Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+					"still running at ${timeout}s: killed"; $code = 0
 				}
+				# Never leave one behind: an engine nobody can see would hold the exe and the GPU.
+				Get-Process -Name doomxr -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -and $_.SessionId -eq (Get-Process -Id $PID).SessionId -and $_.MainWindowHandle -eq 0 } | ForEach-Object { "left-over hidden doomxr pid $($_.Id): killed"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
 				Start-Sleep -Milliseconds 500
 				[RothDesktop]::Close()
 			}
