@@ -19,7 +19,7 @@
 #   dbtest     tools\dbase100_test\build.cmd "<retail folder>" (DBASE100 + inventory tests, dump)
 #   run        doomxr.exe -iwad vrealms.pk3 -rothpath "<retail folder>" -config <bridge ini> +map <map>
 #              lines: -Map <name> (default STUDY1) | -Exec <cfg under this repo> | -TimeoutSec N (default 60,
-#                     max 900) | -Config RelWithDebInfo|Debug|Release | -Foreground
+#                     max 900) | -Config RelWithDebInfo|Debug|Release | -Foreground | -Minimized
 #              The game is killed at the timeout if it has not quit by itself. Returns the engine log
 #              tail. Starts minimised unless -Foreground: a minimised window keeps ticking but does not
 #              present, so screenshots need -Foreground (HANDOFF_SESSION_2026-10-09.md section 9).
@@ -142,12 +142,13 @@ function Run-Action($lines) {
 			return $code
 		}
 		'^run$' {
-			$cfg = 'RelWithDebInfo'; $map = 'STUDY1'; $exec = $null; $timeout = 60; $fg = $false
+			$cfg = 'RelWithDebInfo'; $map = 'STUDY1'; $exec = $null; $timeout = 60; $fg = $false; $min = $false
 			foreach ($a in $args_) {
 				if ($a -match '^-Config\s+(\S+)$' -and $configs -contains $Matches[1]) { $cfg = $Matches[1] }
 				elseif ($a -match '^-Map\s+([A-Za-z0-9_]+)$') { $map = $Matches[1] }
 				elseif ($a -match '^-TimeoutSec\s+(\d+)$') { $timeout = [Math]::Min([int]$Matches[1], 900) }
 				elseif ($a -match '^-Foreground$') { $fg = $true }
+				elseif ($a -match '^-Minimized$') { $min = $true }
 				elseif ($a -match '^-Exec\s+(.+)$') {
 					$e = $Matches[1]
 					if (-not [IO.Path]::IsPathRooted($e)) { $e = Join-Path $repo $e }
@@ -168,11 +169,67 @@ function Run-Action($lines) {
 			$al = "-iwad vrealms.pk3 -rothpath `"$roth`" -config `"$ini`" +logfile `"$log`" +map $map"
 			if ($exec) { $al += " +exec `"" + ($exec -replace '\\', '/') + "`"" }
 			"doomxr.exe $al"
-			$style = 'Minimized'; if ($fg) { $style = 'Normal' }
-			$p = Start-Process -FilePath $exe -ArgumentList $al -WorkingDirectory $exeDir -WindowStyle $style -PassThru
-			$exited = $p.WaitForExit($timeout * 1000)
-			if ($exited) { "exited by itself, code " + $p.ExitCode; $code = $p.ExitCode }
-			else { try { $p.Kill() } catch {}; "still running at ${timeout}s: killed"; $code = 0 }
+			if ($fg -or $min) {
+				$style = 'Minimized'; if ($fg) { $style = 'Normal' }
+				$p = Start-Process -FilePath $exe -ArgumentList $al -WorkingDirectory $exeDir -WindowStyle $style -PassThru
+				$exited = $p.WaitForExit($timeout * 1000)
+				if ($exited) { "exited by itself, code " + $p.ExitCode; $code = $p.ExitCode }
+				else { try { $p.Kill() } catch {}; "still running at ${timeout}s: killed"; $code = 0 }
+			} else {
+				# DEFAULT: on a Win32 desktop of its own that is never shown (the UZDXREMA
+				# boot test's way, tools/rema_rig/claude_bridge/main_boottest). Nothing
+				# appears on the owner's screen and nothing takes his focus, and because the
+				# window is a normal one on ITS desktop the engine keeps presenting, so
+				# screenshots work -- which a minimised window does not give.
+				Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class RothDesktop {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle; public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags; public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateDesktop(string name, IntPtr dev, IntPtr mode, int flags, uint access, IntPtr sa);
+  [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr h);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcess(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumDesktopWindows(IntPtr desk, EnumProc cb, IntPtr l);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  public static IntPtr Desktop = IntPtr.Zero;
+  public static string WindowTitles() {
+    if (Desktop == IntPtr.Zero) return "";
+    var all = new StringBuilder();
+    EnumDesktopWindows(Desktop, (h, l) => { var sb = new StringBuilder(512); GetWindowText(h, sb, 512); string t = sb.ToString().Trim();
+      if (t.Length > 0) { if (all.Length > 0) all.Append("  |  "); all.Append(t); } return true; }, IntPtr.Zero);
+    return all.ToString();
+  }
+  public static int Start(string exe, string args, string cwd, string desktopName) {
+    Desktop = CreateDesktop(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
+    if (Desktop == IntPtr.Zero) throw new Exception("CreateDesktop failed " + Marshal.GetLastWin32Error());
+    var si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si); si.lpDesktop = desktopName;
+    PROCESS_INFORMATION pi;
+    bool ok = CreateProcess(exe, new StringBuilder("\"" + exe + "\" " + args), IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, cwd, ref si, out pi);
+    int err = Marshal.GetLastWin32Error();
+    if (!ok) { CloseDesktop(Desktop); Desktop = IntPtr.Zero; throw new Exception("CreateProcess failed " + err); }
+    CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    return pi.dwProcessId;
+  }
+  public static void Close() { if (Desktop != IntPtr.Zero) { CloseDesktop(Desktop); Desktop = IntPtr.Zero; } }
+}
+'@
+				$dn = 'remaroth_' + (Get-Date -Format 'HHmmssfff')
+				$procId = [RothDesktop]::Start($exe, $al, $exeDir, $dn)
+				"hidden desktop $dn, pid $procId"
+				$p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+				$exited = $true
+				if ($p) { $exited = $p.WaitForExit($timeout * 1000) }
+				if ($exited) { "exited by itself"; $code = 0 }
+				else {
+					"windows on the hidden desktop: " + [RothDesktop]::WindowTitles()
+					try { Stop-Process -Id $procId -Force } catch {}; "still running at ${timeout}s: killed"; $code = 0
+				}
+				Start-Sleep -Milliseconds 500
+				[RothDesktop]::Close()
+			}
 			if (Test-Path -LiteralPath $log) {
 				"--- engine log tail ($log) ---"
 				Get-Content -LiteralPath $log -Tail 200 | Out-String
