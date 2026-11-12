@@ -27,10 +27,26 @@
 namespace roth
 {
 
+// Watches the calls the interpreter and the inventory make INTO EACH OTHER
+// (and into the shared generator) inside the core, where no host sink sees
+// them. For the differential test against the original (tools/gameproof);
+// the engine does not set one.
+class GameCoreObserver
+{
+public:
+	virtual ~GameCoreObserver() {}
+	// `what` is one of "give", "remove", "query", "find", "filter",
+	// "evalblock" (a, b = the call's two arguments) or "rng" (a = count).
+	virtual void Enter(const char *what, int32_t a, int32_t b) { (void)what; (void)a; (void)b; }
+	virtual void Leave(const char *what, int32_t ret) { (void)what; (void)ret; }
+};
+
 class GameCore
 {
 public:
 	GameCore();
+
+	void SetObserver(GameCoreObserver *o) { mObserver = o; }
 
 	// Point the core at a loaded database. `interpHost` and `invHost` receive
 	// every call that belongs to another system; either may be null.
@@ -134,6 +150,19 @@ private:
 		void ItemMessage(int interfaceIndex, int colorIndex, uint32_t nameA, uint32_t nameB) override;
 	};
 
+	int32_t DrawIndex(int32_t count);
+	// The generator as the inventory takes it (InventoryRng), through DrawIndex.
+	class RngTap : public InventoryRng
+	{
+	public:
+		explicit RngTap(GameCore &c) : core(c) {}
+		GameCore &core;
+		int32_t NextIndexForCount(int32_t count) override { return core.DrawIndex(count); }
+	};
+	void Enter(const char *what, int32_t a, int32_t b) { if (mObserver != nullptr) mObserver->Enter(what, a, b); }
+	void Leave(const char *what, int32_t ret) { if (mObserver != nullptr) mObserver->Leave(what, ret); }
+
+	GameCoreObserver *mObserver = nullptr;
 	const Dbase100 *mDb = nullptr;
 	Dbase100Interp mInterp;
 	Inventory mInventory;

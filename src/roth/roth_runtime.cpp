@@ -32,6 +32,7 @@
 #include "roth_log.h"
 #include "roth_dbase100.h"
 #include "roth_gamecore.h"
+#include "roth_itemcmds.h"    // 0x27/0x29/0x2a/0x2b/0x42, shared with tools/gameproof
 #include "roth_install.h"
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 
@@ -1112,6 +1113,53 @@ int TailIfNext(Handlers &h)
 //
 //==========================================================================
 
+// THE FIVE ITEM COMMANDS RUN roth_itemcmds.cpp, the engine-free transcription
+// that tools/gameproof replays against the original (ROTH.C running, the same
+// record bytes from the retail maps, call by call). This adapter only moves
+// the chain state in and out of it.
+int32_t g_ifItemList[16];
+int g_ifItemListCount = 0;
+
+struct RuntimeItemCmdHost : ItemCmdHost
+{
+	Command *cmd = nullptr;
+	ItemCmdRecord rec;
+	ItemCmdRecord *PendingRecord(uint32_t handle) override
+	{
+		cmd = Rec((uint16_t)handle);
+		if (cmd == nullptr) return nullptr;
+		rec.modifier = cmd->modifier; rec.fireFlags = cmd->fireFlags; rec.key = cmd->key;
+		return &rec;
+	}
+	void PendingRecordRan(uint32_t) override
+	{
+		if (cmd != nullptr) { cmd->modifier = rec.modifier; SyncDisabled(cmd); }
+	}
+};
+
+template<class F> int RunItemCmd(Command *rec, Handlers *h, F f)
+{
+	ItemCmdState st;
+	st.pendingRecord = g.pendingRecord;
+	st.dialogueLatch = g_dialogueLatch;
+	memcpy(st.list, g_ifItemList, sizeof(st.list));
+	st.listCount = g_ifItemListCount;
+	ItemCmdRecord r;
+	r.modifier = rec->modifier; r.fireFlags = rec->fireFlags; r.key = rec->key;
+	RuntimeItemCmdHost host;
+	const int32_t ret = f(st, r, host);
+	rec->modifier = r.modifier; SyncDisabled(rec);
+	g.pendingRecord = (uint16_t)st.pendingRecord;
+	g_dialogueLatch = st.dialogueLatch;
+	memcpy(g_ifItemList, st.list, sizeof(st.list));
+	g_ifItemListCount = st.listCount;
+	if (h != nullptr && st.interrupt == 1) h->interrupt = Interrupt::Break;
+	if (h != nullptr && st.interrupt == 2) h->interrupt = Interrupt::Rerun;
+	// -1 acted; a positive value is TailIfNext's still-latched pending record,
+	// which the exec loop also counts as acted (see TailIfNext above).
+	return ret != 0 ? CMD_ACTED : CMD_NOTHING;
+}
+
 int RunDbase100Record(Command *rec)
 {
 	if (!g_core.IsAttached())
@@ -1119,14 +1167,8 @@ int RunDbase100Record(Command *rec)
 		g.unhandledOps[0x2B]++;
 		return CMD_NOTHING;                  // eval_dialogue_record_by_id -> 0
 	}
-	if (!g_dialogueLatch)                    // :4701-4704
-	{
-		g_dialogueLatch = true;
-		g_core.Interp().State().g_dbase100_queue_active = 1;
-	}
-	const uint32_t r = g_core.Interp().EvalDialogueRecordById(rec->key);   // :4705
-	if (r != 0) return TailConsume(rec, CMD_ACTED);                      // :4706-4707
-	return CMD_NOTHING;
+	return RunItemCmd(rec, nullptr, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &) {
+		return RunCommandDbase100Record(g_core, st, r); });               // :4697-4709
 }
 
 //==========================================================================
@@ -1190,69 +1232,32 @@ int IfNotFlag(Command *rec, Handlers &h)
 //
 //==========================================================================
 
-// The id list 0x27 builds in list mode: g_query_list 0x89f68, count 0x89f64,
-// sixteen entries (raw_commands.c:4765-4770). Cleared with the chain state
-// (raw_commands.c:1328) -- see Fire.
-int32_t g_ifItemList[16];
-int g_ifItemListCount = 0;
-
-// rawcmd_route_35580 -- raw_commands.c:4743-4749.
-int RouteQuery(Command *rec, Handlers &h, int found)
-{
-	const int f1 = rec->fireFlags & 1;
-	if (found != 0) return f1 ? TailConsume(rec, CMD_NOTHING) : TailIfNext(h);
-	if (g_core.Items().AutoSelected())
-	{
-		h.interrupt = Interrupt::Break;          // g_command_chain_interrupt = 1
-		return CMD_NOTHING;
-	}
-	return f1 ? TailIfNext(h) : TailConsume(rec, CMD_ACTED);
-}
+// The id list 0x27 builds in list mode, g_query_list 0x89f68 / count 0x89f64
+// (raw_commands.c:4765-4770), is g_ifItemList above. Cleared with the chain
+// state (raw_commands.c:1328) -- see Fire.
 
 // 0x27 cmd_if_not_item -- raw_commands.c:4760-4789.
 int IfNotItem(Command *rec, Handlers &h)
 {
 	if (!g_core.IsAttached()) { g.unhandledOps[0x27]++; return CMD_NOTHING; }
-	const uint8_t f6 = rec->fireFlags;
-	const int mode = ((f6 & 2) ? 1 : 0) + ((f6 & 0x20) ? 2 : 0);
-	if (f6 & 8)
-	{
-		if (!(f6 & 4))                           // :4764-4772, append to the list
-		{
-			if (g_ifItemListCount < 0x10) g_ifItemList[g_ifItemListCount++] = rec->key;
-			return CMD_NOTHING;
-		}
-		if (g_ifItemListCount == 0) return TailIfNext(h);                  // :4774
-		return RouteQuery(rec, h, g_core.FindOrAutoselect(g_ifItemList, g_ifItemListCount, mode));
-	}
-	if (f6 & 4)                                  // :4780-4784, compare the last item
-	{
-		if ((uint16_t)g_core.Items().LastItem() == rec->key) return TailConsume(rec, CMD_NOTHING);
-		return TailIfNext(h);
-	}
-	return RouteQuery(rec, h, g_core.Query(rec->key, mode));              // :4785-4788
+	return RunItemCmd(rec, &h, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &host) {
+		return CmdIfNotItem(g_core, st, r, host); });
 }
 
 // 0x29 cmd_give_item -- raw_commands.c:4799-4830.
 int GiveItemCmd(Command *rec, Handlers &h)
 {
 	if (!g_core.IsAttached()) { g.unhandledOps[0x29]++; return CMD_NOTHING; }
-	const int32_t r = g_core.Give(rec->key, nullptr);
-	g_core.Items().SetLastItem(r);               // g_last_item_record
-	if (r != 0) return CMD_ACTED;
-	h.interrupt = Interrupt::Rerun;              // g_command_chain_interrupt = 2
-	return CMD_NOTHING;
+	return RunItemCmd(rec, &h, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &) {
+		return CmdGiveItem(g_core, st, r, nullptr); });
 }
 
 // 0x2a cmd_remove_item -- raw_commands.c:4918-4931.
 int RemoveItemCmd(Command *rec)
 {
 	if (!g_core.IsAttached()) { g.unhandledOps[0x2A]++; return CMD_NOTHING; }
-	int32_t id = rec->key;
-	if (id == 0) id = g_core.Items().LastItem();
-	g_core.Items().SetLastItem(id);
-	if (g_core.Remove((uint16_t)id) != 0) return TailConsume(rec, CMD_ACTED);
-	return CMD_NOTHING;
+	return RunItemCmd(rec, nullptr, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &) {
+		return CmdRemoveItem(g_core, st, r); });
 }
 
 // 0x42 cmd_set_inventory_filter -- raw_commands.c:4940-4947. "Take inventory":
@@ -1260,9 +1265,8 @@ int RemoveItemCmd(Command *rec)
 int SetInventoryFilterCmd(Command *rec)
 {
 	if (!g_core.IsAttached()) { g.unhandledOps[0x42]++; return CMD_NOTHING; }
-	g_core.SetFilter((rec->fireFlags & 1) ? 1 : 0);
-	if (rec->fireFlags & 0x10) { rec->modifier |= 0x08; SyncDisabled(rec); }
-	return CMD_ACTED;
+	return RunItemCmd(rec, nullptr, [](ItemCmdState &, ItemCmdRecord &r, ItemCmdHost &) {
+		return CmdSetInventoryFilter(g_core, r); });
 }
 
 //==========================================================================

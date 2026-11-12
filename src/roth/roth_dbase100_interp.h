@@ -255,7 +255,10 @@ struct Dbase100InterpState
 	int32_t g_active_dialogue_context = 0;          // 0x83115
 	int32_t g_move_freeze_gate = 0;                 // 0x83125
 	int32_t g_voice_stream_state = 0;               // 0x8200c
-	int32_t g_choice_selected_index = 0;            // 0x71370
+	// 0x71370. Starts at -1, "no row picked": the EXE's initialised data
+	// (obj3_owned.c:488-489), and what the running original holds after a new
+	// game (tools/gameproof, S0). file_config.c:1075 tests it against -1.
+	int32_t g_choice_selected_index = -1;
 	// 0x8313d, "VA_g_dialogue_reveal_ramp + 0x14"; dialogue_ui.c:224 calls
 	// it g_choice_saved_index.
 	int32_t g_choice_saved_index = 0;

@@ -53,34 +53,58 @@ uint32_t GameCore::RunAction(uint32_t id)
 	return r;
 }
 
+// Every draw from the shared generator goes through here (dbase100.c:753,
+// inventory.c:1432), so the observer sees each one.
+int32_t GameCore::DrawIndex(int32_t count)
+{
+	const int32_t r = mRng.NextIndexForCount(count);
+	if (mObserver != nullptr) { mObserver->Enter("rng", count, 0); mObserver->Leave("rng", r); }
+	return r;
+}
+
 int32_t GameCore::Give(int32_t item, const GiveContext *ctx)
 {
 	if (mDb == nullptr) return 0;
-	return mInventory.GiveItem(*mDb, item, ctx, &mInvBridge);
+	Enter("give", item, ctx != nullptr);
+	const int32_t r = mInventory.GiveItem(*mDb, item, ctx, &mInvBridge);
+	Leave("give", r);
+	return r;
 }
 
 int GameCore::Query(uint16_t id, int flags)
 {
 	if (mDb == nullptr) return 0;
-	return mInventory.Query(*mDb, id, flags, &mInvBridge);
+	Enter("query", (int16_t)id, flags);
+	const int r = mInventory.Query(*mDb, id, flags, &mInvBridge);
+	Leave("query", r);
+	return r;
 }
 
 int GameCore::FindOrAutoselect(const int32_t *ids, int count, int flags)
 {
 	if (mDb == nullptr) return 0;
-	return mInventory.FindOrAutoselect(ids, count, flags, mRng, &mInvBridge);
+	Enter("find", count, flags);
+	RngTap tap(*this);
+	const int r = mInventory.FindOrAutoselect(ids, count, flags, tap, &mInvBridge);
+	Leave("find", r);
+	return r;
 }
 
 int GameCore::Remove(uint16_t id)
 {
 	if (mDb == nullptr) return 0;
-	return mInventory.RemoveItem(*mDb, id, &mInvBridge);
+	Enter("remove", (int16_t)id, 0);
+	const int r = mInventory.RemoveItem(*mDb, id, &mInvBridge);
+	Leave("remove", r);
+	return r;
 }
 
 void GameCore::SetFilter(int mode)
 {
 	if (mDb == nullptr) return;
+	Enter("filter", mode, 0);
 	mInventory.SetFilter(*mDb, mode, &mInvBridge);
+	Leave("filter", 0);
 }
 
 //==========================================================================
@@ -93,25 +117,22 @@ uint32_t GameCore::InterpBridge::GiveItem(int32_t id, uint32_t ctx)
 {
 	// Op 0x11 always passes a null context (dbase100.c:770).
 	(void)ctx;
-	if (core.mDb == nullptr) return 0;
-	return (uint32_t)core.mInventory.GiveItem(*core.mDb, id, nullptr, &core.mInvBridge);
+	return (uint32_t)core.Give(id, nullptr);
 }
 
 uint32_t GameCore::InterpBridge::RemoveItem(int32_t id)
 {
-	if (core.mDb == nullptr) return 0;
-	return (uint32_t)core.mInventory.RemoveItem(*core.mDb, (uint16_t)id, &core.mInvBridge);
+	return (uint32_t)core.Remove((uint16_t)id);
 }
 
 uint32_t GameCore::InterpBridge::QueryPlayerInventory(int32_t id, uint32_t flags)
 {
-	if (core.mDb == nullptr) return 0;
-	return (uint32_t)core.mInventory.Query(*core.mDb, (uint16_t)id, (int)flags, &core.mInvBridge);
+	return (uint32_t)core.Query((uint16_t)id, (int)flags);
 }
 
 int32_t GameCore::InterpBridge::RngNextIndexForCount(int32_t count)
 {
-	return core.mRng.NextIndexForCount(count);
+	return core.DrawIndex(count);
 }
 
 // Everything else belongs to a system that is not in the core yet.
@@ -158,7 +179,10 @@ int32_t GameCore::InvBridge::EvalItemBlock(int32_t itemId, const DbTriggerBlock 
 {
 	(void)itemId;
 	// eval_dialogue_record_condition_with_cleanup(block, mode), dbase100.c:569-576.
-	return (int32_t)core.mInterp.EvalBlock(block, (uint32_t)mode);
+	core.Enter("evalblock", (int32_t)block.offset, mode);
+	const int32_t r = (int32_t)core.mInterp.EvalBlock(block, (uint32_t)mode);
+	core.Leave("evalblock", r);
+	return r;
 }
 
 void GameCore::InvBridge::RunActionRecord(uint32_t actionId)

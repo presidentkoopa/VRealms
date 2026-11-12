@@ -973,6 +973,7 @@ set (PCH_SOURCES
 	roth/roth_gamecore.cpp
 	# The inventory slot model over DBASE100 (no consumer in the engine yet).
 	roth/roth_inventory.cpp
+	roth/roth_itemcmds.cpp
 	# The exception: roth_texture is the boundary file that hands decoded
 	# artwork to the texture manager, so it does use engine types.
 	roth/roth_texture.cpp
