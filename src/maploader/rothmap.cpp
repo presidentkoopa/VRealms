@@ -81,7 +81,7 @@ CVAR(String, roth_skip_sectors, "", CVAR_NOINITCALL)
 // which skipping alone cannot separate. Not archived, same reason.
 CVAR(String, roth_sector_ceiling, "", CVAR_NOINITCALL)
 
-// ROOMS OVER ROOMS, REPAIRED WITH LINKED PORTALS -- PROTOTYPE, OFF BY DEFAULT.
+// ROOMS OVER ROOMS, REPAIRED WITH LINKED PORTALS. ON.
 //
 // 1: every stack of sectors that overlaps in plan is separated -- the smaller
 // side is moved to a region of its own -- and each face the move cut is rebuilt
@@ -94,10 +94,13 @@ CVAR(String, roth_sector_ceiling, "", CVAR_NOINITCALL)
 // engine takes what is behind it from the far line's front sector, live
 // (line_t::getPortalBeyondSector, r_defs.h). There are no buffer sectors.
 //
-// Not archived, for the same reason as roth_skip_sectors: until this has been
-// seen working in a headset it is a test, not a load anyone should inherit.
-// Applied at load; change it and reload the map.
-CVAR(Bool, roth_portals, false, CVAR_NOINITCALL)
+// On since 2026-11-12. With it off, the 11 retail maps that stack rooms lose
+// floor and ceiling in 54 sectors (STUDY1's upper corridor among them) and the
+// far walls behind them; with it on the offline node-builder check finds no
+// sector short of its floor in any of the 44 maps (tools/portalplan/allmaps.sh).
+// 0 is kept for comparison shots, not for play. Not archived. Applied at load;
+// change it and reload the map.
+CVAR(Bool, roth_portals, true, CVAR_NOINITCALL)
 
 // A door leaf is a polyobject, and a polyobject exists in one region of the
 // map only: the part of a leaf that swings through a portal line is neither
@@ -361,6 +364,20 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Warn("parse failed: %s", rm.error.c_str());
 		log.End();
 		I_Error("Realms map %s: %s", map->rothFile.GetChars(), rm.error.c_str());
+	}
+
+	// THE HEIGHTS THE MAP STARTS WITH. The original writes each 0x07 record's
+	// first limit into its sectors at load (roth_raw.h, ApplyLoadTimeHeights;
+	// ROTH.C raw_commands.c:5243, map_load.c:1183-1196). Done here, to the map
+	// data, before one plane, wall piece or texture offset is made from it.
+	{
+		std::vector<roth::LoadHeightChange> moved;
+		const int n = roth::ApplyLoadTimeHeights(rm, &moved);
+		log.Section("Heights set at load by 0x07 records");
+		log.Line("  sector heights changed  %d", n);
+		for (const roth::LoadHeightChange &ch : moved)
+			log.Line("    sector %-4d %s %d -> %d  (command %d)", ch.sector,
+				ch.ceiling ? "ceiling" : "floor  ", (int)ch.from, (int)ch.to, ch.command);
 	}
 
 	log.Section("Contents");
@@ -812,9 +829,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		for (const RothPlanOverlap &po : found) pairsIn.push_back({ po.a, po.b, po.area });
 		portalPlan = rothplan::BuildPlan(rm, pairsIn, planSkip,
 			(int)(rm.vertices.size() + size_t(platformCount) * 4 + size_t(leafCount) * 8),
-			64., !roth_portals_doorcuts);
+			0., !roth_portals_doorcuts);
 
-		log.Section("Portals (roth_portals 1 -- PROTOTYPE)");
+		log.Section("Portals (roth_portals 1)");
 		for (const std::string &n : portalPlan.notes) log.Line("  %s", n.c_str());
 		if (!portalPlan.active)
 		{

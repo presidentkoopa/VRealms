@@ -30,7 +30,7 @@ static bool Cross(double ax,double ay,double bx,double by,double cx,double cy,do
 	return ((d1>0)!=(d2>0))&&((d3>0)!=(d4>0)); }
 int main(int c,char**v){ double step=4; int ndir=720, npt=17; double maxlen=40000;
  for(int a=1;a<c;a++){ std::string path=v[a]; if(path.rfind("step=",0)==0){step=atof(path.c_str()+5);continue;} if(path.rfind("dirs=",0)==0){ndir=atoi(path.c_str()+5);continue;}
-  auto d=RF(v[a]); Map m=ParseRaw(d.data(),d.size()); std::string name=path.substr(path.rfind('/')+1); if(!m.ok())continue;
+  auto d=RF(v[a]); Map m=ParseRaw(d.data(),d.size()); ApplyLoadTimeHeights(m); /* as the loader does, before planning */ std::string name=path.substr(path.rfind('/')+1); if(!m.ok())continue;
   std::vector<RothPlanOverlap> ov; RothFindPlanOverlaps(m,{},ov); if(ov.empty())continue;
   std::vector<rothplan::OverlapPair> in; for(auto&p:ov)in.push_back({p.a,p.b,p.area});
   rothplan::Plan pl=rothplan::BuildPlan(m,in,{},(int)m.vertices.size());

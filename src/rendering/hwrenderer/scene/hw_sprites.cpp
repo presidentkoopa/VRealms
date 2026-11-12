@@ -1006,13 +1006,20 @@ void HWSprite::PerformSpriteClipAdjustment(AActor *thing, const DVector2 &thingp
 CVAR(Float, gl_sprite_distance_cull, 2000.0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Float, gl_sprite_decor_distance_cull, 1200.0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
-bool IsDistanceCulled(AActor* thing)
+// [RS] Measured from the viewpoint the scene is drawn from and to where the thing is drawn, not from
+// r_viewpoint to where the thing is stored: inside a line portal the scene's viewpoint has been moved by
+// the portal's displacement (HWLineToLinePortal::Setup), and a thing drawn across a linked portal
+// (thruportal 1) is drawn displaced. Same fault and same fix as IsDistanceCulled(seg_t*), hw_bsp.cpp.
+static bool IsDistanceCulled(HWDrawInfo *di, AActor* thing, sector_t *sector, int thruportal)
 {
 	double culldist = gl_sprite_distance_cull * gl_sprite_distance_cull;
 	if (culldist <= 0.0)
 		return false;
 
-	double dist = (thing->Pos() - r_viewpoint.Pos).LengthSquared();
+	DVector3 thingpos = thing->Pos();
+	if (thruportal == 1 && sector != nullptr && thing->Sector != nullptr)
+		thingpos += di->Level->Displacements.getOffset(thing->Sector->PortalGroup, sector->PortalGroup);
+	double dist = (thingpos - di->Viewpoint.Pos).LengthSquared();
 
 	if (dist > culldist)
 		return true;
@@ -1029,7 +1036,7 @@ void HWSprite::Process(HWDrawInfo *di, AActor* thing, sector_t * sector, area_t 
 	if (thing == nullptr)
 		return;
 
-	if (IsDistanceCulled(thing)) 
+	if (IsDistanceCulled(di, thing, sector, thruportal))
 		return;
 
 	// [ZZ] allow CustomSprite-style direct picnum specification

@@ -572,4 +572,88 @@ Map ParseRaw(const uint8_t *data, size_t size)
 	return map;
 }
 
+//==========================================================================
+//
+// ApplyLoadTimeHeights -- see roth_raw.h.
+//
+// tick_apply_geometry_effect (raw_commands.c:5243), the load-time init
+// handler of every 0x07 record (map_load.c:1086 table slot 7, run from
+// init_loaded_object_table pass 2, map_load.c:1183-1196), in file order.
+//
+//==========================================================================
+
+// collect_connected_geometry_group: from the sector the key names, through
+// every face that has a sister and no barrier bit (collisionFlags & 0x08).
+// The same walk as roth_runtime.cpp's FloodConnected, iterative here.
+static void LoadFloodConnected(const Map &map, int start, std::vector<int> &out)
+{
+	std::vector<char> seen(map.sectors.size(), 0);
+	std::vector<int> stack;
+	stack.push_back(start);
+	while (!stack.empty())
+	{
+		const int sec = stack.back();
+		stack.pop_back();
+		if (sec < 0 || (size_t)sec >= map.sectors.size() || seen[sec]) continue;
+		seen[sec] = 1;
+		out.push_back(sec);
+		const Sector &s = map.sectors[sec];
+		if (s.firstFaceIndex < 0) continue;
+		// pushed in reverse so the visiting order is the recursive one
+		for (int i = (int)s.faceCount - 1; i >= 0; i--)
+		{
+			const int fi = s.firstFaceIndex + i;
+			if (fi < 0 || (size_t)fi >= map.faces.size()) continue;
+			const Face &f = map.faces[fi];
+			if (f.collisionFlags & 0x8) continue;
+			if (f.sister < 0 || (size_t)f.sister >= map.faces.size()) continue;
+			stack.push_back(map.faces[f.sister].sector);
+		}
+	}
+}
+
+int ApplyLoadTimeHeights(Map &map, std::vector<LoadHeightChange> *changes)
+{
+	int changed = 0;
+	for (size_t ci = 0; ci < map.commands.size(); ci++)
+	{
+		const Command &c = map.commands[ci];
+		if ((c.opcode & 0x7f) != 0x07) continue;
+		if (c.modifier & 0x08) continue;                       // raw_commands.c:5245
+		// :5246 skips an unarmed record on a REVISIT (g_state_record_count != 0).
+		// This port has no revisit state: every load is a first visit.
+
+		const uint16_t limit = (c.modifier & 0x02) ? c.Word(0x0C) : c.Word(0x0A);   // :5249-5250
+		const int16_t height = (int16_t)(uint16_t)(limit * 2);                      // :5251, 16 bits
+		const bool ceiling = (c.fireFlags & 0x01) != 0;                             // :5261
+
+		std::vector<int> group;
+		if (c.modifier & 0x04)                                 // :5252, :5255
+		{
+			int start = -1;
+			for (size_t si = 0; si < map.sectors.size(); si++)
+				if (map.sectors[si].commandID == c.key) { start = (int)si; break; }
+			if (start >= 0) LoadFloodConnected(map, start, group);
+		}
+		else
+		{
+			for (size_t si = 0; si < map.sectors.size(); si++)
+				if (map.sectors[si].commandID == c.key) group.push_back((int)si);
+		}
+		if (group.size() > 0xc8) group.resize(0xc8);           // the callers' scratch list
+
+		for (int si : group)
+		{
+			Sector &rs = map.sectors[si];
+			int16_t &field = ceiling ? rs.ceilingHeight : rs.floorHeight;   // :5080 / :5105
+			if (field == height) continue;
+			if (changes != nullptr)
+				changes->push_back({ si, ceiling, field, height, (int)ci + 1 });
+			field = height;
+			changed++;
+		}
+	}
+	return changed;
+}
+
 } // namespace roth

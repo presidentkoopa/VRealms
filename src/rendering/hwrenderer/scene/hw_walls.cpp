@@ -115,7 +115,7 @@ EXTERN_CVAR(Int, gl_max_vertices)
 extern int wallVerticesPerEye;
 extern int lightsWallPerEye;
 
-bool IsDistanceCulled(seg_t *line);
+bool IsDistanceCulled(seg_t *line, const DVector3 &viewpos);
 
 // [BB] HOW MUCH FOG THIS SECTOR GETS.
 //
@@ -2569,7 +2569,7 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 		return;
 	}
 
-	if (isculled || IsDistanceCulled(seg))
+	if (isculled || IsDistanceCulled(seg, di->di != nullptr ? di->di->Viewpoint.Pos : r_viewpoint.Pos))	// [RS] the scene's own viewpoint: see IsDistanceCulled, hw_bsp.cpp
 	{
 		if (frontSkyCeiling)
 		{

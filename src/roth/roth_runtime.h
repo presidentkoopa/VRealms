@@ -121,6 +121,10 @@ void RegisterLightFollower(int rothSector, int engineSector);
 // with zeros, when the cvar is off or the map has no stacked rooms.
 void RegisterSectorShift(int rothSector, double dx, double dy);
 bool SectorShift(int rothSector, double &dx, double &dy);
+// A Realms x,y to the engine position of the same spot (the pose tools). z,
+// when given, picks the storey where rooms are stacked; without it the
+// sector that was not moved wins. Returns the Realms sector or -1.
+int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, double &ey);
 
 // The player touched a wall or a door leaf. Returns true if this line belongs
 // to Realms, in which case the engine's own line activation must not also run.

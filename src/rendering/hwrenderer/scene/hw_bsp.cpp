@@ -448,14 +448,22 @@ void HWDrawInfo::UnclipSubsector(subsector_t *sub)
 
 CVAR(Float, gl_line_distance_cull, 4000.0, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 
-bool IsDistanceCulled(seg_t *line)
+// [RS] The distance is measured from the viewpoint THE SCENE IS BEING DRAWN FROM, which the caller
+// passes in (HWDrawInfo::Viewpoint). It used to be r_viewpoint, the camera's own position -- and inside a
+// line portal those are different places: HWLineToLinePortal::Setup moves the scene's viewpoint by the
+// portal's displacement and leaves r_viewpoint alone. A room reached through a linked portal whose two
+// ends are further apart on the map than gl_line_distance_cull was therefore culled whole, however near
+// the eye it was: every wall of it replaced by the cull stand-in (the front sector's ceiling texture from
+// floor to ceiling, HWWall::Process) and given a solid clip range. That is the picture of Realms STUDY1 at
+// (0,345) looking north with roth_portals 1: the corridor 39 units away, set aside 5504 units east.
+bool IsDistanceCulled(seg_t *line, const DVector3 &viewpos)
 {
 	double dist3 = gl_line_distance_cull * gl_line_distance_cull;
 	if (dist3 <= 0.0)
 		return false;
 
-	double dist1 = (line->v1->fPos() - r_viewpoint.Pos).LengthSquared();
-	double dist2 = (line->v2->fPos() - r_viewpoint.Pos).LengthSquared();
+	double dist1 = (line->v1->fPos() - viewpos.XY()).LengthSquared();
+	double dist2 = (line->v2->fPos() - viewpos.XY()).LengthSquared();
 	if ((dist1 > dist3) && (dist2 > dist3))
 		return true;
 	return false;
@@ -631,7 +639,7 @@ void HWDrawInfo::AddLine (seg_t *seg, bool portalclip)
 
 	uint8_t ispoly = uint8_t(seg->sidedef->Flags & WALLF_POLYOBJ);
 
-	if (IsDistanceCulled(seg))
+	if (IsDistanceCulled(seg, Viewpoint.Pos))
 	{
 		if (multithread)
 		{

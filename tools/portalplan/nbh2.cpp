@@ -38,7 +38,7 @@ static std::vector<uint8_t> RF(const char*p){std::vector<uint8_t>o;FILE*f=fopen(
 
 int main(int argc,char**argv)
 {
-	auto d=RF(argv[1]); Map rm=ParseRaw(d.data(),d.size()); if(!rm.ok()){printf("ERR\n");return 1;}
+	auto d=RF(argv[1]); Map rm=ParseRaw(d.data(),d.size()); ApplyLoadTimeHeights(rm); /* as the loader does, before planning */ if(!rm.ok()){printf("ERR\n");return 1;}
 	std::set<int> skip, watch; bool dumpsubs=false, verbose=false, full=false, nopoly=false, portals=false, doorcuts=false;
 	for(int a=2;a<argc;a++){ std::string s=argv[a]; if(s.rfind("skip=",0)==0){const char*c=s.c_str()+5;while(*c){skip.insert(atoi(c));while(*c&&*c!=',')c++;if(*c)c++;}}
 		else if(s.rfind("watch=",0)==0){const char*c=s.c_str()+6;while(*c){watch.insert(atoi(c));while(*c&&*c!=',')c++;if(*c)c++;}} else if(s=="-v")verbose=true; else if(s=="full")full=true; else if(s=="subs")dumpsubs=true; else if(s=="nopoly")nopoly=true; else if(s=="portals")portals=true; else if(s=="doorcuts")doorcuts=true; }
@@ -59,7 +59,7 @@ int main(int argc,char**argv)
 	int nv=realV+platformCount*4+leafCount*8, nl=realL+platformCount*4+leafCount*8, ns=realS+platformCount+leafCount;
 	rothplan::Plan plan; plan.group.assign(realS,0); plan.offX.assign(1,0.); plan.offY.assign(1,0.);
 	if(portals){ std::vector<RothPlanOverlap> ov; std::vector<int> sk(skip.begin(),skip.end()); RothFindPlanOverlaps(rm,sk,ov); std::vector<rothplan::OverlapPair> in; for(auto&p:ov)in.push_back({p.a,p.b,p.area});
-		plan=rothplan::BuildPlan(rm,in,sk,nv,64.,!doorcuts); for(auto&n:plan.notes)printf("PLAN %s\n",n.c_str());
+		plan=rothplan::BuildPlan(rm,in,sk,nv,0.,!doorcuts); for(auto&n:plan.notes)printf("PLAN %s\n",n.c_str());
 		if(plan.active){ for(int g=1;g<plan.numGroups;g++)printf("PLAN group %d offset (%.0f,%.0f)\n",g,plan.offX[g],plan.offY[g]); } }
 	const int xV=nv, xL=nl, xS=ns;   // first extra vertex / line / sector
 	if(plan.active){ nv+=plan.extraVerts.size(); nl+=plan.cuts.size(); }   // one more line per cut; no sectors

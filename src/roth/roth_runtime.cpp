@@ -23,6 +23,8 @@
 //                  a function each. Counted as unimplemented.
 //
 
+#include "maploader/roth_portalplan.h"   // rothplan::SectorAt, for RealmsToEngineXY
+#include "actorinlines.h"                 // AActor::PosRelative
 #include "roth_runtime.h"
 #include "roth_commands.h"
 #include "roth_raw.h"
@@ -1927,8 +1929,21 @@ static uint8_t PlayerObjectBearing(const ObjectRef &r)
 	if (player == nullptr) return 0;
 
 	const Object &o = list[r.index];
-	const double dx = double(o.x) - player->X();
-	const double dy = double(o.y) - player->Y();
+	// o.x, o.y are REALMS coordinates and the player's are the engine's. They
+	// are the same numbers unless the loader set the object's sector aside
+	// (roth_portals): then the object stands at o + shift, and a player in
+	// another region is seen from there through the linked portals, which is
+	// what PosRelative gives.
+	double ox = double(o.x), oy = double(o.y);
+	DVector3 ppos = player->Pos();
+	{
+		double sx = 0., sy = 0.;
+		if (SectorShift(r.sector, sx, sy)) { ox += sx; oy += sy; }
+		if ((unsigned)r.sector < g.level->sectors.Size())
+			ppos = player->PosRelative(&g.level->sectors[r.sector]);
+	}
+	const double dx = ox - ppos.X;
+	const double dy = oy - ppos.Y;
 	if (dx == 0.0 && dy == 0.0) return o.rotation;
 
 	// The inverse of ObjectYaw: that maps a rotation byte to degrees, so a
@@ -2661,6 +2676,59 @@ static bool TickChangeObjectTexture(Effect &e)
 //
 //==========================================================================
 
+// DRAW_FROM_BOTTOM PIECES RIDE THE EDGE THEY ARE PINNED TO.
+//
+// A wall piece with face flag 0x80 has its texture's bottom row on the piece's
+// bottom edge (renderer.c:5057-5063). The loader expresses that as a row
+// offset from the engine's top anchor, texH - pieceHeight * sy (rothmap.cpp,
+// "FF_PIN_BOTTOM"), which is right for the heights the map starts with and
+// goes stale the moment either sector's plane moves. So when a plane moves by
+// `delta`, every such piece whose height it changes takes the opposite change
+// in its offset. Four cases, by which edge of the piece the plane is:
+//
+//   this sector's own UPPER piece  top edge = this ceiling       height += delta
+//   the neighbour's UPPER piece    bottom edge = this ceiling    height -= delta
+//   this sector's own LOWER piece  bottom edge = this floor      height -= delta
+//   the neighbour's LOWER piece    top edge = this floor         height += delta
+//
+// STUDY1's corridor-end painting is the neighbour's-upper case: the picture is
+// sector 56's upper piece over sector 57, and record 9 rolls it up by raising
+// 57's ceiling from 500 to 600. In the original the whole picture slides up
+// into the wall; with the stale offset it stood still and was cut away from
+// the bottom.
+//
+// An image-fit piece (flag 0x04) is one copy tall whatever its height and has
+// no such term (renderer.c:13343); the loader leaves it out and so does this.
+static void RepinWallPieces(int si, bool ceiling, double delta)
+{
+	const Sector &rs = g.map.sectors[si];
+	if (rs.firstFaceIndex < 0) return;
+	for (int k = 0; k < (int)rs.faceCount; k++)
+	{
+		const int fi = rs.firstFaceIndex + k;
+		if (fi < 0 || (size_t)fi >= g.map.faces.size()) continue;
+		const int pair[2] = { fi, g.map.faces[fi].sister };
+		if (pair[1] < 0 || (size_t)pair[1] >= g.map.faces.size()) continue;   // one-sided: one mid piece, no edge of it moves with a neighbour
+		for (int w = 0; w < 2; w++)
+		{
+			const Face &f = g.map.faces[pair[w]];
+			if (f.textureMap < 0 || (size_t)f.textureMap >= g.map.textureMaps.size()) continue;
+			const uint8_t tf = g.map.textureMaps[f.textureMap].flags;
+			if (!(tf & FF_PIN_BOTTOM) || (tf & FF_IMAGE_FIT)) continue;
+			auto it = g.faceToSide.find(pair[w]);
+			if (it == g.faceToSide.end()) continue;
+			if (it->second < 0 || (unsigned)it->second >= g.level->sides.Size()) continue;
+			side_t *sd = &g.level->sides[it->second];
+			const int part = ceiling ? side_t::top : side_t::bottom;
+			if (!sd->GetTexture(part).isValid()) continue;
+			// own piece (w == 0) or the neighbour's piece looking at this sector (w == 1)
+			const double heightChange = ceiling ? (w == 0 ? delta : -delta)
+			                                    : (w == 0 ? -delta : delta);
+			sd->AddTextureYOffset(part, -heightChange * sd->GetTextureYScale(part));
+		}
+	}
+}
+
 static void MoveSectorPlane(int si, bool ceiling, int16_t height)
 {
 	if (g.level == nullptr) return;
@@ -2685,6 +2753,7 @@ static void MoveSectorPlane(int si, bool ceiling, int16_t height)
 	if (ceiling) sec->ceilingplane.setD(newZ);
 	else         sec->floorplane.setD(-newZ);
 	sec->SetPlaneTexZ(which, newZ);
+	RepinWallPieces(si, ceiling, newZ - oldZ);
 	P_ChangeSector(sec, 0, newZ - oldZ, which, false);
 }
 
@@ -3928,6 +3997,35 @@ static bool TickMovingSector(Effect &e)
 //
 //==========================================================================
 
+// The same re-run for 0x07, the tail of its own init handler
+// (tick_apply_geometry_effect falls into rawcmd_tick_rerun, raw_commands.c:
+// 5270 -> :5278). The first half of that handler -- writing the record's first
+// limit into its sectors -- is roth::ApplyLoadTimeHeights (roth_raw.cpp), which
+// the loader runs on the map before it builds anything, so the heights in
+// g.map and in the engine's planes already agree when this runs. Not behind
+// roth_platforms: a 0x07 moves planes, which the engine has always done.
+static void InitChangeHeightAtLoad(Log *log)
+{
+	int records = 0, armed = 0, started = 0;
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		Command *rec = &g.map.commands[i];
+		if (rec->isTrigger || (rec->opcode & 0x7f) != 0x07) continue;
+		records++;
+		if (rec->modifier & 0x08) continue;                    // :5245, before the rerun is reached
+		if (!(rec->modifier & 0x01)) continue;                 // :5280
+		armed++;
+		rec->modifier &= 0xDE;                                 // :5281
+		SyncDisabled(rec);
+		if (rec->modifier & 0x08) continue;                    // :5282
+		if (ChangeHeight(rec, (int)i + 1) == CMD_ACTED) started++;   // :5283-5290
+		rec->modifier |= 0x01;                                 // :5292
+	}
+	if (log != nullptr)
+		log->Line("  change-height    %d 0x07 record(s), %d armed at load, %d started",
+			records, armed, started);
+}
+
 static void InitMovingSectorsAtLoad(Log *log)
 {
 	int armed = 0, started = 0;
@@ -4699,6 +4797,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	}
 
 	InitLightSwitchesAtLoad(log);
+	InitChangeHeightAtLoad(log);
 
 	// roth_platforms. The loader has already described its platform pieces by
 	// the time this runs (rothmap.cpp calls BeginLevel last), so which sectors
@@ -5118,6 +5217,51 @@ void RegisterSectorShift(int rothSector, double dx, double dy)
 {
 	if (rothSector >= 0 && (dx != 0. || dy != 0.))
 		g.sectorShift[rothSector] = std::make_pair(dx, dy);
+}
+
+// A REALMS x,y, as a pose file or the original's own player position gives it,
+// to the engine position of the same spot. Where rooms are stacked the spot
+// names more than one sector, and they may have been set apart; z picks the
+// storey (any height inside the room; rothplan::SectorAt's rule), and without
+// one the sector that was NOT moved wins, which is where the camera stood
+// before there were portals. Returns the Realms sector, or -1 if no sector
+// holds the spot (the position is then returned unchanged).
+int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, double &ey)
+{
+	ex = x; ey = y;
+	int best = -1;
+	if (haveZ)
+	{
+		best = rothplan::SectorAt(g.map, x, y, z);
+	}
+	else
+	{
+		const int nf = (int)g.map.faces.size(), nv = (int)g.map.vertices.size();
+		for (int s = 0; s < (int)g.map.sectors.size(); s++)
+		{
+			const Sector &rs = g.map.sectors[s];
+			if (rs.faceCount < 3 || rs.firstFaceIndex < 0 || rs.firstFaceIndex + rs.faceCount > nf) continue;
+			bool in = false, bad = false;
+			for (int k = 0; k < rs.faceCount; k++)
+			{
+				const Face &f = g.map.faces[rs.firstFaceIndex + k];
+				if (f.vertex1 < 0 || f.vertex2 < 0 || f.vertex1 >= nv || f.vertex2 >= nv) { bad = true; break; }
+				const double ax = g.map.vertices[f.vertex1].x, ay = g.map.vertices[f.vertex1].y;
+				const double bx = g.map.vertices[f.vertex2].x, by = g.map.vertices[f.vertex2].y;
+				if ((ay > y) != (by > y))
+				{
+					const double xi = ax + (y - ay) * (bx - ax) / (by - ay);
+					if (xi > x) in = !in;
+				}
+			}
+			if (bad || !in) continue;
+			const bool moved = g.sectorShift.count(s) != 0;
+			if (best < 0 || (!moved && g.sectorShift.count(best) != 0)) best = s;
+		}
+	}
+	double sx = 0., sy = 0.;
+	if (best >= 0 && SectorShift(best, sx, sy)) { ex += sx; ey += sy; }
+	return best;
 }
 
 bool SectorShift(int rothSector, double &dx, double &dy)

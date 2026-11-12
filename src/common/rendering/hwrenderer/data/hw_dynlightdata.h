@@ -100,6 +100,18 @@ inline void gl_InsertBestLightCandidate(TArray<CandidateT> &candidates, const Ca
 	}
 }
 
+// [RS] Where the light is AS THE CAMERA'S PART OF THE MAP SEES IT. A light in a region joined to the
+// camera's by linked portals is near the camera through the portal, however far apart the two regions
+// were set on the map; measured raw, every light of a room set aside by the Realms loader (roth_portals,
+// thousands of units away) was culled while the player stood at its door. The result is still one answer
+// per light per view, so the cache below is unaffected.
+inline DVector3 gl_LightPosForCull(FDynamicLight *light)
+{
+	if (r_viewpoint.sector != nullptr && light->Sector != nullptr)
+		return light->PosRelative(r_viewpoint.sector->PortalGroup);
+	return light->Pos;
+}
+
 inline bool gl_IsDistanceCulled(FDynamicLight *light)
 {
 	if (!gl_light_distance_cull_cache)
@@ -108,7 +120,7 @@ inline bool gl_IsDistanceCulled(FDynamicLight *light)
 		if (dist3 <= 0.0)
 			return false;
 
-		double dist1 = (light->Pos - r_viewpoint.Pos).LengthSquared();
+		double dist1 = (gl_LightPosForCull(light) - r_viewpoint.Pos).LengthSquared();
 		return dist1 > dist3;
 	}
 
@@ -123,7 +135,7 @@ inline bool gl_IsDistanceCulled(FDynamicLight *light)
 		return false;
 	}
 
-	double dist1 = (light->Pos - r_viewpoint.Pos).LengthSquared();
+	double dist1 = (gl_LightPosForCull(light) - r_viewpoint.Pos).LengthSquared();
 	light->mDistanceCullViewId = gl_dynlight_viewid;
 	light->mDistanceCullResult = dist1 > dist3;
 	return light->mDistanceCullResult;

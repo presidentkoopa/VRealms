@@ -288,6 +288,37 @@ struct Map
 	bool ok() const { return error.empty(); }
 };
 
+// THE HEIGHTS A MAP STARTS WITH ARE NOT ALL IN ITS SECTOR RECORDS.
+//
+// After a map is read the original runs one init handler per command record,
+// chosen by opcode (init_loaded_object_table pass 2, map_load.c:1183-1196; the
+// table is map_load.c:1081-1098). For opcode 0x07, "change height", that
+// handler is tick_apply_geometry_effect (raw_commands.c:5243): unless the
+// record is disabled (modifier & 0x08) it takes the record's first limit --
+// word +0x0a, or +0x0c when modifier & 0x02 -- doubles it, and WRITES it into
+// every sector of the record's group: into the ceiling word when byte +0x06
+// has bit 0x01 (apply_geometry_face_write, raw_commands.c:5080, a bare store
+// at sector +0), into the floor word otherwise (apply_geometry_move_with_
+// player, raw_commands.c:5105). So a mover's sector starts AT ITS LIMIT,
+// whatever height the file stores for it.
+//
+// STUDY1's corridor-end painting is the case that showed it. The picture is
+// the UPPER piece of face 255, between sector 56's ceiling (600) and sector
+// 57's. The file stores 57's ceiling at 598, a 2-unit strip; record 9 (0x07,
+// key 0x0b, limits 250 and 300, ceiling bit) puts it at 500 at load, so the
+// original shows all 100 rows of the picture and hides the niche behind it
+// until the chain that runs record 9 rolls the picture up. Without this pass
+// the port showed the niche (a grey stone box) where the painting hangs.
+//
+// Engine-free and applied to the Map itself, BEFORE anything is built from
+// it, so every consumer -- sector planes, wall pieces and their baked
+// offsets, the portal plan, the runtime's copy -- starts from the same
+// heights. Returns how many sector heights changed. The re-run half of the
+// handler (an ARMED record is dispatched once and re-armed, raw_commands.c:
+// 5278) needs the command interpreter and lives in roth_runtime.cpp.
+struct LoadHeightChange { int sector; bool ceiling; int16_t from, to; int command; };
+int ApplyLoadTimeHeights(Map &map, std::vector<LoadHeightChange> *changes = nullptr);
+
 // Parse a whole .RAW file held in memory.
 void RecentreWrappedMap(Map &map);
 Map ParseRaw(const uint8_t *data, size_t size);

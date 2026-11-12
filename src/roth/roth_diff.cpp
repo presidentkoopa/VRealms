@@ -121,6 +121,9 @@ namespace
 // find gamestate != GS_LEVEL and do nothing. Rather than make every caller
 // stage its own delay (and there is no `wait` command in this build), a dump
 // asked for too early is QUEUED and drained once a level is up.
+// "No height given" for a pose: see PlaceCamera.
+const int NO_POSE_Z = -0x7fffffff;
+
 struct PendingDump
 {
 	int x, y, ang, w, h;
@@ -128,6 +131,7 @@ struct PendingDump
 	bool screenshot;   // a picture for the eye, not an identity buffer
 	int settle;        // frames to let the view settle before shooting
 	int pitch = 0;     // ROTH pitch units, screenshots only
+	int z = NO_POSE_Z; // a height inside the room meant, where rooms are stacked; screenshots only
 };
 TArray<PendingDump> g_pending;
 
@@ -196,7 +200,7 @@ static const int USEWALL_MARKER = -7;
 static const int USEWALL_OP_MARKER = -8;
 
 void DoDump(int px, int py, int pang, int w, int h, const char *path);
-void PlaceCamera(int px, int py, int pang, int pitch = 0);
+void PlaceCamera(int px, int py, int pang, int pitch = 0, int z = NO_POSE_Z);
 void DoSprites(int px, int py, int pang, const char *path);
 } // namespace
 
@@ -508,7 +512,7 @@ void RothDiff_RunPending()
 
 	if (front.screenshot)
 	{
-		PlaceCamera(front.x, front.y, front.ang, front.pitch);
+		PlaceCamera(front.x, front.y, front.ang, front.pitch, front.z);
 		if (front.settle > 0) { front.settle--; return; }
 		// COPY THE WHOLE RECORD, not just the path. `front` is a reference into
 		// g_pending, so after Delete(0) it names the NEXT queued capture --
@@ -775,9 +779,11 @@ CCMD(rothdiff_usewall)
 // numbers do not catch: lighting, framing, mood.
 CCMD(rothdiff_shot)
 {
-	if (argv.argc() != 5 && argv.argc() != 6)
+	if (argv.argc() < 5 || argv.argc() > 7)
 	{
-		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH]\n");
+		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH] [z]\n");
+		Printf("  x y: a REALMS position. Where rooms are stacked, z (any height inside the\n");
+		Printf("  room meant) picks the storey; without it the room that was not set aside.\n");
 		Printf("  pitchROTH: the original's view pitch (+-126, positive looks up); its shear\n");
 		Printf("  of pitch*FY/128 px is a real pitch of atan(pitch/128)\n");
 		return;
@@ -786,7 +792,8 @@ CCMD(rothdiff_shot)
 	d.x = atoi(argv[1]); d.y = atoi(argv[2]); d.ang = atoi(argv[3]);
 	d.w = d.h = 0;
 	d.path = argv[4];
-	d.pitch = argv.argc() == 6 ? atoi(argv[5]) : 0;
+	d.pitch = argv.argc() >= 6 ? atoi(argv[5]) : 0;
+	if (argv.argc() == 7) d.z = atoi(argv[6]);
 	d.screenshot = true;
 	// TWO SECONDS, not two tics. Two was enough for the camera move to take
 	// effect, but the startup console is still down over the view that early
@@ -819,12 +826,27 @@ void StandOnFloor(AActor *cam, int px, int py)
 // Put the camera exactly where it is asked for. Shared so a screenshot and an
 // identity buffer are taken from provably the same place -- the whole value of
 // a side-by-side is that only one thing differs between the two pictures.
-void PlaceCamera(int px, int py, int pang, int pitch)
+//
+// A POSE IS A REALMS POSITION. With roth_portals the loader sets one storey of
+// every stack of rooms aside, somewhere else on the map, so the engine position
+// of a Realms spot is not always the same numbers: roth::RealmsToEngineXY turns
+// one into the other (and is the identity when nothing was moved). Where two
+// rooms share the spot, `z` -- any height inside the room meant -- chooses;
+// with none given the camera goes to the room that stayed where it was.
+DVector2 PoseToEngine(int px, int py, int z)
+{
+	double ex = px, ey = py;
+	roth::RealmsToEngineXY(px, py, z != NO_POSE_Z, z, ex, ey);
+	return DVector2(ex, ey);
+}
+
+void PlaceCamera(int px, int py, int pang, int pitch, int z)
 {
 	AActor *cam = players[consoleplayer].mo;
 	if (cam == nullptr) return;
-	cam->SetOrigin(DVector3(px, py, cam->Z()), true);
-	StandOnFloor(cam, px, py);
+	const DVector2 at = PoseToEngine(px, py, z);
+	cam->SetOrigin(DVector3(at.X, at.Y, cam->Z()), true);
+	cam->SetZ(cam->Sector != nullptr ? cam->Sector->floorplane.ZatPoint(at) : cam->Z());
 	cam->Angles.Yaw = RothAngleToDoom(pang);
 	// Doom pitch is positive looking DOWN.
 	cam->Angles.Pitch = DAngle::fromRad(-atan(pitch / 128.0));
@@ -925,8 +947,11 @@ void DoDump(int px, int py, int pang, int w, int h, const char *path)
 	// PLACE THE CAMERA EXACTLY. A comparison is only meaningful if both engines
 	// are at the same point, so the position is set rather than walked to.
 	const DAngle ang = RothAngleToDoom(pang);
-	cam->SetOrigin(DVector3(px, py, cam->Z()), true);
-	StandOnFloor(cam, px, py);
+	{
+		const DVector2 at = PoseToEngine(px, py, NO_POSE_Z);
+		cam->SetOrigin(DVector3(at.X, at.Y, cam->Z()), true);
+		cam->SetZ(cam->Sector != nullptr ? cam->Sector->floorplane.ZatPoint(at) : cam->Z());
+	}
 	cam->Angles.Yaw = ang;
 
 	// Eye height from the player's own viewheight, not from viewz: viewz is
@@ -939,7 +964,7 @@ void DoDump(int px, int py, int pang, int w, int h, const char *path)
 	// Until that is implemented and tested, a vertical mismatch in a rothdiff
 	// report may be eye height rather than anything about textures.
 	const double eyeZ = cam->Z() + (cam->player ? cam->player->viewheight : cam->Height * 0.75);
-	const DVector3 eye(px, py, eyeZ);
+	const DVector3 eye(cam->X(), cam->Y(), eyeZ);   // the ENGINE position: see PoseToEngine
 
 	// The ray basis. Horizontal half-extent comes from ROTH's focal length;
 	// the vertical follows from the pixel being square, which is why

@@ -11,10 +11,10 @@
 #include "roth_portalplan.h"
 using namespace roth;
 static std::vector<uint8_t> RF(const char*p){std::vector<uint8_t>o;FILE*f=fopen(p,"rb");if(!f)return o;fseek(f,0,SEEK_END);long n=ftell(f);fseek(f,0,SEEK_SET);o.resize(n);if(fread(o.data(),1,n,f)!=(size_t)n)o.clear();fclose(f);return o;}
-int main(int c,char**v){ bool detail=false, doorcuts=false; double minArea=64; std::vector<int> reach;
+int main(int c,char**v){ bool detail=false, doorcuts=false; double minArea=0; std::vector<int> reach;
  for(int a=1;a<c;a++){ std::string path=v[a]; if(path=="-d"){detail=true;continue;} if(path=="doorcuts"){doorcuts=true;continue;} if(path.rfind("min=",0)==0){minArea=atof(path.c_str()+4);continue;}
   if(path.rfind("reach=",0)==0){ reach.clear(); const char*c2=path.c_str()+6; while(*c2){reach.push_back(atoi(c2)); while(*c2&&*c2!=',')c2++; if(*c2)c2++;} continue; }
-  auto d=RF(v[a]); Map m=ParseRaw(d.data(),d.size()); std::string name=path.substr(path.rfind('/')+1); if(!m.ok()){printf("%s ERR\n",name.c_str());continue;}
+  auto d=RF(v[a]); Map m=ParseRaw(d.data(),d.size()); ApplyLoadTimeHeights(m); /* as the loader does, before planning */ std::string name=path.substr(path.rfind('/')+1); if(!m.ok()){printf("%s ERR\n",name.c_str());continue;}
   // reach=F,F,...  (before the map): is face F, with its sister, within the swing of a door leaf?
   for(int fi:reach){ if(fi<0||fi>=(int)m.faces.size())continue; const Face&F=m.faces[fi]; if(F.sister<0||F.sister>=(int)m.faces.size()){printf("%s face %d: no sister\n",name.c_str(),fi);continue;}
     int dr=rothplan::detail::DoorReaching(m,fi,F.sector,m.faces[F.sister].sector);

@@ -229,6 +229,62 @@ inline double PointSegment(double px, double py, double ax, double ay, double bx
 	return sqrt(qx * qx + qy * qy);
 }
 
+// Does the leaf of door sector `ds`, at any angle of its quarter turn about
+// (hx,hy), properly cross face `f`? Sampled every 1.5 degrees; "properly"
+// means an edge of the turned quad crosses the face at an interior point of
+// both, or an end of the face lies strictly inside the quad.
+inline bool LeafCrosses(const roth::Map &rm, const roth::Sector &ds, double hx, double hy,
+	const roth::Face &f)
+{
+	const double ax = rm.vertices[f.vertex1].x, ay = rm.vertices[f.vertex1].y;
+	const double bx = rm.vertices[f.vertex2].x, by = rm.vertices[f.vertex2].y;
+	double qx[4], qy[4];
+	for (int k = 0; k < 4; k++)
+	{
+		const roth::Face &c = rm.faces[ds.firstFaceIndex + k];
+		qx[k] = rm.vertices[c.vertex1].x - hx;
+		qy[k] = rm.vertices[c.vertex1].y - hy;
+	}
+	const double EPS = 1e-6;
+	auto side = [](double px, double py, double qx_, double qy_, double rx, double ry)
+	{
+		return (qx_ - px) * (ry - py) - (qy_ - py) * (rx - px);
+	};
+	for (int step = 0; step <= 60; step++)
+	{
+		const double th = (step * 1.5) * 3.14159265358979323846 / 180.;
+		const double cs = cos(th), sn = sin(th);
+		double px[4], py[4];
+		for (int k = 0; k < 4; k++)
+		{
+			px[k] = hx + qx[k] * cs - qy[k] * sn;
+			py[k] = hy + qx[k] * sn + qy[k] * cs;
+		}
+		for (int k = 0; k < 4; k++)
+		{
+			const int n = (k + 1) & 3;
+			const double d1 = side(ax, ay, bx, by, px[k], py[k]);
+			const double d2 = side(ax, ay, bx, by, px[n], py[n]);
+			const double d3 = side(px[k], py[k], px[n], py[n], ax, ay);
+			const double d4 = side(px[k], py[k], px[n], py[n], bx, by);
+			if (((d1 > EPS && d2 < -EPS) || (d1 < -EPS && d2 > EPS))
+				&& ((d3 > EPS && d4 < -EPS) || (d3 < -EPS && d4 > EPS))) return true;
+		}
+		const double ex[2] = { ax, bx }, ey[2] = { ay, by };
+		for (int e = 0; e < 2; e++)
+		{
+			int pos = 0, neg = 0;
+			for (int k = 0; k < 4; k++)
+			{
+				const double dd = side(px[k], py[k], px[(k + 1) & 3], py[(k + 1) & 3], ex[e], ey[e]);
+				if (dd > 0.01) pos++; else if (dd < -0.01) neg++;
+			}
+			if (pos == 4 || neg == 4) return true;
+		}
+	}
+	return false;
+}
+
 // DOOR REACH. A leaf turns about its hinge (the first vertex of the door
 // sector's hinge face, as the loader builds it), so it can be anywhere in the
 // disc whose radius is the farthest corner of the door sector. A face (between
@@ -261,7 +317,22 @@ inline int DoorReaching(const roth::Map &rm, int face, int sa, int sb)
 			if (r > reach) reach = r;
 		}
 		if (PointSegment(hx, hy, rm.vertices[f.vertex1].x, rm.vertices[f.vertex1].y,
-			rm.vertices[f.vertex2].x, rm.vertices[f.vertex2].y) <= reach + 1.) return d;
+			rm.vertices[f.vertex2].x, rm.vertices[f.vertex2].y) > reach + 1.) continue;
+		// The disc is only the quick test. What decides is the real sweep: the
+		// leaf is the door sector's quad, turned about the hinge through the
+		// quarter turn the port gives it (roth_runtime.cpp SwingDoor:
+		// EV_OpenPolyDoor, +90 degrees, about vertex1 of the hinge face). A
+		// face is reached only if some position of the leaf properly crosses
+		// it; lying along it, or sweeping past in front of it, is not crossing
+		// it. CHURCH1 is the map that needs the difference: the niche of a
+		// wall cupboard (sector 558) pokes four units through the wall into
+		// the nave (sectors 348/359), and the only clean way to separate them
+		// is to set the two nave sectors aside. One of the three faces that
+		// takes (1779) ends at the hinge of the door of sector 586, inside
+		// its disc -- but that leaf turns away from it, into the next room.
+		// IF THE PORT EVER SWINGS A LEAF THE OTHER WAY (the original picks the
+		// sign per use, doors.c:527-533), this must sweep both quarters.
+		if (LeafCrosses(rm, ds, hx, hy, f)) return d;
 	}
 	return -1;
 }
@@ -273,8 +344,8 @@ inline int DoorReaching(const roth::Map &rm, int face, int sa, int sb)
 // BuildPlan
 //
 // extraBase: the engine vertex index the plan's extra vertices will start at.
-// minArea:   overlap pairs smaller than this many square units are slivers
-//            and are left alone (and counted).
+// minArea:   overlap pairs smaller than this many square units are left alone
+//            (and counted). 0, the default and what the loader uses: none are.
 // refuseDoorReach: true -- a face a door leaf can swing across is never cut,
 //            and a stack that needs one is left as it is. false -- such a
 //            face only pays the door penalties, and a cut that lands on one
@@ -283,7 +354,7 @@ inline int DoorReaching(const roth::Map &rm, int face, int sa, int sb)
 //==========================================================================
 
 inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overlaps,
-	const std::vector<int> &skipSectors, int extraBase, double minArea = 64.,
+	const std::vector<int> &skipSectors, int extraBase, double minArea = 0.,
 	bool refuseDoorReach = true)
 {
 	using namespace detail;
@@ -334,26 +405,25 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 	//------------------------------------------------------------------
 	// 1. Layers.
 	//------------------------------------------------------------------
-	// A pair is a SLIVER, and is left alone, when it is tiny outright or when
-	// it is a small bite out of both sectors: a niche whose outline pokes a
-	// few units into the room it opens on (CHURCH1 sector 558 into 348/359)
-	// is an authoring overlap, not a room over a room, and a portal cannot be
-	// stood in a seam four units deep.
-	std::vector<double> planArea((size_t)ns, 0.);
-	for (int s = 0; s < ns; s++)
-	{
-		const Outline &o = outline[s];
-		double a = 0.;
-		for (size_t i = 0; i < o.x1.size(); i++) a += o.x1[i] * o.y2[i] - o.x2[i] * o.y1[i];
-		planArea[s] = fabs(a) / 2.;
-	}
+	// EVERY overlap is separated, however small. An earlier version left a
+	// "sliver" alone (a pair sharing a few units, or a small bite out of both
+	// sectors) on the grounds that a portal could not stand in a seam a few
+	// units deep. That was true of the buffer-room design; a cut face is now a
+	// one-sided line with nothing built behind it, so depth does not come into
+	// it. And the slivers were not harmless: the node builder, forced to split
+	// wherever two sectors share plan, cost CHURCH1 sectors 348, 359 and 558
+	// and SALVAT sector 402 between 168 and 2,820 square units of floor and
+	// ceiling each for overlaps of 16 to 96 (tools/portalplan, nbh2). The
+	// original draws both sectors whole, because it never asks where a sector
+	// lies in plan (ROTH.C renderer.c:7113 walk_visible_sectors, :7319
+	// build_sector_render_tree_recursive). minArea stays as a parameter for
+	// the survey tool; the loader passes 0.
 	std::vector<std::vector<int>> conflict((size_t)ns);
 	int realPairs = 0;
 	for (const OverlapPair &po : overlaps)
 	{
 		if (po.a < 0 || po.b < 0 || po.a >= ns || po.b >= ns || po.a == po.b) continue;
-		const double smaller = planArea[po.a] < planArea[po.b] ? planArea[po.a] : planArea[po.b];
-		if (po.area < minArea || (po.area < 512. && po.area < 0.2 * smaller))
+		if (po.area < minArea)
 		{
 			plan.ignoredSlivers++;
 			say(fmt("sliver left alone: sectors %.0f and %.0f share ~%.0f sq units",
@@ -631,8 +701,8 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 	plan.numGroups = numColours;
 
 	//------------------------------------------------------------------
-	// 4. The translation: a whole number of units, clear of all that has
-	// been placed (and a margin). East of everything if the node builder's
+	// 4. The translation: a whole number of flat periods (GRID below), clear
+	// of all that has been placed (and a margin). East of everything if the node builder's
 	// 16.16 range has room there, else west, else north -- never south, where
 	// the loader parks its door leaves and slab controls.
 	//------------------------------------------------------------------
@@ -659,9 +729,19 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 			if (b.x1 < b.x0) continue;
 			const double pad = MARGIN;
 			double ox = 0., oy = 0.;
-			const double east = ceil((all.x1 + pad - b.x0) / 64.) * 64.;
-			const double west = floor((all.x0 - pad - b.x1) / 64.) * 64.;
-			const double north = ceil((all.y1 + pad - b.y0) / 64.) * 64.;
+			// A WHOLE NUMBER OF FLAT PERIODS (GRID). A Realms flat is anchored
+			// to the world, not to its sector: col = -x / 2^s + shift (mod W),
+			// s = 0..3 (roth_surface.h FlatTexel; ROTH.C renderer.c:3375-3406).
+			// A moved sector keeps its picture where it was only if the move
+			// is a multiple of W * 2^s for every flat in it; 2048 is that for
+			// every power-of-two width up to 256 at every scale. It was 64,
+			// which slid every flat wider than 64 units (STUDY1's 32-texel
+			// ceiling tile at s = 2 is 128 units; 5504 is 43 of those, by
+			// luck, but 8768 in STUDY2 is 68.5).
+			const double GRID = 2048.;
+			const double east = ceil((all.x1 + pad - b.x0) / GRID) * GRID;
+			const double west = floor((all.x0 - pad - b.x1) / GRID) * GRID;
+			const double north = ceil((all.y1 + pad - b.y0) / GRID) * GRID;
 			if (b.x1 + east <= LIMIT) ox = east;
 			else if (b.x0 + west >= -LIMIT) ox = west;
 			else if (b.y1 + north <= LIMIT) oy = north;
