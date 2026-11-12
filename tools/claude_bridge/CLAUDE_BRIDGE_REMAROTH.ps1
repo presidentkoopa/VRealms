@@ -245,6 +245,41 @@ public static class RothDesktop {
 			if ($reports.Count -gt 0) { "--- files written beside the exe this run ---"; ($reports | ForEach-Object { $_.FullName }) -join "`r`n" }
 			return $code
 		}
+		'^oracle$' {
+			# The ORIGINAL engine (ROTH.C, E:\DOOMWork\_oracle) at a list of poses, headless:
+			# no window at all. Lines: -Map <name> | -PoseFile <csv under this repo: name,x,y,angle512>
+			# | -TimeoutSec N. Frames land in logs\oracle\ as <name>.roth.ridb and a .pgm of palette
+			# indices. Uses the repo's own tools\rothdiff\run_oracle.ps1 unchanged.
+			$map = ''; $pf = $null; $timeout = 150
+			foreach ($a in $args_) {
+				if ($a -match '^-Map\s+([A-Za-z0-9_]+)$') { $map = $Matches[1] }
+				elseif ($a -match '^-TimeoutSec\s+(\d+)$') { $timeout = [Math]::Min([int]$Matches[1], 900) }
+				elseif ($a -match '^-PoseFile\s+(.+)$') {
+					$e = $Matches[1]
+					if (-not [IO.Path]::IsPathRooted($e)) { $e = Join-Path $repo $e }
+					if (-not (Under-Repo $e) -or -not (Test-Path -LiteralPath $e)) { "refused or missing pose file: $($Matches[1])"; return 3 }
+					$pf = [IO.Path]::GetFullPath($e)
+				}
+				else { "refused oracle argument: $a"; return 3 }
+			}
+			if (-not $pf) { "oracle needs -PoseFile"; return 3 }
+			$od = Join-Path $logs 'oracle'
+			New-Item -ItemType Directory -Force -Path $od | Out-Null
+			$script = Join-Path $repo 'tools\rothdiff\run_oracle.ps1'
+			$al = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-PoseFile', $pf, '-OutDir', $od, '-TimeoutSec', "$timeout")
+			if ($map) { $al += @('-Map', $map) }
+			$job = Start-Process -FilePath 'powershell.exe' -ArgumentList $al -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $od 'bridge_stdout.txt') -RedirectStandardError (Join-Path $od 'bridge_stderr.txt')
+			if (-not $job.WaitForExit(($timeout + 60) * 1000)) {
+				try { $job.Kill() } catch {}
+				Get-Process -Name rothc -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+				"oracle run did not finish in $($timeout + 60)s: killed"
+			}
+			Get-Content -LiteralPath (Join-Path $od 'bridge_stdout.txt') -ErrorAction SilentlyContinue | Out-String
+			Get-Content -LiteralPath (Join-Path $od 'bridge_stderr.txt') -ErrorAction SilentlyContinue | Select-Object -Last 30 | Out-String
+			"--- files in $od ---"
+			(Get-ChildItem -LiteralPath $od | Sort-Object LastWriteTime | ForEach-Object { "{0,10} {1:HH:mm:ss} {2}" -f $_.Length, $_.LastWriteTime, $_.Name }) -join "`r`n"
+			return 0
+		}
 		'^git$' {
 			if ($args_.Count -lt 1 -or $gitVerbs -notcontains $args_[0]) { "refused git verb: $($args_[0])"; return 3 }
 			foreach ($a in $args_) { if ($badArgs -ccontains $a) { "refused git argument: $a"; return 3 } }
