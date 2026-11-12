@@ -96,3 +96,9 @@ gzdoom-crash.log
 # root. Swept into a commit by a git add -A on 2026-10-02.
 doomxr-log.txt
 perflog.txt
+
+# The REMAROTH Claude bridge's working folders: requests in, responses and logs out.
+tools/claude_bridge/requests/
+tools/claude_bridge/responses/
+tools/claude_bridge/logs/
+tools/claude_bridge/bridge.ini
