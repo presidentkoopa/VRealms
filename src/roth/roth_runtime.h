@@ -34,6 +34,7 @@
 
 #include "textureid.h"
 #include "vectors.h"   // DVector3, for ActivateLine's hit point
+#include "roth_surface.h"   // WallFace, for RegisterWallFace
 
 struct line_t;
 struct sector_t;
@@ -87,6 +88,22 @@ void RegisterFaceSide(int rothFace, int sideIndex);
 // loader registers every index its command records can name, which is a few per
 // map, and the runtime looks up rather than resolving. Call before BeginLevel.
 void RegisterTexture(int rothIndex, FTextureID tex);
+
+// The X-mirrored registration of the same index (TextureSet::World, flipped),
+// for a command that paints it onto a FLIP_X face. See RegisterWallFace.
+void RegisterMirroredTexture(int rothIndex, FTextureID tex);
+
+// THE WALL RULE'S INPUTS for one face's sidedef, as the loader handed them to
+// roth_surface, and per piece (side_t::top / mid / bottom) the picture's shape in
+// the wall's terms and whether the loader drew it from a baked image.
+//
+// A texture swap (0x34, 0x0c) or a shift change (0x0f) then re-runs the SAME rule
+// -- WallPieceRule and WallToEngine, with the record's current slots and shifts and
+// the sectors' current heights -- instead of writing scales and offsets of its own,
+// which is how the loader and the runtime came to disagree before.
+struct WallPieceShape { int dimU = 0, dimV = 0; bool baked = false; };
+void RegisterWallFace(int rothFace, const WallFace &wf, int texelLength,
+	int ownSector, int nbrSector, const WallPieceShape pieces[3]);
 
 // The same, for a FLAT the logic can swap onto a floor or ceiling (0x0a, 0x0b).
 // Separate from RegisterTexture because a flat index can be the pack's SKY

@@ -402,7 +402,7 @@ static FString ColourName(const std::string &pack, int paletteIndex)
 //
 //==========================================================================
 
-FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
+FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped, const BakeMaps *bake)
 {
 	// allFrames: run the delta decoder, so an animated image yields every frame.
 	Image img = mPack->ReadImage(index, true);
@@ -432,6 +432,18 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 
 	FString name = PictureName(mName, index, blend);
 	if (flipped) name += "_X";
+	FString bakeSuffix;
+	if (bake != nullptr)
+	{
+		// The maps ARE the picture, so they are the name: FNV-1a over both.
+		uint32_t hash = 2166136261u;
+		auto mix = [&](uint32_t v) { hash = (hash ^ (v & 0xFF)) * 16777619u; hash = (hash ^ (v >> 8)) * 16777619u; };
+		mix((uint32_t)bake->cols); mix((uint32_t)bake->rows);
+		for (int i = 0; i < bake->cols; i++) mix(bake->colMap[i]);
+		for (int i = 0; i < bake->rows; i++) mix(bake->rowMap[i]);
+		bakeSuffix.Format("_B%dx%d_%08x", bake->cols, bake->rows, hash);
+		name += bakeSuffix;
+	}
 	FTextureID existing = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
 	if (existing.isValid()) return existing;
 
@@ -447,8 +459,11 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 
 	// The quarter turn: exchange the dimensions and hand the stored bytes over
 	// as column-major. See the file comment.
-	const int w = img.height;
-	const int h = img.width;
+	const int srcW = img.height;
+	const int srcH = img.width;
+	// A baked image has the size of its maps; everything else keeps the picture's.
+	const int w = bake != nullptr ? bake->cols : srcW;
+	const int h = bake != nullptr ? bake->rows : srcH;
 
 	// bMasked: true wherever a texel can be a hole or a blend, which is what
 	// makes the image source report itself as possibly translucent.
@@ -477,22 +492,50 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 		return out;
 	};
 
+	// BAKED: pick the source column and row for every baked texel. Both buffers
+	// are column-major (x * height + y). A source index of 0xFFFF, or one past
+	// the picture, is left as palette index 0: the original reads whatever
+	// follows the image in memory there, which no rule can reproduce, and no
+	// retail wall piece does it (tools/wallrule counts them).
+	auto bakePixels = [&](const std::vector<uint8_t> &src) -> std::vector<uint8_t>
+	{
+		std::vector<uint8_t> out((size_t)w * (size_t)h, 0);
+		for (int x = 0; x < w; x++)
+		{
+			const int sx = bake->colMap[x];
+			for (int y = 0; y < h; y++)
+			{
+				const int sy = bake->rowMap[y];
+				const size_t from = (size_t)sx * (size_t)srcH + (size_t)sy;
+				if (sx < srcW && sy < srcH && from < src.size())
+					out[(size_t)x * (size_t)h + (size_t)y] = src[from];
+			}
+		}
+		return out;
+	};
+
 	auto addFrame = [&](const std::vector<uint8_t> &pixelsIn, const char *texName) -> FTextureID
 	{
-		std::vector<uint8_t> pixels = flipped ? mirrorColumns(pixelsIn) : pixelsIn;
+		std::vector<uint8_t> pixels = pixelsIn;
 		FRemapTable *useRemap = remap;
 		bool useHoles = hasHoles;
 
 		// PATTERN MODE: the picture is replaced by its own coordinates, so an
-		// ordinary screenshot IS the texel buffer. See PatternPixels.
+		// ordinary screenshot IS the texel buffer. See PatternPixels. The
+		// coordinates are the PICTURE's, so the mirror and the bake below move
+		// them exactly as they move the art, and the shot still reads back the
+		// texel that was sampled.
 		if (roth_pattern > 0)
 		{
-			pixels = PatternPixels(w, h, index, roth_pattern);
+			pixels = PatternPixels(srcW, srcH, index, roth_pattern);
 			useRemap = GPalette.GetTranslation(TRANSLATION_Standard, GreyTranslation());
 			// Every texel has to survive to the screen. A hole would drop the
 			// very value being measured and a blend would alter it.
 			useHoles = false;
 		}
+
+		if (bake != nullptr) pixels = bakePixels(pixels);
+		else if (flipped) pixels = mirrorColumns(pixels);
 
 		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), useRemap, w, h, true, useHoles);
 		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
@@ -513,6 +556,7 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped)
 		{
 			FString fn = FrameName(mName, index, f, blend);
 			if (flipped) fn += "_X";
+			fn += bakeSuffix;
 			addFrame(img.frames[f], fn.GetChars());
 			mRegistered++;
 		}
@@ -603,6 +647,20 @@ FTextureID TextureSet::World(int index, Log *log, bool masked, bool flipped)
 
 	memo[index] = id;
 	return id;
+}
+
+FTextureID TextureSet::WorldBaked(int index, Log *log, bool masked,
+	const uint16_t *colMap, int cols, const uint16_t *rowMap, int rows)
+{
+	if (!mPack || colMap == nullptr || rowMap == nullptr || cols <= 0 || rows <= 0)
+		return FNullTextureID();
+	// Only a picture can be baked. A solid colour has no columns to choose
+	// between, so the ordinary registration is already exact.
+	if (index < 0 || index >= (int)TEX_PICTURE_LIMIT) return World(index, log, masked, false);
+	// No memo of its own: Build names the image after its maps and asks the
+	// texture manager first, which is the authority World() defers to as well.
+	const BakeMaps maps = { colMap, cols, rowMap, rows };
+	return Build(index, log, masked, false, &maps);
 }
 
 } // namespace roth

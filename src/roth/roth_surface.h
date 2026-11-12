@@ -179,6 +179,144 @@ FlatEngineSetup FlatToEngine(const FlatSetup &s);
 Texel EngineTexel(const FlatEngineSetup &e, uint16_t texW, uint16_t texH,
 	int32_t worldX, int32_t worldY);
 
+
+// ---------------------------------------------------------------------------
+// Walls.
+//
+// A face draws up to three PIECES: on a face with no neighbour, the whole
+// sector height (the "mid"); on a face with a neighbour, an upper piece (own
+// ceiling down to the neighbour's), a lower piece (the neighbour's floor down
+// to own floor) and, when the texture map has TRANSPARENT, a see-through mid
+// piece in the opening. All of it is ROTH.C renderer.c, visible pass:
+//
+//   9271-9279   per face: flags = map +8; an extended record (fit word bit 15)
+//               gives start = 2*shiftX, row shift = shiftY, extent = word & 0xfff
+//   7383-7390, 7484, 9280   EVERY face with a neighbour goes to
+//               draw_world_face_clipped_spans
+//   8767-8793   there: the upper and lower are built with flags & 0xfa
+//               (TRANSPARENT and IMAGE_FIT cleared) whenever the mid overlay
+//               follows -- the face is TRANSPARENT, or the neighbour has a
+//               mid-platform the face shows the edge of -- and with the stored
+//               flags otherwise
+//   8658-8697   upper: own ceiling .. max(neighbour ceiling, own floor);
+//               lower: min(neighbour floor, own ceiling) .. own floor;
+//               each anchored at its OWN top (wrap_reoffset+0xa)
+//   8171-8215, 8727-8742   see-through mid: min(ceilings) .. max(floors), cut
+//               by the own sector's override byte under map flag 0x08
+//   8270-8277   draw flag 0x100 is set exactly when IMAGE_FIT is clear
+//   13334-13340 0x100: extents are the span's own -- the stored extent across,
+//               the piece height down -- both doubled by HALF_PIXEL, in HALF
+//               texels; the column mask stays dim-1 unless the run fits a copy
+//   13342-13349 else (fit): shifts zeroed, extents 2*dim: one copy each way
+//   4733-4737   column = ((a + start) >> 1); FLIP_X: ~column + dim; & mask
+//   5050-5069   start row = shiftY; DRAW_FROM_BOTTOM: ((2*dim - extent) >> 1)
+//               - shiftY, masked if negative; the WRAPPING column mapper (row &
+//               (dim-1) on every pixel, 1929-1935) is chosen when the piece
+//               runs past the image's last row
+//
+// "dimU" is the image's texel count ALONG the wall (stored height, block +0xe)
+// and "dimV" the count DOWN it (stored row length, block +0xc).
+//
+// The masks are ANDs with dim-1. On a power of two that is a repeat. On
+// anything else the COLUMN mask is a fixed scramble of the image's own columns,
+// which WallTexel returns as the original draws it; the ROW mask is not a
+// function of the row at all (see WrapRow in roth_surface.cpp) and is
+// returned as a repeat.
+// ---------------------------------------------------------------------------
+enum WallTier { WALL_UPPER = 0, WALL_MID = 1, WALL_LOWER = 2 };   // side_t::top / mid / bottom
+
+struct WallFace
+{
+	uint8_t flags = 0;          // texture map +8 (FF_*)
+	bool    extended = false;   // fit word bit 15
+	int     extent = 0;         // the stored extent: fit word, or its low 12 bits when extended
+	int     shiftX = 0, shiftY = 0;   // extended records only; 0 otherwise
+	double  length = 0;         // the face's measured length
+	bool    twoSided = false;
+	int     ownFloor = 0, ownCeil = 0, nbrFloor = 0, nbrCeil = 0;
+	int     ownOverride = 0;    // own sector +0x0c, signed
+	bool    overlayFollows = false;   // WallOverlayFollows()
+};
+
+// renderer.c:8767 and 8781-8790 with project_wall_face_span_extents (8585-8621).
+// nbrPlat*/ownPlat*: the neighbour's / own sector's mid-platform underside and top
+// (pass has = false where there is none).
+bool WallOverlayFollows(uint8_t flags, bool midIsColourKey, int ownFloor, int ownCeil,
+	bool nbrHasPlat, int nbrPlatUnder, int nbrPlatTop,
+	bool ownHasPlat, int ownPlatUnder, int ownPlatTop);
+
+struct WallPiece
+{
+	bool drawn = false;
+	int  top = 0, bot = 0;      // what is drawn, world z
+	int  anchor = 0;            // rows count down from here (the piece's own top)
+	int  span = 0;              // the height ROTH.C lays the vertical extent over
+	bool fit = false, mirror = false;
+	double u0 = 0, su = 0;      // column = floor(u0 + su * distanceFromVertex1), then mirror, then mask
+	bool uMasked = false;
+	double v0 = 0, sv = 0;      // row = floor(v0 + sv * (anchor - z)), then mask
+	bool vMasked = false;
+	int  cols = 0;              // texels laid across the face
+};
+
+WallPiece WallPieceRule(const WallFace &f, WallTier tier, int dimU, int dimV);
+
+// The texel ROTH.C samples d units along the face from its first vertex at
+// height z. ok is false where the piece draws nothing or the original reads
+// outside the image.
+Texel WallTexel(const WallPiece &p, int dimU, int dimV, double d, double z);
+
+// ---------------------------------------------------------------------------
+// The engine encoding of a wall piece.
+//
+// The engine (hw_walls.cpp SetWallCoordinates / DoTexture / DoMidTexture,
+// gametexture.cpp GetFromTexture) samples
+//
+//     column = offsetX/|xScale| ... (xOffset + TexelLength * xScale * d / length) mod dimU
+//     row    = yOffset + yScale * (reference - z)                             mod dimV
+//
+// where `reference` is the front ceiling for a one-sided wall and an upper
+// piece (ML_DONTPEGTOP), the REAL back floor for a lower piece -- even where
+// that is above the front ceiling and the piece starts lower -- and
+// min(ceilings) for a two-sided mid piece, of which it draws ONE copy clipped
+// to the opening.
+//
+// Two things the engine cannot do with scales and offsets, and what is done
+// instead:
+//
+//   * A NEGATIVE xScale is not a mirror here. With the offset at 0 the run is
+//     0 .. -1, which hw_walls.cpp:1585 takes for "inside one copy" and clamps:
+//     the whole piece becomes one smeared column. FLIP_X therefore asks for
+//     the X-mirrored registration of the image (`mirrored`) and keeps the
+//     scale positive -- which is also what the original does: it mirrors
+//     inside the image's own columns (4735).
+//   * The non-power-of-two column mask, and a see-through mid piece that has
+//     to tile, stop short of its image or start part-way down it. Those ask for a
+//     BAKED registration: an image made of exactly the columns and rows the
+//     original draws, in order (`baked`, colMap / rowMap from WallBakeMaps),
+//     laid down once.
+// ---------------------------------------------------------------------------
+struct WallEngineSetup
+{
+	bool   drawn = false;
+	double xScale = 1, yScale = 1, xOffset = 0, yOffset = 0;
+	bool   mirrored = false;
+	bool   baked = false;
+	bool   bakeU = false, bakeV = false;
+};
+
+// side_t::TexelLength for the face's side: the stored extent, which is the
+// number of half texels ROTH.C lays across the face. -1: leave the engine's.
+int WallTexelLength(const WallFace &f);
+
+WallEngineSetup WallToEngine(const WallFace &f, WallTier tier, const WallPiece &p,
+	int dimU, int dimV, int texelLength);
+
+// The baked image: entry i of colMap / rowMap is the source column / row for
+// baked column / row i, or 0xFFFF for "outside the image".
+void WallBakeMaps(const WallPiece &p, const WallEngineSetup &e, int dimU, int dimV,
+	uint16_t *colMap, int &cols, uint16_t *rowMap, int &rows, int maxEntries);
+
 } // namespace roth
 
 #endif // ROTH_SURFACE_H

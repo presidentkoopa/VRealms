@@ -296,31 +296,14 @@ void RothFindPlanOverlaps(const roth::Map &rm, const std::vector<int> &skipSecto
 //
 //==========================================================================
 
-//==========================================================================
-//
-// The sidedef scale that puts EXACTLY one copy of a texture across `span`
-// world units -- what FF_IMAGE_FIT asks for (renderer.c:13342-13349).
-//
-// texels / span is the right number and the engine cannot use it. It turns a
-// sidedef scale into an INTEGER render size with a ceil
-// (FTexCoordInfo::GetFromTexture, gametexture.cpp:554 and :568), and measures
-// a wall by its ROUNDED length (FinishLoadingLineDef, maploader.cpp:1563). One
-// copy means those two integers are equal. On a diagonal 181.02 long they were
-// 182 and 181, so the picture stopped 1/182 short of its far edge; on DOPPLE's
-// 6-unit slivers it lost a seventh of itself. Down a piece the same ceil could
-// add a row whenever texels / span rounded the wrong way as a float.
-//
-// So the quotient is aimed HALF A UNIT inside the integer wanted and the ceil
-// lands it: texels / (n - 0.5) gives ceil(n - 0.5) = n, with a margin no float
-// rounding can cross. A mirrored face has a NEGATIVE scale and ceil rounds
-// that toward zero, so it is aimed half a unit the other way.
-//
-//==========================================================================
-
+// One copy of a picture across a span, for DOOR LEAVES only (the wall loop now
+// goes through roth_surface's WallToEngine and does not use this). The engine
+// measures the span rounded to whole units, and the last texel must not wrap.
+// Seen on screen 2026-11-12 against the original's frames (doors tag 1, 3, 5).
 static double OneCopyScale(double texels, double span, bool mirrored)
 {
-	const double whole = floor(span + 0.5);      // what the engine will measure
-	if (whole < 1.) return texels / span;        // degenerate; nothing to land on
+	const double whole = floor(span + 0.5);
+	if (whole < 1.) return texels / span;
 	return texels / (whole + (mirrored ? 0.5 : -0.5));
 }
 
@@ -1498,15 +1481,19 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	int storedExtentUnusable = 0;// no usable stored extent; fell back to 0.5
 	int storedExtentScaled = 0;  // faces scaled by the stored extent (the real rule)
 	int imageFitFaces = 0;       // FF_IMAGE_FIT faces
-	int imageFitVerticalUnhandled = 0; // PIECES, not faces: up to 3 per side
-	int flippedFaces = 0;        // FF_FLIP_X, approximated by a negative scale
+	int flippedFaces = 0;        // FF_FLIP_X: drawn from the X-mirrored registration of the image
 	int shiftedFaces = 0;        // a non-zero shiftX/shiftY was applied
 	int edgeMapFaces = 0;        // FF_EDGE_MAP: the outdoor backdrop seen through windows
 	int keyWallPieces = 0;       // on the colour key: the original draws nothing there
 	int transUpLoFaces = 0;      // FF_TRANS_UPLO with no band (not transparent, or override 0)
 	int transUpLoBanded = 0;     // mid pieces cut to the TEXTURE_MAP_OVERRIDE band
-	int transUpLoInexact = 0;    // ...whose single copy cannot match the original's wrap
 	int extentBitsAbove12 = 0;   // see the note where this is reported
+	struct WallShape { int w = 0, h = 0; bool ok = false; };
+	std::map<int, WallShape> wallShape;   // stored index -> the picture's stored shape
+	int bakedWallPieces = 0;     // pieces drawn from a baked image (roth_surface WallToEngine)
+	int bakeTooLarge = 0;        // ...that would have needed one larger than 4096 texels a side
+	int fittedPieces = 0;        // pieces laid down as exactly one copy
+	int fitClearedPieces = 0;    // upper/lower pieces of a fitted face the original draws unfitted
 	int doorMidToLeaf = 0;       // doorway mid pieces handed over to a door leaf
 
 	unsigned sideIndex = 0;
@@ -1618,357 +1605,204 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			}
 
 			//--------------------------------------------------------------
-			// SCALE. Realms addresses wall art in HALF-texels: two world units
-			// per texture pixel, where Doom uses one -- so the base scale is
-			// 0.5 on both axes. FF_HALF_PIXEL drops that to one unit per texel.
+			// WHERE EVERY TEXEL OF THIS FACE GOES is decided in ONE place,
+			// roth_surface (WallPieceRule: what ROTH.C samples; WallToEngine:
+			// the engine values that sample the same), and nothing here
+			// computes a scale, an offset, a flip or an anchor of its own.
+			// roth_surface.h cites the renderer.c lines for each rule; this
+			// block only collects what the rule needs to know about the face
+			// and pushes the answer into the sidedef. tools/wallrule runs the
+			// same two functions over all 44 maps against an independent
+			// transcription of ROTH.C, piece by piece and join by join, and
+			// tools/oracle confirms the rule against the original's own
+			// pixels.
 			//
-			// Horizontally the scale is the SAME FIXED 0.5, not derived from the
-			// face at all. The original's u is `accumulator >> 1` (renderer.c:4734)
-			// masked by the texture dimension minus one (13289 sets the mask to
-			// texDim - 1; 4356/4437/4734 apply it), and THE WALL'S LENGTH NEVER
-			// APPEARS IN THAT PATH. The stored extent says where the coordinate
-			// WRAPS, not how far the art is stretched.
-			//
-			// This used to divide the stored extent by the wall length, which
-			// gave every face its own stretch -- so at a corner, two faces
-			// sharing a texture stopped continuing each other's pattern. That is
-			// what a seam is. The masked wrap is also why the ORIGINAL cannot
-			// have seams: a coordinate can only land inside the texture, so a
-			// partial tile is structurally impossible.
-			//
-			// FF_IMAGE_FIT (renderer.c:8272, 13342-13359) takes the OTHER branch
-			// entirely: the extents become 2 * texture_dimension, i.e. exactly
-			// one copy, the shifts are zeroed, and FF_HALF_PIXEL is never read.
-			// So half-pixel does not apply to a fitted face.
+			// What used to be here and was wrong (tools/wallrule, HEAD column):
+			//   * FF_FLIP_X as a NEGATIVE horizontal scale. With the offset at
+			//     0 the engine takes the run 0..-1 for "inside one copy" and
+			//     clamps it (hw_walls.cpp SetWallCoordinates), so the piece is
+			//     one smeared column: 2,777 pieces. The mirror now lives in the
+			//     image (TextureSet::World, flipped), as it does in the
+			//     original (renderer.c:4735).
+			//   * FF_IMAGE_FIT stretched over the UPPER and LOWER pieces of a
+			//     see-through face. The original builds those two with the
+			//     flag cleared (renderer.c:8773, 8785): 429 pieces.
+			//   * a lower piece under a neighbour floor ABOVE this ceiling was
+			//     anchored at that floor; the original anchors it at the
+			//     piece's own top (renderer.c:8682-8685).
+			//   * a see-through mid piece was one clipped copy whatever the
+			//     original did: no tiling, rows the band should hide, a start
+			//     row beyond the image. 1,717 pieces.
+			//   * the shifts of an extended record were dropped from every
+			//     piece of a fitted face, including the unfitted ones.
+			//   * a 12-bit stored extent was "restored" from the wall's length
+			//     on two RAQUIA4 faces. ROTH.C reads 12 bits (renderer.c:9276)
+			//     and draws what they say.
 			//--------------------------------------------------------------
 			const bool imageFit = (tf & roth::FF_IMAGE_FIT) != 0;
-			const double unitsPerTexel = (!imageFit && (tf & roth::FF_HALF_PIXEL)) ? 1. : 2.;
-			const double baseScale = 1. / unitsPerTexel;
-
-			double scaleX = baseScale;
-			double stored = double(tm->StoredExtent());
-			// The extended record keeps only 12 bits of the extent. Across all 44
-			// maps every visible wall's stored extent equals its length modulo
-			// that field (oracle survey, 2026-10-01): RAQUIA4 has two 6080- and
-			// 6144-long walls stored as 1984 and 2048. Restore the lost high bits
-			// rather than drawing those walls three times too wide.
-			if (tm->extended && stored > 0. && wallLen > 4096.)
-				stored += 4096. * floor((wallLen - stored) / 4096. + 0.5);
-			if (imageFit)
-			{
-				imageFitFaces++;
-			}
-			else
-			{
-				// THE STORED EXTENT *IS* THE HORIZONTAL SCALE. Measured, not
-				// argued: an instrumented ROTH.C run over STUDY1 logged every
-				// wall span's draw flags, and bit 0x100 -- the one that selects
-				// the unscaled path -- was CLEAR on all of them:
-				//
-				//     stored-extent path   0 spans
-				//     computed-extent path 34 spans
-				//
-				// So every wall takes the computed path, where renderer.c:13347
-				// builds extent_out = 2 * storedRowLength and renderer.c:4943
-				// applies it:
-				//
-				//     u = alongWall * extent_out / hfit
-				//
-				// i.e. the stored extent divides the coordinate. Texels across
-				// the face = hfit / 2, so
-				//
-				//     unitsPerTexel = 2 * faceLength / hfit
-				//
-				// The comment that used to be here claimed the opposite -- that
-				// the extent was only a wrap and the scale was a fixed 0.5. That
-				// held for the common case ONLY because most faces have
-				// hfit == storedRowLength, which collapses the ratio to 2. The
-				// probe found one setup with hfit = 16 against a width of 8,
-				// where the true density is 1 world unit per texel and the fixed
-				// rule draws it at half size -- and that setup was the most drawn
-				// of the sample, 16 spans of 34.
-				//
-				// HALF_PIXEL still halves it (renderer.c:13336 doubles the
-				// along-wall coordinate itself).
-				if (stored > 0. && wallLen > 0.)
-				{
-					// THE EXTENT GOES INTO TexelLength, NOT INTO THE SCALE.
-					//
-					// ROTH.C runs the horizontal coordinate from 0 to hfit
-					// HALF-texels across the face, whatever its length
-					// (renderer.c:13335-13339: the extent is span record
-					// +0x26 = hfit, doubled by HALF_PIXEL), adds 2*shiftX
-					// (9274, 5113) and halves the sum (4733-4734):
-					//
-					//     texel(d) = shiftX + (hfit / 2) * d / faceLength
-					//
-					// The engine's is (hw_walls.cpp:1378-1381, 1490-1491)
-					//
-					//     texel(d) = offset + TexelLength * xscale * d / lineLength
-					//
-					// which is the SAME formula with TexelLength = hfit and
-					// xscale = 1/2 (1 under HALF_PIXEL), and both of those
-					// the engine holds exactly.
-					//
-					// This used to fold the extent into the scale instead:
-					// xscale = hfit / (2 * length). On a diagonal face hfit
-					// is the length rounded UP (181.02 -> 182), so the scale
-					// came out a hair off 0.5, and the engine cannot hold
-					// that: it turns the scale into an INTEGER render width
-					// with a ceil (gametexture.cpp:554, 128.01 -> 129) and
-					// measures the wall by its ROUNDED length
-					// (maploader.cpp:1563, 181). Both errors land at the
-					// face's far end, which is where the next face picks the
-					// pattern up: up to 0.7 texel in STUDY1 and 2.6 in DOPPLE
-					// (tools/wallseams).
-					scaleX = baseScale;
-					wantTexelLength[makingSide] = (int)min(stored, 65535.);
-					storedExtentScaled++;
-				}
-				else
-				{
-					// No usable extent: fall back to the old fixed density
-					// rather than divide by zero, and count it so a map full of
-					// these is visible rather than silent.
-					storedExtentUnusable++;
-				}
-
-				// Faces where the extent is NOT simply the wall's length are the
-				// ones the old fixed rule drew at the wrong size, so they are
-				// worth a number of their own.
-				if (stored > 0. && wallLen > 0. && fabs(stored - wallLen) > 1.)
-					storedExtentDeviates++;
-			}
-
-			//--------------------------------------------------------------
-			// SHIFTS exist only on an extended record, and FF_IMAGE_FIT zeroes
-			// them (renderer.c:13343). Both are texel counts, which is what
-			// Doom's sidedef offsets are too, so they carry across unchanged.
-			//
-			// shiftY's SIGN depends on the anchor: by default the piece is top
-			// anchored and shiftY moves the art DOWN (renderer.c:5050), but
-			// under FF_PIN_BOTTOM the piece is bottom anchored and shiftY is
-			// SUBTRACTED instead (renderer.c:5061).
-			//--------------------------------------------------------------
-			double offX = 0., offY = 0.;
-			if (tm->extended && !imageFit)
-			{
-				offX = double(tm->shiftX);
-				offY = double(tm->shiftY);
-				if (tf & roth::FF_PIN_BOTTOM) offY = -offY;
-				if (offX != 0. || offY != 0.) shiftedFaces++;
-			}
-
-			// The height of each piece, so FF_IMAGE_FIT can put exactly one copy
-			// down it. Doom resolves these at draw time, but WE ALREADY KNOW
-			// BOTH SECTORS here -- we built them -- so every piece's extent is
-			// computable at load and none of them has to be given up on.
-			//
-			// This used to bail on any two-sided wall, which left 903 of
-			// STUDY1's pieces silently taking the default scale. That is most of
-			// the level, and it is why some walls lined up and others did not:
-			// the ones that happened to be one-sided were right.
 			const sector_t *ownSec = &Level->sectors[face.sector];
-			const double ownFloor = ownSec->GetPlaneTexZ(sector_t::floor);
-			const double ownCeil  = ownSec->GetPlaneTexZ(sector_t::ceiling);
-			double nbrFloor = 0., nbrCeil = 0.;
 			const bool haveNbr = twoSided && neighbourSector >= 0
 				&& neighbourSector < (int)rm.sectors.size();
+
+			roth::WallFace wf;
+			wf.flags = tf;
+			wf.extended = tm->extended;
+			wf.extent = (int)tm->StoredExtent();
+			wf.shiftX = tm->extended ? (int)tm->shiftX : 0;
+			wf.shiftY = tm->extended ? (int)tm->shiftY : 0;
+			wf.length = wallLen;
+			wf.twoSided = haveNbr;
+			wf.ownFloor = (int)floor(ownSec->GetPlaneTexZ(sector_t::floor) + 0.5);
+			wf.ownCeil  = (int)floor(ownSec->GetPlaneTexZ(sector_t::ceiling) + 0.5);
+			wf.ownOverride = (face.sector >= 0 && face.sector < (int)rm.sectors.size())
+				? (int)rm.sectors[face.sector].textureMapOverride : 0;
 			if (haveNbr)
 			{
 				const sector_t *ns = &Level->sectors[neighbourSector];
-				nbrFloor = ns->GetPlaneTexZ(sector_t::floor);
-				nbrCeil  = ns->GetPlaneTexZ(sector_t::ceiling);
-			}
-			// Which piece is which, in Doom's terms:
-			//   upper  = my ceiling down to the neighbour's
-			//   lower  = the neighbour's floor down to mine
-			//   mid    = the opening between them (the whole sector if solid)
-			//--------------------------------------------------------------
-			// FF_TRANS_UPLO: THE MID PIECE IS A BAND, NOT THE WHOLE OPENING.
-			//
-			// compute_face_span_extents (renderer.c:8171) builds a transparent
-			// mid piece from the opening -- top = min(ceilings), bottom =
-			// max(floors) of the face's own sector (face +6) and its sister's --
-			// and then, when the texture map has flag 0x08 AND the face's OWN
-			// sector's TEXTURE_MAP_OVERRIDE (sector +0x0c, signed) is non-zero,
-			// cuts it to a band 4 * |override| world units tall
-			// (renderer.c:8196-8207):
-			//
-			//   override > 0   bottom = top - 4*override     (hung from the top)
-			//   override < 0   top    = bottom + 4*|override| (stood on the floor)
-			//
-			// The texture is anchored at the band's top (0x852be feeds
-			// wrap_reoffset+0x0a). This is how furniture draws its low panels:
-			// STUDY1's chair (sectors 421-427, override -10) has a 40-unit band
-			// at floor level on its back and arm faces. Ignoring it hung the
-			// chair-back art from the CEILING, top-anchored in an opening 384
-			// units tall, and stretched the FF_IMAGE_FIT arm faces over the
-			// whole height -- the purple slab and brown posts over the desk.
-			//--------------------------------------------------------------
-			const double openTop = haveNbr ? min(ownCeil, nbrCeil) : ownCeil;
-			const double openBot = haveNbr ? max(ownFloor, nbrFloor) : ownFloor;
-			double bandTop = openTop, bandBot = openBot;
-			bool banded = false;
-			if (twoSided && (tf & roth::FF_TRANSPARENT) && (tf & roth::FF_TRANS_UPLO)
-				&& face.sector >= 0 && face.sector < (int)rm.sectors.size())
-			{
-				const int tmo = (int)rm.sectors[face.sector].textureMapOverride;
-				if (tmo > 0)      { bandBot = openTop - 4. * tmo; banded = true; }
-				else if (tmo < 0) { bandTop = openBot - 4. * tmo; banded = true; }
+				wf.nbrFloor = (int)floor(ns->GetPlaneTexZ(sector_t::floor) + 0.5);
+				wf.nbrCeil  = (int)floor(ns->GetPlaneTexZ(sector_t::ceiling) + 0.5);
+				// Does the mid overlay follow the upper and lower? (That is what
+				// clears IMAGE_FIT on them.) The platform slabs are the map's.
+				auto platOf = [&](int si, int &under, int &top) -> bool
+				{
+					under = top = 0;
+					if (si < 0 || si >= (int)rm.sectors.size()) return false;
+					const int pi = rm.sectors[si].platformIndex;
+					if (pi < 0 || pi >= (int)rm.platforms.size()) return false;
+					under = rm.platforms[pi].undersideZ; top = rm.platforms[pi].topZ;
+					return true;
+				};
+				int nu, nt, ou, ot;
+				const bool nh = platOf(neighbourSector, nu, nt);
+				const bool oh = platOf(face.sector, ou, ot);
+				wf.overlayFollows = roth::WallOverlayFollows(tf,
+					haveArt && art.IsSkySurface(tm->midTexture),
+					wf.ownFloor, wf.ownCeil, nh, nu, nt, oh, ou, ot);
 			}
 
-			auto heightOf = [&](int part) -> double
-			{
-				if (!haveNbr) return ownCeil - ownFloor;
-				if (part == side_t::top)    return ownCeil - nbrCeil;
-				if (part == side_t::bottom) return nbrFloor - ownFloor;
-				return bandTop - bandBot;
-			};
+			// The side's TexelLength: the stored extent is the number of half
+			// texels ROTH.C lays across the face (renderer.c:9276-9279, 13335).
+			// Applied after FinishLoadingLineDef, which overwrites the field.
+			const int ruleTexelLength = roth::WallTexelLength(wf);
+			wantTexelLength[makingSide] = ruleTexelLength;
+			const int sideTexelLength = ruleTexelLength >= 0 ? ruleTexelLength : (int)(wallLen + 0.5f);
 
+			if (imageFit) imageFitFaces++;
+			else if (wf.extent > 0) storedExtentScaled++;
+			else storedExtentUnusable++;
+			if (!imageFit && wf.extent > 0 && fabs(double(wf.extent) - wallLen) > 1.) storedExtentDeviates++;
+			if (wf.shiftX != 0 || wf.shiftY != 0) shiftedFaces++;
+			if (tf & roth::FF_FLIP_X) flippedFaces++;
+			const bool banded = haveNbr && (tf & roth::FF_TRANSPARENT) && (tf & roth::FF_TRANS_UPLO)
+				&& wf.ownOverride != 0;
+
+			roth::WallPieceShape pieceShape[3];   // for RegisterWallFace
 			auto setPart = [&](int part, int storedIndex, bool masked)
 			{
 				// THE COLOUR KEY MEANS DRAW NOTHING, on a wall as on a flat.
 				//
-				// renderer.c:9222-9225 is a THREE-way test, and this port had
-				// it as two: a negative index is a solid palette colour, an
-				// index equal to the pack's key draws NO PIXELS AT ALL, and
-				// anything else is textured. The key is a real painted entry in
-				// every pack -- DEMO's is an opaque 256x146 picture -- so
-				// handing it to World() returns that artwork and we paint a
-				// wall across an opening the original leaves open.
-				//
-				// Measured over all 44 maps: of 59,273 wall pieces that are
-				// present, 1,778 sit on the key, and 1,325 of those are MID
-				// pieces -- the ones on two-sided lines, where drawing anything
-				// at all turns a doorway into a barrier.
-				//
-				// IsSkySurface is this exact test (index == SkyMarkerIndex);
-				// the name is from when the key was thought to mean sky.
+				// renderer.c:9222-9225 is a THREE-way test: a negative index is
+				// a solid palette colour, an index equal to the pack's key
+				// draws NO PIXELS AT ALL, and anything else is textured. The
+				// key is a real painted entry in every pack -- DEMO's is an
+				// opaque 256x146 picture -- so handing it to World() returns
+				// that artwork and paints a wall across an opening the original
+				// leaves open. IsSkySurface is this exact test (index ==
+				// SkyMarkerIndex); the name is from when the key was thought to
+				// mean sky.
 				if (haveArt && art.IsSkySurface(storedIndex))
 				{
 					keyWallPieces++;
 					return false;
 				}
+				if (!haveArt) return false;
 
-				FTextureID tex = worldTex(storedIndex, masked);
-				if (!tex.isValid()) return false;   // nothing to draw here
-
-				double sx = scaleX, sy = baseScale;
-				if (imageFit)
+				// The picture's shape, in the wall's terms: its stored HEIGHT
+				// runs along the wall, its stored row length down it
+				// (renderer.c:13288-13289).
+				int storedW = 0, storedH = 0;
+				bool picture = false;
+				if (storedIndex >= 0 && storedIndex < (int)roth::TEX_PICTURE_LIMIT)
 				{
-					// One copy across the piece: Doom covers texDim/scale world
-					// units with one copy, so scale = texDim / pieceExtent.
-					auto *gt = TexMan.GetGameTexture(tex, false);
-					double texW = gt ? gt->GetDisplayWidth() : 0.;
-					double texH = gt ? gt->GetDisplayHeight() : 0.;
-					//
-					// EXACTLY one (renderer.c:13342-13349: both extents are
-					// twice the texture's own dimension, and the shifts are
-					// zeroed). See OneCopyScale for why this is not simply
-					// texW / wallLen.
-					if (texW > 0. && wallLen > 0.)
-						sx = OneCopyScale(texW, wallLen, (tf & roth::FF_FLIP_X) != 0);
-					const double pieceHeight = heightOf(part);
-					if (texH > 0. && pieceHeight > 0.)
-						sy = OneCopyScale(texH, pieceHeight, false);
-					// ONLY COUNT A PIECE THAT IS ACTUALLY DRAWN. This used to
-					// count every case where the fit could not be computed,
-					// which included every zero-height step -- and the upper and
-					// lower are attempted unconditionally on every two-sided
-					// wall, so a wall whose ceilings simply match scored one.
-					// That reported 572 "not expressible" fits in STUDY1 alone,
-					// all of them pieces Doom draws nothing for. A counter whose
-					// number is dominated by non-events is worse than no counter,
-					// because it reads as a backlog.
-					else if (pieceHeight > 0.) imageFitVerticalUnhandled++;
-				}
-				// FF_FLIP_X mirrors the art, which Doom expresses as a negative
-				// horizontal scale. NOT EXACTLY THE SAME THING: ROTH.C mirrors
-				// inside the texture's own texel range (renderer.c:4735 computes
-				// H - u - 1) AFTER the shift is added, so where a piece is wider
-				// than one copy of the art, or carries a shiftX, the two differ.
-				// A negative scale is the closest Doom has.
-				if (tf & roth::FF_FLIP_X) { sx = -sx; flippedFaces++; }
-
-				//------------------------------------------------------------
-				// DRAW_FROM_BOTTOM, as an EXPLICIT OFFSET rather than a peg flag.
-				//
-				// Realms anchors each wall piece to a coordinate it computes --
-				// the visible pass writes it into wrap_reoff[0x0a]:
-				//
-				//   upper piece   = clip_top, the sector's own ceiling  R:8664
-				//   lower piece   = the piece's own top edge, i.e. the
-				//                   top of the step                     R:8685
-				//
-				// Doom's DEFAULT bottom-part anchor is already the top of the
-				// step, so a lower piece needs NO flag at all. Setting
-				// ML_DONTPEGBOTTOM there -- which is what FF_PIN_BOTTOM used to
-				// do -- re-anchors it to the ceiling and misplaces every one.
-				//
-				// FF_PIN_BOTTOM (DRAW_FROM_BOTTOM) is a different rule entirely:
-				// the texture's BOTTOM sits on the piece's bottom edge
-				// (renderer.c:5057-5063). Where the piece is taller than the
-				// art that is a downward shift of (pieceHeight - texHeight),
-				// expressed in the texel units Doom's offsets use.
-				//------------------------------------------------------------
-				double pieceOffY = offY;
-				if (tf & roth::FF_PIN_BOTTOM)
-				{
-					auto *gt = TexMan.GetGameTexture(tex, false);
-					const double texH = gt ? gt->GetDisplayHeight() : 0.;
-					const double pieceHeight = heightOf(part);
-					if (texH > 0. && pieceHeight > 0.)
+					// ImageShape decodes the image, and a map asks for the same
+					// few hundred pictures thousands of times.
+					auto known = wallShape.find(storedIndex);
+					if (known == wallShape.end())
 					{
-						// sy is texels-per-world-unit for this part, so the
-						// piece is pieceHeight * sy texels tall.
-						//
-						// MEASURED (oracle, SALVAT face 14208, 100% of 248k
-						// pixels): texel = W - (z - bottom)/2 - shiftY, i.e. the
-						// art's bottom row on the piece's bottom edge. In Doom
-						// terms, from the top anchor, that is a row offset of
-						// +(texH - pieceHeight*sy). This line used to have the
-						// sign the other way round, which misplaced every
-						// DRAW_FROM_BOTTOM wall whose height is not a whole
-						// number of copies (483 faces, mostly SALVAT/DOMINION).
-						//
-						// A fitted piece is exactly one copy tall, so the term
-						// is zero there (renderer.c:5057-5063 with the extent
-						// 2*W and the shift zeroed at 13343). It must not be
-						// computed from sy, which OneCopyScale aims half a
-						// unit short.
-						if (!imageFit) pieceOffY += texH - pieceHeight * sy;
-						pinBottomFaces++;
+						WallShape ws; bool translucent = false;
+						ws.ok = art.ImageShape(storedIndex, ws.w, ws.h, translucent);
+						known = wallShape.emplace(storedIndex, ws).first;
+					}
+					picture = known->second.ok;
+					storedW = known->second.w; storedH = known->second.h;
+				}
+				const int dimU = storedH, dimV = storedW;
+
+				roth::WallPiece wp;
+				roth::WallEngineSetup we;
+				if (picture)
+				{
+					wp = roth::WallPieceRule(wf, (roth::WallTier)part, dimU, dimV);
+					we = roth::WallToEngine(wf, (roth::WallTier)part, wp, dimU, dimV, sideTexelLength);
+				}
+
+				FTextureID tex;
+				if (we.drawn && we.baked)
+				{
+					// An image of exactly the columns and rows the original
+					// draws on this piece, in order. See WallToEngine.
+					static uint16_t colMap[4096], rowMap[4096];
+					int cols = 0, rows = 0;
+					roth::WallBakeMaps(wp, we, dimU, dimV, colMap, cols, rowMap, rows, 4096);
+					if (cols > 0 && rows > 0)
+					{
+						tex = art.WorldBaked(storedIndex, &log, masked, colMap, cols, rowMap, rows);
+						bakedWallPieces++;
+					}
+					else
+					{
+						// Too large to bake (no retail piece is): the plain
+						// image, tiled by the engine. Counted, not hidden.
+						if (we.bakeV) we.yOffset += wp.v0;   // the start row the bake would have held
+						we.baked = we.bakeU = we.bakeV = false;
+						we.mirrored = wp.mirror;
+						we.xOffset = wp.u0;
+						bakeTooLarge++;
 					}
 				}
+				if (!tex.isValid())
+					tex = art.World(storedIndex, &log, masked, picture && (tf & roth::FF_FLIP_X) != 0);
+				if (!tex.isValid()) return false;   // nothing to draw here
 
-				// A banded mid piece: Doom anchors a two-sided mid texture's top
-				// at min(ceilings) + rowoffset/scale (hw_walls.cpp DoMidTexture),
-				// so move it down to the band's top. pieceOffY so far is the
-				// texel row wanted AT the band top.
-				if (part == side_t::mid && banded)
+				double sx, sy, ox, oy;
+				if (we.drawn)
 				{
-					pieceOffY += (bandTop - openTop) * sy;
-					transUpLoBanded++;
-					auto *gt = TexMan.GetGameTexture(tex, false);
-					const double texH = gt ? gt->GetDisplayHeight() : 0.;
-					// One copy is drawn. The original wraps inside the band, so a
-					// band taller than the art loses its repeats, and a ceiling-
-					// hung band shorter than the art spills below it (Doom only
-					// clips a mid piece to the opening). Counted, not hidden.
-					// (A fitted band is one copy by construction, and its sy is
-					// aimed half a unit short -- see OneCopyScale -- so it is
-					// exempt from this count rather than tripping it.)
-					if (!imageFit && sy > 0. && texH > 0. && fabs(texH / sy - (bandTop - bandBot)) > 0.5
-						&& !(bandBot <= openBot && texH / sy > bandTop - bandBot))
-						transUpLoInexact++;
+					sx = we.xScale; sy = we.yScale; ox = we.xOffset; oy = we.yOffset;
+					if (wp.fit) fittedPieces++;
+					else if (imageFit) fitClearedPieces++;
+					if ((tf & roth::FF_PIN_BOTTOM) && !wp.fit) pinBottomFaces++;
+					if (part == side_t::mid && banded) transUpLoBanded++;
+				}
+				else
+				{
+					// A piece with no height at load (the two sectors meet), or
+					// a solid colour. Nothing is drawn now; if a moving sector
+					// opens the piece later it starts from the unfitted rule's
+					// plain terms. (ROTH.C re-derives every piece from the live
+					// heights each frame; this loader does it once. See the
+					// wallrule report, "what remains".)
+					sx = sy = (tf & roth::FF_HALF_PIXEL) ? 1. : 0.5;
+					ox = wf.shiftX; oy = wf.shiftY;
 				}
 
+				pieceShape[part].dimU = picture ? dimU : 0;
+				pieceShape[part].dimV = picture ? dimV : 0;
+				pieceShape[part].baked = we.drawn && we.baked;
 				sd->SetTexture(part, tex);
 				sd->SetTextureXScale(part, sx);
 				sd->SetTextureYScale(part, sy);
-				sd->SetTextureXOffset(part, offX);
-				sd->SetTextureYOffset(part, pieceOffY);
+				sd->SetTextureXOffset(part, ox);
+				sd->SetTextureYOffset(part, oy);
 				return true;
 			};
 
@@ -1980,6 +1814,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				if (setPart(side_t::top, tm->upperTexture, false)) hasUpper = true;
 				setPart(side_t::bottom, tm->lowerTexture, false);
 			}
+			// The same inputs, for the runtime's texture swaps and scrolls, which
+			// re-run this rule rather than keeping a copy of it (ReapplyWallFace).
+			roth::RegisterWallFace((int)(&face - &rm.faces[0]), wf, sideTexelLength,
+				face.sector, haveNbr ? neighbourSector : -1, pieceShape);
 
 			//--------------------------------------------------------------
 			// ANCHORING. Realms hangs a wall piece's art from the TOP of that
@@ -2145,10 +1983,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		FinishLoadingLineDef(ld, 255);
 
 		// FinishLoadingLineDef has just set TexelLength to the rounded line
-		// length. Where the face has a stored extent, THAT is the number of
-		// half-texels ROTH.C lays across it (renderer.c:9276-9279, 13335), so
-		// it replaces the length. The two are equal on every axis-aligned wall
-		// and differ by under one unit on a diagonal.
+		// length. roth_surface's WallTexelLength replaces it with the stored
+		// extent -- the number of half-texels ROTH.C lays across the face
+		// (renderer.c:9276-9279, 13335) -- and every scale makeSide set was
+		// computed against that number.
 		for (int s = 0; s < 2; s++)
 			if (ld->sidedef[s] != nullptr && wantTexelLength[s] >= 0)
 				ld->sidedef[s]->TexelLength = (uint16_t)wantTexelLength[s];
@@ -3355,25 +3193,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.Section("Texturing");
 	log.Line("  registered images     %d  (%d animated, %d solid colour)",
 		art.Registered(), art.Animated(), art.SolidColours());
-	log.Line("  wall horizontal scale %d face(s) scaled by the stored extent, %d unusable",
+	log.Line("  wall horizontal extent %d unfitted face(s) carry a stored extent, %d carry none"
+		" (one column repeated, as the original draws it)",
 		storedExtentScaled, storedExtentUnusable);
-	log.Line("    of those, %d have an extent that differs from the wall's length"
-		" -- the faces the old fixed 0.5 drew at the wrong size", storedExtentDeviates);
-	log.Line("  image fit             %d faces; %d PIECES got no vertical fit",
-		imageFitFaces, imageFitVerticalUnhandled);
-	log.Line("  x-flipped             %d pieces", flippedFaces);
+	log.Line("    of those, %d have an extent that differs from the wall's length", storedExtentDeviates);
+	log.Line("  image fit             %d faces: %d pieces fitted, %d upper/lower pieces left"
+		" unfitted (the original clears the flag on them)",
+		imageFitFaces, fittedPieces, fitClearedPieces);
+	log.Line("  x-flipped             %d faces (mirrored image, positive scale)", flippedFaces);
+	log.Line("  baked wall images     %d pieces (non-power-of-two masks, see-through bands)", bakedWallPieces);
+	log.Count("walls: piece too large to bake -- drawn from the plain image", bakeTooLarge);
 	log.Line("  shifts applied        %d faces", shiftedFaces);
 	log.Line("  records the Python's 15-bit extent would have misread  %d",
 		extentBitsAbove12);
 	log.Line("  door mid pieces handed to a swinging leaf  %d", doorMidToLeaf);
 	log.Count("walls: no texture-map record", noTextureMap);
 	log.Count("walls: mid texture wanted but absent", midMissing);
-	log.Count("walls: FF_IMAGE_FIT vertical fit not expressible", imageFitVerticalUnhandled);
 	log.Count("walls: FF_EDGE_MAP faces -- sky above the wall top not modelled", edgeMapFaces);
 	log.Count("walls: pieces on the colour key -- left undrawn, as the original does", keyWallPieces);
 	log.Line("  FF_TRANS_UPLO mid pieces banded  %d", transUpLoBanded);
 	log.Count("walls: FF_TRANS_UPLO faces with no band (opaque or override 0)", transUpLoFaces);
-	log.Count("walls: FF_TRANS_UPLO band not exact (art shorter, or spills below)", transUpLoInexact);
 	log.Count("artwork: images that failed to decode", art.Failed());
 	log.Count("artwork: stored indices out of every known range", art.OutOfRange());
 
@@ -3489,12 +3328,21 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			return iw == 256 && ih == 256 && !trans;
 		};
 
+		// A swapped-in picture on a FLIP_X face is drawn from the X-mirrored
+		// registration (roth_surface WallToEngine), which only a picture has.
+		auto registerMirrored = [&](int index)
+		{
+			if (!haveArt || index < 0 || index >= (int)roth::TEX_PICTURE_LIMIT || art.IsSkySurface(index)) return;
+			roth::RegisterMirroredTexture(index, art.World(index, &log, false, true));
+		};
+
 		for (const roth::Command &c : rm.commands)
 		{
 			if ((c.opcode & 0x7f) != 0x34) continue;
 			FTextureID tex = worldTex((int)c.aux);
 			if (!tex.isValid()) continue;
 			roth::RegisterTexture((int)c.aux, tex);
+			registerMirrored((int)c.aux);
 			registered++;
 		}
 
@@ -3514,6 +3362,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				FTextureID t = worldTex(slots[k]);
 				if (!t.isValid()) continue;
 				roth::RegisterTexture(slots[k], t);
+				registerMirrored(slots[k]);
 				advSlots++;
 			}
 		}

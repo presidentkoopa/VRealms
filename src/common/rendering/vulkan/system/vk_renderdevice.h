@@ -73,6 +73,7 @@ struct VkTexLoadOut
 	bool needsQueueOwnershipTransfer = false;
 	int uploadQueueFamily = -1;
 	std::shared_ptr<VkCompressedPixels> compressed;	// [DDS] stored levels a load-only worker read; UploadLoadedTextures uploads them
+	FTexture* source = nullptr;	// [RS] whose pixels these are, for the zero-size fatal error's text
 };
 
 struct VkModelLoadIn
