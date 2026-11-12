@@ -56,6 +56,8 @@
 #include "d_event.h"
 #include "d_main.h"
 #include "roth/roth_palshade.h"
+#include "roth/roth_runtime.h"   // DefaultStartMap
+bool P_RothInstallOpen();          // p_openmap.cpp
 #include "d_net.h"
 #include "d_netinf.h"
 #include "decallib.h"
@@ -4710,6 +4712,19 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 			{
 				if (gameaction != ga_loadgame && gameaction != ga_loadgamehidecon)
 				{
+					// Realms of the Haunting starts a game at once, in the map
+					// ROTH.RES lists first (game_core.c:1062-1068), rather than
+					// at a console. roth::DefaultStartMap answers only for the
+					// Realms IWAD with an install it can open.
+					if (!autostart && !netgame && P_RothInstallOpen())
+					{
+						std::string rothStart;
+						if (roth::DefaultStartMap(rothStart))
+						{
+							startmap = rothStart.c_str();
+							autostart = true;
+						}
+					}
 					if (autostart || netgame)
 					{
 						// Do not do any screenwipes when autostarting a game.

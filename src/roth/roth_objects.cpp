@@ -1267,6 +1267,27 @@ double ObjectActorYaw(const AActor *mo, uint8_t rotation)
 	return deg;
 }
 
+void RebindObjectActors(FLevelLocals *Level)
+{
+	gObjectActors.clear();
+	gActorObjects.clear();
+	if (Level == nullptr) return;
+	PClassActor *cls = PropClass();
+	if (cls == nullptr) return;
+	auto it = Level->GetThinkerIterator<AActor>();
+	AActor *mo;
+	int found = 0;
+	while ((mo = it.Next()) != nullptr)
+	{
+		if (mo->GetClass() != cls || mo->special2 == 0) continue;
+		const uint32_t key = (uint32_t)(mo->special2 - 1);
+		gObjectActors[key] = mo;
+		gActorObjects[mo] = key;
+		found++;
+	}
+	if (found > 0) Printf("Realms: %d props found again after a restore\n", found);
+}
+
 void SpawnPreparedObjects(FLevelLocals *Level)
 {
 	gObjectActors.clear();
@@ -1302,6 +1323,9 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 			// And the reverse, for anything starting from the world: a ray that
 			// hits this prop, or a hand that closes on it. See ObjectForActor.
 			gActorObjects[mo] = ObjectKey(p.rothSector, p.rothIndex);
+		// And on the actor itself, so it survives a hub snapshot or a save
+		// (RebindObjectActors). +1 so that 0 stays "not a Realms prop".
+		mo->special2 = (int)ObjectKey(p.rothSector, p.rothIndex) + 1;
 		}
 
 		// After the spawn, not before: the spawn state sets the sprite, and

@@ -78,6 +78,16 @@ public:
 	int Remove(uint16_t id);                                             // remove_item, RAW 0x2a
 	void SetFilter(int mode);                                            // set_inventory_list_filter, RAW 0x42
 
+	// For the game flow (roth_gameflow): the sink the inventory's own calls
+	// leave through, so a restore or a boot reaches weapons and the panel the
+	// way a give does.
+	InventorySink *ItemSink() { return &mInvBridge; }
+	// activate_weapon_item(0, 0): back to fists (game_core.c:832, 962).
+	void UnequipWeapon();
+	// activate_weapon_item(weapon hand): what a load does once the slots and
+	// the hands are back (savegame.c:1489-1493).
+	void ReactivateWeapon();
+
 private:
 	// The interpreter's calls: inventory and RNG are answered here, the rest
 	// goes to the host.

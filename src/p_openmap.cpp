@@ -73,6 +73,18 @@ CUSTOM_CVAR(String, roth_path, "", CVAR_ARCHIVE | CVAR_NOINITCALL)
 			(int)roth::TheInstall().MapNames().size());
 }
 
+static bool P_IsRothMap(const char *mapname, MapData *map);
+
+// Open the Realms install from -rothpath or roth_path, as the first map
+// lookup would, and say whether it is open. For the start map, which has to
+// be known before any map is looked up (d_main.cpp).
+bool P_RothInstallOpen()
+{
+	MapData probe;
+	P_IsRothMap("", &probe);
+	return roth::TheInstall().IsOpen();
+}
+
 // True when this map name belongs to the install. Returns false for every
 // ordinary map, so the usual lump lookup is left completely untouched.
 static bool P_IsRothMap(const char *mapname, MapData *map)

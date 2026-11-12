@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 #include <vector>      // SidesWithOpcode
+#include <string>      // DefaultStartMap
 
 #include "textureid.h"
 #include "vectors.h"   // DVector3, for ActivateLine's hit point
@@ -40,6 +41,7 @@ class AActor;
 struct FLevelLocals;
 struct FTraceResults;   // UseFlatAt / Pick -- by reference only, no layout needed
 class  player_t;        // declared as a class in d_player.h:348
+class  FSerializer;     // SerializeRealmsGlobals
 
 namespace roth
 {
@@ -332,5 +334,21 @@ void TickLevelLogic(FLevelLocals *level);
 
 // Wipe the persistent progress flags. A new game, not a level change.
 void ResetProgressFlags();
+
+// ---- game flow (roth_gameflow.h holds the rules) -------------------------
+
+// The map a new game starts in: the first entry of ROTH.RES's `maps {` list
+// (game_core.c:1062-1068), STUDY1 in the retail game. False when this is not
+// the Realms game or its install is not open.
+bool DefaultStartMap(std::string &out);
+
+// The engine has just rebuilt a level from a hub snapshot or a savegame.
+// Called at the end of FLevelLocals::Serialize when reading.
+void LevelRestored(FLevelLocals *level);
+
+// The Realms state a savegame carries beside the level: flags, inventory,
+// health, music, the movie gallery, and every visited map's logic. Called
+// beside P_WriteACSVars / P_ReadACSVars.
+void SerializeRealmsGlobals(FSerializer &arc);
 
 } // namespace roth

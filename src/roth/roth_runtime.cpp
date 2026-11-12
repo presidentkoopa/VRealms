@@ -33,6 +33,7 @@
 #include "roth_dbase100.h"
 #include "roth_gamecore.h"
 #include "roth_itemcmds.h"    // 0x27/0x29/0x2a/0x2b/0x42, shared with tools/gameproof
+#include "roth_gameflow.h"     // new game, travel, per-map state, saves, death
 #include "roth_install.h"
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 
@@ -61,6 +62,8 @@
 #include "c_cvars.h"
 #include "v_font.h"
 #include "sbar.h"          // C_MidPrint, for the stopgap dialogue line
+#include "serializer.h"    // SerializeRealmsGlobals
+#include "gi.h"            // gameinfo.ConfigName, for the start map
 
 // Declared in p_map.cpp at GLOBAL scope, next to the use path it reports on.
 // It cannot live in namespace roth beside roth_trigger_debug, because p_map.cpp
@@ -145,7 +148,7 @@ int32_t HostRunObjectCommandsById(uint16_t id);
 CVAR(Bool, roth_dialogue_onscreen, true, 0)
 CVAR(Bool, roth_newgame_on_start, true, 0)
 
-class CoreHost : public Dbase100Sink
+class CoreHost : public FlowInterpSink   // movies, images, health: the game flow (roth_gameflow.h)
 {
 public:
 	std::vector<uint8_t> text;              // DBASE400.DAT, whole
@@ -220,8 +223,6 @@ public:
 	uint32_t Dbase100OpenDialogueWindowAlt(const uint8_t *t, uint32_t bytes) override
 	{ calls["dialogue window (line)"]++; if (t != nullptr) Say("[Realms]", t, bytes); return 0; }
 
-	uint32_t PlayRecordGdvCutscene(int index) override { (void)index; calls["cutscene (GDV)"]++; return 0; }
-	uint32_t ShowFullscreenImage(uint32_t operand) override { (void)operand; calls["fullscreen image"]++; return 0; }
 	// play_sound_effect (audio.c:758). The id is a sample row: an action
 	// record carries one directly, and an item record's key was rewritten to
 	// one when the bank was loaded (resolve_dbase100_sound_ids, audio.c:1898).
@@ -235,12 +236,46 @@ public:
 	uint8_t MusicMasterVolume() override { return 0x7f; }
 	int32_t ResetCommandChainNoSource(uint16_t index) override { return HostResetCommandChainNoSource(index); }
 	int32_t RunObjectCommandsById(uint16_t id) override { return HostRunObjectCommandsById(id); }
-	void AdvanceClamp8a0f0(uint32_t amount, uint32_t max) override { (void)amount; (void)max; calls["health change"]++; }
-	void ZeroHealthAndFlagDeath() override { calls["death"]++; }
 };
 
 GameCore g_core;
 CoreHost g_coreHost;
+
+// What the flow asks of the engine. There is NO GDV decoder in this tree
+// (src/common/cutscenes plays ANM, MVE, SMK and VPX only), so a movie is
+// announced, counted, and every state change around it happens exactly as if
+// it had played: the flow does the gallery stamp, the mode save and restore
+// and the overlay latch itself (roth_gameflow.cpp, PlayRecordGdvCutscene).
+// The full-screen still (op 0x0e) has no viewer either. Both are counted in
+// the core host's `calls`, so a missing picture is a number, not silence.
+class FlowEngineHost : public FlowHost
+{
+public:
+	void PlayMovie(const char *name, uint32_t subOffset, int32_t subSize) override
+	{
+		g_coreHost.calls["cutscene (GDV) not shown: no GDV decoder"]++;
+		Printf("Realms: movie %s.GDV (subtitles %d bytes at DBASE400 +0x%x) -- not shown, no GDV player yet\n",
+			name, (int)subSize, subOffset);
+	}
+	void ShowImage(uint32_t id) override
+	{
+		g_coreHost.calls["fullscreen image not shown"]++;
+		Printf("Realms: full-screen image DBASE200 +0x%x -- not shown, no viewer yet\n", id);
+	}
+};
+
+GameFlow g_flow;
+FlowEngineHost g_flowHost;
+// Every map left this session, by name: the port's <MAP>.TMP for the command
+// records and their queues (map_load.c:694-807). The world half -- planes,
+// light, textures, doors, props -- is the engine's own hub snapshot (the
+// cluster is a hub in vrealms_iwad/MAPINFO). Cleared by a new game, as
+// delete_temp_files clears the .TMP files (game_core.c:449).
+std::map<std::string, MapLogicState> g_mapStates;
+// A death restarted the game: the next level runs the new-game block.
+bool g_flowNewGamePending = false;
+// The map ROTH.RES lists first (game_core.c:1062-1063); a death returns here.
+std::string g_flowDefaultMap;
 // g@0x8a26c: set by the first 0x2b of a chain, cleared by the chain's tail
 // (raw_commands.c:4701-4704, 1313-1314).
 bool g_dialogueLatch = false;
@@ -668,6 +703,13 @@ Runtime g;
 // the player is leaving and applied in the one they arrive in.
 std::string g_warpArrivalMapName;
 int g_warpArrivalSector = -1;
+// Also carried: how far above its floor the player stood (the original keeps
+// that, map_load.c:518-520 and 627-631), and for an arrival key of 0, where
+// it stood in REALMS coordinates, which it keeps outright (no relocation
+// runs, map_load.c:661).
+double g_warpAboveFloor = 0.;
+bool g_warpCarryXY = false;
+double g_warpCarryX = 0., g_warpCarryY = 0., g_warpCarryZ = 0.;
 
 // Opcodes that watch for the player USING a wall, and for ENTERING a sector.
 // From the original's load-time registration table (map_load.c:1089-1097) and
@@ -4574,7 +4616,7 @@ bool SectorCentre(int rothSector, double &outX, double &outY)
 	return true;
 }
 
-void RelocateToArrival(int rothSector)
+void RelocateToArrival(int rothSector, double aboveFloor = 0.)
 {
 	if (g.level == nullptr) return;
 	double x = 0., y = 0.;
@@ -4582,7 +4624,9 @@ void RelocateToArrival(int rothSector)
 	if (rothSector >= (int)g.level->sectors.Size()) return;
 
 	sector_t *dest = &g.level->sectors[rothSector];
-	const double z = dest->floorplane.ZatPoint(x, y);
+	// The player keeps its height above the floor: new z = old z - (old floor
+	// - new floor), ml_relocate_found (map_load.c:518-520).
+	const double z = dest->floorplane.ZatPoint(x, y) + aboveFloor;
 
 	for (int i = 0; i < MAXPLAYERS; i++)
 	{
@@ -4596,10 +4640,32 @@ void RelocateToArrival(int rothSector)
 
 void ConsumeArrival()
 {
+	if (g_warpCarryXY)
+	{
+		// Arrival key 0: process_map_warp_or_load runs no relocation
+		// (map_load.c:661), so the player keeps x, y and height in REALMS
+		// coordinates. The engine's own spot for it can differ per map where
+		// rooms are stacked (roth_portals), hence the conversion both ways.
+		g_warpCarryXY = false;
+		double ex = 0., ey = 0.;
+		if (g.level != nullptr && RealmsToEngineXY(g_warpCarryX, g_warpCarryY, true, g_warpCarryZ, ex, ey) >= 0)
+		{
+			for (int i = 0; i < MAXPLAYERS; i++)
+			{
+				if (!g.level->PlayerInGame(i)) continue;
+				AActor *mo = g.level->Players[i]->mo;
+				if (mo == nullptr) continue;
+				P_TeleportMove(mo, DVector3(ex, ey, g_warpCarryZ), true);
+				mo->Vel.Zero();
+			}
+		}
+		else TheLog().Count("logic: 0x3b key-0 arrival, the carried position is in no sector of this map");
+	}
 	if (g.pendingArrivalSector < 0) return;
 	const int sec = g.pendingArrivalSector;
 	g.pendingArrivalSector = -1;
-	RelocateToArrival(sec);
+	RelocateToArrival(sec, g_warpAboveFloor);
+	g_warpAboveFloor = 0.;
 }
 
 //==========================================================================
@@ -4612,33 +4678,84 @@ void ConsumeArrival()
 //
 //==========================================================================
 
+// The first player's pawn: what the original's single player is.
+AActor *FlowPawn()
+{
+	if (g.level == nullptr) return nullptr;
+	for (int i = 0; i < MAXPLAYERS; i++)
+		if (g.level->PlayerInGame(i) && g.level->Players[i]->mo != nullptr) return g.level->Players[i]->mo;
+	return nullptr;
+}
+
+void CaptureMapLogic(MapLogicState &out);
+
 void ApplyPendingWarp()
 {
 	if (!g.warpPending) return;
 	g.warpPending = false;
 	if (g.level == nullptr) return;
 
-	// Same map -> relocate in place, no reload.
-	if (g.warpMap.empty() || stricmp(g.warpMap.c_str(), g.level->MapName.GetChars()) == 0)
+	// What the latch asks for, decided exactly as process_map_warp_or_load
+	// and the frame tail decide it (roth_gameflow.h, ClassifyWarp).
+	WarpRequest req;
+	for (size_t i = 0; i < 8 && i < g.warpMap.size(); i++) req.name[i] = g.warpMap[i];
+	req.key = g.warpArrival;
+	const WarpKind kind = ClassifyWarp(req, g.level->MapName.GetChars());
+
+	AActor *pawn = FlowPawn();
+	double aboveFloor = 0.;
+	int ownSector = -1;
+	if (pawn != nullptr && pawn->Sector != nullptr)
 	{
-		const int arrival = g.warpArrival != 0 ? FindSectorByCommandID(g.warpArrival) : -1;
-		if (arrival >= 0) RelocateToArrival(arrival);
+		aboveFloor = pawn->Z() - pawn->Sector->floorplane.ZatPoint(pawn->Pos().XY());
+		ownSector = pawn->Sector->Index();
+	}
+
+	if (kind == WarpKind::Nothing || kind == WarpKind::SameMapNoMove) return;   // map_load.c:614-622
+	if (kind == WarpKind::RelocateInPlace)
+	{
+		// The search skips the sector the player stands in (map_load.c:549).
+		Arrival a;
+		if (FindArrivalSector(g.map, req.key, ownSector, a)) RelocateToArrival(a.sector, aboveFloor);
 		else TheLog().Count("logic: 0x3b same-map warp, arrival point named no sector");
 		return;
 	}
 
-	if (FindLevelInfo(g.warpMap.c_str(), false) == nullptr)
+	const std::string target = WarpTargetName(req);
+	if (FindLevelInfo(target.c_str(), false) == nullptr)
 	{
-		Printf(TEXTCOLOR_ORANGE "Realms: map transition to \"%s\" -- no such level is known.\n",
-			g.warpMap.c_str());
+		// MAUSO1EA record 60 names "MAS5", which is no map: the original's
+		// load fails and the game carries on where it is (map_load.c:664-669).
+		Printf(TEXTCOLOR_ORANGE "Realms: map transition to \"%s\" -- no such level is known.\n", target.c_str());
 		return;
+	}
+
+	// Leaving: this map's logic is kept, as write_raw_state_temp keeps it
+	// (map_load.c:625). The world is kept by the engine's hub snapshot.
+	{
+		std::string cur = g.level->MapName.GetChars();
+		for (char &c : cur) c = (char)toupper((unsigned char)c);
+		CaptureMapLogic(g_mapStates[cur]);
 	}
 
 	// The arrival point is latched in the map being LEFT and applied in the one
 	// being entered, so it has to outlive the level change.
-	g_warpArrivalMapName = g.warpMap;
-	g_warpArrivalSector = (int)g.warpArrival;
-	g.level->ChangeLevel(g.warpMap.c_str(), 0, CHANGELEVEL_NOINTERMISSION);
+	g_warpArrivalMapName = target;
+	g_warpArrivalSector = (int)req.key;
+	g_warpAboveFloor = aboveFloor;
+	g_warpCarryXY = false;
+	if (req.key == 0 && pawn != nullptr)
+	{
+		double dx = 0., dy = 0.;
+		if (ownSector >= 0) SectorShift(ownSector, dx, dy);
+		g_warpCarryXY = true;
+		g_warpCarryX = pawn->X() - dx;
+		g_warpCarryY = pawn->Y() - dy;
+		g_warpCarryZ = pawn->Z();
+	}
+	// Facing is kept: nothing in the warp path touches the angle (all 86
+	// arrivals measured in the original keep it, tools/gameflow_test).
+	g.level->ChangeLevel(target.c_str(), 0, CHANGELEVEL_NOINTERMISSION | CHANGELEVEL_KEEPFACING);
 }
 
 } // namespace
@@ -4879,23 +4996,58 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	{
 		const bool haveText = g_coreHost.LoadText(TheInstall());
 		g_core.Attach(&TheDbase100(), &g_coreHost, nullptr);
-		if (roth_newgame_on_start) g_core.NewGame();
+		g_flow.Attach(&g_core, &TheDbase100(), &g_flowHost);
+		g_coreHost.flow = &g_flow;
+		{
+			const std::string res = TheInstall().DataFile("ROTH.RES");
+			std::vector<uint8_t> bytes;
+			if (FILE *f = res.empty() ? nullptr : fopen(res.c_str(), "rb"))
+			{
+				fseek(f, 0, SEEK_END); const long n = ftell(f); fseek(f, 0, SEEK_SET);
+				if (n > 0) { bytes.resize((size_t)n); if (fread(bytes.data(), 1, (size_t)n, f) != (size_t)n) bytes.clear(); }
+				fclose(f);
+			}
+			const std::vector<MapListEntry> list = ParseMapList(bytes.data(), bytes.size());
+			if (!list.empty()) g_flowDefaultMap = list[0].map;
+		}
+		// The boot (action 1: two movies and the title music, game_core.c:755-773)
+		// and Play's new-game block (game_core.c:821-845). A savegame being
+		// restored brings its own state, so neither runs under it.
+		if (roth_newgame_on_start && !savegamerestore)
+		{
+			g_flow.Boot();
+			g_flow.NewGame();
+			g_mapStates.clear();
+		}
 		if (log != nullptr) log->Line("game core: attached (%d items, %d actions, flag bitmap %d bytes, DBASE400 text %s)",
 			TheDbase100().ItemCount(), TheDbase100().ActionCount(),
 			(int)g_core.Interp().State().g_dbase100_record_bitmap.size(),
 			haveText ? "loaded" : "MISSING -- dialogue lines will be empty");
 	}
 	g_dialogueLatch = false;
+	// A death went back to the menu, and Play was chosen (game_core.c:1006-1012,
+	// 821-845). There is no main menu yet, so Play is what happens.
+	if (g_core.IsAttached() && g_flowNewGamePending && !savegamerestore)
+	{
+		g_flowNewGamePending = false;
+		g_flow.NewGame();
+		g_mapStates.clear();
+	}
 
 	// The arrival point the map we came FROM asked for.
 	g.pendingArrivalSector = -1;
 	if (g_warpArrivalSector >= 0 && level != nullptr
 		&& stricmp(g_warpArrivalMapName.c_str(), level->MapName.GetChars()) == 0)
 	{
-		g.pendingArrivalSector = FindSectorByCommandID((uint16_t)g_warpArrivalSector);
-		if (g.pendingArrivalSector < 0 && log)
+		// Key 0 relocates nothing (map_load.c:661); ConsumeArrival carries the
+		// position over instead.
+		Arrival a;
+		if (g_warpArrivalSector != 0 && FindArrivalSector(g.map, (uint16_t)g_warpArrivalSector, -1, a))
+			g.pendingArrivalSector = a.sector;
+		if (g_warpArrivalSector != 0 && g.pendingArrivalSector < 0 && log)
 			log->Count("logic: 0x3b arrival point named no sector in the destination map");
 	}
+	else g_warpCarryXY = false;     // not the map the warp asked for: nothing carries
 	g_warpArrivalMapName.clear();
 	g_warpArrivalSector = -1;
 
@@ -6494,6 +6646,8 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 //
 //==========================================================================
 
+namespace { void TickGameFlow(); }   // the death tick, beside the map-state code below
+
 void TickLevelLogic(FLevelLocals *level)
 {
 	if (!g.active || level == nullptr || level != g.level) return;
@@ -6501,6 +6655,9 @@ void TickLevelLogic(FLevelLocals *level)
 	// An arrival point waits for a player to exist, which it does not at
 	// BeginLevel time.
 	ConsumeArrival();
+
+	// Health at 0: the death block and its wait (game_core.c:948-1020).
+	TickGameFlow();
 
 	// tick_delay_timer (raw_commands.c:5328): count down, and on expiry push the
 	// delay record's NEXT onto the deferred queue, re-arming the record -- its
@@ -6704,6 +6861,132 @@ void DrainPendingDialogue()
 	}
 }
 
+//==========================================================================
+//
+// One map's logic, kept and restored (roth_gameflow.h, MapLogicState).
+//
+//==========================================================================
+
+void CaptureMapLogic(MapLogicState &out)
+{
+	MapLogicState s;
+	s.mapName = g.level != nullptr ? g.level->MapName.GetChars() : "";
+	s.commands.reserve(g.map.commands.size());
+	for (const Command &c : g.map.commands)
+	{
+		SavedCommand sc;
+		sc.modifier = c.modifier;
+		sc.disabled = c.disabled ? 1 : 0;
+		sc.args = c.args;
+		s.commands.push_back(sc);
+	}
+	for (const PendingDelay &d : g.delays) s.delays.push_back({ d.remaining, d.record, d.context });
+	for (const Deferred &d : g.deferred) s.deferred.push_back({ d.chain, d.context });
+	for (const Effect &e : g.effects)
+	{
+		SavedEffect se;
+		se.tick = e.tick; se.record = e.record; se.payload = e.payload;
+		se.sectors.assign(e.sectors.begin(), e.sectors.end());
+		se.finished = e.finished ? 1 : 0;
+		se.baseLight = e.baseLight;
+		se.hold = e.hold; se.holding = e.holding ? 1 : 0; se.flags5 = e.flags5;
+		se.sfxNode = e.sfxNode; se.sfxStarted = e.sfxStarted ? 1 : 0;
+		for (const ObjectRef &o : e.objects) { se.objects.push_back(o.sector); se.objects.push_back(o.index); }
+		for (int k = 0; k < 4; k++) se.moveVerts[k] = e.moveVerts[k];
+		s.effects.push_back(se);
+	}
+	s.pendingRecord = g.pendingRecord;
+	s.activeFace = g.activeFace; s.activeSector = g.activeSector;
+	s.activeObjectSector = g.activeObjectSector; s.activeObjectIndex = g.activeObjectIndex;
+	for (const auto &kv : g.movers) { s.movers.push_back(kv.first); s.movers.push_back(kv.second.first); s.movers.push_back(kv.second.second); }
+	for (const auto &kv : g.lastSectorByPlayer) { s.lastSectorByPlayer.push_back(kv.first); s.lastSectorByPlayer.push_back(kv.second); }
+	s.dialogueLatch = g_dialogueLatch ? 1 : 0;
+	out = s;
+}
+
+// The revisit: what was kept replaces what the load-time passes just built,
+// as read_raw_state_stream replaces it (map_load.c:812-904). Refused, and
+// counted, when the record count no longer matches the map.
+bool RestoreMapLogic(const MapLogicState &s)
+{
+	if (s.commands.size() != g.map.commands.size())
+	{
+		TheLog().Count("flow: kept map state does not match this map's command records; not restored");
+		return false;
+	}
+	for (size_t i = 0; i < s.commands.size(); i++)
+	{
+		Command &c = g.map.commands[i];
+		c.modifier = s.commands[i].modifier;
+		c.disabled = s.commands[i].disabled != 0;
+		if (s.commands[i].args.size() == c.args.size()) c.args = s.commands[i].args;
+	}
+	g.delays.clear();
+	for (const SavedDelay &d : s.delays) { PendingDelay p; p.remaining = d.remaining; p.record = d.record; p.context = d.context; g.delays.push_back(p); }
+	g.deferred.clear();
+	for (const SavedDeferred &d : s.deferred) { Deferred q; q.chain = d.chain; q.context = d.context; g.deferred.push_back(q); }
+	g.effects.clear();
+	for (const SavedEffect &se : s.effects)
+	{
+		Effect e;
+		e.tick = se.tick; e.record = se.record; e.payload = se.payload;
+		e.sectors.assign(se.sectors.begin(), se.sectors.end());
+		e.finished = se.finished != 0;
+		e.baseLight = se.baseLight;
+		e.hold = se.hold; e.holding = se.holding != 0; e.flags5 = se.flags5;
+		e.sfxNode = se.sfxNode; e.sfxStarted = se.sfxStarted != 0;
+		for (size_t k = 0; k + 1 < se.objects.size(); k += 2) e.objects.push_back({ se.objects[k], se.objects[k + 1] });
+		for (int k = 0; k < 4; k++) e.moveVerts[k] = se.moveVerts[k];
+		g.effects.push_back(e);
+	}
+	g.pendingRecord = s.pendingRecord;
+	g.activeFace = s.activeFace; g.activeSector = s.activeSector;
+	g.activeObjectSector = s.activeObjectSector; g.activeObjectIndex = s.activeObjectIndex;
+	g.movers.clear();
+	for (size_t k = 0; k + 2 < s.movers.size(); k += 3) g.movers[s.movers[k]] = { s.movers[k + 1], s.movers[k + 2] };
+	g.lastSectorByPlayer.clear();
+	for (size_t k = 0; k + 1 < s.lastSectorByPlayer.size(); k += 2) g.lastSectorByPlayer[s.lastSectorByPlayer[k]] = s.lastSectorByPlayer[k + 1];
+	g_dialogueLatch = s.dialogueLatch != 0;
+	return true;
+}
+
+//==========================================================================
+//
+// Death (game_core.c:948-1020), driven once per engine tic.
+//
+// The original's wait counts g_frame_time_scale per pass up to 0x12c; at this
+// port's fixed schedule a tic is one frame step at scale 2
+// (ROTH_FRAME_TICKS_PER_TIC), so the wait is 150 tics, 4.3 seconds -- the
+// same 4.3 seconds the original waits (measured in the oracle: 300 units).
+// What the wait's two keys do is not wired here: Esc (ends the wait) and
+// scancode 0x39 (loads the last slot) need the input layer.
+//
+//==========================================================================
+
+void TickGameFlow()
+{
+	if (!g_flow.IsAttached() || !g_flow.BootDone()) return;
+	GameFlow::DeathStep step;
+	if (!g_flow.Dying())
+	{
+		if (g_flow.Health() > 0) return;
+		Printf("Realms: health is 0 -- the death sequence (action 4)\n");
+		step = g_flow.BeginDeath();
+	}
+	else step = g_flow.TickDeath(ROTH_FRAME_TICKS_PER_TIC, 0);
+	if (step != GameFlow::DeathStep::Restart) return;
+
+	// reset_and_start_new_game (game_core.c:438-471): every map's kept state
+	// gone, fresh databases, the default map; then the main menu, whose Play
+	// runs the new-game block -- in BeginLevel, on that map.
+	g_flow.ResetForMenu();
+	g_mapStates.clear();
+	g_flowNewGamePending = true;
+	g_warpCarryXY = false;
+	g_warpArrivalSector = -1;
+	if (!g_flowDefaultMap.empty()) G_DeferedInitNew(g_flowDefaultMap.c_str());
+}
+
 } // namespace
 
 CCMD(roth_dialogue)
@@ -6727,6 +7010,111 @@ CCMD(roth_fire)
 CCMD(roth_inventory)
 {
 	gPendingDialogue.push_back(-1);
+}
+
+//==========================================================================
+//
+// Game flow: the engine's hooks. See roth_runtime.h.
+//
+//==========================================================================
+
+bool DefaultStartMap(std::string &out)
+{
+	// Only for the Realms game itself (vrealms_iwad/IWADINFO, Config =
+	// "VRealms"): the hands build shares the engine and must not start here.
+	if (gameinfo.ConfigName.CompareNoCase("VRealms") != 0) return false;
+	if (!TheInstall().IsOpen()) return false;
+	const std::string res = TheInstall().DataFile("ROTH.RES");
+	if (res.empty()) return false;
+	std::vector<uint8_t> bytes;
+	if (FILE *f = fopen(res.c_str(), "rb"))
+	{
+		fseek(f, 0, SEEK_END); const long n = ftell(f); fseek(f, 0, SEEK_SET);
+		if (n > 0) { bytes.resize((size_t)n); if (fread(bytes.data(), 1, (size_t)n, f) != (size_t)n) bytes.clear(); }
+		fclose(f);
+	}
+	// load_map_list selects entry 0 (map_load.c:1050-1059), and the boot loads
+	// it (game_core.c:1062-1068).
+	const std::vector<MapListEntry> list = ParseMapList(bytes.data(), bytes.size());
+	if (list.empty() || !TheInstall().HasMap(list[0].map.c_str())) return false;
+	out = list[0].map;
+	return true;
+}
+
+void LevelRestored(FLevelLocals *level)
+{
+	// The engine just replaced every thinker from a hub snapshot or a save, so
+	// the props the loader spawned are gone and their saved copies stand in
+	// their place.
+	RebindObjectActors(level);
+	if (!g.active || level != g.level) return;
+	std::string cur = level->MapName.GetChars();
+	for (char &c : cur) c = (char)toupper((unsigned char)c);
+	auto it = g_mapStates.find(cur);
+	if (it != g_mapStates.end()) RestoreMapLogic(it->second);
+}
+
+void SerializeRealmsGlobals(FSerializer &arc)
+{
+	static const char *KEY_G = "realms_globals", *KEY_GN = "realms_globals_size";
+	static const char *KEY_M = "realms_maps", *KEY_MN = "realms_maps_size";
+	if (arc.isWriting())
+	{
+		if (!g_flow.IsAttached() || g.level == nullptr) return;
+		std::string cur = g.level->MapName.GetChars();
+		for (char &c : cur) c = (char)toupper((unsigned char)c);
+		CaptureMapLogic(g_mapStates[cur]);                       // write_raw_state_temp, savegame.c:1577
+		g_flow.SetMusicChunk(MusicCurrentChunk());
+
+		SaveWriter gw;
+		g_flow.SaveGlobals(gw, PlayerRecord(), cur);             // the pawn is the engine's own
+		SaveWriter mw;
+		mw.U32((uint32_t)g_mapStates.size());                    // bundle_level_states, savegame.c:1138-1192
+		for (const auto &kv : g_mapStates) { mw.Str(kv.first); kv.second.Save(mw); }
+
+		int gn = (int)gw.Data().size(), mn = (int)mw.Data().size();
+		arc(KEY_GN, gn);
+		arc.SerializeMemory(KEY_G, gw.Data().data(), gw.Data().size());
+		arc(KEY_MN, mn);
+		arc.SerializeMemory(KEY_M, mw.Data().data(), mw.Data().size());
+		return;
+	}
+
+	if (!g_flow.IsAttached() || !arc.HasKey(KEY_G)) return;
+	int gn = 0, mn = 0;
+	arc(KEY_GN, gn);
+	arc(KEY_MN, mn);
+	if (gn <= 0 || mn < 4 || gn > (1 << 24) || mn > (1 << 28)) { Printf(TEXTCOLOR_RED "Realms: the save's Realms state is malformed\n"); return; }
+	std::vector<uint8_t> gb((size_t)gn), mb((size_t)mn);
+	arc.SerializeMemory(KEY_G, gb.data(), gb.size());
+	arc.SerializeMemory(KEY_M, mb.data(), mb.size());
+
+	SaveReader gr(gb.data(), gb.size());
+	std::string mapName;
+	if (!g_flow.LoadGlobals(gr, nullptr, &mapName)) { Printf(TEXTCOLOR_RED "Realms: the save's Realms state could not be read\n"); return; }
+	// Chunk 0xe: the song is loaded and, when it was not already the current
+	// one, started (savegame.c:1450-1460).
+	if (g_flow.MusicChunk() != 0 && MusicLoadChunk(g_flow.MusicChunk()) == 0) MusicProcess();
+
+	std::map<std::string, MapLogicState> maps;
+	SaveReader mr(mb.data(), mb.size());
+	const uint32_t n = mr.U32();
+	for (uint32_t i = 0; i < n && mr.Ok(); i++)
+	{
+		const std::string name = mr.Str();
+		MapLogicState st;
+		if (!st.Load(mr)) break;
+		maps[name] = st;
+	}
+	g_mapStates.swap(maps);                                      // the .TMP files, recreated (savegame.c:1422-1424)
+	g_flowNewGamePending = false;
+	if (g.active && g.level != nullptr)
+	{
+		std::string cur = g.level->MapName.GetChars();
+		for (char &c : cur) c = (char)toupper((unsigned char)c);
+		auto it = g_mapStates.find(cur);
+		if (it != g_mapStates.end()) RestoreMapLogic(it->second);
+	}
 }
 
 } // namespace roth

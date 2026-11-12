@@ -293,6 +293,15 @@ clusterdef 1
 {
 	flat = "-NOFLAT-"
 	music = ""
+
+	// A HUB, because Realms remembers every map: leaving one writes its state
+	// to <MAP>.TMP and coming back reads it again instead of the map's
+	// authored state (map_load.c:625, 651-662, 694-904). The engine's hub
+	// snapshot is that for the world -- sector planes, light, textures, door
+	// polyobjects, props -- and roth_runtime keeps the command records beside
+	// it (roth_gameflow.h, MapLogicState). A new game clears both, as
+	// delete_temp_files does (game_core.c:449).
+	hub
 }
 
 //===========================================================================

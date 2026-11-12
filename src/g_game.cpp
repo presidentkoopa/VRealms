@@ -19,6 +19,7 @@
 
 // HEADER FILES ------------------------------------------------------------
 
+#include "roth/roth_runtime.h"
 #include <memory>
 #include <stdio.h>
 #include <string.h>
@@ -2958,6 +2959,7 @@ void G_DoLoadGame ()
 	FRandom::StaticReadRNGState(arc);
 	P_ReadACSDefereds(arc);
 	P_ReadACSVars(arc);
+	roth::SerializeRealmsGlobals(arc);
 
 	NextSkill = -1;
 	arc("nextskill", NextSkill);
@@ -3252,6 +3254,7 @@ void G_DoSaveGame (bool okForQuicksave, bool forceQuicksave, FString filename, c
 	FRandom::StaticWriteRNGState(savegameglobals);
 	P_WriteACSDefereds(savegameglobals);
 	P_WriteACSVars(savegameglobals);
+	roth::SerializeRealmsGlobals(savegameglobals);	// Realms of the Haunting's flags, items, maps (roth_runtime.h)
 	G_WriteVisited(savegameglobals);
 
 

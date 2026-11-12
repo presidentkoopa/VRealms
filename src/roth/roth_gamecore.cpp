@@ -107,6 +107,21 @@ void GameCore::SetFilter(int mode)
 	Leave("filter", 0);
 }
 
+void GameCore::UnequipWeapon()
+{
+	mInventory.SetLeftHand(-1);
+	mInvBridge.UnequipWeapon();
+}
+
+void GameCore::ReactivateWeapon()
+{
+	// savegame.c:1489-1493: the slot in the weapon hand and its item id,
+	// sign-extended; an empty hand is activate_weapon_item(0, 0).
+	const int slot = mInventory.LeftHand();
+	if (slot < 0) { mInvBridge.UnequipWeapon(); return; }
+	mInvBridge.EquipWeapon(slot, (int32_t)(int16_t)mInventory.Slot(slot).id);
+}
+
 //==========================================================================
 //
 // Interpreter -> inventory, and the shared generator.

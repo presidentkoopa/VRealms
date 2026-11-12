@@ -23,6 +23,7 @@
 */
 
 
+#include "roth/roth_runtime.h"
 #include "p_local.h"
 #include "p_spec.h"
 
@@ -1177,6 +1178,9 @@ void FLevelLocals::Serialize(FSerializer &arc, bool hubload)
 
 		automap->UpdateShowAllLines();
 
+		// Realms of the Haunting: the props and the level logic find their
+		// state again (roth_runtime.h). Inert for any other level.
+		roth::LevelRestored(this);
 	}
 	// clean up the static data we allocated
 	StaticClearSerializeTranslationsData();

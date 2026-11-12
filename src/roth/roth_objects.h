@@ -69,6 +69,11 @@ AActor *FindObjectActor(int rothSector, int rothIndex);
 // test it rather than treating it as a fault.
 bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex);
 
+// After the engine replaced every thinker (a hub snapshot coming back, a
+// savegame loading), find the props again. Each carries its (sector, index)
+// in `special2`, set at spawn, which the actor serializer keeps.
+void RebindObjectActors(FLevelLocals *Level);
+
 // A sprite for a texture the LOGIC can ask for, looked up by the packed texture
 // word a command record carries -- the object's +0x04 pair, texture index in the
 // low byte and source in the high one.
