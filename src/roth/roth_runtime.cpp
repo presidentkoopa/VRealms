@@ -5568,4 +5568,41 @@ CCMD(roth_door)
 		d.tag, d.speedMul, d.dwell, d.after);
 }
 
+//==========================================================================
+//
+// roth_dialogue <action id> -- run one DBASE100 action record through the game
+// core, exactly as RAW 0x2b would (eval_dialogue_record_by_id, then the chain
+// tail), and say what came of it. A test instrument: it lets a config file
+// prove the interpreter runs inside the engine with nobody at the controls.
+//
+// roth_inventory -- print what the core's inventory holds.
+//
+//==========================================================================
+
+CCMD(roth_dialogue)
+{
+	if (argv.argc() < 2) { Printf("roth_dialogue <action id 1..%d>\n", TheDbase100().ActionCount()); return; }
+	if (!g_core.IsAttached()) { Printf("roth_dialogue: no game core (DBASE100 not loaded -- load a Realms map first)\n"); return; }
+	const int id = atoi(argv[1]);
+	const std::map<std::string, int> before = g_coreHost.calls;
+	const uint32_t r = g_core.RunAction((uint32_t)id);
+	Printf("roth_dialogue: action %d returned %d\n", id, (int)r);
+	for (const auto &kv : g_coreHost.calls)
+	{
+		const auto it = before.find(kv.first);
+		const int was = it == before.end() ? 0 : it->second;
+		if (kv.second != was) Printf("  asked for, not built: %s x%d\n", kv.first.c_str(), kv.second - was);
+	}
+}
+
+CCMD(roth_inventory)
+{
+	if (!g_core.IsAttached()) { Printf("roth_inventory: no game core\n"); return; }
+	Inventory &inv = g_core.Items();
+	Printf("roth_inventory: %d item(s), left hand slot %d, right hand slot %d\n",
+		inv.Count(), inv.LeftHand(), inv.RightHand());
+	for (int i = 0; i < inv.Count(); i++)
+		Printf("  slot %d: item %d x%d\n", i, (int)inv.Slot(i).id, (int)inv.Slot(i).quantity);
+}
+
 } // namespace roth
