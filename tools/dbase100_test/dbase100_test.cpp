@@ -492,6 +492,24 @@ void TestRecordAnomalies()
 		CHECK(HasNote(db, "actions: 3 entries, 0 empty, 2 malformed"));
 	}
 
+	g_test = "action with a zero length word";
+	{
+		// Retail has 27 of these. A stub, not a fault: served, no commands.
+		fx::Spec s;
+		fx::ActionSpec a1; a1.overrideLength = true; a1.length = 0;
+		fx::ActionSpec a2; a2.words = { W(1, 1) };
+		s.actions = { a1, a2 };
+		auto b = fx::Build(s);
+		CHECK(db.Load(b.data(), b.size()));
+		CHECK_EQ(db.AnomalyTotal(), 0);
+		CHECK(db.Action(1) != nullptr && db.Action(1)->bodiless);
+		CHECK(db.Action(1) != nullptr && db.Action(1)->commandCount == 0);
+		CHECK(db.Action(1) != nullptr && db.Commands(*db.Action(1)).empty());
+		CHECK(db.Action(2) != nullptr && !db.Action(2)->bodiless && db.Action(2)->commandCount == 1);
+		CHECK(HasNote(db, "actions: 2 entries, 0 empty, 0 malformed"));
+		CHECK(HasNote(db, "actions: 1 with a zero length word"));
+	}
+
 	g_test = "action offset out of file";
 	{
 		fx::Layout L;
