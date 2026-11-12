@@ -972,6 +972,7 @@ set (PCH_SOURCES
 	roth/roth_dbase100_interp.cpp
 	roth/roth_gamecore.cpp
 	roth/roth_gameflow.cpp
+	roth/roth_menus.cpp
 	# The inventory slot model over DBASE100 (no consumer in the engine yet).
 	roth/roth_inventory.cpp
 	roth/roth_itemcmds.cpp

@@ -1736,6 +1736,10 @@ bool G_Responder (event_t *ev)
 	if (!CanChat())
 		CT_Stop();
 
+	// Realms of the Haunting's menus, death wait and quick keys (roth_runtime.h).
+	if (roth::FlowResponder(ev))
+		return true;
+
 	// check events
 	if (ev->type != EV_Mouse && primaryLevel->localEventManager->Responder(ev)) // [ZZ] ZScript ate the event // update 07.03.17: mouse events are handled directly
 		return true;
@@ -2536,6 +2540,14 @@ void FLevelLocals::QueueBody (AActor *body)
 //
 void FLevelLocals::DoReborn (int playernum, bool force)
 {
+	// Realms of the Haunting: while its death wait is up, a dead player's use
+	// press is a click on the death box, not a respawn (roth_runtime.h).
+	if (!force && (players[playernum].playerstate == PST_REBORN || players[playernum].playerstate == PST_ENTER)
+		&& roth::FlowRebornRequested(&players[playernum]))
+	{
+		players[playernum].playerstate = PST_DEAD;
+		return;
+	}
 	if (!multiplayer && !(flags2 & LEVEL2_ALLOWRESPAWN) && !sv_singleplayerrespawn &&
 		!G_SkillProperty(SKILLP_PlayerRespawn))
 	{

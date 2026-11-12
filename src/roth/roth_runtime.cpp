@@ -35,6 +35,7 @@
 #include "roth_gamecore.h"
 #include "roth_itemcmds.h"    // 0x27/0x29/0x2a/0x2b/0x42, shared with tools/gameproof
 #include "roth_gameflow.h"     // new game, travel, per-map state, saves, death
+#include "roth_menus.h"        // the main menu, options, slot lists, death screen
 #include "roth_install.h"
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 #include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
@@ -67,6 +68,14 @@
 #include "c_cvars.h"
 #include "v_font.h"
 #include "serializer.h"    // SerializeRealmsGlobals
+#include "filesystem.h"    // FResourceFile, for the save slots' names
+#include "savegamemanager.h"   // G_BuildSaveName
+#include "g_game.h"        // G_SaveGame, G_LoadGame
+#include "cmdlib.h"        // FileExists
+#include "menustate.h"     // menuactive
+#include "d_eventbase.h"   // event_t, for FlowResponder
+#include "keydef.h"
+#include <time.h>
 #include "gi.h"            // gameinfo.ConfigName, for the start map
 
 // Declared in p_map.cpp at GLOBAL scope, next to the use path it reports on.
@@ -226,6 +235,18 @@ FlowEngineHost g_flowHost;
 std::map<std::string, MapLogicState> g_mapStates;
 // A death restarted the game: the next level runs the new-game block.
 bool g_flowNewGamePending = false;
+// The next level shows the main menu instead (the boot's, or after a death:
+// game_core.c:806-816, 1006-1012).
+bool g_flowMenuPending = false;
+// A restart has been asked for and the level is about to change: the death
+// check must not run again on the level that is going away.
+bool g_flowRestarting = false;
+// The slot a load was asked for, so the load can record it (savegame.c:1497).
+int g_flowPendingLoadSlot = -1;
+// The menus (roth_menus.h); drawn and pointed at by roth_interface.
+RealmsMenus g_menus;
+// The new-game block, wherever it is asked for (defined beside the death tick).
+void RunNewGameBlock();
 // The map ROTH.RES lists first (game_core.c:1062-1063); a death returns here.
 std::string g_flowDefaultMap;
 // g@0x8a26c: set by the first 0x2b of a chain, cleared by the chain's tail
@@ -5340,11 +5361,14 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			MovieSetSuppressed(!roth_intro_movies);
 			g_flow.Boot();
 			MovieSetSuppressed(false);
-			g_flow.NewGame();
-			g_cmd.NewGame();                    // the RAW command core's own new-game state
-			g_cmd.health = g_flow.Health();     // one health (see CoreHost)
-			g_mapStates.clear();
+			InterfaceSetMenus(&g_menus);
+			// Launched with no map: the main menu, as game_play_loop shows it
+			// after the boot (game_core.c:806-816). Launched with +map (the
+			// bridge, the tests): straight into the new-game block, as before.
+			if (g_flowMenuPending) { g_flowMenuPending = false; g_menus.OpenMain(); }
+			else RunNewGameBlock();
 		}
+		InterfaceSetMenus(&g_menus);
 		if (log != nullptr) log->Line("game core: attached (%d items, %d actions, flag bitmap %d bytes, DBASE400 text %s)",
 			TheDbase100().ItemCount(), TheDbase100().ActionCount(),
 			(int)g_core.Interp().State().g_dbase100_record_bitmap.size(),
@@ -5356,9 +5380,15 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	if (g_core.IsAttached() && g_flowNewGamePending && !savegamerestore)
 	{
 		g_flowNewGamePending = false;
-		g_flow.NewGame();
-		g_mapStates.clear();
+		RunNewGameBlock();
 	}
+	// A death that ran out, or was ended: the main menu (game_core.c:1006-1012).
+	if (g_core.IsAttached() && g_flowMenuPending && !savegamerestore)
+	{
+		g_flowMenuPending = false;
+		g_menus.OpenMain();
+	}
+	g_flowRestarting = false;
 
 	// The arrival point the map we came FROM asked for.
 	g.pendingArrivalSector = -1;
@@ -7049,7 +7079,7 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 //
 //==========================================================================
 
-namespace { void TickGameFlow(); }   // the death tick, beside the map-state code below
+namespace { void TickGameFlow(); void TickMenus(); void HoldPlayer(bool hold); }   // the death tick, beside the map-state code below
 
 void TickLevelLogic(FLevelLocals *level)
 {
@@ -7067,6 +7097,19 @@ void TickLevelLogic(FLevelLocals *level)
 	// Health at 0: the death block and its wait (game_core.c:948-1020). The
 	// frame loop tests health after the world has ticked.
 	TickGameFlow();
+
+	// A menu or the death wait is modal in the original: the world does not
+	// tick under it. The panels, the sound and a movie the menu asked for
+	// (the movie clips) still run.
+	TickMenus();
+	HoldPlayer(g_menus.IsOpen() || g_flow.Dying());
+	if (g_menus.IsOpen() || g_flow.Dying())
+	{
+		InterfaceTick(level);
+		SoundTick(level);
+		MoviePump();
+		return;
+	}
 
 	// tick_delay_timer (raw_commands.c:5328): count down, and on expiry push the
 	// delay record's NEXT onto the deferred queue, re-arming the record -- its
@@ -7385,28 +7428,188 @@ bool RestoreMapLogic(const MapLogicState &s)
 //
 //==========================================================================
 
+//==========================================================================
+//
+// The flow's engine side: the new-game block, restarts, the save slots, the
+// menus' outcomes, and the death wait (game_core.c:948-1020) shown as a box.
+//
+//==========================================================================
+
+void RunNewGameBlock()
+{
+	// game_core.c:821-845: inventory cursors and inventory cleared, action 3,
+	// Adam latched, health to the maximum, no weapon, mode 1.
+	g_flow.NewGame();
+	g_cmd.NewGame();                    // the RAW command core's own new-game state
+	g_cmd.health = g_flow.Health();     // one health (see CoreHost)
+	CmdPushHealth();
+	g_mapStates.clear();
+}
+
+// reset_and_start_new_game (game_core.c:438-471): every map's kept state gone,
+// fresh databases, the default map. Then either the main menu (after a death,
+// game_core.c:1006-1012) or straight into the new-game block (the options'
+// New game: game_play_loop's outer loop with ebx 3 skips the menu).
+void RestartGame(bool toMenu)
+{
+	g_flow.ResetForMenu();
+	g_mapStates.clear();
+	g_menus.CloseAll();
+	g_flowNewGamePending = !toMenu;
+	g_flowMenuPending = toMenu;
+	g_flowRestarting = true;
+	g_warpCarryXY = false;
+	g_warpArrivalSector = -1;
+	if (!g_flowDefaultMap.empty()) G_DeferedInitNew(g_flowDefaultMap.c_str());
+}
+
+// SAVE<n>.SAV becomes the engine's own savegame "realms<n>" in its own save
+// folder (G_BuildSaveName); slot 0 is the quick slot (input.c:545-559).
+FString SlotFile(int slot) { return G_BuildSaveName(FStringf("realms%d", slot).GetChars()); }
+
+// read_savegame_slot_names (savegame.c:1262-1295): the name stored in each of
+// slots 1..9, empty where there is no save.
+std::vector<std::string> ReadSlotNames()
+{
+	std::vector<std::string> out(RealmsMenus::SLOTS);
+	for (int slot = 1; slot <= RealmsMenus::SLOTS; slot++)
+	{
+		const FString path = SlotFile(slot);
+		if (!FileExists(path.GetChars())) continue;
+		std::unique_ptr<FResourceFile> f(FResourceFile::OpenResourceFile(path.GetChars(), true));
+		std::string name = "(saved game)";
+		if (f != nullptr)
+		{
+			const int info = f->FindEntry("info.json");
+			if (info >= 0)
+			{
+				auto data = f->Read(info);
+				FSerializer arc;
+				if (arc.OpenReader(data.string(), data.size()))
+				{
+					const FString t = arc.GetString("Title");
+					if (t.IsNotEmpty()) name = t.GetChars();
+				}
+			}
+		}
+		out[(size_t)(slot - 1)] = name;
+	}
+	return out;
+}
+
+std::string DefaultSaveName()
+{
+	// The original types the name into a text row (show_message_box's
+	// 0x40000000 row, menu_hud_ui.c:1276). There is no keyboard in the
+	// headset, so the save is named for the player: the place and the time.
+	std::string place = g.level != nullptr ? g.level->LevelName.GetChars() : "Realms";
+	char t[32] = "";
+	const time_t now = time(nullptr);
+	if (const struct tm *lt = localtime(&now)) strftime(t, sizeof t, " %d %b %H:%M", lt);
+	std::string n = place + t;
+	if (n.size() > 0x2f) n.resize(0x2f);            // the 0x30-byte name chunk (savegame.c:1568)
+	return n;
+}
+
+bool SaveSlot(int slot, const std::string &name)
+{
+	if (gamestate != GS_LEVEL || g_flow.Dying()) return false;
+	G_SaveGame(SlotFile(slot).GetChars(), name.c_str());
+	g_flow.SetLastSlot(slot);                       // savegame.c:1631
+	Printf("Realms: saving slot %d (\"%s\")\n", slot, name.c_str());
+	return true;
+}
+
+bool LoadSlot(int slot)
+{
+	const FString path = SlotFile(slot);
+	if (slot < 0 || !FileExists(path.GetChars()))
+	{
+		Printf("Realms: slot %d holds no save\n", slot);
+		return false;
+	}
+	g_flowPendingLoadSlot = slot;
+	g_menus.CloseAll();
+	G_LoadGame(path.GetChars(), true);
+	Printf("Realms: loading slot %d\n", slot);
+	return true;
+}
+
+// What a chosen row asks for (roth_menus.h, MenuOutcome).
+void ApplyMenuOutcome(const MenuOutcome &o)
+{
+	switch (o.kind)
+	{
+	case MenuOutcome::PLAY: RunNewGameBlock(); break;
+	case MenuOutcome::LOAD: LoadSlot(o.slot); break;
+	case MenuOutcome::SAVE: SaveSlot(o.slot, o.name); break;
+	case MenuOutcome::NEW_GAME: RestartGame(false); break;
+	case MenuOutcome::QUIT:
+		// game_core.c:799-805: action 2, then the program ends.
+		g_core.RunAction(GameCore::ACTION_QUIT);
+		AddCommandString("quit");
+		break;
+	case MenuOutcome::RUN_ACTION: g_core.RunAction((uint32_t)o.slot); break;
+	case MenuOutcome::DEATH_LOAD:
+		// game_core.c:984-997: a failed load ends the wait and restarts.
+		if (!LoadSlot(g_flow.LastSlot())) { g_flow.DeathLoadFailed(); RestartGame(true); }
+		break;
+	case MenuOutcome::DEATH_END: RestartGame(true); break;
+	default: break;
+	}
+}
+
+// Under a menu or the death wait the original's frame loop does not run the
+// world (show_message_box and the death loop are modal): the player is held
+// still. The engine's own flag; set only by this, cleared only by this.
+player_t *g_frozenPlayer = nullptr;
+
+void HoldPlayer(bool hold)
+{
+	player_t *p = g.level != nullptr ? g.level->GetConsolePlayer() : nullptr;
+	if (g_frozenPlayer != nullptr && (g_frozenPlayer != p || !hold))
+	{
+		if (g_frozenPlayer == p) g_frozenPlayer->cheats &= ~CF_TOTALLYFROZEN;
+		g_frozenPlayer = nullptr;
+	}
+	if (hold && p != nullptr && g_frozenPlayer == nullptr && !(p->cheats & CF_TOTALLYFROZEN))
+	{
+		p->cheats |= CF_TOTALLYFROZEN;
+		g_frozenPlayer = p;
+	}
+}
+
+RealmsMenus::Box g_lastBox = RealmsMenus::NONE;
+
+void TickMenus()
+{
+	// Entering a slot list reads the slots afresh (read_savegame_slot_names
+	// runs each time a list opens, menu_hud_ui.c:2047, 2061, 2097).
+	const RealmsMenus::Box b = g_menus.Current();
+	if (b != g_lastBox && (b == RealmsMenus::LOAD || b == RealmsMenus::SAVE))
+	{
+		g_menus.SetSlotNames(ReadSlotNames());
+		g_menus.SetDefaultSaveName(DefaultSaveName());
+	}
+	g_lastBox = b;
+	while (g_menus.HasOutcome()) ApplyMenuOutcome(g_menus.Take());
+}
+
 void TickGameFlow()
 {
-	if (!g_flow.IsAttached() || !g_flow.BootDone()) return;
+	if (!g_flow.IsAttached() || !g_flow.BootDone() || g_flowRestarting) return;
+	CmdPullHealth();                    // the engine's own damage, taken in
 	GameFlow::DeathStep step;
 	if (!g_flow.Dying())
 	{
 		if (g_flow.Health() > 0) return;
 		Printf("Realms: health is 0 -- the death sequence (action 4)\n");
 		step = g_flow.BeginDeath();
+		const bool canLoad = g_flow.LastSlot() != -1 && FileExists(SlotFile(g_flow.LastSlot()).GetChars());
+		if (step == GameFlow::DeathStep::Waiting) g_menus.OpenDeath(canLoad);
 	}
 	else step = g_flow.TickDeath(ROTH_FRAME_TICKS_PER_TIC, 0);
-	if (step != GameFlow::DeathStep::Restart) return;
-
-	// reset_and_start_new_game (game_core.c:438-471): every map's kept state
-	// gone, fresh databases, the default map; then the main menu, whose Play
-	// runs the new-game block -- in BeginLevel, on that map.
-	g_flow.ResetForMenu();
-	g_mapStates.clear();
-	g_flowNewGamePending = true;
-	g_warpCarryXY = false;
-	g_warpArrivalSector = -1;
-	if (!g_flowDefaultMap.empty()) G_DeferedInitNew(g_flowDefaultMap.c_str());
+	if (step == GameFlow::DeathStep::Restart) RestartGame(true);
 }
 
 } // namespace
@@ -7432,6 +7635,32 @@ CCMD(roth_fire)
 CCMD(roth_inventory)
 {
 	gPendingDialogue.push_back(-1);
+}
+
+// The menus, for binding (flat) and for a controller binding (VR):
+//   roth_options        the in-game options (New game, Load, Save, Settings, Quit)
+//   roth_mainmenu       the front-end main menu
+//   roth_quicksave      F9: slot 0          roth_quickload   F10: slot 0
+//   roth_menu up|down|enter|back|scrollup|scrolldown|choose <row>|dump
+// While a box is up, roth_ui up/down/enter/close drive it too, and the use
+// button clicks the row under the beam or the crosshair.
+CCMD(roth_options) { if (g_flow.IsAttached() && !g_flow.Dying()) g_menus.OpenOptions(); }
+CCMD(roth_mainmenu) { if (g_flow.IsAttached() && !g_flow.Dying()) g_menus.OpenMain(); }
+CCMD(roth_quicksave) { if (g_flow.IsAttached()) SaveSlot(0, DefaultSaveName()); }
+CCMD(roth_quickload) { if (g_flow.IsAttached()) LoadSlot(0); }
+CCMD(roth_menu)
+{
+	if (argv.argc() < 2) { Printf("roth_menu up|down|enter|back|scrollup|scrolldown|choose <row>|dump\n"); return; }
+	const std::string v = argv[1];
+	if (v == "up") g_menus.Up();
+	else if (v == "down") g_menus.Down();
+	else if (v == "enter") g_menus.Enter();
+	else if (v == "back") g_menus.Back();
+	else if (v == "scrollup") g_menus.ScrollUp();
+	else if (v == "scrolldown") g_menus.ScrollDown();
+	else if (v == "choose" && argv.argc() > 2) g_menus.Choose(atoi(argv[2]));
+	Printf("[roth_menu] %s, %d row(s)%s\n", g_menus.Describe().c_str(), (int)g_menus.Rows().size(),
+		g_menus.HasOutcome() ? ", a choice is pending" : "");
 }
 
 //==========================================================================
@@ -7460,6 +7689,65 @@ bool DefaultStartMap(std::string &out)
 	const std::vector<MapListEntry> list = ParseMapList(bytes.data(), bytes.size());
 	if (list.empty() || !TheInstall().HasMap(list[0].map.c_str())) return false;
 	out = list[0].map;
+	// A game started this way gets the main menu after the boot, as the
+	// original's does (game_core.c:806-816). +map launches never come here.
+	g_flowMenuPending = true;
+	return true;
+}
+
+bool FlowWantsEscape()
+{
+	// Esc belongs to a Realms box or the death wait while one is up; in play
+	// it stays the engine's (its own menu holds the VR and video settings).
+	return g_flow.IsAttached() && (g_menus.IsOpen() || g_flow.Dying());
+}
+
+bool FlowResponder(const event_t *ev)
+{
+	if (ev == nullptr || ev->type != EV_KeyDown || !g_flow.IsAttached() || !g.active) return false;
+	if (gamestate != GS_LEVEL || menuactive != MENU_Off) return false;
+	const int k = ev->data1;
+	if (g_menus.IsOpen())
+	{
+		if (g_menus.Current() == RealmsMenus::DEATH && k == KEY_SPACE)
+		{
+			// Scancode 0x39 in the death wait (game_core.c:984-997): the last
+			// slot, or, with none, the end of the wait.
+			if (g_menus.Rows()[0].enabled) g_menus.Choose(0); else g_menus.Back();
+			return true;
+		}
+		switch (k)
+		{
+		case KEY_ESCAPE: case KEY_PAD_B: case KEY_PAD_BACK: g_menus.Back(); return true;
+		case KEY_UPARROW: case KEY_PAD_DPAD_UP: g_menus.Up(); return true;
+		case KEY_DOWNARROW: case KEY_PAD_DPAD_DOWN: g_menus.Down(); return true;
+		case KEY_ENTER: case KEY_PAD_A: g_menus.Enter(); return true;
+		default: return false;
+		}
+	}
+	if (!g_flow.BootDone() || g_flow.Dying()) return false;
+	// The keymap at 0x7093d: F9 (0x43) key_quicksave, F10 (0x44) key_quickload,
+	// both on slot 0 (input.c:545-559).
+	if (k == KEY_F9) { SaveSlot(0, DefaultSaveName()); return true; }
+	if (k == KEY_F10) { LoadSlot(0); return true; }
+	return false;
+}
+
+bool FlowRebornRequested(player_t *player)
+{
+	// A dead player's use press reaches the engine as a respawn request
+	// (DeathThink -> PST_REBORN). While the Realms death wait is up it is a
+	// press on the death box instead, by beam or crosshair.
+	// Only for the dead pawn of the level being played: a new level's players
+	// enter through the same call and must not be held back.
+	if (player == nullptr || !g_flow.IsAttached() || !(g_flow.Dying() || g_flowRestarting)) return false;
+	if (player->mo == nullptr || player->mo->health > 0 || !g.active || player->mo->Level != g.level) return false;
+	// DeathThink asks every tic the button is held: one press per hold.
+	static int lastAsk = -10;
+	const int now = g.level->maptime;
+	const bool fresh = now - lastAsk > 1;
+	lastAsk = now;
+	if (fresh && !g_flowRestarting) InterfaceUse(player);
 	return true;
 }
 
@@ -7530,6 +7818,11 @@ void SerializeRealmsGlobals(FSerializer &arc)
 	}
 	g_mapStates.swap(maps);                                      // the .TMP files, recreated (savegame.c:1422-1424)
 	g_flowNewGamePending = false;
+	g_flowMenuPending = false;
+	g_flowRestarting = false;
+	g_menus.CloseAll();
+	if (g_flowPendingLoadSlot >= 0) g_flow.SetLastSlot(g_flowPendingLoadSlot);   // savegame.c:1497
+	g_flowPendingLoadSlot = -1;
 	if (g.active && g.level != nullptr)
 	{
 		std::string cur = g.level->MapName.GetChars();

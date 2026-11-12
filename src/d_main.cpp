@@ -4835,6 +4835,8 @@ static int D_DoomMain_Internal (void)
 		RemapUserTranslation,
 		System_DisableAnisotropicFiltering
 	};
+	// Realms of the Haunting takes Esc while one of its boxes is up (roth_runtime.h).
+	sysCallbacks.WantEscape = roth::FlowWantsEscape;
 
 	profileManager.CollectProfiles();
 	ParseMultiplayerCommandLineFile();

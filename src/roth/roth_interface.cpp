@@ -21,6 +21,7 @@
 #include "roth_objects.h"
 #include "roth_sound.h"
 #include "roth_raw.h"
+#include "roth_menus.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -115,6 +116,8 @@ enum ElementKind
 {
 	E_NONE, E_BACKING, E_CHOICE, E_CELL, E_TAB, E_HAND, E_SCROLLUP, E_SCROLLDOWN, E_CLOSE,
 	E_POP_MAG, E_POP_INFO, E_POP_TOPIC, E_POP_CLOSE, E_POP_PGUP, E_POP_PGDN, E_POP_BACKING,
+	E_OPTIONS,                                          // the inventory screen's way into the options
+	E_MENU_BACKING, E_MENU_ROW, E_MENU_UP, E_MENU_DOWN, E_MENU_BACK,
 };
 
 struct Element
@@ -164,6 +167,7 @@ struct Ui
 	bool havePendingFly = false;
 
 	std::vector<std::vector<std::string>> queue;    // test commands, drained per tic
+	RealmsMenus *menus = nullptr;                   // roth_menus, owned by the runtime
 };
 
 Ui U;
@@ -489,6 +493,15 @@ std::string Signature()
 		s += buf;
 		for (int sl : U.screen.Entries().slots) { snprintf(buf, sizeof buf, "%d:%d.%d,", sl, inv.Slot(sl).id, inv.Slot(sl).quantity); s += buf; }
 	}
+	if (U.menus != nullptr && U.menus->IsOpen())
+	{
+		s += "M" + U.menus->Describe() + "|";
+		for (const RealmsMenus::Row &r : U.menus->Rows())
+		{
+			snprintf(buf, sizeof buf, "%u/%d/", r.textId, r.enabled ? 1 : 0);
+			s += buf; s += r.label; s += '\x1f';
+		}
+	}
 	if (U.screen.PopupUp())
 	{
 		snprintf(buf, sizeof buf, "P%d/%d/%d/%d|", U.screen.PopupItem(), U.screen.PopupPage(), U.screen.PopupTopicsShown() ? 1 : 0,
@@ -641,6 +654,12 @@ void BuildInventory()
 				entry == held ? 0.5 : 1.0, E_NONE, 0, false);
 		}
 	}
+	// The way into the options (inventory.c:1799-1817; the original's screen
+	// has it among its buttons).
+	{
+		static const char *opt = "Options";
+		Add(-W / 2 + 4.0, -H / 2 + 1.6, 0.2, TextPixels(opt) * PX * 1.2 + 1.0, ROWH * 1.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), opt, 1.0, E_OPTIONS, 0, true);
+	}
 	// Scroll arrows (actions 0x28 / 0x29) and the label of the cursor's item.
 	Add(W / 2 - 1.5, H / 2 - 5, 0.1, 2.4, 2.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "^", 1.0, E_SCROLLUP, 0, true);
 	Add(W / 2 - 1.5, -H / 2 + 5, 0.1, 2.4, 2.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "v", 1.0, E_SCROLLDOWN, 0, true);
@@ -698,15 +717,74 @@ void BuildPopup()
 	}
 }
 
+// A DBASE100 interface text, resolved as resolve_dbase100_text does
+// (dbase100.c:408-422), at most 0x50 bytes as show_message_box asks
+// (menu_hud_ui.c:1320).
+std::string InterfaceText(uint32_t id)
+{
+	uint32_t off = 0;
+	if (U.db == nullptr || !U.db->InterfaceEntry((int)id, off) || off == 0) return "Missing Text";
+	return U.dialogue.LineText(off, 0x50);
+}
+
+void BuildMenu()
+{
+	if (U.menus == nullptr || !U.menus->IsOpen()) return;
+	RealmsMenus &m = *U.menus;
+	// show_message_box (menu_hud_ui.c:1284-): the title, the body line, one
+	// row per entry; the selection drawn in the marker colour. Laid out as a
+	// world panel in front of the player, a little in front of any other.
+	const std::vector<RealmsMenus::Row> rows = m.Rows();
+	std::vector<std::string> text;
+	for (const RealmsMenus::Row &r : rows) text.push_back(r.textId ? InterfaceText(r.textId) : r.label);
+	const std::string title = m.Current() == RealmsMenus::DEATH ? m.TitleText() : InterfaceText(m.TitleId());
+	const std::string body = m.BodyId() ? InterfaceText(m.BodyId()) : std::string();
+	double widest = TextPixels(title);
+	if (!body.empty()) widest = std::max(widest, (double)TextPixels(body));
+	for (const std::string &t : text) widest = std::max(widest, (double)TextPixels(t));
+	const double S = 1.6;                                   // the menu reads larger than a subtitle
+	const double rowH = ROWH * S * 1.5;
+	const double W = widest * PX * S + 8.0;
+	const int head = body.empty() ? 1 : 2;
+	const double H = (rows.size() + head) * rowH + 4.0;
+	const double L = 3.0;
+	Add(0, 0, L, W, H, BB_PANEL, 0, PalEntry(255, 8, 8, 12), nullptr, 0.9, E_MENU_BACKING, 0, true);
+	double z = H / 2 - rowH * 0.5 - 1.0;
+	Add(0, z, L + 0.1, TextPixels(title) * PX * S, ROWH * S, BB_TEXT, 0, Color(U.dialogue.markerSelected), title.c_str(), 1.0, E_NONE, 0, false);
+	z -= rowH;
+	if (!body.empty())
+	{
+		Add(0, z, L + 0.1, TextPixels(body) * PX * S, ROWH * S, BB_TEXT, 0, Color(U.dialogue.defaultMessageColor[0]), body.c_str(), 1.0, E_NONE, 0, false);
+		z -= rowH;
+	}
+	for (size_t i = 0; i < rows.size(); i++)
+	{
+		const bool lit = (int)i == m.Selected();
+		const bool on = rows[i].enabled;
+		Add(0, z, L + 0.1, W - 3.0, rowH * 0.9, BB_PANEL, 0, lit ? PalEntry(255, 70, 60, 40) : PalEntry(255, 24, 24, 24), nullptr,
+			lit ? 0.7 : 0.3, E_MENU_ROW, (int)i, true);
+		const PalEntry col = !on ? PalEntry(255, 110, 110, 110) : Color(lit ? U.dialogue.markerSelected : U.dialogue.defaultMessageColor[0]);
+		if (!text[i].empty())
+			Add(0, z, L + 0.2, TextPixels(text[i]) * PX * S, ROWH * S, BB_TEXT, 0, col, text[i].c_str(), 1.0, E_NONE, 0, false);
+		z -= rowH;
+	}
+	// The slot lists scroll (word[0xc]); the close box is Esc ("cancelled").
+	if (m.CanScrollUp()) Add(W / 2 + 2.5, H / 2 - 4, L + 0.1, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "^", 1.0, E_MENU_UP, 0, true);
+	if (m.CanScrollDown()) Add(W / 2 + 2.5, -H / 2 + 4, L + 0.1, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "v", 1.0, E_MENU_DOWN, 0, true);
+	Add(W / 2 - 2.0, H / 2 - 2.0, L + 0.2, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "x", 1.0, E_MENU_BACK, 0, true);
+}
+
 void Rebuild(player_t *player)
 {
 	const std::string sig = Signature();
 	if (sig == U.signature) return;
-	const bool worldPanel = U.dialogue.MenuUp() || U.screen.IsOpen();
+	const bool menuUp = U.menus != nullptr && U.menus->IsOpen();
+	const bool worldPanel = U.dialogue.MenuUp() || U.screen.IsOpen() || menuUp;
 	if (!worldPanel) U.anchored = false;
 	else if (!U.anchored) Anchor(player);
 	ClearBillboards();
 	U.signature = sig;
+	if (menuUp) { BuildMenu(); return; }        // modal: nothing else is shown or clicked under it
 	BuildDialogue();
 	BuildTimedMessage();
 	BuildInventory();
@@ -738,6 +816,11 @@ void ClickElement(const Element &e, int button)
 	case E_POP_CLOSE: U.screen.PopupClose(); break;
 	case E_POP_PGUP: U.screen.PopupPageUp(); break;
 	case E_POP_PGDN: U.screen.PopupPageDown(); break;
+	case E_OPTIONS: if (U.menus != nullptr) U.menus->OpenOptions(); break;
+	case E_MENU_ROW: if (U.menus != nullptr) { U.menus->Choose(e.arg); Printf("[roth_menu] row %d chosen: %s\n", e.arg, U.menus->Describe().c_str()); } break;
+	case E_MENU_UP: if (U.menus != nullptr) U.menus->ScrollUp(); break;
+	case E_MENU_DOWN: if (U.menus != nullptr) U.menus->ScrollDown(); break;
+	case E_MENU_BACK: if (U.menus != nullptr) U.menus->Back(); break;
 	default: break;
 	}
 }
@@ -765,10 +848,18 @@ bool Press(player_t *player, int forcedButton)
 	Ray rays[2];
 	int n = 0;
 	if (!PointerRays(player, rays, n)) return false;
+	const bool menuUp = U.menus != nullptr && U.menus->IsOpen();
 	for (int i = 0; i < n; i++)
 	{
 		const Element *e = HitElement(rays[i]);
 		if (e == nullptr) continue;
+		if (menuUp)
+		{
+			// A box is modal: only its rows and buttons answer.
+			if (e->kind < E_MENU_ROW) continue;
+			ClickElement(*e, InventoryScreen::PRIMARY);
+			return true;
+		}
 		// The main hand (or the view) is the primary button, the off hand the
 		// secondary: the original needs both on the inventory.
 		const int button = forcedButton ? forcedButton : (i == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY);
@@ -778,6 +869,7 @@ bool Press(player_t *player, int forcedButton)
 		ClickElement(*e, button);
 		return true;
 	}
+	if (menuUp) return true;                    // a press beside the box does nothing, and goes no further
 	if (ClickDialogue(nullptr)) return true;
 	return ClickNothing();
 }
@@ -789,6 +881,12 @@ void UpdateHover(player_t *player)
 	const Element *e = nullptr;
 	if (PointerRays(player, rays, n) && n > 0) e = HitElement(rays[0]);
 	const int bb = e ? e->bb : 0;
+	if (U.menus != nullptr && U.menus->IsOpen())
+	{
+		if (bb != U.hoverBb && e != nullptr && e->kind == E_MENU_ROW) U.menus->Hover(e->arg);
+		U.hoverBb = bb;
+		return;
+	}
 	// The dialogue's hover (game_core.c:556-569; dialogue_ui.c:231-271): the
 	// "position" is the element under the pointer, so a keyboard selection
 	// survives until the pointer moves to another row.
@@ -899,6 +997,8 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 }
 
 InventorySink *InterfaceInventorySink() { return &U.invSink; }
+
+void InterfaceSetMenus(RealmsMenus *menus) { U.menus = menus; }
 
 uint32_t InterfaceReadNextDialogueLine(uint8_t *dest, uint32_t maxlen, uint32_t voiceOffset, uint32_t flag)
 {
@@ -1050,6 +1150,14 @@ static void KeyVerb(player_t *player, const std::string &verb, int arg)
 	if (verb == "primary" || verb == "secondary")
 	{
 		Press(player, verb == "primary" ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY);
+		return;
+	}
+	if (U.menus != nullptr && U.menus->IsOpen())
+	{
+		if (verb == "up") U.menus->Up();
+		else if (verb == "down") U.menus->Down();
+		else if (verb == "enter") U.menus->Enter();
+		else if (verb == "skip" || verb == "close") U.menus->Back();
 		return;
 	}
 	if (s.PopupUp())                                        // file_config.c:1063-1117

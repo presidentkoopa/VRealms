@@ -43,6 +43,7 @@ struct FLevelLocals;
 struct FTraceResults;   // UseFlatAt / Pick -- by reference only, no layout needed
 class  player_t;        // declared as a class in d_player.h:348
 class  FSerializer;     // SerializeRealmsGlobals
+struct event_t;         // FlowResponder
 
 namespace roth
 {
@@ -390,5 +391,14 @@ void LevelRestored(FLevelLocals *level);
 // health, music, the movie gallery, and every visited map's logic. Called
 // beside P_WriteACSVars / P_ReadACSVars.
 void SerializeRealmsGlobals(FSerializer &arc);
+
+// The menus and the death wait take Esc while one is up (sysCallbacks.WantEscape),
+// and their keys -- Esc, Space in the death wait, arrows, Enter, the pad's A/B
+// and d-pad -- plus F9/F10 (quicksave, quickload) in play (G_Responder).
+bool FlowWantsEscape();
+bool FlowResponder(const event_t *ev);
+// A dead player asked to respawn (FLevelLocals::DoReborn). True while the
+// Realms death wait owns that press: it is a click on the death box instead.
+bool FlowRebornRequested(player_t *player);
 
 } // namespace roth

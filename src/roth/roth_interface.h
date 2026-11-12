@@ -69,6 +69,14 @@ void InterfaceEndLevel();
 // press belonged to a panel or to the dialogue and must go no further.
 bool InterfaceUse(player_t *player);
 
+// The Realms menus (roth_menus.h), drawn as a world panel like the others and
+// clicked with the same beam or crosshair. While a box is up it is the only
+// panel that takes clicks; the inventory screen gains an "Options" button that
+// opens the in-game options, as the original's inventory screen does
+// (inventory.c:1799-1817). Set once by the runtime.
+class RealmsMenus;
+void InterfaceSetMenus(RealmsMenus *menus);
+
 // An object the player used or examined that carries no command chain: the
 // original's world pickup (activate_targeted_object, input.c:1034-1086) and
 // right-click examine (examine_object_under_cursor, input.c:982-1014).
