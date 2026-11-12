@@ -1253,7 +1253,13 @@ int MapTransition(Command *rec)
 	size_t len = 0;                          // NUL-terminated, not fixed-width
 	while (len < 8 && name[len] != 0) len++;
 	name[len] = 0;
-	if (len == 0) return CMD_NOTHING;
+	// AN EMPTY NAME IS A WARP WITHIN THIS MAP, not a record to ignore.
+	// cmd_map_transition latches and answers -1 whatever the name is
+	// (raw_commands.c:525-533), and process_map_warp_or_load skips its name
+	// compare when the requested name is empty, which leaves `same` set and
+	// relocates in place (map_load.c:598-623). STUDY1 has one: record 383,
+	// reached from dialogue action 178. This returned CMD_NOTHING until
+	// 2026-11-12, so that chain "did nothing".
 
 	g.warpMap = name;
 	g.warpArrival = rec->key;
@@ -3888,7 +3894,7 @@ void ApplyPendingWarp()
 	if (g.level == nullptr) return;
 
 	// Same map -> relocate in place, no reload.
-	if (stricmp(g.warpMap.c_str(), g.level->MapName.GetChars()) == 0)
+	if (g.warpMap.empty() || stricmp(g.warpMap.c_str(), g.level->MapName.GetChars()) == 0)
 	{
 		const int arrival = g.warpArrival != 0 ? FindSectorByCommandID(g.warpArrival) : -1;
 		if (arrival >= 0) RelocateToArrival(arrival);
