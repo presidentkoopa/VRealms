@@ -25,6 +25,11 @@ INTERP="$HERE/interp_test.cpp $SRC/roth_dbase100_interp.cpp $SRC/roth_dbase100.c
 g++ $FLAGS -o "$OUT/interp_test" $INTERP
 g++ $FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all -o "$OUT/interp_test_san" $INTERP
 
+# The game core: interpreter and inventory joined. Retail only (ROTH_DATA).
+g++ $FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all -o "$OUT/gamecore_test" \
+	"$HERE/gamecore_test.cpp" "$SRC/roth_gamecore.cpp" "$SRC/roth_dbase100_interp.cpp" \
+	"$SRC/roth_inventory.cpp" "$SRC/roth_dbase100.cpp"
+
 TMP=$(mktemp -d)
 "$OUT/dbase100_test" "$TMP"
 "$OUT/dbase100_test_san" "$TMP"
@@ -33,6 +38,7 @@ rm -rf "$TMP"
 if [ -n "$ROTH_DATA" ]; then RETAIL="$ROTH_DATA/DBASE100.DAT"; else RETAIL="/nonexistent/DBASE100.DAT"; fi
 "$OUT/interp_test" "$RETAIL" | tail -1
 "$OUT/interp_test_san" "$RETAIL" | tail -1
+"$OUT/gamecore_test" "${ROTH_DATA:-/nonexistent}" | tail -1
 
 # Exercise the dump tool on the synthetic fixture (no retail data here).
 FIX=$(mktemp -d)

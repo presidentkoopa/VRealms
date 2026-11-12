@@ -5,7 +5,7 @@
 #
 # The owner starts it by double-clicking START_CLAUDE_BRIDGE_REMAROTH.cmd; closing its window
 # stops it. It derives the repo root from where this file sits (tools\claude_bridge\), so it
-# works wherever the repo is checked out.
+# works wherever the repo is checked out; a copy kept outside the repo reads repopath.txt.
 #
 # Claude writes  requests\<id>.req   (line 1 = action, following lines = arguments, one per line)
 # The bridge writes responses\<id>.out (all output, last line "EXIT=<code>") then deletes the request.
@@ -41,6 +41,13 @@
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repo = [IO.Path]::GetFullPath((Join-Path $root '..\..'))
+# A copy kept OUTSIDE the repo (so starting it does not depend on which branch is checked out)
+# names the repo in repopath.txt beside it.
+$repoFile = Join-Path $root 'repopath.txt'
+if (Test-Path -LiteralPath $repoFile) {
+	$rp0 = (Get-Content -LiteralPath $repoFile -TotalCount 1).Trim().Trim('"')
+	if ($rp0 -and (Test-Path -LiteralPath (Join-Path $rp0 '.git'))) { $repo = [IO.Path]::GetFullPath($rp0) }
+}
 $req  = Join-Path $root 'requests'
 $res  = Join-Path $root 'responses'
 $logs = Join-Path $root 'logs'

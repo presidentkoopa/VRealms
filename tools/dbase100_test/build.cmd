@@ -32,6 +32,11 @@ cl /nologo /std:c++17 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /Fo:"%OUT%\\" /Fd:"%OU
    /Fe:"%OUT%\interp_test.exe" "%HERE%interp_test.cpp" "%SRC%roth_dbase100_interp.cpp" "%SRC%roth_dbase100.cpp"
 if errorlevel 1 exit /b 1
 
+cl /nologo /std:c++17 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /Fo:"%OUT%\\" /Fd:"%OUT%\core.pdb" ^
+   /Fe:"%OUT%\gamecore_test.exe" "%HERE%gamecore_test.cpp" "%SRC%roth_gamecore.cpp" ^
+   "%SRC%roth_dbase100_interp.cpp" "%SRC%roth_inventory.cpp" "%SRC%roth_dbase100.cpp"
+if errorlevel 1 exit /b 1
+
 "%OUT%\dbase100_test.exe" "%TEMP%"
 if errorlevel 1 exit /b 1
 "%OUT%\inventory_test.exe"
@@ -46,6 +51,8 @@ rem The interpreter over every retail action and item block.
 "%OUT%\interp_test.exe" "%~1\DBASE100.DAT" > "%OUT%\interp_retail.txt"
 if errorlevel 1 (echo INTERPRETER TEST FAILED, see %OUT%\interp_retail.txt & exit /b 1)
 echo Interpreter retail run written to %OUT%\interp_retail.txt
+"%OUT%\gamecore_test.exe" "%~1"
+if errorlevel 1 exit /b 1
 
 "%OUT%\dbase100_dump.exe" %1 --all > "%OUT%\dbase100_dump.txt"
 echo Full dump written to %OUT%\dbase100_dump.txt
