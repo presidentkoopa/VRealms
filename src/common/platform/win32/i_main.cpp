@@ -422,6 +422,8 @@ int DoMain (HINSTANCE hInstance)
 	return ret;
 }
 
+extern FILE *Logfile;
+
 void I_ShowFatalError(const char *msg)
 {
 	I_ShutdownGraphics ();
@@ -432,6 +434,12 @@ void I_ShowFatalError(const char *msg)
 	{
 		Printf("%s", CVMAbortException::stacktrace.GetChars());
 	}
+
+	// The log is fully buffered and the pane is a window nobody can read on a
+	// hidden test desktop: put the message in the log and flush it first, so
+	// a fatal error always leaves its text behind.
+	Printf("FATAL ERROR: %s\n", msg);
+	if (Logfile) fflush(Logfile);
 
 	if (!batchrun)
 	{
