@@ -123,6 +123,11 @@ uint8_t g_progressFlags[FLAG_BITS / 8];
 //
 //==========================================================================
 
+// The interpreter's two calls back into the map's own command chains
+// (DBASE100 ops 0x23 and 0x36). Defined after Fire, which they run.
+int32_t HostResetCommandChainNoSource(uint16_t index);
+int32_t HostRunObjectCommandsById(uint16_t id);
+
 class CoreHost : public Dbase100Sink
 {
 public:
@@ -186,8 +191,8 @@ public:
 	uint32_t ShowFullscreenImage(uint32_t operand) override { (void)operand; calls["fullscreen image"]++; return 0; }
 	uint32_t PlaySoundEffect(uint32_t id, uint32_t param) override { (void)id; (void)param; calls["sound effect"]++; return 0; }
 	uint32_t LoadDbase300Chunk(uint32_t index) override { (void)index; calls["music chunk"]++; return 1; }
-	int32_t ResetCommandChainNoSource(uint16_t index) override { (void)index; calls["RAW chain by index (op 0x23)"]++; return 0; }
-	int32_t RunObjectCommandsById(uint16_t id) override { (void)id; calls["RAW chain by object id (op 0x36)"]++; return 0; }
+	int32_t ResetCommandChainNoSource(uint16_t index) override { return HostResetCommandChainNoSource(index); }
+	int32_t RunObjectCommandsById(uint16_t id) override { return HostRunObjectCommandsById(id); }
 	void AdvanceClamp8a0f0(uint32_t amount, uint32_t max) override { (void)amount; (void)max; calls["health change"]++; }
 	void ZeroHealthAndFlagDeath() override { calls["death"]++; }
 };
@@ -3725,6 +3730,54 @@ bool Fire(uint16_t chain)
 
 //==========================================================================
 //
+// Dialogue calling back into the map.
+//
+// reset_command_chain_no_source (raw_commands.c:5445-5450): clear the pending
+// rotation, re-arm the warp sentinel, run the chain at that command index.
+// [unverified]: the two latches it resets (0x8a264, 0x8a260) are the warp's;
+// what the runtime keeps of them is g.warpPending, left alone here.
+//
+// run_object_commands_by_id (raw_commands.c:1732-1756): walk the command table
+// in order for the first record that is not disabled and whose key is the id,
+// and run the chain its link word names, with the dialogue latch held across
+// it. -1 when one was found, else 0.
+//
+// A dialogue record is itself run from a chain, so these NEST: Fire inside
+// the interpreter inside Fire. The original nests the same way, and its inner
+// chain's tail runs finish_dialogue_record_eval just as Fire's does. A depth
+// guard stops a record and a chain that call each other for ever; ROTH.C has
+// none and would not return.
+//
+//==========================================================================
+
+int g_hostChainDepth = 0;
+
+int32_t HostResetCommandChainNoSource(uint16_t index)
+{
+	if (g_hostChainDepth >= 16) { g.unhandledOps[0x23]++; return 0; }
+	g_hostChainDepth++;
+	Fire(index);
+	g_hostChainDepth--;
+	return -1;                               // reset_command_chain_state's own answer
+}
+
+int32_t HostRunObjectCommandsById(uint16_t id)
+{
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		Command *rec = Rec((uint16_t)(i + 1));
+		if (rec == nullptr) continue;
+		if ((rec->modifier & 0x08) != 0 || rec->key != id) continue;         // :1746-1747
+		g_dialogueLatch = true;                                              // :1748
+		const int32_t r = HostResetCommandChainNoSource(rec->linkIndex);     // :1749-1750
+		g_dialogueLatch = false;                                             // :1751
+		return r;
+	}
+	return 0;
+}
+
+//==========================================================================
+//
 // process_deferred_command_queue -- raw_commands.c:1587
 //
 // Double-buffered: the front buffer is swapped out, the new front cleared, and
@@ -5713,8 +5766,10 @@ void DrainPendingDialogue()
 			continue;
 		}
 		const std::map<std::string, int> before = g_coreHost.calls;
+		const int firedBefore = g.fired;
 		const uint32_t r = g_core.RunAction((uint32_t)id);
-		Printf("roth_dialogue: action %d returned %d\n", id, (int)r);
+		Printf("roth_dialogue: action %d returned %d, map chains that acted because of it: %d\n",
+			id, (int)r, (int)(g.fired - firedBefore));
 		for (const auto &kv : g_coreHost.calls)
 		{
 			const auto it = before.find(kv.first);
