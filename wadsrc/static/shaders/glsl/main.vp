@@ -84,14 +84,15 @@ void main()
 		// Harmless outside Realms lantern sectors: only those read it.
 		int pk = int(uGlobVis + 0.5);
 		int Ll = (pk >> 2) & 3;
-		// SIX bits, bias 32 -- the same layout main.fp:543 decodes and
-		// hw_drawinfo.cpp:1891 packs. This read seven bits with a bias of 64
+		// SIX bits, bias 16 (it was 32 until the candle bias became the
+		// map's own, which reaches 32) -- the same layout R_RothShade decodes
+		// and hw_drawinfo.cpp packs. This read seven bits with a bias of 64
 		// until 2026-10-01, which was right until E was narrowed to free bit 10
 		// for the storm flag and THIS copy was not updated with the other one.
 		// The extra bit it swallowed was that flag, so E came out 32 low (or 32
 		// high with the storm lit) and the lantern exponent went far enough
 		// wrong to render the world black.
-		int E  = ((pk >> 4) & 63) - 32;
+		int E  = ((pk >> 4) & 63) - 16;	// six bits, bias 16 (hw_drawinfo.cpp packs E+16)
 		float jx = float(((pk >> 11) & 31) - 16) / 256.0;
 		float jy = float(((pk >> 16) & 31) - 16) / 256.0;
 		vec3 fwd3 = -vec3(ViewMatrix[0][2], ViewMatrix[1][2], ViewMatrix[2][2]);
@@ -103,10 +104,14 @@ void main()
 		float tx = (d.x * fh.y - d.z * fh.x) / Z;
 		float ty = clamp(d.y / Z, -240.0 / 355.06, 240.0 / 355.06);
 		// A FLAT is clipped to the view before its corners are evaluated, so
-		// an off-screen corner lands on the screen edge. A WALL is not: only
-		// its Y is clamped to the view band, its X stays where it projects --
-		// which is why a wall that runs off the side of the screen goes dark
-		// across its whole width (the study's left bay window, 2026-10-01).
+		// an off-screen corner lands on the screen edge. So is a WALL, in X as
+		// well as Y -- wall_body_36b68 evaluates its corners at the clipped
+		// columns (renderer.c:5009-5014, the left/right clip counts added to
+		// the corner x before wd_project) -- but a GPU vertex cannot see where
+		// its quad meets the screen edge, so walls and billboards are no longer
+		// shaded from this value: the fragment shader rebuilds the original's
+		// clipped corners from the quad itself (R_RothWallRow, uRothWall). This
+		// per-vertex value is only the fallback for a draw that carries no quad.
 		vec3 nrm = bones.Normal;
 		bool isWall = dot(nrm, nrm) > 0.25 && abs(nrm.y) < 0.7 * length(nrm);
 		if (!isWall) tx = clamp(tx, -320.0 / 309.77, 320.0 / 309.77);

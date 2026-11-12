@@ -34,7 +34,8 @@ std::pair<PalEntry, PalEntry>& R_GetSkyCapColor(FGameTexture* tex);
 // would want it, and why a dome cannot express it.
 //
 // A cvar so the two can be compared without a reload, and off by default so no
-// existing map changes. A map that wants it sets it at load; Realms does.
+// existing map changes. A map that wants it sets FLevelLocals::ForcedSkyBand at
+// load (Realms does) -- never this cvar, which is the player's archived setting.
 //
 // This replaces an earlier attempt that tried to cancel the viewer's pitch by
 // ROTATING the dome. It could never have worked: on a dome v is a function of
@@ -101,7 +102,7 @@ void HWSkyPortal::DrawContents(HWDrawInfo *di, FRenderState &state)
 		// matrices: both of its laws are already in the vertex UVs, which is
 		// what makes it exact, and what makes it correct in VR for free, since
 		// nothing in it depends on where the camera is.
-		if (r_skyband && origin->texture[0])
+		if ((r_skyband || (di->Level != nullptr && di->Level->ForcedSkyBand)) && origin->texture[0])
 		{
 			state.SetTextureMode(TM_OPAQUE);
 			vertexBuffer->RenderRothSky(state, origin->texture[0]);

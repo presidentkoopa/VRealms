@@ -473,6 +473,12 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 				state.SetDepthFunc(DF_Always);
 			}
 			state.SetLightIndex(-1);
+			// [ROTHWALL] A Realms billboard goes through the original's WALL driver (render_world_sprite,
+			// render_world.c:698-735, enters the wall body at 0x366d2), so a candle-lit one is shaded
+			// from its quad's four clipped corners like a wall (R_RothWallRow in main.fp). The upright
+			// quad is (x1,y1)-(x2,y2), top z1, bottom z2 (CalculateVertices' plain case).
+			const bool rothQuad = di->Level->RothLighting && !isBillboard && spritetype == RF_FACESPRITE && z1 > z2;
+			if (rothQuad) state.SetRothWall(x1, y1, x2, y2, z1, z2, z1, z2);
 			state.Draw(DT_TriangleStrip, vertexindex, 4);
 			if (isBillboard && bbNoDepth)
 			{
@@ -488,6 +494,7 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 				state.Draw(DT_TriangleStrip, vertexindex, 4);
 				state.SetTextureMode(TM_NORMAL);
 			}
+			if (rothQuad) state.ClearRothWall();	// [ROTHWALL]
 		}
 		else
 		{

@@ -1530,6 +1530,16 @@ public:
 	// Set it during map load, before the player spawns.
 	double		ForcedPlayerHeight = 0;			// total height, 0 = class default
 	double		ForcedPlayerViewHeight = 0;		// eye height,   0 = class default
+	// The flat-screen field of view this map is drawn with, in degrees; 0 = the
+	// player's own `fov`. Applied to the player at spawn (P_SpawnPlayer) instead
+	// of the cvar, so a map that needs its own projection never writes the
+	// player's ARCHIVED setting. In a headset the lenses decide and this is not
+	// used. Realms sets 91.82 (rothmap.cpp, ROTH_FOV_DEGREES).
+	double		ForcedPlayerFOV = 0;
+	// The sky on a world-locked cylinder (FSkyVertexBuffer::RenderRothSky) for
+	// THIS level, as r_skyband does for every level. A map that needs it sets
+	// this at load instead of the archived cvar. Realms does (rothmap.cpp).
+	bool		ForcedSkyBand = false;
 
 	// How tall a step the player can walk up, for the same reason: a level
 	// authored for a person 154 units tall has stairs to match, and Doom's
@@ -1561,6 +1571,12 @@ public:
 	// normal sectors' shift and RothLanternShift the lantern sectors'.
 	bool		RothLighting = false;
 	int			RothLanternShift = 5;
+	// The lantern ("candle") bias E: the map's metadata +0x12, which the original
+	// copies into the camera record at +0x1c (map_load.c:212, 0x89f08) and adds,
+	// with -13 when the viewer stands outside a lantern sector, to every lantern
+	// row (setup_surface_render_constants, renderer.c:9386-9388). 8 in most maps;
+	// 12, 15, 16 and 32 in others.
+	int			RothCandleBias = 8;
 	uint16_t	RothLightRng = 0;		// the original's flicker LCG (0x85328)
 	int			RothLightStep = 0;
 	// The storm/lightning phase (0x8a355), driven by the same LCG. A burst

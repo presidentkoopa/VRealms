@@ -184,6 +184,9 @@ bool FGLRenderState::ApplyShader()
 	activeShader->muFlatGlowIsCeiling.Set(mStreamData.uFlatGlowIsCeiling);
 	activeShader->muDarknessExempt.Set(mStreamData.uDarknessExempt);
 	activeShader->muFogDensityScale.Set(mStreamData.uFogDensityScale);
+	activeShader->muRothWall.Set(&mStreamData.uRothWall.X);	// [ROTHWALL]
+	activeShader->muRothWallZ.Set(&mStreamData.uRothWallZ.X);
+	activeShader->muRothWallP.Set(&mStreamData.uRothWallP.X);
 	activeShader->muOutlineColorA.Set(&mStreamData.uOutlineColorA.X);
 	activeShader->muOutlineColorB.Set(&mStreamData.uOutlineColorB.X);
 	activeShader->muOutlineParms.Set(&mStreamData.uOutlineParms.X);

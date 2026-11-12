@@ -87,6 +87,27 @@ void HWDrawInfo::AddMirrorSurface(HWWall *w)
 
 //==========================================================================
 //
+// [MIRRORPICTURE] The picture of a reflective wall (GTexf_MirrorPictureOverlay), drawn over
+// the mirror's reflection with its own texture and alpha: the same list and the same depth
+// rule as the environment-map surface above, which is the one GZDoom already draws on top
+// of a mirror.
+//
+//==========================================================================
+
+void HWDrawInfo::AddMirrorPicture(HWWall *w)
+{
+	auto newwall = drawlists[GLDL_TRANSLUCENTBORDER].NewWall();
+	*newwall = *w;
+	newwall->type = RENDERWALL_MIRRORSURFACE;
+	newwall->flags |= HWWall::HWF_MIRRORPICTURE | HWWall::HWF_TRANSLUCENT;
+	newwall->RenderStyle = STYLE_Translucent;
+	newwall->vertcount = 0;
+	newwall->MakeVertices(true);
+	newwall->dynlightindex = -1;
+}
+
+//==========================================================================
+//
 // HWDrawInfo::AddFlat
 //
 // Checks texture, lighting and translucency settings and puts this

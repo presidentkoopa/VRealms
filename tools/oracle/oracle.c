@@ -174,6 +174,27 @@ static void w_wallspans(struct roth_chain *c, const struct roth_api_v1 *api, uin
         fflush(g_walllog);
     }
 }
+static int16_t g_lastw[4] = {0x7fff,0,0,0};
+static int w_colsrc(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t edi_in, uint32_t *o_esi, uint32_t *o_edi, uint32_t *o_ecx, uint32_t *o_edx, uint32_t *o_eax)
+{
+    const struct roth_game_ram_api_v1 *g = api->game_ram;
+    if (g_walllog && g_frames >= g_target) {
+        int16_t xl = (int16_t)g->u16(0x90958), xr = (int16_t)g->u16(0x90960), ytl = (int16_t)g->u16(0x9095a), ytr = (int16_t)g->u16(0x90962);
+        if (xl != g_lastw[0] || xr != g_lastw[1] || ytl != g_lastw[2] || ytr != g_lastw[3]) {
+            g_lastw[0] = xl; g_lastw[1] = xr; g_lastw[2] = ytl; g_lastw[3] = ytr;
+            fprintf(g_walllog, "C xl %d xr %d ytl %d ybl %d ytr %d ybr %d zl %u zr %u cxl %u cxr %u clip %d %d sh %04x %04x %04x %04x fl %04x alt %04x lt %u bias %d cap %d E %d vb %d %d %d %d r84 %d r8e %d\n",
+                xl, xr, ytl, (int16_t)g->u16(0x9095c), ytr, (int16_t)g->u16(0x90964),
+                g->u16(0x8a316 + 0x14), g->u16(0x8a316 + 0x16), g->u16(0x8a316 + 0xa), g->u16(0x8a316 + 0xc),
+                (int16_t)g->u16(0x8a2f0 + 0x1e), (int16_t)g->u16(0x8a2f0 + 0x1c),
+                g->u16(0x90948), g->u16(0x9094a), g->u16(0x9094c), g->u16(0x9094e), g->u16(0x9093c), g->u16(0x909ae), g->u8(0x90970), (int16_t)g->u16(0x90a1e), (int16_t)g->u16(0x90a20),
+                (int16_t)g->u16(0x38c94),
+                (int16_t)g->u16(0x9096a), (int16_t)g->u16(0x90968), (int16_t)g->u16(0x9096e), (int16_t)g->u16(0x9096c),
+                (int16_t)g->u16(0x90984), (int16_t)g->u16(0x9098e));
+            fflush(g_walllog);
+        }
+    }
+    return roth_next_compute_wall_column_source_offset(c, edi_in, o_esi, o_edi, o_ecx, o_edx, o_eax);
+}
 static void w_render_world_col_shaded_gs_37ec8(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t p1, uint32_t p2, uint32_t p3, uint32_t ebx, uint32_t esi, uint32_t edi, const uint8_t *gs)
 { (void)api; uint32_t off = edi; if (off >= 640*480) { uint32_t fb = g_api->game_ram->u32(0x90a98); off = edi - fb; } uint32_t save = g_cur_tag;
   g_cur_tag = (0xCu << 28) | (1u << 20) | (((ebx) >> 8) & 0xff) << 8 | (g_api->game_ram->u8(0x90970)); 
@@ -310,6 +331,7 @@ static void reg(const struct roth_api_v1 *api, struct roth_registrar_v1 *r)
     roth_override(r, ROTH_FN_project_floorceil_edge_texcoord, w_project, 100);
     roth_override(r, ROTH_FN_execute_command_chain, w_exec_chain, 100);
     roth_override(r, ROTH_FN_draw_world_surface_spans, w_wallspans, 100);
+    roth_override(r, ROTH_FN_compute_wall_column_source_offset, w_colsrc, 100);
     roth_override(r, ROTH_FN_render_world_col_shaded_gs_37ec8, w_render_world_col_shaded_gs_37ec8, 100);
     roth_override(r, ROTH_FN_render_world_col_shaded_masked_gs_38198, w_render_world_col_shaded_masked_gs_38198, 100);
     roth_override(r, ROTH_FN_render_world_col_shaded_gs_wrapped_38434, w_render_world_col_shaded_gs_wrapped_38434, 100);

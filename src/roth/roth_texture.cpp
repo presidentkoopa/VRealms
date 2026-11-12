@@ -540,6 +540,19 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped, con
 		auto *image = new FPalettedMemoryImage(KeepPixels(pixels), useRemap, w, h, true, useHoles);
 		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
 		if (roth_pattern <= 0) ApplyPaletteShading(tex, mName, *mPack);
+		// A MIRROR is a property of the PICTURE. rasterize_world_spans_scanline tests `ah & 8`
+		// on the art block's word at +0xa -- image_type bit 3, IT_MIRROR -- and, instead of
+		// drawing the face, registers it for a reflected view (ROTH.C renderer.c:13229-13246,
+		// add_reflection_view_entry :12642, rendered by render_reflection_subviews,
+		// render_world.c:203). `ah & 4` -- IT_TRANSLUCENT -- then decides whether the picture is
+		// ALSO drawn over the reflection (:13245 `jne srcptr`) or not drawn at all (:13246).
+		// Keyed to the picture, so a smashed mirror (cmd 0x2e swaps in the odd, plain picture)
+		// stops reflecting by itself. Not in pattern mode, which must see every texel.
+		if (roth_pattern <= 0 && (img.imageType & IT_MIRROR) != 0)
+		{
+			tex->SetMirrorPicture(true, (img.imageType & IT_TRANSLUCENT) != 0);
+			if (log) log->Count("artwork: mirror pictures (IT_MIRROR)");
+		}
 		return TexMan.AddGameTexture(tex);
 	};
 

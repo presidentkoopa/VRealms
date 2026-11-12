@@ -357,6 +357,7 @@ public:
 
 	void AddWall(HWWall *w);
 	void AddMirrorSurface(HWWall *w);
+	void AddMirrorPicture(HWWall *w);	// [MIRRORPICTURE]
 	void AddFlat(HWFlat *flat, bool fog);
 	void AddSprite(HWSprite *sprite, bool translucent);
 

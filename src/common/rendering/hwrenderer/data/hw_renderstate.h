@@ -377,6 +377,20 @@ struct StreamData
 	// never sets it uploads exactly the bytes it did. The Vulkan prolog keeps the slot's name; main.fp reads it as
 	// uSurfaceDamageKey only inside #ifdef SURFACE_DAMAGE, which only the Vulkan backend defines.
 	int uSurfaceDamageKey;
+
+	// [ROTHWALL] THE VERTICAL QUAD THIS DRAW BELONGS TO, for a shader that shades a wall from
+	// its CORNERS rather than per pixel (Realms of the Haunting's candle light, R_RothWallRow in
+	// main.fp). uRothWall is the quad's two ends in the horizontal plane (x, y of end 1, then
+	// of end 2: map units, which are the shader's world x and z); uRothWallZ the quad's top and
+	// bottom height at end 1, then at end 2. All zero means "no quad": every draw that never sets
+	// it uploads zeros and the shader falls back to its per-vertex value. Set by the wall and
+	// sprite draws only while a level asks for it, and put back to zero after the draw.
+	// uRothWallP.x is the face's stored length when the wall also darkens as it turns edge-on to
+	// the view (side_t WALLF2_VIEWANGLESHADE), 0 otherwise; y, z, w are unused.
+	// Appended after the last lane so no existing offset moves.
+	FVector4 uRothWall;
+	FVector4 uRothWallZ;
+	FVector4 uRothWallP;
 };
 
 class FRenderState
@@ -478,6 +492,9 @@ public:
 		mStreamData.uGlowTopFar = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGlowBottomFar = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGlowInset = { 0.0f, 0.0f, 0.0f, 0.0f };
+		mStreamData.uRothWall = { 0.0f, 0.0f, 0.0f, 0.0f };	// [ROTHWALL]
+		mStreamData.uRothWallZ = { 0.0f, 0.0f, 0.0f, 0.0f };
+		mStreamData.uRothWallP = { 0.0f, 0.0f, 0.0f, 0.0f };
 		mStreamData.uGlowTopFalloff = 0;
 		mStreamData.uGlowBottomFalloff = 0;
 		mStreamData.uGlowTopIntensity = 1.0f;
@@ -852,6 +869,22 @@ public:
 	void SetSurfaceDamageKey(int key)
 	{
 		mStreamData.uSurfaceDamageKey = key;
+	}
+
+	// [ROTHWALL] See uRothWall. (x1,y1)-(x2,y2) the quad's ends in map units; top/bottom its
+	// height at each end. ClearRothWall puts the all-zero "no quad" back.
+	void SetRothWall(float x1, float y1, float x2, float y2, float top1, float bottom1, float top2, float bottom2, float angleShadeLength = 0.f)
+	{
+		mStreamData.uRothWall = { x1, y1, x2, y2 };
+		mStreamData.uRothWallZ = { top1, bottom1, top2, bottom2 };
+		mStreamData.uRothWallP = { angleShadeLength, 0.0f, 0.0f, 0.0f };
+	}
+
+	void ClearRothWall()
+	{
+		mStreamData.uRothWall = { 0.0f, 0.0f, 0.0f, 0.0f };
+		mStreamData.uRothWallZ = { 0.0f, 0.0f, 0.0f, 0.0f };
+		mStreamData.uRothWallP = { 0.0f, 0.0f, 0.0f, 0.0f };
 	}
 
 	// [EFFECTLIGHTS] This draw's effect-light mode ("Engine docs/EFFECT_LIGHTS_LB_IMPL_NOTES.md"): 0 none, 1 lit with N.L (walls,

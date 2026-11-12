@@ -129,13 +129,9 @@ CVAR(Bool, roth_platforms, false, CVAR_NOINITCALL)
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
-// The world-locked sky cylinder, defined in hw_skyportal.cpp.
-EXTERN_CVAR(Bool, r_skyband)
-// The player's own field of view. Setting the player's FOV fields is not
-// enough: the player SPAWN overwrites both from this cvar
-// (p_mobj.cpp:6566, `p->DesiredFOV = p->FOV = QzDoom_GetFOV()`), so a map that
-// wants its own field of view has to move the cvar or be silently overridden.
-EXTERN_CVAR(Float, fov)
+// The player's own field of view is NOT written by this loader: it is the
+// player's archived setting. Realms' projection is the level's
+// (FLevelLocals::ForcedPlayerFOV, applied at the player spawn).
 
 //==========================================================================
 //
@@ -422,6 +418,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		{
 			Level->ShadeFalloffShift = shadeShift;
 			Level->RothLanternShift = lanternShift;
+			// The lantern bias E, metadata +0x12 (map_load.c:212); see
+			// FLevelLocals::RothCandleBias.
+			Level->RothCandleBias = int(rm.metadata.candleGlow);
 			Level->RothLighting = true;
 			Level->RothLightRng = 0;
 			Level->RothLightStep = 0;
@@ -1215,18 +1214,19 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// is in force, and setting only one lets the next think undo it.
 	{
 		const float ROTH_FOV_DEGREES = 91.82f;
-		// The CVAR as well as the fields. Setting only the fields does not
-		// survive: the player spawn overwrites both from the cvar
-		// (p_mobj.cpp:6566), so the view quietly reverted to the engine's 90 --
-		// about 2% too narrow, which skews EVERY comparison against the
-		// original, not only the ones about field of view.
-		if (fabs(fov - ROTH_FOV_DEGREES) > 0.001f) fov = ROTH_FOV_DEGREES;
+		// ON THE LEVEL, NOT THE CVAR. Setting only the player fields does not
+		// survive -- the spawn overwrites both (P_SpawnPlayer) -- and this used
+		// to fix that by writing the player's `fov` cvar, which is ARCHIVED: one
+		// Realms map silently changed the field of view of every other game
+		// this engine runs, permanently. ForcedPlayerFOV is read by the spawn
+		// instead, and lasts as long as this level does.
+		Level->ForcedPlayerFOV = ROTH_FOV_DEGREES;
 		for (int i = 0; i < MAXPLAYERS; i++)
 		{
 			players[i].DesiredFOV = ROTH_FOV_DEGREES;
 			players[i].FOV = ROTH_FOV_DEGREES;
 		}
-		log.Line("  field of view         %.2f degrees (Realms; cvar and players)",
+		log.Line("  field of view         %.2f degrees (Realms; the level's, the fov cvar is untouched)",
 			ROTH_FOV_DEGREES);
 	}
 
@@ -1263,11 +1263,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// turns it on here, for the same reason the two values above are set here.
 	// See FSkyVertexBuffer::RenderRothSky.
 	//----------------------------------------------------------------------
-	if (!r_skyband)
-	{
-		r_skyband = true;
-		log.Line("  sky                   world-locked cylinder (r_skyband)");
-	}
+	// On the LEVEL: r_skyband is archived, and writing it here switched the
+	// cylinder on for every other game this engine runs, for good.
+	Level->ForcedSkyBand = true;
+	log.Line("  sky                   world-locked cylinder (the level's; r_skyband untouched)");
 
 	//----------------------------------------------------------------------
 	// Lines and sides
@@ -1561,6 +1560,16 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			}
 
 			const uint8_t tf = tm->flags;
+
+			// The view-angle shading of a lantern wall (R_RothWallRow in main.fp):
+			// every face whose texture map leaves flag 0x10 clear gets draw flag
+			// 0x40 (emit_world_span_record, renderer.c:8274), and the wall body
+			// then lowers the bias by 16 * (length + lateral step) / length
+			// (renderer.c:4825-4845) -- 0 for a face square to the view, 16 rows
+			// darker for one seen edge-on. Measured on the original: the side
+			// walls at STUDY1 100 556 128 carry bias -8 against the frontal
+			// walls' 8 (oracle wall log, 2026-11-12). 90% of the retail faces.
+			if (!(tf & 0x10)) sd->Flags2 |= WALLF2_VIEWANGLESHADE;
 
 			//--------------------------------------------------------------
 			// Which stored index goes in which Doom slot.

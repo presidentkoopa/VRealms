@@ -1370,6 +1370,13 @@ enum
 	// is room above it), and it honours a masked texture's holes. Inert unless
 	// something sets it.
 	WALLF2_OWNHEIGHT			= 2,
+	// [ROTHWALL] This wall darkens as it turns edge-on to the VIEWER -- not to a
+	// world axis like Doom's fake contrast -- by the rule Realms of the Haunting
+	// gives every face whose texture map leaves flag 0x10 clear (ROTH.C
+	// emit_world_span_record, renderer.c:8274, and the depth-bias adjust in
+	// wall_body_36b68, :4825-4845). Read only by R_RothWallRow in main.fp, as
+	// uRothWallP.x = the face's stored length. Inert unless something sets it.
+	WALLF2_VIEWANGLESHADE		= 4,
 };
 
 struct side_t

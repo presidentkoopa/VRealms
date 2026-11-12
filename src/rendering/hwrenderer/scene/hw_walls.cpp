@@ -463,6 +463,35 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 		}
 	}
 
+	// [ROTHWALL] Realms of the Haunting shades a candle-lit wall from the FACE's four corners,
+	// clipped to the screen (R_RothWallRow in main.fp). The quad handed over is the whole
+	// linedef, with this piece's top and bottom carried out to the line's two ends: glseg's
+	// fracleft/fracright place this piece on the line, measured from the SIDE's first vertex
+	// (Process: v1/v2 are swapped for a back side), and planes are linear along a line. A
+	// piece narrowed by a split (SplitWall, a ceiling below its floor) therefore still hands
+	// over the face, and a light-list slice below draws the same quad, as the original draws
+	// one span per face.
+	const bool rothQuad = di->Level != nullptr && di->Level->RothLighting && seg != nullptr && seg->linedef != nullptr
+		&& type != RENDERWALL_COLOR;
+	if (rothQuad)
+	{
+		const line_t *ln = seg->linedef;
+		const bool front = seg->sidedef == ln->sidedef[0];
+		const vertex_t *s1 = front ? ln->v1 : ln->v2;
+		const vertex_t *s2 = front ? ln->v2 : ln->v1;
+		const float df = glseg.fracright - glseg.fracleft;
+		auto heightAt = [&](const float *h, float f) -> float
+		{
+			return fabsf(df) > 1e-6f ? h[0] + (h[1] - h[0]) * (f - glseg.fracleft) / df : h[0];
+		};
+		// The view-angle term takes the face's STORED length (the texture map's extent, which
+		// the loader leaves in TexelLength), as the original divides by it (renderer.c:4840).
+		const float angleShadeLength = (seg->sidedef != nullptr && (seg->sidedef->Flags2 & WALLF2_VIEWANGLESHADE))
+			? (float)seg->sidedef->TexelLength : 0.f;
+		state.SetRothWall((float)s1->fX(), (float)s1->fY(), (float)s2->fX(), (float)s2->fY(),
+			heightAt(ztop, 0.f), heightAt(zbottom, 0.f), heightAt(ztop, 1.f), heightAt(zbottom, 1.f), angleShadeLength);
+	}
+
 	float absalpha = fabsf(alpha);
 	if (lightlist == nullptr)
 	{
@@ -522,6 +551,7 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	state.ApplyTextureManipulation(nullptr);
 	if (surfaceDamageKey != 0) state.SetSurfaceDamageKey(0);	// [SURFACEDAMAGE]
 	if (effectLightMode != 0) state.SetEffectLightMode(0);	// [EFFECTLIGHTS]
+	if (rothQuad) state.ClearRothWall();	// [ROTHWALL]
 }
 
 //==========================================================================
@@ -577,7 +607,16 @@ void HWWall::DrawWall(HWWallDispatcher*di, FRenderState &state, bool translucent
 		switch (type)
 		{
 		case RENDERWALL_MIRRORSURFACE:
-			RenderMirrorSurface(di, state);
+			// [MIRRORPICTURE] The picture a reflective wall wears, over its own reflection. It
+			// lies exactly on the plane the portal sealed the depth buffer at, so it needs
+			// LEqual, as the environment-map surface does.
+			if (flags & HWWall::HWF_MIRRORPICTURE)
+			{
+				state.SetDepthFunc(DF_LEqual);
+				RenderTranslucentWall(di, state);
+				state.SetDepthFunc(DF_Less);
+			}
+			else RenderMirrorSurface(di, state);
 			break;
 
 		case RENDERWALL_FOGBOUNDARY:
@@ -1649,9 +1688,18 @@ void HWWall::DoTexture(HWWallDispatcher *di, int _type,seg_t * seg, int peg,
 	if (!SetWallCoordinates(seg, &tci, floatceilingref, topleft, topright, bottomleft, bottomright,
 							seg->sidedef->GetTextureXOffset(texpos), skew)) return;
 
-	if (seg->linedef->special == Line_Mirror && _type == RENDERWALL_M1S && gl_mirrors && !(di->Level->ib_compatflags & BCOMPATF_NOMIRRORS))
+	// [MIRRORPICTURE] A one-sided wall is also a mirror while it wears a reflective picture
+	// (GTexf_MirrorPicture, gametexture.h). The same portal as Line_Mirror; the picture itself
+	// is then drawn over the reflection only when it says so (AddMirrorPicture below).
+	const bool mirrorPicture = texture != nullptr && texture->isMirrorPicture();
+	if ((seg->linedef->special == Line_Mirror || mirrorPicture) && _type == RENDERWALL_M1S && gl_mirrors && !(di->Level->ib_compatflags & BCOMPATF_NOMIRRORS))
 	{
 		PutPortal(di, PORTALTYPE_MIRROR, -1);
+		if (mirrorPicture && texture->isMirrorPictureOverlay() && di->di)
+		{
+			CheckTexturePosition(&tci);
+			di->di->AddMirrorPicture(this);
+		}
 	}
 	else
 	{

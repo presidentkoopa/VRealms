@@ -502,6 +502,9 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 		uniform vec4 uOutlineColorB;
 		uniform vec4 uOutlineParms;
 		uniform float uFogDensityScale;
+		uniform vec4 uRothWall;		// [ROTHWALL] hw_renderstate.h
+		uniform vec4 uRothWallZ;
+		uniform vec4 uRothWallP;
 		uniform int uFlatGlowLineCount;
 		uniform vec4 uFlatGlowLines[64];
 
@@ -944,6 +947,9 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 	muFlatGlowIsCeiling.Init(hShader, "uFlatGlowIsCeiling");
 	muDarknessExempt.Init(hShader, "uDarknessExempt");
 	muFogDensityScale.Init(hShader, "uFogDensityScale");
+	muRothWall.Init(hShader, "uRothWall");	// [ROTHWALL]
+	muRothWallZ.Init(hShader, "uRothWallZ");
+	muRothWallP.Init(hShader, "uRothWallP");
 	muOutlineColorA.Init(hShader, "uOutlineColorA");
 	muOutlineColorB.Init(hShader, "uOutlineColorB");
 	muOutlineParms.Init(hShader, "uOutlineParms");

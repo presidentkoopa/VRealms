@@ -529,6 +529,166 @@ const float RothRamp[32] = float[](
 float gRothDbg = -1.0;	// roth_shade_debug >= 2 writes this straight to the frame
 int gRothRow = -1;	// ROTH_PALETTE: the colormap row this pixel takes (64 = the fog colour)
 
+//===========================================================================
+//
+// [ROTHWALL] The candle row of a WALL or a BILLBOARD, the way the original's
+// wall driver gets it, from the quad this draw belongs to (uRothWall /
+// uRothWallZ, set by HWWall::RenderTexturedWall and HWSprite::DrawSprite).
+//
+// wall_body_36b68 (ROTH.C renderer.c:4764-5140) does not shade a pixel from
+// its own position. For a candle ("lantern") surface it evaluates the cone at
+// FOUR CORNERS and interpolates between them on the screen:
+//
+//   1. the quad's left and right ends are CLIPPED to the view window first:
+//      the corner x is x_left + clip_left and x_right - clip_right
+//      (renderer.c:5009-5014), and the depth there is the quad's own depth at
+//      that column (the corner-clip adjust, :4945-4973);
+//   2. each corner goes through wd_project (renderer.c:4319-4344): its screen y
+//      clamped to the view band, then
+//          e = depth + max(1024*|x - cx|, 1024*|y - cy|)    (screen over focal)
+//          s = (e >> shift) - bias - E
+//      s <= 0 is row 1 (0x100), s is capped at the light's cap, s >= 31 is
+//      31.99 (0x1fff), and the bits shifted out are the fraction;
+//   3. a column takes its top and bottom value linearly across the columns
+//      between the left and right corners (the endpoint steppers, :5034-5042);
+//   4. down the column the value runs linearly from the top of what is VISIBLE
+//      of that column to its bottom (dispatch_world_span_column, :4552-4566:
+//      the step is (bottom - top) / visible rows);
+//   5. all four corners at 31.99 is the fog colour, not row 31 (:5019-5024).
+//
+// So a wall seen across the whole screen is black at the screen edge and the
+// cone's brightness only reaches it where its corners do -- not a per-pixel
+// cone, and not a value carried in from a vertex far off the side of the
+// screen. Measured on the original (oracle shade probe, STUDY1 128 600 0):
+// the wall beside the painting runs 20 at the screen edge to 10 at its end,
+// constant down each column, exactly steps 1-4.
+//
+// The window is the original's own: 640x480 at FX 309.77 / FY 355.06
+// (docs/REMAROTH_MEASURED.md 1), in the same yaw-only frame R_RothShade uses,
+// so both eyes of a headset get the same value and a wider flat window simply
+// holds the edge value beyond the original's edge.
+//
+// Returns the interpolated value (1.0 .. 31.99), 64.0 for the fog colour, or
+// -1.0 when this draw carries no usable quad (then the per-vertex vRothE stands).
+//
+//===========================================================================
+
+float R_RothCorner(float tx, float ty, float Z, float jx, float jy, int Ll, int biasE, int cap)
+{
+	const float H = 240.0 / 355.06;
+	float e = Z + 1024.0 * max(abs(tx - jx), abs(clamp(ty, -H, H) - jy));
+	float q = e / float(32 << Ll);
+	float s = floor(q) - float(biasE);
+	if (s <= 0.0) return 1.0;
+	s = min(s, float(cap));
+	if (s >= 31.0) return 31.99;
+	return s + fract(q);
+}
+
+// THE VIEW-ANGLE TERM, for a candle-lit wall and an ordinary one alike: the wall body
+// lowers the depth bias (g_floorceil_depth_clip_bias, which both the corner projector and
+// the per-column depth shade subtract) before either runs. A face whose texture map leaves
+// flag 0x10 clear (side_t WALLF2_VIEWANGLESHADE; uRothWallP.x is then its stored length L)
+// loses
+//     16 * (L + h) / L,   h = lateral(first end) - lateral(second end)
+// (renderer.c:4825-4845; the flag is emit_world_span_record's 0x40, :8274): nothing for a
+// face square to the view (h = -L), 16 rows for one seen edge-on (h = 0). An end behind the
+// eye first shortens L to the part in front of depth 16. Measured on the original: bias -8
+// on STUDY1's corridor side walls against 8 on the frontal ones. A visible face runs left to
+// right on the screen, so h is minus the lateral span; the magnitude keeps that true in a
+// mirror, whose view is flipped. Returns the amount to take off the bias (0 for a draw
+// without a wall quad, and for billboards, which never carry the flag).
+int R_RothAngleBias(vec2 fh)
+{
+	float L = uRothWallP.x;
+	if (L <= 0.0) return 0;
+	vec2 rh = vec2(fh.y, -fh.x);
+	vec2 dA = uRothWall.xy - uCameraPos.xz;
+	vec2 dB = uRothWall.zw - uCameraPos.xz;
+	float zA = dot(dA, fh), zB = dot(dB, fh);
+	float h = -abs(floor(dot(dB, rh)) - floor(dot(dA, rh)));
+	float Le = L;
+	if (zA < 0.0 || zB < 0.0)
+	{
+		float bp = abs(zB - zA);
+		float t = max(zA, zB) - 16.0;
+		if (t <= 0.0 || bp < 1e-3) return 0;
+		Le = floor(L * t / bp);
+	}
+	if (Le <= 0.0) return 0;
+	float s = Le + h;
+	return s > 0.0 ? int(floor(s * 16.0 / Le)) : 0;
+}
+
+float R_RothWallRow(vec2 fh, float jx, float jy, int Ll, int biasE, int cap)
+{
+	if (!(uRothWallZ.x > uRothWallZ.y || uRothWallZ.z > uRothWallZ.w)) return -1.0;
+	const float W = 320.0 / 309.77;
+	const float H = 240.0 / 355.06;
+	const float NEARZ = 16.0;		// the original's near depth (0x10, renderer.c:4859-4870)
+	vec2 rh = vec2(fh.y, -fh.x);
+	vec2 dA = uRothWall.xy - uCameraPos.xz;
+	vec2 dB = uRothWall.zw - uCameraPos.xz;
+	float zA = dot(dA, fh), zB = dot(dB, fh);
+	float lA = dot(dA, rh), lB = dot(dB, rh);
+	vec2 hA = uRothWallZ.xy - uCameraPos.y;		// top, bottom at end A
+	vec2 hB = uRothWallZ.zw - uCameraPos.y;
+
+	if (zA < NEARZ && zB < NEARZ) return -1.0;
+	if (zA < NEARZ)
+	{
+		float k = (NEARZ - zA) / (zB - zA);
+		lA = mix(lA, lB, k); hA = mix(hA, hB, k); zA = NEARZ;
+	}
+	else if (zB < NEARZ)
+	{
+		float k = (NEARZ - zB) / (zA - zB);
+		lB = mix(lB, lA, k); hB = mix(hB, hA, k); zB = NEARZ;
+	}
+	float xA = lA / zA, xB = lB / zB;
+	if (xA > xB)
+	{
+		float t; vec2 t2;
+		t = xA; xA = xB; xB = t;
+		t = lA; lA = lB; lB = t;
+		t = zA; zA = zB; zB = t;
+		t2 = hA; hA = hB; hB = t2;
+	}
+	float xL = max(xA, -W), xR = min(xB, W);
+	if (xR - xL < 1e-6) return -1.0;
+
+	// The quad's depth and height at a screen column x: the point P(k) on A->B
+	// whose lateral over depth is x.
+	float dl = lB - lA, dz = zB - zA;
+	float denL = dl - xL * dz, denR = dl - xR * dz;
+	float kL = abs(denL) > 1e-6 ? clamp((xL * zA - lA) / denL, 0.0, 1.0) : 0.0;
+	float kR = abs(denR) > 1e-6 ? clamp((xR * zA - lA) / denR, 0.0, 1.0) : 1.0;
+	float zL = max(mix(zA, zB, kL), NEARZ), zR = max(mix(zA, zB, kR), NEARZ);
+	vec2 hL = mix(hA, hB, kL), hR = mix(hA, hB, kR);
+
+	float vTL = R_RothCorner(xL, hL.x / zL, zL, jx, jy, Ll, biasE, cap);
+	float vBL = R_RothCorner(xL, hL.y / zL, zL, jx, jy, Ll, biasE, cap);
+	float vTR = R_RothCorner(xR, hR.x / zR, zR, jx, jy, Ll, biasE, cap);
+	float vBR = R_RothCorner(xR, hR.y / zR, zR, jx, jy, Ll, biasE, cap);
+	if (min(min(vTL, vBL), min(vTR, vBR)) >= 31.99) return 64.0;
+
+	// This pixel: its column across the clipped quad, and its place down the
+	// visible part of that column.
+	vec3 d = pixelpos.xyz - uCameraPos.xyz;
+	float zf = max(dot(d.xz, fh), 1.0);
+	float xf = dot(d.xz, rh) / zf;
+	float yf = d.y / zf;
+	float u = clamp((xf - xL) / (xR - xL), 0.0, 1.0);
+	float vT = mix(vTL, vTR, u), vB = mix(vBL, vBR, u);
+	float denF = dl - xf * dz;
+	float kF = abs(denF) > 1e-6 ? clamp((xf * zA - lA) / denF, 0.0, 1.0) : u;
+	float zF = max(mix(zA, zB, kF), NEARZ);
+	vec2 hF = mix(hA, hB, kF);
+	float yT = clamp(hF.x / zF, -H, H), yB = clamp(hF.y / zF, -H, H);
+	float t = yT - yB > 1e-6 ? clamp((yT - yf) / (yT - yB), 0.0, 1.0) : 0.0;
+	return mix(vT, vB, t);
+}
+
 float R_RothShade(float light)
 {
 	int lb = int(light * 255.0 + 0.5);
@@ -540,7 +700,7 @@ float R_RothShade(float light)
 	if (dbg == 2) gRothDbg = float(lb) / 255.0;
 	int Ln = pk & 3;
 	int Ll = (pk >> 2) & 3;
-	int E  = ((pk >> 4) & 63) - 32;		// six bits: E is only ever 8 or -5
+	int E  = ((pk >> 4) & 63) - 16;		// six bits, bias 16: E = candle bias (8..32) or that minus 13
 	bool storm = ((pk >> 10) & 1) != 0;	// the lightning phase is lit this frame
 
 	// uDesaturationFactor is a BITFIELD, not a flag: bit 0 lantern, bit 1 glow.
@@ -616,12 +776,31 @@ float R_RothShade(float light)
 		// subdivision of the same world, so a narrow surface like the pillar
 		// lands on its answer and a long glancing wall does not. Making this
 		// per-pixel is not the fix -- it trades three regions for one.
-		if (dbg != 7 && vRothE >= 1.0) row = int(floor(min(vRothE, 31.99)));
+		// A WALL OR A BILLBOARD is shaded from the original's clipped corners
+		// (R_RothWallRow above), which is what makes a wall running off the
+		// side of the screen go black there instead of taking the value of a
+		// vertex far outside the picture (the "flat, bright walls" of
+		// 2026-11-12). The per-vertex value stays for flats and models.
+		float wv = (dbg != 7) ? R_RothWallRow(fh, jx, jy, Ll, bias + E - R_RothAngleBias(fh), cap) : -1.0;
+		if (wv >= 64.0)	// all four corners past 31: the original's fog fill
+		{
+			if (dbg >= 6) gRothDbg = 1.0;
+#ifdef ROTH_PALETTE
+			gRothRow = 64;
+			return 0.0;
+#else
+			return 1.0;
+#endif
+		}
+		if (wv >= 1.0) row = int(floor(min(wv, 31.99)));
+		else if (dbg != 7 && vRothE >= 1.0) row = int(floor(min(vRothE, 31.99)));
 		else row = clamp(min(int(floor(e / float(32 << Ll))) - bias - E, cap), 1, 31);
 	}
 	else
 	{
-		row = int(floor(Z / float(32 << Ln))) - bias;
+		// The per-column depth shade (dispatch_world_span_column, renderer.c:4572-4588) with the
+		// same bias the wall body set, view-angle term included (R_RothAngleBias).
+		row = int(floor(Z / float(32 << Ln))) - (bias - R_RothAngleBias(fh));
 		if (row <= 0) row = 0;
 		row = min(row, cap);
 		if (row > 31)	// the original's fog fill

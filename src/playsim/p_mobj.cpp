@@ -6581,6 +6581,12 @@ AActor *FLevelLocals::SpawnPlayer (FPlayerStart *mthing, int playernum, int flag
 	// In multiplayer, do not seed authoritative player state from the local VR
 	// renderer mode. Runtime FOV changes already go through the net command path.
 	p->DesiredFOV = p->FOV = multiplayer ? 90.f : QzDoom_GetFOV();
+	// A map that states its own flat-screen field of view gets it here, from the
+	// level rather than from the archived `fov` cvar (see ForcedPlayerFOV). The
+	// same value on every peer, so it is applied in multiplayer as well; a
+	// single-player headset keeps the 90 above, as the lenses set the view.
+	if (ForcedPlayerFOV > 0 && (multiplayer || vr_mode == VR_MONO))
+		p->DesiredFOV = p->FOV = (float)ForcedPlayerFOV;
 	p->camera = p->mo;
 	// `PlayInVR` affects gameplay-side script branches. In multiplayer it must
 	// not come from the local renderer mode, or VR and flatscreen peers will

@@ -90,6 +90,15 @@ enum EGameTexFlags
 	GTexf_NoTrim = 1024,					// Don't perform trimming on this texture.
 	GTexf_Seen = 2048,						// Set to true when the texture is being used for rendering. Must be cleared manually if the check is needed.
 	GTexf_NoMipmap = 4096,					// Disable mipmapping for this texture
+	// [MIRRORPICTURE] A REFLECTIVE PICTURE: a one-sided wall wearing it is drawn as a mirror,
+	// exactly as if its line carried Line_Mirror, for as long as it wears it -- so a wall
+	// whose picture is swapped for a plain one (a smashed mirror) stops reflecting by itself.
+	// Realms of the Haunting keys mirrors off the picture (image_type bit 3, rasterize_world_
+	// spans_scanline in ROTH.C), not off the line; roth::TextureSet sets these.
+	GTexf_MirrorPicture = 8192,
+	// ...and the picture is ALSO drawn over the reflection (glass, a frame), blended as the
+	// texture's own alpha says. Without it the reflection shows on its own.
+	GTexf_MirrorPictureOverlay = 16384,
 };
 
 struct FMaterialLayers
@@ -296,6 +305,13 @@ public:
 	// Glowing is a pure material property that should not filter down to the actual texture objects.
 	void GetGlowColor(float* data);
 	bool isGlowing() const { return !!(flags & GTexf_Glowing); }
+	bool isMirrorPicture() const { return !!(flags & GTexf_MirrorPicture); }	// [MIRRORPICTURE]
+	bool isMirrorPictureOverlay() const { return !!(flags & GTexf_MirrorPictureOverlay); }
+	void SetMirrorPicture(bool on, bool overlay)
+	{
+		flags &= ~(GTexf_MirrorPicture | GTexf_MirrorPictureOverlay);
+		if (on) flags |= GTexf_MirrorPicture | (overlay ? GTexf_MirrorPictureOverlay : 0);
+	}
 	bool isAutoGlowing() const { return !!(flags & GTexf_AutoGlowing); }
 	int GetGlowHeight() const { return GlowHeight; }
 	void SetAutoGlowing() { flags |= (GTexf_AutoGlowing | GTexf_Glowing | GTexf_RenderFullbright); }

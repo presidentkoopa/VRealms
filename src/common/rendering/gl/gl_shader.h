@@ -268,6 +268,9 @@ class FShader
 	FBufferedUniform1i muFlatGlowIsCeiling;
 	FBufferedUniform1f muDarknessExempt;
 	FBufferedUniform1f muFogDensityScale;
+	FBufferedUniform4f muRothWall;		// [ROTHWALL]
+	FBufferedUniform4f muRothWallZ;
+	FBufferedUniform4f muRothWallP;
 	FBufferedUniform4f muOutlineColorA;
 	FBufferedUniform4f muOutlineColorB;
 	FBufferedUniform4f muOutlineParms;

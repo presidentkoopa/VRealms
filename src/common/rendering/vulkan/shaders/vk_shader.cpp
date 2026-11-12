@@ -829,6 +829,10 @@ static const char *shaderBindings = R"(
 		int uFogPad1;
 	#endif
 		int uFogPad2;
+
+		vec4 uRothWall;		// [ROTHWALL] hw_renderstate.h
+		vec4 uRothWallZ;
+		vec4 uRothWallP;
 	};
 
 	layout(set = 1, binding = 2, std140) uniform readonly StreamUBO {
@@ -1007,6 +1011,9 @@ static const char *shaderBindings = R"(
 	#define uOutlineColorA data[uDataIndex].uOutlineColorA
 	#define uOutlineColorB data[uDataIndex].uOutlineColorB
 	#define uOutlineParms data[uDataIndex].uOutlineParms
+	#define uRothWall data[uDataIndex].uRothWall
+	#define uRothWallZ data[uDataIndex].uRothWallZ
+	#define uRothWallP data[uDataIndex].uRothWallP
 	#define uFlatGlowLineCount data[uDataIndex].uFlatGlowLineCount
 	#define uFlatGlowLines data[uDataIndex].uFlatGlowLines
 	#define uGradientTopPlane data[uDataIndex].uGradientTopPlane

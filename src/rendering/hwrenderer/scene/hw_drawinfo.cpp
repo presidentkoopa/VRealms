@@ -1866,7 +1866,10 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 				// Desaturation is a BITFIELD: bit 0 lantern, bit 1 glow. A
 				// non-zero test would read a glow-only sector as a lantern one.
 				const bool viewInLantern = Viewpoint.sector != nullptr && (Viewpoint.sector->Colormap.Desaturation & 1) != 0;
-				const int E = 8 + (viewInLantern ? 0 : -13);
+				// The 8 is the map's own candle bias, metadata +0x12 (map_load.c:212
+				// copies it to the camera record's +0x1c, renderer.c:9386 adds it):
+				// 8 in STUDY1, but 12, 15, 16 or 32 in eleven other maps.
+				const int E = Level->RothCandleBias + (viewInLantern ? 0 : -13);
 				const int Ln = clamp(Level->ShadeFalloffShift - 5, 0, 3);
 				const int Ll = clamp(Level->RothLanternShift - 5, 0, 3);
 
@@ -1904,10 +1907,11 @@ void HWDrawInfo::StartScene(FRenderViewpoint &parentvp, HWViewpointUniforms *uni
 				}
 				const bool stormLit = (Level->RothStormPhase & 0x49) != 0;
 
-				// E is SIX bits, not seven: it only ever takes 8 or -5, and bit
-				// 10 is worth more as the storm flag than as a range nothing
-				// uses.
-				const int packed = Ln | (Ll << 2) | (((E + 32) & 63) << 4)
+				// E is SIX bits, biased by 16: the retail maps give it -5..32
+				// (candle 8..32, minus 13 outside a lantern sector), so the old
+				// bias of 32 (-32..31) could not carry TGATE1's 32. Bit 10 stays
+				// the storm flag. main.fp and main.vp decode the same layout.
+				const int packed = Ln | (Ll << 2) | (((E + 16) & 63) << 4)
 					| (stormLit ? (1 << 10) : 0)
 					| (rx << 11) | (ry << 16) | ((roth_shade_debug & 7) << 21);
 				VPUniforms.mGlobVis = float(packed);
