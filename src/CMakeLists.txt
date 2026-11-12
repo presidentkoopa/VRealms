@@ -969,6 +969,7 @@ set (PCH_SOURCES
 	# Engine-free; tested standalone in tools/dbase100_test.
 	roth/roth_dbase100.cpp
 	roth/roth_dbase100_install.cpp
+	roth/roth_dbase100_interp.cpp
 	# The inventory slot model over DBASE100 (no consumer in the engine yet).
 	roth/roth_inventory.cpp
 	# The exception: roth_texture is the boundary file that hands decoded

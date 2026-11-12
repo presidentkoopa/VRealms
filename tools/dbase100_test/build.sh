@@ -19,11 +19,20 @@ g++ $FLAGS -o "$OUT/dbase100_dump" "$HERE/dbase100_dump.cpp" $CORE
 g++ $FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all \
 	-o "$OUT/inventory_test" "$HERE/inventory_test.cpp" "$SRC/roth_inventory.cpp" $CORE
 
+# The interpreter needs only the reader. ROTH_DATA, if set, is the retail folder:
+# the test then also runs every retail action and item block.
+INTERP="$HERE/interp_test.cpp $SRC/roth_dbase100_interp.cpp $SRC/roth_dbase100.cpp"
+g++ $FLAGS -o "$OUT/interp_test" $INTERP
+g++ $FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all -o "$OUT/interp_test_san" $INTERP
+
 TMP=$(mktemp -d)
 "$OUT/dbase100_test" "$TMP"
 "$OUT/dbase100_test_san" "$TMP"
 rm -rf "$TMP"
 "$OUT/inventory_test"
+if [ -n "$ROTH_DATA" ]; then RETAIL="$ROTH_DATA/DBASE100.DAT"; else RETAIL="/nonexistent/DBASE100.DAT"; fi
+"$OUT/interp_test" "$RETAIL" | tail -1
+"$OUT/interp_test_san" "$RETAIL" | tail -1
 
 # Exercise the dump tool on the synthetic fixture (no retail data here).
 FIX=$(mktemp -d)
