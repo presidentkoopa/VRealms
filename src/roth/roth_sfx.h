@@ -345,6 +345,8 @@ struct VoiceClip
 
 void BuildDpcmStepTable(int32_t table[256]);
 VoiceClip ReadDbase500Clip(const std::string &path, uint32_t clip, bool decode);
+// Just the 0x2c header bytes at clip << 3. False when the file ends first.
+bool ReadDbase500Header(const std::string &path, uint32_t clip, uint8_t hdr[0x2c]);
 
 //==========================================================================
 //

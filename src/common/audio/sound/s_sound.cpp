@@ -774,7 +774,9 @@ sfxinfo_t *SoundEngine::LoadSound(sfxinfo_t *sfx)
 			// If the sound is raw, just load it as such.
 			else if (sfx->bLoadRAW)
 			{
-				sfx->data = GSnd->LoadSoundRaw(sfxp, size, sfx->RawRate, 1, 8, sfx->LoopStart);
+				// REMAROTH: b16bit was declared and never read, so a raw sound was
+				// always taken as 8-bit. Realms' samples are raw 16-bit PCM.
+				sfx->data = GSnd->LoadSoundRaw(sfxp, size, sfx->RawRate, 1, sfx->b16bit ? 16 : 8, sfx->LoopStart);
 			}
 			// Otherwise, try the sound as DMX format.
 			else if (((uint8_t *)sfxp)[0] == 3 && ((uint8_t *)sfxp)[1] == 0 && dmxlen <= size - 8)

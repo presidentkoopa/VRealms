@@ -106,11 +106,24 @@ bool SoundLevelKeepsMusic(const FLevelLocals *level);
 // is already playing. 1 = started.
 uint32_t SoundPrimeVoiceClip(uint32_t clip);
 
+// For the dialogue layer, which owns the stream state and the timing
+// (voice_stream_pump, audio.c:1300-1327) and needs only a player:
+//   SoundSpeechAvailable  DBASE500.DAT was found (g_audio_decode_buffer_b != 0)
+//   SoundSpeechHeader     the 0x2c-byte clip header at clip << 3 (audio.c:1238-1245)
+//   SoundPrimeVoiceClip   above: decode the clip and start it
+//   SoundVoicePlaying     false once the clip has run out or been stopped --
+//                         the driver's "type 2" end of stream (audio.c:1178)
+//   SoundVoiceStop        sos_stop_voice on the speech handle (audio.c:1338)
+bool SoundSpeechAvailable();
+bool SoundSpeechHeader(uint32_t clip, uint8_t hdr[0x2c]);
+bool SoundVoicePlaying();
+void SoundVoiceStop();
+
 // ---- engine hook ------------------------------------------------------------
 
-// DoomSoundEngine::ReadSound asks here first. True, with `out` holding a
-// complete WAVE image, when `lumpnum` is one of the numbers this file gave a
-// Realms sample; the engine then decodes it like any other sound.
+// DoomSoundEngine::ReadSound asks here first. True, with `out` holding the
+// sample's raw PCM, when `lumpnum` is one of the numbers this file gave a
+// Realms sample. The engine's entry says it is raw, at what rate and width.
 bool SoundReadLump(int lumpnum, TArray<uint8_t> &out);
 
 } // namespace roth

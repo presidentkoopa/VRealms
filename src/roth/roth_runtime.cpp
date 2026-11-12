@@ -381,6 +381,7 @@ struct Binding
 	uint8_t   fireFlags = 0;              // the record's +0x06: the facing mask
 	uint8_t   subFlags = 0;               // the record's +0x07: the 0x13 variant
 	uint16_t  sound = 0;                  // the record's +0x0a: the chain's sound, plus one
+	uint16_t  record = 0;                 // the trigger record ITSELF, 1-based (chain is its link)
 };
 
 // Which link test an 0x13 record wants, from its +0x07. See NotifyPlayerSector
@@ -4937,7 +4938,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			continue;
 		}
 
-		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags, c.subFlags, c.aux };
+		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags, c.subFlags, c.aux,
+			(uint16_t)(&c - g.map.commands.data() + 1) };
 
 		if (IsFaceTrigger(c.opcode))
 		{
@@ -6298,7 +6300,13 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 	{
 		if (b.event != want) continue;
 
-		Command *rec = Rec(b.chain);
+		// THE MATCHED RECORD, not the record its link names. This used to be
+		// Rec(b.chain) -- the trigger's +0x04 -- so a light switch was run on
+		// whatever record its link pointed at, and one with a link of 0 never
+		// ran at all. run_leftclick_object_trigger hands cmd_light_switch the
+		// record it matched by id (raw_commands.c:2932-2936, 2953-2954), and
+		// skips a matched record that is disabled (:2950).
+		Command *rec = Rec(b.record);
 		if (rec == nullptr) continue;
 
 		// BASE 2: a light switch. The record IS the switch -- there is no chain
@@ -6306,7 +6314,8 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 		// does. Use only; the examine channel has no base branch.
 		if (want == TrigEvent::Use && b.opcode == 0x02)
 		{
-			if (LightSwitch(rec, (int)b.chain) != CMD_ACTED) continue;
+			if (rec->modifier & 0x08) continue;                        // :2950
+			if (LightSwitch(rec, (int)b.record) != CMD_ACTED) continue;
 
 			// The sound at +0x0e, stored one higher so 0 can mean silence:
 			// play_sound_effect(snd - 1, 0) (raw_commands.c:2955-2957).

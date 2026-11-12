@@ -6,9 +6,18 @@
 // registered with the SoundEngine as "roth/sfxNNN" and given a lump number
 // from a range no real file can reach. The engine loads sounds lazily, and
 // when it wants one of ours DoomSoundEngine::ReadSound asks SoundReadLump,
-// which reads that row from the player's install and returns it as a WAVE
-// image in memory. So the engine caches, resamples, evicts and reloads our
-// samples exactly as it does its own, and nothing is ever written out.
+// which reads that row from the player's install and returns its PCM as it
+// stands. Each entry is marked RAW with its own rate and width (bLoadRAW,
+// RawRate, b16bit), so the engine hands the bytes straight to the backend.
+// So the engine caches, resamples, evicts and reloads our samples exactly as
+// it does its own, and nothing is ever written out.
+//
+// NOT A WAVE IMAGE, which is what this did first and why NOTHING PLAYED on the
+// owner's PC (2026-11-12, 1,405 refusals): the only thing in the engine that
+// can read a WAVE is libsndfile, loaded at run time if its DLL is there, and
+// Doom's own sounds never need it. With no decoder the load failed, the
+// engine marked the entry empty, and StartSound returned nothing. Raw PCM
+// needs no decoder at all.
 //
 // HOW A REALMS VOICE BECOMES AN ENGINE CHANNEL. The original mixes in 2D: a
 // volume from distance (compute_sound_volume_pan) and a left/right pan from
@@ -155,7 +164,8 @@ struct State
 	std::map<uint32_t, std::vector<uint8_t>> songs;
 
 	// speech
-	std::vector<uint8_t> voiceWave;
+	std::vector<uint8_t> voicePcm;              // the current clip, 16-bit mono
+	uint32_t voiceClip = 0;
 	FSoundHandle voiceChan;
 
 	std::vector<Pending> pending;
@@ -163,6 +173,8 @@ struct State
 	// counters, for roth_sound_status
 	int asked = 0, started = 0, dropNoSlot = 0, dropSilent = 0, dropNoSample = 0, dropEngine = 0;
 	int enginePulls = 0;
+	const char *lastRefusal = "";
+	std::map<std::string, int> refusals;        // why the engine said no, by reason
 };
 
 State S;
@@ -254,6 +266,23 @@ bool EnsureRegistered()
 		S.ids.push_back(id);
 	}
 	S.voiceId = soundEngine->AddSoundLump("roth/voice", LUMP_VOICE, 0, -1, 0);
+	// Raw PCM, each at its own rate and width. Set after every Add: adding
+	// grows the engine's table and moves its entries.
+	for (int i = 0; i < S.bank.Count(); i++)
+	{
+		sfxinfo_t *sfx = soundEngine->GetWritableSfx(S.ids[i]);
+		const SfxRow *r = S.bank.Row(i);
+		if (sfx == nullptr || r == nullptr) continue;
+		sfx->bLoadRAW = true;
+		sfx->b16bit = r->Is16Bit();
+		sfx->RawRate = r->Rate();
+	}
+	if (sfxinfo_t *sfx = soundEngine->GetWritableSfx(S.voiceId))
+	{
+		sfx->bLoadRAW = true;
+		sfx->b16bit = true;
+		sfx->RawRate = 22050;
+	}
 	S.handed.assign(S.bank.Count(), 0);
 	soundEngine->HashSounds();
 	Printf("roth_sound: registered %d samples with the sound engine as roth/sfx000..roth/sfx%03d"
@@ -364,6 +393,31 @@ const char *KindName(EmitterKind k)
 	}
 }
 
+// WHY THE ENGINE SAID NO. SoundEngine::StartSound returns nothing for a dozen
+// different reasons and says which for none of them. This walks the same
+// tests in the same order (s_sound.cpp, StartSound) on what can be seen from
+// outside, AFTER a refusal, and names the first that fails. Read-only.
+const char *RefusalReason(FSoundID id, float vol, bool loops)
+{
+	if (soundEngine == nullptr) return "there is no sound engine";
+	if (!soundEngine->isValidSoundId(id)) return "the engine no longer knows this sound id (its table was rebuilt)";
+	if (vol <= 0.f) return "the volume asked for is 0";
+	if (nosfx) return "sound effects are off (-nosfx / nosfx)";
+	if (!SoundEnabled()) return "sound is disabled (snd_enabled false, or the app is muted in the background)";
+	if (soundEngine->NewSoundsBlocked()) return "the engine is blocking new sounds (BlockNewSounds)";
+	const sfxinfo_t *sfx = soundEngine->GetSfx(id);
+	if (sfx == nullptr) return "the engine has no entry for this sound id";
+	if (sfx->Volume <= 0.f) return "the engine's entry has volume 0";
+	if (sfx->link != sfxinfo_t::NO_LINK && !sfx->data.isValid()) return "the engine's entry is a link to another sound";
+	if (GSnd == nullptr || GSnd->IsNull()) return "the sound device is the null device (no audio output was opened)";
+	if (sfx->lumpnum == sfx_empty)
+		return "the engine could not load the sample: the backend rejected its data and the entry was marked empty";
+	if (!sfx->data.isValid()) return "the sample is not loaded and the engine did not try to load it";
+	if (!loops && soundEngine->IsSoundPaused())
+		return "sound is PAUSED (the game is paused or the window lost focus); a one-shot is not started while paused";
+	return "the sample is loaded and nothing forbids it, but the backend gave no voice (out of sources?)";
+}
+
 // start_sound_voice / start_sound_voice_vol. `vol` is 0..0x7fff.
 bool StartChannel(Handle &h, int32_t vol, bool positional)
 {
@@ -398,9 +452,10 @@ bool StartChannel(Handle &h, int32_t vol, bool positional)
 	if (chan == nullptr)
 	{
 		S.dropEngine++;
+		S.lastRefusal = RefusalReason(S.ids[h.row], fvol, h.loops);
+		S.refusals[S.lastRefusal]++;
 		if (roth_sound_debug)
-			Printf("roth_sound: row %d (%s) was REFUSED by the sound engine (sound off, paused, or no data)\n",
-				h.row, KindName(h.kind));
+			Printf("roth_sound: row %d (%s) REFUSED: %s\n", h.row, KindName(h.kind), S.lastRefusal);
 		return false;
 	}
 	h.chan = handle;
@@ -768,6 +823,8 @@ void PrintStatus()
 	Printf("  asked %d, started %d, dropped: %d no free record, %d silent or out of range,"
 		" %d no such sample, %d refused by the engine\n",
 		S.asked, S.started, S.dropNoSlot, S.dropSilent, S.dropNoSample, S.dropEngine);
+	for (const auto &kv : S.refusals)
+		Printf("  refused x%d: %s\n", kv.second, kv.first.c_str());
 	Printf("  music: chunk %u, %s; file %s\n", (unsigned)S.songIndex,
 		(S.songPhase & 4) ? "playing" : (S.songPhase & 1) ? "loaded" : "none",
 		S.songPath.empty() ? "(not found or not looked for)" : S.songPath.c_str());
@@ -792,6 +849,7 @@ void DrainPending()
 				break;
 			}
 			const int before = S.enginePulls;
+			const int refusedBefore = S.dropEngine;
 			const bool ok = p.what == P_ROW ? SoundPlayEffect((uint32_t)p.a, 0)
 				: SoundPlayEntity((uint32_t)p.a, p.b, p.c);
 			Printf("roth_sound: row %d (key %u, %u bytes, %d Hz, %d-bit, %.2f s) %s%s\n", p.a,
@@ -799,6 +857,7 @@ void DrainPending()
 				double(r->Frames()) / double(r->Rate()),
 				ok ? "STARTED on an engine channel" : "did NOT start",
 				S.enginePulls != before ? " (the engine loaded its data just now)" : "");
+			if (!ok && S.dropEngine != refusedBefore) Printf("roth_sound:   why: %s\n", S.lastRefusal);
 			break;
 		}
 		case P_KEY:
@@ -1124,17 +1183,7 @@ uint32_t SoundPrimeVoiceClip(uint32_t clip)
 	// state 1 = a clip is playing: refuse (audio.c:1211).
 	if (S.voiceChan.IsValid() && soundEngine->IsPlaying(S.voiceChan)) return 0;
 
-	if (!S.voiceSearched)
-	{
-		S.voiceSearched = true;
-		std::string tried;
-		S.voicePath = FindFile("DBASE500.DAT", &tried);
-		if (S.voicePath.empty())
-			Printf(TEXTCOLOR_RED "roth_sound: NO SPEECH. DBASE500.DAT was not found. Looked in:%s\n", tried.c_str());
-		else
-			Printf("roth_sound: speech from %s\n", S.voicePath.c_str());
-	}
-	if (S.voicePath.empty()) return 0;
+	if (!SoundSpeechAvailable()) return 0;
 
 	VoiceClip v = ReadDbase500Clip(S.voicePath, clip, true);
 	if (!v.ok || v.pcm.empty())
@@ -1149,17 +1198,63 @@ uint32_t SoundPrimeVoiceClip(uint32_t clip)
 	if (sfx == nullptr) return 0;
 	soundEngine->UnloadSound(sfx);
 	sfx->lumpnum = LUMP_VOICE;
-	S.voiceWave = MakeWave((const uint8_t *)v.pcm.data(), v.pcm.size() * 2, v.rate, 16);
+	sfx->bLoadRAW = true;
+	sfx->b16bit = true;
+	sfx->RawRate = v.rate;
+	S.voicePcm.assign((const uint8_t *)v.pcm.data(), (const uint8_t *)v.pcm.data() + v.pcm.size() * 2);
+	S.voiceClip = clip;
 
 	FSoundHandle handle;
 	FSoundChan *chan = soundEngine->StartSound(SOURCE_None, nullptr, nullptr, CHAN_VOICE,
 		CHANF_OVERLAP | CHANF_TRANSIENT, S.voiceId, 1.f, ATTN_NONE, nullptr, 1.f, 0.f, &handle);
-	if (chan == nullptr) return 0;
+	if (chan == nullptr)
+	{
+		S.lastRefusal = RefusalReason(S.voiceId, 1.f, false);
+		S.refusals[S.lastRefusal]++;
+		Printf("roth_sound: speech clip %u REFUSED: %s\n", (unsigned)clip, S.lastRefusal);
+		return 0;
+	}
 	S.voiceChan = handle;
 	if (roth_sound_debug)
 		Printf("roth_sound: speech clip %u: %u samples at %d Hz (%s), engine handle %d\n", (unsigned)clip,
 			(unsigned)v.pcm.size(), v.rate, v.dpcm ? "DPCM" : "PCM", (int)handle);
 	return 1;
+}
+
+// The speech player as the dialogue layer needs it (roth_dialogue's
+// SpeechHeader / VoiceStarted / VoiceStopped / VoiceEnded). The dialogue owns
+// the stream STATE (g_voice_stream_state); these only read and play.
+
+bool SoundSpeechAvailable()
+{
+	if (!S.voiceSearched)
+	{
+		S.voiceSearched = true;
+		std::string tried;
+		S.voicePath = FindFile("DBASE500.DAT", &tried);
+		if (S.voicePath.empty())
+			Printf(TEXTCOLOR_RED "roth_sound: NO SPEECH. DBASE500.DAT was not found. Looked in:%s\n", tried.c_str());
+		else
+			Printf("roth_sound: speech from %s\n", S.voicePath.c_str());
+	}
+	return !S.voicePath.empty();
+}
+
+bool SoundSpeechHeader(uint32_t clip, uint8_t hdr[0x2c])
+{
+	if (!SoundSpeechAvailable()) return false;
+	return ReadDbase500Header(S.voicePath, clip, hdr);
+}
+
+bool SoundVoicePlaying()
+{
+	return soundEngine != nullptr && S.voiceChan.IsValid() && soundEngine->IsPlaying(S.voiceChan);
+}
+
+void SoundVoiceStop()
+{
+	if (soundEngine != nullptr && S.voiceChan.IsValid()) soundEngine->StopSound(S.voiceChan);
+	S.voiceChan = FSoundHandle();
 }
 
 //==========================================================================
@@ -1171,27 +1266,27 @@ uint32_t SoundPrimeVoiceClip(uint32_t clip)
 bool SoundReadLump(int lumpnum, TArray<uint8_t> &out)
 {
 	if (lumpnum < LUMP_BASE || lumpnum > LUMP_VOICE) return false;
-	std::vector<uint8_t> wave;
+	std::vector<uint8_t> pcm;
 	if (lumpnum == LUMP_VOICE)
 	{
-		wave = S.voiceWave;
+		pcm = S.voicePcm;
 	}
 	else
 	{
 		const int row = lumpnum - LUMP_BASE;
-		wave = S.bank.ReadAsWave(row);
+		pcm = S.bank.Read(row);
 		const SfxRow *r = S.bank.Row(row);
 		S.enginePulls++;
 		if (r != nullptr && row < (int)S.handed.size() && !S.handed[row])
 		{
 			S.handed[row] = 1;
 			if (roth_sound_debug)
-				Printf("roth_sound: sample row %d handed to the sound engine: %u bytes, %d Hz, %d-bit\n",
-					row, (unsigned)r->size, r->Rate(), r->Is16Bit() ? 16 : 8);
+				Printf("roth_sound: sample row %d handed to the sound engine: %u bytes raw PCM, %d Hz, %d-bit\n",
+					row, (unsigned)pcm.size(), r->Rate(), r->Is16Bit() ? 16 : 8);
 		}
 	}
-	out.Resize((unsigned)wave.size());
-	if (!wave.empty()) memcpy(out.Data(), wave.data(), wave.size());
+	out.Resize((unsigned)pcm.size());
+	if (!pcm.empty()) memcpy(out.Data(), pcm.data(), pcm.size());
 	return true;
 }
 

@@ -592,6 +592,15 @@ void BuildDpcmStepTable(int32_t table[256])
 	table[255] = (int32_t)ecx;
 }
 
+bool ReadDbase500Header(const std::string &path, uint32_t clip, uint8_t hdr[0x2c])
+{
+	FILE *f = fopen(path.c_str(), "rb");
+	if (f == nullptr) return false;
+	const bool ok = ReadAt(f, (uint64_t)clip << 3, hdr, 0x2c);
+	fclose(f);
+	return ok;
+}
+
 VoiceClip ReadDbase500Clip(const std::string &path, uint32_t clip, bool decode)
 {
 	VoiceClip v;

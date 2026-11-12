@@ -292,6 +292,9 @@ public:
 	{
 		blockNewSounds = on;
 	}
+	// REMAROTH: read-only, so a caller whose sound was refused can say why.
+	bool NewSoundsBlocked() const { return blockNewSounds; }
+	bool IsSoundPaused() const { return SoundPaused; }
 
 	virtual void StopChannel(FSoundChan* chan);
 	sfxinfo_t* LoadSound(sfxinfo_t* sfx);
