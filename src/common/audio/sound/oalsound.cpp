@@ -101,7 +101,19 @@ bool IsOpenALPresent()
 	if (!done)
 	{
 		done = true;
+#ifdef _WIN32
+		// OpenAL Soft is "soft_oal.dll" in its own releases and "OpenAL32.dll"
+		// when it comes from vcpkg, which is what this fork's setup script
+		// installs. Looking only for the first name left a vcpkg build silent:
+		// "Sound init failed. Using nosound." with the library sitting beside
+		// the exe. The exe's own folder first, never the system one by path.
+		cached_result = OpenALModule.Load({OPENALLIB1, OPENALLIB2,
+			NicePath("$PROGDIR/OpenAL32.dll").GetChars(), "OpenAL32.dll"});
+		if (!cached_result)
+			Printf(TEXTCOLOR_ORANGE "OpenAL: neither soft_oal.dll nor OpenAL32.dll could be loaded with every function the engine needs.\n");
+#else
 		cached_result = OpenALModule.Load({OPENALLIB1, OPENALLIB2});
+#endif
 	}
 	return cached_result;
 #endif
