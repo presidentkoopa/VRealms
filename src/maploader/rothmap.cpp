@@ -97,6 +97,34 @@ EXTERN_CVAR(Float, fov)
 //
 //==========================================================================
 
+//==========================================================================
+//
+// The sidedef scale that puts EXACTLY one copy of a texture across `span`
+// world units -- what FF_IMAGE_FIT asks for (renderer.c:13342-13349).
+//
+// texels / span is the right number and the engine cannot use it. It turns a
+// sidedef scale into an INTEGER render size with a ceil
+// (FTexCoordInfo::GetFromTexture, gametexture.cpp:554 and :568), and measures
+// a wall by its ROUNDED length (FinishLoadingLineDef, maploader.cpp:1563). One
+// copy means those two integers are equal. On a diagonal 181.02 long they were
+// 182 and 181, so the picture stopped 1/182 short of its far edge; on DOPPLE's
+// 6-unit slivers it lost a seventh of itself. Down a piece the same ceil could
+// add a row whenever texels / span rounded the wrong way as a float.
+//
+// So the quotient is aimed HALF A UNIT inside the integer wanted and the ceil
+// lands it: texels / (n - 0.5) gives ceil(n - 0.5) = n, with a margin no float
+// rounding can cross. A mirrored face has a NEGATIVE scale and ceil rounds
+// that toward zero, so it is aimed half a unit the other way.
+//
+//==========================================================================
+
+static double OneCopyScale(double texels, double span, bool mirrored)
+{
+	const double whole = floor(span + 0.5);      // what the engine will measure
+	if (whole < 1.) return texels / span;        // degenerate; nothing to land on
+	return texels / (whole + (mirrored ? 0.5 : -0.5));
+}
+
 void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 {
 	auto &log = roth::TheLog();
@@ -1088,6 +1116,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		// accumulate into these and the line takes the result.
 		bool hasUpper = false;
 
+		// The stored extent of each side's face, to become that side's
+		// TexelLength once FinishLoadingLineDef has run (it overwrites the
+		// field). -1 leaves the engine's own rounded line length in place.
+		// See the SCALE block in makeSide.
+		int wantTexelLength[2] = { -1, -1 };
+		int makingSide = 0;
+
 		auto makeSide = [&](const roth::Face &face, bool twoSided, int neighbourSector) -> side_t *
 		{
 			side_t *sd = &Level->sides[sideIndex++];
@@ -1238,10 +1273,37 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// along-wall coordinate itself).
 				if (stored > 0. && wallLen > 0.)
 				{
-					// texels across = hfit/2, and Doom's scale is texels per
-					// world unit.
-					scaleX = (stored * 0.5) / wallLen;
-					if (tf & roth::FF_HALF_PIXEL) scaleX *= 2.;
+					// THE EXTENT GOES INTO TexelLength, NOT INTO THE SCALE.
+					//
+					// ROTH.C runs the horizontal coordinate from 0 to hfit
+					// HALF-texels across the face, whatever its length
+					// (renderer.c:13335-13339: the extent is span record
+					// +0x26 = hfit, doubled by HALF_PIXEL), adds 2*shiftX
+					// (9274, 5113) and halves the sum (4733-4734):
+					//
+					//     texel(d) = shiftX + (hfit / 2) * d / faceLength
+					//
+					// The engine's is (hw_walls.cpp:1378-1381, 1490-1491)
+					//
+					//     texel(d) = offset + TexelLength * xscale * d / lineLength
+					//
+					// which is the SAME formula with TexelLength = hfit and
+					// xscale = 1/2 (1 under HALF_PIXEL), and both of those
+					// the engine holds exactly.
+					//
+					// This used to fold the extent into the scale instead:
+					// xscale = hfit / (2 * length). On a diagonal face hfit
+					// is the length rounded UP (181.02 -> 182), so the scale
+					// came out a hair off 0.5, and the engine cannot hold
+					// that: it turns the scale into an INTEGER render width
+					// with a ceil (gametexture.cpp:554, 128.01 -> 129) and
+					// measures the wall by its ROUNDED length
+					// (maploader.cpp:1563, 181). Both errors land at the
+					// face's far end, which is where the next face picks the
+					// pattern up: up to 0.7 texel in STUDY1 and 2.6 in DOPPLE
+					// (tools/wallseams).
+					scaleX = baseScale;
+					wantTexelLength[makingSide] = (int)min(stored, 65535.);
 					storedExtentScaled++;
 				}
 				else
@@ -1381,9 +1443,16 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					auto *gt = TexMan.GetGameTexture(tex, false);
 					double texW = gt ? gt->GetDisplayWidth() : 0.;
 					double texH = gt ? gt->GetDisplayHeight() : 0.;
-					if (texW > 0. && wallLen > 0.) sx = texW / wallLen;
+					//
+					// EXACTLY one (renderer.c:13342-13349: both extents are
+					// twice the texture's own dimension, and the shifts are
+					// zeroed). See OneCopyScale for why this is not simply
+					// texW / wallLen.
+					if (texW > 0. && wallLen > 0.)
+						sx = OneCopyScale(texW, wallLen, (tf & roth::FF_FLIP_X) != 0);
 					const double pieceHeight = heightOf(part);
-					if (texH > 0. && pieceHeight > 0.) sy = texH / pieceHeight;
+					if (texH > 0. && pieceHeight > 0.)
+						sy = OneCopyScale(texH, pieceHeight, false);
 					// ONLY COUNT A PIECE THAT IS ACTUALLY DRAWN. This used to
 					// count every case where the fit could not be computed,
 					// which included every zero-height step -- and the upper and
@@ -1443,7 +1512,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 						// sign the other way round, which misplaced every
 						// DRAW_FROM_BOTTOM wall whose height is not a whole
 						// number of copies (483 faces, mostly SALVAT/DOMINION).
-						pieceOffY += texH - pieceHeight * sy;
+						//
+						// A fitted piece is exactly one copy tall, so the term
+						// is zero there (renderer.c:5057-5063 with the extent
+						// 2*W and the shift zeroed at 13343). It must not be
+						// computed from sy, which OneCopyScale aims half a
+						// unit short.
+						if (!imageFit) pieceOffY += texH - pieceHeight * sy;
 						pinBottomFaces++;
 					}
 				}
@@ -1462,7 +1537,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					// band taller than the art loses its repeats, and a ceiling-
 					// hung band shorter than the art spills below it (Doom only
 					// clips a mid piece to the opening). Counted, not hidden.
-					if (sy > 0. && texH > 0. && fabs(texH / sy - (bandTop - bandBot)) > 0.5
+					// (A fitted band is one copy by construction, and its sy is
+					// aimed half a unit short -- see OneCopyScale -- so it is
+					// exempt from this count rather than tripping it.)
+					if (!imageFit && sy > 0. && texH > 0. && fabs(texH / sy - (bandTop - bandBot)) > 0.5
 						&& !(bandBot <= openBot && texH / sy > bandTop - bandBot))
 						transUpLoInexact++;
 				}
@@ -1549,6 +1627,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			pending[li].sister >= 0 ? rm.faces[pending[li].sister].sector : -1);
 		if (pending[li].sister >= 0)
 		{
+			makingSide = 1;
 			ld->sidedef[1] = makeSide(rm.faces[pending[li].sister], true, f.sector);
 			ld->flags |= ML_TWOSIDED;
 		}
@@ -1631,6 +1710,15 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		linemap.Push((unsigned)li);
 		ld->AdjustLine();
 		FinishLoadingLineDef(ld, 255);
+
+		// FinishLoadingLineDef has just set TexelLength to the rounded line
+		// length. Where the face has a stored extent, THAT is the number of
+		// half-texels ROTH.C lays across it (renderer.c:9276-9279, 13335), so
+		// it replaces the length. The two are equal on every axis-aligned wall
+		// and differ by under one unit on a diagonal.
+		for (int s = 0; s < 2; s++)
+			if (ld->sidedef[s] != nullptr && wantTexelLength[s] >= 0)
+				ld->sidedef[s]->TexelLength = (uint16_t)wantTexelLength[s];
 	}
 
 	//----------------------------------------------------------------------
