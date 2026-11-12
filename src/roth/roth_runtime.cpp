@@ -59,6 +59,7 @@
 #include "d_player.h"
 #include <math.h>
 #include "playsim/po_man.h"
+#include "texturemanager.h"   // ReapplyWallFace: a swapped-in picture's size
 #include "p_trace.h"       // Trace, for the floor-click probe in UseFlat
 #include "printf.h"
 #include "c_dispatch.h"
@@ -642,6 +643,13 @@ struct Runtime
 	// TextureSet is a local that dies with the load; the loader registers every
 	// index its command records can name. See RegisterTexture.
 	std::map<int, FTextureID> texByIndex;
+	std::map<int, FTextureID> mirroredByIndex;   // RegisterMirroredTexture
+
+	// The wall rule's inputs per face. See RegisterWallFace and ReapplyWallFace.
+	struct WallReg { WallFace wf; int texelLength = 0; int own = -1, nbr = -1; WallPieceShape piece[3]; };
+	std::map<int, WallReg> wallByFace;
+	int wallBakedKept = 0;      // a shift change on a baked piece: the picture is left as loaded
+	int wallBakedDropped = 0;   // a swap onto a piece that would need a baked image: drawn from the plain one
 
 	// What ran and what could not, for the report and for the console.
 	int fired = 0;
@@ -1647,6 +1655,110 @@ int RunIndexedCommand(const Command &rec, Handlers &h)
 //
 //==========================================================================
 
+//==========================================================================
+//
+// RE-RUN THE WALL RULE ON ONE FACE, with the mapping record's slots and shifts
+// as they are NOW and the sectors' current heights: roth_surface's
+// WallPieceRule (what ROTH.C samples) and WallToEngine (the sidedef values that
+// sample the same), exactly as the loader called them. Nothing here computes a
+// scale or an offset of its own.
+//
+// texturesChanged: a swap wrote one of the record's slots (0x34, 0x0c). Without
+// it only the shifts moved (0x0f) and every piece keeps its picture.
+//
+// What the runtime cannot do is BAKE an image (the loader's TextureSet is gone):
+//   * a shift change on a piece the loader baked leaves that piece as loaded
+//     (wallBakedKept) -- its picture has the old shift built in;
+//   * a swap onto a piece that would need a baked image draws the plain one,
+//     shifted by the rule (wallBakedDropped), as the loader does when a bake is
+//     too large.
+//
+//==========================================================================
+
+static void ReapplyWallFace(int fi, bool texturesChanged)
+{
+	if (g.level == nullptr || fi < 0 || (size_t)fi >= g.map.faces.size()) return;
+	auto wr = g.wallByFace.find(fi);
+	auto sdi = g.faceToSide.find(fi);
+	if (wr == g.wallByFace.end() || sdi == g.faceToSide.end()) return;
+	if (sdi->second < 0 || (size_t)sdi->second >= g.level->sides.Size()) return;
+	const int tmi = g.map.faces[fi].textureMap;
+	if (tmi < 0 || (size_t)tmi >= g.map.textureMaps.size()) return;
+	const TextureMap &tm = g.map.textureMaps[tmi];
+	side_t &side = g.level->sides[sdi->second];
+	Runtime::WallReg &reg = wr->second;
+
+	WallFace wf = reg.wf;
+	wf.shiftX = tm.extended ? (int)tm.shiftX : 0;
+	wf.shiftY = tm.extended ? (int)tm.shiftY : 0;
+	auto planeZ = [&](int si, int plane) { return (int)floor(g.level->sectors[si].GetPlaneTexZ(plane) + 0.5); };
+	if (reg.own >= 0 && (unsigned)reg.own < g.level->sectors.Size())
+	{
+		wf.ownFloor = planeZ(reg.own, sector_t::floor);
+		wf.ownCeil  = planeZ(reg.own, sector_t::ceiling);
+	}
+	if (wf.twoSided && reg.nbr >= 0 && (unsigned)reg.nbr < g.level->sectors.Size())
+	{
+		wf.nbrFloor = planeZ(reg.nbr, sector_t::floor);
+		wf.nbrCeil  = planeZ(reg.nbr, sector_t::ceiling);
+	}
+
+	const int slotOfPart[3] = { tm.upperTexture, tm.midTexture, tm.lowerTexture };   // side_t::top, mid, bottom
+	for (int part = 0; part < 3; part++)
+	{
+		if (!wf.twoSided && part != side_t::mid) continue;
+		WallPieceShape &shape = reg.piece[part];
+		FTextureID tex = side.GetTexture(part);
+		if (texturesChanged)
+		{
+			auto plain = g.texByIndex.find(slotOfPart[part]);
+			if (plain == g.texByIndex.end() || !plain->second.isValid()) continue;   // not this slot, or nothing registered
+			if (!tex.isValid() && part == side_t::mid && wf.twoSided) continue;      // never wall up an opening
+			FGameTexture *gt = TexMan.GetGameTexture(plain->second, false);
+			if (gt == nullptr) continue;
+			// The quarter turn: the engine texture's width is the picture's
+			// along-the-wall count (roth_texture.cpp).
+			shape.dimU = (int)gt->GetTexelWidth();
+			shape.dimV = (int)gt->GetTexelHeight();
+			shape.baked = false;
+			tex = plain->second;
+		}
+		else if (!tex.isValid())
+		{
+			continue;
+		}
+		else if (shape.baked)
+		{
+			g.wallBakedKept++;
+			continue;
+		}
+		if (shape.dimU <= 0 || shape.dimV <= 0) continue;   // a solid colour: no texel to place
+
+		const WallPiece wp = WallPieceRule(wf, (WallTier)part, shape.dimU, shape.dimV);
+		WallEngineSetup we = WallToEngine(wf, (WallTier)part, wp, shape.dimU, shape.dimV, reg.texelLength);
+		if (!we.drawn) continue;
+		if (we.baked)
+		{
+			// The loader's fallback for a bake it cannot make (rothmap.cpp makeSide).
+			if (we.bakeV) we.yOffset += wp.v0;
+			we.xOffset = wp.u0;
+			we.mirrored = wp.mirror;
+			we.baked = we.bakeU = we.bakeV = false;
+			g.wallBakedDropped++;
+		}
+		if (texturesChanged)
+		{
+			auto mir = g.mirroredByIndex.find(slotOfPart[part]);
+			if (we.mirrored && mir != g.mirroredByIndex.end() && mir->second.isValid()) tex = mir->second;
+			side.SetTexture(part, tex);
+		}
+		side.SetTextureXScale(part, we.xScale);
+		side.SetTextureYScale(part, we.yScale);
+		side.SetTextureXOffset(part, we.xOffset);
+		side.SetTextureYOffset(part, we.yOffset);
+	}
+}
+
 int ChangeFaceTexture(const Command &c)
 {
 	if (g.level == nullptr) return CMD_NOTHING;
@@ -1689,14 +1801,11 @@ int ChangeFaceTexture(const Command &c)
 			field = c.aux;
 		}
 
-		auto sd = g.faceToSide.find(fi);
-		if (sd == g.faceToSide.end()) continue;
-		if (sd->second < 0 || (size_t)sd->second >= g.level->sides.Size()) continue;
-
-		const int part = slot == SlotMid   ? side_t::mid
-		               : slot == SlotLower ? side_t::bottom
-		                                   : side_t::top;
-		g.level->sides[sd->second].SetTexture(part, tex->second);
+		// The new picture goes through the wall rule like any other: a FLIP_X
+		// face gets the mirrored image, a fitted piece one copy of the NEW
+		// picture's size, a DRAW_FROM_BOTTOM piece the new picture's start row.
+		if (g.faceToSide.count(fi) == 0) continue;
+		ReapplyWallFace(fi, true);
 		changed++;
 	}
 
@@ -3388,24 +3497,14 @@ static void ApplyTexmapShift(int tmi)
 	if (tmi < 0 || (size_t)tmi >= g.map.textureMaps.size()) return;
 	const TextureMap &tm = g.map.textureMaps[tmi];
 
-	double offX = double(tm.shiftX);
-	double offY = double(tm.shiftY);
-	if (tm.flags & FF_PIN_BOTTOM) offY = -offY;
+	(void)tm;
 
+	// Through the wall rule (ReapplyWallFace): this used to write offX = shiftX
+	// and offY = +-shiftY onto all three pieces, which dropped the anchor term,
+	// the DRAW_FROM_BOTTOM start row and IMAGE_FIT's zeroed shifts.
 	auto faces = g.texmapToFaces.find(tmi);
 	if (faces == g.texmapToFaces.end()) return;
-	for (int fi : faces->second)
-	{
-		auto sd = g.faceToSide.find(fi);
-		if (sd == g.faceToSide.end()) continue;
-		if (sd->second < 0 || (size_t)sd->second >= g.level->sides.Size()) continue;
-		side_t &side = g.level->sides[sd->second];
-		for (int part = 0; part < 3; part++)
-		{
-			side.SetTextureXOffset(part, offX);
-			side.SetTextureYOffset(part, offY);
-		}
-	}
+	for (int fi : faces->second) ReapplyWallFace(fi, false);
 }
 
 //==========================================================================
@@ -3567,23 +3666,10 @@ static void ApplyTexmapFull(int tmi)
 	auto faces = g.texmapToFaces.find(tmi);
 	if (faces == g.texmapToFaces.end()) return;
 
-	const int slot[3] = { tm.midTexture, tm.upperTexture, tm.lowerTexture };
-	const int part[3] = { side_t::mid, side_t::top, side_t::bottom };
+	(void)tm;
 
-	for (int fi : faces->second)
-	{
-		auto sd = g.faceToSide.find(fi);
-		if (sd == g.faceToSide.end()) continue;
-		if (sd->second < 0 || (size_t)sd->second >= g.level->sides.Size()) continue;
-		side_t &side = g.level->sides[sd->second];
-		for (int k = 0; k < 3; k++)
-		{
-			auto t = g.texByIndex.find(slot[k]);
-			if (t == g.texByIndex.end() || !t->second.isValid()) continue;
-			side.SetTexture(part[k], t->second);
-		}
-	}
-	ApplyTexmapShift(tmi);
+	// Pictures and shifts together, through the wall rule (ReapplyWallFace).
+	for (int fi : faces->second) ReapplyWallFace(fi, true);
 }
 
 //==========================================================================
@@ -5643,6 +5729,9 @@ void EndLevel()
 	g.flatByIndex.clear();
 	g.effects.clear();
 	g.texByIndex.clear();
+	g.mirroredByIndex.clear();
+	g.wallByFace.clear();
+	g.wallBakedKept = g.wallBakedDropped = 0;
 	g.byFace.clear();
 	g.bySide.clear();
 	g.faceToSide.clear();
@@ -5776,6 +5865,20 @@ void RegisterFaceSide(int rothFace, int sideIndex)
 void RegisterTexture(int rothIndex, FTextureID tex)
 {
 	if (rothIndex >= 0 && tex.isValid()) g.texByIndex[rothIndex] = tex;
+}
+
+void RegisterMirroredTexture(int rothIndex, FTextureID tex)
+{
+	if (rothIndex >= 0 && tex.isValid()) g.mirroredByIndex[rothIndex] = tex;
+}
+
+void RegisterWallFace(int rothFace, const WallFace &wf, int texelLength,
+	int ownSector, int nbrSector, const WallPieceShape pieces[3])
+{
+	Runtime::WallReg r;
+	r.wf = wf; r.texelLength = texelLength; r.own = ownSector; r.nbr = nbrSector;
+	for (int k = 0; k < 3; k++) r.piece[k] = pieces[k];
+	g.wallByFace[rothFace] = r;
 }
 
 void RegisterFlat(int rothIndex, FTextureID tex, bool isSky, bool opaque256)

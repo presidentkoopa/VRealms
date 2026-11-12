@@ -38,6 +38,8 @@
 #include "vk_hwtexture.h"
 #include "filesystem.h"	// [DDS] VkCompressedPixels::Read
 #include "image.h"
+#include "texturemanager.h"	// [RS] DescribeZeroSizeTexture
+#include <typeinfo>
 #include "hwrenderer/data/hw_perftrack.h"	// RS FORK -- perf_track: a texture upload is a hitch reason
 #include <algorithm>
 
@@ -136,6 +138,30 @@ VkTextureImage *VkHardwareTexture::GetDepthStencil(FTexture *tex)
 	return &mDepthStencil;
 }
 
+// [RS] WHICH texture came back empty. "Trying to create zero size texture" names no
+// texture, and the hardware texture does not know whose it is; the FTexture does,
+// through the game texture that wraps it. Only reached on the way to the fatal error.
+FString DescribeZeroSizeTexture(FTexture *tex, int w, int h)
+{
+	FString what;
+	for (int i = 0; tex != nullptr && i < TexMan.NumTextures(); i++)
+	{
+		FGameTexture *gt = TexMan.GameByIndex(i);
+		if (gt != nullptr && gt->GetTexture() == tex)
+		{
+			what.Format("'%s' (texture #%d, use type %d)", gt->GetName().GetChars(), i, (int)gt->GetUseType());
+			break;
+		}
+	}
+	if (what.IsEmpty()) what = "a texture no game texture wraps (a material layer?)";
+	FImageSource *img = tex != nullptr ? tex->GetImage() : nullptr;
+	FString msg;
+	msg.Format("Trying to create zero size texture: %s -- texture %dx%d, buffer %dx%d, image %s %dx%d",
+		what.GetChars(), tex ? tex->GetWidth() : -1, tex ? tex->GetHeight() : -1, w, h,
+		img ? typeid(*img).name() : "(none)", img ? img->GetWidth() : -1, img ? img->GetHeight() : -1);
+	return msg;
+}
+
 void VkHardwareTexture::CreateImage(FTexture *tex, int translation, int flags)
 {
 	if (!tex->isHardwareCanvas())
@@ -145,6 +171,8 @@ void VkHardwareTexture::CreateImage(FTexture *tex, int translation, int flags)
 		{
 			FTextureBuffer texbuffer = tex->CreateTexBuffer(translation, flags | CTF_ProcessData);
 			bool indexed = flags & CTF_Indexed;
+			if (texbuffer.mWidth <= 0 || texbuffer.mHeight <= 0)
+				throw CVulkanError(DescribeZeroSizeTexture(tex, texbuffer.mWidth, texbuffer.mHeight).GetChars());
 			CreateTexture(texbuffer.mWidth, texbuffer.mHeight,indexed? 1 : 4, indexed? VK_FORMAT_R8_UNORM : VK_FORMAT_B8G8R8A8_UNORM, texbuffer.mBuffer, !indexed);
 		}
 	}
