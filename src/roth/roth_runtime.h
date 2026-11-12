@@ -128,6 +128,25 @@ bool SectorShift(int rothSector, double &dx, double &dy);
 // sector that was not moved wins. Returns the Realms sector or -1.
 int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, double &ey);
 
+// The player's health 0x8a0f0, its cap 0x7fe44 and the armour factor 0x81e30
+// (DBASE100 op 0x37, the interpreter's) and the pain flash 0x89f3b, for the
+// actor rules (roth_actors.h). ONE value each: the game flow's health as the
+// command core mirrors it, the core's flash, the interpreter's armour.
+int32_t PlayerHealth();
+void SetPlayerHealth(int32_t v);
+int32_t PlayerMaxHealth();
+int32_t PlayerArmour();
+int32_t PlayerPainFlash();
+void SetPlayerPainFlash(int32_t v);
+
+// begin_object_command_chain (raw_commands.c:1717-1729), for the actor rules:
+// the object becomes the command source and the chain of the first live 0x1b
+// trigger keyed to its command id runs (the "hit by an attack" channel). Used
+// when a creature dies and when a shot lands on a shootable object.
+bool FireObjectChain(int rothSector, int rothIndex);
+// A 0x3c record's +0x0e sound, played at the object by the chain's tail.
+void StageObjectChainSound(uint16_t soundPlusOne, int x, int y);
+
 // The player touched a wall or a door leaf. Returns true if this line belongs
 // to Realms, in which case the engine's own line activation must not also run.
 //

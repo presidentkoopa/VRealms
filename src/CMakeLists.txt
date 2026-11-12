@@ -999,6 +999,13 @@ set (PCH_SOURCES
 	# live world. roth_commands is also compiled into the standalone selftest.
 	roth/roth_commands.cpp
 	roth/roth_runtime.cpp
+	# The actors: objects, creatures, bullets, player damage (roth_actors.h);
+	# engine-free rules plus the engine binding.
+	roth/roth_actors.cpp
+	roth/roth_actor_tick.cpp
+	roth/roth_actor_player.cpp
+	roth/roth_actor_collide.cpp
+	roth/roth_actors_engine.cpp
 	# Realms' own sound. roth_sfx reads the retail containers and holds the
 	# rules (engine-free; tools/roth_sound compiles it too); roth_sound plays
 	# them through the engine's sound system and music player.

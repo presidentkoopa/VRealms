@@ -38,6 +38,7 @@
 #include "roth_install.h"
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 #include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
+#include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 
 #include <map>
 #include <vector>
@@ -4571,6 +4572,17 @@ int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h)
 	case 0x29: return GiveItemCmd(rec, h);
 	case 0x2A: return RemoveItemCmd(rec);
 	case 0x42: return SetInventoryFilterCmd(rec);
+	// The actor commands (roth_actors.cpp). Not marked in IsImplemented: the
+	// lead flips that after seeing them work.
+	case 0x16: case 0x3A: case 0x3C:
+		if (ActorsActive())
+		{
+			bool interrupt = false;
+			const int r = ActorsCommand(op, *rec, g.activeObjectSector, g.activeObjectIndex, g.activeFace, interrupt);
+			if (interrupt) h.interrupt = Interrupt::Rerun;   // g_command_chain_interrupt = 2
+			return r;
+		}
+		return RunCommand(m, cc, index);
 	case 0x34:
 	{
 		// cmd_change_face_texture (raw_commands.c:396-437): with a key of 0, a
@@ -5201,6 +5213,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// records resolved to sample rows. The new-game action below starts the
 	// first song, so this has to be up before it.
 	SoundBeginLevel(map, level, log);
+	ActorsBeginLevel(g.map, level, log);
 
 	// The game core is attached once: its flags and items are the game's, not
 	// the map's. There is no menu or save yet, so the first level this session
@@ -5656,6 +5669,7 @@ void EndLevel()
 	g.warpPending = false;
 	g.fired = 0;
 	g.unhandledOps.clear();
+	ActorsEndLevel();
 	SoundEndLevel();
 	// g_progressFlags is NOT cleared -- see the header.
 }
@@ -5819,6 +5833,39 @@ int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, doubl
 	if (best >= 0 && SectorShift(best, sx, sy)) { ex += sx; ey += sy; }
 	return best;
 }
+
+bool FireObjectChain(int rothSector, int rothIndex)
+{
+	if (!g.active || rothSector < 0 || (size_t)rothSector >= g.map.objects.size()) return false;
+	if (rothIndex < 0 || (size_t)rothIndex >= g.map.objects[rothSector].size()) return false;
+	const uint16_t key = g.map.objects[rothSector][rothIndex].commandID;
+	g.activeObjectSector = rothSector;
+	g.activeObjectIndex = rothIndex;
+	g.activeFace = g.activeSector = -1;                   // raw_commands.c:1721-1722
+	for (const Command &c : g.map.commands)               // find_object_list24: the first live one
+	{
+		if ((c.opcode & 0x7f) != 0x1B || c.disabled || c.key != key) continue;
+		if (c.modifier & 0x29) return false;              // raw_commands.c:1704
+		return Fire(c.chainStart);
+	}
+	return false;
+}
+
+void StageObjectChainSound(uint16_t soundPlusOne, int x, int y)
+{
+	StageChainSoundAt(soundPlusOne, x, y);
+}
+
+// See roth_runtime.h. One health: the flow holds it and the command core
+// mirrors it (CmdPullHealth / CmdPushHealth), and the actor rules go through
+// the same two steps, so a creature's hit reaches the engine's player exactly
+// as a RAW 0x33 does.
+int32_t PlayerHealth() { CmdPullHealth(); return g_cmd.health; }
+void SetPlayerHealth(int32_t v) { g_cmd.health = v; CmdPushHealth(); }
+int32_t PlayerMaxHealth() { return g_flow.MaxHealth(); }
+int32_t PlayerPainFlash() { return g_cmd.damageFlash; }
+void SetPlayerPainFlash(int32_t v) { g_cmd.damageFlash = v; }
+int32_t PlayerArmour() { return g_core.IsAttached() ? g_core.Interp().State().g_value_reduction_factor : 0; }
 
 bool SectorShift(int rothSector, double &dx, double &dy)
 {
@@ -6935,6 +6982,10 @@ void TickLevelLogic(FLevelLocals *level)
 	// roth_platforms: tell the platform actors where the effects just put
 	// their sectors. After the pool, so an actor is never a frame behind it.
 	DrivePlatforms();
+
+	// The actors and their bullets: tick_dynamic_entities, from the frame
+	// step after the world effects (game_core.c, gameplay_frame_step).
+	ActorsTick(level, ROTH_FRAME_TICKS_PER_TIC);
 
 	DrainDeferred();
 	ApplyPendingWarp();

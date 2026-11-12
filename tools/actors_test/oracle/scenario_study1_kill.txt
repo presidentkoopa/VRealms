@@ -1,0 +1,13 @@
+1 ticktrace 1
+100001 dump start
+100150 fire 61
+100180 fire 61
+100210 fire 61
+100240 fire 61
+100270 fire 61
+100300 fire 61
+100330 fire 61
+100360 fire 61
+100390 fire 61
+100420 fire 61
+101000 quit

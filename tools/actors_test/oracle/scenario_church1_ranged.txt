@@ -1,0 +1,14 @@
+1 unhide 55 0
+1 ticktrace 1
+100001 dump start
+100060 fire 254
+100120 fire 254
+100180 fire 254
+100240 fire 254
+100300 fire 254
+100360 fire 254
+100420 fire 254
+100480 fire 254
+100700 dump mid700
+101400 dump end
+101401 quit

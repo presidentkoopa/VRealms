@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdint.h>
+#include <utility>
+#include <vector>
 //
 // Placing Realms of the Haunting's objects -- the furniture, the decoration, the
 // suit of armour, the chairs and the desks -- into a level the engine reads
@@ -68,6 +70,11 @@ AActor *FindObjectActor(int rothSector, int rothIndex);
 // That is the ordinary answer for every Doom actor in the level, so callers
 // test it rather than treating it as a fault.
 bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex);
+
+// Replace both indexes with `current`: ((sector, index), actor) for every
+// object that has an actor now. For the actor rules, whose list edits move
+// records (roth_actors_engine.cpp).
+void RekeyObjectActors(const std::vector<std::pair<std::pair<int, int>, AActor *>> &current);
 
 // After the engine replaced every thinker (a hub snapshot coming back, a
 // savegame loading), find the props again. Each carries its (sector, index)

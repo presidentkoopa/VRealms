@@ -1288,6 +1288,23 @@ bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex)
 	return true;
 }
 
+// The actor rules (roth_actors.h) remove records from a sector's list and move
+// them between lists, as the original does (raw_commands.c:3703, 3849), which
+// changes the (sector, index) of every record after them. They re-key both
+// indexes here afterwards, so FindObjectActor keeps naming the right actor.
+void RekeyObjectActors(const std::vector<std::pair<std::pair<int, int>, AActor *>> &current)
+{
+	gObjectActors.clear();
+	gActorObjects.clear();
+	for (const auto &e : current)
+	{
+		if (e.second == nullptr) continue;
+		const uint32_t key = ObjectKey(e.first.first, e.first.second);
+		gObjectActors[key] = e.second;
+		gActorObjects[e.second] = key;
+	}
+}
+
 // How far each spawned actor's yaw sits from its object's facing: the mesh and
 // fixed-angle offsets above. Absent means zero. Kept so a later turn goes
 // through the same sum the spawn did.
