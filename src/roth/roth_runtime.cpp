@@ -874,7 +874,10 @@ int TailConsume(Command *rec, int ret)
 int TailIfNext(Handlers &h)
 {
 	uint16_t pending = g.pendingRecord;
-	if (pending != 0)
+	// raw_commands.c:4652-4656: the pending record runs only when
+	// g_item_autoselected_flag is clear. Set, the record stays latched and the
+	// (non-zero) latch is the answer.
+	if (pending != 0 && !(g_core.IsAttached() && g_core.Items().AutoSelected()))
 	{
 		// g_item_autoselected_flag gates this in the original. It belongs to the
 		// inventory subsystem, which is not built, and is therefore always 0
@@ -973,6 +976,99 @@ int IfNotFlag(Command *rec, Handlers &h)
 	const int f1 = rec->fireFlags & 1;
 	if (set) return f1 ? TailConsume(rec, CMD_NOTHING) : TailIfNext(h);
 	return f1 ? TailIfNext(h) : TailConsume(rec, CMD_ACTED);
+}
+
+//==========================================================================
+//
+// The inventory commands: 0x27, 0x29, 0x2a, 0x42.
+//
+// All four are transcribed from raw_commands.c and call the game core. With
+// no core (no DBASE100) each is counted as unhandled and does nothing.
+//
+// NOT IN IsImplemented(), ON PURPOSE, exactly as 0x2b is not: the census moves
+// when the owner has picked something up and seen it, not when this compiles.
+//
+// [unverified] give_item's context. The original hands it the active world
+// object (0x8a134), or a drop position worked out from the secondary active
+// object (0x8a0fc) -- raw_commands.c:4801-4822. That decides where the item
+// is seen flying in from, and nothing else. The runtime has neither latch
+// yet, so the context is null: the item is given, with no fly-in.
+//
+//==========================================================================
+
+// The id list 0x27 builds in list mode: g_query_list 0x89f68, count 0x89f64,
+// sixteen entries (raw_commands.c:4765-4770). Cleared with the chain state
+// (raw_commands.c:1328) -- see Fire.
+int32_t g_ifItemList[16];
+int g_ifItemListCount = 0;
+
+// rawcmd_route_35580 -- raw_commands.c:4743-4749.
+int RouteQuery(Command *rec, Handlers &h, int found)
+{
+	const int f1 = rec->fireFlags & 1;
+	if (found != 0) return f1 ? TailConsume(rec, CMD_NOTHING) : TailIfNext(h);
+	if (g_core.Items().AutoSelected())
+	{
+		h.interrupt = Interrupt::Break;          // g_command_chain_interrupt = 1
+		return CMD_NOTHING;
+	}
+	return f1 ? TailIfNext(h) : TailConsume(rec, CMD_ACTED);
+}
+
+// 0x27 cmd_if_not_item -- raw_commands.c:4760-4789.
+int IfNotItem(Command *rec, Handlers &h)
+{
+	if (!g_core.IsAttached()) { g.unhandledOps[0x27]++; return CMD_NOTHING; }
+	const uint8_t f6 = rec->fireFlags;
+	const int mode = ((f6 & 2) ? 1 : 0) + ((f6 & 0x20) ? 2 : 0);
+	if (f6 & 8)
+	{
+		if (!(f6 & 4))                           // :4764-4772, append to the list
+		{
+			if (g_ifItemListCount < 0x10) g_ifItemList[g_ifItemListCount++] = rec->key;
+			return CMD_NOTHING;
+		}
+		if (g_ifItemListCount == 0) return TailIfNext(h);                  // :4774
+		return RouteQuery(rec, h, g_core.FindOrAutoselect(g_ifItemList, g_ifItemListCount, mode));
+	}
+	if (f6 & 4)                                  // :4780-4784, compare the last item
+	{
+		if ((uint16_t)g_core.Items().LastItem() == rec->key) return TailConsume(rec, CMD_NOTHING);
+		return TailIfNext(h);
+	}
+	return RouteQuery(rec, h, g_core.Query(rec->key, mode));              // :4785-4788
+}
+
+// 0x29 cmd_give_item -- raw_commands.c:4799-4830.
+int GiveItemCmd(Command *rec, Handlers &h)
+{
+	if (!g_core.IsAttached()) { g.unhandledOps[0x29]++; return CMD_NOTHING; }
+	const int32_t r = g_core.Give(rec->key, nullptr);
+	g_core.Items().SetLastItem(r);               // g_last_item_record
+	if (r != 0) return CMD_ACTED;
+	h.interrupt = Interrupt::Rerun;              // g_command_chain_interrupt = 2
+	return CMD_NOTHING;
+}
+
+// 0x2a cmd_remove_item -- raw_commands.c:4918-4931.
+int RemoveItemCmd(Command *rec)
+{
+	if (!g_core.IsAttached()) { g.unhandledOps[0x2A]++; return CMD_NOTHING; }
+	int32_t id = rec->key;
+	if (id == 0) id = g_core.Items().LastItem();
+	g_core.Items().SetLastItem(id);
+	if (g_core.Remove((uint16_t)id) != 0) return TailConsume(rec, CMD_ACTED);
+	return CMD_NOTHING;
+}
+
+// 0x42 cmd_set_inventory_filter -- raw_commands.c:4940-4947. "Take inventory":
+// a display filter, nothing is removed.
+int SetInventoryFilterCmd(Command *rec)
+{
+	if (!g_core.IsAttached()) { g.unhandledOps[0x42]++; return CMD_NOTHING; }
+	g_core.SetFilter((rec->fireFlags & 1) ? 1 : 0);
+	if (rec->fireFlags & 0x10) { rec->modifier |= 0x08; SyncDisabled(rec); }
+	return CMD_ACTED;
 }
 
 //==========================================================================
@@ -3591,6 +3687,10 @@ int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h)
 	case 0x38: return JumpIfNextFails(rec, h);
 	case 0x40: return RunIndexedCommand(*rec, h);
 	case 0x2B: return RunDbase100Record(rec);
+	case 0x27: return IfNotItem(rec, h);
+	case 0x29: return GiveItemCmd(rec, h);
+	case 0x2A: return RemoveItemCmd(rec);
+	case 0x42: return SetInventoryFilterCmd(rec);
 	default:   return RunCommand(m, cc, index);
 	}
 }
@@ -3618,6 +3718,7 @@ bool Fire(uint16_t chain)
 		g_dialogueLatch = false;
 		g_core.Items().ClearAutoSelected();
 	}
+	g_ifItemListCount = 0;                       // raw_commands.c:1328
 	if (result != CMD_NOTHING) g.fired++;
 	return result != CMD_NOTHING;
 }
@@ -5596,6 +5697,12 @@ void DrainPendingDialogue()
 	batch.swap(gPendingDialogue);
 	for (int id : batch)
 	{
+		if (id >= 100000)
+		{
+			const bool acted = Fire((uint16_t)(id - 100000));
+			Printf("roth_fire: chain %d %s\n", id - 100000, acted ? "acted" : "did nothing");
+			continue;
+		}
 		if (id < 0)
 		{
 			Inventory &inv = g_core.Items();
@@ -5625,6 +5732,16 @@ CCMD(roth_dialogue)
 	const int id = atoi(argv[1]);
 	if (id < 1) { Printf("roth_dialogue: ids start at 1\n"); return; }
 	gPendingDialogue.push_back(id);
+}
+
+// roth_fire <command index> -- run the chain that starts at that 1-based
+// command record, as a trigger naming it would. A test instrument.
+CCMD(roth_fire)
+{
+	if (argv.argc() < 2) { Printf("roth_fire <1-based command index>\n"); return; }
+	const int idx = atoi(argv[1]);
+	if (idx < 1 || idx > 65535) { Printf("roth_fire: index out of range\n"); return; }
+	gPendingDialogue.push_back(100000 + idx);
 }
 
 CCMD(roth_inventory)

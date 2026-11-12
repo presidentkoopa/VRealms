@@ -55,6 +55,14 @@ public:
 	// RAW 0x2b: run an action record by id, then finish the evaluation.
 	uint32_t RunAction(uint32_t id);
 
+	// The inventory entries the RAW commands call, each going out through the
+	// core's own sink so that weapons, the panel and the interpreter hear of it.
+	int32_t Give(int32_t item, const GiveContext *ctx = nullptr);        // give_item, RAW 0x29
+	int Query(uint16_t id, int flags);                                   // query_player_inventory, RAW 0x27
+	int FindOrAutoselect(const int32_t *ids, int count, int flags);      // RAW 0x27, list mode
+	int Remove(uint16_t id);                                             // remove_item, RAW 0x2a
+	void SetFilter(int mode);                                            // set_inventory_list_filter, RAW 0x42
+
 private:
 	// The interpreter's calls: inventory and RNG are answered here, the rest
 	// goes to the host.

@@ -42,6 +42,36 @@ uint32_t GameCore::RunAction(uint32_t id)
 	return r;
 }
 
+int32_t GameCore::Give(int32_t item, const GiveContext *ctx)
+{
+	if (mDb == nullptr) return 0;
+	return mInventory.GiveItem(*mDb, item, ctx, &mInvBridge);
+}
+
+int GameCore::Query(uint16_t id, int flags)
+{
+	if (mDb == nullptr) return 0;
+	return mInventory.Query(*mDb, id, flags, &mInvBridge);
+}
+
+int GameCore::FindOrAutoselect(const int32_t *ids, int count, int flags)
+{
+	if (mDb == nullptr) return 0;
+	return mInventory.FindOrAutoselect(ids, count, flags, mRng, &mInvBridge);
+}
+
+int GameCore::Remove(uint16_t id)
+{
+	if (mDb == nullptr) return 0;
+	return mInventory.RemoveItem(*mDb, id, &mInvBridge);
+}
+
+void GameCore::SetFilter(int mode)
+{
+	if (mDb == nullptr) return;
+	mInventory.SetFilter(*mDb, mode, &mInvBridge);
+}
+
 //==========================================================================
 //
 // Interpreter -> inventory, and the shared generator.
