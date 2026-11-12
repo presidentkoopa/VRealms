@@ -35,6 +35,14 @@ Every agent runs these before handing back:
 | `tools/gdv_test/` | GDV movies vs the original's decoder | 7882/7882 records, every audio sample |
 | `tools/wallrule/` | Wall texture rule | 0 of 38,034 pieces differ |
 
+### The porting rule (from UZDXREMA's Quake VR postmortem, for every source we port: ROTH.C, Eternity, Quake VR, RSQ DistanceGrab, 3D Platform)
+1. Port from the source, never from a summary, a header comment, a research note or an old handoff. Read the whole implementation first.
+2. Before porting, write a numbered checklist of every part, constant and behaviour of the source, each with its file:line, and for each the port's file:line or "not ported" with the reason. That list is the acceptance test.
+3. Never label partial work with the source's name. Say which parts are not ported.
+4. When a ported system misbehaves, check the port against the source before inventing a fix.
+
+For ROTH.C this lane adds a fifth rule: prove the port with a differential test against the running original.
+
 ### Traps that cost hours today
 - **Never use `git stash`.** All worktrees share one stash list, and two agents popped each other's work.
 - **The anonymous namespace.** `roth_runtime.cpp` opens one near the top. A function declared inside it and defined outside it type-checks but fails to link with MSVC (LNK2019). This happened three times today. A failed link leaves the owner without a working exe.
@@ -121,13 +129,17 @@ Every agent runs these before handing back:
      - every animation clip and what it is for, plus clip lengths and frame rates;
      - blend shapes, if any;
      - how to get the most responsiveness out of them in VR: which clips to drive from controller input (grip, trigger, thumb touch, finger curl from capacitive sensors), what to blend versus pose procedurally, and what latency the pipeline adds.
-   - **Hand posing on meshes, from UZDXREMA's player-IK/avatar lane.** UZDXREMA already ported Quake VR's auto-grasp:
-     - `src/r_data/vr_grasp.{h,cpp}` (from vittorioromeo/quakevr `Quake/vr/vr_grasp.cpp`, GPL): fingers close along their curl paths and stop joint by joint on the held mesh's triangles;
-     - `src/r_data/vr_avatar_pose.cpp` (the hand pose, including `[FBXGRIP]` thumb and support-hand rules);
-     - `wadsrc/static/vrhandpose.txt`, `VRHANDPOSE` lumps;
-     - `tools/avatar/mkfbxposes.py`, which already writes hand poses from the FBX hands.
-     - Read `HANDOFF_AVATAR_2026-11-11.md` and `AVATAR_IK_WORKLIST.md` there.
-     - The owner wants this for our FBX hands. Bring the grasp and pose code into REMAROTH, or do the engine move in step 5 first and use it in place. Decide with the owner.
+   - **Hand posing on meshes: Quake VR's grasp.** Read `docs/QUAKEVR_POSTMORTEM_from_UZDXREMA_2026-11-12.md` first.
+     - **Correction to an earlier version of this handoff.** It said "UZDXREMA already ported Quake VR's auto-grasp". That is wrong. The `vr_grasp.{h,cpp}` this session read at UZDXREMA `39e4dad` contains **only part 1 of 8** (close from open, stop on contact). It was written from a header-comment summary and labelled as the whole thing.
+     - **Parts 2–8 are being ported in UZDXREMA now**, against a written checklist (`QUAKEVR_GRASP_SPEC.md` there): conservative advancement, close from the fist, settle, thumb turn search, Quake VR's own thumb motion, finger spheres fitted to the skin, index/palm/grip/trigger and the warm start.
+     - **For our FBX hands:** take the grasp from UZDXREMA only once its checklist shows all 8 parts ported and seen working in the headset. Otherwise port from Quake VR's source itself (vittorioromeo/quakevr: `Quake/vr/vr_grasp.cpp`, `vr_handrig.cpp`, the rig data `vr_handrig_data.inc`, `make_hand_rig.py`), reading the whole implementation first.
+     - **Supporting UZDXREMA files:**
+       - `src/r_data/vr_avatar_pose.cpp`: hand pose, `[FBXGRIP]` thumb and support-hand rules;
+       - `wadsrc/static/vrhandpose.txt`, `VRHANDPOSE` lumps;
+       - `tools/avatar/mkfbxposes.py`, which writes hand poses from the FBX hands.
+       - Read `HANDOFF_AVATAR_2026-11-11.md`, `AVATAR_IK_WORKLIST.md` and any newer avatar handoff there.
+     - Finger spheres must be fitted to the **FBX hands' own skin** (Quake VR's `make_hand_rig.py` method), not to another hand's.
+     - The owner wants this for our FBX hands. Bring it into REMAROTH, or do the engine move in step 5 first and use it in place. Decide with the owner.
    - **FBX in the engine.** Neither engine reads FBX today. Both load IQM, MD3, OBJ and the like; UZDXREMA converts FBX hand poses offline with `mkfbxposes.py`. Making the engine read FBX is not unreasonable. The well-trodden way is to embed **ufbx** (single-file C library, MIT licence) as a new model loader beside the IQM one: skeleton, skin weights, animation curves sampled into the engine's bone-animation path. The alternative is an offline FBX→IQM conversion of the FBX hands, which still keeps the FBX as the source. Recommend: the ufbx loader. Then the owner's FBX files load directly and re-exports are not needed.
    - **Interaction: a quick port of the owner's RSQ DistanceGrab** (`presidentkoopa/RSQ_UBQSeries`, `DistanceGrab/`): policy, mass, lock-on, flight, hold, throw, door, feel.
      - UZDXREMA's avatar handoff decided (2026-11-12) to rebuild it as one system on the engine, without its QZD workarounds (`handsync.zs`, KEYCONF netevents, cvars read in play). Follow that decision.
