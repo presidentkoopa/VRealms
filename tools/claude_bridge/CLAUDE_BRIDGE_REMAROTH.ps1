@@ -18,7 +18,7 @@
 #   selftest   src\roth\build_selftest.cmd "<retail folder>"   (engine-free reader checks)
 #   dbtest     tools\dbase100_test\build.cmd "<retail folder>" (DBASE100 + inventory tests, dump)
 #   run        doomxr.exe -iwad vrealms.pk3 -rothpath "<retail folder>" -config <bridge ini> +map <map>
-#              lines: -Map <name> (default STUDY1) | -Exec <cfg under this repo> | -TimeoutSec N (default 60,
+#              lines: -Map <name>|NONE (default STUDY1) | -Exec <cfg under this repo> | -TimeoutSec N (default 60,
 #                     max 900) | -Config RelWithDebInfo|Debug|Release | -Foreground | -Minimized
 #              The game is killed at the timeout if it has not quit by itself. Returns the engine log
 #              tail. Starts minimised unless -Foreground: a minimised window keeps ticking but does not
@@ -166,7 +166,10 @@ function Run-Action($lines) {
 			$ini = Get-EngineIni
 			$log = Join-Path $logs 'run.log'
 			Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-			$al = "-iwad vrealms.pk3 -rothpath `"$roth`" -config `"$ini`" +logfile `"$log`" +map $map"
+			# -Map NONE: no +map at all, so the engine's own start path runs (the
+			# ROTH.RES start map and the game flow's boot and new game).
+			$al = "-iwad vrealms.pk3 -rothpath `"$roth`" -config `"$ini`" +logfile `"$log`""
+			if ($map -ne 'NONE') { $al += " +map $map" }
 			if ($exec) { $al += " +exec `"" + ($exec -replace '\\', '/') + "`"" }
 			"doomxr.exe $al"
 			if ($fg -or $min) {
