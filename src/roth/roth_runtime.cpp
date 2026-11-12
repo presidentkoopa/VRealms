@@ -579,6 +579,7 @@ struct Runtime
 	// Realms sector -> the engine sector holding its mid-platform's two planes.
 	std::map<int, int> platformCtrl;
 	std::map<int, std::vector<int>> lightFollowers;
+	std::map<int, std::pair<double, double>> sectorShift;   // roth_portals: moved sectors
 
 	// Realms FLAT index -> the engine texture, and whether the index is the
 	// pack's sky marker. See RegisterFlat.
@@ -3863,6 +3864,10 @@ bool SectorCentre(int rothSector, double &outX, double &outY)
 	}
 	outX = double((minx + maxx) >> 1);
 	outY = double((miny + maxy) >> 1);
+	// The centre is wanted as a place to PUT something, so it is an engine
+	// position: follow the sector if the loader moved it (roth_portals).
+	double sx = 0., sy = 0.;
+	if (SectorShift(rothSector, sx, sy)) { outX += sx; outY += sy; }
 	return true;
 }
 
@@ -4515,6 +4520,7 @@ void EndLevel()
 	g.level = nullptr;
 	g.platformCtrl.clear();
 	g.lightFollowers.clear();
+	g.sectorShift.clear();
 	g.flatByIndex.clear();
 	g.effects.clear();
 	g.texByIndex.clear();
@@ -4638,6 +4644,22 @@ void RegisterTexture(int rothIndex, FTextureID tex)
 void RegisterFlat(int rothIndex, FTextureID tex, bool isSky, bool opaque256)
 {
 	if (rothIndex >= 0) g.flatByIndex[rothIndex] = Runtime::FlatReg{ tex, isSky, opaque256 };
+}
+
+void RegisterSectorShift(int rothSector, double dx, double dy)
+{
+	if (rothSector >= 0 && (dx != 0. || dy != 0.))
+		g.sectorShift[rothSector] = std::make_pair(dx, dy);
+}
+
+bool SectorShift(int rothSector, double &dx, double &dy)
+{
+	dx = dy = 0.;
+	auto it = g.sectorShift.find(rothSector);
+	if (it == g.sectorShift.end()) return false;
+	dx = it->second.first;
+	dy = it->second.second;
+	return true;
 }
 
 void RegisterLightFollower(int rothSector, int engineSector)

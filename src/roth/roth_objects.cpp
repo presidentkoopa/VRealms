@@ -29,6 +29,7 @@
 */
 
 #include "roth_objects.h"
+#include "roth_runtime.h"   // SectorShift: sectors moved by roth_portals
 #include "roth_raw.h"
 #include "roth_das.h"
 #include "roth_install.h"
@@ -717,6 +718,12 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			Pending p;
 			p.x = o.x;
 			p.y = o.y;
+			{
+				// An object belongs to the sector whose list it is in; if the
+				// loader moved that sector (roth_portals) the object goes too.
+				double sx = 0., sy = 0.;
+				if (SectorShift((int)si, sx, sy)) { p.x += sx; p.y += sy; }
+			}
 			p.z = o.z;               // ABSOLUTE, not relative to the floor
 			p.yaw = ObjectYaw(o.rotation);
 			p.rothSector = (int)si;

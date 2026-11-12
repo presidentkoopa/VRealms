@@ -104,6 +104,15 @@ void RegisterPlatformControl(int rothSector, int ctrlSector);
 // the load-time lights-out pass) reaching them too.
 void RegisterLightFollower(int rothSector, int engineSector);
 
+// roth_portals: a Realms sector that the loader moved to a region of its own
+// (rooms over rooms, joined back by linked line portals). Anything that turns
+// a REALMS coordinate known to lie in that sector into an engine position must
+// add this: sector centres for warps and arrivals, object positions, a camera
+// posed by the diff tools. Nothing is registered, and SectorShift returns false
+// with zeros, when the cvar is off or the map has no stacked rooms.
+void RegisterSectorShift(int rothSector, double dx, double dy);
+bool SectorShift(int rothSector, double &dx, double &dy);
+
 // The player touched a wall or a door leaf. Returns true if this line belongs
 // to Realms, in which case the engine's own line activation must not also run.
 //

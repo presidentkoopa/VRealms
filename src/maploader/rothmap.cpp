@@ -42,6 +42,8 @@
 #include "hw_vrmodes.h"   // VR_SetUnitsPerMeterOverride
 #include "roth/roth_runtime.h"
 #include "c_cvars.h"
+#include "roth_portalplan.h"   // rooms over rooms: groups, cuts, buffers
+#include "playsim/portal.h"    // FLinePortal, PORTT_LINKED
 
 //==========================================================================
 //
@@ -76,6 +78,20 @@ CVAR(String, roth_skip_sectors, "", CVAR_NOINITCALL)
 // problem", and this answers "is it the geometry or the 2-unit band on it",
 // which skipping alone cannot separate. Not archived, same reason.
 CVAR(String, roth_sector_ceiling, "", CVAR_NOINITCALL)
+
+// ROOMS OVER ROOMS, REPAIRED WITH LINKED PORTALS -- PROTOTYPE, OFF BY DEFAULT.
+//
+// 1: every stack of sectors that overlaps in plan is separated -- the smaller
+// side is moved to a region of its own -- and each face the move cut is rebuilt
+// as a pair of lines joined by a linked line portal, so the two regions render,
+// collide and trace as if they were still stacked. The plan (which sectors,
+// which faces, where the buffers go) is made by roth_portalplan.h, which the
+// offline node-builder harness runs too. 0: the map is built exactly as before.
+//
+// Not archived, for the same reason as roth_skip_sectors: until this has been
+// seen working in a headset it is a test, not a load anyone should inherit.
+// Applied at load; change it and reload the map.
+CVAR(Bool, roth_portals, false, CVAR_NOINITCALL)
 
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
@@ -716,9 +732,81 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	for (const auto &rs : rm.sectors)
 		if (leafBuildable(rs)) leafCount++;
 
+	//----------------------------------------------------------------------
+	// Rooms over rooms (roth_portals). Planned HERE, before anything is
+	// allocated, because the arrays below are allocated once and exactly, and
+	// the plan adds to every one of them: moved copies of vertices, a buffer
+	// sector behind each cut face, the buffers' walls, and one more line and
+	// two more sides per cut. Everything it adds goes at the very END of each
+	// array, after the slab controls and the door leaves, so no index the
+	// rest of this function computes moves.
+	//----------------------------------------------------------------------
+	rothplan::Plan portalPlan;
+	portalPlan.group.assign(rm.sectors.size(), 0);
+	if (roth_portals)
+	{
+		log.StageBegin("portal plan");
+		std::vector<int> planSkip;
+		for (const char *sk = roth_skip_sectors; sk != nullptr && *sk != 0; )
+		{
+			while (*sk == ' ' || *sk == ',') sk++;
+			if (*sk == 0) break;
+			planSkip.push_back(atoi(sk));
+			while (*sk != 0 && *sk != ',') sk++;
+		}
+		std::vector<RothPlanOverlap> found;
+		RothFindPlanOverlaps(rm, planSkip, found);
+		std::vector<rothplan::OverlapPair> pairsIn;
+		for (const RothPlanOverlap &po : found) pairsIn.push_back({ po.a, po.b, po.area });
+		portalPlan = rothplan::BuildPlan(rm, pairsIn, planSkip,
+			(int)(rm.vertices.size() + size_t(platformCount) * 4 + size_t(leafCount) * 8));
+
+		log.Section("Portals (roth_portals 1 -- PROTOTYPE)");
+		for (const std::string &n : portalPlan.notes) log.Line("  %s", n.c_str());
+		if (!portalPlan.active)
+		{
+			log.Line("  nothing separated: the map is built as it always was");
+		}
+		else
+		{
+			for (int g = 1; g < portalPlan.numGroups; g++)
+			{
+				FString members;
+				int count = 0;
+				for (size_t si = 0; si < rm.sectors.size(); si++)
+					if (portalPlan.group[si] == g)
+					{
+						if (count++ < 64) members.AppendFormat("%d ", (int)si);
+						roth::RegisterSectorShift((int)si, portalPlan.offX[g], portalPlan.offY[g]);
+					}
+				log.Line("  group %d: %d sector(s) moved by (%.0f, %.0f): %s%s", g, count,
+					portalPlan.offX[g], portalPlan.offY[g], members.GetChars(),
+					count > 64 ? "..." : "");
+			}
+			log.Line("  buffers %d (depth %.0f), buffer walls %d, moved vertices + far corners %d",
+				(int)portalPlan.buffers.size(), portalPlan.depth,
+				(int)portalPlan.bufferLines.size(), (int)portalPlan.extraVerts.size());
+			log.Count("portals: cut faces that paid a hazard penalty (door or slab"
+				" nearby, trigger face, short face)", portalPlan.penalisedCuts);
+			log.Count("portals: overlap stacks that could not be separated",
+				portalPlan.unresolvedStacks);
+		}
+	}
+	const size_t planVerts = portalPlan.active ? portalPlan.extraVerts.size() : 0;
+	const size_t planSectors = portalPlan.active ? portalPlan.buffers.size() : 0;
+	const size_t planCuts = portalPlan.active ? portalPlan.cuts.size() : 0;
+	const size_t planWalls = portalPlan.active ? portalPlan.bufferLines.size() : 0;
+	const unsigned planVertexBase = (unsigned)(rm.vertices.size() + size_t(platformCount) * 4
+		+ size_t(leafCount) * 8);
+	const unsigned planSectorBase = (unsigned)(rm.sectors.size() + size_t(platformCount)
+		+ size_t(leafCount));
+
 	log.StageBegin("vertices");
 	Level->vertexes.Alloc(rm.vertices.size() + size_t(platformCount) * 4
-		+ size_t(leafCount) * 8);
+		+ size_t(leafCount) * 8 + planVerts);
+	for (size_t i = 0; i < planVerts; i++)
+		Level->vertexes[planVertexBase + (unsigned)i].set(portalPlan.extraVerts[i].x,
+			portalPlan.extraVerts[i].y);
 	for (size_t i = 0; i < rm.vertices.size(); i++)
 		Level->vertexes[i].set(double(rm.vertices[i].x), double(rm.vertices[i].y));
 
@@ -731,8 +819,10 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// Sectors
 	//----------------------------------------------------------------------
 	log.StageBegin("sectors");
-	Level->sectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount));
-	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount));
+	Level->sectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount)
+		+ planSectors);
+	Level->extsectors.Alloc(rm.sectors.size() + size_t(platformCount) + size_t(leafCount)
+		+ planSectors);
 	memset(&Level->sectors[0], 0, sizeof(sector_t) * Level->sectors.Size());
 
 	int doorCount = 0, doorsWithHinge = 0, flatsToSky = 0, flatFlipsApplied = 0;
@@ -1011,6 +1101,57 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		sec->Colormap.Desaturation = (roth_lighting && (rs.flags & 2)) ? 1 : 0;
 
 	}
+
+	// Portal buffers (roth_portals). The engine lets an actor through a line
+	// portal only if the line has a back sector with empty space behind it
+	// (FLevelLocals::UpdatePortal, portal.cpp), and it takes the opening the
+	// actor must fit through from that back sector (P_LineOpening). So the
+	// buffer behind a cut face carries the heights, flats and light of the
+	// sector that is REALLY beyond the face: the wall's upper and lower pieces
+	// then come out exactly as they did when the two rooms shared the line,
+	// and a step up or a low lintel at the seam is still a step and a lintel.
+	// It is a COPY made at load: logic that later moves that sector's floor or
+	// ceiling does not move the buffer's (the light does follow).
+	for (size_t b = 0; b < planSectors; b++)
+	{
+		const unsigned bi = planSectorBase + (unsigned)b;
+		const int like = portalPlan.buffers[b].likeSector;
+		sector_t *bs = &Level->sectors[bi];
+		const sector_t *src = &Level->sectors[like];
+		bs->Level = Level;
+		bs->e = &Level->extsectors[bi];
+		bs->sectornum = (int)bi;
+		bs->seqType = -1;
+		bs->nextsec = bs->prevsec = -1;
+		bs->LastDamage = -1;
+		bs->heightsec = nullptr;
+		bs->damageinterval = 32;
+		bs->terrainnum[sector_t::ceiling] = bs->terrainnum[sector_t::floor] = -1;
+		bs->ibocount = -1;
+		memset(bs->SpecialColors, -1, sizeof(bs->SpecialColors));
+		memset(bs->AdditiveColors, 0, sizeof(bs->AdditiveColors));
+		bs->gravity = 1.;
+		bs->ZoneNumber = 0xFFFF;
+		bs->friction = ORIG_FRICTION;
+		bs->movefactor = ORIG_FRICTION_FACTOR;
+		bs->Flags |= SECF_FLOORDROP;
+		bs->Colormap = src->Colormap;
+		bs->lightlevel = src->lightlevel;
+		for (int which = 0; which < 2; which++)
+		{
+			bs->SetXScale(which, src->GetXScale(which));
+			bs->SetYScale(which, src->GetYScale(which));
+			bs->SetXOffset(which, src->GetXOffset(which));
+			bs->SetYOffset(which, src->GetYOffset(which, false));
+			bs->SetAngle(which, src->GetAngle(which, false));
+			bs->SetAlpha(which, 1.);
+			bs->SetPlaneTexZ(which, src->GetPlaneTexZ(which));
+			bs->SetTexture(which, src->GetTexture(which), false);
+		}
+		bs->floorplane = src->floorplane;
+		bs->ceilingplane = src->ceilingplane;
+		roth::RegisterLightFollower(like, (int)bi);
+	}
 	log.Line("  doors closed at load  %d  (%d with a hinge resolved)", doorCount, doorsWithHinge);
 	log.Count("doors: no hinge face found", doorCount - doorsWithHinge);
 	log.Line("  flats with no art -> sky  %d", flatsToSky);
@@ -1134,9 +1275,14 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	log.StageBegin("lines");
 
 	std::vector<bool> consumed(rm.faces.size(), false);
-	struct PendingLine { int face, sister; };
+	// portalPeer/buffer: set on the two halves of a face pair the portal plan
+	// cut. Each half is then a line of its own, in its own group's space,
+	// whose BACK is a buffer sector and whose far side is reached through the
+	// portal that joins it to the other half.
+	struct PendingLine { int face, sister; int portalPeer = -1; int buffer = -1; };
 	std::vector<PendingLine> pending;
 	pending.reserve(rm.faces.size());
+	std::vector<std::pair<int, int>> portalPending;   // the two line indices of each cut
 
 	// BISECTING GEOMETRY BY SECTOR. roth_skip_sectors is a comma list of Realms
 	// sector numbers whose faces are left out of the build entirely, on either
@@ -1195,7 +1341,25 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			&& rm.faces[sister].sector >= 0)
 		{
 			consumed[sister] = true;
-			pending.push_back({ (int)i, sister });
+			auto cutIt = portalPlan.active ? portalPlan.cutByFace.find((int)i)
+				: portalPlan.cutByFace.end();
+			if (cutIt != portalPlan.cutByFace.end()
+				&& portalPlan.cuts[cutIt->second].face == (int)i
+				&& portalPlan.cuts[cutIt->second].sister == sister)
+			{
+				const rothplan::Cut &cut = portalPlan.cuts[cutIt->second];
+				PendingLine a = { (int)i, -1 };
+				a.portalPeer = sister; a.buffer = cut.bufBehindFace;
+				PendingLine b = { sister, -1 };
+				b.portalPeer = (int)i; b.buffer = cut.bufBehindSister;
+				portalPending.push_back({ (int)pending.size(), (int)pending.size() + 1 });
+				pending.push_back(a);
+				pending.push_back(b);
+			}
+			else
+			{
+				pending.push_back({ (int)i, sister });
+			}
 			twoSided++;
 		}
 		else
@@ -1283,9 +1447,26 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 
 	// The tails of both arrays are reserved for the 3D floor control geometry
 	// built after this loop -- see the platform count above.
-	Level->lines.Alloc(pending.size() + size_t(platformCount) * 4 + size_t(leafCount) * 8);
+	// roth_portals: a cut pair is two pending lines and so is already counted
+	// in pending.size(); it needs two MORE sides than the pair it replaced (a
+	// back side on each half), and every buffer wall is a line with up to two.
+	if (portalPending.size() != planCuts)
+	{
+		// The planner pairs faces by the same rule as the loop above. If the
+		// two ever disagree the buffers would have no portal line: stop.
+		log.Warn("portal plan named %d cut(s) but the line loop found %d",
+			(int)planCuts, (int)portalPending.size());
+		log.End();
+		I_Error("Realms map %s: portal plan and line pairing disagree (roth_portals)",
+			map->rothFile.GetChars());
+	}
+	const unsigned planLineBase = (unsigned)(pending.size() + size_t(platformCount) * 4
+		+ size_t(leafCount) * 8);
+	Level->lines.Alloc(pending.size() + size_t(platformCount) * 4 + size_t(leafCount) * 8
+		+ planWalls);
 	Level->sides.Alloc(pending.size() + twoSided + size_t(platformCount) * 4
-		+ size_t(leafCount) * 8);   // one per original face, plus the void geometry
+		+ size_t(leafCount) * 8      // one per original face, plus the void geometry
+		+ planCuts * 2 + planWalls * 2);
 	memset(&Level->lines[0], 0, sizeof(line_t) * Level->lines.Size());
 	memset(&Level->sides[0], 0, sizeof(side_t) * Level->sides.Size());
 
@@ -1318,8 +1499,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		const roth::Face &f = rm.faces[pending[li].face];
 		line_t *ld = &Level->lines[li];
 
-		ld->v1 = &Level->vertexes[f.vertex1];
-		ld->v2 = &Level->vertexes[f.vertex2];
+		// A face of a moved sector uses that group's moved copy of each vertex
+		// (roth_portals); with no plan VertexFor returns the vertex itself.
+		{
+			const int faceGroup = portalPlan.GroupOf(f.sector);
+			ld->v1 = &Level->vertexes[portalPlan.VertexFor(faceGroup, f.vertex1)];
+			ld->v2 = &Level->vertexes[portalPlan.VertexFor(faceGroup, f.vertex2)];
+		}
 		ld->alpha = 1.;
 		ld->portalindex = UINT_MAX;
 		ld->portaltransferred = UINT_MAX;
@@ -1840,12 +2026,37 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			return sd;
 		};
 
-		ld->sidedef[0] = makeSide(f, pending[li].sister >= 0,
-			pending[li].sister >= 0 ? rm.faces[pending[li].sister].sector : -1);
+		const int portalPeer = pending[li].portalPeer;
+		ld->sidedef[0] = makeSide(f, pending[li].sister >= 0 || portalPeer >= 0,
+			pending[li].sister >= 0 ? rm.faces[pending[li].sister].sector
+				: portalPeer >= 0 ? rm.faces[portalPeer].sector : -1);
 		if (pending[li].sister >= 0)
 		{
 			makingSide = 1;
 			ld->sidedef[1] = makeSide(rm.faces[pending[li].sister], true, f.sector);
+			ld->flags |= ML_TWOSIDED;
+		}
+		else if (portalPeer >= 0)
+		{
+			// One half of a cut pair. The front side above was built exactly as
+			// it would have been against the real neighbour -- same pieces, same
+			// heights, because makeSide reads the neighbour's own sector. The
+			// back side belongs to the buffer and draws nothing: what is seen
+			// through the opening is the portal.
+			side_t *bd = &Level->sides[sideIndex++];
+			bd->sector = &Level->sectors[planSectorBase + (unsigned)pending[li].buffer];
+			bd->linedef = ld;
+			bd->Flags = WALLF_NOFAKECONTRAST;
+			bd->UDMFIndex = (int)(bd - &Level->sides[0]);
+			for (int part = 0; part < 3; part++)
+			{
+				bd->SetTextureXScale(part, 1.);
+				bd->SetTextureYScale(part, 1.);
+				bd->SetTextureXOffset(part, 0.);
+				bd->SetTextureYOffset(part, 0.);
+			}
+			bd->ClearAlpha();
+			ld->sidedef[1] = bd;
 			ld->flags |= ML_TWOSIDED;
 		}
 		else
@@ -2150,6 +2361,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				cl->flags = ML_BLOCKING;
 				cl->special = 0;
 				cl->alpha = 1.;
+				// These lines came out of the memset with portalindex 0, and this
+				// engine's line_t::getPortal (g_levellocals.h) only treats UINT_MAX
+				// as "no portal". Harmless while a Realms map had no line portals
+				// and nothing asked; with roth_portals it would make every slab
+				// control line a copy of portal 0.
+				cl->portalindex = UINT_MAX;
+				cl->portaltransferred = UINT_MAX;
 				cd->linedef = cl;
 				cl->AdjustLine();
 				sideIndex++;
@@ -2715,7 +2933,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// exactly that delta, so the leaf lands on its authored position with
 			// its hinge on StartSpot -- and PODOOR_SWING then rotates about the
 			// hinge, which is what ROTH.C does.
-			polySpots.push_back({ hingeX, hingeY, hingeX + offX, hingeY + offY, tag });
+			// The SPAWN spot follows the doorway if its sector was moved
+			// (roth_portals); the anchor and the leaf stay in the void cell.
+			const int doorGroup = portalPlan.GroupOf((int)i);
+			const double shiftX = portalPlan.active ? portalPlan.offX[doorGroup] : 0.;
+			const double shiftY = portalPlan.active ? portalPlan.offY[doorGroup] : 0.;
+			polySpots.push_back({ hingeX + shiftX, hingeY + shiftY,
+				hingeX + offX, hingeY + offY, tag });
 
 			// Tag the DOORWAY sector with the same number so stage 7 can get from
 			// the sector the player used to the polyobject that fills it. A tag is
@@ -2764,6 +2988,92 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			leafCoplanarRisk);
 		log.Count("doors: 0xFFFE door-capable sectors, no leaf built (OPEN QUESTION)",
 			doorCapableNotBuilt);
+	}
+
+	//----------------------------------------------------------------------
+	// roth_portals: the buffers' walls, then the portals themselves.
+	//----------------------------------------------------------------------
+	if (portalPlan.active)
+	{
+		log.StageBegin("portals");
+		for (size_t w = 0; w < planWalls; w++)
+		{
+			const rothplan::BufferLine &bl = portalPlan.bufferLines[w];
+			line_t *ld = &Level->lines[planLineBase + (unsigned)w];
+			ld->v1 = &Level->vertexes[bl.v1];
+			ld->v2 = &Level->vertexes[bl.v2];
+			ld->alpha = 1.;
+			ld->portalindex = UINT_MAX;
+			ld->portaltransferred = UINT_MAX;
+			ld->special = 0;
+			// Never on the automap: these walls are scaffolding, not the manor.
+			ld->flags = ML_DONTDRAW | (bl.back >= 0 ? ML_TWOSIDED : ML_BLOCKING);
+			const int secs[2] = { bl.front, bl.back };
+			for (int k = 0; k < 2; k++)
+			{
+				if (secs[k] < 0) { ld->sidedef[k] = nullptr; continue; }
+				side_t *sd = &Level->sides[sideIndex++];
+				sd->sector = &Level->sectors[planSectorBase + (unsigned)secs[k]];
+				sd->linedef = ld;
+				sd->Flags = WALLF_NOFAKECONTRAST;
+				sd->UDMFIndex = (int)(sd - &Level->sides[0]);
+				for (int part = 0; part < 3; part++)
+				{
+					sd->SetTextureXScale(part, 1.);
+					sd->SetTextureYScale(part, 1.);
+					sd->SetTextureXOffset(part, 0.);
+					sd->SetTextureYOffset(part, 0.);
+				}
+				sd->ClearAlpha();
+				ld->sidedef[k] = sd;
+			}
+			ld->frontsector = ld->sidedef[0]->sector;
+			ld->backsector = ld->sidedef[1] != nullptr ? ld->sidedef[1]->sector : nullptr;
+			ld->AdjustLine();
+		}
+
+		// Two portals per cut, each naming the other, exactly as the engine's
+		// own Eternity-style definition makes them (MapLoader::SpawnLinePortal,
+		// specials.cpp, the PORTT_LINKEDEE branch): type LINKED, no z offset,
+		// interactive. FinalizePortals (after PO_Init) then measures the
+		// displacement from the vertices and floods the groups. A linked pair
+		// must be an exact translation of each other with reversed direction;
+		// the plan moves whole groups by whole units, so it is -- checked here
+		// rather than trusted, because the engine demotes a mismatched pair to
+		// a teleporter without stopping.
+		int made = 0, bad = 0;
+		for (const std::pair<int, int> &pp : portalPending)
+		{
+			line_t *la = &Level->lines[pp.first];
+			line_t *lb = &Level->lines[pp.second];
+			const DVector2 d1 = lb->v2->fPos() - la->v1->fPos();
+			const DVector2 d2 = lb->v1->fPos() - la->v2->fPos();
+			const bool exact = d1.X == d2.X && d1.Y == d2.Y
+				&& la->backsector != nullptr && lb->backsector != nullptr;
+			if (!exact) bad++;
+			line_t *ends[2] = { la, lb };
+			for (int k = 0; k < 2 && exact; k++)
+			{
+				ends[k]->portalindex = Level->linePortals.Reserve(1);
+				FLinePortal *port = &Level->linePortals.Last();
+				port->Clear();
+				port->mOrigin = ends[k];
+				port->mDestination = ends[1 - k];
+				port->mType = PORTT_LINKED;
+				port->mAlign = PORG_ABSOLUTE;
+				port->mDefFlags = PORTF_TYPEINTERACTIVE;
+			}
+			if (exact) made++;
+			log.Line("  portal  line %-5d (%.0f,%.0f)-(%.0f,%.0f) sector %-4d  <->  line %-5d"
+				" (%.0f,%.0f)-(%.0f,%.0f) sector %-4d  displacement (%.0f, %.0f)%s",
+				pp.first, la->v1->fX(), la->v1->fY(), la->v2->fX(), la->v2->fY(),
+				la->frontsector ? la->frontsector->sectornum : -1,
+				pp.second, lb->v1->fX(), lb->v1->fY(), lb->v2->fX(), lb->v2->fY(),
+				lb->frontsector ? lb->frontsector->sectornum : -1, d1.X, d1.Y,
+				exact ? "" : "  NOT AN EXACT PAIR -- left as a wall");
+		}
+		log.Line("  linked line portal pairs  %d", made);
+		log.Count("portals: cut pairs that were not an exact translation (no portal made)", bad);
 	}
 
 	if (sideIndex < Level->sides.Size())
@@ -2823,6 +3133,18 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		FMapThing mt = {};
 		mt.pos.X = rm.metadata.startX;
 		mt.pos.Y = rm.metadata.startY;
+		if (portalPlan.active)
+		{
+			// The start is a Realms coordinate; if it stands in a moved sector
+			// it moves with it. Where two sectors share the spot, the height
+			// decides.
+			const int startSector = rothplan::SectorAt(rm, double(rm.metadata.startX),
+				double(rm.metadata.startY), double(rm.metadata.startZ));
+			const int sg = portalPlan.GroupOf(startSector);
+			mt.pos.X += portalPlan.offX[sg];
+			mt.pos.Y += portalPlan.offY[sg];
+			log.Line("  player start    in Realms sector %d, group %d", startSector, sg);
+		}
 		mt.pos.Z = 0;
 		mt.angle = (int)(90 + rm.metadata.rotation * 360.0 / 512.0) % 360;
 		mt.EdNum = 1;
