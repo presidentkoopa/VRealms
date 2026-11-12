@@ -1,0 +1,349 @@
+version "4.10"
+
+// Boot test handler for the MAIN engine's hidden boot test (tools/main_boottest/main_boottest.ps1). Never shipped.
+// It proves the engine starts, loads a level and renders: markers at 35 tics, an exploding barrel at 105 so the
+// effect paths (blast, smoke, particles, effect lights) draw, and "BOOT: ok" at 420.
+//
+// It does NOT kill the player or change level. A version that did found a real hang at the level transition, but
+// the owner says that fault is long-standing and parked ("we would do it later"), so the test stops short of it
+// rather than reporting RED on every run for a known, deferred problem. Put those steps back when that work starts.
+class BootTestHandler : EventHandler
+{
+	int t;
+	int bootkill;
+	int bootfire;   // read once: a CVar lookup every tic while the trigger is held is waste
+	int boottics;   // how long the run lasts; 0 at read time becomes the historic 420
+
+	override void WorldTick()
+	{
+		t++;
+		if (t == 1)
+		{
+			let c = CVar.FindCVar("bootfire");
+			bootfire = c ? clamp(c.GetInt(), 0, 120) : 0;
+			let k = CVar.FindCVar("bootkill");
+			bootkill = k ? k.GetInt() : 0;
+			let n = CVar.FindCVar("boottics");
+			boottics = n ? n.GetInt() : 0;
+			if (boottics <= 0) boottics = 420;
+		}
+		if (t == 35)
+		{
+			Console.Printf("BOOT: level running (35 tics)");
+		}
+		if (t == 105)
+		{
+			let pmo = players[consoleplayer].mo;
+			if (pmo != null)
+			{
+				let b = Actor.Spawn("ExplosiveBarrel", pmo.Vec3Angle(160, pmo.angle, 0));
+				if (b != null)
+				{
+					b.DamageMobj(null, null, 1000, 'None');
+					Console.Printf("BOOT: barrel blast set off");
+				}
+				else
+				{
+					Console.Printf("BOOT: barrel did not spawn");
+				}
+			}
+		}
+		// A NAMED WEAPON PUT INTO A HAND, so a card's PARTS are exercised and not just
+		// parsed. A clean compile proves a card is LEGAL; only a gun actually held proves
+		// its surfaces RESOLVE -- which is a different thing and the one that has bitten
+		// us (twenty WW2 card lines parsed and resolved nothing while saying nothing).
+		//
+		// INERT UNLESS ASKED. Nothing happens without -bootgun <class>, and nothing
+		// happens if that class is not in the load order, so every other lane's run is
+		// byte-identical to before. Pair it with the boot script's -ExtraFiles.
+		if (t == 200)
+		{
+			String want = "";
+			let c = CVar.FindCVar("bootgun");
+			if (c) want = c.GetString();
+			if (want != "")
+			{
+				let cls = want;
+				if (!(class<Inventory>)(cls))
+				{
+					Console.Printf("BOOT: gun class '%s' is not in this load order", want);
+				}
+				else
+				{
+					let pmo = players[consoleplayer].mo;
+					if (pmo)
+					{
+						pmo.A_GiveInventory(cls, 1);
+						let w = Weapon(pmo.FindInventory(cls));
+						if (w)
+						{
+							pmo.player.PendingWeapon = w;
+							Console.Printf("BOOT: gave and selected %s", want);
+						}
+						else Console.Printf("BOOT: %s did not arrive in inventory", want);
+					}
+				}
+			}
+		}
+		// WHAT A PICKUP ACTUALLY HANDS OVER. Some mechanisms are INVISIBLE WHEN THEY WORK --
+		// a set bridge swaps one weapon class for another at spawn, so a clean parse and a
+		// green boot prove nothing at all about it. This spawns the named pickup, touches it
+		// with the player, and prints what arrived in the inventory, which is the only
+		// evidence that a swap happened and swapped to the right thing.
+		//
+		// Inert unless -bootpickup names a class, so every other run is unchanged.
+		// A NETWORK EVENT SENT FROM INSIDE THE LEVEL, which is the only way to exercise
+		// one offline. `+netevent` on the command line and `-exec` on a cfg both run
+		// BEFORE a level exists, so a NetworkProcess handler that reads the player or
+		// the level sees nothing and prints nothing -- and a diagnostic that printed
+		// nothing reads exactly like a diagnostic that is broken. Nothing in this
+		// harness could reach a netevent at all until now.
+		//
+		// AT 230: after -Gun puts a weapon in the hand at 200 and before -Fire pulls the
+		// trigger at 260, so a command that reports on the held gun has one to report
+		// on, and anything it arms is still armed when the trigger goes down.
+		//
+		// Inert unless -bootnetevent names one, so every other lane's run is unchanged.
+		if (t == 230)
+		{
+			String want = "";
+			let c = CVar.FindCVar("bootnetevent");
+			if (c) want = c.GetString();
+			// AND IT CARRIES ARGUMENTS NOW, which it did not until 2026-10-10.
+			//
+			// SendNetworkEvent takes a name plus up to three ints, and this only ever
+			// passed the name -- so any handler that reads e.Args was unreachable from
+			// the harness. SuperPunchOut's `netevent spo_bout <boxer> <class> <speed>`
+			// is the case that found it: the three numbers ARE the command, and
+			// -NetEvent "spo_bout 0 1 4" set a cvar whose extra words went nowhere, so
+			// nothing fired and nothing said so.
+			//
+			// So bootnetevent is split on spaces: first word the name, next three parsed
+			// as ints. A BARE NAME BEHAVES EXACTLY AS BEFORE -- the three default to 0,
+			// which is what SendNetworkEvent passed implicitly anyway -- so every
+			// existing caller is untouched.
+			//
+			// The log line prints the parsed numbers, because "sent netevent spo_bout"
+			// with its arguments silently dropped is the failure this replaces.
+			if (want != "")
+			{
+				Array<String> part;
+				want.Split(part, " ", TOK_SKIPEMPTY);
+				if (part.Size() > 0)
+				{
+					int a0 = part.Size() > 1 ? part[1].ToInt() : 0;
+					int a1 = part.Size() > 2 ? part[2].ToInt() : 0;
+					int a2 = part.Size() > 3 ? part[3].ToInt() : 0;
+					EventHandler.SendNetworkEvent(part[0], a0, a1, a2);
+					Console.Printf("BOOT: sent netevent %s  args %d %d %d",
+						part[0], a0, a1, a2);
+				}
+			}
+		}
+		if (t == 250)
+		{
+			String want = "";
+			let c = CVar.FindCVar("bootpickup");
+			if (c) want = c.GetString();
+			if (want != "")
+			{
+				let pmo = players[consoleplayer].mo;
+				if (!(class<Actor>)(want))
+				{
+					Console.Printf("BOOT: pickup class '%s' is not in this load order", want);
+				}
+				else if (pmo != null)
+				{
+					// Remember what was already carried, so the new arrival is identifiable.
+					Array<String> had;
+					for (let it = pmo.Inv; it != null; it = it.Inv)
+						if (it is "Weapon") had.Push(it.GetClassName());
+
+					let drop = Actor.Spawn(want, pmo.Pos);
+					if (drop == null)
+					{
+						Console.Printf("BOOT: pickup '%s' did not spawn", want);
+					}
+					else
+					{
+						Console.Printf("BOOT: spawned %s -- it became %s", want, drop.GetClassName());
+						// Touch it the way walking over it would.
+						let inv = Inventory(drop);
+						if (inv != null) inv.CallTryPickup(pmo);
+						bool found = false;
+						for (let it = pmo.Inv; it != null; it = it.Inv)
+						{
+							if (!(it is "Weapon")) continue;
+							String n = it.GetClassName();
+							if (had.Find(n) != had.Size()) continue;
+							Console.Printf("BOOT: pickup gave %s", n);
+							found = true;
+						}
+						if (!found) Console.Printf("BOOT: pickup gave NOTHING NEW");
+					}
+				}
+			}
+		}
+		// AND THEN IT PULLS THE TRIGGER (-Fire <tics>, after -Gun).
+		//
+		// KNOWN LIMIT, so nobody reads a green run as proof: this fires a BUTTON, and the VR
+		// weapon path (WM cards) does not read buttons at all -- it reads the hand's trigger
+		// state. A carded gun is given, selected, and does not shoot. It works for anything that
+		// fires off the ordinary button, and the fix for the rest is to teach the WM path that an
+		// injected button is a pulled trigger, which is the same question as a desktop player
+		// firing a carded gun in co-op. The proof a shot happened is the log line the shot writes,
+		// never the run going green.
+		//
+		// Holding a weapon proves its
+		// card resolves; it proves NOTHING about what leaves the barrel. A muzzle flash, a casing,
+		// a round in flight and its model are all things that are missing in exactly the same way
+		// they are fine: silently. This fires the held weapon and the run's log carries whatever
+		// the shot logged -- which round, which look, which profile.
+		//
+		// Written into the player's own command the way a held button is, so the weapon's real
+		// state machine runs: refire, recoil, reload and every hook a lane has hung off firing.
+		// Inert at 0, which is every run that does not ask.
+		if (t >= 260 && bootfire > 0 && t < 260 + bootfire)
+		{
+			let p = players[consoleplayer];
+			// THROUGH THE ENGINE'S OWN INJECTION, not by writing the command. PlayerInfo.ButtonInject
+			// (RS fork) is OR'd into the command at the TOP of P_PlayerThink, before anything reads
+			// it, and is carried by CopyFrom so prediction agrees -- which a hand-rolled write to
+			// cmd.buttons from WorldTick does not, and that is how a script-pressed button desyncs.
+			// It is a ONE-SHOT, so a HELD trigger is one injection per tic.
+			//
+			// ButtonMask is the other half and is NOT what this wants: it holds bits OUT (a trigger
+			// kept dead while a gun is apart), not down.
+			//
+			// BOTH TRIGGERS: a VR gun can arrive in either hand -- the test pistol went to the off
+			// hand -- and the off hand's shot is not BT_ATTACK.
+			// PULSED, NOT HELD, AND THAT IS THE WHOLE POINT OF THE OPTION.
+			//
+			// A carded VR gun fires ONCE for a held button -- one shot, then silence for the rest
+			// of the window. So "held for 60 tics" produced a single round and read as the gun
+			// being broken rather than the harness asking the wrong question. The weapons lane hit
+			// this, worked around it with their own probe, and reported the number their probe
+			// could reach rather than the number my tool implied. They were right to.
+			//
+			// Every OTHER tic: a gun's own fire rate then decides how many shots actually happen,
+			// which is what a rate measurement needs. A gun at 2 tics a shot fires every pulse and
+			// measures its true ceiling; a slower gun simply ignores the pulses it is not ready
+			// for. Holding measures nothing; pulsing faster than the fastest gun measures nothing
+			// either, because the gun stops being the limit.
+			if (p && ((t - 260) % 2) == 0) p.ButtonInject |= (BT_ATTACK | BT_ALTATTACK);
+			if (t == 260) Console.Printf("BOOT: trigger pulsed for %d tics (every other tic -- a held button fires a carded gun ONCE)", bootfire);
+		}
+		// [KILL] DEATH, the other half of the parked report ("crash on death/reload/level
+		// change"). Kills the player outright and keeps a heartbeat running, so a death
+		// that takes the game down is visible as the log simply stopping.
+		if (bootkill > 0)
+		{
+			if (t == bootkill)
+			{
+				let pmo = players[consoleplayer].mo;
+				Console.Printf("BOOT: KILL -- damaging player (health %d)", pmo ? pmo.Health : -1);
+				// DMG_FORCED, because a plain DamageMobj took the player from 100 to 89:
+				// something in the load order scales damage hard, and a test that does not
+				// actually kill proves nothing about dying.
+				if (pmo) pmo.DamageMobj(null, null, 10000, 'None', DMG_FORCED | DMG_NO_PROTECT);
+				Console.Printf("BOOT: KILL -- returned, health now %d", pmo ? pmo.Health : -1);
+			}
+			if (t > bootkill && (t % 10) == 0)
+			{
+				let pmo = players[consoleplayer].mo;
+				Console.Printf("BOOT: ALIVE t=%d health=%d state=%d", t,
+					pmo ? pmo.Health : -1, players[consoleplayer].playerstate);
+			}
+			// Press USE after a moment, which is what a dead player does to respawn.
+			if (t == bootkill + 70)
+			{
+				Console.Printf("BOOT: KILL -- pressing USE to respawn");
+				let p = players[consoleplayer];
+				if (p) p.ButtonInject |= BT_USE;
+			}
+		}
+		// THE MARKER main_boottest.ps1 WATCHES FOR, and the run ends when it prints. The
+		// length is a cvar now (boottics, 0 = the historic 420) because a test with a clock
+		// of its own -- an intro, a countdown, a timed script -- needs longer than the
+		// twelve seconds this was built for. See CVARINFO.txt.
+		if (t == boottics)
+		{
+			Console.Printf("BOOT: ok (%d tics, %d s of play)", boottics, boottics / 35);
+		}
+	}
+}
+
+// [RESTART] THE STEP THAT WAS TAKEN OUT, PUT BACK -- and it must be STATIC.
+//
+// The header above says a version of this test "found a real hang at the level transition",
+// removed because the owner had parked that fault. He has now asked for it to be hunted,
+// which is exactly the condition that comment named.
+//
+// STATIC BECAUSE AN ORDINARY EventHandler IS DESTROYED AND REMADE ON EVERY LEVEL CHANGE.
+// The first attempt at this was a plain one: its tic counter went back to zero on the new
+// map, fired the change again at the same tic, and looped until the run timed out. That
+// read exactly like a hang and was not one -- which is its own lesson about this crash.
+// A StaticEventHandler survives the transition, so the counter keeps running and the
+// change happens ONCE.
+//
+// A HEARTBEAT AFTER IT, because a hang and a crash look identical from outside the process:
+// it simply stops. If ALIVE keeps printing, the transition survived; if it stops and the
+// process lives, it is a hang; if the process dies, the last line says how far it got.
+//
+// ChangeLevel("") is the NEXT map in the MAPINFO order -- the owner's own repro: "you don't
+// even have to restart, just go to next map, that should do it too."
+//
+// Inert at 0, so every other lane's run is byte-identical.
+class BootRestartHandler : StaticEventHandler
+{
+	int t;
+	int at;
+	bool fired;
+	String from;
+
+	// Where to go. A different map from the one we start on, so arriving there is proof
+	// the transition happened and is also what stops it happening again.
+	static String targetMap()
+	{
+		let c = CVar.FindCVar("bootrestartto");
+		String m = c ? c.GetString() : "";
+		return m != "" ? m : "e1m2";
+	}
+
+	override void WorldTick()
+	{
+		t++;
+		if (t == 1)
+		{
+			let r = CVar.FindCVar("bootrestart");
+			at = r ? r.GetInt() : 0;
+			from = level.MapName;
+		}
+		if (at <= 0) return;
+
+		// THE GUARD IS THE MAP NAME, not a flag, and that is the second thing this test
+		// taught. ChangeLevel("") did not advance -- it came back on E1M1 with EVERY
+		// handler reset, the STATIC one included, which is a full game restart rather than
+		// a level transition. So a "have I fired" bool cannot survive to stop the loop.
+		// The map we are ON does survive, because it is the thing that changed.
+		if (!fired && t >= at && level.MapName ~== from)
+		{
+			fired = true;
+			Console.Printf("BOOT: RESTART -- leaving %s for %s (tic %d)", level.MapName, targetMap(), t);
+			// NOINTERMISSION, AND FINDING OUT WHY COST A WRONG DIAGNOSIS NEARLY BEING FILED.
+			// Without it the transition stops on the TALLY SCREEN, which waits for a
+			// keypress this harness has no way to send -- on a hidden desktop with no
+			// input, forever. That looks exactly like a hang from outside: the log stops,
+			// the process lives, and the main thread pegs a core because vsync is off and
+			// it is happily rendering the intermission at uncapped FPS. It is not a hang
+			// at all. The engine's own [XLVL] breadcrumbs say so: the last line is
+			// "1j before RunIntermission".
+			level.ChangeLevel(targetMap(), 0, CHANGELEVEL_NOINTERMISSION);
+			Console.Printf("BOOT: RESTART -- ChangeLevel returned, still alive");
+		}
+		if (fired && (t % 10) == 0)
+		{
+			Console.Printf("BOOT: ALIVE t=%d map=%s", t, level.MapName);
+		}
+	}
+}

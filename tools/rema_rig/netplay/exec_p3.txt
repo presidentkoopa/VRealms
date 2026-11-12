@@ -1,0 +1,1 @@
+wait 60; +forward; wait 50; -forward; +moveleft; wait 30; -moveleft; slot 2; wait 25; +attack; wait 20; -attack; slot 1; wait 20; +back; wait 40; -back; +left; wait 30; -left; +attack; wait 60; -attack; +forward; wait 120; -forward; +jump; wait 5; -jump; +attack; wait 60; -attack

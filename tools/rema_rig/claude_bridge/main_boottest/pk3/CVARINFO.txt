@@ -1,0 +1,20 @@
+server string bootgun = "";
+server string bootpickup = "";
+server int bootfire = 0;   // tics of held trigger from tic 260, after -Gun has put a weapon in the hand
+server int bootrestart = 0;   // tic to change level at -- the parked crash, hunted on demand
+server string bootrestartto = "";   // where -Restart goes; blank = e1m2
+// A NETWORK EVENT SENT AT TIC 230, from inside the level: the only place a
+// NetworkProcess handler can see a player and a level. Blank = none sent.
+server string bootnetevent = "";
+server int bootkill = 0;   // tic to kill the player at -- the other half of the parked report
+// HOW LONG THE RUN LASTS, in tics, 0 = the historic 420 (12 s of play).
+//
+// 420 was hardcoded, and it is plenty for what this test was built to do: start a level,
+// set off a barrel, see the effect paths draw. It is NOT enough for anything with a clock
+// of its own. The first case was a Super Punch-Out bout, where the intro alone is 105 tics
+// and the bell waits on top of that, so the marker landed about 80 tics into round 1 --
+// before the opponent had thrown a single punch. Anything with an intro, a countdown, a
+// spawn wave or a timed script needs to say how long it wants.
+//
+// Default 0 so every existing caller gets exactly the run it got before.
+server int boottics = 0;
