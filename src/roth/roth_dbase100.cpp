@@ -329,9 +329,24 @@ void Dbase100::ParseAction(DbAction &a, uint32_t off)
 	const uint32_t w = RdU32(mImage.data() + off);
 	a.length = (uint16_t)(w & 0xffff);
 	a.unk02 = (uint16_t)(w >> 16);
+	if (a.length == 0)
+	{
+		// A deliberate stub: retail has 27 of them, action 2 (quit) among them.
+		// The count is 0/4 - 1 = -1 (dbase100.c:433-436), and the interpreter's
+		// loop tests the count only AFTER its first pass (dbase100.c:625-637),
+		// so ROTH.C does read the one word after the header. In retail that
+		// word is always the next record's header -- 0x0300 over a length --
+		// which decodes as op 0x03 or as operand 0, and neither has an effect.
+		// Served with no commands: the interpreter finalizes and returns.
+		a.bodiless = true;
+		a.firstCommand = off + 4;
+		a.commandCount = 0;
+		a.ok = true;
+		return;
+	}
 	if (a.length < 4)
 	{
-		// len/4 - 1 would be -1: ROTH.C runs no commands. Not served.
+		// 1..3: no retail record does this. Not served.
 		Anomaly("action record shorter than its own length word");
 		return;
 	}
@@ -418,18 +433,21 @@ void Dbase100::CrossCheck()
 		mNotes.push_back(buf);
 	}
 
-	int emptyActions = 0, badActions = 0;
+	int emptyActions = 0, badActions = 0, bodilessActions = 0;
 	std::map<uint32_t, int> actionOffsets;
 	for (const auto &a : mActions)
 	{
 		if (a.offset == 0) { emptyActions++; continue; }
 		actionOffsets[a.offset]++;
 		if (!a.ok) badActions++;
+		else if (a.bodiless) bodilessActions++;
 	}
 	int sharedActions = 0;
 	for (auto &kv : actionOffsets) if (kv.second > 1) sharedActions += kv.second;
 	mNotes.push_back(Fmt("actions: %ld entries, %ld empty, %ld malformed, %ld sharing a record offset",
 		(long)mActions.size(), emptyActions, badActions, sharedActions));
+	mNotes.push_back(Fmt("actions: %ld with a zero length word (served, no commands)",
+		(long)bodilessActions));
 
 	mNotes.push_back(Fmt("header +0x30 = %ld (op 0x07 plays cutscenes only when this is 2)", (long)h.field30));
 

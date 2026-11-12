@@ -221,6 +221,7 @@ struct DbAction
 	int id = 0;                 // 1-based
 	uint32_t offset = 0;
 	bool ok = false;
+	bool bodiless = false;      // length word 0: a stub, served with no commands
 	uint16_t length = 0;
 	uint16_t unk02 = 0;
 	uint32_t firstCommand = 0;
