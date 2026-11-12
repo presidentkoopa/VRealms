@@ -5584,6 +5584,9 @@ CCMD(roth_door)
 // Typed from an +exec script these run BEFORE the deferred `map`, so, like
 // roth_door, they are queued and drained from the level tick, in order, once
 // the core is attached. A negative id asks for the inventory listing.
+namespace
+{
+
 std::vector<int> gPendingDialogue;
 
 void DrainPendingDialogue()
@@ -5613,6 +5616,8 @@ void DrainPendingDialogue()
 		}
 	}
 }
+
+} // namespace
 
 CCMD(roth_dialogue)
 {
