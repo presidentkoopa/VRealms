@@ -1260,6 +1260,8 @@ const GiveContext *ActiveGiveContext()
 	return &g_activeGiveContext;
 }
 
+} // namespace (anonymous) -- reopened below; roth_interface.cpp links to this
+
 // The level's copy of an object record, for roth_interface's pickup.
 bool RuntimeObjectRecord(int rothSector, int rothIndex, Object &out)
 {
@@ -1269,6 +1271,8 @@ bool RuntimeObjectRecord(int rothSector, int rothIndex, Object &out)
 	out = grp[rothIndex];
 	return true;
 }
+
+namespace {
 
 // 0x29 cmd_give_item -- raw_commands.c:4799-4830.
 int GiveItemCmd(Command *rec, Handlers &h)
