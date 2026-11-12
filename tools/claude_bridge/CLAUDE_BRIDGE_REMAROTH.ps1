@@ -38,7 +38,10 @@
 # hands build. Runs use tools\rothdiff\captures\capture.ini when it exists, else bridge.ini beside
 # this script.
 
+param([string]$Once = '')
+
 $ErrorActionPreference = 'Continue'
+$env:GIT_TERMINAL_PROMPT = '0'   # a git that wants a password fails instead of hanging the bridge
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repo = [IO.Path]::GetFullPath((Join-Path $root '..\..'))
 # A copy kept OUTSIDE the repo (so starting it does not depend on which branch is checked out)
@@ -108,7 +111,7 @@ function Run-Action($lines) {
 			if (-not $cmake) { "cmake not found (looked in Visual Studio and on PATH)"; return 4 }
 			$log = Join-Path $logs 'build.log'
 			$start = Get-Date
-			& $cmake --build $build --config $cfg -- -maxcpucount -verbosity:minimal 2>&1 | Out-File -LiteralPath $log -Encoding UTF8
+			& $cmake --build $build --config $cfg --parallel 2>&1 | ForEach-Object { "$_" } | Out-File -LiteralPath $log -Encoding UTF8
 			$code = $LASTEXITCODE
 			"build ${cfg}: exit=$code, " + [int]((Get-Date) - $start).TotalSeconds + "s, log $log"
 			$errs = @(Select-String -LiteralPath $log -Pattern '(: (fatal )?error |LINK : |error LNK|error MSB)' | Select-Object -First 60 | ForEach-Object { $_.Line })
@@ -121,7 +124,7 @@ function Run-Action($lines) {
 			$script = Join-Path $repo 'tools\rothdiff\packiwad.py'
 			if (-not (Test-Path -LiteralPath $script)) { "missing: $script"; return 3 }
 			Push-Location $repo
-			& python $script 2>&1 | Out-String | Write-Output
+			& python $script 2>&1 | ForEach-Object { "$_" } | Out-String | Write-Output
 			$code = $LASTEXITCODE
 			Pop-Location
 			return $code
@@ -133,7 +136,7 @@ function Run-Action($lines) {
 			else { $cmdFile = Join-Path $repo 'tools\dbase100_test\build.cmd' }
 			if (-not (Test-Path -LiteralPath $cmdFile)) { "missing: $cmdFile"; return 3 }
 			Push-Location $repo
-			& cmd /c "`"$cmdFile`" `"$roth`"" 2>&1 | Out-String | Write-Output
+			& cmd /c "`"$cmdFile`" `"$roth`"" 2>&1 | ForEach-Object { "$_" } | Out-String | Write-Output
 			$code = $LASTEXITCODE
 			Pop-Location
 			return $code
@@ -183,7 +186,7 @@ function Run-Action($lines) {
 			foreach ($a in $args_) { if ($badArgs -ccontains $a) { "refused git argument: $a"; return 3 } }
 			if ($args_[0] -eq 'pull' -and ($args_ -notcontains '--ff-only')) { "pull is allowed only with --ff-only"; return 3 }
 			Push-Location $repo
-			& git @args_ 2>&1 | Out-String | Write-Output
+			& git @args_ 2>&1 | ForEach-Object { "$_" } | Out-String | Write-Output
 			$code = $LASTEXITCODE
 			Pop-Location
 			return $code
@@ -204,6 +207,32 @@ function Run-Action($lines) {
 	}
 }
 
+function Handle-Request($file) {
+	$id = [IO.Path]::GetFileNameWithoutExtension($file)
+	$lines = @(Get-Content -LiteralPath $file)
+	Remove-Item -LiteralPath $file -Force
+	if ($lines.Count -lt 1) { $lines = @('') }
+	Write-Host ("[{0}] {1}: {2}" -f (Get-Date -Format 'HH:mm:ss'), $id, $lines[0])
+	$out = Join-Path $res "$id.out"
+	$tmp = "$out.partial"
+	try {
+		$result = @(Run-Action $lines)
+		$code = $result[-1]
+		$text = ($result | Select-Object -SkipLast 1) -join "`r`n"
+	} catch { $text = $_ | Out-String; $code = 99 }
+	Set-Content -LiteralPath $tmp -Value ($text + "`r`nEXIT=$code") -Encoding UTF8
+	Move-Item -LiteralPath $tmp -Destination $out -Force
+	Write-Host ("[{0}] {1}: EXIT={2}" -f (Get-Date -Format 'HH:mm:ss'), $id, $code)
+}
+
+# -Once <request file>: handle that one request and exit. The watching window below starts a
+# fresh copy of THIS FILE for every request, so a fix to an action takes effect on the next
+# request without restarting the window. The list of actions is still only what this file says.
+if ($Once -ne '') {
+	if (Test-Path -LiteralPath $Once) { Handle-Request $Once }
+	exit 0
+}
+
 Write-Host "Claude bridge (REMAROTH) running."
 Write-Host "  repo      $repo"
 Write-Host "  requests  $req"
@@ -212,21 +241,7 @@ if ($rp) { Write-Host "  retail    $rp" } else { Write-Host "  retail    NOT SET
 Write-Host "Close this window to stop it."
 while ($true) {
 	Get-ChildItem $req -Filter '*.req' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | ForEach-Object {
-		$id = $_.BaseName
-		$lines = @(Get-Content -LiteralPath $_.FullName)
-		Remove-Item -LiteralPath $_.FullName -Force
-		if ($lines.Count -lt 1) { $lines = @('') }
-		Write-Host ("[{0}] {1}: {2}" -f (Get-Date -Format 'HH:mm:ss'), $id, $lines[0])
-		$out = Join-Path $res "$id.out"
-		$tmp = "$out.partial"
-		try {
-			$result = @(Run-Action $lines)
-			$code = $result[-1]
-			$text = ($result | Select-Object -SkipLast 1) -join "`r`n"
-		} catch { $text = $_ | Out-String; $code = 99 }
-		Set-Content -LiteralPath $tmp -Value ($text + "`r`nEXIT=$code") -Encoding UTF8
-		Move-Item -LiteralPath $tmp -Destination $out -Force
-		Write-Host ("[{0}] {1}: EXIT={2}" -f (Get-Date -Format 'HH:mm:ss'), $id, $code)
+		& powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Once $_.FullName
 	}
 	Start-Sleep -Seconds 2
 }
