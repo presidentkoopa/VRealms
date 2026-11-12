@@ -110,4 +110,12 @@ uint8_t RotationFromYaw(double deg);
 // that turns one must keep that turn.
 double ObjectActorYaw(const AActor *mo, uint8_t rotation);
 
+// A PARTICLE (opcode 0x2d, roth_cmdcore.h): an actor wearing the logic sprite
+// for `textureWord` at a Realms-absolute position already moved into the
+// engine's frame. Null when no sprite was built for the word at load. The
+// light is the combined level the caller worked out, or -1 for the sector's.
+AActor *SpawnLogicSpriteActor(FLevelLocals *Level, uint16_t textureWord, double x, double y, double z, int lightLevel);
+// Move one to where its particle now is, with the same anchor shift.
+bool MoveLogicSpriteActor(AActor *mo, uint16_t textureWord, double x, double y, double z);
+
 } // namespace roth

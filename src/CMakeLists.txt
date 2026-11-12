@@ -981,6 +981,9 @@ set (PCH_SOURCES
 	roth/roth_invscreen.cpp
 	roth/roth_icons.cpp
 	roth/roth_interface.cpp
+	# RAW counters/loops, texture oddments, player effects, particles
+	# (engine-free, tools/cmdcore_test).
+	roth/roth_cmdcore.cpp
 	# The exception: roth_texture is the boundary file that hands decoded
 	# artwork to the texture manager, so it does use engine types.
 	roth/roth_texture.cpp

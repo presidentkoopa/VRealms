@@ -27,6 +27,7 @@
 #include "actorinlines.h"                 // AActor::PosRelative
 #include "roth_runtime.h"
 #include "roth_commands.h"
+#include "roth_cmdcore.h"     // counters, texture oddments, player effects, particles
 #include "roth_raw.h"
 #include "roth_surface.h"
 #include "roth_log.h"
@@ -142,6 +143,11 @@ int32_t HostRunObjectCommandsById(uint16_t id);
 
 CVAR(Bool, roth_newgame_on_start, true, 0)
 
+void CmdHealHealth(uint32_t amount, uint32_t max);
+void CmdZeroHealth();
+void CmdPullHealth();
+void CmdHealthFromFlow();
+
 class CoreHost : public FlowInterpSink   // movies, images, health: the game flow (roth_gameflow.h)
 {
 public:
@@ -173,6 +179,13 @@ public:
 	uint8_t MusicMasterVolume() override { return 0x7f; }
 	int32_t ResetCommandChainNoSource(uint16_t index) override { return HostResetCommandChainNoSource(index); }
 	int32_t RunObjectCommandsById(uint16_t id) override { return HostRunObjectCommandsById(id); }
+	// ONE health, as in the original (g_player_health 0x8a0f0). The game flow
+	// owns it (death sequence, maximum, saves); the command core keeps a mirror
+	// for the RAW damage opcodes, synced in CmdPullHealth/CmdPushHealth. A
+	// DBASE100 heal or kill goes through the flow first (it also sets the
+	// no-death-wait flag on a kill), then the core and the engine follow.
+	void AdvanceClamp8a0f0(uint32_t amount, uint32_t max) override { CmdPullHealth(); FlowInterpSink::AdvanceClamp8a0f0(amount, max); CmdHealthFromFlow(); }
+	void ZeroHealthAndFlagDeath() override { CmdPullHealth(); FlowInterpSink::ZeroHealthAndFlagDeath(); CmdHealthFromFlow(); calls["death"]++; }
 };
 
 GameCore g_core;
@@ -1062,12 +1075,12 @@ int TailIfNext(Handlers &h)
 		g.pendingRecord = 0;
 	}
 	h.interrupt = Interrupt::Rerun;          // g_command_chain_interrupt = 2
-	// The original returns the pending RECORD POINTER here, and the exec loop
-	// only ORs it into the chain result, whose low bit picks the post-chain
-	// sound. With no pointer to return, a consumed pending record reports
-	// nothing and a latched one reports acted. UNVERIFIED in the one place it
-	// could matter -- the post-chain SFX, which is not implemented either.
-	return pending != 0 ? CMD_ACTED : CMD_NOTHING;
+	// The original returns the pending RECORD POINTER here (raw_commands.c:
+	// 4652-4659), and the exec loop only ORs it into the chain result. A record
+	// pointer is even, so it makes the chain "do something" (a trigger's one-shot
+	// bit, :1646) without setting bit 0, which is what lets the post-chain sound
+	// play (:1296). CMD_LATCHED says exactly that; this used to answer -1.
+	return pending != 0 ? CMD_LATCHED : CMD_NOTHING;
 }
 
 //==========================================================================
@@ -1134,9 +1147,10 @@ template<class F> int RunItemCmd(Command *rec, Handlers *h, F f)
 	g_ifItemListCount = st.listCount;
 	if (h != nullptr && st.interrupt == 1) h->interrupt = Interrupt::Break;
 	if (h != nullptr && st.interrupt == 2) h->interrupt = Interrupt::Rerun;
-	// -1 acted; a positive value is TailIfNext's still-latched pending record,
-	// which the exec loop also counts as acted (see TailIfNext above).
-	return ret != 0 ? CMD_ACTED : CMD_NOTHING;
+	// -1 acted; a positive value is TailIfNext's still-latched pending record:
+	// non-zero with bit 0 clear in the original, which CMD_LATCHED carries
+	// (see TailIfNext above).
+	return ret > 0 ? CMD_LATCHED : ret != 0 ? CMD_ACTED : CMD_NOTHING;
 }
 
 int RunDbase100Record(Command *rec)
@@ -1344,6 +1358,9 @@ int JumpIfNextFails(Command *rec, Handlers &h)
 
 int Dbase100IfNextFails(int index)
 {
+	// :516 clears g_item_autoselected_flag before latching. Missing until
+	// 2026-11-12, so a 0x36 after an auto-select left the pending record gated.
+	if (g_core.IsAttached()) g_core.Items().ClearAutoSelected();
 	g.pendingRecord = (uint16_t)index;
 	return CMD_NOTHING;
 }
@@ -4287,6 +4304,200 @@ int ActivateSfxNode(Command *rec)
 	return CMD_ACTED;
 }
 
+//==========================================================================
+//
+// The command core, joined to the engine.
+//
+// roth_cmdcore.cpp holds the rules and the state, engine-free and checked
+// against the original by tools/cmdcore_test. What is here only tells the
+// engine about a change: a repainted wall or floor, a prop's new picture, the
+// player's health and facing, and the particle actors.
+//
+//==========================================================================
+
+AActor *CmdPlayer()
+{
+	if (g.level == nullptr) return nullptr;
+	for (int i = 0; i < MAXPLAYERS; i++)
+		if (g.level->PlayerInGame(i) && g.level->Players[i]->mo != nullptr) return g.level->Players[i]->mo;
+	return nullptr;
+}
+
+class CmdEngineHost : public CmdHost
+{
+public:
+	bool ItemAutoSelected() override { return g_core.IsAttached() && g_core.Items().AutoSelected(); }
+	void RunPendingRecord(uint16_t idx) override { Command *p = Rec(idx); if (p != nullptr) RunDbase100Record(p); }
+	bool QueueDeferred(uint16_t chain) override
+	{
+		// The front buffer holds sixteen (raw_commands.c:4033). {NEXT, 0}: no
+		// wall, no source object, when it runs.
+		if (g.deferred.size() >= 0x10) return false;
+		Deferred d; d.chain = chain; d.context = 0;
+		if (chain != 0) g.deferred.push_back(d);
+		return true;
+	}
+	void PlayerXY(int16_t &x, int16_t &y) override
+	{
+		// g_player_x/y are Realms coordinates; a player standing in a sector the
+		// loader set aside (roth_portals) is moved back by that sector's shift.
+		x = y = 0;
+		AActor *mo = CmdPlayer();
+		if (mo == nullptr) return;
+		double px = mo->X(), py = mo->Y(), sx = 0., sy = 0.;
+		if (mo->Sector != nullptr && SectorShift(mo->Sector->Index(), sx, sy)) { px -= sx; py -= sy; }
+		x = (int16_t)(int)floor(px);
+		y = (int16_t)(int)floor(py);
+	}
+	uint16_t PlayerAngle() override
+	{
+		AActor *mo = CmdPlayer();
+		return mo != nullptr ? (uint16_t)DoomYawToRoth512(mo->Angles.Yaw) : 0;
+	}
+	void SetPlayerAngle(uint16_t a) override
+	{
+		// The original's angle word keeps 16 bits but every reader masks it to
+		// 0x1ff, 512 to the turn, 0 facing +Y (RothAngleToDoom, roth_diff.cpp).
+		AActor *mo = CmdPlayer();
+		if (mo == nullptr) return;
+		mo->Angles.Yaw = DAngle::fromDeg(90.0 + (double)(a & 0x1ff) * (360.0 / 512.0));
+	}
+	void TexmapChanged(int tmi) override { ApplyTexmapFull(tmi); }
+	void SectorFlatChanged(int si) override { ApplySectorFlat(si, true); ApplySectorFlat(si, false); }
+	void PlatformChanged(int si) override { ApplyPlatform(si); }
+	void ObjectChanged(int si, int oi) override
+	{
+		if (si < 0 || (size_t)si >= g.map.objects.size() || oi < 0 || (size_t)oi >= g.map.objects[si].size()) return;
+		const Object &o = g.map.objects[si][oi];
+		ObjectRef r; r.sector = si; r.index = oi;
+		ApplyObjectTexture(r, (uint16_t)(o.textureIndex | (o.textureSource << 8)));
+	}
+};
+
+CmdCore g_cmd;
+CmdEngineHost g_cmdHost;
+// The engine health the core's last value maps to, so a change made by
+// anything else (the engine's own damage) is noticed and taken in.
+int g_cmdHealthSeen = -1;
+
+// Health runs 0..0x800 in Realms and 0..100 here: rounded up, so the player is
+// never shown 0 while alive.
+int CmdEngineHealth(int32_t h) { return h <= 0 ? 0 : (int)((h * 100 + 0x7ff) / 0x800); }
+
+// Before a command reads the player's health, take in whatever the engine did
+// to it since the core last looked.
+void CmdPullHealth()
+{
+	AActor *mo = CmdPlayer();
+	if (mo == nullptr || mo->player == nullptr) return;
+	if (mo->health != g_cmdHealthSeen && mo->health != CmdEngineHealth(g_cmd.health))
+		g_cmd.health = mo->health <= 0 ? 0 : (int32_t)((mo->health * 0x800) / 100);
+	g_cmdHealthSeen = mo->health;
+	g_flow.SetHealth(g_cmd.health);   // one health: the flow holds it, the core mirrors it
+}
+
+// After: hand the change to the engine. Down goes through P_DamageMobj, so a
+// hurt player flinches and a dead one dies the engine's way; the flash is the
+// original's own level (g_damage_flash_level, decaying 8 a tic: game_core.c:
+// 337-342) turned into the engine's red-palette count, which runs out 1 a tic.
+void CmdPushHealth()
+{
+	AActor *mo = CmdPlayer();
+	if (mo == nullptr || mo->player == nullptr) return;
+	g_flow.SetHealth(g_cmd.health);
+	const int want = CmdEngineHealth(g_cmd.health);
+	if (want < mo->health && mo->health > 0)
+		P_DamageMobj(mo, nullptr, nullptr, mo->health - want, NAME_None, DMG_NO_ARMOR | DMG_THRUSTLESS | DMG_NO_ENHANCE | DMG_FORCED);
+	else if (want > mo->health && mo->health > 0)
+		mo->health = mo->player->health = want;
+	const int flash = g_cmd.damageFlash >> 4;
+	if (flash > mo->player->damagecount) mo->player->damagecount = flash > 100 ? 100 : flash;
+	g_cmdHealthSeen = mo->health;
+}
+
+// A DBASE100 health op changed the flow's value: the core mirrors it and the
+// engine's player follows (P_DamageMobj on a loss, as for the RAW opcodes).
+void CmdHealthFromFlow() { g_cmd.health = g_flow.Health(); CmdPushHealth(); }
+
+void CmdHealHealth(uint32_t amount, uint32_t max) { CmdPullHealth(); g_cmd.AdvanceClampHealth(amount, max); CmdPushHealth(); }
+void CmdZeroHealth() { CmdPullHealth(); g_cmd.health = 0; CmdPushHealth(); }
+
+// "What the player just used", from the runtime's latches: a wall is a face
+// and the mapping record it wears; a prop is (sector, index).
+void CmdStageContext()
+{
+	g_cmd.activeFace = g.activeFace;
+	g_cmd.activeTexmap = (g.activeFace >= 0 && (size_t)g.activeFace < g.map.faces.size())
+		? g.map.faces[g.activeFace].textureMap : -1;
+	g_cmd.sourceSector = g.activeObjectSector;
+	g_cmd.sourceIndex = g.activeObjectIndex;
+	CmdPullHealth();
+}
+
+void CmdAfterDispatch() { CmdPushHealth(); }
+
+// The particle pool's actors, one per slot, replaced when the slot is reused.
+struct CmdParticleActor { AActor *mo = nullptr; uint32_t serial = 0; uint16_t texture = 0; };
+CmdParticleActor g_cmdParticleActors[CmdCore::PARTICLES];
+
+void CmdClearParticleActors(bool destroy)
+{
+	for (CmdParticleActor &a : g_cmdParticleActors)
+	{
+		if (destroy && a.mo != nullptr) a.mo->Destroy();
+		a = CmdParticleActor();
+	}
+}
+
+// Show the pool. Positions are Realms coordinates moved into the engine's frame
+// by the particle's sector's shift (roth_portals); the light follows the
+// placed-object rule with the particle's own light byte (+0x10) and its
+// sector's (roth_objects.cpp, the light block in PrepareObjects).
+void CmdPresentParticles()
+{
+	if (g.level == nullptr) return;
+	for (int i = 0; i < CmdCore::PARTICLES; i++)
+	{
+		const CmdParticle &p = g_cmd.particles[i];
+		CmdParticleActor &a = g_cmdParticleActors[i];
+		if (!p.busy || (a.mo != nullptr && (a.serial != p.serial || a.texture != p.texture)))
+		{
+			if (a.mo != nullptr) a.mo->Destroy();
+			a = CmdParticleActor();
+		}
+		if (!p.busy) continue;
+		double x = p.x, y = p.y, sx = 0., sy = 0.;
+		if (p.sector >= 0 && SectorShift(p.sector, sx, sy)) { x += sx; y += sy; }
+		if (a.mo == nullptr)
+		{
+			const uint8_t S = (p.sector >= 0 && (size_t)p.sector < g.map.sectors.size()) ? g.map.sectors[p.sector].light : 0;
+			const int light = (p.light != 0 && S != 0) ? (int)(uint8_t)((uint8_t)(p.light - 0x80) + S) : (int)p.light;
+			a.mo = SpawnLogicSpriteActor(g.level, p.texture, x, y, p.z, light);
+			a.serial = p.serial;
+			a.texture = p.texture;
+			if (a.mo == nullptr) { g.unhandledOps[0x2D]++; a.serial = p.serial; continue; }
+		}
+		else MoveLogicSpriteActor(a.mo, p.texture, x, y, p.z);
+	}
+}
+
+// The per-frame half, in tick_world_effects' order (raw_commands.c:3288-3299):
+// the speed request is latched and cleared, then the particles move.
+void CmdTick()
+{
+	g_cmd.LatchSpeedReduction();
+	// The shift applies to the input velocity (renderer.c:1080-1081); the
+	// engine's equivalent is the speed MovePlayer multiplies the input by.
+	if (AActor *mo = CmdPlayer())
+	{
+		const double base = mo->GetDefault()->Speed;
+		mo->Speed = g_cmd.speedShift != 0 ? base / (double)(1u << (g_cmd.speedShift & 0x1f)) : base;
+	}
+	g_cmd.TickParticles();
+	g_cmd.DecayDamageFlash();
+	CmdPresentParticles();
+}
+
 int RunCommand(const Map &, const Command &cc, int index)
 {
 	// The 0x80 bit is masked off by the exec loop (raw_commands.c:1256) as editor
@@ -4356,7 +4567,31 @@ int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h)
 	case 0x29: return GiveItemCmd(rec, h);
 	case 0x2A: return RemoveItemCmd(rec);
 	case 0x42: return SetInventoryFilterCmd(rec);
-	default:   return RunCommand(m, cc, index);
+	case 0x34:
+	{
+		// cmd_change_face_texture (raw_commands.c:396-437): with a key of 0, a
+		// wall that was there but already wore the texture answers "the next
+		// step failed" (interrupt 2), which re-runs from 0x38's latch.
+		const int r = ChangeFaceTexture(*rec);
+		if (r == CMD_NOTHING && rec->key == 0 && g.activeFace >= 0) h.interrupt = Interrupt::Rerun;
+		return r;
+	}
+	default:
+	{
+		// The command core (roth_cmdcore.cpp): 0x14 0x15 0x1c 0x1e 0x1f 0x20
+		// 0x21 0x22 0x2d 0x2e 0x33 0x35 0x3f 0x41. Its interrupt IS the chain's.
+		int r = CMD_NOTHING;
+		CmdStageContext();
+		g_cmd.interrupt = (uint8_t)h.interrupt;
+		if (g_cmd.Dispatch(op, *rec, r))
+		{
+			h.interrupt = (Interrupt)g_cmd.interrupt;
+			SyncDisabled(rec);
+			CmdAfterDispatch();
+			return r;
+		}
+		return RunCommand(m, cc, index);
+	}
 	}
 }
 
@@ -4534,6 +4769,7 @@ void DrainDeferred()
 	for (const Deferred &d : batch)
 	{
 		g.activeFace = (int)d.context - 1;    // 0 means "none"
+		g.activeObjectSector = g.activeObjectIndex = -1;   // :1599-1601, the source is cleared
 		StageChainSound(0);                   // raw_commands.c:1597
 		Fire(d.chain);
 	}
@@ -4932,6 +5168,12 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	g.level = level;
 	g.active = true;
 	g.activeFace = g.activeSector = -1;
+	// The command core works on this level's copy of the map. Its particle
+	// actors died with the last level; the player's health carries over.
+	g_cmd.Attach(&g.map, &g_cmdHost, &g.rng, &g.pendingRecord);
+	g_cmd.BeginLevel();
+	CmdClearParticleActors(false);
+	g_cmdHealthSeen = -1;
 	g.pendingRecord = 0;
 	g.delays.clear();
 	g.deferred.clear();
@@ -4987,6 +5229,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		{
 			g_flow.Boot();
 			g_flow.NewGame();
+			g_cmd.NewGame();                    // the RAW command core's own new-game state
+			g_cmd.health = g_flow.Health();     // one health (see CoreHost)
 			g_mapStates.clear();
 		}
 		if (log != nullptr) log->Line("game core: attached (%d items, %d actions, flag bitmap %d bytes, DBASE400 text %s)",
@@ -5370,6 +5614,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 void EndLevel()
 {
 	InterfaceEndLevel();
+	CmdClearParticleActors(false);      // the level's thinkers go with it
 	g.active = false;
 	g.level = nullptr;
 	g.platformCtrl.clear();
@@ -5751,6 +5996,9 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 	// resolves to it (ROTH_COMMANDS.md).
 	auto f = g.sideToFace.find(idx);
 	if (f != g.sideToFace.end()) g.activeFace = f->second;
+	// fire_wall_object_trigger (raw_commands.c:1766-1768) clears the source
+	// object: a key of 0 after a wall names the wall, never an earlier prop.
+	g.activeObjectSector = g.activeObjectIndex = -1;
 
 	auto it = g.bySide.find(idx);
 	if (it == g.bySide.end())
@@ -6423,6 +6671,7 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 	// and a sector are staged, so a chain command carrying key 0 finds it.
 	g.activeObjectSector = rothSector;
 	g.activeObjectIndex  = rothIndex;
+	g.activeFace = -1;          // run_leftclick_object_trigger :2950, g_active_object(s) = 0
 
 	bool any = false;
 	for (const Binding &b : it->second)
@@ -6540,6 +6789,10 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 {
 	if (!g.active || sec == nullptr) return;
 	g.activeSector = sec->sectornum;
+	// fire_sector_trigger (raw_commands.c:2883) clears the wall and the source
+	// object before the chain runs.
+	g.activeFace = -1;
+	g.activeObjectSector = g.activeObjectIndex = -1;
 	auto it = g.bySector.find(sec->sectornum);
 	if (it == g.bySector.end()) return;
 	for (const Binding &b : it->second)
@@ -6633,7 +6886,13 @@ void TickLevelLogic(FLevelLocals *level)
 	// BeginLevel time.
 	ConsumeArrival();
 
-	// Health at 0: the death block and its wait (game_core.c:948-1020).
+	// The command core's per-frame half -- the speed latch, the particles, the
+	// pain flash -- comes first in tick_world_effects (raw_commands.c:3290-3297),
+	// before the effect pool and its delay timers.
+	CmdTick();
+
+	// Health at 0: the death block and its wait (game_core.c:948-1020). The
+	// frame loop tests health after the world has ticked.
 	TickGameFlow();
 
 	// tick_delay_timer (raw_commands.c:5328): count down, and on expiry push the

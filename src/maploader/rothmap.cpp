@@ -3521,6 +3521,68 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			log.Line("  logic walls      0x0c: %d slot(s); keys on a face %d/%d",
 				advSlots, advKeysHit, advKeysHit + advKeysMiss);
 
+		// The counter and breakage opcodes paint numbers the map need not wear
+		// anywhere (roth_cmdcore.cpp): 0x1f writes count - 1 + word[+0x10] as
+		// its count runs from 0 up to its limit (raw_commands.c:686-698), and
+		// 0x2e flips bit 0 of a slot -- Realms keeps a wall's whole and broken
+		// pictures as an even/odd pair (:361-389) -- on the walls its key names,
+		// or with key 0 on whichever wall was used.
+		int countTex = 0;
+		for (const roth::Command &c : rm.commands)
+		{
+			const uint8_t op = (uint8_t)(c.opcode & 0x7f);
+			if (op == 0x1F)
+			{
+				const int top = (c.Word(0x08) > c.Word(0x0C) ? c.Word(0x08) : c.Word(0x0C)) + 1;
+				for (int k = 0; k <= top && k < 0x100; k++)
+				{
+					const int ti = (uint16_t)(k - 1 + c.Word(0x10));
+					FTextureID t = worldTex(ti);
+					if (!t.isValid()) continue;
+					roth::RegisterTexture(ti, t);
+					countTex++;
+				}
+			}
+			else if (op == 0x2E)
+			{
+				static const int dirSlot[4] = { 0, 2, 1, 0 };   // {2,6,4,2}: mid, lower, upper, mid
+				const int which = dirSlot[c.Word(0x06) & 3];
+				for (const roth::TextureMap &tm : rm.textureMaps)
+				{
+					if (c.key != 0 && (!tm.extended || tm.faceID != c.key)) continue;
+					const uint16_t v = which == 0 ? tm.midTexture : which == 1 ? tm.upperTexture : tm.lowerTexture;
+					for (int pair = 0; pair < 2; pair++)
+					{
+						const int ti = pair == 0 ? (v & ~1) : (v | 1);
+						FTextureID t = worldTex(ti);
+						if (!t.isValid()) continue;
+						roth::RegisterTexture(ti, t);
+						countTex++;
+					}
+				}
+			}
+			else if (op == 0x1C)
+			{
+				// cmd_cycle_texture: every sector the key names takes the
+				// reference sector's floor (or ceiling, flag 1) plus one, once
+				// per run (:973-1027). Sixteen runs ahead are made ready.
+				const bool ceiling = (c.Word(0x06) & 1) != 0;
+				for (const roth::Sector &rs : rm.sectors)
+				{
+					if (rs.commandID != c.key && rs.commandID != c.Word(0x0A)) continue;
+					const int base = ceiling ? rs.ceilingTexture : rs.floorTexture;
+					for (int k = 1; k <= 16; k++)
+					{
+						const int fi = base + k;
+						const bool isSky = haveArt && art.IsSkySurface(fi);
+						roth::RegisterFlat(fi, isSky ? FNullTextureID() : worldTex(fi), isSky, flatOpaque256For(fi));
+					}
+				}
+			}
+		}
+		if (countTex > 0)
+			log.Line("  logic counters   %d texture(s) for opcodes 0x1f/0x2e", countTex);
+
 		// And the FLATS opcodes 0x0a / 0x0b can swap onto a floor or ceiling,
 		// which the record names at +0x0a. A flat index may be the pack's sky
 		// marker, so that is registered with it rather than resolved to a

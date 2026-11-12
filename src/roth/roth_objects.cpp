@@ -605,6 +605,8 @@ int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Lo
 // Packed texture word -> sprite, for the textures the level LOGIC names rather
 // than the ones its objects wear. See FindLogicSprite.
 static std::map<uint16_t, int> gLogicSprites;
+struct LogicSpriteLook { double scale = 2.0, zShift = 0.0, offsetX = 0.0; };
+static std::map<uint16_t, LogicSpriteLook> gLogicSpriteLook;
 
 int FindLogicSprite(uint16_t textureWord)
 {
@@ -1178,15 +1180,41 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	// Opcode 0x0d repaints a prop to the texture word its record carries at
 	// +0x0c, and that texture may be on no object anywhere in the map. The
 	// packs are locals here and the runtime cannot open one later, so the
-	// sprite is built now. Only the record's INITIAL word needs this: the
+	// sprite is built now. For 0x0d only the record's INITIAL word needs this: the
 	// swap puts the prop's own previous texture back into the record, and
 	// that one already has a sprite because the prop is wearing it.
 	//------------------------------------------------------------------
 	gLogicSprites.clear();
+	gLogicSpriteLook.clear();
+	// The words the OTHER object-texture commands can put on a prop or a
+	// particle (roth_cmdcore.cpp): 0x2d draws particles whose texture word is
+	// the record's key (raw_commands.c:4885-4911); 0x22 writes count - 1 +
+	// word[+0x10] while its count runs 0..limit (:780-788); 0x20 writes the
+	// reference object's word plus one (:1184-1206).
+	std::vector<uint16_t> logicWords;
 	for (const Command &c : rm.commands)
 	{
-		if ((c.opcode & 0x7f) != 0x0D) continue;
-		const uint16_t word = c.Word(0x0C);
+		const uint8_t op = (uint8_t)(c.opcode & 0x7f);
+		if (op == 0x0D) logicWords.push_back(c.Word(0x0C));
+		else if (op == 0x2D) logicWords.push_back(c.Word(0x08));
+		else if (op == 0x22)
+		{
+			const int top = (c.Word(0x08) > c.Word(0x0C) ? c.Word(0x08) : c.Word(0x0C)) + 1;
+			for (int k = 0; k <= top && k < 0x100; k++)
+				logicWords.push_back((uint16_t)(k - 1 + c.Word(0x10)));
+		}
+		else if (op == 0x20)
+		{
+			const uint16_t av = c.Word(0x0A), key = c.Word(0x08);
+			const uint16_t refId = (av != 0 && av != key) ? av : key;
+			for (const auto &list : rm.objects)
+				for (const Object &o : list)
+					if (refId != 0 && o.commandID == refId)
+						logicWords.push_back((uint16_t)((o.textureIndex | (o.textureSource << 8)) + 1));
+		}
+	}
+	for (const uint16_t word : logicWords)
+	{
 		if (word == 0 || gLogicSprites.count(word) != 0) continue;
 
 		int artIndex = 0;
@@ -1208,6 +1236,14 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		if (sn < 0) continue;
 		spriteByTexture[tex.GetIndex()] = sn;
 		gLogicSprites[word] = sn;
+		// The same placement rules a placed object gets (finishPictureSprite):
+		// the drawn size, and the anchor shift down for a standing picture or
+		// up for a hanging one.
+		LogicSpriteLook look;
+		look.scale = info.unitsPerPixel;
+		look.zShift = info.hang ? info.anchorShift : -info.anchorShift;
+		look.offsetX = info.lateralOffset;
+		gLogicSpriteLook[word] = look;
 	}
 	if (log && !gLogicSprites.empty())
 		log->Line("  logic sprites    %d texture word(s) pre-built for opcode 0x0d",
@@ -1390,6 +1426,46 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 		failed ? FStringf(", %d failed", failed).GetChars() : "");
 
 	gPending.clear();
+}
+
+//==========================================================================
+//
+// An actor wearing a logic sprite: a particle of opcode 0x2d. The original
+// draws its particle list through the same object path as placed objects
+// (renderer.c:8010-8011), so it gets the same size, anchor and light rule as a
+// placed picture -- see finishPictureSprite and the light block in Prepare.
+//
+//==========================================================================
+
+AActor *SpawnLogicSpriteActor(FLevelLocals *Level, uint16_t textureWord, double x, double y, double z, int lightLevel)
+{
+	if (Level == nullptr) return nullptr;
+	auto it = gLogicSprites.find(textureWord);
+	if (it == gLogicSprites.end()) return nullptr;
+	PClassActor *cls = PropClass();
+	if (cls == nullptr) return nullptr;
+	LogicSpriteLook look;
+	auto lk = gLogicSpriteLook.find(textureWord);
+	if (lk != gLogicSpriteLook.end()) look = lk->second;
+	AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(x, y, z + look.zShift), NO_REPLACE);
+	if (mo == nullptr) return nullptr;
+	mo->sprite = it->second;
+	mo->frame = 0;
+	mo->Scale = DVector2(look.scale, look.scale);
+	if (look.offsetX != 0.0) mo->SpriteOffset.X = look.offsetX;
+	if (lightLevel >= 0) mo->LightLevel = (int16_t)lightLevel;
+	mo->SetZ(z + look.zShift);
+	return mo;
+}
+
+bool MoveLogicSpriteActor(AActor *mo, uint16_t textureWord, double x, double y, double z)
+{
+	if (mo == nullptr) return false;
+	double shift = 0.0;
+	auto lk = gLogicSpriteLook.find(textureWord);
+	if (lk != gLogicSpriteLook.end()) shift = lk->second.zShift;
+	mo->SetOrigin(DVector3(x, y, z + shift), true);
+	return true;
 }
 
 } // namespace roth
