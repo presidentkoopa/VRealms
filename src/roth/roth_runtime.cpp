@@ -29,6 +29,7 @@
 #include "roth_surface.h"
 #include "roth_log.h"
 #include "roth_dbase100.h"
+#include "roth_gamecore.h"
 #include "roth_install.h"
 
 #include <map>
@@ -91,8 +92,116 @@ namespace
 static const int FLAG_BITS = 448;
 uint8_t g_progressFlags[FLAG_BITS / 8];
 
+//==========================================================================
+//
+// The game core, and the engine's side of it.
+//
+// roth::GameCore (roth_gamecore.h) owns the DBASE100 interpreter, the
+// inventory and their shared generator, with no engine headers. It is
+// attached ONCE, on the first level that finds DBASE100 loaded, because its
+// state is the game's and not the map's: flags and items outlive a level.
+//
+// Once it is attached, THE FLAG BITMAP ABOVE IS NO LONGER THE FLAGS. The
+// interpreter's bitmap is, sized from DBASE100's own header as the original
+// sizes it (game_core.c:420-432), and RAW 0x26/0x28 and DBASE100 ops
+// 0x01/0x04/0x0d read and write the same bits, as they do in ROTH.C. The
+// array stays only as the fallback for an install with no DBASE100.
+//
+// CoreHost is everything the interpreter asks of a system that is not built
+// yet. Text is real: read_next_dialogue_line (dbase100.c:371-403) reads an
+// 8-byte header { voice clip u32, length u16, colour u8 } and then the text
+// from DBASE400.DAT. Its timed-message cache and the voice clip are NOT
+// ported -- the cache only saves a file seek, the voice is sound (M8). What
+// the original draws in a dialogue window is, for now, printed to the
+// console: enough to see a conversation happen and to stop the hub menus
+// looping on an empty line (HANDOFF_LANE_GAMELAYER_2026-11-11.md section 5).
+// Everything else is counted by name, so a missing system is a number in the
+// load report and never a silent success.
+//
+// NOT COMPILED BY MSVC in the lane that wrote it. Syntax-checked with g++
+// against the engine headers (tools/roth_syntaxcheck.sh), never linked, never run.
+//
+//==========================================================================
+
+class CoreHost : public Dbase100Sink
+{
+public:
+	std::vector<uint8_t> text;              // DBASE400.DAT, whole
+	std::map<std::string, int> calls;       // what was asked for and not built
+
+	bool LoadText(const Install &install)
+	{
+		if (!text.empty()) return true;
+		const std::string path = install.DataFile("DBASE400.DAT");
+		if (path.empty()) return false;
+		FILE *f = fopen(path.c_str(), "rb");
+		if (f == nullptr) return false;
+		fseek(f, 0, SEEK_END);
+		const long n = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (n > 0)
+		{
+			text.resize((size_t)n);
+			if (fread(text.data(), 1, (size_t)n, f) != (size_t)n) text.clear();
+		}
+		fclose(f);
+		return !text.empty();
+	}
+
+	// dbase100.c:371-403, minus the cache and the voice.
+	uint32_t ReadNextDialogueLine(uint8_t *dest, uint32_t maxlen, uint32_t voiceOffset, uint32_t flag) override
+	{
+		(void)flag;
+		if (dest == nullptr || (uint64_t)voiceOffset + 8 > text.size()) return 0;
+		uint32_t len = (uint32_t)text[voiceOffset + 4] | ((uint32_t)text[voiceOffset + 5] << 8);
+		if (len > maxlen) len = maxlen;                                  // :390
+		const uint64_t avail = text.size() - ((uint64_t)voiceOffset + 8);
+		if (len > avail) len = (uint32_t)avail;
+		memcpy(dest, text.data() + voiceOffset + 8, len);
+		return len;
+	}
+
+	void Say(const char *what, const uint8_t *t, uint32_t bytes)
+	{
+		// The builder's buffer is NUL-separated lines; print each.
+		std::string line;
+		for (uint32_t i = 0; i < bytes; i++)
+		{
+			if (t[i] == 0)
+			{
+				if (!line.empty()) Printf("%s: %s\n", what, line.c_str());
+				line.clear();
+			}
+			else if (t[i] >= 0x20 && t[i] < 0x7f) line += (char)t[i];
+		}
+		if (!line.empty()) Printf("%s: %s\n", what, line.c_str());
+	}
+
+	uint32_t Dbase100OpenDialogueWindow(const uint8_t *t, uint32_t bytes) override
+	{ calls["dialogue window (choices)"]++; if (t != nullptr) Say("[Realms choice]", t, bytes); return 0; }
+	uint32_t Dbase100OpenDialogueWindowAlt(const uint8_t *t, uint32_t bytes) override
+	{ calls["dialogue window (line)"]++; if (t != nullptr) Say("[Realms]", t, bytes); return 0; }
+
+	uint32_t PlayRecordGdvCutscene(int index) override { (void)index; calls["cutscene (GDV)"]++; return 0; }
+	uint32_t ShowFullscreenImage(uint32_t operand) override { (void)operand; calls["fullscreen image"]++; return 0; }
+	uint32_t PlaySoundEffect(uint32_t id, uint32_t param) override { (void)id; (void)param; calls["sound effect"]++; return 0; }
+	uint32_t LoadDbase300Chunk(uint32_t index) override { (void)index; calls["music chunk"]++; return 1; }
+	int32_t ResetCommandChainNoSource(uint16_t index) override { (void)index; calls["RAW chain by index (op 0x23)"]++; return 0; }
+	int32_t RunObjectCommandsById(uint16_t id) override { (void)id; calls["RAW chain by object id (op 0x36)"]++; return 0; }
+	void AdvanceClamp8a0f0(uint32_t amount, uint32_t max) override { (void)amount; (void)max; calls["health change"]++; }
+	void ZeroHealthAndFlagDeath() override { calls["death"]++; }
+};
+
+GameCore g_core;
+CoreHost g_coreHost;
+// g@0x8a26c: set by the first 0x2b of a chain, cleared by the chain's tail
+// (raw_commands.c:4701-4704, 1313-1314).
+bool g_dialogueLatch = false;
+
 bool FlagIsSet(uint16_t id)
 {
+	// test_dbase100_record_flag: non-zero when set (raw_commands.c:79-86).
+	if (g_core.IsAttached()) return g_core.Interp().TestDbase100RecordFlag(id) != 0;
 	const int byteIndex = (int)id >> 3;
 	if (byteIndex < 0 || byteIndex >= (int)sizeof(g_progressFlags)) return false;
 	return (g_progressFlags[byteIndex] & (1u << (id & 7))) != 0;
@@ -101,6 +210,8 @@ bool FlagIsSet(uint16_t id)
 // test_set / test_clear report "acted" only when the bit actually CHANGED.
 bool FlagTestSet(uint16_t id)
 {
+	// dbase100_bitmap_test_set: 0 when already set (renderer.c:11528-11539).
+	if (g_core.IsAttached()) return g_core.Interp().Dbase100BitmapTestSet(id) != 0;
 	const int byteIndex = (int)id >> 3;
 	if (byteIndex < 0 || byteIndex >= (int)sizeof(g_progressFlags)) return false;
 	const uint8_t mask = (uint8_t)(1u << (id & 7));
@@ -111,6 +222,8 @@ bool FlagTestSet(uint16_t id)
 
 bool FlagTestClear(uint16_t id)
 {
+	// dbase100_bitmap_test_clear: 0 when already clear (renderer.c:11543-11554).
+	if (g_core.IsAttached()) return g_core.Interp().Dbase100BitmapTestClear(id) != 0;
 	const int byteIndex = (int)id >> 3;
 	if (byteIndex < 0 || byteIndex >= (int)sizeof(g_progressFlags)) return false;
 	const uint8_t mask = (uint8_t)(1u << (id & 7));
@@ -782,22 +895,41 @@ int TailIfNext(Handlers &h)
 
 //==========================================================================
 //
-// 0x2b run_command_dbase100_record -- raw_commands.c:4697
+// 0x2b run_command_dbase100_record -- raw_commands.c:4697-4709
 //
-// Fires a DBASE100 dialogue record. The latch is transcribed; the record itself
-// is evaluated by eval_dialogue_record_by_id (0x1dc73), the DBASE100 dialogue
-// interpreter, WHICH IS NOT BUILT. The original's own early-out for an unloaded
-// DBASE100 base returns 0, which is exactly the state this is in, so this
-// reproduces that path rather than inventing one -- but no dialogue will play
-// until DBASE100 is read. Counted, so it does not look like a success.
+// Fires a DBASE100 action record: id = word[rec+8]. The first 0x2b of a chain
+// sets the chain's dialogue latch (0x8a26c) and the interpreter's queue-active
+// flag (0x81e18); then eval_dialogue_record_by_id runs the record. If it acted
+// the shared consume-tail runs and the answer is -1, else 0.
+//
+// With no DBASE100 the original's own early-out answers 0 (dbase100.c:547),
+// and so does this, counted so it does not look like a success.
+//
+// NOT IN IsImplemented(), ON PURPOSE. The interpreter runs and its lines print
+// to the console, but nobody has seen it run in the engine, choices cannot be
+// picked and nothing is drawn. The census keeps counting 0x2b as a hole until
+// the owner has seen a conversation (tools/rothdiff/opcodecensus.cpp says why).
+//
+// The chain's tail -- finish_dialogue_record_eval, the latch cleared, the
+// autoselect flag cleared (raw_commands.c:1313-1315) -- is in Fire.
 //
 //==========================================================================
 
 int RunDbase100Record(Command *rec)
 {
-	(void)rec;
-	g.unhandledOps[0x2B]++;
-	return CMD_NOTHING;                      // eval_dialogue_record_by_id -> 0
+	if (!g_core.IsAttached())
+	{
+		g.unhandledOps[0x2B]++;
+		return CMD_NOTHING;                  // eval_dialogue_record_by_id -> 0
+	}
+	if (!g_dialogueLatch)                    // :4701-4704
+	{
+		g_dialogueLatch = true;
+		g_core.Interp().State().g_dbase100_queue_active = 1;
+	}
+	const uint32_t r = g_core.Interp().EvalDialogueRecordById(rec->key);   // :4705
+	if (r != 0) return TailConsume(rec, CMD_ACTED);                      // :4706-4707
+	return CMD_NOTHING;
 }
 
 //==========================================================================
@@ -3476,6 +3608,15 @@ bool Fire(uint16_t chain)
 		return RunCommandWithChain(m, c, index, *hp);
 	};
 	const int result = ExecChain(g.map, chain, h);
+	// The tail of reset_command_chain_state (raw_commands.c:1313-1315).
+	// [unverified]: the original runs this on the path that reaches the end of
+	// that function; whether every early return skips it has not been read.
+	if (g_core.IsAttached())
+	{
+		g_core.Interp().FinishDialogueRecordEval();
+		g_dialogueLatch = false;
+		g_core.Items().ClearAutoSelected();
+	}
 	if (result != CMD_NOTHING) g.fired++;
 	return result != CMD_NOTHING;
 }
@@ -3832,6 +3973,20 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// (ROTH_GAME_PORT.md §4 step 1). NOT COMPILED in the lane that wrote it.
 	if (!TheDbase100().IsLoaded())
 		LoadDbase100FromInstall(TheInstall(), TheDbase100(), log);
+
+	// The game core is attached once: its flags and items are the game's, not
+	// the map's. A new game (action 3) is NOT run here -- that belongs to game
+	// flow, which is not built, so the player starts with an empty inventory.
+	if (TheDbase100().IsLoaded() && !g_core.IsAttached())
+	{
+		const bool haveText = g_coreHost.LoadText(TheInstall());
+		g_core.Attach(&TheDbase100(), &g_coreHost, nullptr);
+		if (log != nullptr) log->Line("game core: attached (%d items, %d actions, flag bitmap %d bytes, DBASE400 text %s)",
+			TheDbase100().ItemCount(), TheDbase100().ActionCount(),
+			(int)g_core.Interp().State().g_dbase100_record_bitmap.size(),
+			haveText ? "loaded" : "MISSING -- dialogue lines will be empty");
+	}
+	g_dialogueLatch = false;
 
 	// The arrival point the map we came FROM asked for.
 	g.pendingArrivalSector = -1;
