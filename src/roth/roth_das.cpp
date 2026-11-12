@@ -459,6 +459,90 @@ Image Pack::ReadImage(int index, bool allFrames) const
 	return img;
 }
 
+//==========================================================================
+//
+// One picture of an image pack, by the index a mesh face carries.
+//
+// The original's rule, renderer.c:13251-13273. The resolved art block's flag
+// word has bit 0x40 (our `modifier & IM_IMAGE_PACK`); the word at block+0x10 --
+// entry+6 here, because a block starts ten bytes before its entry -- says how a
+// picture is chosen:
+//
+//     bit 15      by the view angle (a billboard's views)
+//     bit 14      by the FACE: byte +0x1c of the mesh face record
+//     neither     through a table of state words the engine keeps
+//
+// and in every case the chosen word, read from block+0x12+2k, is a paragraph
+// offset from the block: the sub-record starts at block + word*16 and is laid
+// out like a block of its own, so its flag word, dimensions and pixels sit at
+// +0x0a, +0x0c/+0x0e and +0x10 -- which is the shape readPlainAt already reads
+// when handed sub+0x0a. Bit 15 of the word asks for a mirrored draw
+// (renderer.c:13271); MEASURED by tools/propcheck over all five map packs, no
+// face-indexed table word sets it.
+//
+// The low bits of the selector word are the table's size in bytes: 0x401c is
+// fourteen pictures. Only the bit-14 kind is resolved here.
+//
+//==========================================================================
+
+int Pack::SubImageCount(int index) const
+{
+	const FatEntry *e = Entry(index);
+	if (e == nullptr || e->kind != EntryKind::ImagePack) return 0;
+	if ((size_t)e->offset + 8 > mSize) return 0;
+	const uint16_t sel = RdU16(mData + e->offset + 6);
+	if ((sel & 0x8000) != 0 || (sel & 0x4000) == 0) return 0;
+	return (sel & 0x3fff) / 2;
+}
+
+Image Pack::ReadSubImage(int index, int sub) const
+{
+	const FatEntry *e = Entry(index);
+	if (e == nullptr) return Image();
+	if (e->kind != EntryKind::ImagePack) return ReadImage(index, false);
+
+	const int n = SubImageCount(index);
+	if (sub < 0 || sub >= n) return Image();
+	const size_t at = (size_t)e->offset + 8 + (size_t)sub * 2;
+	if (at + 2 > mSize) return Image();
+	const uint16_t word = RdU16(mData + at);
+	// block + (word & 0x7fff) * 16, plus 0x0a to the sub-record's flag word.
+	// The block starts ten bytes before the entry, so the two tens cancel.
+	const size_t p = (size_t)e->offset + (size_t)(word & 0x7fff) * 16;
+
+	Image img;
+	if (p + 6 > mSize) return img;
+	const int w = RdU16(mData + p + 2);
+	const int h = RdU16(mData + p + 4);
+	if (w <= 0 || h <= 0 || w > 4096 || h > 4096) return img;
+	if (p + 6 + (size_t)w * h > mSize) return img;
+	img.modifier = mData[p];
+	img.imageType = mData[p + 1];
+	img.width = w;
+	img.height = h;
+	img.frames.emplace_back(mData + p + 6, mData + p + 6 + (size_t)w * h);
+	return img;
+}
+
+//==========================================================================
+//
+// A 3D prop. Layout, with the original's block offsets (block = entry - 10):
+//
+//   entry+20            vertex count                       (block+0x1e)
+//   entry+22            vertices, 0x10 bytes each: x, up, y as int16 and ten
+//                       bytes the original uses as per-frame scratch
+//                       (render_world.c:653-676)
+//   then 8 bytes        the four-character tag, two unused bytes, and the size
+//                       of the face chain as a BIG-endian word
+//   then the faces      a 0x36-byte record and a closed ring of corner words,
+//                       each a BYTE OFFSET into the vertex table (so >> 4)
+//
+// The texture word at +0x0c is big-endian in an "EXP2" mesh and a plain byte in
+// an "EXPL" one; initialize_das_block_internal_pointers normalises both at load
+// (renderer.c:806, :815-821).
+//
+//==========================================================================
+
 Mesh Pack::ReadMesh(int index) const
 {
 	Mesh mesh;
@@ -484,6 +568,8 @@ Mesh Pack::ReadMesh(int index) const
 	}
 
 	if (p + 8 > mSize) return Mesh();
+	mesh.expl = (mData[p] == 'E' && mData[p + 1] == 'X' && mData[p + 2] == 'P'
+		&& mData[p + 3] == 'L');
 	uint16_t facesSize = RdU16BE(mData + p + 6);   // big endian
 	p += 8;
 
@@ -491,9 +577,15 @@ Mesh Pack::ReadMesh(int index) const
 	while (consumed < facesSize && p + MESH_FACE_SIZE <= mSize)
 	{
 		MeshFace f;
-		f.texture = RdU16BE(mData + p + 0x0C);     // big endian
-		f.flipV = (mData[p + 0x16] & 2) != 0;
+		f.texture = mesh.expl ? (uint16_t)mData[p + 0x0C]      // renderer.c:819
+		                      : RdU16BE(mData + p + 0x0C);     // renderer.c:821
+		f.shade = mData[p + 0x0E];
+		f.tile = mData[p + 0x0F];
+		f.flags = RdU16(mData + p + 0x16);
+		for (int i = 0; i < 12; i++) f.corner[i] = mData[p + 0x18 + i];
 		f.subTexture = mData[p + 0x1C];
+		f.extentV = RdU16(mData + p + 0x24);
+		f.extentU = RdU16(mData + p + 0x26);
 		uint16_t edgeCount = RdU16(mData + p + 0x34);
 		p += MESH_FACE_SIZE;
 		consumed += MESH_FACE_SIZE;
@@ -501,9 +593,10 @@ Mesh Pack::ReadMesh(int index) const
 		int n = edgeCount + 1;
 		if (n > 64 || p + (size_t)n * 2 > mSize) break;
 
-		// A vertex index lives in the high bits of each edge word. Realms
-		// describes a quad with 5 edges and a triangle with 4.
-		int idx[5];
+		// A vertex index lives in the high bits of each corner word. The ring
+		// is closed, so a quad is 5 words and a triangle 4; a count of zero
+		// leaves the single word naming the vertex a picture hangs on.
+		int idx[5] = { -1, -1, -1, -1, -1 };
 		for (int i = 0; i < n && i < 5; i++)
 			idx[i] = RdU16(mData + p + (size_t)i * 2) >> 4;
 		p += (size_t)n * 2;
@@ -511,15 +604,149 @@ Mesh Pack::ReadMesh(int index) const
 
 		if (n == 5)      { f.count = 4; for (int i = 0; i < 4; i++) f.vertex[i] = idx[i]; }
 		else if (n == 4) { f.count = 3; for (int i = 0; i < 3; i++) f.vertex[i] = idx[i]; }
+		else if (n == 1) { f.count = 0; f.vertex[0] = idx[0]; }
 		else continue;
 
 		bool bad = false;
-		for (int i = 0; i < f.count; i++)
+		for (int i = 0; i < (f.count == 0 ? 1 : f.count); i++)
 			if (f.vertex[i] < 0 || f.vertex[i] >= (int)mesh.vertices.size()) bad = true;
 		if (!bad) mesh.faces.push_back(f);
 	}
 
 	return mesh;
+}
+
+//==========================================================================
+//
+// MeshFaceTexCoords -- see roth_das.h. One rule per span driver.
+//
+// THE AXES. Object art is stored with the picture's columns as its rows, so the
+// original's "row index" is ACROSS the picture (u) and its "offset in the row"
+// is DOWN it (v). The row count is the block's +0x0e word and the row length
+// its +0x0c word (renderer.c:13288-13290); `texW` and `texH` are those two.
+//
+// WALL (neither 0x20 nor 0x200). classify_surface_floorceil hands the driver
+// corner 0 as top-left, 1 as top-right, 2 as bottom-right and 3 as bottom-left
+// (renderer.c:4283-4294). Across: the column walk runs the full u extent from
+// the left edge to the right one, and the extent is two half-texels per texel
+// times the repeat count in the LOW nibble of +0x0f (renderer.c:13363-13370,
+// the `[0x90956]` word). Down: v is measured from corner 0's height and scaled
+// so that one picture, times the HIGH nibble's repeat count, spans the face
+// height the record stores at +0x24 (renderer.c:4979-4981, `[0x90954]` over
+// `[0x90980]`). Flag bit 1 mirrors across, inside the texture's own columns
+// (renderer.c:4735, `col = width - 1 - col`).
+//   With flag 0x100 the record's own +0x24/+0x26 are the extents instead, at
+// the wall density of two world units a texel (renderer.c:13347-13354 and
+// :4975-4976).
+//
+// POLYGON (0x200). build_floorceil_vertex_records gives each corner of the ring
+// a coordinate from a two-bit counter (renderer.c:3737-3750): down is 0, 0,
+// max, max and across is max, 0, 0, max -- or 0, max, max, 0 when flag bit 1
+// is set (renderer.c:3708-3710). With flag 0x1000 the corners carry their own
+// coordinates as bytes, in texels: across at +0x1c+k, down at +0x20+k
+// (renderer.c:3777-3793, where both end up shifted left six, the same
+// fixed point as the `(dim << 6) - 1` extents above).
+//
+// PLANE (0x20). The sprite span driver maps a horizontal plane by scanline from
+// the view's sine and cosine (renderer.c:3441-3453), so its picture is laid
+// out in the object's ground plane rather than fitted to the ring. That
+// derivation is NOT done here: the face is given the POLYGON rule with the
+// repeat nibbles the shared builder applies under this flag
+// (renderer.c:3695-3704), which fits the picture to the ring. 32 faces in the
+// retail packs take this path; tools/propcheck lists the meshes.
+//
+//==========================================================================
+
+bool MeshFaceTexCoords(const Mesh &mesh, const MeshFace &f, int texW, int texH,
+	float u[4], float v[4])
+{
+	for (int i = 0; i < 4; i++) u[i] = v[i] = 0.f;
+	if (f.count != 3 && f.count != 4) return false;
+	if (texW <= 0 || texH <= 0) return false;
+	for (int i = 0; i < f.count; i++)
+		if (f.vertex[i] < 0 || f.vertex[i] >= (int)mesh.vertices.size()) return false;
+
+	const bool mirror = (f.flags & 2) != 0;
+	const float across = float(1 + (f.tile & 0x0f));
+	const float down = float(1 + (f.tile >> 4));
+
+	switch (f.Kind())
+	{
+	case MeshFaceKind::Wall:
+	{
+		const float top = float(mesh.vertices[f.vertex[0]].up);
+		float uMax, vPerUnit;
+		if (f.flags & 0x100)
+		{
+			uMax = float(f.extentU) / (2.f * float(texW));
+			vPerUnit = 1.f / (2.f * float(texH));
+		}
+		else
+		{
+			uMax = across;
+			// A record with no stored height cannot scale v; fall back to the
+			// geometry, which is what the stored value is on every retail wall
+			// face that has one (tools/propcheck, "wall extents").
+			float h = float(f.extentV);
+			if (h <= 0.f)
+			{
+				float lo = top;
+				for (int i = 0; i < f.count; i++)
+				{
+					const float z = float(mesh.vertices[f.vertex[i]].up);
+					if (z < lo) lo = z;
+				}
+				h = top - lo;
+			}
+			vPerUnit = (h > 0.f) ? down / h : 0.f;
+		}
+		// Corners 0 and 3 are the left edge, 1 and 2 the right.
+		static const int rightEdge[4] = { 0, 1, 1, 0 };
+		for (int i = 0; i < f.count; i++)
+		{
+			float uu = rightEdge[i] ? uMax : 0.f;
+			if (mirror) uu = uMax - uu;
+			u[i] = uu;
+			v[i] = (top - float(mesh.vertices[f.vertex[i]].up)) * vPerUnit;
+		}
+		return true;
+	}
+
+	case MeshFaceKind::Polygon:
+		if (f.flags & 0x1000)
+		{
+			for (int i = 0; i < f.count; i++)
+			{
+				u[i] = float(f.corner[4 + i]) / float(texW);
+				v[i] = float(f.corner[8 + i]) / float(texH);
+			}
+			return true;
+		}
+		// fall through: the corner-counter rule, no repeats
+	case MeshFaceKind::Plane:
+	{
+		const bool plane = (f.Kind() == MeshFaceKind::Plane);
+		const float uMax = plane ? across : 1.f;
+		const float vMax = plane ? down : 1.f;
+		// The counter starts at 0xff and steps once per corner: across reads
+		// bit 1 BEFORE the step, down reads it AFTER (renderer.c:3745-3748).
+		for (int i = 0; i < f.count; i++)
+		{
+			const bool acrossHi = (((0xff + i) & 2) != 0);
+			const bool downHi = (((0xff + i + 1) & 2) != 0);
+			// [+0x24] is the extent and [+0x1c] zero with the bit clear; the
+			// other way round with it set, and always under 0x20
+			// (renderer.c:3701, :3708-3710).
+			const bool swap = plane || mirror;
+			u[i] = (acrossHi != swap) ? uMax : 0.f;
+			v[i] = downHi ? vMax : 0.f;
+		}
+		return true;
+	}
+
+	default:
+		return false;
+	}
 }
 
 bool Pack::ResolveObjectArt(uint8_t textureIndex, uint8_t textureSource, int &outIndex)

@@ -25,6 +25,7 @@
 #include <assert.h>
 
 #include "d_main.h"
+#include "roth/roth_sound.h"
 #include "g_level.h"
 #include "g_game.h"
 #include "common/rendering/hwrenderer/data/hw_vrwheel.h"
@@ -2631,6 +2632,10 @@ int IsPointInMap(FLevelLocals *Level, double x, double y, double z)
 
 void FLevelLocals::SetMusic()
 {
+	// REMAROTH: a Realms level has no music of its own. The original never
+	// touches the music on a map load; it changes only when a script asks
+	// (DBASE100 ops 0x1a / 0x1b), and whatever is playing carries on.
+	if (roth::SoundLevelKeepsMusic(this)) return;
 	S_ChangeMusic(Music.GetChars(), musicorder);
 }
 

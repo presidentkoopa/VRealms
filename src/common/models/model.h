@@ -130,6 +130,10 @@ public:
 	// override applied. The draw path needs this before it has resolved an
 	// actor's model data, and no actor overrides it anyway.
 	bool ignoresSkinAlpha() const { return !!(flags & (1 << 18)); }
+	// For a frame built in memory rather than parsed from MODELDEF (a native
+	// map loader binding its own mesh with AddSpriteModelFrame): the same MDL_
+	// flags a MODELDEF block would have set.
+	void setFlags(unsigned int f) { flags = f; }
 	friend void InitModels();
 	friend void ParseModelDefLump(int Lump);
 

@@ -255,4 +255,76 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 	return id;
 }
 
+//==========================================================================
+//
+// MeshSkin -- see roth_texture.h.
+//
+// Registered under its own names, apart from Sprite()'s, because the same
+// stored index can be wanted both ways: as a prop's cut-out picture with sprite
+// offsets, and as an opaque face of a mesh. The quarter turn is the same one.
+//
+//==========================================================================
+
+FTextureID TextureSet::MeshSkin(int index, int sub, bool masked, Log *log,
+	int *texW, int *texH)
+{
+	if (texW) *texW = 0;
+	if (texH) *texH = 0;
+	if (!mPack) return FNullTextureID();
+
+	// Flat colours and out-of-range ids: one rule, Sprite()'s.
+	if (index >= (int)TEX_PICTURE_LIMIT) return Sprite(index, log);
+
+	const int key = (index << 9) | ((sub & 0xff) << 1) | (masked ? 1 : 0);
+	auto found = mMeshSkins.find(key);
+	if (found != mMeshSkins.end())
+	{
+		if (!found->second.id.isValid() ||
+			TexMan.GetGameTexture(found->second.id, false) != nullptr)
+		{
+			if (texW) *texW = found->second.w;
+			if (texH) *texH = found->second.h;
+			return found->second.id;
+		}
+		mMeshSkins.erase(found);
+	}
+
+	MeshSkinEntry entry;
+	Image img = mPack->ReadSubImage(index, sub);
+	if (!img.ok())
+	{
+		mSpritesFailed++;
+		if (log) log->Count("objects: mesh face picture could not be decoded");
+		mMeshSkins[key] = entry;
+		return FNullTextureID();
+	}
+
+	// The quarter turn: stored rows are the picture's columns.
+	entry.w = img.height;
+	entry.h = img.width;
+
+	FString name = FStringf("ROTH_%s_M%05d_%02d%s", mName.c_str(), index, sub & 0xff,
+		masked ? "K" : "");
+	entry.id = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
+	if (!entry.id.isValid())
+	{
+		const bool translucent = (img.imageType & IT_TRANSLUCENT) != 0;
+		const int tr = (translucent && mTranslucentTranslation >= 0) ? mTranslucentTranslation
+			: masked ? mTranslation
+			: (mOpaqueTranslation >= 0 ? mOpaqueTranslation : mTranslation);
+		FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard, tr);
+		auto *image = new FPalettedMemoryImage(KeepObjectPixels(img.frames[0]), remap,
+			entry.w, entry.h, true, masked || translucent);
+		auto *tex = MakeGameTexture(new FImageTexture(image), name.GetChars(),
+			ETextureType::Override);
+		entry.id = TexMan.AddGameTexture(tex);
+		mSpritesRegistered++;
+	}
+
+	mMeshSkins[key] = entry;
+	if (texW) *texW = entry.w;
+	if (texH) *texH = entry.h;
+	return entry.id;
+}
+
 } // namespace roth

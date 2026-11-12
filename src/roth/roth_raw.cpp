@@ -389,6 +389,14 @@ Map ParseRaw(const uint8_t *data, size_t size)
 		}
 	}
 
+	// ---- sound nodes ------------------------------------------------------
+	// Section 7 follows the command section. Kept as bytes; see Map::sfxSection.
+	{
+		const size_t start = (size_t)h.verticesOffset + h.verticesSectionSize + h.commandSectionSize;
+		if (h.section7Size != 0 && start + h.section7Size <= size)
+			map.sfxSection.assign(data + start, data + start + h.section7Size);
+	}
+
 	// ---- objects ----------------------------------------------------------
 	// Laid out as a table of per-sector offsets relative to the start of the
 	// section, each pointing at a small run of object records.

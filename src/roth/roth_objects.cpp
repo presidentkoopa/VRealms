@@ -20,8 +20,9 @@
 ** the engine's own sprite table at load. There is no lump anywhere.
 **
 ** WHAT WAS READ OUT OF ROTH.C AND WHAT WAS NOT is commented at each decision.
-** The two things to distrust first are the facing sense (ANGLE_SENSE below) and
-** the mesh UVs, and both say so where they are.
+** The facing sense and the mesh face mapping were both re-derived on 2026-11-12
+** and are checked over the retail data by tools/propcheck; what is still not
+** the original's is said where it is (the horizontal-plane faces).
 **
 **---------------------------------------------------------------------------
 ** SPDX-License-Identifier: GPL-3.0-or-later
@@ -61,80 +62,88 @@ namespace roth
 
 //==========================================================================
 //
-// THE FACING SENSE. The single most likely thing here to be wrong, and the
-// cheapest to correct: flip this constant and every prop in the game turns the
-// other way.
+// WHICH WAY AN OBJECT FACES. Settled 2026-11-12 from ROTH.C alone, and checked
+// against three things that do not depend on each other.
 //
-// What ROTH.C says. The object's rotation byte is doubled before it is used
-// (renderer.c:6097 for the fixed-angle quad, render_world.c:637 for a mesh) and
-// then indexes the same 512-entry sincos table the PLAYER's angle indexes. So
-// an object at rotation r is oriented exactly as a player at angle 2r: same
-// zero direction, same rotational sense, 256 units per turn against the
-// player's 512. The fixed-angle quad's own plane is a quarter turn off that,
-// and its NORMAL is the 2r bearing -- which is what GZDoom's RF_WALLSPRITE
-// wants in Angles.Yaw (hw_sprites.cpp:1635-1644 builds the quad along
-// Yaw - 90 degrees).
+// THE ORIGINAL'S ANGLES RUN CLOCKWISE FROM +Y. Its view basis for a view angle
+// V (512 a turn) is forward = (sin V, cos V), right = (cos V, -sin V): both the
+// world-vertex transform (renderer.c:6752-6779 with :1278-1291) and the object
+// origin transform (render_world.c:626-633 with renderer.c:12204-12217) reduce
+// to exactly that, and its own atan2 returns 0 along +Y and 0x80 along +X
+// (renderer.c:614-650). The PLAYER's stored angle is the negative of V -- the
+// movement code negates it before every table lookup (renderer.c:1183-1185,
+// :1203-1205) -- which is why the player start in rothmap.cpp is right to turn
+// COUNTER-clockwise, and why reading "an object at rotation r is oriented as a
+// player at angle 2r" gave this file the wrong sense for six weeks.
 //
-// What that contradicts. ROTH_STATE.md and the Python oracle both say object
-// facing runs in the OPPOSITE sense to the player's, and the oracle subtracts
-// where this adds. One of the two is wrong and the code above is the only
-// first-hand evidence either way, so this follows the code -- but it has not
-// been seen on a screen, and 114 of STUDY1's 274 objects are fixed-angle, so a
-// wrong sign here is very visible and very cheap to fix.
+// WHAT THE ROTATION BYTE DOES, with R = rot * 360/256 degrees:
 //
-// The rule that must hold whatever the sign is: an object's facing and the
-// player start's facing (rothmap.cpp) live in the SAME space, with the object's
-// doubled. If one is changed the other must change with it.
+//   a mesh corner (x, y)      ang = V - 2*rot; lateral = x cos - y sin,
+//                             depth = x sin + y cos   (render_world.c:637-655)
+//                             => world offset ( x cos R + y sin R,
+//                                              -x sin R + y cos R )
+//   a fixed-angle picture     theta = 2*(rot + 0x40) - V; its right-hand edge is
+//                             at lateral + sin(theta), depth + cos(theta)
+//                             (renderer.c:6096-6110) => it lies along
+//                             (cos R, -sin R), the SAME local x axis
+//   a directional picture     view index ((2*rot + 0x120 - V) >> 6) & 7
+//                             (renderer.c:5714-5719), which is the engine's own
+//                             rotation index when the actor faces local +y
+//
+// So an object's own +y axis points along (sin R, cos R): CLOCKWISE with the
+// byte, and at bearing 90 - R in this engine's counter-clockwise degrees. That
+// is ObjectYaw. The three ways an object is drawn each sit at a fixed turn from
+// it -- see YawOffsetMesh / YawOffsetFixedQuad below.
+//
+// THE CHECKS:
+//   1. "Face the player" (compute_player_object_bearing, raw_commands.c:300)
+//      stores atan2(player -> object) >> 1 in the byte. With the rule above that
+//      turns a fixed-angle picture's readable side to the player and nothing
+//      else does.
+//   2. The two descriptions recorded here when the sign was last argued over --
+//      "sense +1: a couch faced 12 o'clock, wanted 6" and "sense -1: the same
+//      couch faced 3 o'clock", for a byte worth 45 degrees, both taken with a
+//      zero of 0 -- are 180 and 90 degrees out from a face normal of 270 - R
+//      and from nothing else.
+//   3. tools/propcheck: a ring that is clockwise on screen is the visible side
+//      in the original, and under this handedness the visible side of the
+//      retail meshes' faces points OUT of the mesh 838 times to 268 (the 268
+//      are cards and the inside faces of concave furniture).
+//   4. THE ORIGINAL ITSELF. tools/propcheck/proprender draws a map's objects
+//      on the host with exactly these rules and was laid over frames of the
+//      original engine (tools/oracle) from the same poses on 2026-11-12:
+//      STUDY1's courtyard trees, hall chandelier, couch, chair and table,
+//      CHURCH1's trees and wall boxes, and a banner in MAS3 at rotation 19
+//      all land on the original's, and the banner drawn with the old sense is
+//      a broadside where the original shows it nearly edge-on.
+//
+// What that does NOT cover: the engine's own drawing of these actors has not
+// been seen yet -- in particular that RF_WALLSPRITE and the model winding
+// behave as read (YawOffsetFixedQuad, MDL_FORCECULLBACKFACES).
 //
 //==========================================================================
 
-// +1, as read out of ROTH.C above. This was briefly flipped to -1 and that was
-// wrong; the evidence is worth keeping because it separates the two kinds of
-// error cleanly:
-//
-//   sense +1  ->  a couch faced 12 o'clock, wanted 6   = 180 degrees out
-//   sense -1  ->  the same couch faced 3 o'clock       = 90 degrees out
-//
-// A wrong SENSE is rotation-DEPENDENT: it reflects each object about the zero,
-// so it moves different objects by different amounts (that couch's byte is 45
-// degrees worth, hence 90). A wrong ZERO is rotation-INDEPENDENT: every object
-// is out by the same amount. The observed error was a uniform 180, so the sense
-// was right all along and the quarter turn below was the culprit.
-static const double ANGLE_SENSE = +1.0;
+// Clockwise, as derived above.
+static const double ANGLE_SENSE = -1.0;
 
-// ROTH.C builds an object's world angle as
-//
-//     angle512 = 2 * (rotationByte + 0x40) - viewAngle          (renderer.c:6096)
-//
-// so the object contributes rotationByte*2 units of a 512-unit turn, plus a
-// fixed 0x80 units == 90 degrees.
-//
-// SO THE ORIGIN IS 90 DEGREES, and it is now used. It was derived correctly in
-// the comment above and then thrown away: the constant sat at 0.0 with the
-// derivation written directly over it, and the 90 was left for the user to
-// rediscover by dialling a cvar. That is the exact failure the project rule
-// forbids -- a value that ROTH.C states, replaced by a placeholder.
-//
-// The citation is renderer.c:6096, rwss_rotated_tail, which is the path that
-// orients a flat object rather than billboarding it:
-//
-//     angle512 = (2 * (rotationByte + 0x40) - viewAngle) & 0x1ff
-//
-// GZDoom subtracts the view angle itself, so the ABSOLUTE yaw we owe it is the
-// object's own term, 2*rot + 0x80, converted from 512-per-turn to degrees:
-//
-//     (2*rot + 128) * 360/512  ==  rot * 360/256 + 90
-//
-// which is the per-step factor already below plus this 90.
-//
-// ONE DISAGREEMENT, recorded rather than smoothed over: the sense note above
-// says "the observed error was a uniform 180". That came from reading
-// descriptions of which way furniture pointed, which is the method that gave
-// three contradictory answers. This 90 comes from the code. If furniture is
-// still wrong after this, the remaining error is a MEASUREMENT against the
-// oracle, not another guess -- and it should be a clean 90, since a wrong
-// origin is rotation-independent.
+// Rotation 0 has the object's +y axis along the map's +Y, which is 90 degrees
+// here.
 static const double ANGLE_ZERO = 90.0;
+
+// A MESH is built with its local x on the model's x and its local y on the
+// model's z, and the engine turns model (x, z) counter-clockwise by the actor's
+// yaw (models.cpp, `rotate(-yaw, 0, 1, 0)` after `translate(X, Z, Y)`). Local x
+// has to land on (cos R, -sin R), so the yaw is -R: a quarter turn behind the
+// facing.
+static const double YawOffsetMesh = -90.0;
+
+// A FIXED-ANGLE PICTURE is an RF_WALLSPRITE, whose Angles.Yaw is the direction
+// its readable face looks (hw_sprites.cpp builds the quad along (sin yaw,
+// -cos yaw), the mirror image of the camera-facing case). The original draws
+// the picture unmirrored when its `-` edge is on screen-left
+// (renderer.c:6113-6119 swaps and sets the mirror bit otherwise), which is the
+// view from the object's -y side. So the face looks back along -y.
+static const double YawOffsetFixedQuad = 180.0;
 
 // A TRIM on top of the measured origin, defaulting to 0 because the origin is
 // now known. Kept only so a disagreement can be confirmed without a rebuild: if
@@ -160,11 +169,15 @@ double ObjectYaw(uint8_t rotation)
 // forward direction so a change to the convention cannot update only one of them.
 uint8_t RotationFromYaw(double deg)
 {
+	// The original takes the bearing in its own 512 steps and then halves it
+	// with an arithmetic shift (raw_commands.c:300-308), so the byte is the
+	// nearest 512th FLOORED to a 256th, not the nearest 256th.
 	double r = (deg - ANGLE_ZERO - double(roth_objectangle)) / ANGLE_SENSE;
-	r = r * 256.0 / 360.0;
-	r = fmod(r, 256.0);
-	if (r < 0) r += 256.0;
-	return (uint8_t)(int)(r + 0.5);
+	r = r * 512.0 / 360.0;
+	r = fmod(r, 512.0);
+	if (r < 0) r += 512.0;
+	const int step512 = (int)(r + 0.5) & 0x1ff;
+	return (uint8_t)(step512 >> 1);
 }
 
 //==========================================================================
@@ -180,6 +193,9 @@ struct Pending
 {
 	double x = 0, y = 0, z = 0;
 	double yaw = 0;
+	// Added to ObjectYaw for the actor: 0 for a picture that faces the camera
+	// or picks a view, YawOffsetMesh, or YawOffsetFixedQuad.
+	double yawOffset = 0;
 	double scaleX = 1, scaleY = 1;
 	double renderRadius = 0;
 	int    spriteNum = -1;     // index into the engine's `sprites`
@@ -215,6 +231,11 @@ struct MeshBinding
 	unsigned modelIndex = unsigned(-1);
 	int      spriteNum = -1;
 	std::string pseudoName;
+	// The faces that are not polygons at all: a camera-facing picture hung on
+	// one vertex (MeshFaceKind::Billboard). Kept so each placement can spawn
+	// them; the chandelier's eight flames are these.
+	struct Hung { int x, y, up; int texture; };
+	std::vector<Hung> hung;
 };
 std::map<std::string, MeshBinding> gMeshes;
 
@@ -326,13 +347,27 @@ static int MakeRuntimeSprite(FTextureID tex, Log *log)
 // translate(X, Z, Y) -- so the components go straight across with no negation
 // and no swap.
 //
-// UVs ARE NOT VERIFIED AND CANNOT BE. Realms' mesh vertices carry no texture
-// coordinates at all; the original derives them per face inside its span
-// drivers from stored extents (renderer.c:13116-13117, 13334-13360). What is
-// used here is the unit square per face, in corner order, which is what the
-// Python oracle used and what its screenshots were taken with. Expect the
-// texture ORIENTATION on a face to be wrong somewhere; expect the geometry not
-// to be.
+// TEXTURE COORDINATES are roth::MeshFaceTexCoords (roth_das.cpp), which holds
+// the rule for each of the original's three span drivers and is the function
+// tools/propcheck runs over the retail data. Until 2026-11-12 every face got
+// the unit square in corner order -- a quarter turn out on every wall-type
+// face, which is every face of every tree -- and flag bit 1 was read as a
+// vertical flip when it is a horizontal mirror, so the back of each tree card
+// was drawn upside down over its front.
+//
+// THE PICTURE is TextureSet::MeshSkin: the face's own choice out of an image
+// pack, and the face's own say on whether texel 0 is a hole.
+//
+// ONE-SIDED. The original draws a face only when its ring runs clockwise on
+// screen (renderer.c:12307-12314, :12371-12397), and its props depend on it: a
+// card is stored as two faces over the same four corners, wound opposite ways,
+// each wearing what that side should show (120 such pairs in the retail packs,
+// 28 of them with different coordinates on the two sides). Drawn double-sided
+// that is four coplanar quads fighting for the same depth, which is the smeared
+// trees. A ring is emitted here in the file's order, the model is bound with
+// MDL_FORCECULLBACKFACES, and the engine's front face for a model is the
+// clockwise one (hw_models.cpp:57, Cull_CW) -- the same rule, so nothing is
+// reversed.
 //
 //==========================================================================
 
@@ -347,36 +382,40 @@ static FMemoryMeshData BuildMeshData(const Mesh &mesh, TextureSet &art, Log *log
 		data.vertices[(unsigned)i] = FVector3((float)v.x, (float)v.up, (float)v.y);
 	}
 
-	// Realms' own test is bit 15 of the face's texture word, and the colour is
-	// its low byte (renderer.c:13102-13110) -- looser than either of the two
-	// bases roth_texture.h documents, but agreeing with both on every value the
-	// retail data contains. TextureSet::Sprite applies the documented bases.
 	for (const MeshFace &f : mesh.faces)
 	{
+		// A Billboard face has no polygon; EnsureMesh hands it to the spawner.
 		if (f.count != 3 && f.count != 4) continue;
 
 		FMemoryMeshFace out;
 		out.count = f.count;
 		for (int i = 0; i < f.count; i++) out.vertex[i] = f.vertex[i];
-		out.skin = art.Sprite((int)f.texture, log);
+
+		// Realms' own test for a flat colour is bit 15 of the face's texture
+		// word, and the colour is its low byte (renderer.c:13102-13110).
+		int texW = 0, texH = 0;
+		out.skin = art.MeshSkin((int)f.texture, (int)f.subTexture, f.Masked(), log,
+			&texW, &texH);
 		if (f.texture & 0x8000) outFlatFaces++; else outTexturedFaces++;
 
-		// The unit square, in corner order. flipV mirrors it vertically, which
-		// is the one per-face texturing bit the reader exposes.
-		static const float U[4] = { 0.f, 0.f, 1.f, 1.f };
-		static const float V[4] = { 0.f, 1.f, 1.f, 0.f };
-		for (int i = 0; i < f.count; i++)
-			out.uv[i] = FVector2(U[i], f.flipV ? 1.f - V[i] : V[i]);
+		float u[4], v[4];
+		if (MeshFaceTexCoords(mesh, f, texW, texH, u, v))
+		{
+			for (int i = 0; i < f.count; i++) out.uv[i] = FVector2(u[i], v[i]);
+			if (f.Kind() == MeshFaceKind::Plane && log)
+				log->Count("objects: horizontal-plane mesh face, picture fitted to the ring (not the original's planar mapping)");
+		}
+		else
+		{
+			// A flat colour, or a picture that did not decode: every corner on
+			// one texel.
+			for (int i = 0; i < f.count; i++) out.uv[i] = FVector2(0.5f, 0.5f);
+		}
 
 		data.faces.Push(out);
 	}
 
-	// Realms culls by a screen-space winding test with Y downward
-	// (renderer.c:12307-12314), which is not a winding this can be translated
-	// into with any confidence, and its props include open single-sided panels.
-	// Drawing both ways is wrong only in lighting; getting the winding backwards
-	// makes the prop invisible or inside out.
-	data.doubleSided = true;
+	data.doubleSided = false;
 	return data;
 }
 
@@ -423,6 +462,13 @@ static const MeshBinding *EnsureMesh(const std::string &packName, int index,
 	}
 
 	MeshBinding b;
+	for (const MeshFace &f : mesh.faces)
+	{
+		if (f.Kind() != MeshFaceKind::Billboard) continue;
+		const Mesh::Vertex &v = mesh.vertices[f.vertex[0]];
+		MeshBinding::Hung h = { v.x, v.y, v.up, (int)f.texture };
+		b.hung.push_back(h);
+	}
 	// Prefixed so it can never collide with a real model path, which is what
 	// both FindModel's dedupe and the revalidation above key on.
 	b.pseudoName = "*memory/roth/" + key;
@@ -455,6 +501,8 @@ static const MeshBinding *EnsureMesh(const std::string &packName, int index,
 	// One mesh unit is one world unit. Zero here would make the prop invisible,
 	// which is what memset leaves behind.
 	smf.xscale = smf.yscale = smf.zscale = 1.f;
+	// One-sided, as the original draws them. See BuildMeshData.
+	smf.setFlags(MDL_FORCECULLBACKFACES);
 	smf.type = PropClass();
 	smf.sprite = (short)b.spriteNum;
 	smf.frame = 0;
@@ -600,6 +648,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	int oversized = 0;
 	int directionalPlaced = 0, directionalUnresolved = 0, directionalFrames = 0;
 	int directionalFixedAngle = 0;
+	int hungPictures = 0;
 
 	// Sprite definitions for directional art, keyed by the entry rather than by
 	// a texture: one entry is eight pictures, and two entries may share a
@@ -719,6 +768,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 		if (o.FixedAngle())
 		{
 			p.renderFlags |= RF_WALLSPRITE;
+			p.yawOffset = YawOffsetFixedQuad;
 			fixedAngle++;
 		}
 		if (o.HorizontalFlip())
@@ -964,6 +1014,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					meshesBuilt, flatFaces, texturedFaces);
 				if (b == nullptr) { noArt++; continue; }
 				p.isMesh = true;
+				p.yawOffset = YawOffsetMesh;
 				p.spriteNum = b->spriteNum;
 				// A mesh is drawn at one unit per unit with no picture to scale,
 				// so only the model's own extent decides how far it overhangs.
@@ -986,6 +1037,68 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 					}
 				}
 				spawnedMeshes++;
+
+				// THE PICTURES HUNG ON THIS MESH'S VERTICES. A face with no
+				// corners is drawn by render_world_sprite's side entry
+				// (render_world.c:701-714 -> renderer.c:6591-6608): the vertex,
+				// already turned and placed with the rest of the mesh, becomes
+				// the position of an ordinary camera-facing object picture --
+				// lateral, height and depth are seeded from the vertex record
+				// and the draw joins the object path at its resolver, with the
+				// plain mode word 0x19 and no mirror. So each one is spawned as
+				// what it is: a billboard at the vertex's world position. The
+				// corner turns clockwise with the rotation byte, as every mesh
+				// corner does (render_world.c:650-651).
+				//
+				// These are separate actors with no entry in the object index,
+				// so a command that later turns or moves the mesh does not
+				// carry them. No retail command targets a mesh that has any
+				// (DEMO's 4115, the chandelier, is the only one placed).
+				for (const MeshBinding::Hung &h : b->hung)
+				{
+					// The face's texture word is an OBJECT ART WORD on this
+					// path, not a DAS id: the side entry stores it where the
+					// object record's +4 dword goes (renderer.c:6603-6605), so
+					// its low byte is the art index and its high byte the
+					// source, exactly as for a placed object. 0x0012 on the
+					// chandelier is DEMO's entry 4114, the lamp globe.
+					int hungIndex = 0;
+					const bool hungShared = Pack::ResolveObjectArt((uint8_t)(h.texture & 0xff),
+						(uint8_t)(h.texture >> 8), hungIndex);
+					if (hungShared && !haveShared) continue;
+					SpriteInfo hinfo;
+					FTextureID htex = (hungShared ? sharedArt : levelArt).Sprite(hungIndex, log, &hinfo);
+					if (!htex.isValid()) continue;
+					Pending hp = p;
+					hp.isMesh = false;
+					hp.yawOffset = 0;
+					hp.renderRadius = 0;
+					hp.rothIndex = -1;
+					const double R = double(o.rotation) * (M_PI / 128.0);
+					hp.x = p.x + h.x * cos(R) + h.y * sin(R);
+					hp.y = p.y - h.x * sin(R) + h.y * cos(R);
+					hp.z = p.z + h.up;
+					auto found = spriteByTexture.find(htex.GetIndex());
+					if (found != spriteByTexture.end()) hp.spriteNum = found->second;
+					else
+					{
+						hp.spriteNum = MakeRuntimeSprite(htex, log);
+						if (hp.spriteNum < 0) { noSpriteSlot++; continue; }
+						spriteByTexture[htex.GetIndex()] = hp.spriteNum;
+					}
+					hp.scaleX = hp.scaleY = hinfo.unitsPerPixel;
+					if (hinfo.anchorShift != 0.0)
+						hp.z += hinfo.hang ? hinfo.anchorShift : -hinfo.anchorShift;
+					auto gtex = TexMan.GetGameTexture(htex, false);
+					if (gtex != nullptr)
+					{
+						const double w = gtex->GetDisplayWidth() * hp.scaleX;
+						const double hh = gtex->GetDisplayHeight() * hp.scaleY;
+						hp.renderRadius = (w > hh ? w : hh) * 0.5;
+					}
+					hungPictures++;
+					gPending.push_back(hp);
+				}
 				break;
 			}
 
@@ -1030,6 +1143,8 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			meshesBuilt, texturedFaces, flatFaces);
 		log->Line("  sprite definitions    %d registered at load",
 			(int)(sprites.Size() - gSpriteMark));
+		log->Line("  pictures hung on mesh vertices  %d  (each its own camera-facing actor)",
+			hungPictures);
 		log->Line("  from the shared pack  %d", fromShared);
 		log->Line("  directional           %d placed from %d view frames, %d unresolved%s",
 			directionalPlaced, directionalFrames, directionalUnresolved,
@@ -1137,10 +1252,26 @@ bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex)
 	return true;
 }
 
+// How far each spawned actor's yaw sits from its object's facing: the mesh and
+// fixed-angle offsets above. Absent means zero. Kept so a later turn goes
+// through the same sum the spawn did.
+static std::map<const AActor *, double> gActorYawOffset;
+
+double ObjectActorYaw(const AActor *mo, uint8_t rotation)
+{
+	double deg = ObjectYaw(rotation);
+	auto it = gActorYawOffset.find(mo);
+	if (it != gActorYawOffset.end()) deg += it->second;
+	deg = fmod(deg, 360.0);
+	if (deg < 0) deg += 360.0;
+	return deg;
+}
+
 void SpawnPreparedObjects(FLevelLocals *Level)
 {
 	gObjectActors.clear();
 	gActorObjects.clear();
+	gActorYawOffset.clear();
 	if (gPending.empty() || Level == nullptr) return;
 
 	PClassActor *cls = PropClass();
@@ -1162,17 +1293,23 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 		AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
 		if (mo == nullptr) { failed++; continue; }
 
-		// So the level logic can find this prop again. See FindObjectActor.
-		gObjectActors[ObjectKey(p.rothSector, p.rothIndex)] = mo;
-		// And the reverse, for anything starting from the world: a ray that hits
-		// this prop, or a hand that closes on it. See ObjectForActor.
-		gActorObjects[mo] = ObjectKey(p.rothSector, p.rothIndex);
+		// So the level logic can find this prop again. See FindObjectActor. A
+		// picture hung on a mesh vertex (rothIndex -1) is not an object of the
+		// map and is deliberately not findable.
+		if (p.rothIndex >= 0)
+		{
+			gObjectActors[ObjectKey(p.rothSector, p.rothIndex)] = mo;
+			// And the reverse, for anything starting from the world: a ray that
+			// hits this prop, or a hand that closes on it. See ObjectForActor.
+			gActorObjects[mo] = ObjectKey(p.rothSector, p.rothIndex);
+		}
 
 		// After the spawn, not before: the spawn state sets the sprite, and
 		// LoaderProp's spawn state has tics -1 so nothing ever sets it again.
 		mo->sprite = p.spriteNum;
 		mo->frame = 0;
-		mo->Angles.Yaw = DAngle::fromDeg(p.yaw);
+		mo->Angles.Yaw = DAngle::fromDeg(p.yaw + p.yawOffset);
+		if (p.yawOffset != 0) gActorYawOffset[mo] = p.yawOffset;
 		mo->Scale = DVector2(p.scaleX, p.scaleY);
 		mo->renderflags |= ActorRenderFlags::FromInt(p.renderFlags);
 		// The object's own light, already combined with its sector's. The

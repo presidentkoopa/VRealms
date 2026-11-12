@@ -279,6 +279,12 @@ struct Map
 	// lookup has to survive the parse instead of being a local to it.
 	std::unordered_map<uint32_t, int> faceByOffset;
 
+	// RAW section 7, verbatim: the sound nodes and their zones. It sits after
+	// the command section (map_load.c:466-479) and is parsed by roth_sfx
+	// (SfxSection), which is where its layout is documented. Node positions in
+	// here are NOT wrap-shifted; a consumer adds wrapShiftX/Y.
+	std::vector<uint8_t> sfxSection;
+
 	// Applied to every x/y by RecentreWrappedMap (0 unless the map straddles the
 	// 16-bit wrap -- RAQUIA2). Anything converting a coordinate read from the
 	// original's MEMORY back to ours must add these.

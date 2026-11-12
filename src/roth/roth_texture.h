@@ -202,6 +202,22 @@ public:
 	// belongs in roth_texture.cpp and should be moved there.
 	FTextureID Sprite(int index, Log *log, struct SpriteInfo *info = nullptr);
 
+	// The engine texture for ONE FACE OF A 3D PROP, which is not always the
+	// picture Sprite() would hand back for the same id:
+	//
+	//  * the face names a picture INSIDE an image pack by its +0x1c byte
+	//    (renderer.c:13251-13273; Pack::ReadSubImage), where Sprite() only
+	//    ever reads the pack's first picture -- 14 different pictures in DEMO's
+	//    entry 454, which every face of the STUDY1 chairs and chandelier uses;
+	//  * the FACE says whether texel 0 is a hole (flag bit 0, the mapper
+	//    variant at renderer.c:5073), not the picture.
+	//
+	// A flat-colour id goes through the same sentinels as Sprite(). `texW` and
+	// `texH`, when given, receive the registered picture's size in texels (0
+	// for a flat colour), which MeshFaceTexCoords needs.
+	FTextureID MeshSkin(int index, int sub, bool masked, Log *log,
+		int *texW = nullptr, int *texH = nullptr);
+
 	// The decoded pack, for callers that need something other than a picture out
 	// of it -- a 3D mesh, or just the kind of an entry. Null until Open succeeds.
 	const Pack *PackData() const { return mPack; }
@@ -238,6 +254,9 @@ private:
 	// masking rule and its own sprite offsets.
 	std::map<int, FTextureID> mByIndexSprite;
 	std::map<int, SpriteInfo> mSpriteInfo;
+	// Mesh skins, keyed (index, sub-picture, masked) packed into one int.
+	struct MeshSkinEntry { FTextureID id; int w = 0, h = 0; };
+	std::map<int, MeshSkinEntry> mMeshSkins;
 	int mSpritesRegistered = 0, mSpritesFailed = 0;
 	int mRegistered = 0, mAnimated = 0, mSolidColours = 0, mFailed = 0;
 	int mOutOfRange = 0;

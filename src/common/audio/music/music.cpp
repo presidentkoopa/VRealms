@@ -97,9 +97,19 @@ CVAR(Int, mod_preferred_player, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)// toggle be
 //
 //==========================================================================
 
+// REMAROTH: music that exists only in memory. Realms of the Haunting's songs
+// are chunks of the player's DBASE300.DAT, read at run time and never written
+// out, so there is no file or lump to open. A game layer that owns such music
+// sets this; it is asked first, and answers false for any name it does not own.
+bool (*S_MemoryMusicHook)(const char* name, FileReader& reader) = nullptr;
+
 static FileReader OpenMusic(const char* musicname)
 {
 	FileReader reader;
+	if (S_MemoryMusicHook != nullptr && S_MemoryMusicHook(musicname, reader))
+	{
+		return reader;
+	}
 	if (!FileExists(musicname))
 	{
 		int lumpnum;

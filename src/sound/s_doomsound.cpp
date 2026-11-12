@@ -30,6 +30,7 @@
 #endif
 
 #include "a_sharedglobal.h"
+#include "roth/roth_sound.h"
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "cmdlib.h"
@@ -1356,6 +1357,12 @@ bool DoomSoundEngine::ValidatePosVel(int sourcetype, const void* source, const F
 
 TArray<uint8_t> DoomSoundEngine::ReadSound(int lumpnum)
 {
+	// REMAROTH: Realms of the Haunting's samples are not lumps. They are read
+	// from the player's install on demand and handed over as a WAVE image.
+	{
+		TArray<uint8_t> realms;
+		if (roth::SoundReadLump(lumpnum, realms)) return realms;
+	}
 	auto wlump = fileSystem.OpenFileReader(lumpnum);
 	TArray<uint8_t> buffer(wlump.GetLength(), true);
 	auto len = wlump.Read(buffer.data(), buffer.size());

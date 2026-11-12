@@ -33,6 +33,7 @@
 #include "roth_dbase100.h"
 #include "roth_gamecore.h"
 #include "roth_install.h"
+#include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 
 #include <map>
 #include <vector>
@@ -178,6 +179,16 @@ public:
 		const uint64_t avail = text.size() - ((uint64_t)voiceOffset + 8);
 		if (len > avail) len = (uint32_t)avail;
 		memcpy(dest, text.data() + voiceOffset + 8, len);
+		// The speech for the line (dbase100.c:393-395): the header's first
+		// dword is the DBASE500 clip, started only on the flag != 0 path and
+		// only when it is not 0. prime_voice_clip refuses while a clip is
+		// still playing, so of several lines read in one go the first speaks.
+		if (flag != 0)
+		{
+			const uint32_t clip = (uint32_t)text[voiceOffset] | ((uint32_t)text[voiceOffset + 1] << 8)
+				| ((uint32_t)text[voiceOffset + 2] << 16) | ((uint32_t)text[voiceOffset + 3] << 24);
+			if (clip != 0) SoundPrimeVoiceClip(clip);
+		}
 		return len;
 	}
 
@@ -210,8 +221,17 @@ public:
 
 	uint32_t PlayRecordGdvCutscene(int index) override { (void)index; calls["cutscene (GDV)"]++; return 0; }
 	uint32_t ShowFullscreenImage(uint32_t operand) override { (void)operand; calls["fullscreen image"]++; return 0; }
-	uint32_t PlaySoundEffect(uint32_t id, uint32_t param) override { (void)id; (void)param; calls["sound effect"]++; return 0; }
-	uint32_t LoadDbase300Chunk(uint32_t index) override { (void)index; calls["music chunk"]++; return 1; }
+	// play_sound_effect (audio.c:758). The id is a sample row: an action
+	// record carries one directly, and an item record's key was rewritten to
+	// one when the bank was loaded (resolve_dbase100_sound_ids, audio.c:1898).
+	uint32_t PlaySoundEffect(uint32_t id, uint32_t param) override { return SoundPlayEffect(id, param) ? 1u : 0u; }
+	// The music: DBASE100 ops 0x1a and 0x1b, and nothing else, change it.
+	uint32_t LoadDbase300Chunk(uint32_t index) override { return MusicLoadChunk(index); }
+	void ProcessAudioSequenceChunk() override { MusicProcess(); }
+	uint32_t CurrentDbase300ChunkId() override { return MusicCurrentChunk(); }
+	// The byte at 0x71124. The music slider is the engine's own volume here,
+	// so the song is asked for at full (0x7f, the clamp at audio.c:1880).
+	uint8_t MusicMasterVolume() override { return 0x7f; }
 	int32_t ResetCommandChainNoSource(uint16_t index) override { return HostResetCommandChainNoSource(index); }
 	int32_t RunObjectCommandsById(uint16_t id) override { return HostRunObjectCommandsById(id); }
 	void AdvanceClamp8a0f0(uint32_t amount, uint32_t max) override { (void)amount; (void)max; calls["health change"]++; }
@@ -329,6 +349,12 @@ struct Effect
 	// (while armed) or the low 6 fractional bits of a fixed-point step.
 	uint8_t flags5 = 0;
 
+	// The sound node a height mover links (chunk[+0xc], with chunk[+5] bit
+	// 0x01 for "has one" and 0x02 for "started"; cmd_change_height,
+	// raw_commands.c:4498-4505). -1 when the record names none.
+	int  sfxNode = -1;
+	bool sfxStarted = false;
+
 	// The members of an OBJECT effect. Sectors go in `sectors` above; these are
 	// the (sector, index) pairs of the props a command named.
 	std::vector<ObjectRef> objects;
@@ -354,6 +380,7 @@ struct Binding
 	uint8_t   opcode = 0;                 // kept for the load report only
 	uint8_t   fireFlags = 0;              // the record's +0x06: the facing mask
 	uint8_t   subFlags = 0;               // the record's +0x07: the 0x13 variant
+	uint16_t  sound = 0;                  // the record's +0x0a: the chain's sound, plus one
 };
 
 // Which link test an 0x13 record wants, from its +0x07. See NotifyPlayerSector
@@ -631,10 +658,6 @@ struct Runtime
 	// What ran and what could not, for the report and for the console.
 	int fired = 0;
 	std::map<uint8_t, int> unhandledOps;
-	// Realms sound ids a chain asked for and this port had no way to play.
-	// Sound is step 3 of the game port and no SFX path exists yet, so these
-	// are recorded rather than approximated with an engine sound.
-	std::map<uint16_t, int> unhandledSfx;
 };
 
 Runtime g;
@@ -794,10 +817,13 @@ void SyncDisabled(Command *c) { c->disabled = (c->modifier & 0x08) != 0; }
 //
 //   +0x0a x +0x07   the open DWELL -- how long it stays open before closing
 //                   (doors.c:1049-1055 counts word[rec+8] down to it)
-//   +0x0c           the SPEED multiplier for the angle step (doors.c:1042)
-//   +0x0e / +0x10   SOUND ids, plus one; 0 means silent. They are not a target
-//                   point -- their only readers play them on close
-//                   (doors.c:1057-1063, 1142-1145)
+//   +0x07           the SPEED multiplier for the angle step (it lands in the
+//                   DOOR record's +0x0c, which doors.c:1042 reads)
+//   +0x0c           the sound while it OPENS (edi -> [0x8b3cc], doors.c:806,
+//                   628-634)
+//   +0x0e / +0x10   the sound while it CLOSES and the sound when it has SHUT
+//                   (doors.c:1057-1063, 1142-1145). All three are stored plus
+//                   one, 0 for silence, and are played by roth_sound.
 //
 // The arc is a FIXED 90 degrees: the angle byte is clamped to +/-0x40
 // (doors.c:1082, 1108) and the table it drives is 256 steps to a turn.
@@ -855,6 +881,12 @@ int OpenDoor(const Command &c)
 	// is also the field the dwell is scaled by is the clearest sign the old
 	// reading was wrong: one value cannot live at two offsets.
 	const int acted = SwingDoor(g.doorTag[rothSector], (int)c.subFlags, (int)c.aux, fromSector);
+	// The door's three sounds, each stored one higher: +0x0c while it opens,
+	// +0x0e while it closes, +0x10 when it has shut (cmd_open_door passes them
+	// as edi and the two halves of edx, raw_commands.c:4073-4076;
+	// register_door_swing, doors.c:805-807). Only a NEW swing has them.
+	if (acted == CMD_ACTED)
+		SoundDoorOpened(g.doorTag[rothSector], c.Word(0x0C), c.Word(0x0E), c.Word(0x10));
 
 	// THE OTHER HALF OF A DOUBLE DOOR opens with it. resolve_door_neighbor_sector
 	// (doors.c:308-340) walks the door's faces in slot order for the first whose
@@ -884,7 +916,13 @@ int OpenDoor(const Command &c)
 			const int far = g.map.faces[psis].sector;
 			if (far == rothSector) continue;
 			if (acted == CMD_ACTED && g.doorTag.count(ps))
-				SwingDoor(g.doorTag[ps], (int)c.subFlags, (int)c.aux, far);
+			{
+				// The partner is allocated by the same alloc_door_record with
+				// the same staged sound words (doors.c:628-634, 788), so it
+				// sounds as the first leaf does.
+				if (SwingDoor(g.doorTag[ps], (int)c.subFlags, (int)c.aux, far) == CMD_ACTED)
+					SoundDoorOpened(g.doorTag[ps], c.Word(0x0C), c.Word(0x0E), c.Word(0x10));
+			}
 			break;
 		}
 		break;                                                 // the first such neighbour only
@@ -1907,7 +1945,7 @@ static void ApplyObjectRotation(const ObjectRef &r, uint8_t rotation)
 
 	list[r.index].rotation = rotation;
 	AActor *mo = FindObjectActor(r.sector, r.index);
-	if (mo != nullptr) mo->Angles.Yaw = DAngle::fromDeg(ObjectYaw(rotation));
+	if (mo != nullptr) mo->Angles.Yaw = DAngle::fromDeg(ObjectActorYaw(mo, rotation));
 }
 
 // compute_player_object_bearing (raw_commands.c:300): the 8-bit facing from the
@@ -2412,6 +2450,31 @@ static bool TickHeightExit(Effect &e, Command *rec)
 	return TickFinalize(e, rec, latch);
 }
 
+// THE MOVERS' SOUND. 0x07 and 0x03 may link a sound node by key (+0x10 and
+// +0x14). The first sweep that moves starts it (the 0x32e2f finalize,
+// raw_commands.c:2545-2552); the exit, when the move has run out, stops it and
+// plays the record's end sound at the node (:2516-2535, 2743-2764). Both exits
+// need the link: a record with an end sound and no node plays nothing.
+static void LinkMoverSound(Effect &e, uint16_t key)
+{
+	if (key != 0) e.sfxNode = SoundFindNodeByKey(key);
+}
+
+static void MoverSoundFinalize(Effect &e)
+{
+	if (e.sfxNode < 0 || e.sfxStarted) return;
+	e.sfxStarted = true;
+	SoundMoverFinalize(e.sfxNode);
+}
+
+static void MoverSoundExit(Effect &e, uint16_t endSoundPlusOne, bool asCommandSound)
+{
+	if (e.sfxNode < 0) return;
+	const bool was = e.sfxStarted;
+	e.sfxStarted = false;
+	SoundMoverExit(e.sfxNode, was, endSoundPlusOne, asCommandSound);
+}
+
 // Push a height we have just changed out to the world. Same discipline as
 // rotation: the Realms word stays the authority, the actor follows it.
 static void ApplyObjectHeight(const ObjectRef &r, int16_t z)
@@ -2773,9 +2836,8 @@ static void MoveSectorPlane(int si, bool ceiling, int16_t height)
 //
 // TWO THINGS ARE NOT REPRODUCED, and both are named rather than approximated:
 //
-//   The SOUND. The registrar optionally links an SFX node through +0x10 and the
-//   exits start and stop it. There is no sound-node system on this side yet, so
-//   the link is skipped and the moves are silent.
+//   (The SOUND is done: the registrar links an SFX node through +0x10 and the
+//   exits start and stop it. See "THE MOVERS' SOUND" above.)
 //
 //   The PORTAL MERGE. Two of the original's four loop variants accumulate a flag
 //   from apply_cell_move_to_player_portalcheck, and a completed sweep with that
@@ -2808,6 +2870,7 @@ int ChangeHeight(Command *rec, int index)
 	e.sectors = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
 	if (e.sectors.empty()) return CMD_NOTHING;
 	e.payload = 0;
+	LinkMoverSound(e, rec->Word(0x10));              // raw_commands.c:4498-4505
 	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
 	g.effects.push_back(e);
 	rec->modifier |= 0x20;
@@ -2871,7 +2934,12 @@ static bool TickChangeHeight(Effect &e)
 		MoveSectorPlane(si, ceiling, stored);
 	}
 
-	if (overshoot) return TickHeightExit(e, rec);
+	if (overshoot)
+	{
+		MoverSoundExit(e, rec->Word(0x12), false);     // play_entity_sound, :2528-2533
+		return TickHeightExit(e, rec);
+	}
+	MoverSoundFinalize(e);                         // :2545-2552
 	return false;                                  // see the portal-merge note
 }
 
@@ -3654,8 +3722,8 @@ static bool TmsStep(int16_t &field, int16_t lim, int16_t &bud, bool desc, bool d
 //   distances every one of these floors travels. So the ascending half is counted
 //   and the record is left registered rather than moved wrongly.
 //
-//   THE SOUNDS, as in 0x07: the SFX node the exits start and stop has no
-//   equivalent here yet.
+//   (THE SOUNDS are done, as in 0x07, for the descending half: the node is
+//   linked through +0x14 and the end sound is the word at +0x0c.)
 //
 // WHAT THE +0x0c BYTE IS, now settled and it was neither guess. RAW.md calls it
 // TEXTURE_MAP_OVERRIDE: it overrides the position and SIZE of the MID_TEXTURE on
@@ -3694,6 +3762,7 @@ int ModifySector(Command *rec, int index)
 	e.sectors = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
 	if (e.sectors.empty()) return CMD_NOTHING;
 	e.payload = 0;
+	LinkMoverSound(e, rec->Word(0x14));              // raw_commands.c:4968-4975
 	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
 	g.effects.push_back(e);
 	rec->modifier |= 0x20;
@@ -3783,7 +3852,12 @@ static bool TickModifySector(Effect &e)
 		}
 	}
 
-	if (!moved) return TickHeightExit(e, rec);
+	if (!moved)
+	{
+		MoverSoundExit(e, rec->Word(0x0C), true);      // play_command_sound, :2756-2762
+		return TickHeightExit(e, rec);
+	}
+	MoverSoundFinalize(e);                             // :2731-2741
 	return false;
 }
 
@@ -4170,7 +4244,7 @@ bool IsImplemented(uint8_t op)
 	switch (op)
 	{
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
-	case 0x02: case 0x03: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0C: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
+	case 0x02: case 0x03: case 0x07: case 0x10: case 0x0A: case 0x0B: case 0x0D: case 0x0C: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
 	// 0x09 only when the loader was told to build platforms for it. With
 	// roth_platforms 0 it is not implemented, exactly as before this existed,
@@ -4180,6 +4254,20 @@ bool IsImplemented(uint8_t op)
 	default:
 		return false;
 	}
+}
+
+// cmd_activate_sfx_node -- raw_commands.c:4855, RAW command base 0x10.
+//
+// Turns the map's sound nodes on and off by key: +0x08 is the key, +0x06 says
+// how (toggle; bits 0x06 force on; bit 0x04 forces off; bit 0x01 also stops
+// the voice of a node it just turned off). A record with no matching node
+// does nothing and reports nothing. Otherwise it disables itself unless
+// +0x06 has bit 0x20, and reports ACTED. The node work is roth_sound's.
+int ActivateSfxNode(Command *rec)
+{
+	if (SoundActivateNodes(rec->key, rec->fireFlags) == 0) return CMD_NOTHING;   // :4861
+	if (!(rec->fireFlags & 0x20)) { rec->modifier |= 0x08; SyncDisabled(rec); }  // :4876
+	return CMD_ACTED;
 }
 
 int RunCommand(const Map &, const Command &cc, int index)
@@ -4214,6 +4302,7 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x0F: return ScrollFaceTexture(rec, index);
 	case 0x0C: return ChangeFaceTextureAdv(rec, index);
 	case 0x03: return ModifySector(rec, index);
+	case 0x10: return ActivateSfxNode(rec);
 	case 0x09:
 		if (g.platformsOn) return MoveSector(rec, index);
 		g.unhandledOps[op]++;                          // roth_platforms 0: as before
@@ -4254,6 +4343,69 @@ int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h)
 	}
 }
 
+//==========================================================================
+//
+// THE CHAIN'S SOUND -- g@0x8a264 and g@0x8a260.
+//
+// A trigger record's +0x0a is a sound, stored one higher so 0 is silence.
+// Whoever fires the trigger latches it (fire_trigger_on_contact,
+// raw_commands.c:1670; fire_sector_trigger, :2882; run_command_chain, :3936)
+// and the END of the chain plays it, once, if the chain ACTED and no item was
+// auto-selected (:1288-1300). Beside it sits a position, or the sentinel
+// 0x80008000 for "none": with the sentinel the sound is play_sound_effect,
+// everywhere at once; with a position it is play_command_sound at that point.
+//
+// Who sets what, from the callers:
+//   a wall or floor used               sound, no position
+//       (fire_object_use_trigger -> fire_command_contact_trigger, :2797, 1705)
+//   an object used                     sound, no position (run_command_chain, :3929)
+//   anything examined                  NO sound (fire_trigger_on_interact, :1683)
+//       An examine record's +0x0a is not a sound at all: it is the DBASE100
+//       record examine_world_object evaluates (input.c:953-969). MEASURED
+//       with tools/roth_sound over the 44 maps: on the use, enter, impact and
+//       contact opcodes every non-zero +0x0a is a row the 320-row bank has
+//       (633 records, none out of range); on the examine opcodes 0x30, 0x31
+//       and 0x32, 249 of 575 are not.
+//   an attack hits a wall              sound, at the wall's midpoint
+//       (fire_wall_object_trigger, :1765-1776)
+//   a sector entered                   sound; at the player when +0x07 has
+//       bit 0x04, else no position (fire_sector_trigger, :2873-2876; the
+//       sentinel is its callers', :3209, 3267)
+//   the deferred queue, and a chain    NO sound (:1597, 5447-5448)
+//   run from dialogue
+//
+// These used to be read as the warp's latches (the note that stood on
+// HostResetCommandChainNoSource); ROTH.C's done-tail is their only reader and
+// it plays them.
+//
+// NOT DONE: cmd_spawn_object_adv re-latches both mid-chain to its own +0x0e
+// and the spawned object's position (:4137, 4202). Opcode 0x3c is not
+// implemented in this runtime, so that sound has no caller yet.
+//
+//==========================================================================
+
+struct ChainSound
+{
+	uint16_t sound = 0;       // plus one
+	bool hasPos = false;
+	int x = 0, y = 0;
+};
+ChainSound g_chainSound;
+
+void StageChainSound(uint16_t soundPlusOne)
+{
+	g_chainSound.sound = soundPlusOne;
+	g_chainSound.hasPos = false;
+}
+
+void StageChainSoundAt(uint16_t soundPlusOne, int x, int y)
+{
+	g_chainSound.sound = soundPlusOne;
+	g_chainSound.hasPos = true;
+	g_chainSound.x = x;
+	g_chainSound.y = y;
+}
+
 // Walk a chain: the flow pre-pass first, exactly as the original does, then the
 // action pass. A gated chain does nothing this time round.
 bool Fire(uint16_t chain)
@@ -4268,6 +4420,18 @@ bool Fire(uint16_t chain)
 		return RunCommandWithChain(m, c, index, *hp);
 	};
 	const int result = ExecChain(g.map, chain, h);
+	// The done-tail's sound (raw_commands.c:1288-1300): bit 0 of the chain's
+	// result OR-ed with the interrupt byte, and no auto-selected item. It is
+	// read before the dialogue tail below clears that flag, as in the original.
+	{
+		const bool bit0 = ((result & 1) != 0) || h.interrupt == Interrupt::Break;
+		const bool autoSel = g_core.IsAttached() && g_core.Items().AutoSelected();
+		if (bit0 && !autoSel && g_chainSound.sound != 0)
+		{
+			if (!g_chainSound.hasPos) SoundPlayEffect((uint32_t)g_chainSound.sound - 1, 0);
+			else SoundPlayCommand((uint32_t)g_chainSound.sound - 1, g_chainSound.x, g_chainSound.y);
+		}
+	}
 	// The tail of reset_command_chain_state (raw_commands.c:1313-1315).
 	// [unverified]: the original runs this on the path that reaches the end of
 	// that function; whether every early return skips it has not been read.
@@ -4288,8 +4452,8 @@ bool Fire(uint16_t chain)
 //
 // reset_command_chain_no_source (raw_commands.c:5445-5450): clear the pending
 // rotation, re-arm the warp sentinel, run the chain at that command index.
-// [unverified]: the two latches it resets (0x8a264, 0x8a260) are the warp's;
-// what the runtime keeps of them is g.warpPending, left alone here.
+// The two latches it resets (0x8a264, 0x8a260) are the chain's sound and the
+// sound's position (raw_commands.c:1290-1299 is their reader).
 //
 // run_object_commands_by_id (raw_commands.c:1732-1756): walk the command table
 // in order for the first record that is not disabled and whose key is the id,
@@ -4298,7 +4462,9 @@ bool Fire(uint16_t chain)
 //
 // A dialogue record is itself run from a chain, so these NEST: Fire inside
 // the interpreter inside Fire. The original nests the same way, and its inner
-// chain's tail runs finish_dialogue_record_eval just as Fire's does. A depth
+// chain's tail runs finish_dialogue_record_eval just as Fire's does. The two
+// latches reset_command_chain_no_source clears are the chain's SOUND and its
+// position, not the warp's: see "THE CHAIN'S SOUND" above Fire. A depth
 // guard stops a record and a chain that call each other for ever; ROTH.C has
 // none and would not return.
 //
@@ -4310,6 +4476,7 @@ int32_t HostResetCommandChainNoSource(uint16_t index)
 {
 	if (g_hostChainDepth >= 16) { g.unhandledOps[0x23]++; return 0; }
 	g_hostChainDepth++;
+	StageChainSound(0);                      // :5447-5448: no sound, no position
 	Fire(index);
 	g_hostChainDepth--;
 	return -1;                               // reset_command_chain_state's own answer
@@ -4350,6 +4517,7 @@ void DrainDeferred()
 	for (const Deferred &d : batch)
 	{
 		g.activeFace = (int)d.context - 1;    // 0 means "none"
+		StageChainSound(0);                   // raw_commands.c:1597
 		Fire(d.chain);
 	}
 }
@@ -4678,6 +4846,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	g.warpPending = false;
 	g.fired = 0;
 	g.unhandledOps.clear();
+	g_chainSound = ChainSound();
 
 	// DBASE100 is game-global, not per map: ROTH.C loads it once at startup
 	// (game_core.c:1060). Loaded on the first map, and its report written into
@@ -4686,6 +4855,14 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// (ROTH_GAME_PORT.md §4 step 1). NOT COMPILED in the lane that wrote it.
 	if (!TheDbase100().IsLoaded())
 		LoadDbase100FromInstall(TheInstall(), TheDbase100(), log);
+
+	// Realms' sound for this level: the effect bank (opened and registered on
+	// the first map), this map's sound nodes, and -- once, straight after
+	// DBASE100 is loaded and BEFORE anything runs a record, as the original
+	// orders it (game_core.c:414-428) -- the sound keys in DBASE100's item
+	// records resolved to sample rows. The new-game action below starts the
+	// first song, so this has to be up before it.
+	SoundBeginLevel(map, level, log);
 
 	// The game core is attached once: its flags and items are the game's, not
 	// the map's. There is no menu or save yet, so the first level this session
@@ -4760,7 +4937,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			continue;
 		}
 
-		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags, c.subFlags };
+		const Binding b{ c.chainStart, ev, c.opcode, c.fireFlags, c.subFlags, c.aux };
 
 		if (IsFaceTrigger(c.opcode))
 		{
@@ -5057,7 +5234,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		log->Line("  What is left above is GAME LOGIC, not effects: the conditional");
 		log->Line("  cluster 0x27/0x29/0x2a, dialogue 0x2b and the item opcodes (the");
 		log->Line("  DBASE100 reader exists; its interpreter does not), object spawn");
-		log->Line("  0x16, SFX nodes 0x10.");
+		log->Line("  0x16. (SFX nodes, 0x10, are done: roth_sound.)");
 		log->Line("  None of it is approximated.");
 	}
 }
@@ -5101,6 +5278,7 @@ void EndLevel()
 	g.warpPending = false;
 	g.fired = 0;
 	g.unhandledOps.clear();
+	SoundEndLevel();
 	// g_progressFlags is NOT cleared -- see the header.
 }
 
@@ -5491,6 +5669,17 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 				f != g.sideToFace.end() ? f->second : -1,
 				(unsigned)b.opcode, TrigEventName(b.event), (unsigned)part,
 				(unsigned)(b.fireFlags & 0x07));
+		// The chain's sound. A use has no position; an examine has no sound;
+		// an attack that hits the wall puts it at the wall's midpoint, by the
+		// same halving the original uses (raw_commands.c:1773-1776).
+		if (want == TrigEvent::Examine) StageChainSound(0);
+		else if (want == TrigEvent::Impact)
+		{
+			const int ax = (int)line->v1->fX(), bx = (int)line->v2->fX();
+			const int ay = (int)line->v1->fY(), by = (int)line->v2->fY();
+			StageChainSoundAt(b.sound, ((ax - bx) >> 1) + bx, ((ay - by) >> 1) + by);
+		}
+		else StageChainSound(b.sound);
 		any |= Fire(b.chain);
 	}
 
@@ -5795,6 +5984,8 @@ bool UseFlatAt(AActor *who, const FTraceResults &res, TrigEvent want)
 					? (hitPlatformTop ? "platform top" : "floor") : "ceiling",
 				res.Sector->sectornum, (unsigned)b.opcode, TrigEventName(b.event),
 				(unsigned)b.fireFlags);
+		// A floor USED: the sound, no position. EXAMINED: no sound.
+		StageChainSound(want == TrigEvent::Use ? b.sound : (uint16_t)0);
 		any |= Fire(b.chain);
 	}
 	return any;
@@ -6117,19 +6308,16 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 		{
 			if (LightSwitch(rec, (int)b.chain) != CMD_ACTED) continue;
 
-			// The sound at +0x0e, stored one higher so 0 can mean silence.
-			// COUNTED, NOT PLAYED: Realms' sound effects are step 3 of the game
-			// port and no SFX path exists here yet, so inventing an engine
-			// sound would be a different noise in the right place, which is
-			// worse than silence and harder to notice.
+			// The sound at +0x0e, stored one higher so 0 can mean silence:
+			// play_sound_effect(snd - 1, 0) (raw_commands.c:2955-2957).
 			const uint16_t snd = rec->Word(0x0E);
-			if (snd != 0) g.unhandledSfx[(uint16_t)(snd - 1)]++;
+			if (snd != 0) SoundPlayEffect((uint32_t)snd - 1, 0);
 
 			FlipObjectTexture(rothSector, rothIndex);
 
 			if (roth_trigger_debug)
 				Printf("roth_trigger: object %d/%d (id %u) LIGHT SWITCH -> acted"
-					" (sfx %u not played, no sound path yet)\n",
+					" (sound id %u, 0 = silent)\n",
 					rothSector, rothIndex, (unsigned)id, (unsigned)snd);
 			any = true;
 			continue;
@@ -6151,6 +6339,10 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 			mo->Destroy();
 		}
 
+		// An object USED runs its chain with the record's sound and no
+		// position (run_command_chain, raw_commands.c:3929-3936); an object
+		// EXAMINED clears the sound (fire_trigger_on_interact, :1683).
+		StageChainSound(want == TrigEvent::Use ? b.sound : (uint16_t)0);
 		any |= Fire(b.chain);
 		if (destroys) break;    // the actor is gone; nothing else may touch it
 	}
@@ -6269,6 +6461,12 @@ void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 			Printf("roth_trigger: sector %d 0x%02x %s mask 0x%02x -> firing\n",
 				sec->sectornum, (unsigned)b.opcode, TrigEventName(b.event),
 				(unsigned)b.fireFlags);
+		// fire_sector_trigger latches the player's position only for a record
+		// whose +0x07 has bit 0x04 (raw_commands.c:2873-2876).
+		if ((b.subFlags & 4) && who != nullptr)
+			StageChainSoundAt(b.sound, (int)floor(who->X()), (int)floor(who->Y()));
+		else
+			StageChainSound(b.sound);
 		Fire(b.chain);
 	}
 	(void)who;
@@ -6332,6 +6530,10 @@ void TickLevelLogic(FLevelLocals *level)
 	ApplyPendingWarp();
 	DrainPendingDoors();
 	DrainPendingDialogue();
+
+	// Realms' sound: the node pump (play_nearby_sfx_emitters, from
+	// update_player_tick, player.c:420), update_active_sounds, the doors.
+	SoundTick(level);
 }
 
 //==========================================================================
@@ -6461,6 +6663,7 @@ void DrainPendingDialogue()
 	{
 		if (id >= 100000)
 		{
+			StageChainSound(0);
 			const bool acted = Fire((uint16_t)(id - 100000));
 			Printf("roth_fire: chain %d %s\n", id - 100000, acted ? "acted" : "did nothing");
 			continue;

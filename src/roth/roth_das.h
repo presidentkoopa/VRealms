@@ -164,14 +164,59 @@ struct Image
 
 struct Colour { uint8_t r, g, b; };
 
-// One face of a 3D prop. Realms stores quads as 5 edges and triangles as 4.
+// One face of a 3D prop, as the art pack stores it: a 0x36-byte record followed
+// by the corner ring. The ring is CLOSED in the file -- a quad is five words, a
+// triangle four -- because the original's polygon builder walks count+1 corners
+// (renderer.c:3737-3750, `dec cl; jge`).
+//
+// HOW THE ORIGINAL DRAWS ONE is decided by the record's flag word at +0x16 and
+// by nothing else (renderer.c:13333-13345, the three-way dispatch at the end of
+// rasterize_world_spans_scanline):
+//
+//   corner count 0  ->  not a polygon at all: a camera-facing picture hung on
+//                       one mesh vertex (render_world.c:701-714)
+//   flags & 0x20    ->  the scaled-sprite span driver: a HORIZONTAL plane
+//   flags & 0x200   ->  the floor/ceiling polygon driver: any polygon, with a
+//                       texture coordinate per CORNER
+//   otherwise       ->  the wall column driver: a VERTICAL quad whose corners
+//                       are top-left, top-right, bottom-right, bottom-left
+//                       (renderer.c:4283-4294 loads them in exactly that role)
+//
+// Every face is ONE-SIDED. It is drawn only when its ring runs clockwise on the
+// screen (renderer.c:12307-12314 and :12383-12397; the vertical-quad shortcut
+// at :12371-12379 is the same test reduced to "corner 0 is left of corner 1").
+enum class MeshFaceKind
+{
+	Wall,           // vertical quad, wall column mapper
+	Polygon,        // flags & 0x200: per-corner texture coordinates
+	Plane,          // flags & 0x20: horizontal plane, sprite span driver
+	Billboard,      // corner count 0: a picture on a vertex
+};
+
 struct MeshFace
 {
 	int vertex[4] = { -1, -1, -1, -1 };
-	int count = 0;              // 3 or 4
-	uint16_t texture = 0;       // FAT index, or >= 65280 meaning a flat colour
-	uint8_t subTexture = 0;
-	bool flipV = false;
+	int count = 0;              // 3 or 4; 0 for a Billboard face (vertex[0] is its anchor)
+	uint16_t texture = 0;       // DAS id, or bit 15 set meaning a flat colour in the low byte
+	uint8_t subTexture = 0;     // +0x1c: which picture of an image pack (see Pack::ReadSubImage)
+	uint16_t flags = 0;         // +0x16
+	uint8_t shade = 0;          // +0x0e: the face's own light byte, 0x80 neutral
+	uint8_t tile = 0;           // +0x0f: repeat counts, high nibble down, low nibble across
+	uint16_t extentV = 0;       // +0x24: the face's height in world units, as authored
+	uint16_t extentU = 0;       // +0x26: the face's width in world units, as authored
+	uint8_t corner[12] = {};    // +0x18..+0x23: per-corner shade, U and V bytes (flags & 0x1000)
+
+	MeshFaceKind Kind() const
+	{
+		if (count == 0) return MeshFaceKind::Billboard;
+		if (flags & 0x20) return MeshFaceKind::Plane;      // tested first, renderer.c:13333
+		if (flags & 0x200) return MeshFaceKind::Polygon;   // renderer.c:13337
+		return MeshFaceKind::Wall;                         // renderer.c:13341-13345
+	}
+	bool Textured() const { return (texture & 0x8000) == 0; }
+	// Bit 0 selects the column/span mappers that skip texel 0 (the variant
+	// index at renderer.c:5073, `(flags & 1) << 3`): the face is a cut-out.
+	bool Masked() const { return (flags & 1) != 0; }
 };
 
 struct Mesh
@@ -181,8 +226,24 @@ struct Mesh
 	struct Vertex { int16_t x, up, y; };
 	std::vector<Vertex> vertices;
 	std::vector<MeshFace> faces;
+	// "EXPL" rather than "EXP2": the face texture is a zero-extended byte
+	// (renderer.c:817-821). One retail entry, placed in no map.
+	bool expl = false;
 	bool ok() const { return !vertices.empty() && !faces.empty(); }
 };
+
+// THE TEXTURE COORDINATES OF ONE FACE, which the file does not store: the
+// original derives them per face inside whichever span driver draws it. `u`
+// runs ACROSS the picture and `v` DOWN it, both in whole pictures (1.0 is one
+// repeat), for the picture as roth::TextureSet registers object art -- the
+// stored rows are the picture's columns. `texW`/`texH` are that picture's size
+// in texels. Returns false for a face that carries no usable mapping (a
+// Billboard, or a degenerate record), leaving the outputs zeroed.
+//
+// Defined in roth_das.cpp with the rule and its citations, and shared with
+// tools/propcheck so the host tool checks the code the engine runs.
+bool MeshFaceTexCoords(const Mesh &mesh, const MeshFace &face, int texW, int texH,
+	float u[4], float v[4]);
 
 class Pack
 {
@@ -234,6 +295,15 @@ public:
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
 	Image ReadImage(int index, bool allFrames = false) const;
 	Mesh ReadMesh(int index) const;
+
+	// One picture out of an IMAGE PACK entry, chosen the way a mesh face chooses
+	// it: the face's +0x1c byte indexes the entry's table of sub-records
+	// (renderer.c:13251-13273). Returns an empty Image when the entry is not a
+	// face-indexed image pack or `sub` is outside its table; a plain entry
+	// ignores `sub` and returns ReadImage(index).
+	Image ReadSubImage(int index, int sub) const;
+	// How many pictures such an entry holds; 0 when it is not one.
+	int SubImageCount(int index) const;
 
 	// Which of the two indirections this entry is, if either.
 	IndirectKind Indirect(int index) const;

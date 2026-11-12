@@ -99,4 +99,10 @@ double ObjectYaw(uint8_t rotation);
 // world: the bearing arrives in degrees and the map holds a byte.
 uint8_t RotationFromYaw(double deg);
 
+// The yaw the ACTOR of an object wants for a rotation byte. Not ObjectYaw: a
+// mesh and a fixed-angle picture each sit at a fixed turn from the object's
+// facing (roth_objects.cpp, YawOffsetMesh / YawOffsetFixedQuad), and a command
+// that turns one must keep that turn.
+double ObjectActorYaw(const AActor *mo, uint8_t rotation);
+
 } // namespace roth
