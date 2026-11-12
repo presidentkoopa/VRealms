@@ -2462,6 +2462,15 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 		realback = backsector ? &di->Level->sectors[backsector->sectornum] : NULL;
 		segfront = frontsector;
 		segback = backsector;
+		// [RS] WALLF2_OWNHEIGHT: a one-sided polyobject wall that carries its own
+		// height. `frontsector` is the sector the polyobject is standing in (AddLine
+		// passes currentsector), which is right for its light and wrong for its size:
+		// a Realms door leaf is as tall as its doorway, not as the room it swings
+		// into. Its extent is its sidedef's own sector, built for it by the loader.
+		if (isPolyobj && !seg->backsector && (sidedef->Flags2 & WALLF2_OWNHEIGHT) && sidedef->sector != nullptr)
+		{
+			realfront = segfront = sidedef->sector;
+		}
 	}
 	frefz = realfront->GetPlaneTexZ(sector_t::floor);
 	crefz = realfront->GetPlaneTexZ(sector_t::ceiling);
@@ -2585,8 +2594,13 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 	// [GZ] 3D middle textures are necessarily two-sided, even if they lack the explicit two-sided flag
 	if (!backsector || (!twoSidedOrMidtex && !isportal)) // one sided
 	{
+		// [RS] A wall with a height of its own stops short of the ceiling, so it has no
+		// business putting the sector's sky above itself: SkyNormal would hang a sky
+		// sheet from the top of the leaf.
+		const bool ownHeight = isPolyobj && !seg->backsector && (sidedef->Flags2 & WALLF2_OWNHEIGHT) != 0;
+
 		// sector's sky
-		SkyNormal(di, frontsector, v1, v2);
+		if (!ownHeight) SkyNormal(di, frontsector, v1, v2);
 
 		if (isportal)
 		{
@@ -2618,7 +2632,10 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 				float skew =
 					skewflag == side_t::skew_front_ceiling ? fch2 - fch1 :
 					skewflag == side_t::skew_front_floor ? ffh2 - ffh1 : 0.;
-				DoTexture(di, RENDERWALL_M1S, seg, dontPegBottom,
+				// [RS] RENDERWALL_FFBLOCK for a wall with its own height: drawn solid unless
+				// its texture is masked, in which case the holes are holes (PutWall, AddWall).
+				// RENDERWALL_M1S is always solid, which is right for a wall with nothing behind it.
+				DoTexture(di, ownHeight ? RENDERWALL_FFBLOCK : RENDERWALL_M1S, seg, dontPegBottom,
 					crefz, frefz,	// must come from the original!
 					fch1, fch2, ffh1, ffh2, 0, skew);
 			}

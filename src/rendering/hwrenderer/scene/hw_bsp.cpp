@@ -580,7 +580,9 @@ void HWDrawInfo::AddLine (seg_t *seg, bool portalclip)
 
 		if (startAngleR - endAngleR >= ANGLE_180)
 		{
-			if (!seg->backsector) clipperr.SafeAddClipRange(startAngleR - paddingR, endAngleR + paddingR);
+			// [RS] not for a wall with a height of its own (WALLF2_OWNHEIGHT, below): it hides nothing above itself.
+			if (!seg->backsector && !(seg->sidedef != nullptr && (seg->sidedef->Flags2 & WALLF2_OWNHEIGHT)))
+				clipperr.SafeAddClipRange(startAngleR - paddingR, endAngleR + paddingR);
 			else if((seg->sidedef != nullptr) && !uint8_t(seg->sidedef->Flags & WALLF_POLYOBJ) && (currentsector->sectornum != seg->backsector->sectornum))
 			{
 				if (in_area == area_default) in_area = hw_CheckViewArea(seg->v1, seg->v2, seg->frontsector, seg->backsector);
@@ -663,8 +665,12 @@ void HWDrawInfo::AddLine (seg_t *seg, bool portalclip)
 		// This is rendered as a one-sided wall, so drop any backsector the radar
 		// clipper above may have cached into 'backsector' via hw_FakeFlat.
 		backsector = nullptr;
+		// [RS] WALLF2_OWNHEIGHT: a polyobject wall shorter than the sector it stands in
+		// (a Realms door leaf) hides nothing above itself, so it must not close the
+		// clipper: the lintel and the room beyond are still in view over it.
 		if(!allowOoB)
-			if (!(seg->sidedef->Flags & WALLF_DITHERTRANS_MID)) clipper.SafeAddClipRange(startAngle, endAngle);
+			if (!(seg->sidedef->Flags & WALLF_DITHERTRANS_MID) && !(ispoly && (seg->sidedef->Flags2 & WALLF2_OWNHEIGHT)))
+				clipper.SafeAddClipRange(startAngle, endAngle);
 
 		// [RS] A LINKED PORTAL ON A ONE-SIDED LINE. The clip range above stays SOLID, on purpose: nothing
 		// that lies behind this line in this part of the map may be drawn (it is the void, or a room that

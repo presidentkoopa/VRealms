@@ -2722,19 +2722,24 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// vertex1, unless the swing is mirrored, in which case `rol ebx,16`
 			// selects vertex2 (doors.c:520, 531, 540).
 			//
-			// UNVERIFIED / KNOWN DIVERGENCE: that mirror choice is made PER
-			// ACTIVATION, from which room the player used the door -- the door
-			// swings away from whoever opened it. A GZDoom polyobject has one
-			// fixed StartSpot, so we pin the hinge to vertex1 (which is also the
-			// unconditional choice when the hinge face's faceID is 0xFFFE). A door
-			// opened from the mirrored side will therefore pivot about the far end
-			// of the hinge edge, a difference of the slab's thickness (8 to 64
-			// units in the retail data). Stage 7 can close this properly: it knows
-			// which side was used, and it can set po->StartSpot before calling
-			// EV_OpenPolyDoor.
+			// SETTLED 2026-11-12 (tools/doorcheck). The mirror is decided by the
+			// hinge mapping's faceID, the "marker" (doors.c:506, 523-531):
+			//   0xFFFE  never mirrored: pivot vertex1, angle byte 0 -> +0x40
+			//   0xFFFD  always mirrored: pivot vertex2, angle byte 0 -> -0x40
+			//   0xFFFF  mirrored only when opened from the room across c3
+			// 160 of the 167 retail doors carry FFFD or FFFE, so their pivot is
+			// fixed by the map and is set here; the 7 FFFF doors start on
+			// vertex1 and roth::SwingDoor moves the pivot when one is opened
+			// from the other side. Pinning every door to vertex1 put 74 doors'
+			// pivot one slab thickness out.
 			const roth::Face &hf = rm.faces[rs.hingeFace];
-			const double hingeX = double(rm.vertices[hf.vertex1].x);
-			const double hingeY = double(rm.vertices[hf.vertex1].y);
+			const roth::TextureMap *hingeTm =
+				(hf.textureMap >= 0 && hf.textureMap < (int)rm.textureMaps.size())
+					? &rm.textureMaps[hf.textureMap] : nullptr;
+			const int hingeMarker = hingeTm ? (int)hingeTm->faceID : 0xFFFE;
+			const int hingeVertex = (hingeMarker == 0xFFFD) ? hf.vertex2 : hf.vertex1;
+			const double hingeX = double(rm.vertices[hingeVertex].x);
+			const double hingeY = double(rm.vertices[hingeVertex].y);
 
 			// Park this leaf's cell and put its hinge at the cell's centre, so the
 			// anchor/spawn delta is exactly the cell offset and nothing else.
@@ -2784,63 +2789,43 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// is exactly the kind of sector that may carry no light of its own.
 			// Tallied rather than assumed.
 			leafLightHist[(int)door->lightlevel]++;
-			// THE LEAF'S HEIGHT IS NOT DERIVED FROM ANYTHING -- it is the
-			// doorway sector's whole floor-to-ceiling span, which is why a leaf
-			// drives through the masonry above the opening (owner-reported,
-			// 2026-10-03). Nothing in the handoff's door work settles where a
-			// door's real height comes from.
-			//
-			// The candidate is TEXTURE_MAP_OVERRIDE, the door sector's +0x0c,
-			// which the Sector comment describes as overriding "the position
-			// and SIZE of the MID_TEXTURE on double-sided faces in this sector
-			// that carry TRANSPARENT" -- and the door's picture IS exactly that
-			// transparent mid piece, the one dropped above in favour of this
-			// leaf. The same comment ends "Still unused by the loader."
-			//
-			// Tallied rather than assumed: if these are 0 across the board the
-			// candidate is dead and the height is elsewhere.
 			leafOverrideHist[(int)rs.textureMapOverride]++;
-			leafSpanHist[(int)(door->GetPlaneTexZ(sector_t::ceiling)
-				- door->GetPlaneTexZ(sector_t::floor))]++;
 			vs->Colormap.Desaturation = door->Colormap.Desaturation;
 			roth::RegisterLightFollower((int)i, (int)vSector);
-			// THE LEAF'S HEIGHT.
-			//
-			// This used to be the doorway sector's whole floor-to-ceiling span,
-			// with the comment "so the leaf is exactly as tall as the opening it
-			// fills". That is true and is the bug: a Realms door is SHORTER than
-			// its doorway sector, so a full-height slab drives up through the
-			// masonry above the opening (owner-reported 2026-10-03).
-			//
-			// TEXTURE_MAP_OVERRIDE (+0x0c) carries the real size where it is
-			// set: roth_raw.h describes it as overriding "the position and SIZE
-			// of the MID_TEXTURE on double-sided faces in this sector that carry
-			// TRANSPARENT" -- and a door's picture IS that transparent mid piece,
-			// the one dropped above in favour of this leaf. Sign is the anchor,
-			// negative to the floor. Measured over 167 leaves in 17 maps
-			// (doorgeom, "the vertical"): 43 carry one, values -100, -87, -75,
-			// -55, -50 and so on against door sectors 200-220 tall -- door
-			// shaped. 116 are 0, which the same comment calls fit-to-size, and
-			// the opening is NOT that default: 0 of 330 broad faces have an
-			// opening shorter than their door sector.
-			//
-			// So this applies the override where there is one and leaves the
-			// rest alone. It is deliberately the SMALLER half of the problem
-			// first, because it is the half that is measured -- and because it
-			// doubles as the experiment that settles whether a leaf's rendered
-			// height comes from these planes at all. Polyobject walls are drawn
-			// with front == back == the sector the leaf OCCUPIES
-			// (hw_bsp.cpp:707), which may mean these planes never reach the
-			// renderer. If the 43 overridden doors visibly shorten, they do.
 			const double doorFullTop = door->GetPlaneTexZ(sector_t::ceiling);
 			const double doorFullBot = door->GetPlaneTexZ(sector_t::floor);
 			const int ovr = (int)rs.textureMapOverride;
-			double lfZ = doorFullBot;
-			double lcZ = doorFullTop;
-			if (ovr < 0)       lcZ = doorFullBot - double(ovr);   // sized up from the floor
-			else if (ovr > 0)  lfZ = doorFullTop - double(ovr);   // sized down from the ceiling
-			if (lcZ > doorFullTop) lcZ = doorFullTop;
-			if (lfZ < doorFullBot) lfZ = doorFullBot;
+			// THE LEAF'S VERTICAL EXTENT, from ROTH.C and no longer a candidate.
+			//
+			// The leaf is a box mesh standing on the door sector's FLOOR:
+			// rwss_type04 passes `es:[sector+2] - view z`, the floor, as the
+			// mesh's base (renderer.c:6436-6438), ring B of its eight vertices
+			// is at height 0 and ring A at the height word (doors.c:561-571).
+			// The height word is the door sector's ceiling minus its floor --
+			// UNLESS corner c1's own mapping carries both TRANSPARENT and
+			// TRANS_UPLO, in which case it is -4 * TEXTURE_MAP_OVERRIDE
+			// (doors.c:534-538). Times four, and only under that flag pair.
+			//
+			// What stood here took the override unscaled and unconditionally,
+			// which made sector 23 of STUDY1 (override 13, no flag pair) a strip
+			// 13 units tall. It never showed, because nothing read this sector's
+			// height: a one-sided polyobject wall was drawn floor to ceiling of
+			// whatever sector it stood IN (see WALLF2_OWNHEIGHT below).
+			// tools/doorcheck: 36 of 167 leaves take the override, none comes
+			// out zero or negative.
+			double leafHeight = doorFullTop - doorFullBot;
+			{
+				const roth::Face &c1f = rm.faces[f0 + ((hingeRel + 1) & 3)];
+				if (c1f.textureMap >= 0 && c1f.textureMap < (int)rm.textureMaps.size())
+				{
+					const uint8_t c1flags = rm.textureMaps[c1f.textureMap].flags;
+					if ((c1flags & roth::FF_TRANSPARENT) && (c1flags & roth::FF_TRANS_UPLO))
+						leafHeight = -4. * double(ovr);
+				}
+			}
+			const double lfZ = doorFullBot;
+			const double lcZ = doorFullBot + (leafHeight > 0. ? leafHeight : 0.);
+			leafSpanHist[(int)(lcZ - lfZ)]++;
 			vs->SetPlaneTexZ(sector_t::floor, lfZ);
 			vs->SetPlaneTexZ(sector_t::ceiling, lcZ);
 			vs->floorplane.set(0., 0., 1., -lfZ);
@@ -2936,7 +2921,13 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 				// carry it and this pairing is by polyobject tag instead.
 				// GAME_core.md §4.5: a type-6 door goes straight to
 				// toggle_door_open_state, with no trigger and no chain.
-				roth::RegisterDoorLeafSide((int)(sd - &Level->sides[0]), tag);
+				// The ROOM face behind a broad side goes with it: a closed door in
+				// the original is that face, so a use on the leaf is a use on it.
+				roth::RegisterDoorLeafSide((int)(sd - &Level->sides[0]), tag,
+					((j == 1 || j == 3) && f.sister >= 0) ? f.sister : -1);
+				// The leaf has a height of its own: this sidedef's sector, the
+				// void room sized above. See WALLF2_OWNHEIGHT (r_defs.h).
+				sd->Flags2 |= WALLF2_OWNHEIGHT;
 				for (int part = 0; part < 3; part++)
 				{
 					sd->SetTextureXScale(part, 1.);
@@ -3040,7 +3031,23 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					extTm = tmOf(f);
 				}
 
-				FTextureID tex = texTm ? worldTex(texTm->midTexture) : FNullTextureID();
+				// WHAT THE SURFACE'S DRAW WORD SAYS (door_corner_tail,
+				// doors.c:263-276, from the TEXTURE source's flag byte):
+				//   TRANSPARENT (bit 0) is kept -- palette index 0 is a hole.
+				//     44 leaf sides in the retail maps wear art that has holes
+				//     (the glazed cabinet doors of STUDY1, texture 748).
+				//   TRANS_UPLO without TRANSPARENT clears the textured bit.
+				//     No retail leaf does (tools/doorcheck), so it is honoured
+				//     by drawing nothing rather than by guessing a fill.
+				// And the colour key draws nothing on a leaf as on a wall: it is
+				// the same rasteriser (renderer.c:13100-13160).
+				const uint8_t skinFlags = texTm ? texTm->flags : 0;
+				const bool skinMasked = (skinFlags & roth::FF_TRANSPARENT) != 0;
+				const bool skinBlank = texTm == nullptr
+					|| ((skinFlags & roth::FF_TRANS_UPLO) && !skinMasked)
+					|| (haveArt && art.IsSkySurface(texTm->midTexture));
+				FTextureID tex = skinBlank ? FNullTextureID()
+					: worldTex(texTm->midTexture, skinMasked);
 
 				// Record what was chosen, before anything can hide it.
 				if (texTm && haveArt && art.IsSkySurface(texTm->midTexture))
@@ -3058,24 +3065,65 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 					leafTexNames[nm]++;
 				}
 
+				// THE LINE'S LENGTH, AS THE ENGINE MEASURES IT. This is the line
+				// that was missing, and it is why every door looked untextured:
+				// the leaf's lines are built here and never went through
+				// FinishLoadingLineDef, so side_t::TexelLength stayed at the
+				// zero the array was cleared to. HWWall::SetWallCoordinates
+				// spans the texture over `TexelLength` texels from one end of
+				// the wall to the other (hw_walls.cpp:1378-1381), so with 0
+				// every column of the wall sampled the SAME texel column -- a
+				// door-coloured smear with no picture in it.
+				const double len = (ld->v2->fPos() - ld->v1->fPos()).Length();
+				sd->TexelLength = (uint16_t)min((int)(len + 0.5), 65535);
+
 				if (!tex.isValid())
 				{
 					leafSidesNoTexture++;
 				}
 				else
 				{
-					// The same scale law as an ordinary wall: two world units per
-					// texture pixel unless FF_HALF_PIXEL, and the stored extent is
-					// authoritative horizontally.
-					const double unitsPerTexel =
-						(texTm->flags & roth::FF_HALF_PIXEL) ? 1. : 2.;
-					const double len = (ld->v2->fPos() - ld->v1->fPos()).Length();
-					const double stored = extTm ? double(extTm->StoredExtent()) : 0.;
-					double sx = 1. / unitsPerTexel;
-					if (stored > 0. && len > 0.) sx = stored / (len * unitsPerTexel);
+					// THE SAME RASTERISER AS A WALL, entered with the surface's
+					// own record (renderer.c:13100-13117, 13334-13361):
+					//
+					//   IMAGE_FIT clear (draw bit 0x100): the extents are the
+					//     surface's stored ones -- +0x26, the extent mapping's
+					//     fit word & 0xfff, across; +0x24, the leaf height,
+					//     down. Half-texels, so two world units per texel both
+					//     ways, hung from the top of the leaf.
+					//   IMAGE_FIT set: both extents are twice the picture's own
+					//     size, i.e. exactly one copy across the quad and one
+					//     down it.
+					//
+					// Shifts and HALF_PIXEL are NOT part of a leaf surface: the
+					// draw word is masked with 0x103 (doors.c:267) and the
+					// record has no shift fields. The original reads both from
+					// globals left by whatever wall it drew last; this draws
+					// them as zero and off, which is what a leaf's own data says.
+					//
+					// This used to scale every side as tiled, IMAGE_FIT or not
+					// (294 of 664 leaf sides are fitted), and to fold the extent
+					// into the scale -- the fault the wall loop documents at its
+					// own TexelLength.
+					auto *gt = TexMan.GetGameTexture(tex, false);
+					const double texW = gt ? gt->GetDisplayWidth() : 0.;
+					const double texH = gt ? gt->GetDisplayHeight() : 0.;
+					const bool flipX = (skinFlags & roth::FF_FLIP_X) != 0;
+					double sx = 0.5, sy = 0.5;
+					if (skinFlags & roth::FF_IMAGE_FIT)
+					{
+						if (texW > 0. && len > 0.) sx = OneCopyScale(texW, len, flipX);
+						if (texH > 0. && lcZ > lfZ) sy = OneCopyScale(texH, lcZ - lfZ, false);
+					}
+					else
+					{
+						const int stored = extTm ? int(extTm->fitWord & 0x0FFF) : 0;
+						if (stored > 0) sd->TexelLength = (uint16_t)stored;
+					}
+					if (flipX) sx = -sx;   // as the wall loop does it
 					sd->SetTexture(side_t::mid, tex);
 					sd->SetTextureXScale(side_t::mid, sx);
-					sd->SetTextureYScale(side_t::mid, 1. / unitsPerTexel);
+					sd->SetTextureYScale(side_t::mid, sy);
 				}
 
 				ld->AdjustLine();
@@ -3155,6 +3203,20 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// And tell the runtime, so a command that names this door can find
 			// the polyobject that swings without searching the tag table.
 			roth::RegisterDoor((int)i, tag);
+			// What decides the swing, for the runtime: the marker, the rooms
+			// across c1 and c3, and both ends of the hinge edge where the leaf
+			// really stands (doors.c:516-546).
+			{
+				const roth::Face &c1f = rm.faces[f0 + ((hingeRel + 1) & 3)];
+				const roth::Face &c3f = rm.faces[f0 + ((hingeRel + 3) & 3)];
+				const int secAcrossC1 = (c1f.sister >= 0 && c1f.sister < (int)rm.faces.size())
+					? rm.faces[c1f.sister].sector : -1;
+				const int secAcrossC3 = (c3f.sister >= 0 && c3f.sister < (int)rm.faces.size())
+					? rm.faces[c3f.sister].sector : -1;
+				roth::RegisterDoorSwing(tag, hingeMarker, secAcrossC1, secAcrossC3,
+					double(rm.vertices[hf.vertex1].x) + shiftX, double(rm.vertices[hf.vertex1].y) + shiftY,
+					double(rm.vertices[hf.vertex2].x) + shiftX, double(rm.vertices[hf.vertex2].y) + shiftY);
+			}
 
 			vSector++; vVertex += 8; vLine += 8;
 			leavesBuilt++;
@@ -3183,12 +3245,11 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  light each leaf inherits from its DOORWAY sector:");
 		for (auto &kv : leafLightHist)
 			log.Line("    lightlevel %-4d x%d", kv.first, kv.second);
-		log.Line("  leaf vertical span CURRENTLY used (the doorway sector's whole"
-			" height -- this is what drives a leaf through the masonry above):");
+		log.Line("  leaf height (doors.c:534-538: door ceiling - floor, or"
+			" -4 * override under TRANSPARENT+TRANS_UPLO on c1):");
 		for (auto &kv : leafSpanHist)
 			log.Line("    span %-5d x%d", kv.first, kv.second);
-		log.Line("  door sector TEXTURE_MAP_OVERRIDE (+0x0c), the candidate for"
-			" the real height -- 0 means fit-to-size, sign is the anchor:");
+		log.Line("  door sector TEXTURE_MAP_OVERRIDE (+0x0c):");
 		for (auto &kv : leafOverrideHist)
 			log.Line("    override %-5d x%d", kv.first, kv.second);
 		log.Count("doors: leaf faces coplanar with a drawn wall piece (UNVERIFIED risk)",

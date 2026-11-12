@@ -1362,6 +1362,14 @@ enum
 	// window onto the outside -- the backdrop seen through the glass -- rather
 	// than a surface. Inert unless something sets it.
 	WALLF2_SKYWALL				= 1,
+	// A one-sided POLYOBJECT wall that has a height of its own: it is drawn
+	// between the floor and ceiling of this sidedef's own sector, wherever the
+	// polyobject stands, instead of filling the sector it is standing in from
+	// floor to ceiling. For a door leaf that is shorter than the rooms it
+	// swings through. Such a wall does not close off the view behind it (there
+	// is room above it), and it honours a masked texture's holes. Inert unless
+	// something sets it.
+	WALLF2_OWNHEIGHT			= 2,
 };
 
 struct side_t

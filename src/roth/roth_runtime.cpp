@@ -546,6 +546,16 @@ struct Runtime
 	// straight to toggle_door_open_state with no trigger chain -- so the use
 	// path needs a way from the line it hit to the panel to swing.
 	std::map<int, int> doorLeafSide;
+	// Engine sidedef of a broad leaf side -> the Realms face on the room's side.
+	std::map<int, int> doorLeafRoomFace;
+	// Polyobject tag -> what decides the swing (RegisterDoorSwing).
+	struct DoorSwing
+	{
+		int marker = 0xFFFE;
+		int secC1 = -1, secC3 = -1;
+		DVector2 v1 = { 0., 0. }, v2 = { 0., 0. };
+	};
+	std::map<int, DoorSwing> doorSwing;
 	// Realms face -> engine sidedef, so a trigger's face can be found from a side.
 	std::map<int, int> faceToSide;
 	std::map<int, int> sideToFace;                 // and back again
@@ -793,7 +803,7 @@ void SyncDisabled(Command *c) { c->disabled = (c->modifier & 0x08) != 0; }
 //==========================================================================
 
 // Defined just below; OpenDoor resolves the target and hands off to it.
-int SwingDoor(int tag, int speedMul, int dwellTicks);
+int SwingDoor(int tag, int speedMul, int dwellTicks, int fromSector = -1);
 
 int OpenDoor(const Command &c)
 {
@@ -810,20 +820,27 @@ int OpenDoor(const Command &c)
 	else if (g.activeFace >= 0)
 		candidates.push_back(g.activeFace);
 
-	// The key names a face; the door is the sector that face belongs to.
-	int rothSector = -1;
+	// THE KEY NAMES A FACE, AND THE DOOR IS THE SECTOR BEHIND IT.
+	//
+	// spawn_door_instance (doors.c:697-698) takes the door sector from the
+	// face's SISTER -- `fs:[fs:[face+8]+6]` -- and hands the face's OWN sector,
+	// `fs:[face+6]`, to setup_door_swing_geometry as the room the door is being
+	// opened from (doors.c:707, 484). That room is what an 0xFFFF hinge compares
+	// against to swing away from the opener (doors.c:525).
+	//
+	// The face's own sector is still tried second, with the sister's as the
+	// room: the load pass moves a binding off a door's own face onto its sister
+	// (map_load.c:1158-1172), and this keeps a record that names the door's own
+	// face working the same way.
+	int rothSector = -1, fromSector = -1;
 	for (int fi : candidates)
 	{
 		if (fi < 0 || fi >= (int)g.map.faces.size()) continue;
 		const int sec = g.map.faces[fi].sector;
-		if (sec >= 0 && g.doorTag.count(sec)) { rothSector = sec; break; }
-		// The face may be the room's side of the doorway; try its sister.
 		const int sis = g.map.faces[fi].sister;
-		if (sis >= 0 && sis < (int)g.map.faces.size())
-		{
-			const int ss = g.map.faces[sis].sector;
-			if (ss >= 0 && g.doorTag.count(ss)) { rothSector = ss; break; }
-		}
+		const int ss = (sis >= 0 && sis < (int)g.map.faces.size()) ? g.map.faces[sis].sector : -1;
+		if (ss >= 0 && g.doorTag.count(ss)) { rothSector = ss; fromSector = sec; break; }
+		if (sec >= 0 && g.doorTag.count(sec)) { rothSector = sec; fromSector = ss; break; }
 	}
 	if (rothSector < 0) return CMD_NOTHING;
 
@@ -835,7 +852,42 @@ int OpenDoor(const Command &c)
 	// +0x0c (doors.c:549), which is where the tick reads the multiplier. That it
 	// is also the field the dwell is scaled by is the clearest sign the old
 	// reading was wrong: one value cannot live at two offsets.
-	return SwingDoor(g.doorTag[rothSector], (int)c.subFlags, (int)c.aux);
+	const int acted = SwingDoor(g.doorTag[rothSector], (int)c.subFlags, (int)c.aux, fromSector);
+
+	// THE OTHER HALF OF A DOUBLE DOOR opens with it. resolve_door_neighbor_sector
+	// (doors.c:308-340) walks the door's faces in slot order for the first whose
+	// far sector carries an id of 0xFFFE or above, and then that sector's faces
+	// for the first whose far side is NOT this door; spawn_door_instance
+	// (doors.c:711-733) opens the partner through that far face, so the partner
+	// counts as opened from the sector that face belongs to. A partner that is
+	// already open is left alone (doors.c:714-719), which SwingDoor's own
+	// refusal of a moving or open leaf gives for free.
+	const Sector &ds = g.map.sectors[rothSector];
+	for (int j = 0; j < (int)ds.faceCount && ds.firstFaceIndex >= 0; j++)
+	{
+		const int fi = ds.firstFaceIndex + j;
+		if (fi >= (int)g.map.faces.size()) break;
+		const int sis = g.map.faces[fi].sister;
+		if (sis < 0 || sis >= (int)g.map.faces.size()) continue;
+		const int ps = g.map.faces[sis].sector;
+		if (ps < 0 || ps >= (int)g.map.sectors.size()) continue;
+		const Sector &partner = g.map.sectors[ps];
+		if (partner.commandID < TRIGGER_INVIS) continue;      // doors.c:320, `>= 0xfffe`
+		for (int k = 0; k < (int)partner.faceCount && partner.firstFaceIndex >= 0; k++)
+		{
+			const int pf = partner.firstFaceIndex + k;
+			if (pf >= (int)g.map.faces.size()) break;
+			const int psis = g.map.faces[pf].sister;
+			if (psis < 0 || psis >= (int)g.map.faces.size()) continue;
+			const int far = g.map.faces[psis].sector;
+			if (far == rothSector) continue;
+			if (acted == CMD_ACTED && g.doorTag.count(ps))
+				SwingDoor(g.doorTag[ps], (int)c.subFlags, (int)c.aux, far);
+			break;
+		}
+		break;                                                 // the first such neighbour only
+	}
+	return acted;
 }
 
 //==========================================================================
@@ -850,9 +902,58 @@ int OpenDoor(const Command &c)
 //
 //==========================================================================
 
-int SwingDoor(int tag, int speedMul, int dwellTicks)
+int SwingDoor(int tag, int speedMul, int dwellTicks, int fromSector)
 {
 	if (g.level == nullptr) return CMD_NOTHING;
+
+	// WHICH WAY, AND ABOUT WHICH END OF THE HINGE EDGE.
+	//
+	// setup_door_swing_geometry decides a "mirror" from the hinge mapping's
+	// faceID (doors.c:523-531): 0xFFFE never, 0xFFFD always, and 0xFFFF when
+	// the sector across corner c3 is the room the door is being opened from --
+	// the door that swings away from whoever opens it. Unmirrored, the pivot is
+	// vertex1 of the hinge face and the angle byte runs 0 -> +0x40
+	// (doors.c:1083-1094); mirrored, the pivot is vertex2 (`rol ebx,16`,
+	// doors.c:528, 546) and it runs 0 -> -0x40 (doors.c:1112-1123).
+	//
+	// rotate_quad turns the leaf by MINUS the angle byte (renderer.c:1562:
+	// the table index is `(-2 * angle) & 0x1ff`), and the map's x,y are the
+	// engine's x,y unchanged, so unmirrored is CLOCKWISE and mirrored is
+	// counter-clockwise. EV_OpenPolyDoor only ever turned counter-clockwise
+	// about the one spot the loader gave it, which sent 93 of the 167 retail
+	// doors the wrong way (tools/doorcheck); a negative speed turns it the
+	// other way, and DPolyDoor measures the arc by |speed|.
+	bool mirrored = false;
+	auto sw = g.doorSwing.find(tag);
+	if (sw != g.doorSwing.end())
+	{
+		const Runtime::DoorSwing &d = sw->second;
+		if (d.marker == 0xFFFD) mirrored = true;
+		else if (d.marker == 0xFFFE) mirrored = false;
+		else mirrored = (fromSector >= 0 && fromSector == d.secC3);
+
+		// An 0xFFFF door has no fixed pivot, so it is put on the right end of
+		// the hinge edge here, while the leaf is closed and at rest: at angle 0
+		// every vertex is StartSpot + OriginalPts, so moving the spot and
+		// taking the same amount off the points leaves the leaf where it is.
+		// (The loader has already put an FFFD or FFFE door on its one pivot.)
+		if (d.marker == 0xFFFF)
+		{
+			FPolyObj *po = g.level->GetPolyobj(tag);
+			if (po != nullptr && po->specialdata == nullptr && !po->bBlocked
+				&& po->Angle == nullAngle)
+			{
+				const DVector2 want = mirrored ? d.v2 : d.v1;
+				const DVector2 delta = want - po->StartSpot.pos;
+				if (delta.X != 0. || delta.Y != 0.)
+				{
+					for (unsigned i = 0; i < po->OriginalPts.Size(); i++)
+						po->OriginalPts[i].pos -= delta;
+					po->StartSpot.pos = want;
+				}
+			}
+		}
+	}
 
 	// Both arguments come from the SAME command field, +0x07, which is why they
 	// arrive together. The caller reads them; see OpenDoor for the chain
@@ -880,7 +981,7 @@ int SwingDoor(int tag, int speedMul, int dwellTicks)
 	//     => speed = 16 * M
 	// Check: M = 1 gives m_Speed = 2.8125 deg/tic, so 90 degrees takes 32 tics
 	// = 0.914 s, against the original's 64 ticks at 70 Hz = 0.914 s. Exact.
-	const double speed = 16.0 * double(M);
+	const double speed = (mirrored ? 16.0 : -16.0) * double(M);
 
 	// DWELL IS `A` TICKS, WHATEVER THE SPEED. The reload is A*M (doors.c:749-
 	// 750) but the counter is decremented by the SAME step as the swing, M per
@@ -889,7 +990,15 @@ int SwingDoor(int tag, int speedMul, int dwellTicks)
 	// did, would have made fast doors wait proportionally longer.
 	//
 	// A is in 70 Hz ticks and GZDoom's m_WaitTics is in 35 Hz tics, so halve.
-	const int delay = dwellTicks > 0 ? (dwellTicks + 1) / 2 : 0;
+	//
+	// A DWELL OF ZERO MEANS THE DOOR STAYS OPEN. tick_swinging_doors tests the
+	// reload word before it counts anything down -- `cmp word [edi+0xa],0; je`
+	// (doors.c:1049) -- so a door with no dwell never starts to close by
+	// itself. This passed 0 on, and DPolyDoor reads a wait of 0 as "close at
+	// once" (po_man.cpp, `m_WaitTics >= 0`): the door opened and shut again
+	// without a pause. -1 is the engine's own "wait for ever". Three retail
+	// commands carry it, among them STUDY1's cabinet doors (key 0x13, M 44).
+	const int delay = dwellTicks > 0 ? (dwellTicks + 1) / 2 : -1;
 
 	// The arc is always 90 degrees: 64 angle units of 1.40625 degrees, settled
 	// from the sincos table's own bytes. See HANDOFF_REMAROTH.md section 12.
@@ -1312,7 +1421,7 @@ int MapTransition(Command *rec)
 
 int RunCommand(const Map &m, const Command &cc, int index);
 int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h);
-int SwingDoor(int tag, int speedMul, int dwellTicks);
+int SwingDoor(int tag, int speedMul, int dwellTicks, int fromSector);
 
 // A door open asked for before the level exists. `roth_door` is normally typed
 // from an +exec script, and exec runs BEFORE the deferred `map` -- so the
@@ -1341,7 +1450,7 @@ void DrainPendingDoors()
 		for (const auto &kv : g.doorTag)
 		{
 			if (d.tag != 0 && kv.second != d.tag) continue;
-			if (SwingDoor(kv.second, d.speedMul, d.dwell) == CMD_ACTED) opened++;
+			if (SwingDoor(kv.second, d.speedMul, d.dwell, -1) == CMD_ACTED) opened++;
 			else refused++;
 		}
 		Printf("roth_door: %d opened, %d refused (speedM %d -> %.1f deg/s, dwell %d)\n",
@@ -4875,6 +4984,8 @@ void EndLevel()
 	g.byObject.clear();
 	g.doorTag.clear();
 	g.doorLeafSide.clear();
+	g.doorLeafRoomFace.clear();
+	g.doorSwing.clear();
 	g.lastSectorByPlayer.clear();
 	// NOT gPendingDoors. EndLevel runs DURING a map load, before BeginLevel
 	// (rothmap.cpp:215, "drop the previous level's logic before anything
@@ -4969,9 +5080,23 @@ std::vector<int> SidesWithOpcode(uint8_t opcode)
 	return out;
 }
 
-void RegisterDoorLeafSide(int sideIndex, int polyTag)
+void RegisterDoorLeafSide(int sideIndex, int polyTag, int roomFace)
 {
-	if (sideIndex >= 0) g.doorLeafSide[sideIndex] = polyTag;
+	if (sideIndex < 0) return;
+	g.doorLeafSide[sideIndex] = polyTag;
+	if (roomFace >= 0) g.doorLeafRoomFace[sideIndex] = roomFace;
+}
+
+void RegisterDoorSwing(int polyTag, int marker, int sectorAcrossC1, int sectorAcrossC3,
+	double v1x, double v1y, double v2x, double v2y)
+{
+	Runtime::DoorSwing d;
+	d.marker = marker;
+	d.secC1 = sectorAcrossC1;
+	d.secC3 = sectorAcrossC3;
+	d.v1 = DVector2(v1x, v1y);
+	d.v2 = DVector2(v2x, v2y);
+	g.doorSwing[polyTag] = d;
 }
 
 void RegisterFaceSide(int rothFace, int sideIndex)
@@ -5069,6 +5194,42 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 		if (sd == nullptr) continue;
 		leaf = g.doorLeafSide.find((int)(sd - &g.level->sides[0]));
 	}
+	// A CLOSED DOOR IS THE ROOM'S WALL FACE. While it is shut the original has
+	// no door object at all (the pool record is made by spawn_door_instance and
+	// removed again on the full close, doors.c:685, 1140-1167): what the player
+	// sees and clicks is the room face in front of the door sector, and it is
+	// THAT face's 0x18 trigger whose chain holds cmd_open_door, with the
+	// record's own speed and dwell, and with "the wall the player just used" as
+	// the face a key of 0 resolves to (raw_commands.c:4060-4070). So a use on a
+	// broad leaf side is handed on to the room face behind it, and the normal
+	// path below fires it. Only where that face carries no chain of its own
+	// does the leaf fall back to swinging by itself.
+	if (leaf != g.doorLeafSide.end() && isUse)
+	{
+		side_t *hitSd = line->sidedef[0];
+		auto rf = hitSd != nullptr
+			? g.doorLeafRoomFace.find((int)(hitSd - &g.level->sides[0]))
+			: g.doorLeafRoomFace.end();
+		if (rf != g.doorLeafRoomFace.end())
+		{
+			auto fs = g.faceToSide.find(rf->second);
+			if (fs != g.faceToSide.end() && fs->second >= 0
+				&& fs->second < (int)g.level->sides.Size() && g.bySide.count(fs->second))
+			{
+				side_t *roomSide = &g.level->sides[fs->second];
+				if (roomSide->linedef != nullptr)
+				{
+					if (roth_trigger_debug)
+						Printf("roth_trigger: line %d is door leaf (poly tag %d); passing the"
+							" use to room face %d, side %d\n", line->Index(), leaf->second,
+							rf->second, fs->second);
+					line = roomSide->linedef;
+					side = (line->sidedef[1] == roomSide) ? 1 : 0;
+					leaf = g.doorLeafSide.end();
+				}
+			}
+		}
+	}
 	if (leaf != g.doorLeafSide.end())
 	{
 		// Printed BEFORE the swing as well as after, because this call is newly
@@ -5088,7 +5249,9 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 		// door that is already open, or whose tag matches no polyobject, comes
 		// back CMD_NOTHING, and "swinging" printed before the call cannot tell
 		// those apart from a door that moved.
-		const int swung = isUse ? SwingDoor(leaf->second, 0, 0) : CMD_NOTHING;
+		const int fromSector = (who != nullptr && who->Sector != nullptr
+			&& who->Sector->Index() < (int)g.map.sectors.size()) ? who->Sector->Index() : -1;
+		const int swung = isUse ? SwingDoor(leaf->second, 0, 0, fromSector) : CMD_NOTHING;
 		if (roth_trigger_debug && isUse)
 		{
 			Printf("roth_trigger: line %d swing returned -> %s\n", line->Index(),
@@ -5669,8 +5832,14 @@ bool Activate(const Pick &p, AActor *who, TrigEvent want)
 	case Pick::DoorLeaf:
 		// A leaf is not a trigger and has no chain: it IS the door. Examining
 		// one is not a thing the original does, so only a use swings it.
-		if (want != TrigEvent::Use) return false;
-		return SwingDoor(p.leafTag, 0, 0) == CMD_ACTED;
+		// Through ActivateLine, which passes a use on a closed leaf to the room
+		// face behind it (the original's route) and swings the leaf by itself
+		// only where that face has no chain.
+		if (want != TrigEvent::Use || p.line == nullptr) return false;
+		{
+			DVector3 hp = p.hitPos;
+			return ActivateLine(p.line, who, p.side, SPAC_Use, &hp);
+		}
 
 	case Pick::WallFace:
 		// WITH THE HIT POSITION, which is the entire point. ActivateLine's one

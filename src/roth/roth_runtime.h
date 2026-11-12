@@ -64,6 +64,15 @@ void EndLevel();
 // SECTOR index of the doorway.
 void RegisterDoor(int rothSector, int polyTag);
 
+// What decides which way a door swings and about which end of its hinge edge
+// (setup_door_swing_geometry, doors.c:506-546): the hinge mapping's faceID
+// ("marker": 0xFFFE never mirrored, 0xFFFD always, 0xFFFF mirrored when the
+// door is opened from the room across corner c3), the Realms sectors across
+// the two broad faces c1 and c3, and where vertex1 and vertex2 of the hinge
+// face c0 stand in the level. Recorded by the loader, per polyobject tag.
+void RegisterDoorSwing(int polyTag, int marker, int sectorAcrossC1, int sectorAcrossC3,
+	double v1x, double v1y, double v2x, double v2y);
+
 // Which engine sidedef a Realms face became. Only the loader knows both, and a
 // trigger names a FACE while the engine hands us a sidedef, so without this the
 // two index spaces never meet.
@@ -150,7 +159,12 @@ void ReportPolyobjects(FLevelLocals *level);
 // straight to toggle_door_open_state, with no trigger and no command chain).
 // Without this the leaf is bare one-sided geometry that silently eats the use
 // ray, and nothing behind it can be reached either.
-void RegisterDoorLeafSide(int sideIndex, int polyTag);
+//
+// roomFace is the Realms face on the ROOM's side of a broad leaf side, or -1
+// for a thickness edge. While a door is closed the original has no door
+// object at all: what the player sees and clicks is that room face, so a use
+// on the leaf is passed on to it and its own trigger opens the door.
+void RegisterDoorLeafSide(int sideIndex, int polyTag, int roomFace = -1);
 
 // Give every Realms line a non-zero `special` and its activation bits, so the
 // engine's own dispatch sites offer the line to ActivateLine instead of
