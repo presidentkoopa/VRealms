@@ -7686,6 +7686,7 @@ CCMD(roth_at)
 	gTimedCommands.emplace_back(atoi(argv[1]), cmd);
 }
 
+namespace {   // declared inside the file's anonymous namespace near the top, so defined in one too
 void DrainTimedCommands(FLevelLocals *level)
 {
 	if (gTimedCommands.empty() || level == nullptr) return;
@@ -7699,6 +7700,7 @@ void DrainTimedCommands(FLevelLocals *level)
 		C_DoCommand(e.second.c_str());
 	}
 }
+} // namespace
 
 //==========================================================================
 //
