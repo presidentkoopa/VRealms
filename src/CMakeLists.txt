@@ -981,6 +981,11 @@ set (PCH_SOURCES
 	roth/roth_invscreen.cpp
 	roth/roth_icons.cpp
 	roth/roth_interface.cpp
+	# The GDV movies: the decoder (engine-free, tools/gdv_test) and the queue
+	# that plays them as cutscenes (engine side; the player is in
+	# common/cutscenes/movieplayer.cpp).
+	roth/roth_gdv.cpp
+	roth/roth_movie.cpp
 	# RAW counters/loops, texture oddments, player effects, particles
 	# (engine-free, tools/cmdcore_test).
 	roth/roth_cmdcore.cpp

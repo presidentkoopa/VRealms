@@ -364,11 +364,12 @@ class FlowHost
 {
 public:
 	virtual ~FlowHost() {}
-	// A movie would play here: `name` is the GDV file stem, `subtitles` the
+	// A movie plays here: `name` is the GDV file stem, `subtitles` the
 	// DBASE400 offset and size of its subtitle stream (0 when the original
-	// would not load one). Returns when it is over or skipped; the original
-	// call is blocking (gdv_cutscene.c:2840) and so the state changes around
-	// it do not depend on which.
+	// would not load one). The original call is blocking (gdv_cutscene.c:2840)
+	// and the state changes around it do not depend on whether it was
+	// skipped; the engine queues it and plays it as a blocking cutscene from
+	// the end of the tic (roth_movie.h).
 	virtual void PlayMovie(const char *name, uint32_t subtitleOffset, int32_t subtitleSize)
 	{ (void)name; (void)subtitleOffset; (void)subtitleSize; }
 	// exit_cutscene_overlay_mode's presentation half (gdv_cutscene.c:2434-2486).

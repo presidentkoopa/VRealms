@@ -55,6 +55,10 @@ void InterfaceRequestPanelClose();
 // The map's pack palette: what the text colour bytes and the icons index.
 // From the loader, right after it opens the pack (rothmap.cpp).
 void InterfaceSetPalette(const TextureSet &art);
+// That palette as the original holds it (g_palette_rgb_ptr, 6-bit VGA values):
+// what a movie subtitle's colour byte indexes (dialogue_ui.c:1927-1929).
+// False before a map has set one.
+bool InterfaceGamePalette6(uint8_t out[0x300]);
 
 // Once per tic from TickLevelLogic, after the chains have run.
 void InterfaceTick(FLevelLocals *level);

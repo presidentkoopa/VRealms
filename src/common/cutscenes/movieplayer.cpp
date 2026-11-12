@@ -41,6 +41,10 @@
 #include <cmath>
 #include <zmusic.h>
 #include "filereadermusicinterface.h"
+#include "v_font.h"
+#include "roth/roth_gdv.h"
+#include "roth/roth_movie.h"
+#include "roth/roth_dialogue.h"
 
 class MoviePlayer
 {
@@ -59,6 +63,8 @@ public:
 	virtual void Stop() {}
 	virtual ~MoviePlayer() = default;
 	virtual FTextureID GetTexture() = 0;
+	// Drawn by the job after the texture (Realms' subtitles); nothing by default.
+	virtual void DrawOverlay() {}
 };
 
 //---------------------------------------------------------------------------
@@ -824,12 +830,251 @@ public:
 
 //---------------------------------------------------------------------------
 //
+// Realms of the Haunting's GDV movies (src/roth/roth_gdv.h, differential-
+// tested against the original by tools/gdv_test). Opened as "rothgdv:<NAME>":
+// the file is read whole from the player's install into memory
+// (roth::MovieFetch), never through the VFS and never onto the disk.
+//
+// The picture is laid out on the original's 640x480 screen -- doubled across,
+// centred, the rest the colour of palette index 0 -- and shown in the DAC's
+// colours of the moment (roth::GdvDecoder::Dac). Frames are paced by the
+// movie's own audio, played at 22050 Hz as the original's sound card plays it
+// (gdv_cutscene.c:2313): a frame lasts SamplesPerFrame() samples. The
+// subtitle is the original's machine (roth::GdvSubtitles) at its row and
+// layout; its glyphs are the engine's font (the original's are ROTH.EXE data).
+//
+//---------------------------------------------------------------------------
+
+class GdvPlayer : public MoviePlayer
+{
+	roth::MovieSource src;
+	roth::GdvDecoder video;
+	roth::GdvDecoder audio;             // the same file, audio only, decoded on the mixer's thread
+	roth::GdvSubtitles subs;
+	roth::GdvScreenPlacement place;
+	MovieAudioTrack audioTrack;
+	AnimTextures animtex;
+	TArray<uint8_t> screen;
+	std::vector<uint8_t> picture;
+	uint8_t palette[768] = {};
+	uint8_t shownDac[0x300] = {};
+	std::vector<int16_t> pending;
+	size_t pendingPos = 0;
+	uint8_t subtitleColor = 0;
+	uint64_t frameNs = 1;
+	bool failed = false;
+	bool hasSound = false;
+	bool reported = false;
+
+	bool StreamCallback(SoundStream *, void *buff, int len)
+	{
+		int16_t *out = (int16_t *)buff;
+		const int want = len / 2;
+		int wrote = 0;
+		while (wrote < want)
+		{
+			if (pendingPos >= pending.size())
+			{
+				if (!audio.NextFrame()) break;
+				pending = audio.AudioBlock();
+				pendingPos = 0;
+				continue;
+			}
+			const int n = std::min<int>(want - wrote, (int)(pending.size() - pendingPos));
+			memcpy(out + wrote, pending.data() + pendingPos, n * sizeof(int16_t));
+			pendingPos += n;
+			wrote += n;
+		}
+		if (wrote == 0) return false;
+		if (wrote < want) memset(out + wrote, 0, (want - wrote) * sizeof(int16_t));
+		return true;
+	}
+	static bool StreamCallbackC(SoundStream *stream, void *buff, int len, void *userdata)
+	{ return static_cast<GdvPlayer *>(userdata)->StreamCallback(stream, buff, len); }
+
+	static uint8_t Widen(uint8_t v) { return (uint8_t)((v * 259 + 33) >> 6); }   // as roth_das.cpp widens a pack palette
+
+	void Compose()
+	{
+		memset(screen.Data(), 0, screen.Size());
+		const int w = video.Width(), h = video.Height();
+		for (int y = 0; y < h; y++)
+		{
+			const int sy = place.y + y;
+			if (sy < 0 || sy >= 480) continue;
+			uint8_t *row = screen.Data() + sy * 640;
+			const uint8_t *srow = picture.data() + (size_t)y * w;
+			for (int x = 0; x < place.w; x++)
+			{
+				const int sx = place.x + x;
+				if (sx >= 0 && sx < 640) row[sx] = srow[x * w / place.w];
+			}
+		}
+		const uint8_t *dac = video.Dac();
+		for (int i = 0; i < 0x300; i++) palette[i] = Widen(dac[i]);
+		memcpy(shownDac, dac, 0x300);
+		animtex.SetFrame(palette, screen.Data());
+	}
+
+public:
+	bool isvalid() { return !failed; }
+
+	GdvPlayer(const char *name, FString &error)
+	{
+		std::string err;
+		if (!roth::MovieFetch(name, src, err)) { error.Format("%s.GDV: %s\n", name, err.c_str()); failed = true; return; }
+		if (!video.Open(src.bytes.data(), src.bytes.size()) || video.Version() != 1)
+		{
+			error.Format("%s.GDV: %s\n", name, video.Error().empty() ? "not an 8-bit movie" : video.Error().c_str());
+			failed = true;
+			return;
+		}
+		audio.Open(src.bytes.data(), src.bytes.size());
+		audio.SetVideo(false);
+		subs.Start(src.subtitles.data(), src.subtitles.size());
+		place = roth::GdvPlacementFor640x480(video.Width(), video.Height());
+		hasSound = video.HasAudio() && SoundEnabled();
+		// With sound, one frame per audio block at 22050 Hz; silent, the
+		// timer's rate (gdv_cutscene.c:1312, 2309-2310, 2568-2590): 60 ticks
+		// a second, a frame every 0x3c00 / (fps << 8, + 0x80 at 21168 Hz).
+		if (hasSound) frameNs = (uint64_t)video.SamplesPerFrame() * 1'000'000'000ull / roth::GDV_OUTPUT_RATE;
+		else
+		{
+			uint32_t dbe = (uint32_t)(uint8_t)video.Fps() << 8;
+			if (video.HeaderRate() == 0x52b0) dbe += 0x80;
+			frameNs = dbe ? 0x3c00ull * 1'000'000'000ull / (60ull * dbe) : 83'333'333ull;
+		}
+		Printf("Realms: movie %s.GDV opened: %dx%d, %d records, %s, subtitles %s\n", name, video.Width(), video.Height(),
+			video.FrameCount(), hasSound ? "audio 22050 Hz" : "silent", subs.Active() ? "yes" : "none");
+	}
+
+	void Start() override
+	{
+		screen.Resize(640 * 480);
+		memset(screen.Data(), 0, screen.Size());
+		animtex.SetSize(AnimTexture::Paletted, 640, 480);
+		animtex.SetFrame(palette, screen.Data());
+	}
+
+	bool Frame(uint64_t clock) override
+	{
+		if (failed) return false;
+		if (!audioTrack.GetAudioStream() && hasSound && clock != 0)
+		{
+			if (!audioTrack.Start(roth::GDV_OUTPUT_RATE, audio.AudioChannels(), MusicSamples16bit, StreamCallbackC, this))
+				hasSound = false;
+		}
+		const uint64_t now = audioTrack.GetClockTime(clock);
+		const int64_t target = (int64_t)(now / frameNs);
+		bool changed = false;
+		while (video.FrameIndex() < target && video.FrameIndex() + 1 < video.FrameCount())
+		{
+			if (!video.NextFrame()) { failed = true; break; }
+			// The subtitle machine around the frame, in the original's order
+			// (roth_gdv.h DecodeWrites / EmitWrites).
+			for (int n = video.DecodeWrites(); n > 0; n--) subs.PaletteWritten();
+			subs.Frame(video.SampleClock());
+			if (subs.Redrawn())
+			{
+				const uint8_t c = subs.ColorIndex();
+				subtitleColor = src.haveGamePalette ? roth::GdvSubtitles::NearestIndex(src.gamePalette + c * 3, video.MoviePalette()) : c;
+			}
+			for (int n = video.EmitWrites(); n > 0; n--) subs.PaletteWritten();
+			if (video.FrameShown()) { video.ExpandPicture(picture); changed = true; }
+		}
+		if (picture.empty()) video.ExpandPicture(picture);
+		if (changed || memcmp(shownDac, video.Dac(), 0x300) != 0) Compose();
+		const bool decodedAll = video.FrameIndex() + 1 >= video.FrameCount();
+		return !(failed || (decodedAll && now >= (uint64_t)video.FrameCount() * frameNs));
+	}
+
+	void DrawOverlay() override
+	{
+		if (failed || !subs.Showing() || NewSmallFont == nullptr) return;
+		// layout_timed_message_text at the screen pitch, two lines
+		// (dialogue_ui.c:1932-1933); each line's x from its 02 code, the
+		// rows 11 apart from the subtitle row (dialogue_ui.c:1935-1944,
+		// text_font.c:304 starts one row and one column in).
+		std::string z = subs.Text();
+		z.push_back('\0');
+		std::vector<roth::TextLine> rec;
+		roth::LayoutTimedMessageText(rec, (const uint8_t *)z.data(), 640, 2, subtitleColor);
+		if (rec.empty()) return;
+		const uint8_t *dac = video.Dac() + subtitleColor * 3;
+		const PalEntry col(255, Widen(dac[0]), Widen(dac[1]), Widen(dac[2]));
+		const double scale = 11.0 / std::max(1, NewSmallFont->GetHeight());
+		const std::vector<uint8_t> &t = rec[0].text;
+		int x = 0, row = 0;
+		std::string line;
+		auto flush = [&]()
+		{
+			if (!line.empty())
+			{
+				int adv = 0;
+				for (unsigned char ch : line) adv += roth::FontCharAdvance(ch);
+				const double w = NewSmallFont->StringWidth(line.c_str()) * scale;
+				const double cx = x + 1 + adv * 0.5;
+				DrawText(twod, NewSmallFont, CR_UNTRANSLATED, cx - w * 0.5, place.subtitleY + 1 + row * 11, line.c_str(),
+					DTA_VirtualWidth, 640, DTA_VirtualHeight, 480, DTA_KeepRatio, true,
+					DTA_ScaleX, scale, DTA_ScaleY, scale, DTA_Color, (int)col, TAG_DONE);
+			}
+			line.clear();
+		};
+		for (size_t i = 0; i < t.size(); )
+		{
+			const uint8_t c = t[i++];
+			if (c == 0) break;
+			if (c == 1) { i++; continue; }
+			if (c == 2 && i + 1 < t.size()) { x = t[i] | (t[i + 1] << 8); i += 2; continue; }
+			if (c == 0x0a || c == 0x0d) { flush(); row++; continue; }
+			if (c < 0x0d) continue;
+			line += (char)c;
+		}
+		flush();
+	}
+
+	void Stop() override
+	{
+		if (!reported && video.FrameCount() > 0)
+		{
+			reported = true;
+			roth::MovieFinished(src.name.c_str(), video.FrameIndex() + 1, video.FrameCount(), video.FrameIndex() + 1 < video.FrameCount());
+		}
+		audioTrack.Finish();
+	}
+
+	~GdvPlayer()
+	{
+		audioTrack.Finish();
+		animtex.Clean();
+	}
+
+	FTextureID GetTexture() override
+	{
+		return animtex.GetFrameID();
+	}
+};
+
+//---------------------------------------------------------------------------
+//
 //
 //
 //---------------------------------------------------------------------------
 
 MoviePlayer* OpenMovie(const char* filename, TArray<int>& ans, const int* frameticks, int flags, FString& error)
 {
+	// Realms of the Haunting: the movie comes from the player's install, not the VFS.
+	if (!strnicmp(filename, "rothgdv:", 8))
+	{
+		auto gdv = new GdvPlayer(filename + 8, error);
+		if (!gdv->isvalid())
+		{
+			delete gdv;
+			return nullptr;
+		}
+		return gdv;
+	}
+
 	FileReader fr;
 	// first try as .ivf - but only if sounds are provided - the decoder is video only.
 	if (ans.Size())
@@ -964,6 +1209,13 @@ DEFINE_ACTION_FUNCTION(_MoviePlayer, Destroy)
 	PARAM_SELF_STRUCT_PROLOGUE(MoviePlayer);
 	self->Stop();
 	delete self;
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(_MoviePlayer, DrawOverlay)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(MoviePlayer);
+	self->DrawOverlay();
 	return 0;
 }
 

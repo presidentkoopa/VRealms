@@ -38,6 +38,7 @@
 #include "roth_install.h"
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 #include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
+#include "roth_movie.h"       // the GDV player: movies the flow asks for
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 
 #include <map>
@@ -193,21 +194,19 @@ public:
 GameCore g_core;
 CoreHost g_coreHost;
 
-// What the flow asks of the engine. There is NO GDV decoder in this tree
-// (src/common/cutscenes plays ANM, MVE, SMK and VPX only), so a movie is
-// announced, counted, and every state change around it happens exactly as if
-// it had played: the flow does the gallery stamp, the mode save and restore
-// and the overlay latch itself (roth_gameflow.cpp, PlayRecordGdvCutscene).
-// The full-screen still (op 0x0e) has no viewer either. Both are counted in
-// the core host's `calls`, so a missing picture is a number, not silence.
+// What the flow asks of the engine. A movie is queued for the GDV player
+// (roth_movie.h, decoder roth_gdv.h) and plays from the next level tic as a
+// blocking cutscene; every state change around it is the flow's own (the
+// gallery stamp, the mode save and restore and the overlay latch:
+// roth_gameflow.cpp, PlayRecordGdvCutscene). The full-screen still (op 0x0e)
+// has no viewer yet; it is counted in the core host's `calls`, so a missing
+// picture is a number, not silence.
 class FlowEngineHost : public FlowHost
 {
 public:
 	void PlayMovie(const char *name, uint32_t subOffset, int32_t subSize) override
 	{
-		g_coreHost.calls["cutscene (GDV) not shown: no GDV decoder"]++;
-		Printf("Realms: movie %s.GDV (subtitles %d bytes at DBASE400 +0x%x) -- not shown, no GDV player yet\n",
-			name, (int)subSize, subOffset);
+		MovieQueue(name, subOffset, subSize);       // gdv_cutscene.c:2840
 	}
 	void ShowImage(uint32_t id) override
 	{
@@ -5000,6 +4999,10 @@ void CaptureMapLogic(MapLogicState &out);
 void ApplyPendingWarp()
 {
 	if (!g.warpPending) return;
+	// A movie asked for before the warp plays first: in the original the
+	// chain that latched the warp had already sat through it (the call blocks,
+	// gdv_cutscene.c:2840) before the frame's tail consumes the latch.
+	if (MovieBusy()) return;
 	g.warpPending = false;
 	if (g.level == nullptr) return;
 
@@ -7101,6 +7104,12 @@ void TickLevelLogic(FLevelLocals *level)
 	// Realms' sound: the node pump (play_nearby_sfx_emitters, from
 	// update_player_tick, player.c:420), update_active_sounds, the doors.
 	SoundTick(level);
+
+	// Movies the flow asked for this tic start now, as one blocking cutscene
+	// (roth_movie.h), so the level does not tick again before them: the
+	// original's play_gdv_cutscene returns only when the movie is over
+	// (gdv_cutscene.c:2840).
+	MoviePump();
 }
 
 //==========================================================================

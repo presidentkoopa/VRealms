@@ -936,6 +936,20 @@ void InterfaceSetPalette(const TextureSet &art)
 	}
 }
 
+bool InterfaceGamePalette6(uint8_t out[0x300])
+{
+	if (U.palette.size() < 256) return false;
+	// The pack palette was widened with Expand6 (roth_das.cpp), which keeps
+	// the 6-bit value in the top six bits.
+	for (int i = 0; i < 256; i++)
+	{
+		out[i * 3 + 0] = (uint8_t)(U.palette[(size_t)i].r >> 2);
+		out[i * 3 + 1] = (uint8_t)(U.palette[(size_t)i].g >> 2);
+		out[i * 3 + 2] = (uint8_t)(U.palette[(size_t)i].b >> 2);
+	}
+	return true;
+}
+
 void InterfaceEndLevel()
 {
 	// The level's billboard array dies with it.

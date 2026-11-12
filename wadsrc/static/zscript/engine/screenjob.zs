@@ -236,6 +236,7 @@ struct MoviePlayer native
 	native bool Frame(double clock);
 	native void Destroy();
 	native TextureID GetTexture();
+	native void DrawOverlay();
 }
 
 //---------------------------------------------------------------------------
@@ -327,6 +328,44 @@ class MoviePlayerJob : SkippableScreenJob
 			player.Destroy();
 		}
 		player = null;
+	}
+}
+
+//---------------------------------------------------------------------------
+//
+// Realms of the Haunting's movies (src/roth/roth_movie.h). Esc skips the
+// movie playing, as the original's per-frame check does (dialogue_ui.c:
+// 1890-1893: input_ring_dequeue() == 1, scancode 1); a controller's B or
+// Back stands in for it in VR, the keys the VR net-wait shell also takes as
+// cancel (hw_vrmodes.cpp). Any other key does nothing, as in the original.
+// The subtitle is drawn over the picture by the player (DrawOverlay).
+//
+//---------------------------------------------------------------------------
+
+class RothMovieJob : MoviePlayerJob
+{
+	static void AddTo(ScreenJobRunner runner, String name)
+	{
+		Array<int> none;
+		let movie = MoviePlayer.Create("rothgdv:" .. name, none, MoviePlayer.NOMUSICCUTOFF, -1, -1, -1);
+		if (movie) runner.Append(new("RothMovieJob").Init(movie, MoviePlayer.NOMUSICCUTOFF));
+	}
+
+	override bool OnEvent(InputEvent evt)
+	{
+		if (evt.type == InputEvent.Type_KeyDown && (evt.KeyScan == InputEvent.Key_Escape
+			|| evt.KeyScan == InputEvent.Key_Pad_B || evt.KeyScan == InputEvent.Key_Pad_Back))
+		{
+			jobstate = skipped;
+			OnSkip();
+		}
+		return true;
+	}
+
+	override void DrawFrame()
+	{
+		Super.DrawFrame();
+		player.DrawOverlay();
 	}
 }
 
