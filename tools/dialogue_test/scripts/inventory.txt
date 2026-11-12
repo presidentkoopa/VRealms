@@ -1,0 +1,224 @@
+# Inventory: give / pickup with its context, query and the auto-select rule, remove, the display filter,
+# examine, labels, and the inventory screen's click verbs -- all on the original's own routines.
+env
+snap
+# --- give: plain items, a stackable twice, weapons (equip + quantity from the weapon block), a hidden context
+give 132
+give 133
+give 48
+give 48
+give 9
+give 38
+give 12
+give 2
+give 2
+give 282
+# --- give with a context record: the item flies in from the object's place (the pickup lock)
+reset
+givectx 132 0x240 100 -200 64 0
+locktick 10
+locktick 10
+locktick 7
+locktick 1
+givectx 133 0x242 5 6 7 1
+reset
+# a world pickup: by render id, through give_item(0, ctx)
+pickup 0x240 300 400 16 0
+pickup 0x241 300 400 16 0
+locktick 28
+pickup 0x241 300 400 16 0
+pickup 0x263 10 20 30 0
+pickup 0x2d5 1 2 3 0
+pickup 0x1ff 1 2 3 0
+pickup 0x283 1 2 3 0
+pickup 0x282 1 2 3 0
+pickup 0x292 0 0 0 0
+pickup 0x292 0 0 0 0
+reset
+# --- RAW 0x27's query: count mode, select mode ("first click selects, second click works"), never-select
+give 132
+give 133
+give 21
+query 132 0
+query 133 0
+query 21 0
+query 16 1
+query 132 1
+query 132 1
+query 133 3
+query 133 1
+query 133 1
+query 99 1
+query 99 0
+query 68 1
+query 9 1
+give 9
+query 9 1
+query 132 1
+query 132 1
+easy 1
+query 133 1
+query 133 1
+easy 0
+# list mode
+list 0 3 132 133 21
+list 1 3 132 133 21
+list 1 3 132 133 21
+list 1 2 99 98
+list 3 2 21 133
+list 1 1 21
+list 1 1 21
+reset
+# --- remove: from the right hand, from the left hand, a stack, something not carried
+give 132
+give 9
+give 48
+give 48
+give 48
+remove 48
+remove 48
+remove 132
+remove 9
+remove 16
+remove 77
+remove 48
+remove 48
+reset
+# --- RAW 0x42: the display filter hides everything but the characters, and gives it back
+give 132
+give 9
+give 2
+filter 0
+query 132 0
+query 2 0
+give 132
+filter 1
+query 132 0
+reset
+# --- examine a world object (right click): OnInspect by render id, eval mode 1
+examine 0x240
+examine 0x263
+examine 0x283
+examine 0x1ff
+examine 0x2ec
+examine 0x231
+reset
+# --- labels: the name, a ChangeName override, the tab an item lives on, has-topics
+label 21
+label 68
+label 2
+label 9
+label 132
+label 48
+label 11
+label 173
+label 219
+flagset 0x30
+label 21
+label 33
+reset
+# --- the screen: the five lists, with weapons and hands in place
+give 132
+give 133
+give 134
+give 108
+give 9
+give 38
+give 48
+give 11
+give 13
+give 2
+give 6
+tab 0
+tab 1
+tab 2
+tab 3
+tab 4
+# take the Flint onto the cursor (secondary click), put it back (secondary on itself)
+tab 0
+hold 3
+cell 3 2
+# take the Matchbox, use it on itself (primary on the held cell): no recipe -> the refusal message
+hold 2
+cell 2 1
+# Matchbox held, primary on the Flint: no recipe either way -> "I cannot use ... with ..."
+cell 3 1
+cell 2 2
+# combine: Flint held, primary on the Cylinder -> "Cylinder and Flint"
+tab 0
+hold 3
+cell 4 1
+tab 0
+# then the Tinder on the result (the recipe is the Tinder's, target 204)
+hold 3
+cell 5 1
+tab 0
+# and the other way round from a fresh pair: Cylinder held, primary on the Flint
+reset
+give 132
+give 133
+tab 0
+hold 4
+cell 3 1
+tab 0
+# swap two items' places: held + secondary on another
+hold 0
+cell 1 2
+tab 0
+# a primary click with nothing held asks for the item's close-up (no state here), secondary past the end does nothing
+cell 0 1
+cell 9 2
+# the hand boxes: held item into the right hand, then into the left
+hold 1
+handbox 1 2
+hold 0
+handbox 0 2
+tab 0
+handbox 0 2
+handbox 1 2
+# use-on-self with a recipe: Earplugs -> Earplugs (worn), and back
+reset
+give 108
+tab 0
+hold 3
+cell 3 1
+tab 0
+hold 3
+cell 3 1
+tab 0
+# Spectacles, Magnifying Glass (a recipe with an effect record), a weapon used on itself
+reset
+give 124
+give 6
+give 9
+tab 0
+hold 3
+cell 3 1
+tab 3
+hold 0
+cell 0 1
+tab 1
+hold 0
+cell 0 1
+# commit: closing with an item held selects it (list 0) or equips it (list 1)
+reset
+give 132
+give 9
+give 38
+tab 0
+hold 2
+commit
+tab 1
+hold 1
+commit
+tab 1
+hold 0
+commit
+tab 2
+hold 0
+commit
+# taking the equipped weapon or the selected item onto the cursor empties that hand
+tab 1
+hold 0
+tab 0
+hold 1

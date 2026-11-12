@@ -1,0 +1,190 @@
+# Dialogue with no speech device (every line waits for a click), as the headless original runs.
+env
+adv
+snap
+# --- 343: a line, then a five-choice menu (one gated by flag 0x139), each branch a line and a map call
+qact 343
+fin
+pump
+tick 1
+skip
+tick 1
+pump
+tick 1
+next
+next
+prev
+enter
+pump
+tick 1
+skip
+tick 1
+pump
+tick 1
+pump
+reset
+# the same menu, picked with the pointer: row 0 ("Try again later.")
+qact 343
+fin
+skip
+tick 1
+pump
+clickrow 0
+pump
+tick 1
+reset
+# row 3 with flag 0x139 set: the gated choice "Spirit." appears, five rows
+flagset 0x139
+qact 343
+fin
+skip
+tick 1
+pump
+clickrow 3
+pump
+tick 1
+skip
+tick 1
+pump
+tick 1
+reset
+# row 3 with the flag clear is "Ask Rebecca's advice": two lines, then a jump into 344's menu
+qact 343
+fin
+skip
+tick 1
+pump
+clickrow 3
+pump
+skip
+tick 1
+pump
+tick 1
+skip
+tick 1
+pump
+tick 1
+next
+next
+next
+next
+enter
+pump
+skip
+tick 1
+pump
+reset
+# --- 223: a gate on flag 0x58, two choices
+act 223
+pump
+next
+next
+enter
+pump
+tick 1
+skip
+tick 1
+pump
+# again: the flag is now set, so the record ends at its first word
+act 223
+reset
+act 223
+prev
+enter
+pump
+reset
+# --- 598: seven choices behind seven If-NOT gates; picking one sets its flag, plays a film and jumps back in
+act 598
+pump
+clickrow 6
+pump
+reset
+act 598
+clickrow 0
+pump
+tick 1
+clickrow 0
+pump
+clickrow 0
+pump
+clickrow 3
+pump
+clickrow 0
+pump
+tick 1
+pump
+reset
+# keyboard wrap: Up from nothing selects row 0, Up again wraps to the last
+act 598
+prev
+prev
+enter
+pump
+reset
+act 598
+clickrow 2
+pump
+act 598
+pump
+reset
+# --- 173, 602, 610: the remaining multi-choice shapes
+flagset 0x3e
+act 173
+pump
+clickrow 1
+pump
+tick 1
+pump
+reset
+flagset 0x3e
+act 173
+next
+next
+next
+enter
+pump
+reset
+act 602
+pump
+clickrow 7
+pump
+tick 1
+pump
+reset
+act 610
+next
+enter
+pump
+clickrow 2
+pump
+reset
+# --- the queue: eight records waiting behind a line; the ninth is dropped
+qact 343
+qact 223
+qact 598
+qact 173
+qact 602
+qact 610
+qact 344
+qact 235
+qact 586
+qact 611
+fin
+skip
+tick 1
+pump
+tick 1
+pump
+reset
+# --- stop-all (load / quit) with a menu up and records queued
+qact 343
+qact 223
+fin
+stopall
+reset
+# --- a timed message
+tmsg I cannot use the Matchbox with the Lamp.
+tick 70
+tick 69
+tick 1
+tmsg A very long message that has to wrap because it is much wider than the screen is in pixels and so it goes onto a second line and maybe even a third one if it keeps going on and on like this.

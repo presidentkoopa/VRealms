@@ -1,0 +1,90 @@
+# Dialogue with speech: the original reads each clip's DBASE500 header and times the line from it.
+# "voice 2" lets the original's own prime_voice_clip run with no sound driver behind it; "vend" is the
+# driver's end-of-stream callback (audio.c:1178).
+env
+voice 2
+snap
+# --- 343: a one-page voiced line; the page is held while the clip plays, the menu follows when it ends
+qact 343
+fin
+frames 10 7
+tick 500
+tick 500
+pump
+vend
+pump
+tick 1
+pump
+tick 1
+clickrow 4
+pump
+tick 30
+frames 3 50
+vend
+frames 2 1
+frames 3 100
+vend
+frames 3 1
+next
+enter
+frames 2 1
+vend
+frames 3 1
+reset
+# --- skipping a voiced line with the key: the clip is stopped, the text goes with it
+qact 343
+fin
+frames 2 10
+skip
+pump
+tick 1
+pump
+tick 1
+reset
+# --- Enter on a voiced line (use_enter_key_handler), then Enter on the menu with nothing selected
+qact 343
+fin
+enter
+frames 2 1
+enter
+next
+enter
+frames 2 1
+skip
+frames 2 1
+reset
+# --- a long voiced line that needs more than one page: 343's "Ask Rebecca" branch (second line wraps)
+qact 343
+fin
+vend
+frames 2 1
+clickrow 3
+frames 2 1
+vend
+frames 2 1
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 2000
+vend
+frames 2 1
+reset
+# --- a line arriving while another plays is re-queued (op 0x05 while busy)
+qact 343
+qact 344
+qact 223
+fin
+frames 2 1
+vend
+frames 2 1
+clickrow 0
+frames 2 1
+frames 2 1
+reset
+# --- stop-all while a clip plays
+qact 343
+fin
+stopall

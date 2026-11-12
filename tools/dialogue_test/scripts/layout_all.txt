@@ -1,0 +1,63 @@
+# Every spoken line (op 0x05) and every choice text (op 0x08) of all 694 action records, through the
+# original's read_next_dialogue_line and layout_timed_message_text, at both screen widths and at the
+# two line budgets the dialogue uses (3 = a spoken line's page, 10 = a choice).
+env
+quiet 1
+alllines 3
+alllines 10
+pitch 320
+alllines 3
+alllines 10
+pitch 640
+quiet 0
+snap
+# multi-page lines in the low-resolution mode, voiced: pages advance on their share of the clip
+voice 2
+pitch 320
+act 182
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+tick 100
+frames 30 100
+vend
+frames 3 1
+reset
+# the same line with no speech device: each page waits for a click
+voice 0
+act 182
+skip
+tick 1
+skip
+tick 1
+skip
+tick 1
+skip
+tick 1
+skip
+tick 1
+skip
+tick 1
+pump
+skip
+tick 1
+skip
+tick 1
+skip
+tick 1
+skip
+tick 1
+frames 3 1
+reset
+voice 2
+act 441
+frames 40 60
+skip
+frames 3 1
+pitch 640

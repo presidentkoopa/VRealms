@@ -975,6 +975,12 @@ set (PCH_SOURCES
 	# The inventory slot model over DBASE100 (no consumer in the engine yet).
 	roth/roth_inventory.cpp
 	roth/roth_itemcmds.cpp
+	# The dialogue around the interpreter, the inventory screen's rules, item
+	# icons (engine-free, tools/dialogue_test), and their panels (engine side).
+	roth/roth_dialogue.cpp
+	roth/roth_invscreen.cpp
+	roth/roth_icons.cpp
+	roth/roth_interface.cpp
 	# The exception: roth_texture is the boundary file that hands decoded
 	# artwork to the texture manager, so it does use engine types.
 	roth/roth_texture.cpp

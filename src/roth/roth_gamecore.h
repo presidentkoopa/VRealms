@@ -57,6 +57,10 @@ public:
 	Inventory &Items() { return mInventory; }
 	RothIndexRng &Rng() { return mRng; }
 	const Dbase100 *Db() const { return mDb; }
+	// The inventory's sink as the core wires it (interpreter chains answered by
+	// the core, the rest forwarded to the host): what a caller of an Inventory
+	// method outside the core must pass, so the same systems hear of it.
+	InventorySink *InvSink() { return &mInvBridge; }
 
 	// The four fixed action records (game_core.c:757, 802, 825, 971).
 	enum { ACTION_BOOT = 1, ACTION_QUIT = 2, ACTION_NEW_GAME = 3, ACTION_DEATH = 4 };

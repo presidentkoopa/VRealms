@@ -315,6 +315,11 @@ bool TextureSet::Open(const char *packName, const std::string &packFile, Log *lo
 //
 //==========================================================================
 
+const std::vector<Colour> *TextureSet::PackPalette() const
+{
+	return mPack != nullptr ? &mPack->Palette() : nullptr;
+}
+
 bool TextureSet::IsSkySurface(int index) const
 {
 	// The marker is a real, painted entry in every pack (DEMO's 0 is a fully

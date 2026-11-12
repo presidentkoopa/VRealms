@@ -1,0 +1,123 @@
+# An item's topic menu (the inspect popup's "i" list): build_available_choice_menu and
+# activate_selected_choice_record on the character items, then the lines they speak.
+env
+snap
+topics 68
+topic 1
+topics 2
+topic 1
+skip
+tick 1
+pump
+tick 1
+topics 2
+reset
+# flag 1 (Rebecca is with you) opens most topics; each topic speaks its lines and may set a flag that changes the list
+flagset 1
+topics 2
+topic 1
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+tick 1
+topics 2
+topic 1
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+tick 1
+topics 2
+topic 4
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+tick 1
+pump
+topics 2
+reset
+flagset 1
+flagset 0x13a
+topics 2
+topic 9
+skip
+tick 1
+pump
+tick 1
+topic 3
+topic 0
+topics 69
+topic 2
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+tick 1
+topics 69
+topics 1
+topic 3
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+topics 1
+topics 68
+flagset 0x3e
+topics 68
+topic 1
+skip
+tick 1
+pump
+skip
+tick 1
+pump
+topics 68
+reset
+topics 116
+topics 132
+topics 7
+topic 1
+skip
+tick 1
+pump
+reset
+# with speech: a topic's line is timed like any other
+voice 2
+flagset 1
+topics 69
+topic 2
+frames 5 20
+vend
+frames 3 1
+frames 5 20
+vend
+frames 3 1
+topics 69
+reset
+# topics in the low-resolution mode wrap at pitch - 0x50
+voice 0
+flagset 1
+flagset 0x13a
+pitch 320
+topics 2
+topics 69
+topics 1
+pitch 640

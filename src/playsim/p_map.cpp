@@ -60,6 +60,7 @@
 #include "p_terrain.h"
 #include "p_trace.h"
 #include "roth/roth_runtime.h"
+#include "roth/roth_interface.h"
 #include "r_sky.h"
 #include "r_utility.h"
 #include "shadowinlines.h"
@@ -6803,6 +6804,14 @@ void P_UseLines(player_t *player)
 	// new value here would be read by the hands build next launch, where the
 	// head ray would silently vanish. roth::UseByHand is inert unless a Realms
 	// level is loaded, so this cannot affect any other game.
+	// A Realms panel or dialogue under the pointer takes the press first: the
+	// choice menu, the inventory screen, a line waiting for a click. Inert
+	// unless a Realms game core is attached.
+	if (roth::InterfaceUse(player))
+	{
+		return;
+	}
+
 	if (roth_pick && roth::UseByHand(player, roth::TrigEvent::Use))
 	{
 		return;

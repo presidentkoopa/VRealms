@@ -29,6 +29,7 @@ namespace roth
 {
 
 class Pack;
+struct Colour;
 class Log;
 
 //
@@ -93,6 +94,9 @@ public:
 	bool Open(const char *packName, const std::string &packFile, Log *log);
 
 	bool IsOpen() const { return mPack != nullptr; }
+	// The pack's palette (null when not open): what the UI's colour bytes and
+	// icons index (roth_interface).
+	const std::vector<Colour> *PackPalette() const;
 	const std::string &Name() const { return mName; }
 	const std::string &Error() const { return mError; }
 

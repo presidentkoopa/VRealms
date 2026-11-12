@@ -41,6 +41,7 @@
 #include "roth/roth_objects.h"
 #include "hw_vrmodes.h"   // VR_SetUnitsPerMeterOverride
 #include "roth/roth_runtime.h"
+#include "roth/roth_interface.h"
 #include "c_cvars.h"
 #include "roth_portalplan.h"   // rooms over rooms: groups, cuts, the translation
 #include "roth/roth_platformplan.h"  // moving sectors: which become platform actors
@@ -626,6 +627,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		std::string packFile = roth::TheInstall().PackFile(map->rothPack.GetChars());
 		log.Line("  pack file      %s", packFile.c_str());
 		haveArt = art.Open(map->rothPack.GetChars(), packFile, &log);
+		// The dialogue and inventory panels draw in this map's palette.
+		if (haveArt) roth::InterfaceSetPalette(art);
 		if (!haveArt)
 		{
 			// Not fatal: geometry without art is still a loadable, walkable

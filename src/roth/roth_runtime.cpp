@@ -36,6 +36,7 @@
 #include "roth_gameflow.h"     // new game, travel, per-map state, saves, death
 #include "roth_install.h"
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
+#include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
 
 #include <map>
 #include <vector>
@@ -61,7 +62,6 @@
 #include "c_dispatch.h"
 #include "c_cvars.h"
 #include "v_font.h"
-#include "sbar.h"          // C_MidPrint, for the stopgap dialogue line
 #include "serializer.h"    // SerializeRealmsGlobals
 #include "gi.h"            // gameinfo.ConfigName, for the start map
 
@@ -140,88 +140,25 @@ uint8_t g_progressFlags[FLAG_BITS / 8];
 int32_t HostResetCommandChainNoSource(uint16_t index);
 int32_t HostRunObjectCommandsById(uint16_t id);
 
-// Show each dialogue line in the middle of the screen as well as in the
-// console. A STOPGAP so a conversation can be seen without the console open:
-// it is the engine's own centred message, not the original's dialogue window,
-// and choices still cannot be picked. Not archived (GAMENAME is shared with
-// the hands build, so nothing here may follow the owner into it).
-CVAR(Bool, roth_dialogue_onscreen, true, 0)
 CVAR(Bool, roth_newgame_on_start, true, 0)
 
 class CoreHost : public FlowInterpSink   // movies, images, health: the game flow (roth_gameflow.h)
 {
 public:
-	std::vector<uint8_t> text;              // DBASE400.DAT, whole
 	std::map<std::string, int> calls;       // what was asked for and not built
 
-	bool LoadText(const Install &install)
-	{
-		if (!text.empty()) return true;
-		const std::string path = install.DataFile("DBASE400.DAT");
-		if (path.empty()) return false;
-		FILE *f = fopen(path.c_str(), "rb");
-		if (f == nullptr) return false;
-		fseek(f, 0, SEEK_END);
-		const long n = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (n > 0)
-		{
-			text.resize((size_t)n);
-			if (fread(text.data(), 1, (size_t)n, f) != (size_t)n) text.clear();
-		}
-		fclose(f);
-		return !text.empty();
-	}
-
-	// dbase100.c:371-403, minus the cache and the voice.
+	// The dialogue window, its text and its speech, and the inventory screen
+	// the interpreter asks about: roth_interface (rules in roth_dialogue and
+	// roth_invscreen, differential-tested against the original).
 	uint32_t ReadNextDialogueLine(uint8_t *dest, uint32_t maxlen, uint32_t voiceOffset, uint32_t flag) override
-	{
-		(void)flag;
-		if (dest == nullptr || (uint64_t)voiceOffset + 8 > text.size()) return 0;
-		uint32_t len = (uint32_t)text[voiceOffset + 4] | ((uint32_t)text[voiceOffset + 5] << 8);
-		if (len > maxlen) len = maxlen;                                  // :390
-		const uint64_t avail = text.size() - ((uint64_t)voiceOffset + 8);
-		if (len > avail) len = (uint32_t)avail;
-		memcpy(dest, text.data() + voiceOffset + 8, len);
-		// The speech for the line (dbase100.c:393-395): the header's first
-		// dword is the DBASE500 clip, started only on the flag != 0 path and
-		// only when it is not 0. prime_voice_clip refuses while a clip is
-		// still playing, so of several lines read in one go the first speaks.
-		if (flag != 0)
-		{
-			const uint32_t clip = (uint32_t)text[voiceOffset] | ((uint32_t)text[voiceOffset + 1] << 8)
-				| ((uint32_t)text[voiceOffset + 2] << 16) | ((uint32_t)text[voiceOffset + 3] << 24);
-			if (clip != 0) SoundPrimeVoiceClip(clip);
-		}
-		return len;
-	}
-
-	void Say(const char *what, const uint8_t *t, uint32_t bytes)
-	{
-		// The builder's buffer is NUL-separated lines; print each.
-		std::string line, all;
-		for (uint32_t i = 0; i <= bytes; i++)
-		{
-			const uint8_t c = i < bytes ? t[i] : 0;
-			if (c == 0)
-			{
-				if (!line.empty())
-				{
-					Printf("%s: %s\n", what, line.c_str());
-					if (!all.empty()) all += "\n";
-					all += line;
-				}
-				line.clear();
-			}
-			else if (c >= 0x20 && c < 0x7f) line += (char)c;
-		}
-		if (roth_dialogue_onscreen && !all.empty()) C_MidPrint(SmallFont, all.c_str());
-	}
-
-	uint32_t Dbase100OpenDialogueWindow(const uint8_t *t, uint32_t bytes) override
-	{ calls["dialogue window (choices)"]++; if (t != nullptr) Say("[Realms choice]", t, bytes); return 0; }
-	uint32_t Dbase100OpenDialogueWindowAlt(const uint8_t *t, uint32_t bytes) override
-	{ calls["dialogue window (line)"]++; if (t != nullptr) Say("[Realms]", t, bytes); return 0; }
+	{ return InterfaceReadNextDialogueLine(dest, maxlen, voiceOffset, flag); }
+	uint32_t Dbase100OpenDialogueWindow(const uint8_t *t, uint32_t bytes) override { return InterfaceOpenDialogueWindow(t, bytes); }
+	uint32_t Dbase100OpenDialogueWindowAlt(const uint8_t *t, uint32_t bytes) override { return InterfaceOpenDialogueWindowAlt(t, bytes); }
+	void DialogueVoiceForceEnd(uint32_t eax, uint32_t edx) override { InterfaceDialogueVoiceForceEnd(eax, edx); }
+	int32_t InventoryPanelOpen() override { return InterfaceInventoryPanelOpen(); }
+	int32_t InspectPopupActive() override { return InterfaceInspectPopupActive(); }
+	void ArmInventoryPanelExit() override { InterfaceArmPanelExit(); }
+	void SetLatch80b2c() override { InterfaceRequestPanelClose(); }
 
 	// play_sound_effect (audio.c:758). The id is a sample row: an action
 	// record carries one directly, and an item record's key was rewritten to
@@ -1286,12 +1223,45 @@ int IfNotItem(Command *rec, Handlers &h)
 		return CmdIfNotItem(g_core, st, r, host); });
 }
 
+// give_item's context (raw_commands.c:4801-4822): the object the player just
+// clicked, g_command_active_chain 0x8a134, set only while that object's chain
+// runs (run_leftclick_object_trigger, raw_commands.c:2929, cleared on every
+// exit). Its 16 bytes are the context record (x +0, y +2, render word +4,
+// flags +7, z +0xa): with it the item is seen flying in from where the object
+// stood. ROTH.C's other source, a drop point between the two vertices of a
+// secondary active EDGE (0x8a0fc), is set only by the original's edge
+// channel, which the face channel here does not stage. Null otherwise.
+static GiveContext g_activeGiveContext;
+const GiveContext *ActiveGiveContext()
+{
+	if (g.activeObjectSector < 0 || g.activeObjectSector >= (int)g.map.objects.size()) return nullptr;
+	const std::vector<Object> &grp = g.map.objects[g.activeObjectSector];
+	if (g.activeObjectIndex < 0 || g.activeObjectIndex >= (int)grp.size()) return nullptr;
+	const Object &o = grp[g.activeObjectIndex];
+	g_activeGiveContext.x = o.x;
+	g_activeGiveContext.y = o.y;
+	g_activeGiveContext.id = (uint16_t)(o.textureIndex | (o.textureSource << 8));
+	g_activeGiveContext.flags7 = o.flags;
+	g_activeGiveContext.z = o.z;
+	return &g_activeGiveContext;
+}
+
+// The level's copy of an object record, for roth_interface's pickup.
+bool RuntimeObjectRecord(int rothSector, int rothIndex, Object &out)
+{
+	if (rothSector < 0 || rothSector >= (int)g.map.objects.size()) return false;
+	const std::vector<Object> &grp = g.map.objects[rothSector];
+	if (rothIndex < 0 || rothIndex >= (int)grp.size()) return false;
+	out = grp[rothIndex];
+	return true;
+}
+
 // 0x29 cmd_give_item -- raw_commands.c:4799-4830.
 int GiveItemCmd(Command *rec, Handlers &h)
 {
 	if (!g_core.IsAttached()) { g.unhandledOps[0x29]++; return CMD_NOTHING; }
 	return RunItemCmd(rec, &h, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &) {
-		return CmdGiveItem(g_core, st, r, nullptr); });
+		return CmdGiveItem(g_core, st, r, ActiveGiveContext()); });
 }
 
 // 0x2a cmd_remove_item -- raw_commands.c:4918-4931.
@@ -4994,8 +4964,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// roth_newgame_on_start 0 leaves the inventory empty, for tests.
 	if (TheDbase100().IsLoaded() && !g_core.IsAttached())
 	{
-		const bool haveText = g_coreHost.LoadText(TheInstall());
-		g_core.Attach(&TheDbase100(), &g_coreHost, nullptr);
+		g_core.Attach(&TheDbase100(), &g_coreHost, InterfaceInventorySink());
+		InterfaceAttach(g_core, TheDbase100(), TheInstall());
 		g_flow.Attach(&g_core, &TheDbase100(), &g_flowHost);
 		g_coreHost.flow = &g_flow;
 		{
@@ -5022,7 +4992,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		if (log != nullptr) log->Line("game core: attached (%d items, %d actions, flag bitmap %d bytes, DBASE400 text %s)",
 			TheDbase100().ItemCount(), TheDbase100().ActionCount(),
 			(int)g_core.Interp().State().g_dbase100_record_bitmap.size(),
-			haveText ? "loaded" : "MISSING -- dialogue lines will be empty");
+			"see the [roth_ui] line");
 	}
 	g_dialogueLatch = false;
 	// A death went back to the menu, and Play was chosen (game_core.c:1006-1012,
@@ -5399,6 +5369,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 
 void EndLevel()
 {
+	InterfaceEndLevel();
 	g.active = false;
 	g.level = nullptr;
 	g.platformCtrl.clear();
@@ -6434,7 +6405,9 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 		if (roth_trigger_debug)
 			Printf("roth_trigger: object %d/%d carries id 0 -- not addressable\n",
 				rothSector, rothIndex);
-		return false;
+		// No command: a plain object, which the original picks up or
+		// examines (input.c:1034-1086, 982-1014).
+		return InterfaceObjectAction(mo, rothSector, rothIndex, want == TrigEvent::Use);
 	}
 
 	auto it = g.byObject.find((int)id);
@@ -6443,7 +6416,7 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 		if (roth_trigger_debug)
 			Printf("roth_trigger: object %d/%d (id %u) -- NO chain bound\n",
 				rothSector, rothIndex, (unsigned)id);
-		return false;
+		return InterfaceObjectAction(mo, rothSector, rothIndex, want == TrigEvent::Use);
 	}
 
 	// Stage "what the player just acted on" as the OBJECT, the same way a face
@@ -6511,6 +6484,10 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 		any |= Fire(b.chain);
 		if (destroys) break;    // the actor is gone; nothing else may touch it
 	}
+	// g_command_active_chain is cleared when the object's chain exits
+	// (raw_commands.c:1331, 2960, 2964): a later chain has no clicked object.
+	g.activeObjectSector = -1;
+	g.activeObjectIndex  = -1;
 	return any;
 }
 
@@ -6700,6 +6677,9 @@ void TickLevelLogic(FLevelLocals *level)
 	ApplyPendingWarp();
 	DrainPendingDoors();
 	DrainPendingDialogue();
+	// The dialogue window and the inventory screen: after the chains, as the
+	// original's text pass follows its logic in the frame.
+	InterfaceTick(level);
 
 	// Realms' sound: the node pump (play_nearby_sfx_emitters, from
 	// update_player_tick, player.c:420), update_active_sounds, the doors.
