@@ -25,6 +25,8 @@
 
 struct FLevelLocals;
 class AActor;
+class PClassActor;
+struct FMemoryMeshData;
 
 namespace roth
 {
@@ -76,6 +78,17 @@ bool ObjectForActor(const AActor *mo, int &rothSector, int &rothIndex);
 // a loader local that does not outlive the load, so nothing can be resolved
 // later. Negative when the loader never built one.
 int FindLogicSprite(uint16_t textureWord);
+
+// A SPRITE FRAME FOR A MESH SOME OTHER PART OF THE LOADER BUILT, bound to an
+// actor class the way prop meshes are bound to LoaderProp -- in memory, nothing
+// written anywhere. roth_platforms uses it for the boxes a moving sector
+// becomes. `key` names the geometry: the same key reuses the model already
+// registered, so reloading a map does not grow the model table.
+//
+// Returns the sprite index to put in AActor::sprite (frame 0), or -1. Must be
+// called after PrepareObjects in the same load, because that is where the
+// sprite table and the added model frames are reset; `data` is consumed.
+int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log);
 
 // The rotation byte -> yaw conversion the objects were built with, exported so a
 // later rotation lands on the same convention as the original spawn instead of a

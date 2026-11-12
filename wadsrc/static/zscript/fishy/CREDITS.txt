@@ -1,0 +1,26 @@
+3D Platform by FishyClock, GPL-3.0, https://github.com/FishyClock/3Dplatform
+
+The two .zs files in this folder are that library's core, copied UNMODIFIED
+from upstream commit 36b0d690b95e148cc5c608001f1fed6ff8a19699 (2026-10-22):
+
+    platform-base.zs      FishyPlatform, FishyPlatformNode, FishyPlatformPivot,
+                          FishyPlatformGroup and the ACS utility functions
+    platform-generic.zs   FishyPlatformGeneric
+
+LICENSE.txt is the library's own LICENSE file (GNU GPL version 3), which is
+also this engine's licence.
+
+NOT brought across, because nothing here uses them and they depend on the
+library's demo assets: test-platforms.zs, demo-platforms.zs, misc-test.zs, the
+demo map, its models, sprites, textures and its compiled ACS. The ACS-callable
+functions are still present (they are static ZScript functions in
+platform-base.zs) and can be reached from ACS with ScriptCall exactly as the
+library documents.
+
+Please do not edit the two files in place. Engine-side behaviour belongs in a
+subclass: see ../actors/loaderplatform.zs, which is this project's own code.
+To update the library, replace both files from upstream and re-check that
+loaderplatform.zs still compiles against them.
+
+The library declares version "4.14.3"; here it is compiled as part of the
+engine's own script unit (version "5.0.0").

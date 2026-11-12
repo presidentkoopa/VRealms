@@ -43,6 +43,8 @@
 #include "roth/roth_runtime.h"
 #include "c_cvars.h"
 #include "roth_portalplan.h"   // rooms over rooms: groups, cuts, buffers
+#include "roth/roth_platformplan.h"  // moving sectors: which become platform actors
+#include "roth/roth_platforms.h"
 #include "playsim/portal.h"    // FLinePortal, PORTT_LINKED
 
 //==========================================================================
@@ -92,6 +94,21 @@ CVAR(String, roth_sector_ceiling, "", CVAR_NOINITCALL)
 // seen working in a headset it is a test, not a load anyone should inherit.
 // Applied at load; change it and reload the map.
 CVAR(Bool, roth_portals, false, CVAR_NOINITCALL)
+
+// Moving sectors as solid platform actors.
+//
+// RAW opcode 0x09 slides a sector sideways by moving its vertices, which a
+// static BSP cannot do. 1: every moving sector that roth_platformplan.h can
+// show as "a slab or a block travelling along a level channel" is taken out of
+// the static map and built as a platform actor instead (roth/roth_platforms.h;
+// the platform physics are FishyClock's "3D Platform", GPL-3.0), and the level
+// logic runs the original's 0x09 tick to drive it. 0: the map is built exactly
+// as before and 0x09 stays unimplemented and counted.
+//
+// Not archived, for the same reason as roth_portals: nothing behind it has
+// been compiled into a running engine by the lane that wrote it, let alone
+// seen in a headset. Applied at load; change it and reload the map.
+CVAR(Bool, roth_platforms, false, CVAR_NOINITCALL)
 
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
@@ -569,6 +586,8 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// one. BeginLevel cannot do it -- by the time it runs, the loader has
 	// already recorded its face and door bindings.
 	roth::EndLevel();
+	// And the previous level's platform pieces, latching the cvar for this load.
+	roth::ResetPlatforms(roth_platforms);
 
 	log.Section("Artwork");
 
@@ -651,10 +670,31 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// Only slabs with real thickness count: a top at or below its own underside
 	// has no volume to render, and reserving space for one would leave a zeroed
 	// sector and a zeroed line in the arrays for the node builder to trip over.
-	int platformCount = 0;
-	for (const auto &rs : rm.sectors)
+	//
+	// roth_platforms: a slab that belongs to a MOVING sector (RAW opcode 0x09)
+	// is not a 3D floor at all in that mode -- it becomes a platform actor, built
+	// further down -- so it is planned first and left out of this count. The
+	// plan is made from the map data alone (roth_platformplan.h), which is why
+	// it can be made this early.
+	std::vector<rothplat::Plan> movePlans;
+	std::vector<char> slabIsActor(rm.sectors.size(), 0);
+	if (roth_platforms)
 	{
+		movePlans = rothplat::PlanMovingSectors(rm);
+		for (const rothplat::Plan &mpn : movePlans)
+		{
+			if (!mpn.supported) continue;
+			for (const rothplat::Piece &pc : mpn.pieces)
+				if (pc.kind == rothplat::PIECE_SLAB) slabIsActor[mpn.sector] = 1;
+		}
+	}
+
+	int platformCount = 0;
+	for (size_t si = 0; si < rm.sectors.size(); si++)
+	{
+		const roth::Sector &rs = rm.sectors[si];
 		if (rs.platformIndex < 0 || rs.platformIndex >= (int)rm.platforms.size()) continue;
+		if (slabIsActor[si]) continue;
 		const roth::MidPlatform &mp = rm.platforms[rs.platformIndex];
 		if (mp.topZ > mp.undersideZ) platformCount++;
 	}
@@ -2195,6 +2235,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			const roth::Sector &rs = rm.sectors[i];
 			if (rs.platformIndex < 0 || rs.platformIndex >= (int)rm.platforms.size())
 				continue;
+			// roth_platforms: this slab moves, and is an actor. Same test as
+			// the census above, which is what keeps the allocation exact.
+			if (slabIsActor[i]) continue;
 
 			const roth::MidPlatform &mp = rm.platforms[rs.platformIndex];
 			const double topZ  = double(mp.topZ);
@@ -2393,6 +2436,225 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  platforms built %d  (%d skipped as zero thickness)",
 			platformsBuilt, platformsSkipped);
 		log.Count("mid-platforms: zero thickness, skipped", platformsSkipped);
+	}
+
+	//----------------------------------------------------------------------
+	// Moving sectors -> platform actors   (roth_platforms)
+	//
+	// RAW opcode 0x09 slides a sector by adding a delta to its four vertices
+	// every frame, and its neighbours stretch to follow. Nothing in a static BSP
+	// can do that. Where roth_platformplan.h finds that the four neighbours are
+	// LEVEL with each other, though, "the sector slides" and "its slab, or the
+	// block of floor it stands proud by, slides along a level channel" are the
+	// same picture -- and a block sliding along a channel is an actor.
+	//
+	// So for each such sector, two things happen here:
+	//
+	//   * its solid parts are DESCRIBED to roth_platforms as boxes -- the
+	//     mid-platform slab, the floor above the neighbours' floor, the ceiling
+	//     below the neighbours' ceiling -- each with the engine's own plane
+	//     parameters for the flats it wears, so the box's top samples exactly
+	//     what the plane sampled. The actors are spawned later, when the level
+	//     can be linked into (MapLoader::LoadLevel, beside the props);
+	//
+	//   * its floor and ceiling in the STATIC map are set to the neighbours',
+	//     flats included, so what is left behind is the channel. Its slab was
+	//     already kept out of the 3D floors above.
+	//
+	// The Realms sector record is NOT changed: the level logic still holds the
+	// sector's own heights, and the platform follows those.
+	//
+	// The side faces of a box take the wall art the original shows on the step:
+	// the neighbour's face looking at the block names it, as its lower texture
+	// for a floor block and its upper for a ceiling block. A slab has no edge
+	// art in Realms; it borrows its top's, as the 3D floors do.
+	//----------------------------------------------------------------------
+	if (!movePlans.empty())
+	{
+		log.StageBegin("moving sectors");
+		log.Section("Moving sectors (roth_platforms)");
+		int built = 0, pieces = 0, notBuilt = 0;
+
+		// A sector plane's texturing as the engine holds it right now.
+		auto planeOf = [&](sector_t *sx, int which) -> roth::PlatformFlat
+		{
+			roth::PlatformFlat f;
+			f.tex = sx->GetTexture(which);
+			if (f.tex == skyflatnum) f.tex = FNullTextureID();   // never draw sky on a box
+			f.xScale = sx->GetXScale(which);
+			f.yScale = sx->GetYScale(which);
+			f.xOffset = sx->GetXOffset(which);
+			f.yOffset = sx->GetYOffset(which, false);
+			f.angle = sx->GetAngle(which, false).Degrees();
+			return f;
+		};
+		// A mid-platform face, through roth_surface exactly as the 3D floors.
+		auto slabFlat = [&](uint16_t texWord, uint8_t sbits, uint8_t shX, uint8_t shY)
+		{
+			roth::FlatSetup f = {};
+			f.textureWord = texWord;
+			f.scaleBits = sbits;
+			f.shiftX = shX;
+			f.shiftY = shY;
+			if (haveArt)
+			{
+				int iw = 0, ih = 0; bool trans = false;
+				if (art.ImageShape((int)texWord, iw, ih, trans))
+				{
+					f.texW = (uint16_t)iw;
+					f.texH = (uint16_t)ih;
+					f.opaque256 = (iw == 256 && ih == 256 && !trans);
+				}
+			}
+			const roth::FlatEngineSetup e = roth::FlatToEngine(f);
+			roth::PlatformFlat out;
+			out.tex = worldTex(texWord);
+			out.xScale = e.xScale;   out.yScale = e.yScale;
+			out.xOffset = e.xOffset; out.yOffset = e.yOffset;
+			out.angle = e.angle;
+			return out;
+		};
+		auto copyPlane = [&](sector_t *to, sector_t *from, int which)
+		{
+			const double z = from->GetPlaneTexZ(which);
+			to->SetPlaneTexZ(which, z);
+			if (which == sector_t::floor) to->floorplane.set(0., 0., 1., -z);
+			else                          to->ceilingplane.set(0., 0., -1., z);
+			to->SetTexture(which, from->GetTexture(which), false);
+			to->SetXScale(which, from->GetXScale(which));
+			to->SetYScale(which, from->GetYScale(which));
+			to->SetXOffset(which, from->GetXOffset(which));
+			to->SetYOffset(which, from->GetYOffset(which, false));
+			to->SetAngle(which, from->GetAngle(which, false));
+		};
+
+		for (const rothplat::Plan &mpn : movePlans)
+		{
+			FString recs;
+			for (int r : mpn.records) recs.AppendFormat("%s%d", recs.IsEmpty() ? "" : ",", r);
+
+			FString why = mpn.reason.c_str();
+			bool ok = mpn.supported;
+			// A geometry test that removed this sector or the neighbour it
+			// borrows from removed the thing this would be built against.
+			if (ok && (sectorSkipped(mpn.sector) || sectorSkipped(mpn.nbSector)))
+			{ ok = false; why = "sector or neighbour left out by roth_skip_sectors"; }
+			// roth_portals moves whole sectors to another region. A platform
+			// whose sector and channel ended up in different regions would have
+			// to cross a portal the moment it moved; that has not been looked
+			// at, so it is declined rather than guessed.
+			double offX = 0., offY = 0.;
+			if (ok)
+			{
+				roth::SectorShift(mpn.sector, offX, offY);
+				const roth::Sector &ms = rm.sectors[mpn.sector];
+				for (int k = 0; k < 4 && ok; k++)
+				{
+					const roth::Face &f = rm.faces[ms.firstFaceIndex + k];
+					if (f.sister < 0) continue;
+					double nx = 0., ny = 0.;
+					roth::SectorShift(rm.faces[f.sister].sector, nx, ny);
+					if (nx != offX || ny != offY)
+					{ ok = false; why = "roth_portals put it and a neighbour in different regions"; }
+				}
+			}
+			if (!ok)
+			{
+				log.Line("  sector %4d  record(s) %s  NOT BUILT: %s", mpn.sector,
+					recs.GetChars(), why.GetChars());
+				notBuilt++;
+				continue;
+			}
+
+			const roth::Sector &ms = rm.sectors[mpn.sector];
+			sector_t *sec = &Level->sectors[mpn.sector];
+			sector_t *nb = &Level->sectors[mpn.nbSector];
+
+			// Which neighbour face looks at each side of the box.
+			// south (y0), east (x1), north (y1), west (x0).
+			int sideFace[4] = { -1, -1, -1, -1 };
+			for (int k = 0; k < 4; k++)
+			{
+				const roth::Face &f = rm.faces[ms.firstFaceIndex + k];
+				const roth::Vertex &a = rm.vertices[f.vertex1], &b = rm.vertices[f.vertex2];
+				int edge = -1;
+				if (a.y == b.y) edge = (a.y == mpn.y0) ? 0 : 2;
+				else if (a.x == b.x) edge = (a.x == mpn.x1) ? 1 : 3;
+				if (edge >= 0) sideFace[edge] = f.sister;
+			}
+			auto stepTex = [&](int edge, bool upper, FTextureID fallback) -> FTextureID
+			{
+				const int sf = sideFace[edge];
+				if (sf >= 0 && rm.faces[sf].textureMap >= 0
+					&& (size_t)rm.faces[sf].textureMap < rm.textureMaps.size())
+				{
+					const roth::TextureMap &tm = rm.textureMaps[rm.faces[sf].textureMap];
+					const FTextureID t = worldTex(upper ? tm.upperTexture : tm.lowerTexture);
+					if (t.isValid()) return t;
+				}
+				return fallback;
+			};
+
+			FString desc;
+			for (const rothplat::Piece &pc : mpn.pieces)
+			{
+				roth::PlatformPiece pp;
+				pp.rothSector = mpn.sector;
+				pp.kind = pc.kind;
+				pp.x0 = double(mpn.x0) + offX;  pp.x1 = double(mpn.x1) + offX;
+				pp.y0 = double(mpn.y0) + offY;  pp.y1 = double(mpn.y1) + offY;
+				pp.z0 = double(pc.z0);          pp.z1 = double(pc.z1);
+				pp.radius = mpn.radius;
+				for (const auto &c : mpn.centres)
+					pp.centres.push_back({ c.first + offX, c.second + offY });
+				pp.lightLevel = sec->lightlevel;
+
+				if (pc.kind == rothplat::PIECE_SLAB)
+				{
+					const roth::MidPlatform &mp = rm.platforms[ms.platformIndex];
+					pp.top = slabFlat(mp.topTexture, (uint8_t)((mp.scales >> 4) & 3),
+						mp.topShiftX, mp.topShiftY);
+					pp.bottom = slabFlat(mp.undersideTexture, (uint8_t)((mp.scales >> 2) & 3),
+						mp.undersideShiftX, mp.undersideShiftY);
+					// Missing art borrows the other face's, as for the 3D floors.
+					if (!pp.top.tex.isValid()) pp.top = pp.bottom;
+					if (!pp.bottom.tex.isValid()) pp.bottom = pp.top;
+					for (int e = 0; e < 4; e++) pp.side[e] = pp.top.tex;
+					desc.AppendFormat(" slab %d..%d", pc.z0, pc.z1);
+				}
+				else if (pc.kind == rothplat::PIECE_FLOORBLOCK)
+				{
+					// Its top is the sector's own floor; it stands on the ground.
+					pp.top = planeOf(sec, sector_t::floor);
+					for (int e = 0; e < 4; e++) pp.side[e] = stepTex(e, false, pp.top.tex);
+					desc.AppendFormat(" floor-block %d..%d", pc.z0, pc.z1);
+				}
+				else
+				{
+					// Its underside is the sector's own ceiling; it hangs flush.
+					pp.bottom = planeOf(sec, sector_t::ceiling);
+					for (int e = 0; e < 4; e++) pp.side[e] = stepTex(e, true, pp.bottom.tex);
+					desc.AppendFormat(" ceiling-block %d..%d", pc.z0, pc.z1);
+				}
+				roth::AddPlatformPiece(pp);
+				pieces++;
+			}
+
+			// What is left behind is the channel. AFTER the pieces were
+			// described, because they read this sector's own planes.
+			if (mpn.lowerFloor) copyPlane(sec, nb, sector_t::floor);
+			if (mpn.raiseCeil)  copyPlane(sec, nb, sector_t::ceiling);
+
+			log.Line("  sector %4d  record(s) %s  %s:%s  footprint %dx%d as %d box(es) r %.0f%s%s",
+				mpn.sector, recs.GetChars(), mpn.reason.c_str(), desc.GetChars(),
+				mpn.x1 - mpn.x0, mpn.y1 - mpn.y0, (int)mpn.centres.size(), mpn.radius,
+				mpn.lowerFloor ? "; static floor -> neighbours'" : "",
+				mpn.raiseCeil ? "; static ceiling -> neighbours'" : "");
+			built++;
+		}
+		log.Line("  %d moving sector(s) built as platforms (%d piece(s)), %d not built",
+			built, pieces, notBuilt);
+		log.Count("moving sectors: 0x09 sectors with no platform (still static)", notBuilt);
 	}
 
 	//----------------------------------------------------------------------

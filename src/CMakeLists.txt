@@ -981,6 +981,9 @@ set (PCH_SOURCES
 	roth/roth_texture_object.cpp
 	# Placed objects: props, furniture and the 3D meshes, all built in memory.
 	roth/roth_objects.cpp
+	# Moving sectors (RAW opcode 0x09) as platform actors, behind roth_platforms.
+	# The platform physics are FishyClock's "3D Platform" (GPL-3.0), in zscript.
+	roth/roth_platforms.cpp
 	# The level-logic spine (engine-free) and the runtime that binds it to the
 	# live world. roth_commands is also compiled into the standalone selftest.
 	roth/roth_commands.cpp

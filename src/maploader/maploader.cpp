@@ -30,6 +30,7 @@
 #include <cmath>	// needed for std::floor on mac
 #include "maploader.h"
 #include "roth/roth_objects.h"
+#include "roth/roth_platforms.h"
 #include "roth/roth_runtime.h"
 #include "c_cvars.h"
 #include "actor.h"
@@ -3204,6 +3205,9 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 	// what it decided and puts the actors in here instead. Does nothing when no
 	// such loader ran, so an ordinary map pays one compare.
 	roth::SpawnPreparedObjects(Level);
+	// And the moving sectors it turned into platform actors (roth_platforms).
+	// After the props, because that is where this load's sprite table starts.
+	roth::SpawnPreparedPlatforms(Level);
 
 	// Load and link lightmaps - must be done after P_Spawn3DFloors (and SpawnThings? Potentially for baking static model actors?)
 	if (!ForceNodeBuild)

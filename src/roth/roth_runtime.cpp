@@ -45,6 +45,8 @@
 #include "p_spec.h"
 #include "playsim/p_local.h"
 #include "roth_objects.h"
+#include "roth_platforms.h"      // roth_platforms: moving sectors as platform actors
+#include "roth_platformplan.h"   // which vertices cmd_move_sector takes
 #include "actor.h"
 #include "d_player.h"
 #include <math.h>
@@ -328,6 +330,11 @@ struct Effect
 	// The members of an OBJECT effect. Sectors go in `sectors` above; these are
 	// the (sector, index) pairs of the props a command named.
 	std::vector<ObjectRef> objects;
+
+	// 0x09 move-sector only: chunk[+0x0e..+0x15], the sector's four vertices in
+	// ASCENDING order of the coordinate that moves, as indices into
+	// Map::vertices. The tick tests [3] going up and [0] going down.
+	int moveVerts[4] = { -1, -1, -1, -1 };
 };
 
 // TrigEvent -- what makes a trigger fire, as opposed to what it is bound to --
@@ -580,6 +587,14 @@ struct Runtime
 	std::map<int, int> platformCtrl;
 	std::map<int, std::vector<int>> lightFollowers;
 	std::map<int, std::pair<double, double>> sectorShift;   // roth_portals: moved sectors
+
+	// roth_platforms. How far each moving sector has slid from where it was at
+	// load, summed from the 0x09 tick's own per-frame deltas, and the sectors
+	// the loader turned into platform actors (in ascending order).
+	bool platformsOn = false;
+	std::map<int, std::pair<int, int>> movers;
+	std::vector<int> platformSectors;
+	int moversUnshown = 0;        // 0x09 effects running with nothing to show them
 
 	// Realms FLAT index -> the engine texture, and whether the index is the
 	// pack's sky marker. See RegisterFlat.
@@ -2544,6 +2559,12 @@ static void MoveSectorPlane(int si, bool ceiling, int16_t height)
 
 	if (ceiling) rs.ceilingHeight = height; else rs.floorHeight = height;
 
+	// roth_platforms: this plane was taken out of the static map and given to a
+	// platform actor, whose box is re-measured from the Realms height every
+	// world step (DrivePlatforms). The engine plane underneath is the
+	// neighbours' and must stay where the loader put it.
+	if (PlatformOwnsPlane(si, ceiling)) return;
+
 	sector_t *sec = &g.level->sectors[si];
 	const int which = ceiling ? sector_t::ceiling : sector_t::floor;
 	if (ceiling) sec->ceilingplane.setD(newZ);
@@ -2689,6 +2710,17 @@ static void ApplySectorFlat(int si, bool isFloor)
 
 	const Sector &rs = g.map.sectors[si];
 	sector_t *sec = &g.level->sectors[si];
+
+	// roth_platforms: a plane the loader gave to a platform actor wears the
+	// NEIGHBOURS' flat in the static map; re-applying this sector's own would
+	// paint the moving piece's picture onto the floor it left. The box's mesh is
+	// built once at load, so a flat SWAP on such a sector is not shown -- no
+	// retail record does one (tools/platforms), and it is counted if one does.
+	if (PlatformOwnsPlane(si, !isFloor))
+	{
+		g.unhandledOps[isFloor ? 0x0A : 0x0B]++;
+		return;
+	}
 
 	const int which = isFloor ? sector_t::floor : sector_t::ceiling;
 	const int index = isFloor ? rs.floorTexture : rs.ceilingTexture;
@@ -3573,6 +3605,281 @@ static bool TickModifySector(Effect &e)
 
 //==========================================================================
 //
+// cmd_move_sector -- raw_commands.c:4588, RAW command base 0x09
+// tick_moving_sector -- raw_commands.c:5869
+//
+// The one effect that slides geometry SIDEWAYS. It adds a signed per-frame
+// delta to one coordinate -- x or y, chosen by bit 0x40 of +0x06 -- of the
+// sector's four vertices, until the leading vertex reaches a limit held in the
+// record. Because the neighbouring sectors share those vertices they stretch
+// and shrink to follow, which is what makes it look like a platform crossing a
+// pit, a floor plate travelling down a corridor or a block sliding in a grid.
+//
+// WHAT IS TRANSCRIBED AND WHAT IS NOT. The LOGIC is the original's, in the
+// original's own 16-bit vertex coordinates: which vertices, the per-frame
+// budget, the clamp, the two limits, the dwell and turn-around, the toggle,
+// and the fold of the delta into the flats' shift bytes. It runs on
+// Map::vertices, the Realms state, whether or not anything can show it.
+//
+// The PRESENTATION is this port's. A Doom BSP cannot move a vertex, so the
+// level's own vertices never move; the loader turned the sector into a platform
+// actor where roth_platformplan.h says that is the same picture (roth_platforms,
+// src/roth/roth_platforms.h), and DrivePlatforms below tells that actor how far
+// the Realms vertices have travelled. A moving sector the plan could not turn
+// into a platform still runs here, invisibly, so that its record's state bits
+// and its timing stay true for the commands that test them. It is counted.
+//
+// THE CARRY IS DELEGATED, as it is for MoveSectorPlane, and for the same
+// reason. The original moves the player and the sector's objects itself
+// (apply_moving_sector_carry, renderer.c:985): a pure position add with no wall
+// test, for a player standing EXACTLY on the sector's floor (+0x06 bit 0x01) or
+// on its mid-platform's top (bit 0x04), and for objects only in a sector whose
+// +0x16 has bit 0x02. Here whatever stands on the platform actor rides it,
+// through the platform library, with collision. Every record the plan builds
+// has the carry bit for the surface it makes walkable, so the two agree on WHO
+// rides; they differ in that ours can be stopped by a wall.
+//
+// All 32 retail records are 18 bytes: +0x06 flags, +0x07 speed, +0x08 the
+// sector id, +0x0a and +0x0c the two limits, +0x0e the dwell.
+//
+//==========================================================================
+
+// A vertex coordinate as the ORIGINAL holds it. The reader recentres a map that
+// straddles the 16-bit wrap (RAQUIA2), and every comparison below is the
+// original's signed 16-bit one, so it has to be made on the original's value.
+static int16_t RawVertexCoord(int vi, bool axisX)
+{
+	const Vertex &v = g.map.vertices[vi];
+	return axisX ? (int16_t)(uint16_t)(v.x - g.map.wrapShiftX)
+	             : (int16_t)(uint16_t)(v.y - g.map.wrapShiftY);
+}
+
+int MoveSector(Command *rec, int index)
+{
+	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+
+	// TOGGLE (raw_commands.c:4590-4598). Tested on bit 0x20 ALONE here, where
+	// 0x07 and 0x03 test 0x21 -- the armed bit does not send this one down the
+	// toggle path.
+	if (rec->modifier & 0x20)
+	{
+		if (rec->Word(0x0E) != 0) return CMD_NOTHING;          // :4591
+		if (!(rec->fireFlags & 0x20)) return CMD_NOTHING;      // :4592
+		Effect *eff = FindEffect(base, (uint16_t)index);       // :4593
+		if (eff == nullptr) return CMD_NOTHING;
+		eff->flags5 ^= 0x80;                                   // :4595
+		rec->modifier ^= 0x02;                                 // :4596
+		SyncDisabled(rec);
+		return CMD_ACTED;
+	}
+
+	// REGISTER. The FIRST sector carrying the id (find_geometry_record, :4600),
+	// not a group: this opcode moves one sector.
+	const int si = FindSectorByCommandID(rec->key);
+	if (si < 0) return CMD_NOTHING;                            // :4601
+
+	// vertex1 of its first four faces (:4609-4616). The original reads four
+	// face slots whatever the sector's face count; with fewer than four it
+	// would read the next sector's. There is nothing faithful to read here
+	// then, so such a record does nothing. All 32 retail ones have four.
+	Effect e;
+	if (!rothplat::MovedVertices(g.map, si, e.moveVerts))
+	{
+		g.unhandledOps[base]++;
+		return CMD_NOTHING;
+	}
+
+	// Sorted ascending by the coordinate that will move (:4617-4623): a bubble
+	// sort that swaps only when strictly greater, so equal coordinates keep
+	// their face order.
+	const bool axisX = (rec->fireFlags & 0x40) != 0;           // :4606
+	for (int pass = 0; pass < 3; pass++)
+		for (int k = 0; k < 3 - pass; k++)
+			if (RawVertexCoord(e.moveVerts[k], axisX) > RawVertexCoord(e.moveVerts[k + 1], axisX))
+				std::swap(e.moveVerts[k], e.moveVerts[k + 1]);
+
+	e.tick = base;                                             // :4629
+	e.record = (uint16_t)index;                                // :4604
+	e.sectors.push_back(si);                                   // chunk[0xc], :4605
+	e.payload = 0;
+	rec->modifier |= 0x20;                                     // :4626
+	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;             // :4627-4628
+	g.effects.push_back(e);
+	SyncDisabled(rec);
+
+	if (!SectorIsPlatform(si)) g.moversUnshown++;
+	return CMD_ACTED;
+}
+
+static bool TickMovingSector(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+
+	// A disabled record (raw_commands.c:5873). AS LIFTED this returns with EAX
+	// still holding the effect record -- nonzero -- and the pool walk frees any
+	// effect whose tick returns nonzero (:3317). So disabling a 0x09 record
+	// drops its effect, while the record keeps its registered bit. Transcribed
+	// as written; it is the one tick in the family that does this.
+	if (rec->modifier & 0x08) return true;
+
+	if (e.flags5 & 0x40) return TickArmedCountdown(e);         // :5875-5876
+
+	if (e.sectors.empty() || e.moveVerts[0] < 0) return true;
+	const int si = e.sectors[0];
+	if (si < 0 || (size_t)si >= g.map.sectors.size()) return true;
+
+	const bool axisX = (rec->fireFlags & 0x40) != 0;
+	const bool descending = (e.flags5 & 0x80) != 0;            // :5881
+	const int32_t speed = (int32_t)rec->Byte(0x07);            // :5879
+
+	// Going UP the coordinate, the LARGEST vertex is the one tested and the
+	// limit is -2 * +0x0a (:5882-5884); going down, the SMALLEST and
+	// -2 * +0x0c (:5886-5888). Both products are truncated to 16 bits.
+	int32_t budget32;
+	int16_t target;
+	int probe;
+	if (!descending)
+	{
+		budget32 = ROTH_FRAME_TICKS_PER_TIC * speed;
+		target = (int16_t)(-2 * (int32_t)(int16_t)rec->Word(0x0A));
+		probe = e.moveVerts[3];
+	}
+	else
+	{
+		budget32 = -(ROTH_FRAME_TICKS_PER_TIC * speed);
+		target = (int16_t)(-2 * (int32_t)(int16_t)rec->Word(0x0C));
+		probe = e.moveVerts[0];
+	}
+
+	const int16_t current = RawVertexCoord(probe, axisX);
+	if (current == target) return TickHeightExit(e, rec);      // :5891
+
+	// The step, cut short so the tested vertex lands ON the limit (:5892-5896).
+	int16_t budget = (int16_t)budget32;
+	const int16_t reached = (int16_t)(current + budget);
+	if ((!descending && reached > target) || (descending && reached < target))
+		budget = (int16_t)(budget - (int16_t)(reached - target));
+
+	// All four vertices take the same step (:5899-5903), in 16 bits.
+	for (int k = 0; k < 4; k++)
+	{
+		Vertex &v = g.map.vertices[e.moveVerts[k]];
+		if (axisX) v.x = (int16_t)(v.x + budget); else v.y = (int16_t)(v.y + budget);
+	}
+	std::pair<int, int> &slid = g.movers[si];
+	if (axisX) slid.first += budget; else slid.second += budget;
+
+	// The carry (:5905-5916) is the platform actor's. See the note above.
+
+	// The low byte of the step goes into the shift bytes the record's low four
+	// bits pick (:5917-5929): the sector's floor and ceiling flats, then its
+	// mid-platform's top and underside. This is what keeps a flat's picture ON
+	// a sector that moves, where it would otherwise stay pinned to the world.
+	// The X byte for an X move, the Y byte for a Y move.
+	const uint8_t f6 = rec->fireFlags;
+	const uint8_t low = (uint8_t)budget;
+	Sector &rs = g.map.sectors[si];
+	if (f6 & 0x01) { if (axisX) rs.floorShiftX += low; else rs.floorShiftY += low; }
+	if (f6 & 0x02) { if (axisX) rs.ceilShiftX += low;  else rs.ceilShiftY += low; }
+	if ((f6 & 0x0C) && rs.platformIndex >= 0 && (size_t)rs.platformIndex < g.map.platforms.size())
+	{
+		MidPlatform &mp = g.map.platforms[rs.platformIndex];
+		if (f6 & 0x04) { if (axisX) mp.topShiftX += low; else mp.topShiftY += low; }
+		if (f6 & 0x08) { if (axisX) mp.undersideShiftX += low; else mp.undersideShiftY += low; }
+	}
+	return false;                                              // :5930
+}
+
+//==========================================================================
+//
+// The load-time pass for armed 0x09 records -- init_loaded_object_table's
+// second pass (map_load.c:1179-1197) through the per-type table at 0x30998,
+// whose entry for type 0x09 is tick_rerun_command_execute (raw_commands.c:5278).
+//
+// This is how a Realms platform is already crossing its pit when the player
+// arrives: the record is stored ARMED (modifier bit 0x01), and at load every
+// armed record has its arm and registered bits cleared, is run once through
+// the ordinary command table -- which for 0x09 registers the effect -- and is
+// armed again. A record that is also DISABLED is left with its arm bit clear
+// and is not run, exactly as written (:5281-5282).
+//
+// The same table entry serves 0x0d, 0x0e, 0x0f, 0x11 and 0x23. Only 0x09 is
+// done here, behind roth_platforms; the others are outside this change.
+//
+// First visit only in the original (it tests g@0x89f5c, the revisit count, in
+// the sibling handlers); this port has no revisit state, as the light-switch
+// pass above says.
+//
+//==========================================================================
+
+static void InitMovingSectorsAtLoad(Log *log)
+{
+	int armed = 0, started = 0;
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		Command *rec = &g.map.commands[i];
+		if (rec->isTrigger || (rec->opcode & 0x7f) != 0x09) continue;
+		if (!(rec->modifier & 0x01)) continue;                 // :5280
+		armed++;
+		rec->modifier &= 0xDE;                                 // :5281
+		SyncDisabled(rec);
+		if (rec->modifier & 0x08) continue;                    // :5282
+		if (MoveSector(rec, (int)i + 1) == CMD_ACTED) started++;   // :5283-5290
+		rec->modifier |= 0x01;                                 // :5292
+	}
+	if (log != nullptr)
+		log->Line("  moving sectors   %d armed 0x09 record(s) at load, %d started"
+			" (roth_platforms)", armed, started);
+}
+
+//==========================================================================
+//
+// DrivePlatforms -- once per world step, after the effect pool has ticked.
+//
+// Hands every platform sector's CURRENT Realms state to its actors: how far
+// the 0x09 ticks have slid its vertices since load, its floor and ceiling, its
+// mid-platform's two heights, and its light. All of those can change without a
+// 0x09 running -- 0x07 raises RAQUIA2's travelling floor plate, 0x03 sinks
+// RAQUIA3's slabs, a light switch darkens the room -- which is why this is a
+// pass over the sectors and not something the 0x09 tick does on its way out.
+//
+// The light is read back from the ENGINE sector, which every light opcode
+// already keeps in step (SyncSectorLight), so the box is lit like the sector it
+// came from wherever it has slid to -- as in the original, where the light
+// byte travels with the sector record.
+//
+//==========================================================================
+
+static void DrivePlatforms()
+{
+	if (!g.platformsOn || g.level == nullptr) return;
+	for (int si : g.platformSectors)
+	{
+		if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+		const Sector &rs = g.map.sectors[si];
+
+		PlatformHeights h;
+		h.floorZ = double(rs.floorHeight);
+		h.ceilingZ = double(rs.ceilingHeight);
+		if (rs.platformIndex >= 0 && (size_t)rs.platformIndex < g.map.platforms.size())
+		{
+			h.slabBottom = double(g.map.platforms[rs.platformIndex].undersideZ);
+			h.slabTop = double(g.map.platforms[rs.platformIndex].topZ);
+		}
+
+		double dx = 0., dy = 0.;
+		auto mv = g.movers.find(si);
+		if (mv != g.movers.end()) { dx = double(mv->second.first); dy = double(mv->second.second); }
+
+		const int light = (size_t)si < g.level->sectors.Size()
+			? (int)g.level->sectors[si].lightlevel : -1;
+		DrivePlatform(g.level, si, dx, dy, h, light);
+	}
+}
+
+//==========================================================================
+//
 // The pool walk -- raw_commands.c:3307.
 //
 // Every effect gets its per-frame handler, and a handler reporting "finished" is
@@ -3606,6 +3913,7 @@ static void TickEffects()
 		case 0x0F: done = TickScrollFaceTexture(g.effects[i]); break;
 		case 0x0C: done = TickChangeFaceTextureAdv(g.effects[i]); break;
 		case 0x03: done = TickModifySector(g.effects[i]); break;
+		case 0x09: done = TickMovingSector(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -3651,6 +3959,11 @@ bool IsImplemented(uint8_t op)
 	case 0x06: case 0x12: case 0x17: case 0x26: case 0x28:
 	case 0x02: case 0x03: case 0x07: case 0x0A: case 0x0B: case 0x0D: case 0x0C: case 0x0E: case 0x0F: case 0x11: case 0x1D: case 0x2F: case 0x34: case 0x23: case 0x24: case 0x36: case 0x38: case 0x3B: case 0x3E: case 0x40:
 		return true;
+	// 0x09 only when the loader was told to build platforms for it. With
+	// roth_platforms 0 it is not implemented, exactly as before this existed,
+	// and the dispatcher counts it.
+	case 0x09:
+		return g.platformsOn;
 	default:
 		return false;
 	}
@@ -3688,6 +4001,10 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x0F: return ScrollFaceTexture(rec, index);
 	case 0x0C: return ChangeFaceTextureAdv(rec, index);
 	case 0x03: return ModifySector(rec, index);
+	case 0x09:
+		if (g.platformsOn) return MoveSector(rec, index);
+		g.unhandledOps[op]++;                          // roth_platforms 0: as before
+		return CMD_NOTHING;
 
 	// cmd_06_empty_noop (raw_commands.c:499) and cmd_empty_allow_sfx (506) are
 	// both `or eax,-1; ret`: inert, but they report ACTED so the post-chain sound
@@ -4268,6 +4585,23 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 
 	InitLightSwitchesAtLoad(log);
 
+	// roth_platforms. The loader has already described its platform pieces by
+	// the time this runs (rothmap.cpp calls BeginLevel last), so which sectors
+	// they are can be listed once, here.
+	g.movers.clear();
+	g.platformSectors.clear();
+	g.moversUnshown = 0;
+	g.platformsOn = PlatformsEnabled();
+	if (g.platformsOn)
+	{
+		for (size_t i = 0; i < g.map.sectors.size(); i++)
+			if (SectorIsPlatform((int)i)) g.platformSectors.push_back((int)i);
+		InitMovingSectorsAtLoad(log);
+		if (log != nullptr && g.moversUnshown > 0)
+			log->Count("logic: 0x09 moving sectors running with no platform to show them",
+				g.moversUnshown);
+	}
+
 	// Translate the face bindings into sidedef bindings now, so activation is a
 	// single lookup rather than a search.
 	for (auto &kv : g.byFace)
@@ -4521,6 +4855,9 @@ void EndLevel()
 	g.platformCtrl.clear();
 	g.lightFollowers.clear();
 	g.sectorShift.clear();
+	g.movers.clear();
+	g.platformSectors.clear();
+	g.platformsOn = false;
 	g.flatByIndex.clear();
 	g.effects.clear();
 	g.texByIndex.clear();
@@ -5667,6 +6004,10 @@ void TickLevelLogic(FLevelLocals *level)
 
 	// The active-effect pool: the per-frame half of every registrar opcode.
 	TickEffects();
+
+	// roth_platforms: tell the platform actors where the effects just put
+	// their sectors. After the pool, so an actor is never a frame behind it.
+	DrivePlatforms();
 
 	DrainDeferred();
 	ApplyPendingWarp();

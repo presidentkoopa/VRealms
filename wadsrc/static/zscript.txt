@@ -60,6 +60,13 @@ version "5.0.0"
 #include "zscript/actors/morph.zs"
 #include "zscript/actors/loaderprop.zs"
 
+// 3D Platform by FishyClock, GPL-3.0, https://github.com/FishyClock/3Dplatform
+// The library's two core files, unmodified; see zscript/fishy/CREDITS.txt.
+#include "zscript/fishy/platform-base.zs"
+#include "zscript/fishy/platform-generic.zs"
+// This project's subclass: a platform a native map loader steers from C++.
+#include "zscript/actors/loaderplatform.zs"
+
 #include "zscript/actors/inventory/inventory.zs"
 #include "zscript/actors/inventory/inv_misc.zs"
 #include "zscript/actors/inventory/stateprovider.zs"

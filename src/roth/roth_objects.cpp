@@ -477,6 +477,79 @@ static const MeshBinding *EnsureMesh(const std::string &packName, int index,
 
 //==========================================================================
 //
+// BindMemoryMesh -- give a mesh some OTHER part of the loader built a sprite
+// frame an actor of `cls` can wear. See roth_objects.h.
+//
+// The same three steps EnsureMesh takes for a prop -- register the model, make
+// a sprite to key it by, bind the pair to a class -- but for geometry that did
+// not come out of an art pack: roth_platforms builds a box from a moving
+// sector's own floor, ceiling and slab.
+//
+// THE MODEL IS KEPT ACROSS LOADS AND THE BINDING IS NOT, deliberately. Models
+// only ever grows, so a mesh with the same key is registered once per process
+// and found again by name. The sprite and the model frame are the opposite:
+// PrepareObjects truncates the sprite table and clears the added model frames
+// at the start of every load (MarkSpriteTable, ClearAddedSpriteModelFrames), so
+// both are made again each time this is called. It must therefore be called
+// AFTER PrepareObjects in a load, which SpawnPreparedPlatforms is.
+//
+//==========================================================================
+
+static std::map<std::string, unsigned> gBoundModels;   // pseudo name -> Models index
+
+int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log)
+{
+	if (key == nullptr || cls == nullptr || data.faces.Size() == 0) return -1;
+	if (!gSpriteMarkValid) return -1;       // PrepareObjects has not run this load
+
+	const std::string pseudo = std::string("*memory/roth/") + key;
+	unsigned modelIndex = unsigned(-1);
+	auto it = gBoundModels.find(pseudo);
+	if (it != gBoundModels.end() && it->second < Models.Size()
+		&& Models[it->second]->mFileName.Compare(pseudo.c_str()) == 0)
+	{
+		modelIndex = it->second;            // same key, same geometry: reuse it
+	}
+	else
+	{
+		modelIndex = RegisterModel(new FMemoryMeshModel(std::move(data)), pseudo.c_str());
+		if (modelIndex == unsigned(-1)) return -1;
+		gBoundModels[pseudo] = modelIndex;
+	}
+
+	const int spriteNum = MakeRuntimeSprite(FNullTextureID(), log);
+	if (spriteNum < 0) return -1;
+
+	FSpriteModelFrame smf;
+	memset((void *)&smf, 0, sizeof(smf));
+	smf.modelsAmount = 1;
+	smf.modelIDs.Alloc(1);
+	smf.modelIDs[0] = (int)modelIndex;
+	smf.modelframes.Alloc(1);
+	smf.modelframes[0] = -1;                // frame numbers are ignored, as for props
+	smf.skinIDs.Alloc(1);
+	smf.skinIDs[0] = FNullTextureID();      // each face draws with the texture it named
+	smf.animationIDs.Alloc(1);
+	smf.animationIDs[0] = -1;
+	smf.surfaceskinIDs.Alloc(MD3_MAX_SURFACES);
+	for (unsigned i = 0; i < smf.surfaceskinIDs.Size(); i++)
+		smf.surfaceskinIDs[i] = FNullTextureID();
+	smf.xscale = smf.yscale = smf.zscale = 1.f;
+	smf.type = cls;
+	smf.sprite = (short)spriteNum;
+	smf.frame = 0;
+	AddSpriteModelFrame(smf);
+
+	if (FindModelFrame(cls, spriteNum, 0, false) == nullptr)
+	{
+		if (log) log->Warn("platforms: model binding for %s did not take", key);
+		return -1;
+	}
+	return spriteNum;
+}
+
+//==========================================================================
+//
 //
 //
 //==========================================================================

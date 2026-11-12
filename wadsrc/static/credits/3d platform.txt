@@ -1,0 +1,14 @@
+3D Platform by FishyClock, GPL-3.0, https://github.com/FishyClock/3Dplatform
+
+A ZScript library: solid moving and rotating platform actors that carry what
+stands on them, pushable crates, platform groups and portal awareness.
+Copyright (C) 2022-2026 Fishytza A.K.A. FishyClockwork.
+
+Its two core script files are shipped unmodified in zscript/fishy/, with the
+library's own licence text beside them (zscript/fishy/LICENSE.txt). The engine
+uses it for Realms of the Haunting's moving sectors (cvar roth_platforms):
+the platform class LoaderPlatform in zscript/actors/loaderplatform.zs derives
+from the library's FishyPlatform.
+
+Released under the GNU General Public License, version 3 or later -
+https://www.gnu.org/licenses/gpl-3.0.html

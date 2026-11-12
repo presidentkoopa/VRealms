@@ -73,6 +73,9 @@ react to you.** What you cannot yet do is talk to anyone, pick anything up, or f
 - `ROTH_BETTER.md` — things the 1996 engine does better than the one hosting it.
 - `README_ENGINE.md` — the host fork, and its lineage: GZDoom → Team Beef → emawind's
   QuestZDoom → iAmErmac's DoomXR → UZDXREMA.
+- `wadsrc/static/zscript/fishy/` — third-party script code, unmodified:
+  3D Platform by FishyClock, GPL-3.0, https://github.com/FishyClock/3Dplatform.
+  The moving-sector platforms behind `roth_platforms` are built on it.
 
 The rule throughout: **the original is the specification.** Where it and the host engine
 disagree, the original wins and the engine changes to suit. Anything not read out of the
