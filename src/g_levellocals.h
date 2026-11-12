@@ -879,6 +879,7 @@ private:
 	void BuildPortalBlockmap();
 	void UpdatePortal(FLinePortal *port);
 	void CollectLinkedPortals();
+	void ValidateOneSidedPortals();	// [RS]
 	void CreateLinkedPortals();
 	bool ChangePortalLine(line_t *line, int destid);
 	void AddDisplacementForPortal(FSectorPortal *portal);
@@ -1247,6 +1248,11 @@ public:
 	FDisplacementTable Displacements;
 	FPortalBlockmap PortalBlockmap;
 	TArray<FLinePortal*> linkedPortals;	// only the linked portals, this is used to speed up looking for them in P_CollectConnectedGroups.
+	// [RS] True while the level holds at least one linked portal on a one-sided line (line_t::getPortalBeyondSector).
+	// Every piece of extra work those portals need is gated on this, so a level without one runs the old code.
+	bool HasOneSidedLinkedPortals = false;
+	line_t *FindCrossedSeam(const DVector2 &from, const DVector2 &to, double radius, int group);
+	sector_t *SectorBehindSeam(const DVector2 &pos, double radius, int group);
 	TArray<FSectorPortalGroup *> portalGroups;
 	TArray<FLinePortalSpan> linePortalSpans;
 	FSectionContainer sections;
@@ -3878,8 +3884,32 @@ inline DAngle line_t::getPortalAngleDiff() const
 	return portalindex >= GetLevel()->linePortals.Size() ? DAngle::fromDeg(0.) : GetLevel()->linePortals[portalindex].mAngleDiff;
 }
 
+// [RS] See the declaration in r_defs.h.
+// Adapted from the Eternity Engine, source/r_portal.cpp (R_SetPortalLine) and source/p_spec.cpp (P_SpawnPortal);
+// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+inline sector_t *line_t::getPortalBeyondSector() const
+{
+	if (backsector != nullptr || portalindex >= GetLevel()->linePortals.Size()) return nullptr;
+	const FLinePortal &port = GetLevel()->linePortals[portalindex];
+	// mDefFlags, not mFlags: for a linked portal the two only differ before FinalizePortals has run, and the
+	// things built at load before that on a savegame restore (the light AABB tree, the level mesh) must see
+	// the same lines as openings that they see on a fresh load. A pair that fails ValidateOneSidedPortals is
+	// no longer PORTT_LINKED.
+	if (port.mType != PORTT_LINKED || !(port.mDefFlags & PORTF_PASSABLE) || port.mDestination == nullptr) return nullptr;
+	if (sidedef[0]->Flags & WALLF_POLYOBJ) return nullptr;	// polyobject portals keep the engine's own handling
+	return port.mDestination->frontsector;
+}
+
 inline bool line_t::hitSkyWall(AActor* mo) const
 {
+	if (backsector == nullptr)
+	{
+		// [RS] the upper piece of a linked portal on a one-sided line, against the sector beyond it
+		sector_t *beyond = getPortalBeyondSector();
+		return beyond &&
+			beyond->GetTexture(sector_t::ceiling) == skyflatnum &&
+			mo->Z() >= beyond->ceilingplane.ZatPoint(mo->PosRelative(this).XY() + getPortalDisplacement());
+	}
 	return backsector &&
 		backsector->GetTexture(sector_t::ceiling) == skyflatnum &&
 		mo->Z() >= backsector->ceilingplane.ZatPoint(mo->PosRelative(this).XY());

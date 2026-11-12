@@ -286,6 +286,7 @@ void FLevelLocals::ClearPortals()
 	Displacements.Create(1);
 	linePortals.Clear();
 	linkedPortals.Clear();
+	HasOneSidedLinkedPortals = false;	// [RS]
 	sectorPortals.Resize(2);
 	PortalBlockmap.Clear();
 

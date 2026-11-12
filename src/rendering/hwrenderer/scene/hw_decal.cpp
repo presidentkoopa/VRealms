@@ -293,7 +293,7 @@ void HWWall::ProcessDecal(HWDrawInfo *di, DBaseDecal *decal, const FVector3 &nor
 			}
 			else
 			{
-				zpos = decal->Z + seg->backsector->GetPlaneTexZ(sector_t::ceiling);
+				zpos = decal->Z + (seg->backsector ? seg->backsector : line->EffectiveBackSector())->GetPlaneTexZ(sector_t::ceiling);	// [RS] upper piece of a one-sided linked portal line
 			}
 			break;
 		case RF_RELLOWER:
@@ -304,7 +304,7 @@ void HWWall::ProcessDecal(HWDrawInfo *di, DBaseDecal *decal, const FVector3 &nor
 			}
 			else
 			{
-				zpos = decal->Z + seg->backsector->GetPlaneTexZ(sector_t::floor);
+				zpos = decal->Z + (seg->backsector ? seg->backsector : line->EffectiveBackSector())->GetPlaneTexZ(sector_t::floor);	// [RS] lower piece of a one-sided linked portal line
 			}
 			break;
 		case RF_RELMID:

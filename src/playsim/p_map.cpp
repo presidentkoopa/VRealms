@@ -226,11 +226,13 @@ static DVector2 FindRefPoint(line_t *ld, const DVector2 &pos)
 	//
 	// Todo: check if this bootload of checks even helps or if it adds more than it saves
 	//
+	// [RS] back: the back sector, or the sector beyond a linked portal on a one-sided line.
+	const sector_t *back = ld->EffectiveBackSector();
 	if 	(ld->frontsector->floorplane.isSlope() ||
-			ld->backsector->floorplane.isSlope() ||
+			back->floorplane.isSlope() ||
 			ld->frontsector->ceilingplane.isSlope() ||
-			ld->backsector->ceilingplane. isSlope() ||
-			ld->backsector->e->XFloor.ffloors.Size() != 0 ||
+			back->ceilingplane. isSlope() ||
+			back->e->XFloor.ffloors.Size() != 0 ||
 			ld->frontsector->e->XFloor.ffloors.Size() != 0 ||
 			!ld->frontsector->PortalBlocksMovement(sector_t::ceiling) ||
 			!ld->frontsector->PortalBlocksMovement(sector_t::floor))
@@ -269,7 +271,7 @@ static bool PIT_FindFloorCeiling(FMultiBlockLinesIterator &mit, FMultiBlockLines
 			ld->Index(), cres.Position.X, cres.Position.Y, ld->frontsector->PortalGroup);
 	}
 
-	if (!ld->backsector)
+	if (!ld->backsector && !ld->isOneSidedLinkedPortal())	// [RS] a linked portal on a one-sided line has an opening
 	{ // One sided line
 		return true;
 	}
@@ -915,7 +917,11 @@ bool PIT_CheckLine(FMultiBlockLinesIterator &mit, FMultiBlockLinesIterator::Chec
 	=       that are only 8 pixels apart could be crossed in either order.
 	*/
 
-	if (!ld->backsector)
+	// [RS] A linked portal on a one-sided line is not a wall: it is handled below like a two-sided line,
+	// with the sector beyond the portal standing in for the back sector (P_LineOpening does the same).
+	// Adapted from the Eternity Engine, source/p_portalclip.cpp (PIT_CheckLine3D / P_LineOpening use of
+	// beyondportalline); Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+	if (!ld->backsector && !ld->isOneSidedLinkedPortal())
 	{ // One sided line
 
 		// Needed for polyobject portals.
@@ -1051,7 +1057,7 @@ bool PIT_CheckLine(FMultiBlockLinesIterator &mit, FMultiBlockLinesIterator::Chec
 	bool ismissile = (tm.thing->flags & MF_MISSILE) && !(tm.thing->flags6 & MF6_STEPMISSILE) && !(tm.thing->flags3 & MF3_FLOORHUGGER);
 	if (!ismissile && !tm.thing->Sector->PortalBlocksMovement(sector_t::ceiling))
 	{
-		sector_t *oppsec = cres.line->frontsector == tm.thing->Sector ? cres.line->backsector : cres.line->frontsector;
+		sector_t *oppsec = cres.line->frontsector == tm.thing->Sector ? cres.line->EffectiveBackSector() : cres.line->frontsector;	// [RS]
 		if (oppsec->PortalBlocksMovement(sector_t::ceiling))
 		{
 			double portz = tm.thing->Sector->GetPortalPlaneZ(sector_t::ceiling);
@@ -1861,6 +1867,27 @@ bool P_CheckPosition(AActor *thing, const DVector2 &pos, FCheckPosition &tm, boo
 	newsec = tm.sector = thing->Level->PointInSector(pos);
 	tm.ceilingline = thing->BlockingLine = NULL;
 
+	// [RS] STEPPING THROUGH A LINKED PORTAL ON A ONE-SIDED LINE. P_TryMove only shifts the thing to the
+	// other side once this check has passed, so the spot checked here can lie BEHIND the portal line. With a
+	// two-sided portal line that was real space; behind a one-sided one it is the void, where the node tree
+	// names no meaningful sector. The sector to start from is the one at the same spot seen through the
+	// portal (secpos), while the line and thing iterators keep working in the coordinates of the side the
+	// thing is still on, entered from the portal line's own front sector (itersec).
+	// With no such portal crossed secpos is pos and itersec is newsec: the code below is the old code.
+	// Fresh code for this engine (not from Eternity).
+	DVector2 secpos = pos;
+	sector_t *itersec = newsec;
+	if (thing->Level->HasOneSidedLinkedPortals && thing->Sector != nullptr)
+	{
+		line_t *seam = thing->Level->FindCrossedSeam(thing->Pos().XY(), pos, thing->radius, thing->Sector->PortalGroup);
+		if (seam != nullptr)
+		{
+			secpos = pos + seam->getPortalDisplacement();
+			newsec = tm.sector = thing->Level->PointInSector(secpos);
+			itersec = seam->frontsector;
+		}
+	}
+
 	// Retrieve the base floor / ceiling from the target location.
 	// Any contacted lines the step closer together will adjust them.
 	if (!thing->IsNoClip2())
@@ -1868,14 +1895,17 @@ bool P_CheckPosition(AActor *thing, const DVector2 &pos, FCheckPosition &tm, boo
 		if (!newsec->PortalBlocksMovement(sector_t::ceiling) || !newsec->PortalBlocksMovement(sector_t::floor))
 		{
 			// Use P_GetFloorCeilingZ only if there's portals to consider. Its logic is subtly different than what is needed here for 3D floors.
+			const DVector3 savedpos = tm.pos;	// [RS] measured at secpos
+			tm.pos.X = secpos.X; tm.pos.Y = secpos.Y;
 			P_GetFloorCeilingZ(tm, FFCF_SAMESECTOR);
+			tm.pos = savedpos;
 		}
 		else
 		{
-			tm.floorz = tm.dropoffz = newsec->floorplane.ZatPoint(pos);
+			tm.floorz = tm.dropoffz = newsec->floorplane.ZatPoint(secpos);
 			tm.dropoffisportal = false;
 			tm.floorpic = newsec->GetTexture(sector_t::floor);
-			tm.ceilingz = newsec->ceilingplane.ZatPoint(pos);
+			tm.ceilingz = newsec->ceilingplane.ZatPoint(secpos);
 			tm.ceilingpic = newsec->GetTexture(sector_t::ceiling);
 			tm.floorsector = tm.ceilingsector = newsec;
 			tm.floorterrain = newsec->GetTerrain(sector_t::floor);
@@ -1889,8 +1919,8 @@ bool P_CheckPosition(AActor *thing, const DVector2 &pos, FCheckPosition &tm, boo
 			rover = newsec->e->XFloor.ffloors[i];
 			if (!(rover->flags & FF_SOLID) || !(rover->flags & FF_EXISTS)) continue;
 
-			double ff_bottom = rover->bottom.plane->ZatPoint(pos);
-			double ff_top = rover->top.plane->ZatPoint(pos);
+			double ff_bottom = rover->bottom.plane->ZatPoint(secpos);
+			double ff_top = rover->top.plane->ZatPoint(secpos);
 
 			double delta1 = thing->Z() - (ff_bottom + ((ff_top - ff_bottom) / 2));
 			double delta2 = thingtop - (ff_bottom + ((ff_top - ff_bottom) / 2));
@@ -1912,8 +1942,8 @@ bool P_CheckPosition(AActor *thing, const DVector2 &pos, FCheckPosition &tm, boo
 	else
 	{
 		// With noclip2, we must ignore 3D floors and go right to the uppermost ceiling and lowermost floor.
-		tm.floorz = tm.dropoffz = LowestFloorAt(newsec, pos.X, pos.Y, &tm.floorsector);
-		tm.ceilingz = HighestCeilingAt(newsec, pos.X, pos.Y, &tm.ceilingsector);
+		tm.floorz = tm.dropoffz = LowestFloorAt(newsec, secpos.X, secpos.Y, &tm.floorsector);
+		tm.ceilingz = HighestCeilingAt(newsec, secpos.X, secpos.Y, &tm.ceilingsector);
 		tm.floorpic = tm.floorsector->GetTexture(sector_t::floor);
 		tm.floorterrain = tm.floorsector->GetTerrain(sector_t::floor);
 		tm.ceilingpic = tm.ceilingsector->GetTexture(sector_t::ceiling);
@@ -1945,7 +1975,7 @@ bool P_CheckPosition(AActor *thing, const DVector2 &pos, FCheckPosition &tm, boo
 
 	if (!(thing->flags2 & MF2_THRUACTORS))
 	{
-		FMultiBlockThingsIterator it2(pcheck, thing->Level, pos.X, pos.Y, thing->Z(), thing->Height, thing->radius, false, newsec);
+		FMultiBlockThingsIterator it2(pcheck, thing->Level, pos.X, pos.Y, thing->Z(), thing->Height, thing->radius, false, itersec);	// [RS] itersec: see the top of this function
 		FMultiBlockThingsIterator::CheckResult tcres;
 
 		while ((it2.Next(&tcres)))
@@ -2017,7 +2047,7 @@ bool P_CheckPosition(AActor *thing, const DVector2 &pos, FCheckPosition &tm, boo
 	if (actorsonly || (thing->flags & MF_NOCLIP))
 		return (thing->BlockingMobj = thingblocker) == NULL;
 
-	FMultiBlockLinesIterator it(pcheck, thing->Level, pos.X, pos.Y, thing->Z(), thing->Height, thing->radius, newsec);
+	FMultiBlockLinesIterator it(pcheck, thing->Level, pos.X, pos.Y, thing->Z(), thing->Height, thing->radius, itersec);	// [RS]
 	FMultiBlockLinesIterator::CheckResult lcres;
 
 	double thingdropoffz = tm.floorz;
@@ -3213,7 +3243,14 @@ void FSlide::SlideTraverse(const DVector2 &start, const DVector2 &end)
 
 		li = in->d.line;
 
-		if (!(li->flags & ML_TWOSIDED) || !li->backsector)
+		// [RS] A linked portal on a one-sided line is checked like a two-sided line, against the sector
+		// beyond it (P_LineOpening). If it lets the mobj through, the slide trace ENDS there: what lies
+		// beyond the portal line in this part of the map is not what the mobj would walk into, and the
+		// slide code does not follow portals. P_TryMove still checks the far side properly.
+		// Fresh code for this engine (not from Eternity).
+		const bool seam = li->isOneSidedLinkedPortal();
+
+		if ((!(li->flags & ML_TWOSIDED) || !li->backsector) && !seam)
 		{
 			DVector3 pos = slidemo->PosRelative(li);
 			if (P_PointOnLineSide(pos.XY(), li))
@@ -3251,6 +3288,7 @@ void FSlide::SlideTraverse(const DVector2 &start, const DVector2 &end)
 		}
 
 		// this line doesn't block movement
+		if (seam) return;	// [RS] see above
 		continue;
 
 		// the line does block movement,
@@ -3555,11 +3593,12 @@ bool FSlide::BounceTraverse(const DVector2 &start, const DVector2 &end)
 		}
 
 		li = in->d.line;
+		const bool seam = li->isOneSidedLinkedPortal();	// [RS] as in SlideTraverse
 		if (li->flags & ML_BLOCKEVERYTHING)
 		{
 			goto bounceblocking;
 		}
-		if (!(li->flags&ML_TWOSIDED) || !li->backsector)
+		if ((!(li->flags&ML_TWOSIDED) || !li->backsector) && !seam)
 		{
 			if (P_PointOnLineSide(slidemo->Pos().XY(), li))
 				continue;			// don't hit the back side
@@ -3576,6 +3615,7 @@ bool FSlide::BounceTraverse(const DVector2 &start, const DVector2 &end)
 		if (open.bottom > slidemo->Z())
 			goto bounceblocking;				// mobj is too low
 
+		if (seam) return true;	// [RS] the trace ends at an open portal
 		continue;			// this line doesn't block movement
 
 		// the line does block movement, see if it is closer than best so far
@@ -4342,6 +4382,32 @@ struct aim_t
 
 				if (li->isLinePortal() && frontflag == 0)
 				{
+					// [RS] A linked portal on a one-sided line: the aim goes on beyond it, but only through
+					// the opening between this sector and the one beyond the portal -- the wall above and
+					// below it narrows the aim exactly as a two-sided line's would.
+					// Adapted from the Eternity Engine, source/cam_aim.cpp (AimContext::aimTraverse);
+					// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+					if (li->isOneSidedLinkedPortal())
+					{
+						FLineOpening open;
+						P_LineOpening(open, NULL, li, it.InterceptPoint(in), (DVector2*)nullptr, FFCF_NODROPOFF);
+						if (open.range <= 0 || open.bottom >= open.top)
+							return;
+
+						dist = attackrange * in->frac;
+						if (open.bottom != LINEOPEN_MIN)
+						{
+							pitch = -VecToAngle(dist, open.bottom - shootz);
+							if (pitch < bottompitch) bottompitch = pitch;
+						}
+						if (open.top != LINEOPEN_MAX)
+						{
+							pitch = -VecToAngle(dist, open.top - shootz);
+							if (pitch > toppitch) toppitch = pitch;
+						}
+						if (toppitch >= bottompitch)
+							return;
+					}
 					EnterLinePortal(li, in->frac);
 					return;
 				}
@@ -6563,7 +6629,18 @@ bool P_UseTraverse(AActor *usething, const DVector2 &start, const DVector2 &end,
 			continue;
 		}
 
-		if (it.PortalRelocate(in, PT_ADDLINES | PT_ADDTHINGS, &xpos))
+		// [RS] A linked portal on a one-sided line that is SHUT (the sector beyond it leaves no opening: a door
+		// closed on the far side) is a wall to the use ray, handled below like any wall. Open, the ray goes
+		// through it as it goes through every other passable line portal. Fresh code (not from Eternity).
+		bool seamshut = false;
+		if (in->d.line->isOneSidedLinkedPortal())
+		{
+			FLineOpening seamopen;
+			P_LineOpening(seamopen, NULL, in->d.line, it.InterceptPoint(in));
+			seamshut = seamopen.range <= 0;
+		}
+
+		if (!seamshut && it.PortalRelocate(in, PT_ADDLINES | PT_ADDTHINGS, &xpos))
 		{
 			continue;
 		}

@@ -78,7 +78,9 @@ bool DoomLevelAABBTree::GenerateTree(const FVector2 *centroids, bool dynamicsubt
 	auto &maplines = Level->lines;
 	for (unsigned int i = 0; i < maplines.Size(); i++)
 	{
-		if (!maplines[i].backsector)
+		// [RS] A linked portal on a one-sided line is an opening: it must not shadow the light that
+		// reaches the far side through it (a_dynlight.cpp collects that light across the portal).
+		if (!maplines[i].backsector && !maplines[i].isOneSidedLinkedPortal())
 		{
 			bool isPolyLine = maplines[i].sidedef[0] && (maplines[i].sidedef[0]->Flags & WALLF_POLYOBJ);
 			if (isPolyLine && dynamicsubtree)

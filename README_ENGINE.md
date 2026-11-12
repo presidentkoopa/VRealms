@@ -273,6 +273,7 @@ upstream merges.
 - [ZDoom + GZDoom + UZDoom teams](https://zdoom.org/) — the engine this is based upon
 - [Emile Belanger](http://www.beloko.com/) — the developer behind the android port
 - [Team Beef](https://github.com/Team-Beef-Studios) — built the original VR port for the Oculus Quest device; QuestZDoom above is a fork of their work, not a from-scratch project
+- [The Eternity Engine](https://github.com/team-eternity/eternity) (James Haley, Stephen McGranahan, Ioan Chera, Max Waine et al.; GPL-3.0-or-later) — **linked line portals on one-sided lines** are adapted from it: the idea that a portal line with no back sector takes the sector behind it from its destination line (`MLI_1SPORTALLINE` / `beyondportalline` there, `line_t::getPortalBeyondSector` here), and the places that have to ask. Every block adapted from it says so where it stands, with the Eternity source file and function it came from
 
 Special thanks to Coraline of the EDGE team for allowing use of her
 [README.md](https://github.com/3dfxdev/EDGE/blob/master/README.md) as a

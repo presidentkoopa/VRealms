@@ -482,10 +482,16 @@ const char *VariantName(LinkVariant v)
 
 uint8_t WallPartBit(line_t *line, double z)
 {
-	if (line == nullptr || line->backsector == nullptr) return 0x01;   // one-sided: mid
+	// The sector behind the line: its back sector, or -- for a cut face of the portal plan, which is a
+	// linked portal on a one-sided line -- the sector beyond the portal, measured where it really is.
+	// So a cut face keeps the three bands it had when the two rooms shared the line.
+	sector_t *back = line != nullptr ? line->EffectiveBackSector() : nullptr;
+	if (back == nullptr) return 0x01;   // one-sided: mid
 
-	const double bf = line->backsector->floorplane.ZatPoint(line->v1->fPos());
-	const double bc = line->backsector->ceilingplane.ZatPoint(line->v1->fPos());
+	DVector2 at = line->v1->fPos();
+	if (line->backsector == nullptr) at += line->getPortalDisplacement();
+	const double bf = back->floorplane.ZatPoint(at);
+	const double bc = back->ceilingplane.ZatPoint(at);
 	if (z <= bf) return 0x02;   // below the opening -> lower
 	if (z >= bc) return 0x04;   // above it -> upper
 	return 0x01;                // the opening itself -> mid

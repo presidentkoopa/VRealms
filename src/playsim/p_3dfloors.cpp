@@ -666,7 +666,17 @@ void P_LineOpening_XFloors (FLineOpening &open, AActor * thing, const line_t *li
 		thingtop = thing->Top();
 
 
-		extsector_t::xfloor *xf[2] = {&linedef->frontsector->e->XFloor, &linedef->backsector->e->XFloor};
+		// [RS] The sector behind the line: its back sector, or -- for a linked portal on a one-sided line --
+		// the front sector of the portal's destination, whose planes are measured at the spot seen through
+		// the portal. For every ordinary line backsec IS linedef->backsector and sx[1],sy[1] ARE x,y.
+		// Adapted from the Eternity Engine, source/p_maputl.cpp (lineopening_t::calculateAtPoint);
+		// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+		sector_t *backsec = linedef->EffectiveBackSector();
+		if (backsec == nullptr) return;
+		const DVector2 backdisp = linedef->backsector == nullptr ? linedef->getPortalDisplacement() : DVector2(0., 0.);
+		const double sx[2] = { x, x + backdisp.X }, sy[2] = { y, y + backdisp.Y };
+
+		extsector_t::xfloor *xf[2] = {&linedef->frontsector->e->XFloor, &backsec->e->XFloor};
 
 		// Check for 3D-floors in the sector (mostly identical to what Legacy does here)
 		if(xf[0]->ffloors.Size() || xf[1]->ffloors.Size())
@@ -675,7 +685,7 @@ void P_LineOpening_XFloors (FLineOpening &open, AActor * thing, const line_t *li
 			double    highestfloor = open.bottom;
 			double    lowestfloor[2] = {
 				linedef->frontsector->floorplane.ZatPoint(x, y),
-				linedef->backsector->floorplane.ZatPoint(x, y) };
+				backsec->floorplane.ZatPoint(sx[1], sy[1]) };
 			bool lowestfloorset[2] = { false, false };
 			FTextureID highestfloorpic;
 			int highestfloorterrain = -1;
@@ -697,8 +707,8 @@ void P_LineOpening_XFloors (FLineOpening &open, AActor * thing, const line_t *li
 					if (!(rover->flags & FF_EXISTS)) continue;
 					if (!(rover->flags & FF_SOLID)) continue;
 
-					double ff_bottom=rover->bottom.plane->ZatPoint(x, y);
-					double ff_top=rover->top.plane->ZatPoint(x, y);
+					double ff_bottom=rover->bottom.plane->ZatPoint(sx[j], sy[j]);
+					double ff_top=rover->top.plane->ZatPoint(sx[j], sy[j]);
 
 					double delta1 = fabs(thingbot - ((ff_bottom + ff_top) / 2));
 					double delta2 = fabs(thingtop - ((ff_bottom + ff_top) / 2));
@@ -707,7 +717,7 @@ void P_LineOpening_XFloors (FLineOpening &open, AActor * thing, const line_t *li
 					{
 						lowestceiling = ff_bottom;
 						lowestceilingpic = *rover->bottom.texture;
-						lowestceilingsec = j == 0 ? linedef->frontsector : linedef->backsector;
+						lowestceilingsec = j == 0 ? linedef->frontsector : backsec;
 						lowestceilingffloor = rover;
 					}
 
@@ -718,10 +728,10 @@ void P_LineOpening_XFloors (FLineOpening &open, AActor * thing, const line_t *li
 							highestfloor = ff_top;
 							highestfloorpic = *rover->top.texture;
 							highestfloorterrain = rover->model->GetTerrain(rover->top.isceiling);
-							highestfloorsec = j == 0 ? linedef->frontsector : linedef->backsector;
+							highestfloorsec = j == 0 ? linedef->frontsector : backsec;
 							highestfloorffloor = rover;
 						}
-						if (ff_top > highestfloorplanes[j]->ZatPoint(x, y))
+						if (ff_top > highestfloorplanes[j]->ZatPoint(sx[j], sy[j]))
 						{
 							highestfloorplanes[j] = rover->top.plane;
 						}

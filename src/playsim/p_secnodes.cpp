@@ -233,9 +233,17 @@ msecnode_t *P_CreateSecNodeList(AActor *thing, double radius, msecnode_t *sector
 	FBlockLinesIterator it(thing->Level, box);
 	line_t *ld;
 
+	// [RS] What is built behind a linked portal on a one-sided line is not touched by a thing that
+	// straddles the portal (FSeamFilter, p_maputl.h). Finds nothing in a level without such a portal.
+	FSeamFilter seamfilter;
+	seamfilter.Collect(thing->Level, box, thing->Sector->PortalGroup);
+
 	while ((ld = it.Next()))
 	{
 		if (!inRange(box, ld) || BoxOnLineSide(box, ld) != -1)
+			continue;
+
+		if (seamfilter.numseams > 0 && seamfilter.Hides(ld, box))
 			continue;
 
 		// This line crosses through the object.
@@ -256,6 +264,18 @@ msecnode_t *P_CreateSecNodeList(AActor *thing, double radius, msecnode_t *sector
 
 		if (ld->backsector)
 			sector_list = P_AddSecnode(ld->backsector, thing, sector_list, ld->backsector->*seclisthead);
+		else if (seclisthead == &sector_t::touching_thinglist)
+		{
+			// [RS] A thing that straddles a linked portal on a one-sided line touches the sector beyond it,
+			// exactly as it would touch the back sector of a two-sided line. Listing it there is what makes a
+			// floor or a ceiling that moves on the far side of a seam carry, stop at or crush the thing
+			// (P_ChangeSector walks this list). Only the playsim list: the renderer draws a thing across a
+			// line portal by other means (AActor::UpdateRenderSectorList), in the far side's coordinates.
+			// Fresh code for this engine (not from Eternity).
+			sector_t *beyond = ld->getPortalBeyondSector();
+			if (beyond != nullptr)
+				sector_list = P_AddSecnode(beyond, thing, sector_list, beyond->*seclisthead);
+		}
 	}
 
 	// Add the sector of the (x,y) point to sector_list.

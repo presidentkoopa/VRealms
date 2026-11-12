@@ -665,6 +665,19 @@ void HWDrawInfo::AddLine (seg_t *seg, bool portalclip)
 		backsector = nullptr;
 		if(!allowOoB)
 			if (!(seg->sidedef->Flags & WALLF_DITHERTRANS_MID)) clipper.SafeAddClipRange(startAngle, endAngle);
+
+		// [RS] A LINKED PORTAL ON A ONE-SIDED LINE. The clip range above stays SOLID, on purpose: nothing
+		// that lies behind this line in this part of the map may be drawn (it is the void, or a room that
+		// belongs to another storey). What is seen in the opening is drawn by the line portal itself, which
+		// has a clipper of its own -- exactly as for a mirror or a visual portal on a one-sided wall.
+		// The wall, however, is built like a two-sided one: its upper and lower pieces are measured against
+		// the sector beyond the portal, which is handed to HWWall::Process as the back sector.
+		// Adapted from the Eternity Engine, source/r_bsp.cpp (R_AddLine: `beyond`, passed to R_1SidedLine);
+		// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+		if (isVisualPortalLine && seg->backsector == nullptr && seg->sidedef == seg->linedef->sidedef[0])
+		{
+			backsector = seg->linedef->getPortalBeyondSector();	// null for every other kind of line
+		}
 	}
 	else if (!ispoly)	// Two-sided polyobjects never obstruct the view
 	{

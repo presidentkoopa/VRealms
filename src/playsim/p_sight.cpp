@@ -159,6 +159,19 @@ void SightCheck::P_SightOpening(SightOpening &open, const line_t *linedef, doubl
 	open.bottom = open.top = 0;
 	sector_t *front = linedef->frontsector;
 	sector_t *back = linedef->backsector;
+	// [RS] where the back sector's planes are measured: x,y -- or, behind a linked portal on a one-sided
+	// line, that spot seen through the portal.
+	double bx = x, by = y;
+
+	if (back == NULL && (back = linedef->getPortalBeyondSector()) != NULL)
+	{
+		// [RS] A linked portal on a one-sided line: the opening is against the sector beyond the portal.
+		// Adapted from the Eternity Engine, source/cam_sight.cpp (CamContext::checkPortalSector / sightTraverse
+		// use of beyondportalline); Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+		const DVector2 disp = linedef->getPortalDisplacement();
+		bx += disp.X;
+		by += disp.Y;
+	}
 
 	if (back == NULL)
 	{
@@ -187,9 +200,9 @@ void SightCheck::P_SightOpening(SightOpening &open, const line_t *linedef, doubl
 	}
 
 	if (fc == 0) fc = front->ceilingplane.ZatPoint(x, y);
-	if (bc == 0) bc = back->ceilingplane.ZatPoint(x, y);
+	if (bc == 0) bc = back->ceilingplane.ZatPoint(bx, by);
 	if (ff == 0) ff = front->floorplane.ZatPoint(x, y);
-	if (bf == 0) bf = back->floorplane.ZatPoint(x, y);
+	if (bf == 0) bf = back->floorplane.ZatPoint(bx, by);
 
 	open.bottom = max(ff, bf);
 	open.top = min(fc, bc);
@@ -266,7 +279,7 @@ bool SightCheck::PTR_SightTraverse (intercept_t *in)
 		if (!frontflag)
 		{
 			frontsec = li->frontsector;
-			backsec = li->backsector;
+			backsec = li->EffectiveBackSector();	// [RS] the sector beyond a linked portal on a one-sided line
 		}
 		else
 		{
@@ -388,6 +401,12 @@ bool SightCheck::PTR_SightTraverse (intercept_t *in)
 bool SightCheck::LineBlocksSight(line_t *ld)
 {
 	// try to early out the check
+	// [RS] a linked portal on a one-sided line is an opening, not a wall
+	if (ld->isOneSidedLinkedPortal())
+	{
+		if (ld->flags & ML_BLOCKSIGHT) return true;
+	}
+	else
 	if (!ld->backsector || !(ld->flags & ML_TWOSIDED) || (ld->flags & ML_BLOCKSIGHT))
 		return true;	// stop checking
 
@@ -552,6 +571,13 @@ bool SightCheck::P_SightTraverseIntercepts ()
 		{
 			scan->frac = INT_MAX;
 			count--;
+		}
+		// [RS] A linked portal on a one-sided line may have a wall standing in exactly the same place behind
+		// it (the room that was under or over the far room before the map was taken apart). The portal has
+		// to be met first, so it is moved a hair nearer. Fresh code for this engine (not from Eternity).
+		else if (Level->HasOneSidedLinkedPortals && scan->d.line->isOneSidedLinkedPortal())
+		{
+			if (scan->frac - 1e-7 > Startfrac) scan->frac -= 1e-7;
 		}
 	}
 

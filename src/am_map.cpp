@@ -2750,6 +2750,18 @@ void DAutomap::drawWalls (bool allmap)
 				{
 					drawMline(&l, AMColors.SpecialWallColor);	// wall with special non-door action the player can do
 				}
+				else if (line.backsector == nullptr && line.isOneSidedLinkedPortal())
+				{
+					// [RS] A linked portal on a one-sided line is an opening, not a wall: it is drawn as the
+					// two-sided line it stands for, by the heights of the sector beyond it (or not at all).
+					const sector_t *beyond = line.getPortalBeyondSector();
+					if (beyond->floorplane != line.frontsector->floorplane)
+						drawMline(&l, AMColors.FDWallColor);
+					else if (beyond->ceilingplane != line.frontsector->ceilingplane)
+						drawMline(&l, AMColors.CDWallColor);
+					else if (am_cheat > 0 && am_cheat < 4)
+						drawMline(&l, AMColors.TSWallColor);
+				}
 				else if (line.backsector == nullptr)
 				{
 					drawMline(&l, AMColors.WallColor);	// one-sided wall

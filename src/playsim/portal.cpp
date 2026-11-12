@@ -239,7 +239,12 @@ static void SetPortalRotation(FLinePortal *port)
 
 void FLevelLocals::UpdatePortal(FLinePortal *port)
 {
-	if (port->mType != PORTT_VISUAL && port->mOrigin->backsector == nullptr && !(port->mOrigin->sidedef[0]->Flags & WALLF_POLYOBJ))
+	// [RS] A LINKED portal may stand on a one-sided line: what is behind it is then the front sector of its
+	// destination (line_t::getPortalBeyondSector). Every other traversable type still needs a back sector,
+	// and a one-sided linked portal that does not survive the checks below is demoted by ValidateOneSidedPortals.
+	// Adapted from the Eternity Engine, source/p_spec.cpp (P_SpawnPortal: unblockline);
+	// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+	if (port->mType != PORTT_VISUAL && port->mType != PORTT_LINKED && port->mOrigin->backsector == nullptr && !(port->mOrigin->sidedef[0]->Flags & WALLF_POLYOBJ))
 	{
 		Printf(TEXTCOLOR_RED "Warning: Traversable portals must have a back-sector and empty space behind them (or be on a polyobject)! Changing line %d to visual-portal!\n", port->mOrigin->Index());
 		port->mType = PORTT_VISUAL;
@@ -319,6 +324,133 @@ void FLevelLocals::FinalizePortals()
 	CollectLinkedPortals();
 	BuildPortalBlockmap();
 	CreateLinkedPortals();
+	ValidateOneSidedPortals();
+}
+
+//============================================================================
+//
+// [RS] One-sided linked portals, checked once everything else is known.
+//
+// UpdatePortal lets a LINKED portal stay on a line with no back sector. That
+// is only sound if the portal really ended up linked: a destination that
+// links back, both ends LINKED, and the two ends in different portal groups
+// with an agreed displacement (AddDisplacementForPortal turns a pair that
+// fails into teleporters). Anything less on a one-sided line would be a
+// traversable portal into the void, which is exactly what the old warning
+// was about -- so it gets the old treatment: visual only.
+//
+// Fresh code for this engine (not from Eternity).
+//
+//============================================================================
+
+void FLevelLocals::ValidateOneSidedPortals()
+{
+	bool demoted = false;
+	HasOneSidedLinkedPortals = false;
+	for (unsigned i = 0; i < linePortals.Size(); i++)
+	{
+		FLinePortal *port = &linePortals[i];
+		line_t *org = port->mOrigin;
+		if (org == nullptr || port->mType == PORTT_VISUAL || org->backsector != nullptr
+			|| org->portalindex != i || (org->sidedef[0]->Flags & WALLF_POLYOBJ)) continue;
+
+		bool ok = port->mType == PORTT_LINKED && port->mDestination != nullptr
+			&& port->mDestination->portalindex < linePortals.Size()
+			&& linePortals[port->mDestination->portalindex].mType == PORTT_LINKED
+			&& linePortals[port->mDestination->portalindex].mDestination == org
+			&& (port->mFlags & PORTF_PASSABLE);
+		if (ok)
+		{
+			const int g1 = org->frontsector->PortalGroup, g2 = port->mDestination->frontsector->PortalGroup;
+			ok = g1 != g2 && g1 > 0 && g2 > 0 && g1 < Displacements.size && g2 < Displacements.size
+				&& Displacements(g1, g2).isSet && Displacements(g1, g2).pos == port->mDisplacement;
+		}
+		if (ok)
+		{
+			HasOneSidedLinkedPortals = true;
+			// A one-sided line usually arrives flagged impassable. This one is an opening.
+			// Adapted from the Eternity Engine, source/p_spec.cpp (P_SpawnPortal: unblockline);
+			// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+			org->flags &= ~ML_BLOCKING;
+		}
+		else
+		{
+			Printf(TEXTCOLOR_RED "Warning: Traversable portals must have a back-sector and empty space behind them (or be on a polyobject, or be a properly linked pair)! Changing line %d to visual-portal!\n", org->Index());
+			port->mType = PORTT_VISUAL;
+			port->mDefFlags &= ~(PORTF_PASSABLE | PORTF_SOUNDTRAVERSE | PORTF_INTERACTIVE);
+			port->mFlags = port->mDestination != nullptr ? port->mDefFlags : 0;
+			demoted = true;
+		}
+	}
+	if (demoted)
+	{
+		CollectLinkedPortals();
+		BuildPortalBlockmap();
+	}
+}
+
+//============================================================================
+//
+// [RS] FindCrossedSeam
+//
+// The one-sided linked portal line of portal group `group` that a thing of
+// the given radius crosses, front to back, when its centre goes from `from`
+// to `to` -- by the same two tests P_TryMove uses to decide that a portal
+// was crossed (the thing's box at `to` touches the line, and the centre
+// changes side from front to back). Null if there is none.
+//
+// P_CheckPosition needs this because the spot being checked then lies in the
+// void behind the line, where "the sector at this point" means nothing: the
+// sector to start from is the one at the same spot seen through the portal.
+// With a two-sided portal line the engine never had to ask (the space behind
+// the line was real).
+//
+// Fresh code for this engine (not from Eternity).
+//
+//============================================================================
+
+line_t *FLevelLocals::FindCrossedSeam(const DVector2 &from, const DVector2 &to, double radius, int group)
+{
+	if (!HasOneSidedLinkedPortals) return nullptr;
+	FBoundingBox box(to.X, to.Y, radius);
+	for (unsigned i = 0; i < linkedPortals.Size(); i++)
+	{
+		line_t *ld = linkedPortals[i]->mOrigin;
+		if (ld->backsector != nullptr || ld->frontsector->PortalGroup != group) continue;
+		if (!inRange(box, ld) || BoxOnLineSide(box, ld) != -1) continue;
+		if (ld->getPortalBeyondSector() == nullptr) continue;
+		if (P_PointOnLineSide(from, ld) == 0 && P_PointOnLineSide(to, ld) == 1) return ld;
+	}
+	return nullptr;
+}
+
+//============================================================================
+//
+// [RS] SectorBehindSeam
+//
+// `pos` is a spot in the coordinate space of portal group `group` that the
+// node tree could not place in that group. If it lies behind a one-sided
+// linked portal line of that group which a box of the given radius touches,
+// the line's front sector is returned: a sector that certainly is in the
+// group, for code that only needs somewhere to stand (FMultiBlockLinesIterator).
+//
+// Fresh code for this engine (not from Eternity).
+//
+//============================================================================
+
+sector_t *FLevelLocals::SectorBehindSeam(const DVector2 &pos, double radius, int group)
+{
+	if (!HasOneSidedLinkedPortals) return nullptr;
+	FBoundingBox box(pos.X, pos.Y, radius);
+	for (unsigned i = 0; i < linkedPortals.Size(); i++)
+	{
+		line_t *ld = linkedPortals[i]->mOrigin;
+		if (ld->backsector != nullptr || ld->frontsector->PortalGroup != group) continue;
+		if (!inRange(box, ld) || BoxOnLineSide(box, ld) != -1) continue;
+		if (ld->getPortalBeyondSector() == nullptr) continue;
+		return ld->frontsector;
+	}
+	return nullptr;
 }
 
 //============================================================================
@@ -1142,7 +1274,7 @@ bool FLevelLocals::CollectConnectedGroups(int startgroup, const DVector3 &positi
 					{
 						for (int s = 0; s < 2; s++)
 						{
-							sector_t *sec = s ? ld->backsector : ld->frontsector;
+							sector_t *sec = s ? ld->EffectiveBackSector() : ld->frontsector;	// [RS] also the sector beyond a one-sided linked portal
 							if (sec && !(sec->PortalBlocksMovement(sector_t::ceiling)))
 							{
 								if (sec->GetPortalPlaneZ(sector_t::ceiling) < upperz)
@@ -1161,7 +1293,7 @@ bool FLevelLocals::CollectConnectedGroups(int startgroup, const DVector3 &positi
 					{
 						for (int s = 0; s < 2; s++)
 						{
-							sector_t *sec = s ? ld->backsector : ld->frontsector;
+							sector_t *sec = s ? ld->EffectiveBackSector() : ld->frontsector;	// [RS] also the sector beyond a one-sided linked portal
 							if (sec && !(sec->PortalBlocksMovement(sector_t::floor)))
 							{
 								if (sec->GetPortalPlaneZ(sector_t::floor) > position.Z)

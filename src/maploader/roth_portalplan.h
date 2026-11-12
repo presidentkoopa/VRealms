@@ -3,14 +3,17 @@
 **
 ** Rooms over rooms, planned: which Realms sectors have to be moved to their
 ** own region of the map so that no two sectors of one region share plan area,
-** which faces are cut to do it, and the exact extra geometry (moved vertices,
-** buffer sectors behind every cut face, their walls) the loader must emit so
-** the cut faces can be joined again by linked line portals.
+** which faces are cut to do it, and the moved copies of the vertices the
+** loader must emit so the cut faces can be joined again by linked line
+** portals.
 **
 ** ENGINE-FREE ON PURPOSE. It reads roth::Map and nothing else, so the offline
 ** harness (the standalone FNodeBuilder check) and the level loader run the
 ** SAME planner and cannot disagree about what was built. All of it is fresh
-** code for this project; nothing here is ported from another engine.
+** code for this project; nothing in THIS FILE is ported from another engine.
+** (What lets a cut face be a portal with nothing behind it is in the engine:
+** a linked portal on a one-sided line, adapted from the Eternity Engine --
+** see line_t::getPortalBeyondSector in r_defs.h.)
 **
 ** What it decides, in order:
 **
@@ -27,17 +30,23 @@
 **      very short faces. The sink side is taken as small as the minimum cut
 **      allows, so the unmoved group stays as large as possible.
 **
-**   3. BUFFERS. This engine only lets an actor through a line portal that has
-**      a back sector with empty space behind it (portal.cpp, UpdatePortal), and
-**      checks an actor straddling the portal against the lines found at the
-**      translated position (p_maputl.cpp, FMultiBlockLinesIterator). So each
-**      cut face gets a rectangular buffer sector behind it, in its own group's
-**      space, carrying the heights of the sector really on the other side. A
-**      buffer must not overlap anything of its own group; a face whose buffer
-**      cannot be placed is priced out and the cut is solved again.
+**      A CUT FACE IS A ONE-SIDED LINE. Each half of a cut pair is emitted as a
+**      line with a front side only; the linked portal on it stands in for the
+**      sector that used to be behind it. There are NO buffer sectors: the
+**      engine takes the opening, the floor to stand on and the wall's upper
+**      and lower pieces from the sector really on the far side, live -- so a
+**      floor or a ceiling that moves next to a seam simply works, and a cut
+**      may be made where there is no room at all behind the face (the usual
+**      case: the room of the other storey is exactly there).
 **
-**   4. THE TRANSLATION. Group 0 stays. Every other group moves along +X, clear
-**      of everything placed before it, by a whole number of map units (the
+**   3. DOOR LEAVES. A swinging door is a polyobject, and a polyobject exists
+**      in ONE region of the map: the part of a leaf that swings through a
+**      portal line is neither drawn nor solid on the far side. So a face a
+**      leaf can reach is not cut (refuseDoorReach), and a stack that cannot
+**      be separated without such a face is left as it was and reported.
+**
+**   4. THE TRANSLATION. Group 0 stays. Every other group moves clear of
+**      everything placed before it, by a whole number of map units (the
 **      engine compares portal displacements for exact equality).
 **
 **---------------------------------------------------------------------------
@@ -63,20 +72,9 @@ struct Cut
 {
 	int face = -1, sister = -1;     // the loader's pending pair: face is the primary
 	int groupFace = 0, groupSister = 0;
-	int bufBehindFace = -1;         // buffer index: lies in face's group, stands in for sister's sector
-	int bufBehindSister = -1;       // buffer index: lies in sister's group, stands in for face's sector
 	int cost = 0;                   // what the cut paid for this face (10 = clean)
+	int doorSector = -1;            // a door leaf of this sector can reach the face (only if allowed)
 };
-
-struct Buffer
-{
-	int group = 0;
-	int likeSector = -1;            // the Realms sector whose heights, flats and light it copies
-};
-
-// A wall of a buffer. Vertex numbers are ENGINE vertex indices: below
-// map.vertices.size() the Realms vertex itself, otherwise extraBase + k.
-struct BufferLine { int v1, v2, front, back; };   // back < 0: one-sided
 
 struct ExtraVertex { double x, y; };
 
@@ -84,19 +82,17 @@ struct Plan
 {
 	bool active = false;            // false: nothing to do, or it could not be done -- see notes
 	int numGroups = 1;
-	double depth = 0.;              // buffer depth used
 	std::vector<int> group;         // per Realms sector
 	std::vector<double> offX, offY; // per group
 	std::vector<Cut> cuts;
-	std::vector<Buffer> buffers;
-	std::vector<BufferLine> bufferLines;
-	std::vector<ExtraVertex> extraVerts;    // already translated
+	std::vector<ExtraVertex> extraVerts;    // moved copies of vertices, already translated
 	std::map<std::pair<int, int>, int> movedVertex;   // (group, Realms vertex) -> index into extraVerts
 	std::map<int, int> cutByFace;   // face OR sister -> index into cuts
 	std::vector<std::string> notes; // everything worth a line in the load report
 	int ignoredSlivers = 0;         // overlap pairs below the area threshold
 	int penalisedCuts = 0;          // cuts that had to pay a penalty (hazards)
 	int unresolvedStacks = 0;       // overlap stacks that could not be separated
+	int doorReachCuts = 0;          // cuts a door leaf can reach (only when that is allowed)
 	int extraBase = 0;              // first engine vertex index of extraVerts
 
 	// The engine vertex a face of a sector in `g` must use for Realms vertex `v`.
@@ -205,6 +201,71 @@ struct Flow
 
 struct Pair { int face, sister, sa, sb; int cost; };
 
+// The same test rothmap.cpp's leafBuildable makes: a door sector that gets a
+// swinging polyobject leaf. Keep the two in step.
+inline bool LeafBuildable(const roth::Map &rm, const roth::Sector &rs)
+{
+	if (!rs.IsDoorCapable() || rs.faceCount != 4 || rs.hingeFace < 0) return false;
+	if (rs.firstFaceIndex < 0 || rs.firstFaceIndex + 3 >= (int)rm.faces.size()) return false;
+	const int hingeRel = rs.hingeFace - rs.firstFaceIndex;
+	if (hingeRel < 0 || hingeRel > 3) return false;
+	for (int j = 0; j < 4; j++)
+	{
+		const roth::Face &a = rm.faces[rs.firstFaceIndex + j];
+		const roth::Face &b = rm.faces[rs.firstFaceIndex + ((j + 1) & 3)];
+		if (a.vertex1 < 0 || a.vertex1 >= (int)rm.vertices.size()) return false;
+		if (a.vertex2 < 0 || a.vertex2 >= (int)rm.vertices.size()) return false;
+		if (a.vertex2 != b.vertex1) return false;
+	}
+	return true;
+}
+
+inline double PointSegment(double px, double py, double ax, double ay, double bx, double by)
+{
+	const double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+	double t = l2 > 0. ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0.;
+	t = t < 0. ? 0. : t > 1. ? 1. : t;
+	const double qx = ax + dx * t - px, qy = ay + dy * t - py;
+	return sqrt(qx * qx + qy * qy);
+}
+
+// DOOR REACH. A leaf turns about its hinge (the first vertex of the door
+// sector's hinge face, as the loader builds it), so it can be anywhere in the
+// disc whose radius is the farthest corner of the door sector. A face (between
+// sectors sa and sb) that enters that disc, at a height the door stands in, is
+// one the leaf can cross; that deliberately takes in the door sector's own
+// four faces. Returns the door sector, or -1.
+inline int DoorReaching(const roth::Map &rm, int face, int sa, int sb)
+{
+	const int ns = (int)rm.sectors.size(), nv = (int)rm.vertices.size();
+	if (face < 0 || face >= (int)rm.faces.size() || sa < 0 || sb < 0 || sa >= ns || sb >= ns) return -1;
+	const roth::Face &f = rm.faces[face];
+	if (f.vertex1 < 0 || f.vertex2 < 0 || f.vertex1 >= nv || f.vertex2 >= nv) return -1;
+	const roth::Sector &A = rm.sectors[sa], &B = rm.sectors[sb];
+	// the opening the pair shares
+	const int lo = A.floorHeight > B.floorHeight ? A.floorHeight : B.floorHeight;
+	const int hi = A.ceilingHeight < B.ceilingHeight ? A.ceilingHeight : B.ceilingHeight;
+	for (int d = 0; d < ns; d++)
+	{
+		const roth::Sector &ds = rm.sectors[d];
+		if (!LeafBuildable(rm, ds)) continue;
+		if (sa != d && sb != d && (hi <= ds.floorHeight || lo >= ds.ceilingHeight)) continue;
+		const roth::Face &hf = rm.faces[ds.hingeFace];
+		const double hx = rm.vertices[hf.vertex1].x, hy = rm.vertices[hf.vertex1].y;
+		double reach = 0.;
+		for (int k = 0; k < 4; k++)
+		{
+			const roth::Face &c = rm.faces[ds.firstFaceIndex + k];
+			const double r = sqrt((rm.vertices[c.vertex1].x - hx) * (rm.vertices[c.vertex1].x - hx)
+				+ (rm.vertices[c.vertex1].y - hy) * (rm.vertices[c.vertex1].y - hy));
+			if (r > reach) reach = r;
+		}
+		if (PointSegment(hx, hy, rm.vertices[f.vertex1].x, rm.vertices[f.vertex1].y,
+			rm.vertices[f.vertex2].x, rm.vertices[f.vertex2].y) <= reach + 1.) return d;
+	}
+	return -1;
+}
+
 } // namespace detail
 
 //==========================================================================
@@ -214,11 +275,16 @@ struct Pair { int face, sister, sa, sb; int cost; };
 // extraBase: the engine vertex index the plan's extra vertices will start at.
 // minArea:   overlap pairs smaller than this many square units are slivers
 //            and are left alone (and counted).
+// refuseDoorReach: true -- a face a door leaf can swing across is never cut,
+//            and a stack that needs one is left as it is. false -- such a
+//            face only pays the door penalties, and a cut that lands on one
+//            is reported (Cut::doorSector); the leaf will end at the seam.
 //
 //==========================================================================
 
 inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overlaps,
-	const std::vector<int> &skipSectors, int extraBase, double minArea = 64.)
+	const std::vector<int> &skipSectors, int extraBase, double minArea = 64.,
+	bool refuseDoorReach = true)
 {
 	using namespace detail;
 	Plan plan;
@@ -397,7 +463,16 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 	std::vector<char> triggerFace((size_t)nf, 0);
 	for (const roth::Command &c : rm.commands)
 		for (int fi : c.faces) if (fi >= 0 && fi < nf) triggerFace[fi] = 1;
-	std::vector<int> extraCost((size_t)nf, 0);   // raised when a buffer cannot be placed
+
+	// Door reach, per face of every pair (detail::DoorReaching).
+	std::vector<int> doorReach((size_t)nf, -1);  // face -> a door sector whose leaf reaches it
+	for (const Pair &p : pairs)
+	{
+		if (skipped(p.sa) || skipped(p.sb)) continue;
+		const int d = DoorReaching(rm, p.face, p.sa, p.sb);
+		if (d >= 0 && !skipped(d)) doorReach[p.face] = doorReach[p.sister] = d;
+	}
+	static const int kRefused = 100000;          // the price of a face that must not be cut
 	auto baseCost = [&](const Pair &p) -> int
 	{
 		const roth::Sector &A = rm.sectors[p.sa], &B = rm.sectors[p.sb];
@@ -416,11 +491,13 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 		}
 		if (A.floorHeight != B.floorHeight || A.ceilingHeight != B.ceilingHeight) c += 3;
 		if (A.commandID != 0 || B.commandID != 0) c += 8;      // logic may move or relight it
+		if (refuseDoorReach && doorReach[p.face] >= 0) c += kRefused;
 		return c;
 	};
 
-	// Which overlap stacks are being separated. A stack whose cut cannot be
-	// given buffers is switched off again and reported; the others still go.
+	// Which overlap stacks are being separated. A stack whose cut would have
+	// to cross a door leaf's swing is switched off again and reported; the
+	// others still go.
 	std::vector<char> compOn((size_t)numComp, 0);
 	const std::vector<int> fullColour = colour;
 	int numColours = 0;
@@ -455,7 +532,7 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 			for (Pair &p : pairs)
 			{
 				if (outGroup[p.sa] != 0 || outGroup[p.sb] != 0) continue;
-				p.cost = baseCost(p) + extraCost[p.face];
+				p.cost = baseCost(p);
 				flow.Add(p.sa, p.sb, p.cost, true);
 			}
 			total += flow.Run(S, T);
@@ -468,50 +545,19 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 	};
 
 	//------------------------------------------------------------------
-	// 2 + 3. Cut, place buffers, and re-cut while a buffer cannot be placed.
+	// 2 + 3. Cut; refuse a cut a door leaf can reach.
 	//------------------------------------------------------------------
-	static const double kDepths[3] = { 128., 96., 64. };
-	struct Rect { double x[4], y[4]; int group; };   // v2, v1, f1, f2 (clockwise)
-	auto rectHolds = [](const Rect &r, double px, double py)
-	{
-		bool in = false;
-		for (int i = 0, j = 3; i < 4; j = i++)
-			if ((r.y[i] > py) != (r.y[j] > py))
-			{
-				const double xi = r.x[j] + (py - r.y[j]) * (r.x[i] - r.x[j]) / (r.y[i] - r.y[j]);
-				if (xi > px) in = !in;
-			}
-		return in;
-	};
-	auto makeRect = [&](int face, double depth, int group) -> Rect
-	{
-		const roth::Face &f = rm.faces[face];
-		const double ax = rm.vertices[f.vertex1].x, ay = rm.vertices[f.vertex1].y;
-		const double bx = rm.vertices[f.vertex2].x, by = rm.vertices[f.vertex2].y;
-		const double len = sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
-		// The owning sector is on the RIGHT of v1->v2; the buffer goes LEFT.
-		const double nx = -(by - ay) / len * depth, ny = (bx - ax) / len * depth;
-		Rect r;
-		r.x[0] = bx; r.y[0] = by;  r.x[1] = ax; r.y[1] = ay;
-		r.x[2] = ax + nx; r.y[2] = ay + ny;  r.x[3] = bx + nx; r.y[3] = by + ny;
-		r.group = group;
-		return r;
-	};
-
 	std::vector<int> group;
 	std::vector<int> cutPairs;
 	std::vector<int> lastFailed;
-	double depthUsed = 0.;
 
-	// One attempt with the stacks currently switched on: cut, try to place
-	// every buffer, price out a face that has no room and cut again. Succeeds
-	// only if every buffer is placed AND the cut never had to go through a
-	// priced-out face (a cut that wanders across the map to avoid one seam is
-	// worse than leaving that one overlap alone).
+	// One attempt with the stacks currently switched on. Succeeds unless the
+	// cheapest cut still goes through a refused face (a cut that wanders
+	// across the map to avoid one seam is worse than leaving that one overlap
+	// alone -- and the price of a refused face is what stops it wandering).
 	auto attempt = [&]() -> bool
 	{
 		applyActive();
-		std::fill(extraCost.begin(), extraCost.end(), 0);
 		long long best = solve(group);
 		// Which of two unrelated stacks is called "upper" changes the cost.
 		for (int pass = 0; pass < 2 && numColours == 2; pass++)
@@ -524,62 +570,15 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 				if (cst < best) { best = cst; group = trial; }
 				else for (int s = 0; s < ns; s++) if (comp[s] == k) colour[s] = 1 - colour[s];
 			}
-		for (int round = 0; round < 6; round++)
-		{
-			if (round > 0) solve(group);
-			cutPairs.clear();
-			for (size_t i = 0; i < pairs.size(); i++)
-				if (group[pairs[i].sa] != group[pairs[i].sb])
-				{
-					if (extraCost[pairs[i].face] > 0) return false;
-					cutPairs.push_back((int)i);
-				}
-			for (int di = 0; di < 3; di++)
+		cutPairs.clear();
+		lastFailed.clear();
+		for (size_t i = 0; i < pairs.size(); i++)
+			if (group[pairs[i].sa] != group[pairs[i].sb])
 			{
-				const double depth = kDepths[di];
-				std::vector<Rect> rects;
-				std::vector<int> failed;
-				for (int ci : cutPairs)
-				{
-					const Pair &p = pairs[ci];
-					for (int side = 0; side < 2; side++)
-					{
-						const int face = side ? p.sister : p.face;
-						const int g = group[side ? p.sb : p.sa];
-						const Rect r = makeRect(face, depth, g);
-						bool ok = true;
-						const double ex = r.x[0] - r.x[1], ey = r.y[0] - r.y[1];   // along the face
-						const double fx = r.x[2] - r.x[1], fy = r.y[2] - r.y[1];   // into the buffer
-						const double len = sqrt(ex * ex + ey * ey);
-						const int nu = (int)(len / 3.) + 2, nw = (int)(depth / 3.) + 2;
-						for (int iu = 0; iu < nu && ok; iu++)
-							for (int iw = 0; iw < nw && ok; iw++)
-							{
-								const double u = (iu + 0.4371) / nu, w = (iw + 0.3913) / nw;
-								const double px = r.x[1] + ex * u + fx * w, py = r.y[1] + ey * u + fy * w;
-								for (int s = 0; s < ns && ok; s++)
-									if (group[s] == g && Holds(outline[s], px, py)) ok = false;
-								for (size_t q = 0; q < rects.size() && ok; q++)
-									if (rects[q].group == g && rectHolds(rects[q], px, py)) ok = false;
-							}
-						if (!ok) failed.push_back(face);
-						rects.push_back(r);
-					}
-				}
-				if (failed.empty()) { depthUsed = depth; return true; }
-				if (di == 2)
-				{
-					lastFailed = failed;
-					for (int face : failed)
-					{
-						extraCost[face] += 5000;
-						const int sis = rm.faces[face].sister;
-						if (sis >= 0 && sis < nf) extraCost[sis] += 5000;
-					}
-				}
+				if (refuseDoorReach && doorReach[pairs[i].face] >= 0) lastFailed.push_back(pairs[i].face);
+				cutPairs.push_back((int)i);
 			}
-		}
-		return false;
+		return lastFailed.empty();
 	};
 
 	// Biggest stacks first; each is kept only if the whole plan still works
@@ -602,10 +601,11 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 			std::string members;
 			for (int s = 0; s < ns; s++)
 				if (comp[s] == k) members += (members.empty() ? "" : ",") + std::to_string(s);
-			say("stack left as it is (no room for a portal buffer at any cut that separates it):"
-				" sectors " + members);
+			say("stack left as it is (it cannot be separated without cutting a face a door"
+				" leaf swings across): sectors " + members);
 			for (int face : lastFailed)
-				say(fmt("    no room behind face %.0f (sector %.0f)", face, rm.faces[face].sector));
+				say(fmt("    face %.0f (sector %.0f) is within reach of the door leaf of sector %.0f",
+					face, rm.faces[face].sector, doorReach[face]));
 			plan.unresolvedStacks++;
 		}
 		if (kept == 0 || !attempt())
@@ -628,14 +628,13 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 		for (int s = 0; s < ns; s++) group[s] = rank[group[s]];
 	}
 	plan.group = group;
-	plan.depth = depthUsed;
 	plan.numGroups = numColours;
 
 	//------------------------------------------------------------------
 	// 4. The translation: a whole number of units, clear of all that has
-	// been placed (buffers and a margin included). East of everything if the
-	// node builder's 16.16 range has room there, else west, else north --
-	// never south, where the loader parks its door leaves and slab controls.
+	// been placed (and a margin). East of everything if the node builder's
+	// 16.16 range has room there, else west, else north -- never south, where
+	// the loader parks its door leaves and slab controls.
 	//------------------------------------------------------------------
 	plan.offX.assign((size_t)numColours, 0.);
 	plan.offY.assign((size_t)numColours, 0.);
@@ -658,14 +657,14 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 		{
 			const Box &b = gb[g];
 			if (b.x1 < b.x0) continue;
-			const double pad = depthUsed + MARGIN;
+			const double pad = MARGIN;
 			double ox = 0., oy = 0.;
 			const double east = ceil((all.x1 + pad - b.x0) / 64.) * 64.;
 			const double west = floor((all.x0 - pad - b.x1) / 64.) * 64.;
 			const double north = ceil((all.y1 + pad - b.y0) / 64.) * 64.;
-			if (b.x1 + east + depthUsed <= LIMIT) ox = east;
-			else if (b.x0 + west - depthUsed >= -LIMIT) ox = west;
-			else if (b.y1 + north + depthUsed <= LIMIT) oy = north;
+			if (b.x1 + east <= LIMIT) ox = east;
+			else if (b.x0 + west >= -LIMIT) ox = west;
+			else if (b.y1 + north <= LIMIT) oy = north;
 			else { fits = false; break; }
 			plan.offX[g] = ox; plan.offY[g] = oy;
 			if (b.x0 + ox < all.x0) all.x0 = b.x0 + ox;
@@ -710,68 +709,31 @@ inline Plan BuildPlan(const roth::Map &rm, const std::vector<OverlapPair> &overl
 	}
 
 	//------------------------------------------------------------------
-	// Buffers and their walls. Far corners are shared by position within a
-	// group, and a wall two buffers both ask for becomes ONE two-sided line
-	// between them (two cut faces side by side in one opening).
+	// The cuts.
 	//------------------------------------------------------------------
-	std::map<std::pair<int, std::pair<long long, long long>>, int> farVertex;   // (group, quantised pos)
-	std::map<std::pair<int, int>, int> wallByEnds;   // (lo vertex, hi vertex) -> bufferLines index
-	auto farIndex = [&](int g, double x, double y) -> int
-	{
-		const std::pair<int, std::pair<long long, long long>> key(g,
-			std::make_pair((long long)floor(x * 256. + 0.5), (long long)floor(y * 256. + 0.5)));
-		auto it = farVertex.find(key);
-		if (it != farVertex.end()) return it->second;
-		const int idx = extraBase + (int)plan.extraVerts.size();
-		plan.extraVerts.push_back({ x, y });
-		farVertex[key] = idx;
-		return idx;
-	};
-	auto addWall = [&](int a, int b, int buf)
-	{
-		const std::pair<int, int> key(a < b ? a : b, a < b ? b : a);
-		auto it = wallByEnds.find(key);
-		if (it != wallByEnds.end())
-		{
-			BufferLine &bl = plan.bufferLines[it->second];
-			if (bl.back < 0 && bl.v1 == b && bl.v2 == a) { bl.back = buf; return; }
-		}
-		wallByEnds[key] = (int)plan.bufferLines.size();
-		plan.bufferLines.push_back({ a, b, buf, -1 });
-	};
-	auto addBuffer = [&](int face, int g, int likeSector) -> int
-	{
-		const roth::Face &f = rm.faces[face];
-		const Rect r = makeRect(face, depthUsed, g);
-		const int bi = (int)plan.buffers.size();
-		plan.buffers.push_back({ g, likeSector });
-		const int v1 = plan.VertexFor(g, f.vertex1), v2 = plan.VertexFor(g, f.vertex2);
-		const int f1 = farIndex(g, r.x[2] + plan.offX[g], r.y[2] + plan.offY[g]);
-		const int f2 = farIndex(g, r.x[3] + plan.offX[g], r.y[3] + plan.offY[g]);
-		// clockwise round the buffer, so it is on the right of each wall
-		addWall(v1, f1, bi);
-		addWall(f1, f2, bi);
-		addWall(f2, v2, bi);
-		return bi;
-	};
 	for (int ci : cutPairs)
 	{
 		const Pair &p = pairs[ci];
 		Cut c;
 		c.face = p.face; c.sister = p.sister;
 		c.groupFace = group[p.sa]; c.groupSister = group[p.sb];
-		c.cost = baseCost(p) + extraCost[p.face];
+		c.cost = baseCost(p);
+		c.doorSector = doorReach[p.face];
 		if (c.cost > 13) plan.penalisedCuts++;
-		c.bufBehindFace = addBuffer(p.face, c.groupFace, p.sb);
-		c.bufBehindSister = addBuffer(p.sister, c.groupSister, p.sa);
+		if (c.doorSector >= 0)
+		{
+			plan.doorReachCuts++;
+			say(fmt("cut face %.0f|%.0f is within reach of the door leaf of sector %.0f:"
+				" the leaf will end at the seam", p.face, p.sister, c.doorSector));
+		}
 		plan.cutByFace[p.face] = (int)plan.cuts.size();
 		plan.cutByFace[p.sister] = (int)plan.cuts.size();
 		plan.cuts.push_back(c);
 	}
 
 	plan.active = !plan.cuts.empty() || numColours > 1;
-	say(fmt("%.0f overlap pair(s) in %.0f stack(s) -> %.0f group(s), %.0f cut face pair(s),"
-		" buffer depth %.0f", realPairs, numComp, numColours, (double)plan.cuts.size(), depthUsed));
+	say(fmt("%.0f overlap pair(s) in %.0f stack(s) -> %.0f group(s), %.0f cut face pair(s)",
+		realPairs, numComp, numColours, (double)plan.cuts.size()));
 	return plan;
 }
 

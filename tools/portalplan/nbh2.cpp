@@ -16,7 +16,7 @@
 #include "p_lnspec.h"
 #include "roth_raw.h"
 #include <algorithm>
-#include "/tmp/sl/patch/overlap_fn.inc"
+#include "overlap_fn.inc"
 #include "roth_portalplan.h"
 #define private public
 #define class struct
@@ -39,9 +39,9 @@ static std::vector<uint8_t> RF(const char*p){std::vector<uint8_t>o;FILE*f=fopen(
 int main(int argc,char**argv)
 {
 	auto d=RF(argv[1]); Map rm=ParseRaw(d.data(),d.size()); if(!rm.ok()){printf("ERR\n");return 1;}
-	std::set<int> skip, watch; bool dumpsubs=false, verbose=false, full=false, nopoly=false, portals=false;
+	std::set<int> skip, watch; bool dumpsubs=false, verbose=false, full=false, nopoly=false, portals=false, doorcuts=false;
 	for(int a=2;a<argc;a++){ std::string s=argv[a]; if(s.rfind("skip=",0)==0){const char*c=s.c_str()+5;while(*c){skip.insert(atoi(c));while(*c&&*c!=',')c++;if(*c)c++;}}
-		else if(s.rfind("watch=",0)==0){const char*c=s.c_str()+6;while(*c){watch.insert(atoi(c));while(*c&&*c!=',')c++;if(*c)c++;}} else if(s=="-v")verbose=true; else if(s=="full")full=true; else if(s=="subs")dumpsubs=true; else if(s=="nopoly")nopoly=true; else if(s=="portals")portals=true; }
+		else if(s.rfind("watch=",0)==0){const char*c=s.c_str()+6;while(*c){watch.insert(atoi(c));while(*c&&*c!=',')c++;if(*c)c++;}} else if(s=="-v")verbose=true; else if(s=="full")full=true; else if(s=="subs")dumpsubs=true; else if(s=="nopoly")nopoly=true; else if(s=="portals")portals=true; else if(s=="doorcuts")doorcuts=true; }
 	// pending lines, as rothmap.cpp:967-1003
 	std::vector<bool> consumed(rm.faces.size(),false); struct PL{int face,sister;}; std::vector<PL> pend;
 	for(size_t i=0;i<rm.faces.size();i++){ if(consumed[i])continue; const Face&f=rm.faces[i];
@@ -59,16 +59,16 @@ int main(int argc,char**argv)
 	int nv=realV+platformCount*4+leafCount*8, nl=realL+platformCount*4+leafCount*8, ns=realS+platformCount+leafCount;
 	rothplan::Plan plan; plan.group.assign(realS,0); plan.offX.assign(1,0.); plan.offY.assign(1,0.);
 	if(portals){ std::vector<RothPlanOverlap> ov; std::vector<int> sk(skip.begin(),skip.end()); RothFindPlanOverlaps(rm,sk,ov); std::vector<rothplan::OverlapPair> in; for(auto&p:ov)in.push_back({p.a,p.b,p.area});
-		plan=rothplan::BuildPlan(rm,in,sk,nv); for(auto&n:plan.notes)printf("PLAN %s\n",n.c_str());
+		plan=rothplan::BuildPlan(rm,in,sk,nv,64.,!doorcuts); for(auto&n:plan.notes)printf("PLAN %s\n",n.c_str());
 		if(plan.active){ for(int g=1;g<plan.numGroups;g++)printf("PLAN group %d offset (%.0f,%.0f)\n",g,plan.offX[g],plan.offY[g]); } }
 	const int xV=nv, xL=nl, xS=ns;   // first extra vertex / line / sector
-	if(plan.active){ nv+=plan.extraVerts.size(); nl+=plan.cuts.size()+plan.bufferLines.size(); ns+=plan.buffers.size(); }
+	if(plan.active){ nv+=plan.extraVerts.size(); nl+=plan.cuts.size(); }   // one more line per cut; no sectors
 	vertex_t*V=(vertex_t*)calloc(nv,sizeof(vertex_t)); line_t*L=(line_t*)calloc(nl,sizeof(line_t)); side_t*S=(side_t*)calloc(nl*2,sizeof(side_t)); sector_t*SEC=(sector_t*)calloc(ns,sizeof(sector_t));
 	for(int i=0;i<realV;i++){V[i].set((double)rm.vertices[i].x,(double)rm.vertices[i].y);} for(int i=0;i<nv;i++)V[i].vertexnum=i;
 	if(plan.active)for(size_t i=0;i<plan.extraVerts.size();i++)V[xV+i].set(plan.extraVerts[i].x,plan.extraVerts[i].y);
 	for(int i=0;i<ns;i++)SEC[i].sectornum=i;
 	int si=0;
-	int xl=xL; std::vector<double> wantBuf;
+	int xl=xL;
 	for(int i=0;i<realL;i++){ const Face&f=rm.faces[pend[i].face]; const int gf=plan.GroupOf(f.sector);
 		L[i].v1=&V[plan.VertexFor(gf,f.vertex1)];L[i].v2=&V[plan.VertexFor(gf,f.vertex2)];L[i].linenum=i;
 		S[si].sector=&SEC[f.sector];S[si].linedef=&L[i];S[si].sidenum=si;L[i].sidedef[0]=&S[si];L[i].frontsector=&SEC[f.sector];si++;
@@ -79,21 +79,17 @@ int main(int argc,char**argv)
 				if(gf!=gg){printf("PLAN BUG: line %d joins groups %d and %d without a cut\n",i,gf,gg);exit(4);}
 				S[si].sector=&SEC[g.sector];S[si].linedef=&L[i];S[si].sidenum=si;L[i].sidedef[1]=&S[si];L[i].backsector=&SEC[g.sector];si++;
 			} else { const rothplan::Cut&c=plan.cuts[ct->second]; if(c.face!=pend[i].face||c.sister!=pend[i].sister){printf("PLAN BUG: cut pairing differs from the loader's\n");exit(4);}
-				// the primary face keeps this line; its back is the buffer standing in for the sister's sector
-				sector_t*b1=&SEC[xS+c.bufBehindFace]; S[si].sector=b1;S[si].linedef=&L[i];S[si].sidenum=si;L[i].sidedef[1]=&S[si];L[i].backsector=b1;si++;
-				// the sister face gets a line of its own, in its own group's space
+				// the primary face keeps this line, ONE-SIDED: the linked portal stands in for what was behind it
+				// the sister face gets a line of its own, in its own group's space, one-sided too
 				line_t*l2=&L[xl]; l2->v1=&V[plan.VertexFor(gg,g.vertex1)]; l2->v2=&V[plan.VertexFor(gg,g.vertex2)]; l2->linenum=xl; xl++;
 				S[si].sector=&SEC[g.sector];S[si].linedef=l2;S[si].sidenum=si;l2->sidedef[0]=&S[si];l2->frontsector=&SEC[g.sector];si++;
-				sector_t*b2=&SEC[xS+c.bufBehindSister]; S[si].sector=b2;S[si].linedef=l2;S[si].sidenum=si;l2->sidedef[1]=&S[si];l2->backsector=b2;si++;
 				if(l2->v1->fX()-L[i].v2->fX()!=plan.offX[gg]-plan.offX[gf]||l2->v2->fX()-L[i].v1->fX()!=plan.offX[gg]-plan.offX[gf]||l2->v1->fY()-L[i].v2->fY()!=plan.offY[gg]-plan.offY[gf]){printf("PLAN BUG: portal pair not an exact translation\n");exit(4);}
 				printf("PORTAL line %d (%.0f,%.0f)-(%.0f,%.0f) sector %d <-> line %d (%.0f,%.0f)-(%.0f,%.0f) sector %d  displacement (%.0f,%.0f)\n",i,L[i].v1->fX(),L[i].v1->fY(),L[i].v2->fX(),L[i].v2->fY(),f.sector,(int)(l2-L),l2->v1->fX(),l2->v1->fY(),l2->v2->fX(),l2->v2->fY(),g.sector,l2->v2->fX()-L[i].v1->fX(),l2->v2->fY()-L[i].v1->fY());
 			}
 		} }
-	if(plan.active){ for(auto&bl:plan.bufferLines){ line_t*l=&L[xl]; l->v1=&V[bl.v1]; l->v2=&V[bl.v2]; l->linenum=xl; xl++;
-			S[si].sector=&SEC[xS+bl.front];S[si].linedef=l;S[si].sidenum=si;l->sidedef[0]=&S[si];l->frontsector=&SEC[xS+bl.front];si++;
-			if(bl.back>=0){S[si].sector=&SEC[xS+bl.back];S[si].linedef=l;S[si].sidenum=si;l->sidedef[1]=&S[si];l->backsector=&SEC[xS+bl.back];si++;} }
+	if(plan.active){
 		if(xl!=nl){printf("PLAN BUG: %d lines emitted, %d allocated\n",xl,nl);exit(4);}
-		printf("PLAN geometry: +%zu vertices, +%zu portal lines, +%zu buffer walls, +%zu buffer sectors\n",plan.extraVerts.size(),plan.cuts.size(),plan.bufferLines.size(),plan.buffers.size()); }
+		printf("PLAN geometry: +%zu moved vertices, +%zu portal lines (one-sided pairs), no buffer sectors\n",plan.extraVerts.size(),plan.cuts.size()); }
 	TArray<FNodeBuilder::FPolyStart> ps,an;
 	if(full){
 		// platform control squares, rothmap.cpp:1638-1842
@@ -129,7 +125,6 @@ int main(int argc,char**argv)
 	std::vector<double> want(ns,0),got(ns,0); 
 	for(int s=0;s<realS;s++){ if(skip.count(s))continue; const Sector&rs=rm.sectors[s]; double a=0; for(int k=0;k<rs.faceCount;k++){const Face&f=rm.faces[rs.firstFaceIndex+k]; auto&A=rm.vertices[f.vertex1];auto&B=rm.vertices[f.vertex2]; a+=(double)A.x*B.y-(double)B.x*A.y;} want[s]=-a/2; }
 	int bad=0,lt3=0,nonconvex=0,open=0,nosec=0,tiny=0,mixed=0;
-	if(plan.active){ for(size_t b=0;b<plan.buffers.size();b++)want[xS+b]=-1; for(auto&c:plan.cuts){ auto&F=rm.faces[c.face]; double len=hypot((double)rm.vertices[F.vertex2].x-rm.vertices[F.vertex1].x,(double)rm.vertices[F.vertex2].y-rm.vertices[F.vertex1].y); want[xS+c.bufBehindFace]=len*plan.depth; want[xS+c.bufBehindSister]=len*plan.depth; } }
 	for(unsigned i=0;i<nsub;i++){
 		int sec=-1; bool mix=false; for(int k=0;k<num[i];k++){auto&g=segs[first[i]+k]; if(g.sidedef){int s2=g.sidedef->sector->sectornum; if(sec<0)sec=s2; else if(sec!=s2)mix=true;}}
 		double a=0; bool op=false, ncv=false; 
@@ -145,7 +140,6 @@ int main(int argc,char**argv)
 	printf("subsectors: <3 segs %d, open loops %d, nonconvex %d, mixed-sector %d, no-sector %d, area<1 %d\n",lt3,open,nonconvex,mixed,nosec,tiny);
 	for(int s=0;s<realS;s++){ if(skip.count(s))continue; if(fabs(want[s]-got[s])>0.51){bad++; printf("DEF %d %.0f %.0f\n",s,want[s],got[s]); if(bad<=40||watch.count(s))printf("AREA sector %d realms %.1f subsectors %.1f diff %.1f\n",s,want[s],got[s],got[s]-want[s]);} }
 	printf("sectors whose subsector area != polygon area: %d of %d\n",bad,realS);
-	if(plan.active){ int bb=0; for(size_t b=0;b<plan.buffers.size();b++) if(fabs(want[xS+b]-got[xS+b])>0.51){bb++; printf("BUFFER %zu (group %d, like sector %d) wants %.1f got %.1f\n",b,plan.buffers[b].group,plan.buffers[b].likeSector,want[xS+b],got[xS+b]);} printf("buffer sectors whose subsector area != rectangle area: %d of %zu\n",bb,plan.buffers.size()); }
 	// ---- emulate SetRenderSector / FixMinisegReferences / FixHoles (glnodes.cpp:1286, renderinfo.cpp:763,815)
 	{
 		struct ES{int v1,v2,sec,partner,sub;bool mini;}; std::vector<ES> E(segs.Size());

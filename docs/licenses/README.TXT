@@ -10,6 +10,10 @@ The majority of original code uses a BSD-like lincese. See bsd.txt.
 
 Some code was taken from the Eternity Engine.
 Copyright (c) James Haley, Stephen McGranahan, et al.
+(That includes linked line portals on one-sided lines, adapted from Eternity's
+p_spec.cpp, r_portal.cpp, p_maputl.cpp, p_portalclip.cpp, p_trace.cpp,
+cam_aim.cpp, cam_sight.cpp and r_bsp.cpp under the GPL v3 or later; each
+adapted block in the source names the file and function it came from.)
 
 This software uses the game_music_emu library, which is covered by the GNU Lesser
 General Public License. See lgpl.txt.

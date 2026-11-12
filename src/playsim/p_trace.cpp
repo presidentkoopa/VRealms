@@ -452,9 +452,17 @@ bool FTraceInfo::LineCheck(intercept_t *in, double dist, DVector3 hit, bool spec
 		}
 	}
 
+	// [RS] A linked portal on a one-sided line that this trace did NOT go through (TraceTraverse sends it
+	// through when it meets the opening from the front): it is a wall here, but a wall with an upper and a
+	// lower piece, measured against the sector beyond the portal. seamsector is null for every other line.
+	// Adapted from the Eternity Engine, source/p_trace.cpp (the shoot traverse's use of beyondportalline);
+	// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+	sector_t *seamsector = nullptr;
+
 	if (!(in->d.line->flags & ML_TWOSIDED))
 	{
 		entersector = NULL;
+		if (lineside == 0) seamsector = in->d.line->getPortalBeyondSector();
 	}
 	else
 	{
@@ -484,6 +492,12 @@ bool FTraceInfo::LineCheck(intercept_t *in, double dist, DVector3 hit, bool spec
 	{
 		bf = entersector->floorplane.ZatPoint(hit);
 		bc = entersector->ceilingplane.ZatPoint(hit);
+	}
+	else if (seamsector != nullptr)
+	{
+		const DVector2 through = hit.XY() + in->d.line->getPortalDisplacement();
+		bf = seamsector->floorplane.ZatPoint(through);
+		bc = seamsector->ceilingplane.ZatPoint(through);
 	}
 
 	sector_t *hsec = CurSector->GetHeightSec();
@@ -524,7 +538,7 @@ bool FTraceInfo::LineCheck(intercept_t *in, double dist, DVector3 hit, bool spec
 		// hit the wall
 		Results->HitType = TRACE_HitWall;
 		Results->Tier =
-			entersector == NULL ? TIER_Middle :
+			(entersector == NULL && seamsector == nullptr) ? TIER_Middle :
 			hit.Z <= bf ? TIER_Lower :
 			hit.Z >= bc ? TIER_Upper : TIER_Middle;
 		if ((TraceFlags & TRACE_Impact) && !special3dpass)
@@ -903,7 +917,20 @@ bool FTraceInfo::TraceTraverse (int ptflags)
 			if (in->d.line->isLinePortal() && P_PointOnLineSidePrecise(Start, in->d.line) == 0)
 			{
 				sector_t *entersector = in->d.line->backsector;
-				if (entersector == NULL || (hit.Z >= entersector->floorplane.ZatPoint(hit) && hit.Z <= entersector->ceilingplane.ZatPoint(hit)))
+				// [RS] A linked portal on a one-sided line lets the trace through only where the sector beyond
+				// it is open -- the wall above and below the opening is a wall (LineCheck).
+				// Adapted from the Eternity Engine, source/p_trace.cpp (the shoot traverse's use of beyondportalline);
+				// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+				DVector3 through = hit;
+				bool infront = true;	// only ever false for such a line: the trace has left the near sector's height
+				if (entersector == NULL && (entersector = in->d.line->getPortalBeyondSector()) != NULL)
+				{
+					const DVector2 disp = in->d.line->getPortalDisplacement();
+					through.X += disp.X;
+					through.Y += disp.Y;
+					infront = hit.Z > CurSector->floorplane.ZatPoint(hit) && hit.Z < CurSector->ceilingplane.ZatPoint(hit);
+				}
+				if (entersector == NULL || (infront && hit.Z >= entersector->floorplane.ZatPoint(through) && hit.Z <= entersector->ceilingplane.ZatPoint(through)))
 				{
 					FLinePortal *port = in->d.line->getPortal();
 					// The caller cannot handle portals without global offset.
@@ -1063,7 +1090,7 @@ static bool EditTraceResult (uint32_t flags, FTraceResults &res)
 		{
 			if (res.Tier == TIER_Upper &&
 				res.Line->frontsector->GetTexture(sector_t::ceiling) == skyflatnum &&
-				res.Line->backsector->GetTexture(sector_t::ceiling) == skyflatnum)
+				res.Line->EffectiveBackSector()->GetTexture(sector_t::ceiling) == skyflatnum)	// [RS] TIER_Upper also on a one-sided linked portal line
 			{
 				res.HitType = TRACE_HasHitSky;
 				return true;
@@ -1084,7 +1111,7 @@ static bool EditTraceResult (uint32_t flags, FTraceResults &res)
 		{
 			if (res.Tier == TIER_Upper &&
 				res.Line->frontsector->GetTexture(sector_t::ceiling) == skyflatnum &&
-				res.Line->backsector->GetTexture(sector_t::ceiling) == skyflatnum)
+				res.Line->EffectiveBackSector()->GetTexture(sector_t::ceiling) == skyflatnum)	// [RS] TIER_Upper also on a one-sided linked portal line
 			{
 				res.HitType = TRACE_HitNone;
 				return false;

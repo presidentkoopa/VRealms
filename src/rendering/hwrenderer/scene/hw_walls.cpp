@@ -1762,7 +1762,7 @@ void HWWall::DoMidTexture(HWWallDispatcher *di, seg_t * seg, bool drawfogboundar
 			}
 		}
 		else if ((bch1>fch1 || bch2>fch2) &&
-				 (seg->frontsector->GetTexture(sector_t::ceiling)!=skyflatnum || seg->backsector->GetTexture(sector_t::ceiling)==skyflatnum))
+				 (seg->frontsector->GetTexture(sector_t::ceiling)!=skyflatnum || (seg->backsector ? seg->backsector : back)->GetTexture(sector_t::ceiling)==skyflatnum))	// [RS] `back` only when the seg has none: a linked portal on a one-sided line
 				 // (!((bch1<=fch1 && bch2<=fch2) || (bch1>=fch1 && bch2>=fch2)))
 		{
 			// Use the higher plane and let the geometry clip the extruding part
@@ -2041,7 +2041,7 @@ void HWWall::BuildFFBlock(HWWallDispatcher *di, seg_t * seg, F3DFloor * rover, i
 
 	lightmap = nullptr;
 	if (seg->sidedef == seg->linedef->sidedef[0])
-		lightmap = seg->linedef->sidedef[1]->lightmap;
+		lightmap = seg->linedef->sidedef[1] ? seg->linedef->sidedef[1]->lightmap : nullptr;	// [RS] no second side on a one-sided linked portal line
 	else
 		lightmap = seg->linedef->sidedef[0]->lightmap;
 
@@ -2632,8 +2632,24 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 		float bch2 = segback->ceilingplane.ZatPoint(v2);
 		float zalign = 0.f;
 
-
-		if (isportal && seg->backsector == nullptr)
+		// [RS] A LINKED PORTAL ON A ONE-SIDED LINE (hw_bsp.cpp, AddLine, passes the sector beyond the portal
+		// as `backsector`). The wall is laid out like any two-sided wall -- upper piece, opening, lower piece
+		// -- against that sector, measured where its planes really are: at this line's vertices seen through
+		// the portal. Linked portals have no height offset, so the alignment fix-up below is not for them.
+		// Adapted from the Eternity Engine, source/r_bsp.cpp (R_AddLine / R_1SidedLine with `beyond`);
+		// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+		const bool onesidedlinked = isportal && seg->backsector == nullptr && linedef->isOneSidedLinkedPortal();
+		if (onesidedlinked)
+		{
+			const DVector2 disp = linedef->getPortalDisplacement();
+			const DVector2 p1 = v1->fPos() + disp, p2 = v2->fPos() + disp;
+			bfh1 = segback->floorplane.ZatPoint(p1);
+			bfh2 = segback->floorplane.ZatPoint(p2);
+			bch1 = segback->ceilingplane.ZatPoint(p1);
+			bch2 = segback->ceilingplane.ZatPoint(p2);
+			SkyNormal(di, frontsector, v1, v2);
+		}
+		else if (isportal && seg->backsector == nullptr)
 		{
 			SkyNormal(di, frontsector, v1, v2); // For sky rendering purposes this needs to be treated as a one-sided wall.
 
@@ -2789,12 +2805,33 @@ void HWWall::Process(HWWallDispatcher *di, seg_t *seg, sector_t * frontsector, s
 			ztop[1] = bch2;
 			zbottom[0] = bfh1;
 			zbottom[1] = bfh2;
+			if (onesidedlinked)
+			{
+				// [RS] The portal fills the opening the two sectors share and no more; a seam that is shut
+				// (a door closed on the far side) draws no portal at all.
+				ztop[0] = min(bch1, fch1);
+				ztop[1] = min(bch2, fch2);
+				zbottom[0] = max(bfh1, ffh1);
+				zbottom[1] = max(bfh2, ffh2);
+				if (ztop[0] > zbottom[0] || ztop[1] > zbottom[1])
+					PutPortal(di, PORTALTYPE_LINETOLINE, -1);
+			}
+			else
 			PutPortal(di, PORTALTYPE_LINETOLINE, -1);
 
-			if (texture && seg->backsector != nullptr)
+			if (texture && (seg->backsector != nullptr || onesidedlinked))
 			{
 				DoMidTexture(di, seg, drawfogboundary, frontsector, backsector, realfront, realback,
 					fch1, fch2, ffh1, ffh2, bch1, bch2, bfh1, bfh2, zalign, skew);
+			}
+
+			// [RS] The edge of a 3D floor that ends exactly at the seam. Seen through a two-sided portal line
+			// it is drawn from the far side's back; a one-sided line has no back, so it is drawn here.
+			if (onesidedlinked && (backsector->e->XFloor.ffloors.Size() || frontsector->e->XFloor.ffloors.Size()))
+			{
+				lightlevel = RescaleLightLevel(sidedef->GetLightLevel(foggy, orglightlevel, side_t::top, false, &rel));
+				rellight = CalcRelLight(lightlevel, orglightlevel, rel);
+				DoFFloorBlocks(di, seg, frontsector, backsector, fch1, fch2, ffh1, ffh2, bch1, bch2, bfh1, bfh2);
 			}
 		}
 		else

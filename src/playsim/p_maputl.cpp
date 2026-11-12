@@ -113,29 +113,40 @@ void P_LineOpening (FLineOpening &open, AActor *actor, const line_t *linedef, co
 	{
 		sector_t *front, *back;
 		double fc = 0, ff = 0, bc = 0, bf = 0;
-
-		if (linedef->backsector == NULL)
-		{
-			// single sided line
-			open.range = 0;
-			return;
-		}
+		// [RS] Where the back sector's planes are measured. The same spot as the front's, except
+		// behind a one-sided linked portal, where it is that spot seen through the portal.
+		DVector2 backpos = pos;
 
 		front = linedef->frontsector;
 		back = linedef->backsector;
 
+		if (back == NULL)
+		{
+			// [RS] A linked portal on a one-sided line opens onto the front sector of its destination.
+			// Adapted from the Eternity Engine, source/p_maputl.cpp (lineopening_t::calculateAtPoint);
+			// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+			back = linedef->getPortalBeyondSector();
+			if (back == NULL)
+			{
+				// single sided line
+				open.range = 0;
+				return;
+			}
+			backpos += linedef->getPortalDisplacement();
+		}
+
 		if (!(flags & FFCF_NOPORTALS) && (linedef->flags & ML_PORTALCONNECT))
 		{
 			if (!linedef->frontsector->PortalBlocksMovement(sector_t::ceiling)) fc = LINEOPEN_MAX;
-			if (!linedef->backsector->PortalBlocksMovement(sector_t::ceiling)) bc = LINEOPEN_MAX;
+			if (!back->PortalBlocksMovement(sector_t::ceiling)) bc = LINEOPEN_MAX;
 			if (!linedef->frontsector->PortalBlocksMovement(sector_t::floor)) ff = LINEOPEN_MIN;
-			if (!linedef->backsector->PortalBlocksMovement(sector_t::floor)) bf = LINEOPEN_MIN;
+			if (!back->PortalBlocksMovement(sector_t::floor)) bf = LINEOPEN_MIN;
 		}
 
 		if (fc == 0) fc = front->ceilingplane.ZatPoint(pos);
-		if (bc == 0) bc = back->ceilingplane.ZatPoint(pos);
+		if (bc == 0) bc = back->ceilingplane.ZatPoint(backpos);
 		if (ff == 0) ff = front->floorplane.ZatPoint(pos);
-		if (bf == 0) bf = back->floorplane.ZatPoint(pos);
+		if (bf == 0) bf = back->floorplane.ZatPoint(backpos);
 
 
 		/*Printf ("]]]]]] %d %d\n", ff, bf);*/
@@ -182,7 +193,7 @@ void P_LineOpening (FLineOpening &open, AActor *actor, const line_t *linedef, co
 			{
 				// We must check through the portal for the actual dropoff.
 				// If there's no lines in the lower sections we'd never get a usable value otherwise.
-				open.lowfloor = NextLowestFloorAt(back, pos.X, pos.Y, back->GetPortalPlaneZ(sector_t::floor) - EQUAL_EPSILON);
+				open.lowfloor = NextLowestFloorAt(back, backpos.X, backpos.Y, back->GetPortalPlaneZ(sector_t::floor) - EQUAL_EPSILON);
 			}
 		}
 		else
@@ -768,6 +779,8 @@ bool FMultiBlockLinesIterator::GoDown(double x, double y)
 bool FMultiBlockLinesIterator::Next(FMultiBlockLinesIterator::CheckResult *item)
 {
 	line_t *line = blockIterator.Next();
+	// [RS] numseams is 0 unless the box touches a linked portal on a one-sided line.
+	while (line != NULL && seamfilter.numseams > 0 && seamfilter.Hides(line, bbox)) line = blockIterator.Next();
 	if (line != NULL)
 	{
 		item->line = line;
@@ -832,13 +845,162 @@ bool FMultiBlockLinesIterator::startIteratorForGroup(int group)
 	offset.X += checkpoint.X;
 	offset.Y += checkpoint.Y;
 	cursector = group == startsector->PortalGroup ? startsector : blockIterator.Level->PointInSector(offset);
+	seamfilter.numseams = 0;
 	// If we ended up in a different group,
 	// presumably because the spot to be checked is too far outside the actual portal group,
 	// the search needs to abort.
-	if (cursector->PortalGroup != group) return false;
+	if (cursector->PortalGroup != group)
+	{
+		// [RS] ...unless the spot is in the void behind a linked portal on a one-sided line of that group,
+		// which is where a thing's centre is (seen from the far side) for as long as it straddles such a
+		// portal. The node tree may name any sector for a spot in the void; the lines on the far side must
+		// still be checked, so the search goes on from the portal line's own front sector.
+		sector_t *seamsec = blockIterator.Level->SectorBehindSeam(offset, checkpoint.Z, group);
+		if (seamsec == nullptr) return false;
+		cursector = seamsec;
+	}
 	bbox.setBox(offset.X, offset.Y, checkpoint.Z);
 	blockIterator.init(bbox);
+
+	// [RS] The lines of this group that lie behind a linked portal on a one-sided line which the box touches
+	// are not offered to the caller: see FSeamFilter.
+	seamfilter.Collect(blockIterator.Level, bbox, group);
 	return true;
+}
+
+//===========================================================================
+//
+// [RS] FSeamFilter :: Collect
+//
+//===========================================================================
+
+void FSeamFilter::Collect(FLevelLocals *Level, const FBoundingBox &box, int group)
+{
+	numseams = 0;
+	if (!Level->HasOneSidedLinkedPortals) return;
+	auto &linked = Level->linkedPortals;
+	for (unsigned i = 0; i < linked.Size() && numseams < MAX_SEAMS; i++)
+	{
+		line_t *ld = linked[i]->mOrigin;
+		if (ld->backsector != nullptr || ld->frontsector->PortalGroup != group) continue;
+		if (!inRange(box, ld) || BoxOnLineSide(box, ld) != -1) continue;
+		if (ld->getPortalBeyondSector() == nullptr) continue;
+		seams[numseams++] = ld;
+	}
+}
+
+//===========================================================================
+//
+// [RS] FSeamFilter :: Hides
+//
+// True if every point of `line` that lies inside the box lies behind one of
+// the collected portal lines: farther than a hair behind its plane, and
+// between its two ends. The portal lines themselves, anything collinear with
+// them (the wall the portal is set in) and anything that reaches the front
+// are never hidden.
+//
+// Fresh code for this engine (not from Eternity).
+//
+//===========================================================================
+
+bool FSeamFilter::Hides(const line_t *line, const FBoundingBox &bbox) const
+{
+	for (int i = 0; i < numseams; i++) if (seams[i] == line) return false;
+
+	// Clip the line to the box (Liang-Barsky).
+	const double x1 = line->v1->fX(), y1 = line->v1->fY();
+	const double dx = line->Delta().X, dy = line->Delta().Y;
+	double t0 = 0., t1 = 1.;
+	const double pp[4] = { -dx, dx, -dy, dy };
+	const double qq[4] = { x1 - bbox.Left(), bbox.Right() - x1, y1 - bbox.Bottom(), bbox.Top() - y1 };
+	for (int k = 0; k < 4; k++)
+	{
+		if (pp[k] == 0.)
+		{
+			if (qq[k] < 0.) return false;	// outside the box: the caller will discard it anyway
+		}
+		else
+		{
+			const double r = qq[k] / pp[k];
+			if (pp[k] < 0.) { if (r > t1) return false; if (r > t0) t0 = r; }
+			else { if (r < t0) return false; if (r < t1) t1 = r; }
+		}
+	}
+	const double ax = x1 + dx * t0, ay = y1 + dy * t0;
+	const double bx = x1 + dx * t1, by = y1 + dy * t1;
+
+	static const double BEHIND = 1. / 128, SLACK = 1. / 128, GAP = 1e-6, PROBE = 1. / 16;
+
+	// Is a point in the hidden region of some portal line: behind its plane, between its ends?
+	auto hiddenPoint = [&](double px, double py) -> bool
+	{
+		for (int i = 0; i < numseams; i++)
+		{
+			const line_t *sm = seams[i];
+			const double sdx = sm->Delta().X, sdy = sm->Delta().Y;
+			const double len = sqrt(sdx * sdx + sdy * sdy);
+			if (len <= 0.) continue;
+			const double d = ((py - sm->v1->fY()) * sdx - (px - sm->v1->fX()) * sdy) / len;
+			const double u = ((px - sm->v1->fX()) * sdx + (py - sm->v1->fY()) * sdy) / len;
+			if (d > BEHIND && u >= -SLACK && u <= len + SLACK) return true;
+		}
+		return false;
+	};
+
+	// A line that only BOUNDS things in the hidden region -- every sector it has a side in lies there --
+	// is hidden even where it touches the portal's plane. That is the wall of a lower storey standing
+	// exactly under the portal line, and the lines inside that storey that end on it. Any other line
+	// (the wall the portal is set in, a wall of the near room running back from the portal's end) must
+	// be strictly behind the plane to be dropped.
+	double behind = BEHIND;
+	{
+		const double qlen = sqrt(dx * dx + dy * dy);
+		if (qlen > 0.)
+		{
+			const double mx = (ax + bx) / 2, my = (ay + by) / 2;
+			// the front (right) side of v1->v2 is (dy, -dx)
+			const double nx = dy / qlen * PROBE, ny = -dx / qlen * PROBE;
+			if (hiddenPoint(mx + nx, my + ny) && (line->backsector == nullptr || hiddenPoint(mx - nx, my - ny)))
+				behind = -BEHIND;
+		}
+	}
+
+	// The stretch of a..b (as s in 0..1) that each portal line hides; hidden if together they cover it all.
+	double lo[MAX_SEAMS], hi[MAX_SEAMS];
+	int n = 0;
+	for (int i = 0; i < numseams; i++)
+	{
+		const line_t *sm = seams[i];
+		const double sdx = sm->Delta().X, sdy = sm->Delta().Y;
+		const double len = sqrt(sdx * sdx + sdy * sdy);
+		if (len <= 0.) continue;
+		const double vx = sm->v1->fX(), vy = sm->v1->fY();
+		// distance behind the portal line (its back is on the left of v1->v2) and distance along it
+		const double da = ((ay - vy) * sdx - (ax - vx) * sdy) / len, db = ((by - vy) * sdx - (bx - vx) * sdy) / len;
+		const double ua = ((ax - vx) * sdx + (ay - vy) * sdy) / len, ub = ((bx - vx) * sdx + (by - vy) * sdy) / len;
+		double s0 = 0., s1 = 1.;
+		// f(s) = fa + s (fb - fa) >= 0, three times over
+		const double fa[3] = { da - behind, ua + SLACK, len + SLACK - ua };
+		const double fb[3] = { db - behind, ub + SLACK, len + SLACK - ub };
+		bool empty = false;
+		for (int k = 0; k < 3 && !empty; k++)
+		{
+			if (fa[k] < 0. && fb[k] < 0.) empty = true;
+			else if (fa[k] < 0.) { const double s = fa[k] / (fa[k] - fb[k]); if (s > s0) s0 = s; }
+			else if (fb[k] < 0.) { const double s = fa[k] / (fa[k] - fb[k]); if (s < s1) s1 = s; }
+		}
+		if (empty || s0 > s1) continue;
+		lo[n] = s0; hi[n] = s1; n++;
+	}
+	if (n == 0) return false;
+	double covered = 0.;
+	for (bool again = true; again && covered < 1. - GAP; )
+	{
+		again = false;
+		for (int i = 0; i < n; i++)
+			if (lo[i] <= covered + GAP && hi[i] > covered) { covered = hi[i]; again = true; }
+	}
+	return covered >= 1. - GAP;
 }
 
 //===========================================================================
@@ -1383,6 +1545,24 @@ intercept_t *FPathTraverse::Next()
 	}
 
 	if (dist > 1. || in == NULL) return NULL;	// checked everything in range
+
+	// [RS] A linked portal on a one-sided line may have a wall standing in exactly the same place behind it
+	// (the room that was under or over the far room before the map was taken apart). Whoever follows this
+	// trace has to meet the portal first -- if the trace comes at it from the front; from behind, the wall
+	// is the thing that is really there. Fresh code for this engine (not from Eternity).
+	if (Level->HasOneSidedLinkedPortals && in->isaline && in->d.line->backsector == nullptr && !in->d.line->isOneSidedLinkedPortal())
+	{
+		for (unsigned scanpos = intercept_index; scanpos < intercepts.Size(); scanpos++)
+		{
+			intercept_t *scan = &intercepts[scanpos];
+			if (!scan->done && scan->isaline && scan->frac <= dist + 1e-7 && scan->d.line->isOneSidedLinkedPortal()
+				&& P_PointOnLineSidePrecise(trace.x, trace.y, scan->d.line) == 0)
+			{
+				in = scan;
+				break;
+			}
+		}
+	}
 	in->done = true;
 	return in;
 }

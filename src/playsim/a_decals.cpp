@@ -258,12 +258,21 @@ FTextureID DBaseDecal::StickToWall (side_t *wall, double x, double y, F3DFloor *
 	sector_t *front, *back;
 	line_t *line;
 	FTextureID tex;
+	double bx = x, by = y;	// [RS] where the back sector's planes are measured
 
 	line = wall->linedef;
 	if (line->sidedef[0] == wall)
 	{
 		front = line->frontsector;
 		back = line->backsector;
+		// [RS] The wall of a linked portal on a one-sided line has an upper and a lower piece, measured
+		// against the sector beyond the portal (at this spot seen through it); a decal belongs to one of them.
+		if (back == NULL && (back = line->getPortalBeyondSector()) != NULL)
+		{
+			const DVector2 disp = line->getPortalDisplacement();
+			bx += disp.X;
+			by += disp.Y;
+		}
 	}
 	else
 	{
@@ -279,7 +288,7 @@ FTextureID DBaseDecal::StickToWall (side_t *wall, double x, double y, F3DFloor *
 			Z -= front->GetPlaneTexZ(sector_t::ceiling);
 		tex = wall->GetTexture(side_t::mid);
 	}
-	else if (back->floorplane.ZatPoint (x, y) >= Z)
+	else if (back->floorplane.ZatPoint (bx, by) >= Z)
 	{
 		RenderFlags |= RF_RELLOWER|RF_CLIPLOWER;
 		if (line->flags & ML_DONTPEGBOTTOM)
@@ -288,7 +297,7 @@ FTextureID DBaseDecal::StickToWall (side_t *wall, double x, double y, F3DFloor *
 			Z -= back->GetPlaneTexZ(sector_t::floor);
 		tex = wall->GetTexture(side_t::bottom);
 	}
-	else if (back->ceilingplane.ZatPoint (x, y) <= Z)
+	else if (back->ceilingplane.ZatPoint (bx, by) <= Z)
 	{
 		RenderFlags |= RF_RELUPPER|RF_CLIPUPPER;
 		if (line->flags & ML_DONTPEGTOP)
@@ -346,7 +355,7 @@ double DBaseDecal::GetRealZ (const side_t *wall) const
 	if (line->sidedef[0] == wall)
 	{
 		front = line->frontsector;
-		back = line->backsector;
+		back = line->EffectiveBackSector();	// [RS] the sector beyond a linked portal on a one-sided line
 	}
 	else
 	{

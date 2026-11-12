@@ -582,7 +582,17 @@ void FDynamicLight::CollectWithinRadius(const DVector3 &opos, FSection *section,
 					line_t *other = port->mDestination;
 					if (other->validcount != ::validcount)
 					{
-						subsector_t *othersub = Level->PointInRenderSubsector(other->v1->fPos() + other->Delta() / 2);
+						DVector2 otherpos = other->v1->fPos() + other->Delta() / 2;
+						if (other->backsector == nullptr)
+						{
+							// [RS] The far line of a linked portal may be one-sided now. Its midpoint lies on the
+							// edge of the map, where the node tree could as well name a subsector that has nothing
+							// to do with it; a point a little way into its front side cannot be misplaced.
+							// Fresh code for this engine (not from Eternity).
+							const double len = other->Delta().Length();
+							if (len > 0.) otherpos += DVector2(other->Delta().Y, -other->Delta().X) * (0.25 / len);
+						}
+						subsector_t *othersub = Level->PointInRenderSubsector(otherpos);
 						FSection *othersect = othersub->section;
 						if (othersect->validcount != ::validcount)
 						{

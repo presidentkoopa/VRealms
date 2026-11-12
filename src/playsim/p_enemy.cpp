@@ -976,12 +976,16 @@ void P_NewChaseDir(AActor * actor)
 		double deltay = 0;
 		while ((line = it.Next()))
 		{
-			if (line->backsector  && // Ignore one-sided linedefs
+			// [RS] backsec: also the sector beyond a linked portal on a one-sided line (measured at the
+			// actor's spot seen through the portal), so a ledge at a seam is a ledge here too.
+			sector_t *backsec = line->EffectiveBackSector();
+			if (backsec  && // Ignore one-sided linedefs
 				inRange(box, line) &&
 				BoxOnLineSide(box, line) == -1)
 			{
 				double front = line->frontsector->floorplane.ZatPoint(actor->PosRelative(line));
-				double back  = line->backsector->floorplane.ZatPoint(actor->PosRelative(line));
+				double back  = line->backsector != nullptr ? backsec->floorplane.ZatPoint(actor->PosRelative(line))
+					: backsec->floorplane.ZatPoint(actor->PosRelative(line).XY() + line->getPortalDisplacement());
 				DAngle angle;
 
 				// The monster must contact one of the two floors,

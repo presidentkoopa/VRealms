@@ -261,6 +261,37 @@ public:
 	void Reset() { StartBlock(minx, miny); }
 };
 
+//===========================================================================
+//
+// [RS] FSeamFilter
+//
+// A thing that straddles a linked portal on a ONE-SIDED line has part of its
+// box behind that line. That part is, in truth, on the far side of the portal
+// (and is checked there, in the far group's coordinates). In the near group's
+// coordinates it overlaps whatever happens to be built behind the portal line
+// -- nothing at all, or a room that in the original map was on another storey
+// -- and none of that may be collided with or counted as touched. A two-sided
+// portal line never needed this: the engine demanded empty space behind it.
+//
+// Collect() gathers the one-sided linked portal lines of one portal group
+// that a box touches; Hides() says whether a line lies wholly behind them, as
+// far as the box is concerned. With no such portal in the level Collect()
+// finds nothing and Hides() is never asked.
+//
+// Fresh code for this engine (not from Eternity).
+//
+//===========================================================================
+
+struct FSeamFilter
+{
+	enum { MAX_SEAMS = 4 };
+	line_t *seams[MAX_SEAMS];
+	int numseams = 0;
+
+	void Collect(FLevelLocals *Level, const FBoundingBox &box, int group);
+	bool Hides(const line_t *line, const FBoundingBox &bbox) const;
+};
+
 class FMultiBlockLinesIterator
 {
 	FPortalGroupArray &checklist;
@@ -275,6 +306,8 @@ class FMultiBlockLinesIterator
 	bool continuedown;
 	FBlockLinesIterator blockIterator;
 	FBoundingBox bbox;
+
+	FSeamFilter seamfilter;	// [RS] see FSeamFilter and startIteratorForGroup
 
 	bool GoUp(double x, double y);
 	bool GoDown(double x, double y);

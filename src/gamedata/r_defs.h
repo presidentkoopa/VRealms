@@ -1750,6 +1750,24 @@ struct line_t : public linebase_t
 	inline DAngle getPortalAngleDiff() const;
 	inline bool hitSkyWall(AActor* mo) const;
 
+	// [RS] ONE-SIDED LINKED LINE PORTALS. A PORTT_LINKED portal may stand on a line
+	// with no back sector. What is "behind" such a line is the FRONT sector of the
+	// portal's destination line, displaced by the portal's displacement.
+	//
+	// Adapted from the Eternity Engine, source/r_portal.cpp (R_SetPortalLine: line.beyondportalline)
+	// and source/p_spec.cpp (P_SpawnPortal: unblockline / MLI_1SPORTALLINE);
+	// Copyright (C) the Eternity Engine team (Stephen McGranahan et al.); GPL-3.0-or-later.
+	// Unlike Eternity the line is NOT turned into a fake two-sided one: backsector stays
+	// null, so any code that was never taught about this still sees a solid wall.
+	//
+	//   getPortalBeyondSector  null for every line that has a back sector, is not a live
+	//                          linked portal, or is a polyobject side; else the far sector.
+	//   EffectiveBackSector    backsector if there is one, else getPortalBeyondSector().
+	//                          For an ordinary line this IS backsector, bit for bit.
+	inline sector_t *getPortalBeyondSector() const;
+	inline bool isOneSidedLinkedPortal() const { return getPortalBeyondSector() != nullptr; }
+	inline sector_t *EffectiveBackSector() const { return backsector != nullptr ? backsector : getPortalBeyondSector(); }
+
 	int Index() const { return linenum; }
 };
 

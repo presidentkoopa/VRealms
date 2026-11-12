@@ -80,6 +80,9 @@ void DoomLevelMesh::CreateSideSurfaces(FLevelLocals &doomMap, side_t *side)
 
 	front = side->sector;
 	back = (side->linedef->frontsector == front) ? side->linedef->backsector : side->linedef->frontsector;
+	// [RS] The wall of a linked portal on a one-sided line is an upper and a lower piece round an opening,
+	// against the sector beyond the portal -- not one solid surface from floor to ceiling.
+	if (back == nullptr && side == side->linedef->sidedef[0]) back = side->linedef->getPortalBeyondSector();
 
 	if (IsControlSector(front))
 		return;
