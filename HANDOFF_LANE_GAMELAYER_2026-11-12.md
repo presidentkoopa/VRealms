@@ -24,6 +24,10 @@ Branch: `lane/gamelayer` on `presidentkoopa/VRealms`. Owner's local copy: `E:\DO
 - CORRECTION: quicksave/quickload ARE bound in game: FlowResponder maps F9/F10 from the original's keymap (0x7093d, input.c:545-559). An earlier note said otherwise without checking the code.
 - Stock Doom menu graphics (M_DOOM...) give menudef script errors at startup; harmless, not ours.
 
+**Owner in the headset (2026-11-12, 23:51): "impressed, looks amazing"; seen issues, for later:**
+- "Some scaling issues" -- not yet said which; ask.
+- "Some sprites are always facing/turning to me: door sigils, the sword, some items in the study." Checked: the original fixes the orientation of 110 STUDY1 objects (renderType bit 7) and the engine builds exactly those 110 as wall sprites (roth_STUDY1.log "fixed angle 110"; tools/propcheck STUDY1: 110 fixed-quad, 89 billboard, 43 mesh). The ones turning are billboards in the original too (camera-facing). Fixing their facing in VR is a VR adaptation: the owner decides when the flat port is done (CLAUDE.md 1:1 rule).
+
 **FBX hands:** report at `docs/FBX_HANDS_REPORT.md` (six questions for the owner at its end). Reader: `tools/fbx_hands/`.
 - **Owner's answers (2026-11-12, then hands PARKED by the owner):** hand length 0.19 m wrist to middle fingertip; the left hand uses the FBX's own left-hand poses (not a mirror); the skin texture `lambert1_Base_Color.png`, with a planned player choice of skin tones (natural and unusual: blue, red, pink).
 - **Gestures (checked, not yet decided):** the FBX has no point/pinch/thumbs-up; its one take is the 1,278 frames RS_Hands calls its source animation (`E:\DOOMWork\_old\RS_Hands`, frames 11-1288). RS_Hands made its 11 baked poses (open, point, trigger, fist, pinch, thumbout, gripfire, grip_tu, ready_td/tu, fire_tu) from five per-finger curl angles each (its README table; pinch solved geometrically) and appended 9 hold poses (iqm_append_pose.py); see `docs/images/poses/wired_poses_sheet.png` there. Proposed and not answered: rebuild those 23 on the FBX rig from that recipe (not from the IQM's data). Still unasked: engine path (build-time FBX->IQM vs ufbx), wrist animation.
