@@ -29,7 +29,7 @@ A level loads from the retail install with geometry, textures, animated and tran
 surfaces, 3D furniture, intermediate floors, and doors on their real hinges. You can walk
 through it, open doors, and the original's level scripts run.
 
-Section by section, as of 2026-10-03. Percentages are deliberately absent — each line
+Section by section (rows A-G as of 2026-10-03; H and I updated 2026-11-13). Percentages are deliberately absent — each line
 says what works and what is known to be missing instead, because that is checkable.
 
 | | | |
@@ -41,11 +41,50 @@ says what works and what is known to be missing instead, because that is checkab
 | **E. Doors** | **Open by the use key** | Built on their real hinges, 30 of 30 in STUDY1, and the use key swings them. **Open: the leaf is built full-height so it drives through the masonry above the opening, and renders black when closed.** The largest visible fault in the game right now |
 | **F. Level logic (triggers)** | **Done** | All four reachable channels verified firing: left-click wall, enter/leave sector, floor click, weapon impact. One sector's script warps the map, which is the original's own scripted transition running |
 | **G. The command interpreter** | **Partly** | 209 of 441 instruction records in STUDY1 implemented, plus the active-effect pool and 14 of its 15 ticks. The remaining one slides a sector by moving its vertices, which GZDoom's static BSP cannot do |
-| **H. The game layer** | **Not started** | Dialogue, items, inventory, combat. All of it is gated behind a DBASE100 reader, which does not exist yet — the format is written up, so it is implementation rather than research |
-| **I. VR** | **Scale settled** | 93.5 units per metre, confirmed in the headset. Room-scale, hands and the rest come from the host fork |
+| **H. The game layer** | **Partly** | DBASE100 read from the install. Inventory, menus, save/load, dialogue, subtitles, timed messages, HUD and the examine popup are drawn by the original's own routines (pixel diffs against the running original: 0 differ). Weapons fire. See the newest `HANDOFF_*.md` for what is open |
+| **I. VR** | **Hands in, scale to judge** | The owner's FBX hands, read by the engine itself and posed from their own animation (below). The headset's metre now puts the player's eye where the original's camera is (144 units above the feet) with the original's vertical stretch (1.1462); not yet judged in the headset |
 
 The honest summary: **you can walk around a Realms level and the game's own scripts
 react to you.** What you cannot yet do is talk to anyone, pick anything up, or fight.
+
+## VR hands
+
+The hands are the owner's own `hand_final.fbx` (two separate hands, each with its own
+skeleton and its own animation), read by the engine at load with
+[ufbx](https://github.com/ufbx/ufbx) — no conversion to another format. The left hand
+wears the right hand's skin through its mirrored texture layout; both carry the FBX's own
+normal and roughness maps.
+
+The controller's capacitive touches pick a pose and trigger and grip move the hand into it.
+Every pose is an **authored frame of that hand's own animation** (or, where the animation
+has no single frame for it, each finger taken whole from one authored frame, the owner's own
+method), and every in-between is a mix of two authored frames. Smoothing is UZDXREMA's.
+
+| index on trigger | thumb touching | pose |
+|---|---|---|
+| yes | yes | fist |
+| yes | no | thumb up |
+| no | yes | point |
+| no | no | finger gun |
+
+Trigger alone curls the index; nothing held is the open hand.
+
+In the engine (flat test, `tools/claude_bridge/cfg/hands_flat.cfg`) — open, fist, point,
+thumb up, finger gun, trigger only:
+
+![The hands in the engine](docs/images/hands/engine_poses_flat.png)
+
+The same states up close, right and left (software render of the engine's pose math,
+`tools/fbxload_test`):
+
+<img src="docs/images/hands/poses_closeup.png" width="560">
+
+How the frames were chosen: every frame of each hand's animation walked
+(`tools/fbxload_test/walk_poses.py`), with the candidates side by side —
+[right](docs/images/hands/walk_Hand_Low.png), [left](docs/images/hands/walk_Hand_Low1.png),
+and four frames of the right hand (1 open, 144, 319 fist, 689) in
+[take_frames_right.png](docs/images/hands/take_frames_right.png).
+The loader and the poses are documented in `docs/FBX_LOADER.md`.
 
 ## Where it is going
 

@@ -58,3 +58,22 @@ The patch is `git diff --binary` against 375bcc07 and applies cleanly there. It 
 - Palm cup: HANDPALM_joint follows grip from the open frame to the fist frame.
 - Open = Blender frame 1 (take 0), fist = 319 (take 318): keep (seen in frames_right.png beside 144 and 689).
 - Thumb: keep UZDXREMA's 0.6 toward the fist frame's thumb on touch.
+
+## CURRENT STATE, 2026-11-13 04:05 (supersedes the sections above where they differ)
+- Hands: the owner's hand_final.fbx read by the engine (ufbx). Right = Hand_Low, left = Hand_Low1?mirrorskin=Hand_Low
+  (the left reads the right's skin about the measured u axis 1.002832). The FBX's embedded normal and roughness maps
+  are on the hands' PBR material (the normal map only shows under dynamic lights in this engine).
+- Fingers: AUTHORED POSES (0bd9acc0), not per-finger bending. The touches pick fist / thumb up / point / finger gun;
+  trigger and grip move each joint between two authored frames of that hand's own take; UZDXREMA's smoothing rate.
+  Frames (take = Blender - 1): open 0; fist 318 (palm driven only here); point index R 808 / L 0, rest 318;
+  thumb up thumb R 990 / L 205, rest 318; finger gun R 808 (middle 318) / L index 0 thumb 205 rest 318;
+  trigger: the fist's index. Chosen by tools/fbxload_test/walk_poses.py; sheets in docs/images/hands/.
+- The FRIK curl table and the curl targets are deleted; the palm cup with grip was tried and removed (it swung a
+  pointing index ~4 cm: owner in the headset).
+- Verified on the owner's PC: build, log lines, docs/images/hands/engine_poses_flat.png (all six states).
+  NOT yet judged by the owner in the headset after 0bd9acc0.
+- Nothing from RS_Hands is in the engine or tools. The IQM converter is gone.
+- Every agent worktree (/home/claude/wt_*) checked 04:00: all committed work is on lane/gamelayer; what remains
+  uncommitted in old worktrees is earlier states of files later rewritten on the branch.
+- Owner's interaction ideas (DistanceGrab + melee for switches, grabbable doorknobs, hands in the inventory)
+  are on hold until he has tested the hands.
