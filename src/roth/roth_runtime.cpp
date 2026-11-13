@@ -44,6 +44,8 @@
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
+#include "roth_touchgeom.h"       // a palm touching a wall (tools/vrpick_test)
+#include "p_maputl.h"             // FBlockLinesIterator, P_PointOnLineSide
 
 #include <algorithm>
 #include <map>
@@ -6859,6 +6861,53 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 			PickKindName(out), out.dist, (unsigned)out.band, out.hitPos.Z);
 	}
 	return true;
+}
+
+bool PickTouchSurface(AActor *who, const DVector3 &p, double radius, Pick &out)
+{
+	out = Pick{};
+	if (!g.active || who == nullptr || g.level == nullptr) return false;
+	FBoundingBox box(p.X, p.Y, radius);
+	FBlockLinesIterator it(g.level, box);
+	line_t *ld;
+	double best = radius;
+	bool found = false;
+	while ((ld = it.Next()) != nullptr)
+	{
+		// The side the palm is on. A palm pushed INTO a one-sided slab (a door
+		// leaf) is behind every one of its lines; the line's own face is then
+		// the one it went through.
+		int side = P_PointOnLineSide(p.XY(), ld);
+		if (ld->sidedef[side] == nullptr) side = 0;
+		side_t *sd = ld->sidedef[side];
+		if (sd == nullptr) continue;
+		const int idx = (int)(sd - &g.level->sides[0]);
+		auto leaf = g.doorLeafSide.find(idx);
+		const bool isLeaf = leaf != g.doorLeafSide.end();
+		if (!isLeaf && !g.bySide.count(idx)) continue;           // no Realms meaning: not a thing to touch
+
+		double cx, cy;
+		const TouchSeg seg{ ld->v1->fX(), ld->v1->fY(), ld->v2->fX(), ld->v2->fY() };
+		const double d = TouchDistance(seg, p.X, p.Y, cx, cy);
+		if (d > best) continue;
+		// Within the wall's height at that point: the room the palm is in.
+		sector_t *sec = sd->sector;
+		if (sec == nullptr) continue;
+		const double fz = sec->floorplane.ZatPoint(DVector2(cx, cy)), cz = sec->ceilingplane.ZatPoint(DVector2(cx, cy));
+		if (p.Z < fz || p.Z > cz) continue;
+
+		best = d;
+		found = true;
+		out = Pick{};
+		out.kind   = isLeaf ? Pick::DoorLeaf : Pick::WallFace;
+		out.line   = ld;
+		out.side   = side;
+		out.leafTag = isLeaf ? leaf->second : 0;
+		out.hitPos = DVector3(cx, cy, p.Z);
+		out.band   = WallPartBit(ld, p.Z);
+		out.dist   = d;
+	}
+	return found;
 }
 
 bool Activate(const Pick &p, AActor *who, TrigEvent want)

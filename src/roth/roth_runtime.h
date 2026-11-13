@@ -348,6 +348,12 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 // coarser and says so (PickFrom).
 void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi);
 
+// A HAND LAID ON A WALL: the nearest Realms wall face or door leaf within
+// `radius` of the point `p` (a palm), measured in the map's plane, with `p`
+// inside that wall's height. Independent of which way the hand faces, which a
+// ray from the palm is not: a palm pressed on a door is level with it.
+bool PickTouchSurface(AActor *who, const DVector3 &p, double radius, Pick &out);
+
 // Act on a pick: faces go to the face dispatch WITH the hit position (which is
 // what finally lets the wall-band gate run), flats to UseFlatAt, leaves to
 // SwingDoor. Returns true if something acted, so the caller can treat the

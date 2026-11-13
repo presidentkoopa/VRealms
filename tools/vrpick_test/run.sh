@@ -23,3 +23,7 @@ gcc -std=c11 -O1 -w -Itools/vrpick_test -c "$OUT/orig_classify.c" -o "$OUT/orig_
 gcc -std=c11 -O1 -w -Itools/vrpick_test -c tools/vrpick_test/orig_env.c -o "$OUT/orig_env.o"
 g++ -std=c++17 -O1 -Wall -Isrc/roth tools/vrpick_test/test_cursor.cpp "$OUT/orig_classify.o" "$OUT/orig_env.o" -o "$OUT/test_cursor"
 "$OUT/test_cursor"
+
+# The grip's geometry on the owner's run's numbers (test_touch.cpp).
+g++ -std=c++17 -O1 -Wall -Isrc/roth tools/vrpick_test/test_touch.cpp -o "$OUT/test_touch"
+"$OUT/test_touch"

@@ -561,8 +561,8 @@ namespace
 
 namespace
 {
-	enum { PT_TIP, PT_BASE, PT_PALM, PT_COUNT };
-	const char *const kPointJoints[PT_COUNT] = { "INDEX_UP_TOP_joint", "INDEX_BASE_joint", "HANDPALM_joint" };
+	enum { PT_TIP, PT_BASE, PT_PALM, PT_WRIST, PT_MIDDLE, PT_COUNT };
+	const char *const kPointJoints[PT_COUNT] = { "INDEX_UP_TOP_joint", "INDEX_BASE_joint", "HANDPALM_joint", "Root_joint", "MIDDLE_F_BASE_joint" };
 
 	struct FPosedPoints
 	{
@@ -616,6 +616,7 @@ bool VRHandPose_FingerPoints(FModel *model, int side, FVRHandPoints &out)
 	if (r.model == model && r.frame != ~0ull && now >= r.frame && now - r.frame <= 4)
 	{
 		out.tip = r.p[PT_TIP]; out.indexBase = r.p[PT_BASE]; out.palm = r.p[PT_PALM];
+		out.wrist = r.p[PT_WRIST]; out.middleBase = r.p[PT_MIDDLE];
 		out.posed = true;
 		return true;
 	}
@@ -623,6 +624,7 @@ bool VRHandPose_FingerPoints(FModel *model, int side, FVRHandPoints &out)
 	for (int k = 0; k < PT_COUNT; k++)
 		if (!RestPoint(model, model->FindJoint(FName(kPointJoints[k])), p[k])) return false;
 	out.tip = p[PT_TIP]; out.indexBase = p[PT_BASE]; out.palm = p[PT_PALM];
+	out.wrist = p[PT_WRIST]; out.middleBase = p[PT_MIDDLE];
 	return true;
 }
 

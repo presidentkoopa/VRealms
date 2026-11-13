@@ -54,7 +54,8 @@ bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out);
 const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones);
 
 // THE INDEX FINGER AND THE PALM, for pointing and touching (src/roth/roth_vrpick.cpp): the index
-// fingertip (INDEX_UP_TOP_joint), its knuckle (INDEX_BASE_joint) and the palm (HANDPALM_joint), in
+// fingertip (INDEX_UP_TOP_joint), its knuckle (INDEX_BASE_joint), the palm (HANDPALM_joint), and the
+// wrist and middle knuckle (the hand's axis, which a curled index does not follow), in
 // the model's own render space -- the space ModelPointToWorld takes, so the caller turns them into
 // map positions through the hand actor's real draw transform (Model_ActorPointToWorld). `posed` is
 // true when they come from the fingers as last drawn (VRHandPose_Apply, within a few frames), false
@@ -62,6 +63,7 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 struct FVRHandPoints
 {
 	DVector3 tip, indexBase, palm;
+	DVector3 wrist, middleBase;	// Root_joint and MIDDLE_F_BASE_joint: the hand's own axis, wrist to knuckles
 	bool posed = false;
 };
 bool VRHandPose_FingerPoints(FModel *model, int side, FVRHandPoints &out);

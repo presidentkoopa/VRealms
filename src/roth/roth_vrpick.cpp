@@ -124,6 +124,7 @@ constexpr double kPokeIn      = 0.025;   // fingertip contact
 constexpr double kPokeOut     = 0.06;    // re-arm distance
 constexpr double kGrabReach   = 0.20;    // palm, along the hand
 constexpr double kGrabBack    = 0.08;    // the grip's ray starts this far behind the palm
+constexpr double kTouchRadius = 0.10;    // a palm this close to a wall or a door is on it
 constexpr double kGrabRadius  = 0.15;    // palm to an object's box
 constexpr double kNoHitBeam   = 0.60;    // the beam's length with nothing at its end
 constexpr int    kDwellTics   = 28;      // 0.8 s
@@ -146,6 +147,7 @@ struct HandState
 	// the ray and what is at its end
 	bool        haveRay = false;
 	DVector3    tip, dir, palm;
+	DVector3    handFwd;            // wrist -> middle knuckle: where the hand itself points (the grip's ray)
 	bool        fromFinger = false;
 	const char *rayWhy = nullptr;   // why there is no ray (a log line)
 	const char *loggedRayWhy = nullptr;
@@ -367,15 +369,19 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 	else if (!VRHandPose_FingerPoints(model, side, pts)) h.rayWhy = "the hand model lacks INDEX_UP_TOP / INDEX_BASE / HANDPALM";
 	else
 	{
-		DVector3 tip, base, palm;
+		DVector3 tip, base, palm, wrist, middle;
 		if (Model_ActorPointToWorld(ha, pts.tip, tip) && Model_ActorPointToWorld(ha, pts.indexBase, base)
-			&& Model_ActorPointToWorld(ha, pts.palm, palm))
+			&& Model_ActorPointToWorld(ha, pts.palm, palm) && Model_ActorPointToWorld(ha, pts.wrist, wrist)
+			&& Model_ActorPointToWorld(ha, pts.middleBase, middle))
 		{
 			DVector3 d = tip - base;
 			const double len = d.Length();
-			if (len > 1e-3)
+			DVector3 f = middle - wrist;
+			const double flen = f.Length();
+			if (len > 1e-3 && flen > 1e-3)
 			{
 				h.tip = tip; h.dir = d / len; h.palm = palm;
+				h.handFwd = f / flen;
 				h.haveRay = h.fromFinger = true;
 			}
 			else h.rayWhy = "the fingertip and its knuckle coincide";
@@ -392,6 +398,7 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 		h.tip = main ? pmo->AttackPos : pmo->OffhandPos;
 		h.dir = DVector3(yaw.Cos() * pitch.Cos(), yaw.Sin() * pitch.Cos(), -pitch.Sin());
 		h.palm = h.tip;
+		h.handFwd = h.dir;
 		h.haveRay = true;
 	}
 	if (h.haveRay && P.test)
@@ -496,26 +503,53 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		objPick = p; objCls = c; haveObj = true;
 		break;
 	}
-	// THE SURFACE ALONG THE HAND, from a little BEHIND the palm: a palm laid
-	// flat on a door is already level with it, or a hair through it, and a ray
-	// starting at the palm would begin past the very surface it is pressed on.
-	// So the ray starts kGrabBack behind the palm, and a hit counts from there
-	// to kGrabReach in front of it.
+	// THE SURFACE ALONG THE HAND -- along the HAND's own axis, wrist to
+	// knuckles (h.handFwd). Not the finger ray: in a fist the index is curled
+	// back into the palm, so its tip-to-knuckle line points down or back, and
+	// under the flat test the finger ray is turned toward the test's aim from
+	// that curled tip. (Owner's PC, 25b13e97: the palm 4.5 units from a door
+	// leaf, the ray along the finger met nothing.) From a little BEHIND the
+	// palm, because a palm laid flat on a door is level with it, or a hair
+	// through it: the ray starts kGrabBack behind and hits count from there to
+	// kGrabReach in front.
 	const double back = kGrabBack * upm;
+	const DVector3 rayFrom = h.palm - h.handFwd * back;
 	Pick rayPick;
 	CursorClass rayCls;
 	bool haveRay = false;
-	if (PickFrom(pmo, h.palm - h.dir * back, h.dir, back + kGrabReach * upm, rayPick))
+	if (PickFrom(pmo, rayFrom, h.handFwd, back + kGrabReach * upm, rayPick))
 	{
 		rayPick.dist -= back;   // from the palm; negative: just behind it
-		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.dir));
+		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.handFwd));
 		haveRay = rayCls.CanUse();
 		if (Logging())
-			Printf("[roth_vrpick]   surface along the hand: %s %.1f units from the palm: cursor type %d shape 0x%x -> %s\n",
+			Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): %s %.1f units from the palm:"
+				" cursor type %d shape 0x%x -> %s\n", rayFrom.X, rayFrom.Y, rayFrom.Z, h.handFwd.X, h.handFwd.Y, h.handFwd.Z,
 				PickKindName(rayPick), rayPick.dist, (int)rayCls.type, (unsigned)rayCls.shape, WhyNotUse(rayCls).GetChars());
 	}
 	else if (Logging())
-		Printf("[roth_vrpick]   surface along the hand: nothing from %.1f behind the palm to %.1f in front\n", back, kGrabReach * upm);
+		Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): nothing from %.1f behind the palm"
+			" to %.1f in front\n", rayFrom.X, rayFrom.Y, rayFrom.Z, h.handFwd.X, h.handFwd.Y, h.handFwd.Z, back, kGrabReach * upm);
+
+	// THE SURFACE THE PALM IS ON, whichever way the hand faces: the nearest
+	// Realms wall face or door leaf within kTouchRadius of the palm in the
+	// map's plane (PickTouchSurface; roth_touchgeom.h).
+	Pick touchPick;
+	CursorClass touchCls;
+	bool haveTouch = false;
+	if (PickTouchSurface(pmo, h.palm, kTouchRadius * upm, touchPick))
+	{
+		touchCls = ClassifyPick(touchPick, pmo, DepthOf(pmo, touchPick, touchPick.hitPos - h.palm));
+		haveTouch = touchCls.CanUse();
+		if (Logging())
+			Printf("[roth_vrpick]   surface under the palm: %s %.1f units from it (at %.1f %.1f): cursor type %d shape 0x%x -> %s\n",
+				PickKindName(touchPick), touchPick.dist, touchPick.hitPos.X, touchPick.hitPos.Y, (int)touchCls.type,
+				(unsigned)touchCls.shape, WhyNotUse(touchCls).GetChars());
+	}
+	else if (Logging())
+		Printf("[roth_vrpick]   surface under the palm: no Realms wall or door within %.1f units\n", kTouchRadius * upm);
+	if (haveTouch && (!haveRay || touchPick.dist < rayPick.dist)) { rayPick = touchPick; rayCls = touchCls; haveRay = true; }
+
 	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
 	// the cursor: a door handle on the door is taken before the door, the door
 	// before a key lying a hand's width beyond it.
