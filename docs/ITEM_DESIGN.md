@@ -120,17 +120,16 @@ gives them (take index = Blender − 1).
 
 **Wired in VRealms today** [F: HANDOFF_..._HANDS.md, CURRENT STATE]: open, fist, point, thumb up, finger gun and
 trigger, picked by the capacitive touches. The images are `docs/images/hands/poses_closeup.png` and `walk_Hand_Low.png`.
-**Item grips wired (2026-11-13)** [F: tools/hands_test test_holds, tools/fbxload_test H0-H2; not yet seen in the
-engine]: UZDXREMA's selection (vr_avatar_pose.cpp:466-656) and the whole table, each hand from its own take. The
-held item names its grip in `src/roth/roth_handhold.h`, from the dossiers below; the hand takes that pose while the
-item is held (the original's right-hand item in the VR off hand, the weapon at the main hand: section 1's [P]).
-- **The right take has no wrap_half, wrap_tight or cup** (it holds its two-finger gun from frame ~760 on while the
-  left wraps): on the right hand every wrap or cup pose is absent and the controller's pose stays. The left take has
-  no fingergun frame. Measured: `tools/fbxload_test/walk_poses.py` (check_hold_table). New frames for the right hand
-  are the owner's to author.
-- The pinch items use the cup (hold_round), UZDXREMA's own fallback; they still need the pinch frames below.
+**Item grips wired (2026-11-13)** [F: tools/hands_test test_holds, tools/fbxload_test H0-H3; this version not yet
+seen in the engine]: UZDXREMA's selection (vr_avatar_pose.cpp:466-656) and the whole table. The held item names its grip in
+`src/roth/roth_handhold.h`, from the dossiers below; the original's right-hand item is held by the VR hand on the
+RIGHT side (owner); the weapon stays at the main hand, where RealmsHeld is drawn.
+- A frame one hand's take lacks is copied from the other hand's take (owner: "just copy the poses"): the right hand
+  copies wrap_half, wrap_tight and cup from the left; the left copies fingergun from the right.
+- **The take has pinches after all**: a thumb-tip-to-index-tip pinch in both hands at Blender 694 (`fbx_pinch`) and
+  a tighter one at 312 (`fbx_pinch_tight`), added to the table as measured frames. The pinch items use `fbx_pinch`.
 
-**What is missing** [R, from the 40 items below]: a **pinch**. Of the first 40 items, 17 are small things a person
+**What is missing** (superseded 2026-11-13: the take has the pinches, above) [R, from the 40 items below]: a **pinch**. Of the first 40 items, 17 are small things a person
 holds between thumb and finger: a match, keys, gems, a feather, earplugs, rings, the wand's tip.
 - The cup (985) is a palm hold, not a pinch.
 - The engine's "trigger" state (walk sheet: index from the fist, the others open) brings the index down to the thumb's

@@ -182,8 +182,8 @@ static void TestSides()
 		}
 		if (have[0] && have[1]) both++; else if (have[0]) right++; else if (have[1]) left++;
 	}
-	printf("the owner's table: %d poses; %d on both hands, %d on the right hand only, %d on the left hand only (never mirrored)\n",
-		kOwnerPoseCount, both, right, left);
+	printf("the pose table: %d poses (the owner's %d + %d measured); from each hand's own take: %d on both, %d the right only, %d the left only "
+		"(the rest of each hand's are copied from the other take)\n", kOwnerPoseCount, kOwnerJsonPoseCount, kOwnerPoseCount - kOwnerJsonPoseCount, both, right, left);
 	CHECK(ok, "a raw pose is on a side its hand did not author, or the table is malformed");
 }
 
@@ -376,7 +376,7 @@ static void TestExtensions()
 	}
 	HoldChoice cr;
 	SelectHold(&R, mag, none, in, cr);
-	CHECK(!cr.Any(), "the right hand holding a magazine: its take has no wrap_half, so no pose (the controller's)");
+	CHECK(!cr.Any(), "a pose with a frame neither take has (built here without the other hand): no pose, the controller's");
 	printf("extensions checked by value: named pose, palm rule, nothing held, a one-sided pose on the other hand\n");
 }
 
@@ -384,19 +384,26 @@ static void TestExtensions()
 // and what each hand then makes, given each hand's own take (the real one-sided pattern).
 static void TestItemMap()
 {
+	// each hand: its own frames, the rest copied from the other take (BuildHoldPoses)
 	HoldPoses T[2];
 	for (int s = 0; s < 2; s++)
 	{
 		T[s].Built = true;
 		for (int p = 0; p < kOwnerPoseCount; p++)
 		{
-			bool have = true;
-			for (int f = 0; f < FINGER_COUNT; f++) if (OwnerFingerFrame(p, f, s) < 0) have = false;
+			bool have = true, copied = false;
+			for (int f = 0; f < FINGER_COUNT; f++)
+			{
+				const int raw = OwnerFingerRaw(p, f);
+				if (raw < 0 || (!OwnerRawAuthored(raw, s) && !OwnerRawAuthored(raw, 1 - s))) have = false;
+				else if (!OwnerRawAuthored(raw, s)) copied = true;
+			}
 			T[s].Have[p] = have;
+			T[s].Copied[p] = copied;
 		}
 	}
 	int bad = 0, rows = 0;
-	printf("the Realms item map (roth_handhold.h), what each hand makes (trigger off):\n");
+	printf("the Realms item map (roth_handhold.h), what each hand makes (trigger off; \"copied\": frames from the other hand's take):\n");
 	for (const roth::ItemGrip &g : roth::kItemGrips)
 	{
 		rows++;
@@ -417,9 +424,9 @@ static void TestItemMap()
 			Inputs in; in.valid = true;
 			SelectHold(&T[s], h, HeldState(), in, ch);
 			const int m = ch.Src[FINGER_MIDDLE][0];
-			made[s] = m >= 0 ? kOwnerPoses[m].name : "ABSENT (controller)";
+			made[s] = m >= 0 ? std::string(kOwnerPoses[m].name) + (T[s].Copied[m] ? " (copied)" : "") : "ABSENT (controller)";
 		}
-		printf("  %3d %-26s %-6s -> %-15s right: %-20s left: %-20s%s\n", g.item, g.name, g.weapon ? "weapon" : "item", name.c_str(),
+		printf("  %3d %-26s %-6s -> %-15s right: %-24s left: %-24s%s\n", g.item, g.name, g.weapon ? "weapon" : "item", name.c_str(),
 			made[0].c_str(), made[1].c_str(), g.needsFrame ? "  [needs a new authored frame]" : "");
 	}
 	CHECK(bad == 0, "%d of %d item rows name a pose the table lacks", bad, rows);

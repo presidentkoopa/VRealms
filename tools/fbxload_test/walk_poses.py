@@ -616,7 +616,12 @@ def check_hold_table(hands, header, owner_path):
     tab, order = read_owner_table(header)
     print("\n== THE HELD-OBJECT AND WEAPON-GRIP TABLE (%s kOwnerPoses) against %s and both takes" % (header, owner_path))
     want = [k for k in owner if not k.startswith("//")]
-    check(order == want, "the table has the owner's %d poses, in his order (%d in the engine)" % (len(want), len(order)))
+    # the owner's entries first, in his order; then exactly the measured additions (not his: the take's pinches)
+    ADDED = {"fbx_pinch": [694, "both"], "fbx_pinch_tight": [312, "both"]}
+    check(order[:len(want)] == want, "the table has the owner's %d poses first, in his order" % len(want))
+    extra = order[len(want):]
+    check(extra == list(ADDED) and all(tab[k].get("raw") == ADDED[k] for k in extra),
+          "after them exactly the measured additions, marked as not his: %s" % ", ".join("%s (Blender %d, %s)" % (k, v[0], v[1]) for k, v in ADDED.items()))
     same = 0
     for k in want:
         o, t = owner[k], tab.get(k)
@@ -650,7 +655,20 @@ def check_hold_table(hands, header, owner_path):
 
     # a pose one hand authored is absent from the other hand's take: its nearest frame there is further from it than the
     # two hands' shared frames are from each other (fingertips in each hand's own palm frame, hand lengths)
-    shared = [b - 1 for k, (b, hs) in raw.items() if hs == "both"]
+    shared = [b - 1 for k, (b, hs) in raw.items() if hs == "both" and k in want]
+
+    # the measured pinches: thumb tip to index tip, each hand's own take (hand lengths)
+    for k in extra:
+        fr = raw[k][0] - 1
+        for s_ in ("R", "L"):
+            h = H[s_]
+            W = h.world(fr)
+            d = np.linalg.norm(W[h.idx["THUMB_UP_TOP_joint"]][:3, 3] - W[h.idx["INDEX_UP_TOP_joint"]][:3, 3]) / h.L
+            others = " ".join("%s %.2f" % (fn, h.finger_metrics(W, fn)["straight"]) for fn in ("middle", "ring", "pinky"))
+            print("     %-16s %s take %d: thumb tip to index tip %.3f hand lengths; straightness %s; motion %.1f deg/frame" % (
+                k, s_, fr, d, others, h_motion(h, fr)))
+        check(all(np.linalg.norm(H[x].world(fr)[H[x].idx["THUMB_UP_TOP_joint"]][:3, 3] - H[x].world(fr)[H[x].idx["INDEX_UP_TOP_joint"]][:3, 3]) / H[x].L < 0.06
+                  for x in ("R", "L")), "%s: a thumb-to-index-tip pinch in both takes (tips < 0.06 hand lengths apart)" % k)
     tol = max(np.linalg.norm(tip_sig(H["R"], fr) - tip_sig(H["L"], fr)) for fr in shared)
     print("  the two hands' shared frames (%s) differ from each other by up to %.3f (fingertips in the hand's own frame, hand lengths): "
           "a frame further than that from a pose is not that pose" % (", ".join(str(x) for x in sorted(set(shared))), tol))
@@ -667,10 +685,10 @@ def check_hold_table(hands, header, owner_path):
         used = sorted(n for n, v in tab.items() if "fingers" in v and k in v["fingers"].values())
         if not used:
             print("  NOTE  %s (Blender %d, hand %s): no composed pose uses it; the %s take's nearest frame %d is %.3f away (tolerance %.3f), %s -- "
-                  "not mirrored, and not substituted" % (k, b, hs, "right" if dst == "R" else "left", g, best, tol,
+                  "copied from the authoring hand where a pose uses it" % (k, b, hs, "right" if dst == "R" else "left", g, best, tol,
                                                          "held" if held(H[dst], "index", g) and held(H[dst], "middle", g) else "moving"))
             continue
-        check(best > tol, "%s (Blender %d, hand %s): absent from the %s take -- its nearest frame there, %d, is %.3f away (> %.3f), %s" % (
+        check(best > tol, "%s (Blender %d, hand %s): authored by that hand only -- the %s take has no such frame (nearest %d, %.3f away > %.3f, %s), so that hand's frame is copied" % (
             k, b, hs, "right" if dst == "R" else "left", g, best, tol,
             "held" if held(H[dst], "index", g) and held(H[dst], "middle", g) else "moving") + "; used by " + ", ".join(used))
 

@@ -22,8 +22,10 @@
 //   H0  the owner's raw frames as poses: for every raw pose of his fbx_poses.json and each hand that AUTHORED it, the
 //       15 rotations from take frame (Blender - 1) against the ones mkfbxposes.py wrote for that hand ("own", not
 //       "MIRRORED") in UZDXREMA's vrhandpose.txt.
-//   H1  the held-object and weapon-grip poses built from each hand's own take (BuildHoldPoses): which poses a hand has
-//       and which its take lacks, and that a raw pose is on a hand exactly when that hand authored it.
+//   H1  the held-object and weapon-grip poses (BuildHoldPoses): the other hand loaded, its rest locals equal to this
+//       hand's; every pose on both hands, a raw frame copied from the other hand's take exactly where this hand did
+//       not author it.
+//   H3  a copied pose's joints have the other hand's local rotations at that frame (through the engine path).
 //   H2  EVERY HOLD POSE AT FULL INPUT through the engine path (SelectHold + StepPoseHeld converged at 90 Hz, PosePalette
 //       on the engine's palette), both hands: every pose of the table by name, every hold subject, every weapon grip
 //       class at trigger 0 and 1. (a) each joint's (and the palm's) drawn rotation equals the rotation made in double from its authored
@@ -622,7 +624,7 @@ int main(int argc, char **argv)
 				for (int p = 0; p < kOwnerPoseCount; p++)
 				{
 					const OwnerPose &op = kOwnerPoses[p];
-					if (op.blender <= 0 || OwnerRawFrame(p, side) < 0) continue;
+					if (op.blender <= 0 || OwnerRawFrame(p, side) < 0 || p >= kOwnerJsonPoseCount) continue;	// the measured pinches are not in his file
 					if (!rotFile.count(op.name) || !rotFile[op.name].count(sideCh)) { Check(false, "H0 %s: %s %c is not in vrhandpose.txt", meshes[h], op.name, sideCh); continue; }
 					const int fr = OwnerRawFrame(p, side);
 					double w = 0;
@@ -642,27 +644,58 @@ int main(int argc, char **argv)
 					"this hand within %.3f deg (worst %s)", meshes[h], n, worstOwn, worstPose.c_str());
 			}
 
-			// ---- H1: the hold poses of this hand's own take
+			// ---- H1: the hold poses: this hand's own take, a frame it lacks copied from the other hand's take
+			Result ro;
+			std::string errO;
+			const bool haveOther = Load(file.data(), file.size(), selectors[1 - h], ro, errO);
+			std::map<std::string, int> idxO;
+			if (haveOther) for (int j = 0; j < (int)ro.joints.size(); j++) idxO[ro.joints[j].name] = j;
+			const int njo = haveOther ? (int)ro.joints.size() : 0;
+			auto getQOther = [&](int frame, const char *name, double q[4]) {
+				auto it = idxO.find(name);
+				if (it == idxO.end() || frame < 0 || frame >= ro.numFrames) return false;
+				for (int k = 0; k < 4; k++) q[k] = ro.frames[(size_t)frame * njo + it->second].q[k];
+				return true;
+			};
+			{
+				// the two skeletons' REST locals agree, so the other hand's local rotation can be used as it is
+				double worstRest = 0;
+				int compared = 0;
+				std::vector<int> js = { palmJ };
+				for (int f = 0; f < 5; f++) { for (int j = 0; j < 3; j++) js.push_back(joints[f][j]); js.push_back(tips[f]); }
+				for (int jt : js)
+				{
+					auto it = idxO.find(r.joints[jt].name);
+					if (it == idxO.end()) continue;
+					worstRest = fmax(worstRest, QAngleDeg(r.joints[jt].rest.q, ro.joints[it->second].rest.q));
+					compared++;
+				}
+				Check(haveOther && compared == 21 && worstRest < 1e-3, "H1 %s: the other hand (%s) loaded; its 21 finger, tip and palm joints' rest local rotations equal "
+					"this hand's within %.2g deg", meshes[h], selectors[1 - h], worstRest);
+			}
 			HoldPoses hold;
 			{
-				const bool ok = BuildHoldPoses(rig, frames, side, r.numFrames, getQ, hold, why, sizeof(why));
-				int have = 0, rawOk = 0, raw = 0;
-				std::string lacks;
+				const bool ok = BuildHoldPoses(rig, frames, side, r.numFrames, getQ, getQOther, haveOther ? ro.numFrames : 0, hold, why, sizeof(why));
+				int have = 0, rawOk = 0, raw = 0, copied = 0;
+				std::string copies;
 				for (int p = 0; p < kOwnerPoseCount; p++)
 				{
 					const OwnerPose &op = kOwnerPoses[p];
 					if (hold.Have[p]) have++;
+					if (hold.Copied[p]) copied++;
 					if (op.blender > 0)
 					{
 						raw++;
-						const bool authored = op.hands == HANDS_BOTH || (op.hands == HANDS_A) == right;
-						if (hold.Have[p] == authored) rawOk++;
-						if (!hold.Have[p]) lacks += std::string(lacks.empty() ? "" : ", ") + op.name;
+						const bool authored = OwnerRawAuthored(p, side);
+						// every raw pose is on this hand; copied exactly when this hand did not author it
+						if (hold.Have[p] && hold.Copied[p] == !authored) rawOk++;
+						if (hold.Copied[p]) copies += std::string(copies.empty() ? "" : ", ") + op.name;
 					}
 				}
-				printf("  H1 %s: %d of %d held-object / weapon-grip poses from its own take; it lacks (never mirrored from the other hand): %s\n",
-					meshes[h], have, kOwnerPoseCount, lacks.c_str());
-				Check(ok && rawOk == raw, "H1 %s: built (%s); each of the %d raw poses is on this hand exactly when this hand authored it", meshes[h], ok ? "ok" : why, raw);
+				printf("  H1 %s: %d of %d held-object / weapon-grip poses; %d use frames copied from the other hand's take; the raw frames copied: %s\n",
+					meshes[h], have, kOwnerPoseCount, copied, copies.c_str());
+				Check(ok && have == kOwnerPoseCount && rawOk == raw, "H1 %s: built (%s); all %d raw poses on this hand, copied exactly where this hand did not author "
+					"them (the json's hand)", meshes[h], ok ? "ok" : why, raw);
 			}
 
 			// ---- H2: every hold pose at full input, through the engine path
@@ -681,7 +714,8 @@ int main(int argc, char **argv)
 						c.in = in0; c.in.trigger = (float)t; c.in.triggerTouch = t != 0;
 						cases.push_back(c);
 					}
-				double worstQ = 0, worstLocal = 0;
+				double worstQ = 0, worstLocal = 0, worstCopied = 0;
+				int copiedStates = 0;
 				std::string worstQName, worstLocalName;
 				int posed = 0, absent = 0, absentOk = 0;
 				for (const HC &c : cases)
@@ -693,17 +727,31 @@ int main(int argc, char **argv)
 					PoseInputs pi;
 					PoseRule(c.in, pi);
 					int src[5];
+					bool other[5] = { false, false, false, false, false };	// that finger's frame is the other hand's take's
 					bool all = true;
 					for (int f = 0; f < 5; f++)
 					{
 						int fr;
-						if (f == FINGER_INDEX && ch.IdxReady >= 0) fr = hold.Frame[c.in.trigger >= 1.f ? ch.IdxFire : ch.IdxReady][f];
-						else if (ch.Src[f][0] >= 0) fr = hold.Frame[ch.Src[f][0]][f];
+						if (f == FINGER_INDEX && ch.IdxReady >= 0)
+						{
+							const int pp = c.in.trigger >= 1.f ? ch.IdxFire : ch.IdxReady;
+							fr = hold.Frame[pp][f]; other[f] = hold.FromOther[pp][f];
+						}
+						else if (ch.Src[f][0] >= 0) { fr = hold.Frame[ch.Src[f][0]][f]; other[f] = hold.FromOther[ch.Src[f][0]][f]; }
 						else { all = false; fr = pi.Amount[f] >= 1.f ? kPoseSources[side][pi.Pose].Finger[f] : kOpenFrame; }
 						src[f] = fr;
 					}
 					const int pm = ch.Src[FINGER_MIDDLE][0];
-					const int palmSrc = (all && pm >= 0 && hold.PalmDriven[pm]) ? hold.PalmFrame[pm] : kDrawnFrame;
+					const bool palmDriven = all && pm >= 0 && hold.PalmDriven[pm];
+					const int palmSrc = palmDriven ? hold.PalmFrame[pm] : kDrawnFrame;
+					const bool palmOther = palmDriven && hold.PalmFromOther[pm];
+					bool anyCopied = palmOther;
+					for (int f = 0; f < 5; f++) anyCopied = anyCopied || other[f];
+					// a joint's local rotation in the composition: this take's frame, or the other hand's (by name)
+					auto srcQ = [&](int jt, int fr, bool fromOther, double q[4]) {
+						if (!fromOther) { for (int k = 0; k < 4; k++) q[k] = r.frames[(size_t)fr * nj + jt].q[k]; return; }
+						if (!getQOther(fr, r.joints[jt].name.c_str(), q)) { q[0] = q[1] = q[2] = 0; q[3] = 1; }
+					};
 					if (!ch.Any())
 					{
 						// nothing for this hand: exactly the controller's pose
@@ -721,7 +769,9 @@ int main(int argc, char **argv)
 						{
 							const int jt = joints[f][j];
 							double q[4];
-							PoseRotation(frames[f][j], r.frames[(size_t)kDrawnFrame * nj + jt].q, r.frames[(size_t)src[f] * nj + jt].q, q);
+							double qs[4];
+							srcQ(jt, src[f], other[f], qs);
+							PoseRotation(frames[f][j], r.frames[(size_t)kDrawnFrame * nj + jt].q, qs, q);
 							const double a[4] = { p.rot.Q[f][j][0], p.rot.Q[f][j][1], p.rot.Q[f][j][2], p.rot.Q[f][j][3] };
 							// the angle of a^-1 q, by atan2 (exact for small angles)
 							const double w = a[3] * q[3] + a[0] * q[0] + a[1] * q[1] + a[2] * q[2];
@@ -736,7 +786,9 @@ int main(int argc, char **argv)
 						FingerFrame I;
 						I.X[0] = 1; I.Y[1] = 1; I.Z[2] = 1;
 						double q[4];
-						PoseRotation(I, r.frames[(size_t)kDrawnFrame * nj + palmJ].q, r.frames[(size_t)palmSrc * nj + palmJ].q, q);
+						double qs[4];
+						srcQ(palmJ, palmSrc, palmOther, qs);
+						PoseRotation(I, r.frames[(size_t)kDrawnFrame * nj + palmJ].q, qs, q);
 						const double a2[4] = { p.palm.Q[0], p.palm.Q[1], p.palm.Q[2], p.palm.Q[3] };
 						const double w = a2[3] * q[3] + a2[0] * q[0] + a2[1] * q[1] + a2[2] * q[2];
 						const double x = a2[3] * q[0] - a2[0] * q[3] - a2[1] * q[2] + a2[2] * q[1];
@@ -748,6 +800,10 @@ int main(int argc, char **argv)
 					// (b) the whole palette path: local rotations against the composition's
 					std::vector<TRSd> loc;
 					compose(src, palmSrc, loc);
+					// a copied finger / palm: the other hand's local ROTATION at that frame on this hand's joint
+					for (int f = 0; f < 5; f++)
+						if (other[f]) for (int j = 0; j < 3; j++) { loc[joints[f][j]] = r.frames[(size_t)kDrawnFrame * nj + joints[f][j]]; srcQ(joints[f][j], src[f], true, loc[joints[f][j]].q); }
+					if (palmOther) { loc[palmJ] = r.frames[(size_t)kDrawnFrame * nj + palmJ]; srcQ(palmJ, palmSrc, true, loc[palmJ].q); }
 					Mats WC;
 					ComposeChain(r, loc.data(), WC);
 					for (int jt : cmp)
@@ -759,8 +815,10 @@ int main(int argc, char **argv)
 						localOf(WC[pj].data(), WC[jt].data(), lc);
 						const double a = rotAngle(lo, lc);
 						if (a > worstLocal) { worstLocal = a; worstLocalName = c.label + " / " + r.joints[jt].name; }
+						if (anyCopied) worstCopied = fmax(worstCopied, a);
 					}
-					if (c.label == "pose hold_magazine" || c.label == "pose hold_round" || c.label == "pose fbx_curl" || c.label == "pose hold_forend"
+					if (anyCopied) copiedStates++;
+					if (c.label == "pose hold_magazine" || c.label == "pose fbx_pinch" || c.label == "pose fbx_pinch_tight" || c.label == "pose hold_round" || c.label == "pose fbx_curl" || c.label == "pose hold_forend"
 						|| c.label == "pose hold_foregrip" || c.label == "pose hold_inserting" || c.label == "weapon pistol, trigger off")
 					{
 						std::string lab = c.label.substr(c.label.find(' ') + 1);
@@ -777,6 +835,8 @@ int main(int argc, char **argv)
 				Check(posed > 0 && worstQ < 1e-5, "H2 %s: every hold pose at full input is its authored frame(s): drawn rotations within %.2g deg (< 1e-5)", meshes[h], worstQ);
 				Check(worstLocal < 1e-4, "H2 %s: and through the float palette, every finger joint, tip and the palm within %.2g deg of the composition", meshes[h], worstLocal);
 				Check(absentOk == absent, "H2 %s: a pose this hand lacks leaves exactly the controller's pose (%d of %d)", meshes[h], absentOk, absent);
+				Check(copiedStates > 0 && worstCopied < 1e-4, "H3 %s: in the %d held states using copied frames, every copied joint has the OTHER hand's local "
+					"rotation at that frame, within %.2g deg (the rest of the hand its own)", meshes[h], copiedStates, worstCopied);
 			}
 		}
 

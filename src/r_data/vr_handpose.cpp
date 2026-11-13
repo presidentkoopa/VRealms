@@ -126,21 +126,21 @@
 **   the other hand's gun, both handednesses, tracked or not, the real one-sided table plus random holes): every
 **   choice and every joint target identical (difference 0). The VA probes are answered per side by the stub: item 49.]
 ** 48. EGripSubject: None, Round, Shell, Inserting, Magazine, Grip, Forend, Foregrip, Slide, Support, Holster, Pouch, MAX
-**                                                               OXR-h:105-131  -> math:1019 (same values: test_holds)
+**                                                               OXR-h:105-131  -> math:1015 (same values: test_holds)
 ** 49. VRAvatar_NamedPose(name, finger) / VRAvatar_NamedPoseRot(name, side, finger, joint), names by stricmp
-**                                                               VA:319-347     -> math:1202 HoldHas, :1212 HoldRot, :1058
+**                                                               VA:319-347     -> math:1224 HoldHas, :1234 HoldRot, :1054
 **     DEPARTS: VA's NamedPose has no side, because UZDXREMA's table always carries both sides (MKP writes a pose one hand
-**     authored for the other side MIRRORED). Here a side has a pose only from its own take (owner: never mirror), so the
+**     authored for the other side MIRRORED). Here a side's pose comes from its own take or a copied frame (item 76), so the
 **     probe is per side; a pose a side lacks is absent there, as VAP treats any missing pose (:577-579).
-** 50. weapon branch taken when a weapon is drawn in this hand    VAP:476        -> math:1289 SelectHold (HeldState.weapon)
-** 51. base = gun_grip; with a grip class: grip_<cls>, fire grip_<cls>_fire   VAP:484-491 -> math:1291-1298
+** 50. weapon branch taken when a weapon is drawn in this hand    VAP:476        -> math:1336 SelectHold (HeldState.weapon)
+** 51. base = gun_grip; with a grip class: grip_<cls>, fire grip_<cls>_fire   VAP:484-491 -> math:1338-1345
 ** 52. [GUNPOSE] grip_<prop class> wins when it has a middle finger, fire = grip_<prop>_fire
-**                                                               VAP:494-503    -> math:1299-1307
-** 53. middle, ring, pinky: per joint from base, else gun_grip  VAP:505-514    -> math:1308-1317
+**                                                               VAP:494-503    -> math:1346-1354
+** 53. middle, ring, pinky: per joint from base, else gun_grip  VAP:505-514    -> math:1355-1364
 ** 54. [FBXGRIP] the thumb from base (else gun_grip) when that pose has a thumb rotation
-**                                                               VAP:522-535    -> math:1318-1327
+**                                                               VAP:522-535    -> math:1365-1374
 ** 55. the index ready->fire only when a fire name exists and both have the index; t = trigger if tracked, else 0
-**                                                               VAP:543-556    -> math:1328-1337
+**                                                               VAP:543-556    -> math:1375-1384
 ** 56. otherwise the index (and any finger no pose set) stays the controller's
 **                                                               VAP:470-472, 685-690 -> HoldTargets keeps the controller's
 **     target (PoseRule / PoseTargets, items 11-20): VAP's fallback there is its FRIK curl table, which is not ported (19).
@@ -155,42 +155,34 @@
 **     magazines, rounds or pumps to claim; the subject is the item in the hand (roth_handhold.h), published per tic.
 ** 60. netplay: the held state through usercmd_t / the pawn       (UZDXREMA's rules) -> NOT PORTED: single player; the
 **     hands are presentation only (vr_handpose.h).
-** 61. object branch otherwise                                   VAP:558        -> math:1338
+** 61. object branch otherwise                                   VAP:558        -> math:1385
 ** 62. subject -> name: Magazine hold_magazine, Round hold_round, Shell hold_shell, Inserting hold_inserting (fallback
 **     hold_round), Forend hold_forend, Foregrip hold_foregrip, Slide hold_slide, Support hold_support (fallback
-**     offhand_weapon_grip); None, Grip, Holster, Pouch: nothing  VAP:587-609    -> math:1340-1354
+**     offhand_weapon_grip); None, Grip, Holster, Pouch: nothing  VAP:587-609    -> math:1387-1401
 ** 63. per gun type: tries <base>_<other hand's prop>, <base>_<other hand's class>, <base>, for the name then the
-**     fallback (other hand's only while it holds a weapon)      VAP:622-636    -> math:1359-1370
+**     fallback (other hand's only while it holds a weapon)      VAP:622-636    -> math:1406-1417
 ** 64. ONE POSE WINS WHOLE: the first try with any finger; every finger it has, the index included
-**                                                               VAP:637-654    -> math:1371-1379
+**                                                               VAP:637-654    -> math:1418-1426
 ** 65. NOT IN THE SOURCE: HeldState.pose -- a held thing may name a pose of the table itself (the Lamp's fbx_curl, the
 **     frame its dossier names and no subject's pose uses); it takes the subject's name's place in 62-64. Checked by
-**     value (test_holds).                                                      -> math:1356
+**     value (test_holds).                                                      -> math:1403
 ** 66. the target: the index QSlerp(ready, fire, t) when both have it; else the named pose's rotation
-**                                                               VAP:672-684    -> math:1390 HoldTargets
+**                                                               VAP:672-684    -> math:1437 HoldTargets
 ** 67. the targets then smoothed exactly as every other target (items 21-22)
-**                                                               VAP:691-696    -> math:1421 StepPoseHeld (Smooth)
+**                                                               VAP:691-696    -> math:1468 StepPoseHeld (Smooth)
 ** 68. once per displayed frame, both sides, held states per ROLE (hidx), the other hand by role
 **                                                               VAP:433-438, 622 -> UpdateCurls (here)
-** 69. the poses: the owner's fbx_poses.json, every entry in his order (16 raw frames, 34 composed), Blender - 1
-**                                                               FJ, MKP main() -> math:1102 kOwnerPoses
-**     [V: walk_poses.py check_hold_table reads both: 50 of 50 equal. fbxload_test H0: every raw frame from take
-**      frame Blender - 1 equals mkfbxposes.py's own rotations for the hand that authored it, within 0.131 deg (right,
-**      11 frames) / 0.129 deg (left, 13 frames).]
-** 70. EACH HAND FROM ITS OWN TAKE; a raw pose only on the hand(s) that authored it ("both" / "A" right / "B" left)
-**                                                               MKP "MIRRORED from hand ..." -> NOT DONE (owner): math:1168
-**     [V: test_holds (the table's sides); fbxload_test H1 on the real FBX; walk_poses.py check_hold_table measures
-**      the other take for every one-sided frame a hold uses: none is there -- its nearest frame is 0.352-0.578 hand
-**      lengths away (fingertips in the hand's own frame), more than the two hands' shared frames differ (0.319).]
-**     THE RIGHT TAKE (Hand_Low) LACKS wrap_half (820), wrap_tight (837), cup (985) and twohand_support (985): from
-**     about frame 760 to the end it holds its two-finger gun while the left wraps and cups. So on the RIGHT hand
-**     gun_grip, every grip_<class> but grip_saw, offhand_weapon_grip, hold_magazine, hold_round, hold_shell,
-**     hold_slide, hold_forend, hold_support and every hold_support_<class> but _saw are ABSENT (the controller's
-**     pose). THE LEFT TAKE (Hand_Low1) LACKS twofinger_point (762), fingergun (803) and twohand_gun (985): `pointing`
-**     is absent on the left. NEEDS NEW AUTHORED FRAMES (owner): the right hand's wrap_half, wrap_tight and cup.
-**     (fbx_thumb_out, 944 left: the right take has a near frame, 745, moving -- no pose uses it; not substituted.)
+** 69. the poses: the owner's fbx_poses.json, every entry in his order (16 raw frames, 34 composed), Blender - 1,
+**     then 2 MEASURED ADDITIONS (item 77)                       FJ, MKP main() -> math:1098 kOwnerPoses
+**     [V: walk_poses.py check_hold_table: his 50 first and equal, then exactly the 2 additions. fbxload_test H0: every
+**      raw frame of his, from take frame Blender - 1, equals mkfbxposes.py's own rotations for the hand that authored
+**      it, within 0.131 deg (right, 11 frames) / 0.129 deg (left, 13 frames).]
+** 70. each hand's OWN take wherever it authored the frame       MKP "own"      -> math:1245 BuildHoldPoses
+**     The right take lacks wrap_half (820), wrap_tight (837), cup and twohand_support (985), thumb_out (944); the left
+**     lacks twofinger_point (762), fingergun (803), twohand_gun (985). [V: walk_poses.py: nearest frame in the other
+**     take 0.352-0.578 hand lengths away, beyond the 0.319 the hands' shared frames differ by.] Those are copied: 76.
 ** 71. a pose = PoseRotation (item 29) from the drawn frame to each finger's take frame, built once per model and
-**     side                                                     MKP main()     -> math:1220 BuildHoldPoses; HandFor (here)
+**     side                                                     MKP main()     -> math:1245 BuildHoldPoses; HandFor (here)
 **     [V: fbxload_test H2, both hands, every pose by name, every subject, every grip class at trigger 0 and 1, through
 **      SelectHold + StepPoseHeld converged at 90 Hz: every drawn joint rotation (and the palm's) within 8.3e-6 deg of
 **      the rotation made in double from its authored frame; through the float palette, every finger joint, tip and
@@ -202,13 +194,24 @@
 **     Item 38's wording ("no straight finger") fails the owner's frames: in curl (206) / halfcurl (193) the bend is the
 **     palm joint's own (59-64 deg) and the fingers on it are straight; without their palm they turn back from the hand
 **     (seen: fbxload_test software renders, fingers/holds_<hand>.png). While a finger is the controller's (a weapon with
-**     no fire pose), the palm stays in the drawn frame.                       -> math:1078 (Palm), :1390 HoldTargets
+**     no fire pose), the palm stays in the drawn frame.                       -> math:1074 (Palm), :1437 HoldTargets
 ** 73. which Realms thing is which subject / grip class: src/roth/roth_hands.cpp + roth_handhold.h (the item dossiers,
 **     docs/ITEM_DESIGN.md). Not a port: a design table, every row with the dossier's words.
 ** 74. the log: one line per hand whenever what shapes it changes ("VR hands: the left hand (off hand) holds ...") --
-**     evidence of the choice in a run, not of the drawing.                     -> UpdateCurls, math:1436 DescribeHold
+**     evidence of the choice in a run, not of the drawing.                     -> UpdateCurls, math:1483 DescribeHold
 ** 75. roth_handhold (flat test): a physical hand's held thing in place of the game's while roth_handtest is on
 **                                                                              -> VRHandTest_SetHeld, roth_hands.cpp
+** 76. A FRAME A HAND'S TAKE LACKS IS COPIED FROM THE OTHER HAND'S TAKE (owner, 2026-11-13: "just copy the poses"):
+**     that frame's joint LOCAL rotations, by joint name, onto this hand's joints; only the missing frames.
+**     MKP instead MIRRORS the other hand's whole pose.          -> math:1245 BuildHoldPoses (getQOther), HandFor
+**     [V: fbxload_test H1: the two skeletons' rest locals equal (0 deg); right hand 33 poses use copied frames,
+**      left 4; H3: every copied joint has the other hand's local rotation at that frame within 1.1e-5 deg through
+**      the engine path. Software renders: the copied right-hand wraps look like the left's, mirror-image.]
+** 77. MEASURED ADDITIONS (not the owner's json, which says there is no pinch): fbx_pinch = Blender 694 (take 693, tips
+**     0.045 R / 0.044 L hand lengths), fbx_pinch_tight = Blender 312 (0.028 R / 0.051 L), both hands' own. The
+**     pinch items use fbx_pinch (roth_handhold.h).              -> math:1152 [V: walk_poses.py prints and checks them]
+** 78. the original's right-hand item is held by the hand on the RIGHT side (owner); the weapon stays at the main hand,
+**     where RealmsHeld is drawn; where both are one hand the weapon's grip wins (VAP :476)  -> roth_hands.cpp PublishHeld
 **
 ** The flat test (not in UZDXREMA; test-only)
 ** 47. roth_handtest: both hands in front of the camera, fixed grip axes, through the placement above
@@ -403,6 +406,10 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out)
 
 namespace
 {
+	// Each hand's FBX mesh selector, as vrealms_iwad/MODELDEF.txt names it (after "hand_final.fbx:"): the other hand's
+	// model is found by it when a frame is copied from its take (checklist 76).
+	const char *const kHandSelector[SIDE_COUNT] = { "Hand_Low", "Hand_Low1?mirrorskin=Hand_Low" };
+
 	// HandFrameFromJoints' P[5]: wrist, index, middle, ring, pinky knuckles (RIG:733-750).
 	const char *const kFrameJoints[5] =
 	{
@@ -538,24 +545,59 @@ namespace
 			Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- fingers NOT posed: %s\n", model->mFileName.GetChars(), sideName, why);
 			return false;
 		}
-		// the held-object and weapon-grip poses (checklist 48-75): the owner's table, from this hand's own take only
-		if (!BuildHoldPoses(c->rig[side], frames, side, model->NumFrames(), getQ, c->hold[side], why, sizeof(why)))
+		// the held-object and weapon-grip poses (checklist 48-75, 76-78): the owner's table, from this hand's own take,
+		// and a frame only the OTHER hand authored copied from the other hand's take, joint by joint by name (item 76).
+		// The other hand is the other FBX mesh of the same file, by its MODELDEF selector (kHandSelector).
+		FModel *otherModel = nullptr;
+		{
+			const FString &mine = model->mFileName;
+			const ptrdiff_t colon = mine.LastIndexOf(':');
+			if (colon > 0)
+			{
+				const FString otherName = mine.Left(colon + 1) + kHandSelector[1 - side];
+				const unsigned idx = FindModel(nullptr, otherName.GetChars(), true);
+				if (idx < Models.Size() && Models[idx] != model) otherModel = Models[idx];
+			}
+			if (otherModel == nullptr)
+				Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- the other hand's model (%s) is not loaded: no frame can be copied from its take\n",
+					model->mFileName.GetChars(), sideName, kHandSelector[1 - side]);
+		}
+		auto getQOther = [otherModel](int frame, const char *name, double q[4]) {
+			if (otherModel == nullptr) return false;
+			const int j = otherModel->FindJoint(FName(name));
+			if (j < 0 || frame < 0 || frame >= otherModel->NumFrames()) return false;
+			const TRS t = otherModel->GetJointPose(j, frame);
+			q[0] = t.rotation.X; q[1] = t.rotation.Y; q[2] = t.rotation.Z; q[3] = t.rotation.W;
+			return true;
+		};
+		if (!BuildHoldPoses(c->rig[side], frames, side, model->NumFrames(), getQ, getQOther, otherModel != nullptr ? otherModel->NumFrames() : 0,
+			c->hold[side], why, sizeof(why)))
 		{
 			Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- fingers NOT posed: %s\n", model->mFileName.GetChars(), sideName, why);
 			return false;
 		}
 		{
-			int have = 0;
-			FString lacks, palms;
+			int have = 0, copied = 0;
+			FString lacks, copies, palms;
 			for (int p = 0; p < kOwnerPoseCount; p++)
 			{
 				const OwnerPose &op = kOwnerPoses[p];
-				if (c->hold[side].Have[p]) { have++; if (c->hold[side].PalmDriven[p]) palms.AppendFormat("%s%s", palms.IsEmpty() ? "" : " ", op.name); }
-				else if (op.blender > 0) lacks.AppendFormat("%s%s (Blender %d, hand %s)", lacks.IsEmpty() ? "" : ", ", op.name, op.blender, op.hands == HANDS_A ? "A" : op.hands == HANDS_B ? "B" : "both");
+				const HoldPoses &hp = c->hold[side];
+				if (!hp.Have[p]) { lacks.AppendFormat("%s%s", lacks.IsEmpty() ? "" : ", ", op.name); continue; }
+				have++;
+				if (hp.PalmDriven[p]) palms.AppendFormat("%s%s", palms.IsEmpty() ? "" : " ", op.name);
+				if (!hp.Copied[p]) continue;
+				copied++;
+				FString from;
+				for (int f = 0; f < FINGER_COUNT; f++)
+					if (hp.FromOther[p][f] && from.IndexOf(FStringf("%d", hp.Frame[p][f]).GetChars()) < 0)
+						from.AppendFormat("%s%d", from.IsEmpty() ? "" : "/", hp.Frame[p][f]);
+				copies.AppendFormat("%s%s (frame %s)", copies.IsEmpty() ? "" : ", ", op.name, from.GetChars());
 			}
-			Printf("VR hands: %s as the %s hand -- held-object and weapon-grip poses (UZDXREMA fbx_poses.json): %d of %d from its own take; "
-				"its take lacks %s, so the poses made of them are absent on this hand (never mirrored from the other); the palm follows the pose in: %s\n",
-				model->mFileName.GetChars(), sideName, have, kOwnerPoseCount, lacks.IsEmpty() ? "nothing" : lacks.GetChars(), palms.IsEmpty() ? "none" : palms.GetChars());
+			Printf("VR hands: %s as the %s hand -- held-object and weapon-grip poses (UZDXREMA fbx_poses.json + the measured pinches): %d of %d; "
+				"%d use frames COPIED from the %s hand's take (this take lacks them): %s; absent: %s; the palm follows the pose in: %s\n",
+				model->mFileName.GetChars(), sideName, have, kOwnerPoseCount, copied, side == SIDE_RIGHT ? "left" : "right",
+				copies.IsEmpty() ? "none" : copies.GetChars(), lacks.IsEmpty() ? "none" : lacks.GetChars(), palms.IsEmpty() ? "none" : palms.GetChars());
 		}
 		c->handOk[side] = true;
 		double minFold = 9;

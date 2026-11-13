@@ -1002,15 +1002,11 @@ inline bool BuildPoses(const HandRig &rig, const FingerFrame frames[FINGER_COUNT
 // the owner's tools/avatar/fbx_poses.json, the table mkfbxposes.py turned into wadsrc/static/vrhandpose.txt.
 // The checklist (source line -> here) is items 16-17 and 48-75 at the top of vr_handpose.cpp.
 //
-// EACH HAND FROM ITS OWN TAKE. mkfbxposes.py writes a pose one FBX hand authored for the OTHER side too, mirrored
-// ("A pose only one hand authored is also written for the other side, mirrored, and says so"). That is never done
-// here (owner: two separate hands, never cloned or mirrored): a side has a pose only when its own take has every
-// frame the pose reads. Measured (tools/fbxload_test/walk_poses.py, check_hold_table): the right take (Hand_Low,
-// the owner's "A") holds its two-finger gun from about frame 760 to the end while the left take wraps, cups and
-// supports, so the right take has no wrap_half, wrap_tight, cup, thumb_out or twohand_support frame anywhere, and
-// the left take has no twofinger_point, fingergun or twohand_gun frame. A pose a side lacks is ABSENT for that
-// side, exactly as VAP treats a pose a table does not carry ("ADDITIVE AND SILENT IF ABSENT", :577-579): the hand
-// keeps the controller's pose.
+// EACH HAND FROM ITS OWN TAKE; A FRAME IT LACKS IS COPIED FROM THE OTHER HAND'S (owner, 2026-11-13: "just copy the
+// poses"). The right take has no wrap_half, wrap_tight, cup, thumb_out or twohand_support frame; the left none of
+// twofinger_point, fingergun or twohand_gun (walk_poses.py). Only those frames are copied: the other hand's joint
+// LOCAL rotations, by joint name (the two rests' locals are identical: fbxload_test H1). A pose with a frame neither
+// take has is absent (VAP :577-579): the controller's pose stays.
 //
 //===========================================================================
 
@@ -1153,7 +1149,12 @@ inline constexpr OwnerPose kOwnerPoses[] =
 	{ "hold_support_rocket",  0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
 	{ "hold_support_bfg",     0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
 	{ "hold_support_saw",     0, 0, VRHP_ALL("fbx_fist"), "fbx_fist" },
+	// ---- MEASURED ADDITIONS, NOT IN THE OWNER'S fbx_poses.json: thumb-tip-to-index-tip pinches both takes pass through
+	// (take 693: tips 0.045 R / 0.044 L hand lengths; take 311: 0.028 R / 0.051 L). Pass-through frames, ~10 deg a frame.
+	{ "fbx_pinch",            694, HANDS_BOTH, {}, "fbx_pinch" },
+	{ "fbx_pinch_tight",      312, HANDS_BOTH, {}, "fbx_pinch_tight" },
 };
+inline constexpr int kOwnerJsonPoseCount = 50;	// the owner's own entries come first; the rest are the measured additions
 #undef VRHP_ALL
 inline constexpr int kOwnerPoseCount = (int)(sizeof(kOwnerPoses) / sizeof(kOwnerPoses[0]));
 
@@ -1164,7 +1165,7 @@ inline int FindOwnerPose(const char *name)
 }
 
 // The take frame a RAW pose gives `side`, or -1: that side's take did not author it (HANDS_A is the right hand's
-// alone, HANDS_B the left's), and it is never mirrored over from the other hand.
+// alone, HANDS_B the left's). The other hand's frame is copied by BuildHoldPoses, not here.
 inline int OwnerRawFrame(int raw, int side)
 {
 	if (raw < 0 || raw >= kOwnerPoseCount || kOwnerPoses[raw].blender <= 0) return -1;
@@ -1173,7 +1174,25 @@ inline int OwnerRawFrame(int raw, int side)
 	return mine ? p.blender - 1 : -1;
 }
 
-// The take frame finger `f` of pose `p` reads on `side` (-1: not on this side); -2 = the table is malformed.
+// Did `side`'s take author raw pose `raw`? (fbx_poses.json's hand: "both", "A" = the right, "B" = the left.)
+inline bool OwnerRawAuthored(int raw, int side)
+{
+	if (raw < 0 || raw >= kOwnerPoseCount || kOwnerPoses[raw].blender <= 0) return false;
+	const int h = kOwnerPoses[raw].hands;
+	return h == HANDS_BOTH || (h == HANDS_A && side == SIDE_RIGHT) || (h == HANDS_B && side == SIDE_LEFT);
+}
+
+// The raw pose finger `f` of pose `p` comes from (its index), or -1 when the table is malformed.
+inline int OwnerFingerRaw(int p, int f)
+{
+	const OwnerPose &op = kOwnerPoses[p];
+	if (op.blender > 0) return p;
+	const int raw = FindOwnerPose(op.finger[f]);
+	return (raw >= 0 && kOwnerPoses[raw].blender > 0) ? raw : -1;
+}
+
+// The take frame finger `f` of pose `p` reads from `side`'s OWN take (-1: that take did not author it); -2 = the table
+// is malformed.
 inline int OwnerFingerFrame(int p, int f, int side)
 {
 	const OwnerPose &op = kOwnerPoses[p];
@@ -1186,8 +1205,11 @@ inline int OwnerFingerFrame(int p, int f, int side)
 // One side's poses from the table, built once per model and side (BuildHoldPoses).
 struct HoldPoses
 {
-	bool  Have[kOwnerPoseCount] = {};								// this side's own take has every frame the pose reads
-	int   Frame[kOwnerPoseCount][FINGER_COUNT] = {};				// those take frames (-1: not on this side)
+	bool  Have[kOwnerPoseCount] = {};								// every frame the pose reads, from this take or copied
+	int   Frame[kOwnerPoseCount][FINGER_COUNT] = {};				// those take frames (-1: neither take)
+	bool  FromOther[kOwnerPoseCount][FINGER_COUNT] = {};			// that finger's frame copied from the other hand's take
+	bool  PalmFromOther[kOwnerPoseCount] = {};
+	bool  Copied[kOwnerPoseCount] = {};								// any part of the pose copied from the other hand
 	float Q[kOwnerPoseCount][FINGER_COUNT][FINGER_JOINTS][4] = {};	// PoseRotation, relative to the drawn frame
 	bool  PalmDriven[kOwnerPoseCount] = {};
 	int   PalmFrame[kOwnerPoseCount] = {};
@@ -1197,8 +1219,8 @@ struct HoldPoses
 };
 
 // VRAvatar_NamedPose(pose, finger, ...) for this side (VA:334-347): does the pose carry finger f? The owner's poses
-// carry whole hands, so a pose this side has carries every finger. DEPARTS from VA in being per side: VA's probe is
-// side-free because UZDXREMA's table always has both sides, the missing one mirrored (see above).
+// carry whole hands, so a pose this side has carries every finger. DEPARTS from VA in being per side (VA's probe has no
+// side, its table always carrying both): here a pose is absent on a side only when neither take has a frame it reads.
 inline bool HoldHas(const HoldPoses *hp, int p, int f)
 {
 	return hp != nullptr && hp->Built && p >= 0 && p < kOwnerPoseCount && f >= 0 && f < FINGER_COUNT && hp->Have[p];
@@ -1216,45 +1238,70 @@ inline bool HoldRot(const HoldPoses *hp, int p, int f, int j, float q[4])
 	return true;
 }
 
-template<class GetQ>
+// getQ(frame, joint, q): this model's joint's LOCAL rotation in a take frame. getQOther(frame, jointName, q): the
+// OTHER hand's take, by joint name; false = it has no such joint (or there is no other hand: nothing is copied).
+// otherFrames: the other take's frame count (0 = none).
+template<class GetQ, class GetQOther>
 inline bool BuildHoldPoses(const HandRig &rig, const FingerFrame frames[FINGER_COUNT][FINGER_JOINTS], int side, int numFrames,
-	GetQ getQ, HoldPoses &out, char *why, size_t whyLen)
+	GetQ getQ, GetQOther getQOther, int otherFrames, HoldPoses &out, char *why, size_t whyLen)
 {
 	out = HoldPoses();
 	if (side < 0 || side >= SIDE_COUNT) { snprintf(why, whyLen, "no such side %d", side); return false; }
-	auto rot = [&](const FingerFrame &F, int joint, int frame, float q[4]) {
+	const int other = 1 - side;
+	// one joint's rotation in a frame of this take (own) or of the other's (copied), relative to this hand's drawn frame
+	auto rot = [&](const FingerFrame &F, int joint, const char *name, int frame, bool copied, float q[4]) {
 		double qd[4], qp[4], r[4];
 		getQ(kDrawnFrame, joint, qd);
-		getQ(frame, joint, qp);
+		if (copied) { if (!getQOther(frame, name, qp)) return false; }
+		else getQ(frame, joint, qp);
 		PoseRotation(F, qd, qp, r);
 		for (int k = 0; k < 4; ++k) q[k] = (float)r[k];
+		return true;
+	};
+	// where a raw pose's frame comes from on this side: 0 own take, 1 copied from the other's, -1 neither
+	auto source = [&](int raw, int &frame) {
+		frame = kOwnerPoses[raw].blender - 1;
+		if (OwnerRawAuthored(raw, side) && frame < numFrames) return 0;
+		if (OwnerRawAuthored(raw, other) && frame < otherFrames) return 1;
+		return -1;
 	};
 	FingerFrame I;
 	I.X[0] = 1; I.Y[1] = 1; I.Z[2] = 1;
-	if (rig.Palm >= 0) rot(I, rig.Palm, kDrawnFrame, out.PalmOpen);
+	if (rig.Palm >= 0) rot(I, rig.Palm, kPalmJoint, kDrawnFrame, false, out.PalmOpen);
 	for (int p = 0; p < kOwnerPoseCount; ++p)
 	{
 		bool have = true;
+		int src[FINGER_COUNT];
 		for (int f = 0; f < FINGER_COUNT; ++f)
 		{
-			const int fr = OwnerFingerFrame(p, f, side);
-			if (fr == -2) { snprintf(why, whyLen, "the pose table is malformed at %s (finger %d)", kOwnerPoses[p].name, f); return false; }
-			out.Frame[p][f] = fr;
-			if (fr < 0 || fr >= numFrames) have = false;
+			const int raw = OwnerFingerRaw(p, f);
+			if (raw < 0) { snprintf(why, whyLen, "the pose table is malformed at %s (finger %d)", kOwnerPoses[p].name, f); return false; }
+			src[f] = source(raw, out.Frame[p][f]);
+			if (src[f] < 0) { have = false; out.Frame[p][f] = -1; }
+			out.FromOther[p][f] = src[f] == 1;
 		}
 		out.PalmFrame[p] = -1;
+		int palmSrc = -1;
 		if (kOwnerPoses[p].palm != nullptr)
 		{
 			const int raw = FindOwnerPose(kOwnerPoses[p].palm);
 			if (raw < 0 || kOwnerPoses[raw].blender <= 0) { snprintf(why, whyLen, "the pose table is malformed at %s (palm)", kOwnerPoses[p].name); return false; }
-			out.PalmFrame[p] = OwnerRawFrame(raw, side);
-			if (out.PalmFrame[p] < 0 || out.PalmFrame[p] >= numFrames || rig.Palm < 0) have = false;
+			palmSrc = source(raw, out.PalmFrame[p]);
+			if (palmSrc < 0 || rig.Palm < 0) { have = false; out.PalmFrame[p] = -1; }
+			out.PalmFromOther[p] = palmSrc == 1;
+		}
+		if (have)
+		{
+			for (int f = 0; f < FINGER_COUNT && have; ++f)
+				for (int j = 0; j < FINGER_JOINTS && have; ++j)
+					have = rot(frames[f][j], rig.Joint[f][j], kFingerJointNames[f][j], out.Frame[p][f], src[f] == 1, out.Q[p][f][j]);
+			if (have && out.PalmFrame[p] >= 0)
+				have = out.PalmDriven[p] = rot(I, rig.Palm, kPalmJoint, out.PalmFrame[p], palmSrc == 1, out.PalmQ[p]);
 		}
 		out.Have[p] = have;
-		if (!have) continue;
-		for (int f = 0; f < FINGER_COUNT; ++f)
-			for (int j = 0; j < FINGER_JOINTS; ++j) rot(frames[f][j], rig.Joint[f][j], out.Frame[p][f], out.Q[p][f][j]);
-		if (out.PalmFrame[p] >= 0) { out.PalmDriven[p] = true; rot(I, rig.Palm, out.PalmFrame[p], out.PalmQ[p]); }
+		if (!have) { out.PalmDriven[p] = false; continue; }
+		for (int f = 0; f < FINGER_COUNT; ++f) out.Copied[p] = out.Copied[p] || out.FromOther[p][f];
+		out.Copied[p] = out.Copied[p] || out.PalmFromOther[p];
 	}
 	out.Built = true;
 	return true;

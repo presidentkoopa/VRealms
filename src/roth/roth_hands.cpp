@@ -18,9 +18,9 @@
 // destroyed.
 //
 // WHAT THEY HOLD (roth_handhold.h): every tic the hands are told what is in
-// them -- the off hand the original's right-hand item (the inventory's
-// selected item), the main hand the weapon while RealmsHeld is drawn there --
-// and the fingers take the owner's hold or grip pose for it
+// them -- the hand on the RIGHT side the original's right-hand item, the main
+// hand the weapon while RealmsHeld is drawn there -- and the fingers take the
+// owner's hold or grip pose for it
 // (r_data/vr_handpose_math.h SelectHold, UZDXREMA VAP :466-656).
 //
 //---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ void HandsEndLevel()
 // What each role holds this tic (roth_handhold.h), published to the hands' fingers.
 static void PublishHeld()
 {
-	// the off hand: the original's right-hand item (g_selected_item_primary); 0 = nothing. The id is read
+	// the RIGHT side's hand: the original's right-hand item (g_selected_item_primary); 0 = nothing. The id is read
 	// sign-extended, as the HUD's icon reads it (roth_interface.cpp RightHandChanged): a hidden id holds nothing.
 	int item = 0;
 	int adam = 0;
@@ -100,13 +100,26 @@ static void PublishHeld()
 		const int slot = inv->RightHand();
 		if (slot >= 0) item = (int16_t)inv->Slot(slot).id;
 	}
-	VRHandPose_SetHeld(VR_OFFHAND, HeldFor(item > 0 ? item : 0, false));
+	VRHandPose::HeldState held[2];
+	const int itemRole = VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
+	held[itemRole] = HeldFor(item > 0 ? item : 0, false);
 	// the main hand: the weapon slot's thing, while its actor is drawn there. Adam's own item (his fists) is not a
 	// thing in the hand.
 	int32_t wpn = 0;
 	const char *cls = nullptr;
 	const bool drawn = ActorsHeldWeaponDrawn(wpn, cls) && wpn != adam;
-	VRHandPose_SetHeld(VR_MAINHAND, drawn ? HeldFor(wpn, true, cls) : VRHandPose::HeldState());
+	if (drawn)
+	{
+		// a right-handed player's item and weapon share the main hand: the weapon's grip wins while it is drawn
+		// (VAP :476 takes the weapon branch first); the item's pose comes back when the weapon is put away
+		const VRHandPose::HeldState w = HeldFor(wpn, true, cls);
+		held[VR_MAINHAND].weapon = true;
+		held[VR_MAINHAND].gripClass = w.gripClass;
+		held[VR_MAINHAND].propClass = w.propClass;
+		if (held[VR_MAINHAND].item == 0) held[VR_MAINHAND].item = w.item;
+	}
+	VRHandPose_SetHeld(VR_MAINHAND, held[VR_MAINHAND]);
+	VRHandPose_SetHeld(VR_OFFHAND, held[VR_OFFHAND]);
 }
 
 void HandsTick(FLevelLocals *level)
