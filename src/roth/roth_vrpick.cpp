@@ -103,6 +103,8 @@
 #include "r_data/models.h"
 #include "r_data/vr_handpose.h"
 #include "r_data/vr_handpose_math.h"
+#include "i_time.h"
+#include "hw_perflog.h"
 #include <math.h>
 #include <algorithm>
 #include <vector>
@@ -166,6 +168,7 @@ struct HandState
 	// billboards
 	int dot[kDots] = {};
 	int marker = 0, ring = 0;
+	bool shown = false;      // any of them visible (so an idle hand touches none)
 };
 
 struct VRPick
@@ -179,6 +182,10 @@ struct VRPick
 	bool   testAimAt = false;
 	DVector3 testAim;
 	double testPitch = 0, testYaw = 0;
+
+	// the cost counters (VRPickTick)
+	int    costTics = 0;
+	double costSum = 0, costMax = 0;
 };
 VRPick P;
 
@@ -233,6 +240,8 @@ void HideBB(int id)
 
 void HideHand(HandState &h)
 {
+	if (!h.shown) return;
+	h.shown = false;
 	for (int &d : h.dot) HideBB(d);
 	HideBB(h.marker);
 	HideBB(h.ring);
@@ -435,6 +444,9 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		if (d <= r) near.push_back({ d, mo });
 	}
 	std::sort(near.begin(), near.end(), [](const std::pair<double, AActor *> &a, const std::pair<double, AActor *> &b) { return a.first < b.first; });
+	Pick objPick;
+	CursorClass objCls;
+	bool haveObj = false;
 	for (const auto &n : near)
 	{
 		Pick p;
@@ -444,14 +456,22 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		p.dist = n.first;
 		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, p.hitPos - h.palm));
 		if (!c.CanUse()) continue;
-		return DoUse(role, p, c, pmo, "grip on an object");
+		objPick = p; objCls = c; haveObj = true;
+		break;
 	}
-	Pick p;
-	if (PickFrom(pmo, h.palm, h.dir, kGrabReach * upm, p))
+	Pick rayPick;
+	CursorClass rayCls;
+	bool haveRay = false;
+	if (PickFrom(pmo, h.palm, h.dir, kGrabReach * upm, rayPick))
 	{
-		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, h.dir));
-		if (c.CanUse()) return DoUse(role, p, c, pmo, "grip on a surface");
+		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.dir));
+		haveRay = rayCls.CanUse();
 	}
+	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
+	// the cursor: a door handle on the door is taken before the door, the door
+	// before a key lying a hand's width beyond it.
+	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist)) return DoUse(role, objPick, objCls, pmo, "grip on an object");
+	if (haveRay) return DoUse(role, rayPick, rayCls, pmo, "grip on a surface");
 	if (P.test || roth_vrpick_debug)
 		Printf("[roth_vrpick] %s hand grip: nothing usable within reach (%d object(s) near the palm)\n", RoleName(role), (int)near.size());
 	return false;
@@ -482,7 +502,13 @@ void TickHand(int role, AActor *pmo)
 	else if (h.grip >= kGripClose) h.gripClosed = true;
 	else if (h.grip <= kGripOpen) h.gripClosed = false;
 
-	if (!h.valid || !FingerRay(role, h, pmo))
+	// A HAND THAT IS DOING NOTHING COSTS NOTHING: no fingertip, no trace, no
+	// classification, no billboards -- only the inputs above. In the headset
+	// that is most tics for most hands. Work is done while pointing, while an
+	// index tap is under way (or starting), and on the tic the grip closes.
+	const bool gripEdge = h.gripClosed && !gripWasClosed;
+	const bool tapStarting = !h.tapDown && h.wasPointing && h.triggerTouch;
+	if (!h.valid || !(h.pointing || h.tapDown || tapStarting || gripEdge) || !FingerRay(role, h, pmo))
 	{
 		h.havePick = false;
 		ResetGestures(h);
@@ -492,12 +518,21 @@ void TickHand(int role, AActor *pmo)
 
 	const double upm = UPM();
 
-	// THE PICK, every tic the hand is there: the gestures below need it the
-	// tic the index lifts, and the beam needs it while pointing.
+	// THE PICK while pointing (the beam, the dwell, the press) and while a tap
+	// is under way (the tic the index lifts). The tic a tap starts reads last
+	// tic's pick: what the ray was on when the index came down.
 	const Pick before = h.havePick ? h.pick : Pick{};
 	const bool hadPick = h.havePick;
-	h.havePick = PickFrom(pmo, h.tip, h.dir, PickTraceRange(h.dir), h.pick);
-	h.cls = h.havePick ? ClassifyPick(h.pick, pmo, DepthOf(pmo, h.pick, h.dir)) : CursorClass{};
+	if (h.pointing || h.tapDown)
+	{
+		h.havePick = PickFrom(pmo, h.tip, h.dir, PickTraceRange(h.dir), h.pick);
+		h.cls = h.havePick ? ClassifyPick(h.pick, pmo, DepthOf(pmo, h.pick, h.dir)) : CursorClass{};
+	}
+	else
+	{
+		h.havePick = false;
+		h.cls = CursorClass{};
+	}
 
 	if (roth_vrpick_debug || P.test)
 	{
@@ -519,7 +554,7 @@ void TickHand(int role, AActor *pmo)
 	}
 
 	// ---- GRIP SQUEEZE (near use) ----
-	if (h.gripClosed && !gripWasClosed) GrabNear(role, h, pmo);
+	if (gripEdge) GrabNear(role, h, pmo);
 
 	// ---- INDEX TAP (far use) ----
 	if (h.tapDown)
@@ -534,7 +569,7 @@ void TickHand(int role, AActor *pmo)
 			else if (P.test || roth_vrpick_debug) Printf("[roth_vrpick] %s hand index tap: off the target it began on, nothing done\n", RoleName(role));
 		}
 	}
-	else if (h.wasPointing && h.valid && h.triggerTouch && h.grip >= kPointGrip && h.trigger < kTapMaxPull && hadPick)
+	else if (tapStarting && h.grip >= kPointGrip && h.trigger < kTapMaxPull && hadPick)
 	{
 		h.tapDown = true;
 		h.tapTics = 0;
@@ -602,6 +637,7 @@ void TickHand(int role, AActor *pmo)
 	else if (!actionable) h.hover = Pick{};
 
 	// ---- THE BEAM ----
+	h.shown = true;
 	const HandLock L = LockFor(role, pmo);
 	double markAlpha = 0.0;
 	const PalEntry col = h.havePick ? FamilyColour(h.cls.shape, markAlpha) : PalEntry(255, 200, 200, 200);
@@ -639,6 +675,7 @@ void ForgetLevel()
 	{
 		for (int &d : h.dot) d = 0;
 		h.marker = h.ring = 0;
+		h.shown = false;
 		h.havePick = false;
 		ResetGestures(h);
 	}
@@ -660,6 +697,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	AActor *pmo = player != nullptr ? player->mo : nullptr;
 	const bool on = roth_vrpick && pmo != nullptr && (HeadsetOn() || P.test);
 	const bool stand = modal || !on || player->health <= 0 || InterfacePointerBusy();
+	const uint64_t t0 = I_nsTime();
 	for (int role = 0; role < 2; role++)
 	{
 		if (stand)
@@ -672,6 +710,23 @@ void VRPickTick(FLevelLocals *level, bool modal)
 			continue;
 		}
 		TickHand(role, pmo);
+	}
+
+	// WHAT IT COSTS, measured every tic it runs: into the perf log's CPU
+	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),
+	// and, under the flat test or roth_vrpick_debug, a line every 70 tics with
+	// the average and the worst tic in microseconds.
+	if (stand) return;
+	const double us = (double)(I_nsTime() - t0) / 1000.0;
+	if (PerfLog::GroupsWanted()) PerfLog::AddCpuSample("game.vrpick", us / 1000.0);
+	P.costSum += us;
+	if (us > P.costMax) P.costMax = us;
+	if (++P.costTics >= 70)
+	{
+		if (P.test || roth_vrpick_debug)
+			Printf("[roth_vrpick] cost over %d tics: avg %.1f us, worst %.1f us a tic (both hands)\n",
+				P.costTics, P.costSum / P.costTics, P.costMax);
+		P.costTics = 0; P.costSum = 0; P.costMax = 0;
 	}
 }
 
@@ -745,21 +800,23 @@ CCMD(roth_vrpicktest)
 	{
 		AActor *pmo = players[consoleplayer].mo;
 		if (pmo == nullptr) { Printf("roth_vrpicktest seek: no player\n"); return; }
-		DVector3 aim, stand;
-		if (!PickTestTarget(argv[2], pmo, aim, stand)) { Printf("roth_vrpicktest seek: no %s on this map\n", argv[2]); return; }
 		const double metres = argv.argc() >= 4 ? atof(argv[3]) : 1.0;
-		DVector2 out = stand.XY() - aim.XY();
-		if (out.Length() > 1e-6) out = out / out.Length();
-		// How far ahead of the player's x,y the test hand stands: where
-		// roth_hands.cpp puts it, from the same placement the test grip uses.
+		// Where the test hand hangs off the eye: roth_hands.cpp stands it at
+		// VRHandTest_ActorSpot, the same placement the test grip uses.
 		const int side = VRHandPose_SideForRole(VR_MAINHAND);
-		const double yawDeg = atan2(-out.Y, -out.X) * (180.0 / M_PI);
-		DVector3 spot;
-		VRHandTest_ActorSpot(side, DVector3(0, 0, 0), yawDeg, spot);
-		const double handAhead = DVector2(spot.X, spot.Y) | DVector2(-out.X, -out.Y);
-		const double standoff = handAhead + metres * UPM();
-		const DVector3 at(aim.X + out.X * standoff, aim.Y + out.Y * standoff, stand.Z);
-		pmo->SetOrigin(at, false);
+		DVector3 spot0;
+		VRHandTest_ActorSpot(side, DVector3(0, 0, 0), 0.0, spot0);   // yaw 0: ahead +x, right -y
+		PickTestHand hand;
+		hand.ahead = spot0.X;
+		hand.right = -spot0.Y;
+		hand.up = spot0.Z;
+		hand.metresOff = metres * UPM();
+		// A grip test wants nothing else within the palm's reach.
+		hand.clearRadius = metres < 0.3 ? (kGrabRadius + 0.05) * UPM() : 0.0;
+		DVector3 aim, stand;
+		if (!PickTestTarget(argv[2], pmo, hand, aim, stand)) { Printf("roth_vrpicktest seek: no reachable %s on this map\n", argv[2]); return; }
+		const double yawDeg = atan2(aim.Y - stand.Y, aim.X - stand.X) * (180.0 / M_PI);
+		pmo->SetOrigin(stand, false);
 		pmo->Vel.Zero();
 		pmo->Angles.Yaw = DAngle::fromDeg(yawDeg);
 		pmo->Angles.Pitch = nullAngle;
@@ -767,8 +824,7 @@ CCMD(roth_vrpicktest)
 		P.testAimAt = true;
 		P.testAim = aim;
 		Printf("roth_vrpicktest seek %s: aiming at (%.0f %.0f %.0f), standing at (%.0f %.0f %.0f): the hand %.2f m"
-			" (%.1f units) from it, the player %.1f units\n", argv[2], aim.X, aim.Y, aim.Z, at.X, at.Y, at.Z, metres,
-			metres * UPM(), standoff);
+			" (%.1f units) from it\n", argv[2], aim.X, aim.Y, aim.Z, stand.X, stand.Y, stand.Z, metres, metres * UPM());
 		return;
 	}
 	Printf("roth_vrpicktest: unknown '%s'\n", argv[1]);

@@ -6819,6 +6819,15 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 			{
 				AActor *mo = FindObjectActor((int)sct, (int)i);
 				if (mo == nullptr || mo == who || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
+				// Cheap first: an object whose middle is far off the ray, or
+				// beyond where the ray stops, is not looked at further. 384
+				// covers the largest pictures the props draw (a tree).
+				{
+					const DVector3 rel = mo->PosPlusZ(mo->Height * 0.5) - start;
+					const double along = rel | dir;
+					if (along < -384.0 || along > objLimit + 384.0) continue;
+					if ((rel - dir * along).LengthSquared() > 384.0 * 384.0) continue;
+				}
 				DVector3 lo, hi;
 				ObjectPickBox(mo, lo, hi);
 				double t;
@@ -7244,8 +7253,11 @@ double PickTraceRange(const DVector3 &rayDir)
 {
 	// The examine edge (depth 5000 = z 2468), plus a hand's reach ahead of the
 	// player's x,y, stretched by how far the ray climbs or falls.
+	// Capped: a ray climbing or falling that steeply meets a floor or a
+	// ceiling long before, and an unbounded trace is the one thing here that
+	// could cost real time.
 	const double flat = std::max(0.05, DVector2(rayDir.X, rayDir.Y).Length());
-	return (2468.0 + 64.0) / flat;
+	return std::min((2468.0 + 64.0) / flat, 8192.0);
 }
 
 const char *PickKindName(const Pick &p)
@@ -7596,22 +7608,14 @@ bool ExaminePick(const Pick &p, AActor *who)
 //
 //==========================================================================
 
-bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stand)
+bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVector3 &aim, DVector3 &stand)
 {
 	if (!g.active || who == nullptr || g.level == nullptr || kind == nullptr) return false;
 	const DVector3 from = who->Pos();
-	double best = 1e18;
-	bool found = false;
-	auto consider = [&](const DVector3 &target, const DVector2 &outward, double z)
-	{
-		const double d = (target.XY() - from.XY()).LengthSquared();
-		if (d >= best) return;
-		best = d;
-		aim = target;
-		const DVector2 o = outward.Length() > 1e-6 ? outward / outward.Length() : DVector2(1, 0);
-		stand = DVector3(target.X + o.X * 40.0, target.Y + o.Y * 40.0, z);
-		found = true;
-	};
+	const double vh = who->player != nullptr ? who->player->viewheight : 41.0;
+
+	struct Cand { DVector3 aim; DVector2 out; Pick want; double d2; };
+	std::vector<Cand> cands;
 
 	if (!stricmp(kind, "item"))
 	{
@@ -7626,8 +7630,13 @@ bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stan
 				if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
 				DVector3 lo, hi;
 				ObjectPickBox(mo, lo, hi);
-				const DVector3 c((lo.X + hi.X) * 0.5, (lo.Y + hi.Y) * 0.5, (lo.Z + hi.Z) * 0.5);   // the middle of what is picked
-				consider(c, from.XY() - c.XY(), mo->Sector ? mo->Sector->floorplane.ZatPoint(mo->Pos().XY()) : mo->Z());
+				Cand c;
+				c.aim = DVector3((lo.X + hi.X) * 0.5, (lo.Y + hi.Y) * 0.5, (lo.Z + hi.Z) * 0.5);   // the middle of what is picked
+				c.out = from.XY() - c.aim.XY();
+				c.want.kind = Pick::Prop;
+				c.want.actor = mo;
+				c.d2 = (c.aim.XY() - from.XY()).LengthSquared();
+				cands.push_back(c);
 			}
 	}
 	else if (!stricmp(kind, "door") || !stricmp(kind, "face"))
@@ -7644,12 +7653,17 @@ bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stan
 			// sidedef is on the right of v1 -> v2, which is (dy, -dx).
 			DVector2 n(ln->Delta().Y, -ln->Delta().X);
 			if (ln->sidedef[1] == sd) n = -n;
-			// At about the eye's height (under the ceiling), so the test hand --
-			// which hangs a little below the eye -- meets it level.
+			// At the test hand's height (under the ceiling), so it meets it level.
 			const double fz = sd->sector->floorplane.ZatPoint(mid);
 			const double cz = sd->sector->ceilingplane.ZatPoint(mid);
-			const double vh = who->player != nullptr ? who->player->viewheight : 41.0;
-			consider(DVector3(mid.X, mid.Y, std::max(fz + 8.0, std::min(fz + vh - 4.0, cz - 8.0))), n, fz);
+			Cand c;
+			c.aim = DVector3(mid.X, mid.Y, std::max(fz + 8.0, std::min(fz + vh + hand.up, cz - 8.0)));
+			c.out = n;
+			c.want.kind = door ? Pick::DoorLeaf : Pick::WallFace;
+			c.want.line = ln;
+			c.want.side = (ln->sidedef[1] == sd) ? 1 : 0;
+			c.d2 = (mid - from.XY()).LengthSquared();
+			cands.push_back(c);
 		};
 		// A door: a BROAD side of a leaf (one with a room face), so the test
 		// stands in the room, not in the doorway facing a thickness edge.
@@ -7661,7 +7675,63 @@ bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stan
 					if (b.event == TrigEvent::Use) { pass(kv.first); break; }
 		}
 	}
-	return found;
+	std::sort(cands.begin(), cands.end(), [](const Cand &x, const Cand &y) { return x.d2 < y.d2; });
+
+	// THE FIRST ONE THE TEST HAND CAN ACTUALLY REACH. From where the player
+	// would stand, the eye and the hand must both see it -- the ray from each
+	// must come back with THIS target -- and for a grip (clearRadius > 0) no
+	// other object may be within that radius of the hand. The nearest
+	// candidate is often behind a lintel or on a shelf under a low ceiling.
+	int tried = 0;
+	for (const Cand &c : cands)
+	{
+		if (++tried > 200) break;
+		DVector2 o = c.out.Length() > 1e-6 ? c.out / c.out.Length() : DVector2(1, 0);
+		const DVector2 fwd = -o;
+		const DVector2 right(fwd.Y, -fwd.X);
+		const double standoff = hand.ahead + hand.metresOff;
+		const DVector2 sxy = c.aim.XY() + o * standoff;
+		sector_t *ss = g.level->PointInSector(sxy);
+		if (ss == nullptr) continue;
+		const double fz = ss->floorplane.ZatPoint(sxy), cz = ss->ceilingplane.ZatPoint(sxy);
+		if (cz - fz < who->Height) continue;
+		const DVector3 eye(sxy.X, sxy.Y, fz + vh);
+		const DVector3 hp = eye + DVector3(fwd.X, fwd.Y, 0) * hand.ahead + DVector3(right.X, right.Y, 0) * hand.right + DVector3(0, 0, hand.up);
+		auto reaches = [&](const DVector3 &st) {
+			DVector3 d = c.aim - st;
+			const double len = d.Length();
+			if (len < 1e-6) return true;
+			Pick got;
+			if (!PickFrom(who, st, d / len, len + 64.0, got)) return false;
+			if (c.want.kind == Pick::Prop) return got.kind == Pick::Prop && got.actor == c.want.actor;
+			return got.kind == c.want.kind && got.line == c.want.line;
+		};
+		if (!reaches(eye) || !reaches(hp)) continue;
+		if (hand.clearRadius > 0)
+		{
+			bool clear = true;
+			for (size_t sct = 0; sct < g.map.objects.size() && clear; sct++)
+				for (size_t i = 0; i < g.map.objects[sct].size(); i++)
+				{
+					AActor *mo = FindObjectActor((int)sct, (int)i);
+					if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
+					DVector3 lo, hi;
+					ObjectPickBox(mo, lo, hi);
+					const double dx = std::max(0.0, std::max(lo.X - hp.X, hp.X - hi.X));
+					const double dy = std::max(0.0, std::max(lo.Y - hp.Y, hp.Y - hi.Y));
+					const double dz = std::max(0.0, std::max(lo.Z - hp.Z, hp.Z - hi.Z));
+					if (dx * dx + dy * dy + dz * dz < hand.clearRadius * hand.clearRadius) { clear = false; break; }
+				}
+			if (!clear) continue;
+		}
+		aim = c.aim;
+		stand = DVector3(sxy.X, sxy.Y, fz);
+		Printf("roth_vrpicktest: %d %s candidate(s), the %d%s nearest reachable from the test hand\n",
+			(int)cands.size(), kind, tried, tried == 1 ? "st" : tried == 2 ? "nd" : tried == 3 ? "rd" : "th");
+		return true;
+	}
+	Printf("roth_vrpicktest: %d %s candidate(s), none reachable from the test hand (%d tried)\n", (int)cands.size(), kind, tried);
+	return false;
 }
 
 void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)

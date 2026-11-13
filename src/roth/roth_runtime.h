@@ -444,10 +444,13 @@ bool SamePickTarget(const Pick &a, const Pick &b);
 const char *PickKindName(const Pick &p);
 
 // TEST INSTRUMENT (roth_vrpicktest seek): the nearest thing of a kind the
-// player can act on -- "item" a pickable object, "door" a door leaf, "face" a
-// wall face carrying a use trigger -- and a spot to stand in front of it.
-// False when the level has none.
-bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stand);
+// player can act on -- "item" a pickable object, "door" a door leaf's broad
+// side, "face" a wall face carrying a use trigger -- that the test hand can
+// reach from a spot `metresOff` in front of it, and that spot (on its floor).
+// The hand is placed relative to the eye (ahead, right, up, in units). With
+// clearRadius > 0 no other object may be within it of the hand (a grip test).
+struct PickTestHand { double ahead = 0, right = 0, up = 0, metresOff = 0, clearRadius = 0; };
+bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVector3 &aim, DVector3 &stand);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13
 // triggers. Call once per tic per player; it compares against the sector seen

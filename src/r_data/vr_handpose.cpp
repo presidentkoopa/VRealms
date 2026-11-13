@@ -137,6 +137,8 @@
 #include "c_cvars.h"
 #include "v_video.h"
 #include "printf.h"
+#include "i_time.h"
+#include "hw_perflog.h"
 
 #include <algorithm>
 #include <atomic>
@@ -643,6 +645,11 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 	if ((int)bones.Size() != n) return &bones;
 
 	gSidePoses[side] = &c->poses[side];
+	// The posing's CPU cost, into the perf log as "fx.handpose" (both hands summed per frame), so a slow
+	// frame with the hands on can be told from one with the VR picker on (roth_vrpick.cpp, "game.vrpick").
+	const bool timed = PerfLog::GroupsWanted();
+	const uint64_t t0 = timed ? I_nsTime() : 0;
+	struct TimeOnExit { bool on; uint64_t t0; ~TimeOnExit() { if (on) PerfLog::AddCpuSample("fx.handpose", (double)(I_nsTime() - t0) / 1e6); } } timeOnExit{ timed, t0 };
 	UpdateCurls();
 
 	static thread_local TArray<VSMatrix> posed;
