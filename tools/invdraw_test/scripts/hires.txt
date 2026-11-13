@@ -1,0 +1,29 @@
+# The line-doubled (portrait) modes' drawing: every picture doubled, the icons at full height,
+# the text at double height with its outline. The original draws it on its 640x480 screen with
+# g_hires_line_doubling_flag set (the probe's "hires"); the retail VideoMode 8 does not use it.
+exe 0x71208 0x15e
+exe 0x7675d 0x14
+exe 0x75e2c 0x10
+font
+hires
+env
+give 9
+give 54
+give 48
+give 18
+give 20
+give 21
+open
+env
+dump hires_open
+frame 6
+dump hires_f6
+key 0x4d
+frame 7
+dump hires_right_f7
+cell 2 2
+cursorcell 8
+dump hires_held
+tabclick 1
+frame 9
+dump hires_weapons_f9

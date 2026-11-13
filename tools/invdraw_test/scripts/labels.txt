@@ -1,0 +1,61 @@
+# Labels: a stack with a count, an item with no icon (no picture, no hotspot), weapons' rounds,
+# a stack of ammunition, an empty list (the label tile alone), a close and a re-open (the picture
+# of a closed panel is the world's: not compared; the re-open is).
+exe 0x71208 0x15e
+exe 0x7675d 0x14
+exe 0x75e2c 0x10
+font
+env
+give 185
+give 185
+give 185
+give 251
+give 48
+give 48
+give 48
+give 48
+give 51
+give 9
+give 38
+open
+dump coins_open
+key 0x4d
+frame 1
+dump cursor1_f1
+key 0x4d
+key 0x4d
+frame 2
+dump coins_f2
+key 0x4d
+dump goo
+frame 3
+dump goo_f3
+key 0x4d
+frame 4
+dump after_goo_f4
+tabclick 1
+frame 5
+dump weapons_f5
+key 0x4d
+frame 6
+dump weapon2_f6
+key 0x4d
+frame 1
+dump cartridges_f1
+key 0x4d
+frame 9
+dump magazine_f9
+tabclick 4
+dump empty_docs
+hitgrid 3
+frame 2
+dump empty_docs_f2
+tabclick 3
+frame 0
+dump empty_clothes_f0
+key 0x01
+close
+open
+dump reopened
+frame 23
+dump reopened_f23

@@ -1,0 +1,13 @@
+# Open with the new-game inventory, two items given, the tab strip, a cursor frame.
+exe 0x71208 0x15e
+exe 0x7675d 0x14
+exe 0x75e2c 0x10
+font
+env
+give 2
+give 3
+open
+env
+dump open1
+cursorcell 16
+dump cursor16

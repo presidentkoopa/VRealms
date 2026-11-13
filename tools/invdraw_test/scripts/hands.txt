@@ -1,0 +1,71 @@
+# The hands: an equipped weapon (left), a selected item (right), their tints in the grid and the
+# boxes; an item taken onto the cursor (the held tint), put into a hand box, a hand's item taken
+# off into the cursor and put back; a secondary click on a box with nothing held (a jump to its tab);
+# a primary click on a box (its label is formatted, not drawn).
+exe 0x71208 0x15e
+exe 0x7675d 0x14
+exe 0x75e2c 0x10
+font
+env
+give 9
+give 54
+give 12
+give 48
+give 18
+give 20
+give 21
+open
+dump hands_open
+hitgrid 2
+frame 6
+dump hands_f6
+cell 2 2
+dump held_cell2
+hitgrid 3
+cursorcell 6
+dump held_cursor
+frame 8
+dump held_f8
+handbox 1 2
+dump held_to_right
+frame 9
+dump right_f9
+cell 1 2
+dump right_taken
+frame 10
+dump right_taken_f10
+cell 1 2
+dump dropped
+frame 10
+dump dropped_f10
+tabclick 1
+dump weapons
+frame 14
+dump weapons_f14
+cell 0 2
+dump left_taken
+frame 15
+dump left_taken_f15
+handbox 0 2
+dump left_back
+frame 16
+dump left_back_f16
+cell 1 2
+dump take_staff
+handbox 0 2
+dump staff_to_left
+frame 17
+dump staff_left_f17
+tabclick 0
+dump items_again
+handbox 1 2
+dump jump_right
+frame 18
+dump jump_right_f18
+handbox 0 2
+dump jump_left
+frame 19
+dump jump_left_f19
+handbox 1 1
+dump label_right
+frame 0

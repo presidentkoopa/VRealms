@@ -94,11 +94,14 @@ bool Pack::Load(const uint8_t *data, size_t size)
 	mShade = nullptr;
 	mFogIndex = 0;
 	mGlow = nullptr;
+	mBlend = nullptr;
 	if (paletteOffset != 0 && (size_t)paletteOffset + 768 + 2 + 0x4000 <= size)
 	{
 		mFogIndex = data[paletteOffset + 768];
 		mShade = data + paletteOffset + 768 + 2;
 	}
+	if (paletteOffset != 0 && (size_t)paletteOffset + 768 + 2 + 0x4000 + 0x10000 <= size)
+		mBlend = data + paletteOffset + 768 + 2 + 0x4000;   // map_load.c:377
 	// THE GLOW TABLE, one 256-byte palette remap row.
 	//
 	// The original reads five blocks in a row after the palette

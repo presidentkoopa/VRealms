@@ -980,6 +980,7 @@ set (PCH_SOURCES
 	# icons (engine-free, tools/dialogue_test), and their panels (engine side).
 	roth/roth_dialogue.cpp
 	roth/roth_invscreen.cpp
+	roth/roth_invdraw.cpp
 	roth/roth_icons.cpp
 	roth/roth_interface.cpp
 	# The GDV movies: the decoder (engine-free, tools/gdv_test) and the queue

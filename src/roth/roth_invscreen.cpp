@@ -45,7 +45,13 @@ void InventoryScreen::Rebuild()
 // refresh_inventory_panel (inventory.c:1638-1647).
 void InventoryScreen::RefreshPanel()
 {
-	Rebuild();
+	g_inventory_dirty_flags |= 2;                                           // :1640
+	Rebuild();                                                              // :1641
+	Draw().RefreshInventoryGrid();                                          // :1642
+	Draw().DrawPanelSlotTile(0xa);                                          // :1643
+	Draw().DrawEquippedItemLeft();                                          // :1644
+	Draw().DrawPanelSlotTile(0xb);                                          // :1645
+	Draw().DrawEquippedItemRight();                                         // :1646
 }
 
 // clear_dual_array_80afc (renderer.c:10843-10848).
@@ -59,6 +65,8 @@ void InventoryScreen::SelectInventoryTab()
 {
 	g_cursor_active_list = TabCategory(g_inventory_active_tab);
 	Rebuild();
+	g_inventory_dirty_flags += 2;                                           // :1565
+	Draw().DrawInventoryTabs();                                             // :1566
 }
 
 // move_cursor_entry_clamped (renderer.c:10988-11001).
@@ -69,6 +77,8 @@ void InventoryScreen::MoveCursorEntryClamped(int delta)
 	if (newv >= (uint32_t)EntryCount()) return;
 	if (newv == (uint32_t)g_cursor_list_positions[l]) return;
 	g_cursor_list_positions[l] = (int32_t)newv;
+	if (g_inventory_dirty_flags & 2) return;                                // renderer.c:10997-10999
+	g_inventory_dirty_flags += 2;
 }
 
 // scroll_entry_into_view (menu_hud_ui.c:89-112).
@@ -100,6 +110,9 @@ void InventoryScreen::Open()
 	g_ui_close_request = 0;
 	g_inventory_panel_open = 1;                                             // :1866
 	Rebuild();                                                              // :1893 (clears the held cursor)
+	g_inventory_dirty_flags += 4;                                           // :1902
+	Draw().RenderInventoryPanel();                                          // :1864, 1886-1942
+	g_inventory_dirty_flags += 1;                                           // :1943
 	g_inventory_panel_open = 2;                                             // menu_hud_ui.c:180
 }
 
@@ -107,6 +120,8 @@ void InventoryScreen::Open()
 void InventoryScreen::Close()
 {
 	if (g_inspect_popup_active != 0) return;                                // :1655
+	if (g_inventory_dirty_flags & 4) g_inventory_dirty_flags -= 4;          // :1657-1660
+	if (g_inventory_dirty_flags & 1) g_inventory_dirty_flags -= 1;          // :1661-1662
 	if (mCore != nullptr)
 	{
 		mCore->Items().DropHeld();                                          // :1656
@@ -153,6 +168,8 @@ void InventoryScreen::ClickTab(int tab)
 {
 	g_cursor_active_list = TabCategory(tab);
 	Rebuild();
+	g_inventory_dirty_flags += 2;                                           // :1640
+	Draw().DrawInventoryTabs();                                             // :1641
 }
 
 void InventoryScreen::ClickCell(int cell, int button, bool synthetic)
@@ -185,6 +202,8 @@ void InventoryScreen::ClickCell(int cell, int button, bool synthetic)
 		const int heldSlot = inv.Held();
 		inv.SwapSlots(SlotOfEntry(entry), heldSlot, sink);
 		inv.DropHeld();
+		g_inventory_dirty_flags |= 2;                                       // :1763
+		Draw().RefreshInventoryGrid();                                      // :1800
 		return;
 	}
 
@@ -192,14 +211,27 @@ void InventoryScreen::ClickCell(int cell, int button, bool synthetic)
 	MoveCursorEntryClamped(cell);                                           // :1767
 	if ((!(button & 2) && !(button & 8)) || entry >= EntryCount())          // :1768-1769
 	{
+		Draw().RefreshInventoryGrid();                                      // :1793
 		if (entry < EntryCount()) g_inventory_inspect_request = entry;      // :1795-1796: examine
 		return;
 	}
+	const bool wasLeft = entry == mList.leftEntry, wasRight = entry == mList.rightEntry;
 	inv.PickUpToCursor(SlotOfEntry(entry), sink);                           // :1770-1787
 	// The hand the entry was in is emptied at once, its box with it
 	// (:1772-1785): the trackers do not wait for the next list build.
-	if (entry == mList.leftEntry) { mList.leftEntry = -1; mList.shownLeft = -1; }
-	if (entry == mList.rightEntry) { mList.rightEntry = -1; mList.shownRight = -1; }
+	if (wasLeft)
+	{
+		mList.leftEntry = -1; mList.shownLeft = -1;
+		Draw().DrawPanelSlotTile(0xa);                                      // :1777
+		g_inventory_dirty_flags += 2;                                       // :1778
+	}
+	if (wasRight)
+	{
+		mList.rightEntry = -1; mList.shownRight = -1;
+		Draw().DrawPanelSlotTile(0xb);                                      // :1784
+		g_inventory_dirty_flags += 2;                                       // :1785
+	}
+	Draw().RefreshInventoryGrid();                                          // :1800
 }
 
 // Actions 0x2a (left) and 0x2b (right), :1685-1737.
@@ -214,8 +246,10 @@ void InventoryScreen::ClickHandBox(int right, int button)
 
 	if (button == PRIMARY)                                                  // :1688-1693, 1716-1721
 	{
-		if ((right ? mList.shownRight : mList.shownLeft) < 0) return;
+		const int shown = right ? mList.shownRight : mList.shownLeft;
+		if (shown < 0) return;
 		g_inventory_inspect_request = right ? -3 : -2;
+		Draw().FormatInventoryItemLabel((int16_t)inv.Slot(shown).id, 0);    // :1690, 1718
 		return;
 	}
 	if (button != SECONDARY) return;                                        // :1694, 1722
@@ -224,14 +258,21 @@ void InventoryScreen::ClickHandBox(int right, int button)
 	{
 		if (right) inv.HeldToRightHand(sink); else inv.HeldToLeftHand(sink);    // :1696-1697, 1724-1725
 		Rebuild();                                                          // :1698, 1726
+		g_inventory_dirty_flags += 2;                                       // :1699, 1727
+		Draw().DrawPanelSlotTile(right ? 0xb : 0xa);                        // :1700, 1728
+		if (right) Draw().DrawEquippedItemRight(); else Draw().DrawEquippedItemLeft();   // :1701, 1729
+		Draw().RefreshInventoryGrid();                                      // :1800
 		return;
 	}
 	inv.DropHeld();                                                         // :1695, 1723
 	const int hand = right ? inv.RightHand() : inv.LeftHand();
-	if (hand < 0) return;                                                   // :1704, 1732
-	g_inventory_active_tab = ItemTabIndex(*mDb, (int16_t)inv.Slot(hand).id);   // :1706, 1734
-	SelectInventoryTab();
-	ScrollEntryIntoView(right ? mList.rightEntry : mList.leftEntry);        // :1708, 1736
+	if (hand >= 0)                                                          // :1704, 1732
+	{
+		g_inventory_active_tab = ItemTabIndex(*mDb, (int16_t)inv.Slot(hand).id);   // :1706, 1734
+		SelectInventoryTab();
+		ScrollEntryIntoView(right ? mList.rightEntry : mList.leftEntry);    // :1708, 1736
+	}
+	Draw().RefreshInventoryGrid();                                          // :1800
 }
 
 // Action 0x26 (:1656-1662): the click landed outside the panel.
@@ -251,6 +292,7 @@ void InventoryScreen::ScrollUp()
 {
 	const int l = ListIndex();
 	if (g_cursor_scroll_offsets[l] <= 0) return;
+	g_inventory_dirty_flags += 2;                                           // :1663
 	g_cursor_scroll_offsets[l] -= ROW;
 }
 
@@ -259,6 +301,7 @@ void InventoryScreen::ScrollDown()
 	const int l = ListIndex();
 	const int lim = EntryCount() - 9;
 	if ((uint32_t)lim <= (uint32_t)g_cursor_scroll_offsets[l]) return;
+	g_inventory_dirty_flags += 2;                                           // :1674
 	g_cursor_scroll_offsets[l] += ROW;
 }
 
@@ -307,6 +350,7 @@ void InventoryScreen::KeyLeft()                                             // :
 	if (g_cursor_list_positions[l] <= 0) return;
 	g_cursor_list_positions[l] -= 1;
 	if (g_cursor_list_positions[l] < g_cursor_scroll_offsets[l]) g_cursor_scroll_offsets[l] -= ROW;
+	g_inventory_dirty_flags += 2;                                           // :1757
 }
 
 void InventoryScreen::KeyRight()                                            // :1767-1776
@@ -317,6 +361,7 @@ void InventoryScreen::KeyRight()                                            // :
 	if (g_cursor_scroll_offsets[l] + 9 < g_cursor_list_positions[l]
 		&& (uint32_t)(EntryCount() - 9) > (uint32_t)g_cursor_scroll_offsets[l])
 		g_cursor_scroll_offsets[l] += ROW;
+	g_inventory_dirty_flags += 2;                                           // :1767
 }
 
 void InventoryScreen::KeyUp()                                               // :1777-1784
@@ -324,6 +369,7 @@ void InventoryScreen::KeyUp()                                               // :
 	const int l = ListIndex();
 	if (g_cursor_list_positions[l] >= ROW) g_cursor_list_positions[l] -= ROW;
 	if (g_cursor_list_positions[l] < g_cursor_scroll_offsets[l]) g_cursor_scroll_offsets[l] -= ROW;
+	g_inventory_dirty_flags += 2;                                           // :1775
 }
 
 void InventoryScreen::KeyDown()                                             // :1785-1798
@@ -339,6 +385,7 @@ void InventoryScreen::KeyDown()                                             // :
 	if (g_cursor_scroll_offsets[l] + 9 < g_cursor_list_positions[l]
 		&& (uint32_t)(count - 9) > (uint32_t)g_cursor_scroll_offsets[l])
 		g_cursor_scroll_offsets[l] += ROW;
+	g_inventory_dirty_flags += 2;                                           // :1789
 }
 
 void InventoryScreen::KeyExamine()                                          // :1799-1804

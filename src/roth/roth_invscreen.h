@@ -50,6 +50,27 @@ class GameCore;
 class DialogueUi;
 class Dbase100;
 
+// The original's drawing calls that its inventory RULES make, at the points
+// they make them (dispatch_dialogue_ui_action, update_inventory_screen,
+// render_inventory_panel, refresh_inventory_panel). The original paints its
+// panel incrementally: what is on screen depends on which of these ran, not
+// only on the state, so a picture drawn as the original draws it needs the
+// same calls in the same order. Each default does nothing; roth_invdraw's
+// InventoryPanelPainter implements them.
+class InventoryScreenDraw
+{
+public:
+	virtual ~InventoryScreenDraw() {}
+	// render_inventory_panel's drawing (inventory.c:1864, 1886-1942), after Open's rules.
+	virtual void RenderInventoryPanel() {}
+	virtual void DrawInventoryTabs() {}                                 // 0x1a2d2
+	virtual void DrawPanelSlotTile(int n) { (void)n; }                  // 0x19ee6
+	virtual void DrawEquippedItemLeft() {}                              // 0x1a2ef
+	virtual void DrawEquippedItemRight() {}                             // 0x1bfaa
+	virtual void FormatInventoryItemLabel(int32_t itemId, int32_t qty) { (void)itemId; (void)qty; }   // 0x1c0b1
+	virtual void RefreshInventoryGrid() {}                              // 0x1c469
+};
+
 class InventoryScreen
 {
 public:
@@ -61,6 +82,8 @@ public:
 	// `db` is the same database the core is attached to, writable: examining an
 	// item for the first time sets a bit in its record (file_config.c:962-963).
 	void Bind(GameCore *core, DialogueUi *ui, Dbase100 *db);
+	// The panel's painter, or null for none (the rules alone).
+	void SetDraw(InventoryScreenDraw *draw) { mDraw = draw; }
 
 	// ---- the panel ---------------------------------------------------------
 	bool IsOpen() const { return g_inventory_panel_open != 0; }
@@ -139,6 +162,11 @@ public:
 	// Op 0x2d sub-code 7 (dbase100.c:894-895).
 	void RequestClose() { g_ui_close_request = 1; }
 
+	// 0x7f571, a byte the rules and the drawing share: bit 0 the panel is
+	// drawn, bit 1 the grid must be redrawn, bit 2 the entries' icons are
+	// loaded. The original ADDS 2 where it marks the grid (so a second mark
+	// before the redraw carries into bit 2); this keeps that arithmetic.
+	uint8_t g_inventory_dirty_flags = 0;
 	int32_t g_inventory_panel_open = 0;         // 0x7fec4
 	int32_t g_inspect_popup_active = 0;         // 0x7fec0
 	int32_t g_popup_exit_request = 0;           // 0x7fecc "g_inventory_panel_open + 0x8"
@@ -161,8 +189,12 @@ private:
 	void OpenPopup(int32_t itemId);
 	void ClosePopup();
 
+	InventoryScreenDraw &Draw() { return mDraw != nullptr ? *mDraw : mNoDraw; }
+
 	GameCore *mCore = nullptr;
 	Dbase100 *mDb = nullptr;
+	InventoryScreenDraw *mDraw = nullptr;
+	InventoryScreenDraw mNoDraw;
 	DialogueUi *mUi = nullptr;
 	InventoryEntryList mList;
 	int32_t mPopupItem = 0;                     // 0x7fec8, as an item id

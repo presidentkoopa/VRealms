@@ -315,6 +315,12 @@ public:
 	// glow[texel] with no depth, no sector light and no flash -- it ignores
 	// lighting entirely. Null when the pack has no such section.
 	const uint8_t *GlowTable() const { return mGlow; }
+	// The 0x10000-byte table read next after the shade tables (map_load.c:377,
+	// into [0x85d08]): 256 rows of 256 bytes, row `c` a palette remap. The
+	// inventory panel tints a hand's or the held item's icon through row
+	// g_default_message_color[n] of it (blit_item_icon, inventory.c:2122).
+	// Null when the pack carries no palette of its own.
+	const uint8_t *BlendTable() const { return mBlend; }
 	int FogIndex() const { return mFogIndex; }
 
 	// Decode on demand. `allFrames` also runs the animation delta decoder.
@@ -378,6 +384,7 @@ private:
 	uint16_t mUnknown0x22 = 0;   // header +0x22; see SkyMarkerIndex()
 	const uint8_t *mShade = nullptr;
 	const uint8_t *mGlow = nullptr;
+	const uint8_t *mBlend = nullptr;
 	int mFogIndex = 0;
 	// The directional-object block: header +0x1c is its file offset (0 means
 	// the pack has none) and +0x1a its byte size. The original reads it into

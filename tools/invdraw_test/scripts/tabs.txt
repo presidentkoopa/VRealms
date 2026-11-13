@@ -1,0 +1,60 @@
+# Each of the five tabs, reached by a click on its hotspot and by its key; an item of each
+# category, a stack, a weapon (equipped by the give: the left hand), a document (selected: the right hand).
+exe 0x71208 0x15e
+exe 0x7675d 0x14
+exe 0x75e2c 0x10
+font
+env
+give 4
+give 6
+give 14
+give 17
+give 27
+give 13
+give 69
+give 70
+give 48
+give 48
+give 9
+give 185
+open
+dump tab0_open
+frame 5
+dump tab0_frame5
+tabclick 1
+dump tab1_click
+cursorcell 9
+dump tab1_cursor9
+tabclick 2
+dump tab2_click
+cursorcell 12
+dump tab2_cursor12
+tabclick 3
+dump tab3_click
+tabclick 4
+dump tab4_click
+cursorcell 30
+dump tab4_cursor30
+key 0x02
+dump key1
+key 0x04
+dump key3
+frame 7
+dump key3_frame7
+key 0x0f
+dump keytab_next
+key 0x0f
+dump keytab_next2
+key 0x0f
+dump keytab_next3
+key 0x03
+dump key2
+frame 3
+dump key2_frame3
+# The characters list with an entry held on the cursor: the hand boxes stop answering
+# (dialogue_ui.c:592-596).
+tabclick 4
+frame 4
+cell 0 2
+dump chars_held
+hitgrid 2

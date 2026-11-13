@@ -14,6 +14,7 @@
 #include "roth_gamecore.h"
 #include "roth_dialogue.h"
 #include "roth_invscreen.h"
+#include "roth_invdraw.h"
 #include "roth_icons.h"
 #include "roth_install.h"
 #include "roth_texture.h"
@@ -44,9 +45,11 @@
 #include "r_data/r_translate.h"
 #include "v_video.h"
 #include "r_data/sprites.h"
+#include "animtexture.h"
 
 EXTERN_CVAR(Float, bb_scale)
 EXTERN_CVAR(Float, bb_tiltbias)
+EXTERN_CVAR(Bool, bb_flipu)
 
 namespace roth
 {
@@ -114,9 +117,9 @@ public:
 
 enum ElementKind
 {
-	E_NONE, E_BACKING, E_CHOICE, E_CELL, E_TAB, E_HAND, E_SCROLLUP, E_SCROLLDOWN, E_CLOSE,
+	E_NONE, E_BACKING, E_CHOICE,
+	E_INVPANEL,                                         // the inventory panel's picture; a click is mapped to its hotspots
 	E_POP_MAG, E_POP_INFO, E_POP_TOPIC, E_POP_CLOSE, E_POP_PGUP, E_POP_PGDN, E_POP_BACKING,
-	E_OPTIONS,                                          // the inventory screen's way into the options
 	E_MENU_BACKING, E_MENU_ROW, E_MENU_UP, E_MENU_DOWN, E_MENU_BACK,
 };
 
@@ -144,6 +147,19 @@ struct Ui
 	RuntimeDialogue dialogue;
 	InventoryScreen screen;
 	RuntimeInvSink invSink;
+	// The inventory panel's picture, drawn as the original draws it (roth_invdraw).
+	InventoryPanelPainter painter;
+	std::vector<uint8_t> iconsAll;                  // DATA\ICONS.ALL
+	RothFont font;                                  // out of the player's ROTH.EXE
+	std::vector<uint8_t> shade, blend;              // the map pack's tables, copied (the pack may close first)
+	// The picture on screen: two AnimTextures in turn, as the movie player's
+	// AnimTextures does (common/textures/animtexture.cpp), so the one the GPU
+	// may still be drawing is never the one being rewritten.
+	FGameTexture *panelTex[2] = { nullptr, nullptr };
+	int panelActive = 0;
+	uint32_t panelShown = 0xffffffffu;              // the painter's Version() last uploaded
+	uint8_t panelPal[0x300] = {};
+	int lastHoverAction = 0;                        // [0x81300]: handle_cursor_click's last hovered action
 	std::vector<uint8_t> dbase200;
 	std::string dbase300Path;
 	bool attached = false;
@@ -634,76 +650,128 @@ std::string ItemLabel(int slot)
 	return name;
 }
 
+// The panel's picture as a texture, through the map's palette.
+FTextureID PanelTexture()
+{
+	if (U.panelTex[0] == nullptr)
+	{
+		for (int i = 0; i < 2; i++)
+		{
+			FString name;
+			name.Format("RTHINVPANEL%d", i);
+			FGameTexture *t = MakeGameTexture(new AnimTexture(), name.GetChars(), ETextureType::Override);
+			t->SetUpscaleFlag(false, true);
+			TexMan.AddGameTexture(t);
+			U.panelTex[i] = t;
+		}
+		U.panelShown = 0xffffffffu;
+	}
+	const int w = U.painter.Width(), h = U.painter.Height();
+	FGameTexture *cur = U.panelTex[U.panelActive];
+	if (cur->GetTexelWidth() != w || cur->GetTexelHeight() != h)
+	{
+		// AnimTextures::SetSize (animtexture.cpp)
+		for (int i = 0; i < 2; i++)
+		{
+			static_cast<AnimTexture *>(U.panelTex[i]->GetTexture())->SetFrameSize(AnimTexture::Paletted, w, h);
+			U.panelTex[i]->SetSize(w, h);
+			U.panelTex[i]->CleanHardwareData();
+		}
+		U.panelShown = 0xffffffffu;
+	}
+	if (U.panelShown != U.painter.Version())
+	{
+		// AnimTextures::SetFrame: the other texture takes the new picture.
+		for (int i = 0; i < 256; i++)
+		{
+			const PalEntry c = Color((uint8_t)i);
+			U.panelPal[i * 3 + 0] = c.r;
+			U.panelPal[i * 3 + 1] = c.g;
+			U.panelPal[i * 3 + 2] = c.b;
+		}
+		U.panelActive ^= 1;
+		static_cast<AnimTexture *>(U.panelTex[U.panelActive]->GetTexture())->SetFrame(U.panelPal, U.painter.Pixels().data());
+		U.panelTex[U.panelActive]->CleanHardwareData();
+		U.panelShown = U.painter.Version();
+	}
+	return U.panelTex[U.panelActive]->GetID();
+}
+
+// The panel's size in the world: the original's 0x120 x 0x50 pixels, square
+// (VideoMode 8 is 640x480), at PX map units a pixel and the scale the old
+// layout used, so it stands where it stood.
+static const double PANEL_SCALE = 1.4;
+double PanelW() { return InventoryPanelPainter::W * PX * PANEL_SCALE; }
+double PanelH() { return InventoryPanelPainter::H * PX * PANEL_SCALE; }
+
 void BuildInventory()
 {
 	if (!U.screen.IsOpen() || U.core == nullptr) return;
-	const InventoryEntryList &l = U.screen.Entries();
-	const Inventory &inv = U.core->Items();
-	// The original's panel is 0x120 x 0x50 pixels (inventory.c:1872-1877):
-	// two hand boxes on the left, the tab strip, five-by-two cells, the label.
-	const double W = 0x120 * PX * 1.4, H = 0x50 * PX * 1.6;
-	Add(0, 0, 0, W, H, BB_PANEL, 0, PalEntry(255, 10, 10, 14), nullptr, 0.8, E_BACKING, 0, true);
-	const double cell = 0x1c * PX * 1.4;
-	const int list = U.screen.ActiveList();
-	// Tabs: the five categories, in the original's order (0x7123c).
-	static const char *tabName[5] = { "Items", "Weapons", "Clothes", "Documents", "Characters" };
-	for (int t = 0; t < 5; t++)
+	// ONE billboard: the original's own panel, drawn by roth_invdraw from the
+	// install's pictures. What a click on it means is the original's hotspot
+	// rectangles (InventoryPanelPainter::HitTest), not a layout of ours.
+	const FTextureID tex = PanelTexture();
+	if (!tex.isValid()) return;
+	Add(0, 0, 0, PanelW(), PanelH(), BB_TEXTURE, tex.GetIndex(), PalEntry(255, 255, 255, 255), nullptr, 1.0, E_INVPANEL, 0, true);
+}
+
+// After the billboards were built: a new picture of the panel goes onto the
+// billboard already standing, without a rebuild.
+void UpdatePanelBillboard()
+{
+	if (!U.screen.IsOpen() || U.level == nullptr || U.panelShown == U.painter.Version()) return;
+	const FTextureID tex = PanelTexture();
+	for (const Element &e : U.elements)
 	{
-		const bool lit = TabCategory(t) == list;
-		const double x = -W / 2 + cell * 1.8 + t * (W - cell * 2.2) / 5 + (W - cell * 2.2) / 10;
-		Add(x, H / 2 - 1.6, 0.1, (W - cell * 2.4) / 5, 2.4, BB_PANEL, 0, lit ? PalEntry(255, 120, 90, 40) : PalEntry(255, 40, 40, 40),
-			nullptr, 0.9, E_TAB, t, true);
-		Add(x, H / 2 - 1.6, 0.2, (W - cell * 2.4) / 5 * 0.9, 1.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), tabName[t], 1.0, E_NONE, 0, false);
+		if (e.kind != E_INVPANEL) continue;
+		for (FBillboard &b : U.level->Billboards) if (b.id == e.bb) b.data = tex.GetIndex();
 	}
-	// The hand boxes (actions 0x2a / 0x2b): left = the equipped weapon,
-	// right = the selected item.
-	for (int hnd = 0; hnd < 2; hnd++)
+}
+
+// Where a ray meets the panel's billboard, in the panel's own pixels: (0, 0)
+// its top left, as the original's mouse is relative to its anchor. The
+// renderer puts u along the basis' right and v down from its top
+// (hw_sprites.cpp emitQuad), mirrored by bb_flipu.
+bool PanelPixel(const Ray &r, const Element &e, int &px, int &py)
+{
+	if (U.level == nullptr) return false;
+	const FBillboard *bb = nullptr;
+	for (const FBillboard &b : U.level->Billboards) if (b.id == e.bb) { bb = &b; break; }
+	if (bb == nullptr) return false;
+	DVector3 right, up, normal;
+	double hw, hh;
+	BillboardBasis(*bb, bb->pos, r.start, bb_tiltbias, bb_scale, right, up, normal, hw, hh);
+	const double denom = normal | r.dir;
+	if (fabs(denom) < 1e-9 || hw <= 0 || hh <= 0) return false;
+	const double t = (normal | (bb->pos - r.start)) / denom;
+	if (t <= 0.0) return false;
+	const DVector3 rel = (r.start + r.dir * t) - bb->pos;
+	double u = ((rel | right) / hw + 1.0) * 0.5;
+	const double v = (1.0 - (rel | up) / hh) * 0.5;
+	if (bb_flipu) u = 1.0 - u;
+	px = (int)floor(u * InventoryPanelPainter::W);
+	py = (int)floor(v * InventoryPanelPainter::H);
+	return true;
+}
+
+// A click on the panel at pixel (px, py): the action the original's hit test
+// gives there, fed to the rules as dispatch_dialogue_ui_action takes it
+// (dialogue_ui.c:1556-1808).
+void PanelClick(int px, int py, int button)
+{
+	const int action = U.painter.HitTest(px, py);
+	if (action >= 0x17 && action <= 0x1b)                   // a tab: 0x17 + its category
 	{
-		const int slot = hnd ? l.shownRight : l.shownLeft;
-		const double x = -W / 2 + cell * 0.8, z = H / 2 - 4.5 - hnd * (cell + 1.0);
-		Add(x, z, 0.1, cell, cell, BB_PANEL, 0, PalEntry(255, 50, 45, 40), nullptr, 0.9, E_HAND, hnd, true);
-		if (slot >= 0)
-		{
-			FTextureID tex = IconTexture((int16_t)inv.Slot(slot).id);
-			if (tex.isValid()) Add(x, z, 0.2, cell * 0.85, cell * 0.85, BB_TEXTURE, tex.GetIndex(), PalEntry(255, 255, 255, 255), nullptr, 1.0, E_NONE, 0, false);
-		}
+		for (int t = 0; t < 5; t++) if (TabCategory(t) == action - 0x17) U.screen.ClickTab(t);
+		U.lastHoverAction = 0x20;                           // :1638
 	}
-	// The grid: ten cells from the scroll offset.
-	const int held = U.screen.HeldEntry();
-	const int cursor = U.screen.CursorEntry();
-	for (int c = 0; c < InventoryScreen::CELLS; c++)
-	{
-		const int entry = U.screen.ScrollOffset() + c;
-		const double x = -W / 2 + cell * 2.4 + (c % 5) * (cell + 0.6) + cell / 2;
-		const double z = H / 2 - 4.5 - (c / 5) * (cell + 0.6) - cell / 2 + 1.6;
-		// The cell colours of redraw_inventory_cursor_cell (inventory.c:1625-1630):
-		// held = the marker colour, left hand = message colour 0, right hand = 5.
-		PalEntry back = PalEntry(255, 30, 30, 30);
-		if (entry == cursor) back = PalEntry(255, 70, 70, 50);
-		if (entry == l.leftEntry) back = Color(U.dialogue.defaultMessageColor[0]);
-		if (entry == l.rightEntry) back = Color(U.dialogue.defaultMessageColor[5]);
-		if (entry == held) back = Color(U.dialogue.markerSelected);
-		Add(x, z, 0.1, cell, cell, BB_PANEL, 0, back, nullptr, 0.9, E_CELL, c, true);
-		if (entry < U.screen.EntryCount())
-		{
-			FTextureID tex = IconTexture((int16_t)inv.Slot(l.slots[(size_t)entry]).id);
-			if (tex.isValid()) Add(x, z, 0.2, cell * 0.85, cell * 0.85, BB_TEXTURE, tex.GetIndex(), PalEntry(255, 255, 255, 255), nullptr,
-				entry == held ? 0.5 : 1.0, E_NONE, 0, false);
-		}
-	}
-	// The way into the options (inventory.c:1799-1817; the original's screen
-	// has it among its buttons).
-	{
-		static const char *opt = "Options";
-		Add(-W / 2 + 4.0, -H / 2 + 1.6, 0.2, TextPixels(opt) * PX * 1.2 + 1.0, ROWH * 1.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), opt, 1.0, E_OPTIONS, 0, true);
-	}
-	// Scroll arrows (actions 0x28 / 0x29) and the label of the cursor's item.
-	Add(W / 2 - 1.5, H / 2 - 5, 0.1, 2.4, 2.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "^", 1.0, E_SCROLLUP, 0, true);
-	Add(W / 2 - 1.5, -H / 2 + 5, 0.1, 2.4, 2.4, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "v", 1.0, E_SCROLLDOWN, 0, true);
-	std::string label;
-	if (cursor >= 0 && cursor < U.screen.EntryCount()) label = ItemLabel(l.slots[(size_t)cursor]);
-	if (!label.empty())
-		Add(0, -H / 2 + 1.6, 0.2, TextPixels(label) * PX * 1.2, ROWH * 1.2, BB_TEXT, 0, Color(U.dialogue.markerSelected), label.c_str(), 1.0, E_NONE, 0, false);
+	else if (action >= 0x1c && action <= 0x25) U.screen.ClickCell(action - 0x1c, button);
+	else if (action == 0x26) U.screen.ClickOutside();       // the held item's box: commit and close
+	else if (action == 0x28) { U.screen.ScrollUp(); U.lastHoverAction = 0x20; }      // :1660
+	else if (action == 0x29) { U.screen.ScrollDown(); U.lastHoverAction = 0x20; }    // :1670
+	else if (action == 0x2a || action == 0x2b) U.screen.ClickHandBox(action - 0x2a, button);
+	else if (action == 0x2c) { if (U.menus != nullptr) U.menus->OpenOptions(); }      // the options: inventory.c:1799-1817
+	Printf("[roth_ui] panel click at %d,%d (button %d): action 0x%x\n", px, py, button, action);
 }
 
 void BuildPopup()
@@ -836,24 +904,19 @@ void Rebuild(player_t *player)
 
 void ClickElement(const Element &e, int button)
 {
+	(void)button;           // the inventory's clicks carry their button through PanelClick
 	switch (e.kind)
 	{
 	case E_CHOICE:
 		U.dialogue.PointerClick(e.bb, e.arg);
 		Printf("[roth_ui] choice %d picked\n", e.arg);
 		break;
-	case E_CELL: U.screen.ClickCell(e.arg, button); break;
-	case E_TAB: U.screen.ClickTab(e.arg); break;
-	case E_HAND: U.screen.ClickHandBox(e.arg, button); break;
-	case E_SCROLLUP: U.screen.ScrollUp(); break;
-	case E_SCROLLDOWN: U.screen.ScrollDown(); break;
 	case E_POP_MAG: U.screen.PopupMagnifier(); break;
 	case E_POP_INFO: U.screen.PopupToggleTopics(); break;
 	case E_POP_TOPIC: U.screen.PopupTopic(e.arg); break;
 	case E_POP_CLOSE: U.screen.PopupClose(); break;
 	case E_POP_PGUP: U.screen.PopupPageUp(); break;
 	case E_POP_PGDN: U.screen.PopupPageDown(); break;
-	case E_OPTIONS: if (U.menus != nullptr) U.menus->OpenOptions(); break;
 	case E_MENU_ROW: if (U.menus != nullptr) { U.menus->Choose(e.arg); Printf("[roth_menu] row %d chosen: %s\n", e.arg, U.menus->Describe().c_str()); } break;
 	case E_MENU_UP: if (U.menus != nullptr) U.menus->ScrollUp(); break;
 	case E_MENU_DOWN: if (U.menus != nullptr) U.menus->ScrollDown(); break;
@@ -903,6 +966,12 @@ bool Press(player_t *player, int forcedButton)
 		if (U.screen.PopupUp() && e->kind < E_POP_MAG) continue;    // only the popup takes clicks while it is up
 		if (e->kind == E_CHOICE) return ClickDialogue(e);
 		if (e->kind == E_BACKING || e->kind == E_POP_BACKING) return true;
+		if (e->kind == E_INVPANEL)
+		{
+			int px = 0, py = 0;
+			if (PanelPixel(rays[i], *e, px, py)) PanelClick(px, py, button);
+			return true;
+		}
 		ClickElement(*e, button);
 		return true;
 	}
@@ -930,8 +999,21 @@ void UpdateHover(player_t *player)
 	U.dialogue.SetPointer(bb, (e && e->kind == E_CHOICE) ? e->arg : -1);
 	if (U.dialogue.PointerBelongsToDialogue())
 		U.dialogue.UpdateChoiceHighlight(bb, (e && e->kind == E_CHOICE) ? e->arg : -1);
-	// The inventory cursor follows the pointer over the grid (input.c:1290-1297).
-	if (bb != U.hoverBb && e != nullptr && e->kind == E_CELL && !U.screen.PopupUp()) U.screen.HoverCell(e->arg);
+	// The inventory cursor follows the pointer over the grid (handle_cursor_click,
+	// input.c:1290-1297): a cell's action, when it is not the last one hovered.
+	if (e != nullptr && e->kind == E_INVPANEL && !U.screen.PopupUp() && n > 0)
+	{
+		int px = 0, py = 0;
+		if (PanelPixel(rays[0], *e, px, py))
+		{
+			const int act = U.painter.HitTest(px, py);
+			if (act >= 0x1c && act <= 0x25 && act != U.lastHoverAction)
+			{
+				U.lastHoverAction = act;
+				U.screen.HoverCell(act - 0x1c);
+			}
+		}
+	}
 	U.hoverBb = bb;
 }
 
@@ -1025,6 +1107,37 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 	const std::string icons = install.DataFile("DBASE200.DAT");
 	if (!icons.empty()) U.dbase200 = Install::ReadWholeFile(icons);
 	U.dbase300Path = install.DataFile("DBASE300.DAT");
+	// The inventory panel's pictures (load_icons_all, das_assets.c:183-200:
+	// DATA\ICONS.ALL beside the databases) and the original's font, which is
+	// in ROTH.EXE (see roth_invdraw.h). ROTH.EXE sits in the game's ROTH folder.
+	const std::string iconsAll = install.DataFile("DATA/ICONS.ALL");
+	if (!iconsAll.empty()) U.iconsAll = Install::ReadWholeFile(iconsAll);
+	std::string exeErr = "ROTH.EXE not found beside the install";
+	{
+		std::vector<std::string> tries;
+		const std::string e0 = install.DataFile("ROTH.EXE");
+		if (!e0.empty()) tries.push_back(e0);
+		for (const char *rel : { "/../ROTH/ROTH.EXE", "/../ROTH/roth.exe", "/../ROTH.EXE", "/../roth.exe", "/ROTH/ROTH.EXE" })
+			tries.push_back(install.Path() + rel);
+		for (const std::string &t : tries)
+		{
+			const std::vector<uint8_t> exe = Install::ReadWholeFile(t);
+			if (exe.empty()) continue;
+			if (FindRothExeFont(exe, U.font, exeErr)) { Printf("[roth_ui] font: %s\n", t.c_str()); break; }
+			exeErr = t + ": " + exeErr;
+		}
+	}
+	InvPanelAssets pa;
+	pa.iconsAll = &U.iconsAll;
+	pa.dbase200 = &U.dbase200;
+	pa.shade = U.shade.empty() ? nullptr : U.shade.data();
+	pa.blend = U.blend.empty() ? nullptr : U.blend.data();
+	pa.font = U.font.ok() ? &U.font : nullptr;
+	pa.readLine = [](uint8_t *dest, uint32_t maxlen, uint32_t off) { return U.dialogue.ReadNextDialogueLine(dest, maxlen, off, 0); };
+	pa.labelText = [](int32_t id) { return (U.db != nullptr && U.core != nullptr) ? ItemLabelText(*U.db, id, U.core->InvSink()) : 0u; };
+	U.painter.Bind(&U.screen, &core, &db, pa, false);       // the retail ROTH.INI's VideoMode 8: no line doubling
+	Printf("[roth_ui] inventory panel: ICONS.ALL %s, font %s\n", U.iconsAll.empty() ? "MISSING" : "ok",
+		U.font.ok() ? "ok" : exeErr.c_str());
 	U.dialogue.speechAvailable = SoundSpeechAvailable();          // audio.c:1210
 	U.dialogue.screenPitch = 640;           // the retail ROTH.INI's VideoMode 8
 	U.attached = true;
@@ -1078,6 +1191,16 @@ void InterfaceSetPalette(const TextureSet &art)
 		U.iconTranslation = -1;
 		U.iconTex.clear();
 		U.pageTex.clear();
+		U.panelShown = 0xffffffffu;                         // the panel's picture goes up again in the new colours
+	}
+	// The pack's shade and blend tables (map_load.c:376-377), which the panel's
+	// tints read: copied, since the pack may be closed before the panel is.
+	const Pack *pk = art.PackData();
+	if (pk != nullptr && pk->ShadeTables() != nullptr && pk->BlendTable() != nullptr)
+	{
+		U.shade.assign(pk->ShadeTables(), pk->ShadeTables() + 0x4000);
+		U.blend.assign(pk->BlendTable(), pk->BlendTable() + 0x10000);
+		U.painter.SetPackTables(U.shade.data(), U.blend.data());
 	}
 }
 
@@ -1117,12 +1240,16 @@ void InterfaceTick(FLevelLocals *level)
 	// One tic is two of the original's 70 Hz frame ticks.
 	U.dialogue.PollVoice();
 	U.dialogue.Frame(2);                                 // voice_stream_pump + render_text_ui
+	// redraw_inventory_cursor_cell (game_core.c:886), before the keys' frame
+	// (:894), at the original's 70 Hz frame tick.
+	if (U.screen.IsOpen()) U.painter.RedrawInventoryCursorCell((uint16_t)(level->maptime * 2));
 	U.screen.Post();                                     // update_inventory_screen's tail
 	if (U.screen.PopupUp()) U.screen.PopupFrame();       // the popup's own loop
 	U.core->Items().TickPickupLock(2);                   // tick_item_pickup_lock
 	TickFly(player);
 	UpdateHover(player);
 	Rebuild(player);
+	UpdatePanelBillboard();
 }
 
 bool InterfaceUse(player_t *player)
@@ -1178,6 +1305,7 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 //   roth_ui_choice <row>                click choice row <row> of the open menu
 //   roth_ui_select <item id>            put an item in the right hand from the panel
 //   roth_ui_dump                        print what the panels show
+//   roth_ui_invclick <x> <y> [button]   click the inventory panel at its pixel (x, y)
 //
 //==========================================================================
 
@@ -1248,6 +1376,14 @@ static void Dump()
 		(int)U.screen.PopupPages().size(), U.dialogue.TopicCount());
 	Printf("[roth_ui] %d panel billboard(s)\n", (int)U.elements.size());
 	for (const auto &kv : U.invSink.notBuilt) Printf("[roth_ui] asked for, not built: %s x%d\n", kv.first.c_str(), kv.second);
+	for (const std::string &pr : U.painter.Problems()) Printf("[roth_ui] inventory panel: %s\n", pr.c_str());
+	if (U.screen.IsOpen())
+	{
+		Printf("[roth_ui] inventory panel picture %dx%d, version %u; hotspots:", U.painter.Width(), U.painter.Height(), U.painter.Version());
+		for (const InvHotspot &h : U.painter.TabHotspots()) Printf(" [%d,%d,%u,%u,0x%x]", h.x, h.y, h.w, h.h, h.action);
+		for (const InvHotspot &h : U.painter.PanelHotspots()) Printf(" [%d,%d,%u,%u,0x%x]", h.x, h.y, h.w, h.h, h.action);
+		Printf("\n");
+	}
 }
 
 static void RunQueued(player_t *player)
@@ -1295,6 +1431,14 @@ static void RunQueued(player_t *player)
 			const int rh = U.core->Items().RightHand(), lh = U.core->Items().LeftHand();
 			Printf("[roth_ui] select: item %d -> right hand slot %d, left hand slot %d\n", id, rh, lh);
 		}
+		else if (verb == "invclick")
+		{
+			// A click at panel pixel (x, y), as a pointer on the picture makes it.
+			if (!U.screen.IsOpen()) { Printf("[roth_ui] invclick: the inventory is not open\n"); continue; }
+			const int y = c.size() > 2 ? atoi(c[2].c_str()) : 0;
+			const int b = c.size() > 3 ? atoi(c[3].c_str()) : InventoryScreen::PRIMARY;
+			PanelClick(arg, y, b);
+		}
 		else if (verb == "dump") Dump();
 		else KeyVerb(player, verb, arg);
 	}
@@ -1330,5 +1474,10 @@ CCMD(roth_ui_select)
 	Queue(argv, "select", 1);
 }
 CCMD(roth_ui_dump) { Queue(argv, "dump", 1); }
+CCMD(roth_ui_invclick)
+{
+	if (argv.argc() < 3) { Printf("roth_ui_invclick <x> <y> [1 primary | 2 secondary] -- a click on the inventory panel's pixel\n"); return; }
+	Queue(argv, "invclick", 1);
+}
 
 } // namespace roth
