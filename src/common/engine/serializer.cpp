@@ -706,6 +706,11 @@ void FSerializer::WriteObjectsTo(TArray<TObjPtr<DObject*>>& to, TArray<DObject*>
 	}
 }
 
+// [VRealms] Which object WriteObjects is writing, so a dead pointer found in
+// its fields can be reported with its owner (see Serialize(DObject*&) below).
+static const DObject *s_writingOwner = nullptr;
+static FName s_writingOwnerClass = NAME_None;
+
 void FSerializer::WriteObjects()
 {
 	if (isWriting() && w->mDObjects.Size())
@@ -722,9 +727,12 @@ void FSerializer::WriteObjects()
 			w->Key("classtype");
 			w->String(obj->GetClass()->TypeName.GetChars());
 
+			s_writingOwner = obj;
+			s_writingOwnerClass = obj->GetClass()->TypeName;
 			obj->SerializeUserVars(*this);
 			obj->Serialize(*this);
 			obj->CheckIfSerialized();
+			s_writingOwner = nullptr;
 			EndObject();
 		}
 		EndArray();
@@ -1467,6 +1475,21 @@ FSerializer &Serialize(FSerializer &arc, const char *key, DObject *&value, DObje
 				}
 				else
 				{
+					// [VRealms] A POINTER TO A FREED OBJECT. Its class word is
+					// whatever reused the memory (a Vulkan handle's 0x01CDC0DE in
+					// crash_20261112-195342), and writing it crashes three calls
+					// later in RecurseWriteFields with nothing to say whose field
+					// it was. Checked here, where the field's key and its owner
+					// are known, without dereferencing anything but the class word.
+					const PClass *cls = value->GetClass();
+					if (PClass::AllClasses.Find(const_cast<PClass *>(cls)) == PClass::AllClasses.Size())
+					{
+						I_Error("Saving: field '%s' of %s (%p) points to a destroyed object %p. "
+							"Something kept a raw pointer to it after it was freed.",
+							key ? key : "(array element)",
+							s_writingOwner ? s_writingOwnerClass.GetChars() : "the level itself (not an object)",
+							(const void *)s_writingOwner, (void *)value);
+					}
 					ndx = arc.w->mDObjects.Push(value);
 					arc.w->mObjectMap[value] = ndx;
 				}
