@@ -15,6 +15,9 @@
 #include "roth_dialogue.h"
 #include "roth_invscreen.h"
 #include "roth_invdraw.h"
+#include "roth_menudraw.h"
+#include "roth_dlgdraw.h"
+#include "roth_uidraw.h"
 #include "roth_icons.h"
 #include "roth_install.h"
 #include "roth_texture.h"
@@ -45,7 +48,7 @@
 #include "r_data/r_translate.h"
 #include "v_video.h"
 #include "r_data/sprites.h"
-#include "animtexture.h"
+
 
 EXTERN_CVAR(Float, bb_scale)
 EXTERN_CVAR(Float, bb_tiltbias)
@@ -117,10 +120,13 @@ public:
 
 enum ElementKind
 {
-	E_NONE, E_BACKING, E_CHOICE,
+	E_NONE,
+	E_DLGPANEL,                                         // the dialogue's choice panel picture; a click is mapped to its rows
 	E_INVPANEL,                                         // the inventory panel's picture; a click is mapped to its hotspots
 	E_POP_MAG, E_POP_INFO, E_POP_TOPIC, E_POP_CLOSE, E_POP_PGUP, E_POP_PGDN, E_POP_BACKING,
-	E_MENU_BACKING, E_MENU_ROW, E_MENU_UP, E_MENU_DOWN, E_MENU_BACK,
+	E_MENUBOX,                                          // a message box's picture; a click is mapped by hit_test_ui_element
+	E_MENU_BACKING, E_MENU_ROW, E_MENU_BACK,            // the death screen's (an invented layout: the original has no box there)
+	E_PICTURE,                                          // a picture shown, not clicked (the subtitle, the timed message, a box under another)
 };
 
 struct Element
@@ -129,7 +135,15 @@ struct Element
 	int kind = E_NONE;
 	int arg = 0;
 	bool hittable = false;
+	// A picture's rectangle on the original's screen: a point on the billboard
+	// maps to (left + u * picW, top + v * picH), the original's own mouse.
+	int left = 0, top = 0, picW = 0, picH = 0;
+	int picture = -1;       // which of the pictures (PIC_*) it shows
 };
+
+// The pictures drawn as the original draws them, each through its own pair of
+// textures (see UploadPicture).
+enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_COUNT };
 
 struct Fly
 {
@@ -149,15 +163,26 @@ struct Ui
 	RuntimeInvSink invSink;
 	// The inventory panel's picture, drawn as the original draws it (roth_invdraw).
 	InventoryPanelPainter painter;
+	// The dialogue text (roth_dlgdraw) and the message boxes (roth_menudraw),
+	// drawn as the original draws them.
+	DialogueTextPainter choicePainter, linePainter, tmsgPainter;
+	MessageBoxPainter boxes[2];                     // [0] the box on top, [1] the one under it when it stays on screen
+	RealmsMenus::Box boxOf[2] = { RealmsMenus::NONE, RealmsMenus::NONE };
+	uint32_t menuSerial = 0xffffffffu;              // RealmsMenus::ShowSerial() the box pictures were composed for
 	std::vector<uint8_t> iconsAll;                  // DATA\ICONS.ALL
 	RothFont font;                                  // out of the player's ROTH.EXE
 	std::vector<uint8_t> shade, blend;              // the map pack's tables, copied (the pack may close first)
-	// The picture on screen: two AnimTextures in turn, as the movie player's
+	// Each picture on screen: two textures in turn, as the movie player's
 	// AnimTextures does (common/textures/animtexture.cpp), so the one the GPU
 	// may still be drawing is never the one being rewritten.
-	FGameTexture *panelTex[2] = { nullptr, nullptr };
-	int panelActive = 0;
-	uint32_t panelShown = 0xffffffffu;              // the painter's Version() last uploaded
+	struct Picture
+	{
+		FGameTexture *tex[2] = { nullptr, nullptr };
+		int active = 0;
+		uint32_t shown = 0xffffffffu;               // the canvas' Version() last uploaded
+		const UiCanvas *canvas = nullptr;
+	};
+	Picture pics[PIC_COUNT];
 	uint8_t panelPal[0x300] = {};
 	int lastHoverAction = 0;                        // [0x81300]: handle_cursor_click's last hovered action
 	std::vector<uint8_t> dbase200;
@@ -392,7 +417,7 @@ int Add(double dx, double dz, double lift, double w, double h, int payload, int 
 
 // A view-locked billboard (subtitle, timed message): X ahead, Y right, Z up.
 int AddViewLocked(double ahead, double rightOff, double up, double w, double h, int payload, PalEntry col,
-	const char *text, double alpha)
+	const char *text, double alpha, int data = 0)
 {
 	if (U.level == nullptr) return 0;
 	FBillboard bb;
@@ -402,6 +427,7 @@ int AddViewLocked(double ahead, double rightOff, double up, double w, double h, 
 	bb.height = h;
 	bb.facing = BBF_FIXED;
 	bb.payload = payload;
+	bb.data = data;
 	bb.color = col;
 	bb.alpha = alpha;
 	bb.flags = BBFL_PERSISTENT | BBFL_NOSAVE | BBFL_VIEWLOCKED | BBFL_NODEPTH | BBFL_NOHIT;
@@ -481,7 +507,7 @@ const Element *HitElement(const Ray &r)
 		const DVector3 rel = (r.start + r.dir * t) - bb->pos;
 		if (fabs(rel | right) > hw || fabs(rel | up) > hh) continue;
 		// A backing loses to anything drawn on it at the same depth.
-		if (best != nullptr && fabs(t - bestT) < 0.5 && (e.kind == E_BACKING || e.kind == E_POP_BACKING)) continue;
+		if (best != nullptr && fabs(t - bestT) < 0.5 && (e.kind == E_POP_BACKING || e.kind == E_MENU_BACKING)) continue;
 		bestT = t;
 		best = &e;
 	}
@@ -517,11 +543,21 @@ std::string Signature()
 	}
 	if (U.menus != nullptr && U.menus->IsOpen())
 	{
-		s += "M" + U.menus->Describe() + "|";
-		for (const RealmsMenus::Row &r : U.menus->Rows())
+		if (U.menus->Current() == RealmsMenus::DEATH)
 		{
-			snprintf(buf, sizeof buf, "%u/%d/", r.textId, r.enabled ? 1 : 0);
-			s += buf; s += r.label; s += '\x1f';
+			s += "M" + U.menus->Describe() + "|";
+			for (const RealmsMenus::Row &r : U.menus->Rows())
+			{
+				snprintf(buf, sizeof buf, "%u/%d/", r.textId, r.enabled ? 1 : 0);
+				s += buf; s += r.label; s += '\x1f';
+			}
+		}
+		else
+		{
+			// The box pictures change in place (UpdatePictureBillboards); a box
+			// shown afresh is new billboards.
+			snprintf(buf, sizeof buf, "B%u/%d/%d|", U.menuSerial, (int)U.boxOf[0], (int)U.boxOf[1]);
+			s += buf;
 		}
 	}
 	if (U.screen.PopupUp())
@@ -532,105 +568,6 @@ std::string Signature()
 		for (const TextLine &l : U.dialogue.TopicLines()) { s.append((const char *)l.text.data(), l.text.size()); }
 	}
 	return s;
-}
-
-void BuildDialogue()
-{
-	const DialogueView v = U.dialogue.View();
-	if (v.kind == DialogueView::LINE)
-	{
-		// The original's subtitle sits under the view, centred
-		// (render_text_ui, dialogue_ui.c:1021-1028). Head-locked here so it
-		// is read wherever the player looks; not hittable -- a click anywhere
-		// is what dismisses it (game_core.c:612-632).
-		//
-		// SAME TEXT, READABLE SIZE. The original lays a segment out to its
-		// whole 320-pixel screen (layout_timed_message_text, width = the
-		// screen pitch), so a sentence is usually ONE row ~300 font pixels
-		// wide, filling a flat screen at about 8 pixels tall. Drawn at the
-		// panels' 0.1 unit/pixel that row spanned 40 degrees and was 1.4
-		// degrees tall: a long thin strip, unreadable in a capture and a
-		// head-turn to read in the headset. The rows are re-wrapped at word
-		// breaks to SUB_WRAP font pixels and drawn at SUB_PX, so the words,
-		// colour, order and timing are the original's and only the shape
-		// changes.
-		static const int SUB_WRAP = 170;              // font pixels per row
-		static const double SUB_PX = 0.16;            // map units per font pixel
-		static const double SUB_ROWH = 11 * SUB_PX;
-		std::vector<std::string> rows;
-		for (const std::string &src : v.rows)
-		{
-			std::string cur;
-			size_t i = 0;
-			while (i <= src.size())
-			{
-				size_t j = src.find(' ', i);
-				if (j == std::string::npos) j = src.size();
-				const std::string word = src.substr(i, j - i);
-				const std::string trial = cur.empty() ? word : cur + " " + word;
-				if (!cur.empty() && TextPixels(trial) > SUB_WRAP) { rows.push_back(cur); cur = word; }
-				else cur = trial;
-				i = j + 1;
-			}
-			if (!cur.empty()) rows.push_back(cur);
-		}
-		const int n = (int)rows.size();
-		double widest = 0;
-		for (const std::string &r : rows) widest = std::max(widest, (double)TextPixels(r));
-		const double up0 = -9.0;
-		AddViewLocked(DIST, 0, up0 - (n - 1) * SUB_ROWH * 0.65, widest * SUB_PX + 2.0, n * SUB_ROWH * 1.3 + 1.0, BB_PANEL, PalEntry(255, 0, 0, 0), nullptr, 0.55);
-		for (int i = 0; i < n; i++)
-		{
-			const double w = TextPixels(rows[(size_t)i]) * SUB_PX;
-			if (w <= 0) continue;
-			AddViewLocked(DIST - 0.2, 0, up0 - i * SUB_ROWH * 1.3, w, SUB_ROWH, BB_TEXT, Color(v.color), rows[(size_t)i].c_str(), 1.0);
-		}
-		return;
-	}
-	if (v.kind != DialogueView::CHOICES) return;
-	// The choice menu: centred (render_dialogue_text_panel, dialogue_ui.c:814-850),
-	// one row per choice, the highlighted one in g_map_menu_marker_selected.
-	const std::vector<TextLine> &seg = U.dialogue.Segments();
-	double total = 0, widest = 0;
-	for (size_t i = 0; i < v.rows.size() && i < seg.size(); i++)
-	{
-		total += seg[i].height + 4;
-		widest = std::max(widest, (double)(seg[i].x1 - seg[i].x0));
-	}
-	total = (total - 4) * PX;
-	Add(0, 0, 0, widest * PX + 3.0, total + 3.0, BB_PANEL, 0, PalEntry(255, 0, 0, 0), nullptr, 0.7, E_BACKING, 0, true);
-	double z = total / 2;
-	for (size_t i = 0; i < v.rows.size() && i < seg.size(); i++)
-	{
-		const std::vector<std::string> lines = seg[i].Rows();
-		const double h = seg[i].height * PX;
-		const bool lit = (int)i == v.highlighted;
-		const PalEntry col = Color(lit ? v.highlightColor : v.color);
-		// The row is ONE hittable quad (the record's rectangle,
-		// dialogue_ui.c:255-266); its wrapped lines are drawn on it.
-		Add(0, z - h / 2, 0.1, (seg[i].x1 - seg[i].x0) * PX + 1.0, h + 0.3, BB_PANEL, 0,
-			lit ? PalEntry(255, 60, 60, 40) : PalEntry(255, 20, 20, 20), nullptr, lit ? 0.6 : 0.01, E_CHOICE, (int)i, true);
-		for (size_t k = 0; k < lines.size(); k++)
-		{
-			const double w = TextPixels(lines[k]) * PX;
-			if (w > 0) Add(0, z - (k + 0.5) * ROWH, 0.2, w, ROWH, BB_TEXT, 0, col, lines[k].c_str(), 1.0, E_NONE, 0, false);
-		}
-		z -= h + 4 * PX;
-	}
-}
-
-void BuildTimedMessage()
-{
-	if (U.dialogue.TimedMessageLineCount() == 0) return;
-	// render_active_timed_message (dialogue_ui.c:900-968): at the top of the view.
-	double up = 10.0;
-	for (const TextLine &l : U.dialogue.TimedMessageLines())
-		for (const std::string &r : l.Rows())
-		{
-			const double w = TextPixels(r) * PX;
-			if (w > 0) AddViewLocked(DIST, 0, up, w, ROWH, BB_TEXT, Color(l.Color()), r.c_str(), 1.0);
-			up -= ROWH * 1.3;
-		}
 }
 
 std::string ItemLabel(int slot)
@@ -650,91 +587,213 @@ std::string ItemLabel(int slot)
 	return name;
 }
 
-// The panel's picture as a texture, through the map's palette.
-FTextureID PanelTexture()
+// A picture with holes: palette indices through the map's palette, alpha 0
+// where the original's routines wrote nothing (UiCanvas::Mask: the world
+// behind), kept as BGRA the way AnimTexture keeps its frames.
+class PictureTexture : public FTexture
 {
-	if (U.panelTex[0] == nullptr)
+	TArray<uint8_t> Image;
+public:
+	PictureTexture() { Masked = true; bTranslucent = 1; }
+	void SetPicture(const UiCanvas &c, const uint8_t *pal)
+	{
+		const int w = c.Width() > 0 ? c.Width() : 1, h = c.Height() > 0 ? c.Height() : 1;
+		FTexture::SetSize(w, h);
+		Image.Resize(w * h * 4);
+		memset(Image.Data(), 0, Image.Size());
+		const std::vector<uint8_t> &px = c.Pixels(), &mk = c.Mask();
+		for (size_t i = 0; i < px.size() && i < mk.size() && i < (size_t)w * h; i++)
+		{
+			if (mk[i] != 1) continue;
+			uint8_t *d = Image.Data() + i * 4;
+			d[0] = pal[px[i] * 3 + 2];
+			d[1] = pal[px[i] * 3 + 1];
+			d[2] = pal[px[i] * 3 + 0];
+			d[3] = 255;
+		}
+	}
+	FBitmap GetBgraBitmap(const PalEntry *remap, int *trans) override
+	{
+		(void)remap;
+		if (trans != nullptr) *trans = 1;
+		return FBitmap(Image.Data(), Width * 4, Width, Height);
+	}
+};
+
+// The canvas each picture shows.
+const UiCanvas *CanvasOf(int id)
+{
+	switch (id)
+	{
+	case PIC_INVENTORY: return &U.painter;
+	case PIC_CHOICES: return &U.choicePainter;
+	case PIC_LINE: return &U.linePainter;
+	case PIC_TMSG: return &U.tmsgPainter;
+	case PIC_BOX0: return &U.boxes[0];
+	case PIC_BOX1: return &U.boxes[1];
+	default: return nullptr;
+	}
+}
+
+// A picture as a texture, through the map's palette: the other one of its
+// two textures takes a new picture (AnimTextures::SetFrame does the same).
+FTextureID UploadPicture(int id)
+{
+	const UiCanvas *c = CanvasOf(id);
+	if (c == nullptr) return FNullTextureID();
+	Ui::Picture &p = U.pics[id];
+	if (p.tex[0] == nullptr)
 	{
 		for (int i = 0; i < 2; i++)
 		{
 			FString name;
-			name.Format("RTHINVPANEL%d", i);
-			FGameTexture *t = MakeGameTexture(new AnimTexture(), name.GetChars(), ETextureType::Override);
+			name.Format("RTHPIC%d_%d", id, i);
+			FGameTexture *t = MakeGameTexture(new PictureTexture(), name.GetChars(), ETextureType::Override);
 			t->SetUpscaleFlag(false, true);
 			TexMan.AddGameTexture(t);
-			U.panelTex[i] = t;
+			p.tex[i] = t;
 		}
-		U.panelShown = 0xffffffffu;
+		p.shown = 0xffffffffu;
 	}
-	const int w = U.painter.Width(), h = U.painter.Height();
-	FGameTexture *cur = U.panelTex[U.panelActive];
-	if (cur->GetTexelWidth() != w || cur->GetTexelHeight() != h)
+	if (p.canvas != c || p.shown != c->Version())
 	{
-		// AnimTextures::SetSize (animtexture.cpp)
-		for (int i = 0; i < 2; i++)
-		{
-			static_cast<AnimTexture *>(U.panelTex[i]->GetTexture())->SetFrameSize(AnimTexture::Paletted, w, h);
-			U.panelTex[i]->SetSize(w, h);
-			U.panelTex[i]->CleanHardwareData();
-		}
-		U.panelShown = 0xffffffffu;
-	}
-	if (U.panelShown != U.painter.Version())
-	{
-		// AnimTextures::SetFrame: the other texture takes the new picture.
 		for (int i = 0; i < 256; i++)
 		{
-			const PalEntry c = Color((uint8_t)i);
-			U.panelPal[i * 3 + 0] = c.r;
-			U.panelPal[i * 3 + 1] = c.g;
-			U.panelPal[i * 3 + 2] = c.b;
+			const PalEntry col = Color((uint8_t)i);
+			U.panelPal[i * 3 + 0] = col.r;
+			U.panelPal[i * 3 + 1] = col.g;
+			U.panelPal[i * 3 + 2] = col.b;
 		}
-		U.panelActive ^= 1;
-		static_cast<AnimTexture *>(U.panelTex[U.panelActive]->GetTexture())->SetFrame(U.panelPal, U.painter.Pixels().data());
-		U.panelTex[U.panelActive]->CleanHardwareData();
-		U.panelShown = U.painter.Version();
+		p.active ^= 1;
+		FGameTexture *g = p.tex[p.active];
+		static_cast<PictureTexture *>(g->GetTexture())->SetPicture(*c, U.panelPal);
+		g->SetSize(c->Width() > 0 ? c->Width() : 1, c->Height() > 0 ? c->Height() : 1);
+		g->CleanHardwareData();
+		p.shown = c->Version();
+		p.canvas = c;
 	}
-	return U.panelTex[U.panelActive]->GetID();
+	return p.tex[p.active]->GetID();
 }
 
-// The panel's size in the world: the original's 0x120 x 0x50 pixels, square
-// (VideoMode 8 is 640x480), at PX map units a pixel and the scale the old
-// layout used, so it stands where it stood.
+// Where the pictures stand. A WORLD panel is placed as the original's screen
+// places it around the inventory panel, whose centre on that screen is
+// (168 + 0x90, 240 + 0x28) = (312, 280) (compute_viewport_half_extents,
+// renderer.c:9617-9621): the message boxes the options open over the inventory
+// cover it as they do there. The original's pixels are square (VideoMode 8 is
+// 640 x 480), PX map units each, at the scale the panel stood at before.
 static const double PANEL_SCALE = 1.4;
-double PanelW() { return InventoryPanelPainter::W * PX * PANEL_SCALE; }
-double PanelH() { return InventoryPanelPainter::H * PX * PANEL_SCALE; }
+static const double PXW = PX * PANEL_SCALE;
+static const int PANEL_CX = 312, PANEL_CY = 280;
+
+// `ox` / `oy` place a canvas whose own coordinates are relative (the
+// inventory's are its anchor's).
+void AddWorldPicture(int id, int ox, int oy, double lift, int kind, bool hittable)
+{
+	const UiCanvas *c = CanvasOf(id);
+	if (c == nullptr || c->Width() <= 0 || c->Height() <= 0) return;
+	const FTextureID tex = UploadPicture(id);
+	if (!tex.isValid()) return;
+	const double cx = ox + c->Left() + c->Width() * 0.5, cy = oy + c->Top() + c->Height() * 0.5;
+	Add((cx - PANEL_CX) * PXW, (PANEL_CY - cy) * PXW, lift, c->Width() * PXW, c->Height() * PXW, BB_TEXTURE, tex.GetIndex(),
+		PalEntry(255, 255, 255, 255), nullptr, 1.0, kind, 0, hittable);
+	if (U.elements.empty()) return;
+	Element &e = U.elements.back();
+	e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
+}
+
+// A HEAD-LOCKED picture: where it is on the original's 640 x 480 screen,
+// that screen standing DIST ahead of the eye, PX map units a pixel; the view
+// is the whole screen (ViewSize 0), so its centre (320, 240) is ahead.
+void AddHeadPicture(int id)
+{
+	const UiCanvas *c = CanvasOf(id);
+	if (c == nullptr || c->Width() <= 0 || c->Height() <= 0) return;
+	const FTextureID tex = UploadPicture(id);
+	if (!tex.isValid()) return;
+	const double cx = c->Left() + c->Width() * 0.5, cy = c->Top() + c->Height() * 0.5;
+	AddViewLocked(DIST, (cx - 320) * PX, (240 - cy) * PX, c->Width() * PX, c->Height() * PX, BB_TEXTURE, PalEntry(255, 255, 255, 255), nullptr, 1.0, tex.GetIndex());
+	if (U.elements.empty()) return;
+	Element &e = U.elements.back();
+	e.kind = E_PICTURE; e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
+}
+
+// The dialogue text: the original's renderers (roth_dlgdraw) over the
+// records roth_dialogue keeps (byte for byte the original's), each a picture.
+void BuildDialogue()
+{
+	if (U.core == nullptr) return;
+	const DialogueView v = U.dialogue.View();
+	const int ctx = U.core->Interp().State().g_active_dialogue_context;
+	U.choicePainter.SetAssets(U.painter.Assets());
+	U.linePainter.SetAssets(U.painter.Assets());
+	if (v.kind == DialogueView::CHOICES)
+	{
+		// render_dialogue_text_panel (dialogue_ui.c:814-848): the choices with
+		// the marker colour on the highlighted record, centred on the screen;
+		// the panel's x origin 0x83add is 0x28 while no topic menu is up
+		// (dialogue_ui.c:1209). A world panel; a click is mapped to a row by
+		// the original's own rectangles (ChoiceRowAt).
+		U.choicePainter.RenderDialogueTextPanel(U.dialogue.Segments(), ctx, 0x28);
+		AddWorldPicture(PIC_CHOICES, 0, 0, 0.5, E_DLGPANEL, true);
+		return;
+	}
+	if (v.kind != DialogueView::LINE) return;
+	// render_text_ui's drawing (dialogue_ui.c:1016-1047): the current segment
+	// laid out to the whole screen pitch (layout_timed_message_text), under the
+	// view -- the foot of the screen with the full view -- or under the open
+	// inventory panel. Head-locked; not hittable: a click anywhere is what
+	// dismisses it (game_core.c:612-632). The picture is the text and its
+	// outline only: the original darkens the 3D view behind it
+	// (apply_ui_palette_rect), which is the world's pixels, not drawn here.
+	const int seg = U.dialogue.SegmentIndex();
+	if (seg < 0 || seg >= (int)U.dialogue.Segments().size()) return;
+	U.linePainter.RenderTextUiSegment(U.dialogue.Segments()[(size_t)seg], U.screen.IsOpen(), 480 >> 1, 0, 480);
+	AddHeadPicture(PIC_LINE);
+}
+
+void BuildTimedMessage()
+{
+	const int n = U.dialogue.TimedMessageLineCount();
+	if (n == 0) return;
+	// render_active_timed_message (dialogue_ui.c:900-964): one line at the top
+	// of the view, or above the open inventory panel; more lines from y 0x20.
+	U.tmsgPainter.SetAssets(U.painter.Assets());
+	U.tmsgPainter.RenderActiveTimedMessage(U.dialogue.TimedMessageLines(), n, U.screen.IsOpen(), 480 >> 1, 0);
+	AddHeadPicture(PIC_TMSG);
+}
 
 void BuildInventory()
 {
 	if (!U.screen.IsOpen() || U.core == nullptr) return;
 	// ONE billboard: the original's own panel, drawn by roth_invdraw from the
 	// install's pictures. What a click on it means is the original's hotspot
-	// rectangles (InventoryPanelPainter::HitTest), not a layout of ours.
-	const FTextureID tex = PanelTexture();
-	if (!tex.isValid()) return;
-	Add(0, 0, 0, PanelW(), PanelH(), BB_TEXTURE, tex.GetIndex(), PalEntry(255, 255, 255, 255), nullptr, 1.0, E_INVPANEL, 0, true);
+	// rectangles (InventoryPanelPainter::HitTest), not a layout of ours. Its
+	// picture is panel-relative; the panel's anchor is (168, 240).
+	AddWorldPicture(PIC_INVENTORY, (640 - 0x130) >> 1, 480 >> 1, 0, E_INVPANEL, true);
 }
 
-// After the billboards were built: a new picture of the panel goes onto the
-// billboard already standing, without a rebuild.
-void UpdatePanelBillboard()
+// After the billboards were built: a new picture goes onto the billboard
+// already standing, without a rebuild.
+void UpdatePictureBillboards()
 {
-	if (!U.screen.IsOpen() || U.level == nullptr || U.panelShown == U.painter.Version()) return;
-	const FTextureID tex = PanelTexture();
+	if (U.level == nullptr) return;
 	for (const Element &e : U.elements)
 	{
-		if (e.kind != E_INVPANEL) continue;
+		if (e.picture < 0) continue;
+		const UiCanvas *c = CanvasOf(e.picture);
+		if (c == nullptr || (U.pics[e.picture].canvas == c && U.pics[e.picture].shown == c->Version())) continue;
+		const FTextureID tex = UploadPicture(e.picture);
 		for (FBillboard &b : U.level->Billboards) if (b.id == e.bb) b.data = tex.GetIndex();
 	}
 }
 
-// Where a ray meets the panel's billboard, in the panel's own pixels: (0, 0)
-// its top left, as the original's mouse is relative to its anchor. The
-// renderer puts u along the basis' right and v down from its top
-// (hw_sprites.cpp emitQuad), mirrored by bb_flipu.
+// Where a ray meets a picture's billboard, in the original's own pixels:
+// (left, top) its top left, as the original's mouse is. The renderer puts u
+// along the basis' right and v down from its top (hw_sprites.cpp emitQuad),
+// mirrored by bb_flipu.
 bool PanelPixel(const Ray &r, const Element &e, int &px, int &py)
 {
-	if (U.level == nullptr) return false;
+	if (U.level == nullptr || e.picW <= 0 || e.picH <= 0) return false;
 	const FBillboard *bb = nullptr;
 	for (const FBillboard &b : U.level->Billboards) if (b.id == e.bb) { bb = &b; break; }
 	if (bb == nullptr) return false;
@@ -749,8 +808,8 @@ bool PanelPixel(const Ray &r, const Element &e, int &px, int &py)
 	double u = ((rel | right) / hw + 1.0) * 0.5;
 	const double v = (1.0 - (rel | up) / hh) * 0.5;
 	if (bb_flipu) u = 1.0 - u;
-	px = (int)floor(u * InventoryPanelPainter::W);
-	py = (int)floor(v * InventoryPanelPainter::H);
+	px = e.left + (int)floor(u * e.picW);
+	py = e.top + (int)floor(v * e.picH);
 	return true;
 }
 
@@ -832,18 +891,20 @@ std::string InterfaceText(uint32_t id)
 	return U.dialogue.LineText(off, 0x50);
 }
 
-void BuildMenu()
+// The death screen. AN INVENTED LAYOUT, kept until the owner decides: the
+// original draws no box here -- its death wait (game_core.c:978-1003) shows
+// the world for up to 300 ticks and takes Esc or the quickload key, nothing
+// else -- so there is no picture of the original's to draw. Its rows are
+// this port's way to give those two keys to a player with no keyboard.
+void BuildDeathBox()
 {
 	if (U.menus == nullptr || !U.menus->IsOpen()) return;
 	RealmsMenus &m = *U.menus;
-	// show_message_box (menu_hud_ui.c:1284-): the title, the body line, one
-	// row per entry; the selection drawn in the marker colour. Laid out as a
-	// world panel in front of the player, a little in front of any other.
 	const std::vector<RealmsMenus::Row> rows = m.Rows();
 	std::vector<std::string> text;
 	for (const RealmsMenus::Row &r : rows) text.push_back(r.textId ? InterfaceText(r.textId) : r.label);
-	const std::string title = m.Current() == RealmsMenus::DEATH ? m.TitleText() : InterfaceText(m.TitleId());
-	const std::string body = m.BodyId() ? InterfaceText(m.BodyId()) : std::string();
+	const std::string title = m.TitleText();
+	const std::string body;
 	double widest = TextPixels(title);
 	if (!body.empty()) widest = std::max(widest, (double)TextPixels(body));
 	for (const std::string &t : text) widest = std::max(widest, (double)TextPixels(t));
@@ -873,10 +934,93 @@ void BuildMenu()
 			Add(0, z, L + 0.2, TextPixels(text[i]) * PX * S, ROWH * S, BB_TEXT, 0, col, text[i].c_str(), 1.0, E_NONE, 0, false);
 		z -= rowH;
 	}
-	// The slot lists scroll (word[0xc]); the close box is Esc ("cancelled").
-	if (m.CanScrollUp()) Add(W / 2 + 2.5, H / 2 - 4, L + 0.1, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "^", 1.0, E_MENU_UP, 0, true);
-	if (m.CanScrollDown()) Add(W / 2 + 2.5, -H / 2 + 4, L + 0.1, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "v", 1.0, E_MENU_DOWN, 0, true);
 	Add(W / 2 - 2.0, H / 2 - 2.0, L + 0.2, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "x", 1.0, E_MENU_BACK, 0, true);
+}
+
+// The slot names buffer read_savegame_slot_names fills (savegame.c:1262-1294):
+// 9 cells of 0x30 bytes, {0, '~'} for a slot with no save.
+std::vector<uint8_t> SlotNamesBuffer(const RealmsMenus &m)
+{
+	std::vector<uint8_t> n(0x1b0, 0);
+	const std::vector<std::string> &names = m.SlotNames();
+	for (int s = 0; s < 9; s++)
+	{
+		uint8_t *cell = n.data() + s * 0x30;
+		cell[1] = 0x7e;
+		if (s >= (int)names.size() || names[(size_t)s].empty()) continue;
+		const std::string &nm = names[(size_t)s];
+		for (size_t i = 0; i < nm.size() && i < 0x2f; i++) cell[i] = (uint8_t)nm[i];
+		cell[nm.size() < 0x2f ? nm.size() : 0x2f] = 0;
+	}
+	return n;
+}
+
+// show_message_box's picture for `box` into U.boxes[i] (phases 1-5).
+void OpenBoxPicture(int i, RealmsMenus::Box box, uint32_t flags, int sel, int scroll)
+{
+	RealmsMenus &m = *U.menus;
+	const MsgBoxDesc *d = FindMsgBoxDesc(RealmsMenus::DescriptorOf(box, m.FrontEnd()));
+	U.boxOf[i] = d != nullptr ? box : RealmsMenus::NONE;
+	if (d == nullptr) return;
+	MessageBoxPainter &b = U.boxes[i];
+	b.SetAssets(U.painter.Assets());
+	b.screenPitch = 640;                    // the retail ROTH.INI's VideoMode 8
+	b.screenHeight = 480;
+	b.anchorX = (640 - 0x130) >> 1;         // the panel anchor (compute_viewport_half_extents)
+	b.anchorY = 480 >> 1;
+	b.resolveText = [](uint8_t *dest, uint32_t maxlen, uint32_t id) { return U.dialogue.ResolveDbase100TextBytes(dest, maxlen, (int)id, 0); };
+	b.slotNames = SlotNamesBuffer(m);
+	// The engine's saves hold no picture of the original's kind, and there is
+	// no snapshot of the view (g_ui_panel_scratch_handle): the original's
+	// state when it has neither -- nothing drawn there.
+	b.thumbnail = nullptr;
+	b.panelSnapshot.clear();
+	b.Open(*d, flags, sel, scroll);
+	for (const std::string &pr : b.Problems()) Printf("[roth_menu] box picture: %s\n", pr.c_str());
+}
+
+// The box pictures follow the menus: composed when a box is shown afresh,
+// then one pass of its loop's drawing every tic (two of the original's frame
+// ticks): the selection, the scroll, the zoom fade.
+void TickMenuPictures()
+{
+	RealmsMenus *m = U.menus;
+	if (m == nullptr || !m->IsOpen() || m->Current() == RealmsMenus::DEATH)
+	{
+		U.boxOf[0] = U.boxOf[1] = RealmsMenus::NONE;
+		U.menuSerial = 0xffffffffu;
+		return;
+	}
+	// The slot lists read the save folder when they open (the runtime's
+	// TickMenus may hand the names over after this tic's picture was composed).
+	const bool list = m->Current() == RealmsMenus::LOAD || m->Current() == RealmsMenus::SAVE;
+	if (list && U.boxOf[0] == m->Current() && SlotNamesBuffer(*m) != U.boxes[0].slotNames) U.menuSerial = 0xffffffffu;
+	if (m->ShowSerial() != U.menuSerial)
+	{
+		if (m->ParentVisible())
+		{
+			// The box under stays as it stood: it was the top one until now.
+			if (U.boxOf[0] == m->Parent()) { U.boxes[1] = U.boxes[0]; U.boxOf[1] = U.boxOf[0]; }
+			else OpenBoxPicture(1, m->Parent(), m->Parent() == RealmsMenus::MAIN ? 1u : 0x8c1u, m->ParentSelected(), 0);
+		}
+		else U.boxOf[1] = RealmsMenus::NONE;
+		OpenBoxPicture(0, m->Current(), m->ShowFlags(), m->Selected(), m->Scroll());
+		U.menuSerial = m->ShowSerial();
+		U.pics[PIC_BOX0].shown = U.pics[PIC_BOX1].shown = 0xffffffffu;   // new pictures, whatever their versions say
+	}
+	if (U.boxOf[0] != RealmsMenus::NONE)
+		U.boxes[0].Pass(m->Selected(), m->Scroll() != U.boxes[0].Scroll() ? m->Scroll() : -1, 2);
+}
+
+void BuildMenu()
+{
+	if (U.menus == nullptr || !U.menus->IsOpen()) return;
+	if (U.menus->Current() == RealmsMenus::DEATH) { BuildDeathBox(); return; }
+	// show_message_box's own picture of each box on screen (roth_menudraw):
+	// the one under, when it stays, then the one on top, a little in front;
+	// only the top one takes the pointer, through hit_test_ui_element.
+	if (U.boxOf[1] != RealmsMenus::NONE) AddWorldPicture(PIC_BOX1, 0, 0, 3.0, E_PICTURE, false);
+	if (U.boxOf[0] != RealmsMenus::NONE) AddWorldPicture(PIC_BOX0, 0, 0, 3.5, E_MENUBOX, true);
 }
 
 void Rebuild(player_t *player)
@@ -907,10 +1051,6 @@ void ClickElement(const Element &e, int button)
 	(void)button;           // the inventory's clicks carry their button through PanelClick
 	switch (e.kind)
 	{
-	case E_CHOICE:
-		U.dialogue.PointerClick(e.bb, e.arg);
-		Printf("[roth_ui] choice %d picked\n", e.arg);
-		break;
 	case E_POP_MAG: U.screen.PopupMagnifier(); break;
 	case E_POP_INFO: U.screen.PopupToggleTopics(); break;
 	case E_POP_TOPIC: U.screen.PopupTopic(e.arg); break;
@@ -918,8 +1058,6 @@ void ClickElement(const Element &e, int button)
 	case E_POP_PGUP: U.screen.PopupPageUp(); break;
 	case E_POP_PGDN: U.screen.PopupPageDown(); break;
 	case E_MENU_ROW: if (U.menus != nullptr) { U.menus->Choose(e.arg); Printf("[roth_menu] row %d chosen: %s\n", e.arg, U.menus->Describe().c_str()); } break;
-	case E_MENU_UP: if (U.menus != nullptr) U.menus->ScrollUp(); break;
-	case E_MENU_DOWN: if (U.menus != nullptr) U.menus->ScrollDown(); break;
 	case E_MENU_BACK: if (U.menus != nullptr) U.menus->Back(); break;
 	default: break;
 	}
@@ -933,13 +1071,39 @@ bool ClickNothing()
 	return false;
 }
 
+// Where the pointer is on the choice panel, as the original reads its mouse:
+// (x + y) is the "position" (dialogue_ui.c:237), the row its own rectangles
+// give (ChoiceRowAt, dialogue_ui.c:255-266).
+bool ChoicePointer(const Ray &r, const Element *e, int &pos, int &row)
+{
+	pos = 0; row = -1;
+	if (e == nullptr || e->kind != E_DLGPANEL) return false;
+	int px = 0, py = 0;
+	if (!PanelPixel(r, *e, px, py)) return false;
+	pos = px + py;
+	row = U.choicePainter.ChoiceRowAt(px, py);
+	return true;
+}
+
 // game_core.c:607-632: a click while the dialogue owns the pointer.
-bool ClickDialogue(const Element *e)
+bool ClickDialogue(const Ray *r, const Element *e)
 {
 	if (!U.dialogue.PointerBelongsToDialogue()) return false;
-	if (e != nullptr && e->kind == E_CHOICE) { ClickElement(*e, InventoryScreen::PRIMARY); return true; }
-	U.dialogue.PointerClick(e != nullptr ? e->bb : 0, -1);
+	int pos = 0, row = -1;
+	if (r != nullptr) ChoicePointer(*r, e, pos, row);
+	U.dialogue.PointerClick(pos, row);
+	if (row >= 0) Printf("[roth_ui] choice %d picked\n", row);
 	return true;
+}
+
+// The top message box's own hit test at the pointer (hit_test_ui_element, as
+// show_message_box's loop calls it): 0 off the box.
+int MenuHit(const Ray &r, const Element *e)
+{
+	if (e == nullptr || e->kind != E_MENUBOX || U.boxOf[0] == RealmsMenus::NONE) return 0;
+	int px = 0, py = 0;
+	if (!PanelPixel(r, *e, px, py)) return 0;
+	return U.boxes[0].LoopHit(px, py);
 }
 
 bool Press(player_t *player, int forcedButton)
@@ -949,13 +1113,23 @@ bool Press(player_t *player, int forcedButton)
 	int n = 0;
 	if (!PointerRays(player, rays, n)) return false;
 	const bool menuUp = U.menus != nullptr && U.menus->IsOpen();
+	if (menuUp && U.menus->Current() != RealmsMenus::DEATH)
+	{
+		// A box is modal: the click goes to its loop with the hit where the
+		// pointer is (menu_hud_ui.c:1626-1638); off the box it is a click on nothing.
+		int hit = 0;
+		for (int i = 0; i < n && hit == 0; i++) hit = MenuHit(rays[i], HitElement(rays[i]));
+		U.menus->PointerClick(hit);
+		Printf("[roth_menu] click, hit %d: %s\n", hit, U.menus->IsOpen() ? U.menus->Describe().c_str() : "closed");
+		return true;
+	}
 	for (int i = 0; i < n; i++)
 	{
 		const Element *e = HitElement(rays[i]);
 		if (e == nullptr) continue;
 		if (menuUp)
 		{
-			// A box is modal: only its rows and buttons answer.
+			// The death screen's rows (an invented layout; see BuildDeathBox).
 			if (e->kind < E_MENU_ROW) continue;
 			ClickElement(*e, InventoryScreen::PRIMARY);
 			return true;
@@ -964,8 +1138,8 @@ bool Press(player_t *player, int forcedButton)
 		// secondary: the original needs both on the inventory.
 		const int button = forcedButton ? forcedButton : (i == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY);
 		if (U.screen.PopupUp() && e->kind < E_POP_MAG) continue;    // only the popup takes clicks while it is up
-		if (e->kind == E_CHOICE) return ClickDialogue(e);
-		if (e->kind == E_BACKING || e->kind == E_POP_BACKING) return true;
+		if (e->kind == E_DLGPANEL) return ClickDialogue(&rays[i], e);
+		if (e->kind == E_POP_BACKING) return true;
 		if (e->kind == E_INVPANEL)
 		{
 			int px = 0, py = 0;
@@ -976,7 +1150,7 @@ bool Press(player_t *player, int forcedButton)
 		return true;
 	}
 	if (menuUp) return true;                    // a press beside the box does nothing, and goes no further
-	if (ClickDialogue(nullptr)) return true;
+	if (ClickDialogue(nullptr, nullptr)) return true;
 	return ClickNothing();
 }
 
@@ -989,16 +1163,21 @@ void UpdateHover(player_t *player)
 	const int bb = e ? e->bb : 0;
 	if (U.menus != nullptr && U.menus->IsOpen())
 	{
-		if (bb != U.hoverBb && e != nullptr && e->kind == E_MENU_ROW) U.menus->Hover(e->arg);
+		if (U.menus->Current() == RealmsMenus::DEATH)
+		{
+			if (bb != U.hoverBb && e != nullptr && e->kind == E_MENU_ROW) U.menus->Hover(e->arg);
+		}
+		else U.menus->PointerAt(n > 0 ? MenuHit(rays[0], e) : 0);   // every frame, as the loop does (:1591-1607)
 		U.hoverBb = bb;
 		return;
 	}
 	// The dialogue's hover (game_core.c:556-569; dialogue_ui.c:231-271): the
-	// "position" is the element under the pointer, so a keyboard selection
-	// survives until the pointer moves to another row.
-	U.dialogue.SetPointer(bb, (e && e->kind == E_CHOICE) ? e->arg : -1);
+	// pointer's position and the row the original's rectangles put it on.
+	int pos = 0, row = -1;
+	if (n > 0) ChoicePointer(rays[0], e, pos, row);
+	U.dialogue.SetPointer(pos, row);
 	if (U.dialogue.PointerBelongsToDialogue())
-		U.dialogue.UpdateChoiceHighlight(bb, (e && e->kind == E_CHOICE) ? e->arg : -1);
+		U.dialogue.UpdateChoiceHighlight(pos, row);
 	// The inventory cursor follows the pointer over the grid (handle_cursor_click,
 	// input.c:1290-1297): a cell's action, when it is not the last one hovered.
 	if (e != nullptr && e->kind == E_INVPANEL && !U.screen.PopupUp() && n > 0)
@@ -1191,7 +1370,7 @@ void InterfaceSetPalette(const TextureSet &art)
 		U.iconTranslation = -1;
 		U.iconTex.clear();
 		U.pageTex.clear();
-		U.panelShown = 0xffffffffu;                         // the panel's picture goes up again in the new colours
+		for (Ui::Picture &pic : U.pics) pic.shown = 0xffffffffu;   // the pictures go up again in the new colours
 	}
 	// The pack's shade and blend tables (map_load.c:376-377), which the panel's
 	// tints read: copied, since the pack may be closed before the panel is.
@@ -1248,8 +1427,9 @@ void InterfaceTick(FLevelLocals *level)
 	U.core->Items().TickPickupLock(2);                   // tick_item_pickup_lock
 	TickFly(player);
 	UpdateHover(player);
+	TickMenuPictures();
 	Rebuild(player);
-	UpdatePanelBillboard();
+	UpdatePictureBillboards();
 }
 
 bool InterfaceUse(player_t *player)
@@ -1377,6 +1557,13 @@ static void Dump()
 	Printf("[roth_ui] %d panel billboard(s)\n", (int)U.elements.size());
 	for (const auto &kv : U.invSink.notBuilt) Printf("[roth_ui] asked for, not built: %s x%d\n", kv.first.c_str(), kv.second);
 	for (const std::string &pr : U.painter.Problems()) Printf("[roth_ui] inventory panel: %s\n", pr.c_str());
+	for (int i = 0; i < 2; i++)
+		if (U.boxOf[i] != RealmsMenus::NONE)
+			Printf("[roth_ui] message box %d: %x flags %x at %d,%d %dx%d, rows %d, selection %d, scroll %d, picture version %u\n", i, U.boxes[i].Desc().va,
+				U.boxes[i].Flags(), U.boxes[i].BoxX(), U.boxes[i].BoxY(), U.boxes[i].BoxW(), U.boxes[i].BoxH(), U.boxes[i].Rows(), U.boxes[i].Selected(),
+				U.boxes[i].Scroll(), U.boxes[i].Version());
+	for (const UiCanvas *c : { (const UiCanvas *)&U.choicePainter, (const UiCanvas *)&U.linePainter, (const UiCanvas *)&U.tmsgPainter, (const UiCanvas *)&U.boxes[0] })
+		for (const std::string &pr : c->Problems()) Printf("[roth_ui] picture: %s\n", pr.c_str());
 	if (U.screen.IsOpen())
 	{
 		Printf("[roth_ui] inventory panel picture %dx%d, version %u; hotspots:", U.painter.Width(), U.painter.Height(), U.painter.Version());

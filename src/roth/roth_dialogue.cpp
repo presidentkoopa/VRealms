@@ -318,6 +318,16 @@ std::string DialogueUi::ResolveDbase100Text(int index, uint32_t flag)
 	return "Missing Text";                                                  // :420-422
 }
 
+uint32_t DialogueUi::ResolveDbase100TextBytes(uint8_t *dest, uint32_t maxlen, int index, uint32_t flag)
+{
+	uint32_t off = 0;
+	if (mDb != nullptr && index < mDb->InterfaceCount() && mDb->InterfaceEntry(index, off) && off != 0)
+		return ReadNextDialogueLine(dest, maxlen, off, flag);              // dbase100.c:412-418
+	static const char missing[13] = "Missing Text";                         // 0x71374, :420-421
+	memcpy(dest, missing, 13);
+	return 13;
+}
+
 std::string DialogueUi::LineText(uint32_t voiceOffset, uint32_t maxlen)
 {
 	std::vector<uint8_t> buf(maxlen + 2, 0);

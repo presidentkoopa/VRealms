@@ -1,0 +1,96 @@
+# The front end's main menu (run_main_menu: flags 0x201 the first time, its zoom and its fade
+# frame by frame, then 1), the movie clips box, the front end's settings box, the load list
+# with its border (flags 0xd), the quit confirmation.
+env
+font
+exe 0x71900 0x460
+exe 0x7675d 0x14
+exe 0x75ef0 0x20
+rmsaves
+savefile 3 0x4e 0x38 66 The front end
+savefile 5 0x4e 0x38 67 -
+fill 0x1b
+q 0
+qd main_fade1
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+qd main_fade10
+q 0x50
+qd main_fade11_sel
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+qd main_fade29
+q 0
+qd main_fade_done
+qh 2
+q 0
+qd main_after_fade
+q 0x50
+qd main_sel2
+# Replay Intro (row 2): the movie clips box over the main menu
+q 0x1c
+q 0
+qd movies_open
+qh 2
+q 0x50
+qd movies_sel1
+q 1
+q 0
+qd main_reshown
+# Settings (row 3): the front end's settings box
+q 0x50
+q 0x1c
+q 0
+qd settings_front
+q 0x50
+q 0x50
+qd settings_front_sel2
+q 1
+# Load (row 1): the load list with its border
+q 0
+q 0x48
+q 0x48
+q 0x1c
+q 0
+qd load_front
+qh 2
+q 0x50
+q 0x50
+qd load_front_row2
+q 1
+# Quit to DOS (row 4)
+q 0
+q 0x50
+q 0x50
+q 0x50
+q 0x1c
+q 0
+qd quit_front
+q 1
+q 0
+q 1
+frontend 1
+mainmenu

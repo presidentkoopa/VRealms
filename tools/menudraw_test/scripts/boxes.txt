@@ -1,0 +1,107 @@
+# The other boxes the menus reach: the save-overwrite prompt (prompt_save_overwrite: 0x71cad,
+# flags 0x200 -- a sized box with the zoom fade, frame by frame), the volume box (flag 0x10:
+# slider rows and their value bars, lit on the selected row), the subtitle box, and the two
+# message boxes of the resource errors (flags 0x1200 / 0x200).
+env
+font
+exe 0x71900 0x460
+exe 0x7675d 0x14
+exe 0x75ef0 0x20
+fill 0x55
+q 0
+qd replace_fade1
+q 0
+q 0
+q 0
+qd replace_fade4
+q 0x50
+qd replace_fade5_sel
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+qd replace_fade_over
+qh 2
+q 0x50
+qd replace_after_sel
+q 1
+box 0x71cad 0x200
+fill 0x55
+q 0
+qd volume_open
+qh 2
+q 0x50
+qd volume_sel1
+q 0x50
+q 0x50
+qd volume_sel3
+q 1
+box 0x71b18 0x10
+fill 0x55
+q 0
+qd subtitles_open
+q 0x50
+qd subtitles_sel1
+q 1
+box 0x71ad4 0
+fill 0x55
+q 0
+qd simple_msg
+q 1
+box 0x71cd9 0x1200
+fill 0x55
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+q 0
+qd resource_msg
+q 1
+box 0x71d05 0x200

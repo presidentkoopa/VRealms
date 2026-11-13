@@ -1,0 +1,113 @@
+# The in-game options box (run_options_menu: flags 0x8c1) and every box it leads to, with the
+# selection moved by keys and by the pointer, a hit-test grid over each box: the settings box and
+# the quit / new-game confirmations (sized boxes over the options box, CANCEL preselected), the
+# load list (flags 0x4d) and the save list (flags 0x4f) with saves present (names, a save with no
+# name, a slot with no file, thumbnails of two sizes), the scroll by keys and by a click on its
+# arrow, the save box's view snapshot (flag 2) and the scroll it shares with the load box.
+env
+font
+exe 0x71900 0x460
+exe 0x7675d 0x14
+exe 0x75ef0 0x20
+rmsaves
+savefile 1 0x4e 0x38 11 The Study
+savefile 2 0x4e 0x38 22 Church corridor
+savefile 4 0x4e 0x38 33 -
+savefile 6 0x40 0x30 44 Caverns
+savefile 9 0x4e 0x38 55 Last slot
+snapshot 0x4e 0x38 77
+fill 7
+q 0
+qd opt_open
+qh 2
+q 0x50
+qd opt_sel1
+qm 366 294
+qd opt_hover_settings
+qm 180 250
+qd opt_hover_close
+qm 600 50
+qd opt_pointer_off
+q 0x50
+qd opt_key_after_pointer
+# Settings (row 3): the in-game settings box (0x71a58) over the options box
+q 0x50
+q 0x50
+q 0x50
+q 0x1c
+q 0
+qd settings_open
+qh 2
+q 0x50
+qd settings_sel1
+q 1
+q 0
+qd opt_after_settings
+# Quit to DOS (row 4): the confirmation over the options box, CANCEL preselected
+q 0x50
+q 0x1c
+q 0
+qd quit_open
+qh 2
+q 0x48
+qd quit_sel0
+q 1
+q 0
+qd opt_after_quit
+# New game (row 0)
+q 0x50
+q 0x1c
+q 0
+qd newgame_open
+q 0x48
+qd newgame_sel0
+q 1
+# Load (row 1): the options box closes, the load list opens
+q 0
+q 0x50
+q 0x1c
+q 0
+qd load_open
+qh 2
+q 0x50
+qd load_row1
+q 0x50
+qd load_row2_nofile
+q 0x50
+qd load_row3_noname
+q 0x50
+q 0x50
+qd load_scrolled1
+q 0x50
+q 0x50
+q 0x50
+qd load_scrolled4
+q 0x50
+qd load_bottom_again
+qm 448 264
+qd load_hover_uparrow
+qb 1
+q 0
+qd load_click_uparrow
+qm 340 283
+qd load_hover_row2
+qh 2
+q 1
+# back in the options box: Save (row 2), the save list with the snapshot and the shared scroll
+q 0
+q 0x50
+q 0x1c
+q 0
+qd save_open
+qh 2
+q 0x48
+qd save_sel_up
+q 0x48
+q 0x48
+q 0x48
+q 0x48
+qd save_scrolled_up
+q 1
+q 0
+q 1
+optionsmenu

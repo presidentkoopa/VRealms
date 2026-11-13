@@ -162,6 +162,9 @@ public:
 	// resolve_dbase100_text (dbase100.c:408-423): interface text `index`, or
 	// "Missing Text".
 	std::string ResolveDbase100Text(int index, uint32_t flag = 0);
+	// The same, byte for byte as the original hands it back: up to `maxlen`
+	// bytes into `dest`, the count read (13 for "Missing Text" and its 0).
+	uint32_t ResolveDbase100TextBytes(uint8_t *dest, uint32_t maxlen, int index, uint32_t flag = 0);
 	// The text of a DBASE400 entry, at most `maxlen` bytes, through
 	// ReadNextDialogueLine(flag 0) -- so it sets g_timed_message_color as the
 	// original's read does.

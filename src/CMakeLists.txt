@@ -981,6 +981,9 @@ set (PCH_SOURCES
 	roth/roth_dialogue.cpp
 	roth/roth_invscreen.cpp
 	roth/roth_invdraw.cpp
+	roth/roth_uidraw.cpp
+	roth/roth_menudraw.cpp
+	roth/roth_dlgdraw.cpp
 	roth/roth_icons.cpp
 	roth/roth_interface.cpp
 	# The GDV movies: the decoder (engine-free, tools/gdv_test) and the queue

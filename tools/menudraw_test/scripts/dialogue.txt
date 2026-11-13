@@ -1,0 +1,104 @@
+# The dialogue text, drawn by the original's render_text_ui at frame scale 0 (nothing advances) on
+# a filled screen: 343's spoken line, then its four-choice menu (keys, the pointer's highlight, a
+# hit-test grid), the five-choice menu with flag 0x139, 223's two choices, 182's spoken line of two
+# pages (three wrapped lines each), the timed message of one line and of three, above the open
+# inventory panel too, a spoken line under it. No speech device: every line waits for a click.
+env
+font
+exe 0x71900 0x460
+exe 0x7675d 0x14
+exe 0x75ef0 0x20
+fill 0xe3
+qact 343
+fin
+pump
+tick 1
+dtext line_343
+chgrid 3
+skip
+tick 1
+pump
+tick 1
+dtext choices4_open
+chgrid 2
+next
+dtext choices4_sel0
+next
+next
+dtext choices4_sel2
+prev
+dtext choices4_sel1
+hover 330 230
+dtext choices4_hover
+hover 2 2
+dtext choices4_hover_off
+skip
+tick 1
+pump
+tick 1
+pump
+dtext after_343
+stopall
+# five choices: the gated "Spirit." row
+flagset 0x139
+qact 343
+fin
+pump
+tick 1
+skip
+tick 1
+pump
+tick 1
+next
+next
+next
+dtext choices5_sel2
+chgrid 3
+skip
+tick 1
+pump
+tick 1
+pump
+stopall
+# two choices
+act 223
+pump
+tick 1
+dtext choices2_open
+next
+dtext choices2_sel0
+chgrid 3
+skip
+tick 1
+pump
+tick 1
+pump
+stopall
+# a spoken line of two pages
+act 182
+pump
+tick 1
+dtext line182_page1
+skip
+tick 1
+pump
+tick 1
+dtext line182_page2
+invopen 2 240
+dtext line182_page2_inventory
+invopen 0 0
+skip
+tick 1
+pump
+tick 1
+pump
+stopall
+# timed messages
+tmsg I cannot use the book on the door.
+dtext tmsg_one
+tmsg A first line of the message^^and a second one^^and the third, much longer than the other two.
+dtext tmsg_three
+invopen 2 240
+tmsg Above the inventory panel.
+dtext tmsg_inventory
+invopen 0 0

@@ -63,23 +63,25 @@
 //  blit_item_icon, inventory.c:2073-2148
 //  45  header skips (flag 4: 8, no flag 2: 0x300, then 8); ALWAYS run-length (it never tests flag 1) ... BlitItemIcon
 //  46  index 0 not drawn; modes 2 (every other row), 1 (plain), 0 (doubled); colour <= 0xff00 -> blend + colour, else shade + colour >> 8 ... BlitItemIcon
+//  The primitives 47-58 are roth_uidraw's (moved there unchanged, with its own
+//  checklist, so the menus and the dialogue text share them):
 //  blit_reloc_das_image + blit_das_image_to_buffer, das_assets.c:1392-1400, 1195-1378
-//  47  ICONS.ALL: image = base + dword[base + slot]; mode hires ? 0 : 1 ... BlitRelocDasImage
-//  48  every pixel drawn, 0 included; run-length when flag 1; mode 0 doubled, 1 plain, 2 every other row (a plain image: 1 and 2 alike) ... BlitDasImage
-//  49  variant B (packed stride) .................................. not ported: only for a stride - width > 0xfff, never here
+//  47  ICONS.ALL: image = base + dword[base + slot]; mode hires ? 0 : 1 ... UiCanvas::BlitRelocDasImage
+//  48  every pixel drawn, 0 included; run-length when flag 1; mode 0 doubled, 1 plain, 2 every other row (a plain image: 1 and 2 alike) ... UiCanvas::BlitDasImageToBuffer
+//  49  variant B (packed stride) .................................. UiCanvas (never reached by the panel)
 //  50  the shaded variants ........................................ not ported: the panel's pictures are blitted unshaded (ecx = mode only)
 //  rle_decode_scroll_segment, blit_2d.c:296-327
-//  51  < 0xf1 a literal, else (b - 0xf0) copies of the next byte; the stream runs on across rows ... DecodeRle
+//  51  < 0xf1 a literal, else (b - 0xf0) copies of the next byte; the stream runs on across rows ... roth_uidraw DecodeRle
 //  screen_xy_to_framebuffer_ptr, renderer.c:579-586
-//  52  y doubled in the hi-res modes .............................. Addr
+//  52  y doubled in the hi-res modes .............................. UiCanvas::Addr
 //  draw_text_at_screen_xy / draw_text_to_buffer, text_font.c:371-380, 300-367
-//  53  hi-res: flags + 1, y doubled; pitch doubled; pen = dest + pitch + 1 ... DrawTextAtScreenXy
-//  54  0 ends, 0x0d / 0x0a new line, 1 <c> ramp rows 0..11 of the shade table at column c (flat with flag 8), 2 <w> advance ... DrawTextAtScreenXy
-//  55  glyph: signed offset, 0 -> default advance; width, +1 with 0x20; top, rows; nibble-packed when width <= 4 ... DrawTextAtScreenXy
-//  56  outline: index 1 on 4 neighbours (6 in hi-res) unless flag 4 (text_font.c:193-245) ... DrawTextAtScreenXy
-//  57  glyph pixels: ramp[top + row]; hi-res also the row below (text_font.c:252-279) ... DrawTextAtScreenXy
+//  53  hi-res: flags + 1, y doubled; pitch doubled; pen = dest + pitch + 1 ... UiCanvas::DrawTextAtScreenXy / DrawTextToBuffer
+//  54  0 ends, 0x0d / 0x0a new line, 1 <c> ramp rows 0..11 of the shade table at column c (flat with flag 8), 2 <w> advance ... UiCanvas::DrawTextAtScreenXy / DrawTextToBuffer
+//  55  glyph: signed offset, 0 -> default advance; width, +1 with 0x20; top, rows; nibble-packed when width <= 4 ... UiCanvas::DrawTextAtScreenXy / DrawTextToBuffer
+//  56  outline: index 1 on 4 neighbours (6 in hi-res) unless flag 4 (text_font.c:193-245) ... UiCanvas::DrawTextAtScreenXy / DrawTextToBuffer
+//  57  glyph pixels: ramp[top + row]; hi-res also the row below (text_font.c:252-279) ... UiCanvas::DrawTextAtScreenXy / DrawTextToBuffer
 //  measure_control_text_width, renderer.c:436-452
-//  58  sum of advances of bytes >= 0x20; 1 skips 1, 2 skips 2 ...... MeasureControlTextWidth
+//  58  sum of advances of bytes >= 0x20; 1 skips 1, 2 skips 2 ...... UiCanvas::MeasureControlTextWidth
 //  hit_test_dialogue_ui_action, dialogue_ui.c:576-604
 //  59  outside [0, 0x120] x [0, 0x50] -> 0x26 ...................... HitTest
 //  60  the lists 0x71241 = {0x80b74 tabs, 0x80ba4 the rest}; unsigned dx <= w, dy <= h ... HitTest
@@ -91,6 +93,7 @@
 #include "roth_gamecore.h"
 #include "roth_dbase100.h"
 #include "roth_dialogue.h"
+#include "roth_uidraw.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -123,80 +126,11 @@ const uint8_t InvPanelTables::rightHandColor = 0xee;
 const uint8_t InvPanelTables::labelColor = 0xd7;
 const char InvPanelTables::labelFormat[] = "%s (%D)";
 
-// FNV-1a over [descriptor - ROTH_FONT_BEFORE, descriptor + ROTH_FONT_AFTER)
-// of the running original's memory (tools/invdraw_test: the probe's font
-// bytes, hashed by invdraw_diff "fonthash").
-const uint32_t ROTH_FONT_HASH = 0x192939a9;
-
-uint32_t RothFontHash(const uint8_t *p, size_t n)
-{
-	uint32_t h = 2166136261u;
-	for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
-	return h;
-}
-
-bool FindRothExeFont(const std::vector<uint8_t> &exe, RothFont &out, std::string &error)
-{
-	out = RothFont();
-	// The descriptor's header: max char 0xff, line step 11, default advance 3
-	// (text_font.c:304-306), then the offsets of the 14 control bytes, all 0.
-	static const uint8_t head[6] = { 0xff, 0x00, 0x0b, 0x00, 0x03, 0x00 };
-	const size_t span = ROTH_FONT_BEFORE + ROTH_FONT_AFTER;
-	int candidates = 0;
-	for (size_t i = ROTH_FONT_BEFORE; i + ROTH_FONT_AFTER <= exe.size(); i++)
-	{
-		if (memcmp(exe.data() + i, head, sizeof head) != 0) continue;
-		candidates++;
-		if (RothFontHash(exe.data() + i - ROTH_FONT_BEFORE, span) != ROTH_FONT_HASH) continue;
-		out.bytes.assign(exe.begin() + (long)(i - ROTH_FONT_BEFORE), exe.begin() + (long)(i + ROTH_FONT_AFTER));
-		out.desc = ROTH_FONT_BEFORE;
-		return true;
-	}
-	char buf[160];
-	snprintf(buf, sizeof buf, "ROTH.EXE does not hold the original's font (%d candidate header(s), none with the original's bytes)", candidates);
-	error = buf;
-	return false;
-}
-
 namespace
 {
 
 uint16_t U16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 uint32_t U32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
-
-// rle_decode_scroll_segment's stream (blit_2d.c:296-327), whole: the window
-// the original refills is only a view of one continuous stream, a run
-// crossing a row's end included.
-bool DecodeRle(const uint8_t *src, size_t avail, size_t total, std::vector<uint8_t> &out)
-{
-	out.assign(total, 0);
-	size_t o = 0, p = 0;
-	while (o < total && p < avail)
-	{
-		const uint8_t b = src[p++];
-		if (b < 0xf1) { out[o++] = b; continue; }
-		if (p >= avail) break;
-		const uint8_t v = src[p++];
-		for (int r = b - 0xf0; r > 0 && o < total; r--) out[o++] = v;
-	}
-	return o == total;
-}
-
-// The header of a DAS picture (blit_das_image_to_buffer, das_assets.c:1197-1216;
-// blit_item_icon, inventory.c:2079-2093): where its pixels start.
-size_t PayloadAt(const uint8_t *img)
-{
-	size_t p = 0;
-	if (img[0] & 4) p += 8;
-	if (!(img[0] & 2)) p += 0x300;
-	return p + 8;
-}
-
-// The virtual screen the routines address: wide and tall enough that what
-// the original writes beside the rectangle lands beside it here too, and is
-// then left out of the picture.
-const long VPITCH = 0x400;
-const long VORG = 0x100;
 
 } // namespace
 
@@ -211,33 +145,17 @@ void InventoryPanelPainter::Bind(InventoryScreen *screen, GameCore *core, const 
 	mScreen = screen;
 	mCore = core;
 	mDb = db;
-	mA = assets;
-	mHires = hires;
-	mPix.assign((size_t)W * Height(), 0);
+	mIA = assets;
+	UiAssets ua;
+	ua.iconsAll = assets.iconsAll;
+	ua.shade = assets.shade;
+	ua.blend = assets.blend;
+	ua.font = assets.font;
+	SetAssets(ua);
+	SetRect(0, 0, W, H, hires);                                             // panel-relative: (0, 0) is the anchor
 	mDrawn = false;
 	if (mA.font == nullptr || !mA.font->ok()) Problem("no font: the panel's text is not drawn (ROTH.EXE's font was not found)");
 	if (mScreen != nullptr) mScreen->SetDraw(this);
-}
-
-void InventoryPanelPainter::Problem(const std::string &s)
-{
-	for (const std::string &p : mProblems) if (p == s) return;
-	mProblems.push_back(s);
-}
-
-// screen_xy_to_framebuffer_ptr (renderer.c:579-586), panel-relative.
-long InventoryPanelPainter::Addr(int x, int y) const
-{
-	const long yy = mHires ? (long)y * 2 : (long)y;
-	return (VORG + yy) * VPITCH + VORG + x;
-}
-
-void InventoryPanelPainter::Put(long addr, uint8_t v)
-{
-	const long y = addr / VPITCH - VORG, x = addr % VPITCH - VORG;
-	if (x < 0 || x >= W || y < 0 || y >= Height()) return;
-	uint8_t &d = mPix[(size_t)(y * W + x)];
-	if (d != v) { d = v; mVersion++; }
 }
 
 //==========================================================================
@@ -266,11 +184,11 @@ int32_t InventoryPanelPainter::EntryQty(int entry) const
 // its record's +0x0c resource of DBASE200.DAT, a dword size and the picture.
 bool InventoryPanelPainter::ItemIcon(int32_t itemId, const uint8_t **img, size_t *size) const
 {
-	if (mDb == nullptr || mA.dbase200 == nullptr || itemId <= 0) return false;
+	if (mDb == nullptr || mIA.dbase200 == nullptr || itemId <= 0) return false;
 	const DbItem *rec = mDb->Item(itemId);
 	if (rec == nullptr || !rec->ok || rec->icon == 0) return false;
 	const uint64_t off = (uint64_t)rec->icon << 3;
-	const std::vector<uint8_t> &d = *mA.dbase200;
+	const std::vector<uint8_t> &d = *mIA.dbase200;
 	if (off + 4 > d.size()) return false;
 	const uint32_t n = U32(d.data() + off);
 	if (n < 8 || off + 4 + n > d.size()) return false;
@@ -290,55 +208,6 @@ int InventoryPanelPainter::EntryIcon(int entry, const uint8_t **img, size_t *siz
 //
 //==========================================================================
 
-// blit_das_image_to_buffer (das_assets.c:1195-1378), unshaded, at panel (x, y).
-void InventoryPanelPainter::BlitDasImage(const uint8_t *img, size_t size, int x, int y, int mode)
-{
-	if (img == nullptr || size < 8) return;
-	const int w = U16(img + 4), h = U16(img + 6);
-	const size_t p = PayloadAt(img);
-	if (w <= 0 || h <= 0 || p > size) return;
-	std::vector<uint8_t> px;
-	if (img[0] & 1)
-	{
-		if (!DecodeRle(img + p, size - p, (size_t)w * h, px)) Problem("an ICONS.ALL picture's run-length stream ends early");
-	}
-	else
-	{
-		px.assign((size_t)w * h, 0);
-		for (size_t i = 0; i < px.size() && p + i < size; i++) px[i] = img[p + i];
-		if (!(img[0] & 1)) mode = mode == 0 ? 0 : 1;                       // :1349-1356: modes 1 and 2 alike
-	}
-	long a = Addr(x, y);
-	if (mode == 2)                                                          // every other row
-	{
-		for (int r = 0; r < h; r += 2, a += VPITCH)
-			for (int c = 0; c < w; c++) Put(a + c, px[(size_t)r * w + c]);
-	}
-	else if (mode == 0)                                                     // doubled rows
-	{
-		for (int r = 0; r < h; r++, a += 2 * VPITCH)
-			for (int c = 0; c < w; c++) { Put(a + c, px[(size_t)r * w + c]); Put(a + VPITCH + c, px[(size_t)r * w + c]); }
-	}
-	else
-	{
-		for (int r = 0; r < h; r++, a += VPITCH)
-			for (int c = 0; c < w; c++) Put(a + c, px[(size_t)r * w + c]);
-	}
-}
-
-// blit_reloc_das_image (das_assets.c:1392-1400): a picture of ICONS.ALL by
-// the byte offset of its table entry.
-void InventoryPanelPainter::BlitRelocDasImage(int x, int y, uint32_t offSlot)
-{
-	if (mA.iconsAll == nullptr || mA.iconsAll->empty()) { Problem("no ICONS.ALL"); return; }   // :1394-1395, no buffer: nothing
-	const std::vector<uint8_t> &f = *mA.iconsAll;
-	if ((size_t)offSlot + 8 > f.size()) { Problem("an ICONS.ALL slot past the table"); return; }
-	const uint32_t off = U32(f.data() + offSlot), size = U32(f.data() + offSlot + 4);
-	if ((size_t)off + 8 > f.size()) { Problem("an ICONS.ALL picture past the file"); return; }
-	const size_t avail = (size_t)off + size <= f.size() ? size : f.size() - off;
-	BlitDasImage(f.data() + off, avail, x, y, mHires ? 0 : 1);
-}
-
 // blit_item_icon (inventory.c:2073-2148) at panel (x, y). `ecx` is the
 // original's mode word: low byte the row mode, bits 8-23 the tint.
 void InventoryPanelPainter::BlitItemIcon(const uint8_t *icon, size_t size, int x, int y, uint32_t ecx)
@@ -347,10 +216,10 @@ void InventoryPanelPainter::BlitItemIcon(const uint8_t *icon, size_t size, int x
 	const int w = U16(icon + 4), rows = U16(icon + 6);
 	const uint32_t color = ecx & 0xffff00u;
 	const int mode = (int)(ecx & 0xff);
-	const size_t p = PayloadAt(icon);
+	const size_t p = DasPayloadAt(icon);
 	if (w <= 0 || rows <= 0 || p > size) return;
 	std::vector<uint8_t> px;
-	DecodeRle(icon + p, size - p, (size_t)w * rows, px);                   // :2093-2147: always the run-length decoder
+	UiDecodeRle(icon + p, size - p, (size_t)w * rows, px);                   // :2093-2147: always the run-length decoder
 	const uint8_t *table = nullptr;
 	uint32_t base = 0;
 	size_t tableSize = 0;
@@ -391,126 +260,6 @@ void InventoryPanelPainter::BlitItemIcon(const uint8_t *icon, size_t size, int x
 			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) Put(a, ink(v)); }
 			a += stride;
 		}
-	}
-}
-
-// measure_control_text_width (renderer.c:436-452) over the font's advances
-// (measure_font_char_advance, renderer.c:337-348: roth_dialogue's table, the
-// original's own answers).
-int InventoryPanelPainter::MeasureControlTextWidth(const uint8_t *s, size_t len) const
-{
-	int width = 0;
-	for (size_t i = 0; i < len; i++)
-	{
-		const uint8_t c = s[i];
-		if (c == 0) break;
-		if (c == 1) i += 1;
-		else if (c == 2) i += 2;
-		else if (c >= 0x20) width += roth::FontCharAdvance(c);
-	}
-	return width;
-}
-
-// draw_text_at_screen_xy (text_font.c:371-380) and draw_text_to_buffer
-// (text_font.c:300-367, with its outline and glyph helpers :193-279).
-void InventoryPanelPainter::DrawTextAtScreenXy(const uint8_t *str, size_t len, int x, int y, uint32_t flags)
-{
-	if (mA.font == nullptr || !mA.font->ok()) return;
-	const std::vector<uint8_t> &fb = mA.font->bytes;
-	const long D = (long)mA.font->desc;
-	auto fbyte = [&](long i) -> uint8_t { return (i >= 0 && i < (long)fb.size()) ? fb[(size_t)i] : 0; };
-	auto fword = [&](long i) -> uint16_t { return (uint16_t)(fbyte(i) | (fbyte(i + 1) << 8)); };
-	if (mHires) flags += 1;                                                 // :373-376 (y is doubled by Addr)
-	long pitch = VPITCH;
-	if (flags & 1) pitch += pitch;                                          // :303
-	const uint32_t maxChar = fword(D), lineStep = fword(D + 2), defAdv = fword(D + 4);
-	const long newlineAdv = (long)lineStep * pitch;
-	long pen = Addr(x, y) + pitch + 1, lineBase = pen;                      // :308-309
-	const int dbl = (flags & 1) != 0;
-	const long half = pitch >> 1;
-	const long esi = dbl ? (pitch >> 1) : pitch;                            // outline step, :199
-	auto mark = [&](long e) {
-		if (dbl) { Put(e + esi - 1, 1); Put(e + esi + 1, 1); Put(e - 1, 1); Put(e + 1, 1); Put(e - esi, 1); Put(e + 2 * esi, 1); }
-		else { Put(e - 1, 1); Put(e + 1, 1); Put(e - esi, 1); Put(e + esi, 1); }
-	};
-	for (size_t i = 0; i < len; i++)
-	{
-		const uint8_t c = str[i];
-		if (c == 0) return;
-		if (c == 0x0d) { pen = lineBase + newlineAdv; lineBase = pen; continue; }
-		if (c < 0x0d)
-		{
-			if (c == 1)
-			{
-				const uint8_t color = i + 1 < len ? str[++i] : 0;
-				for (int k = 0; k < 12; k++)
-					mRamp[k] = (flags & 8) ? color : (mA.shade ? mA.shade[(k << 8) | color] : color);   // fs:[(k<<8)|colour]
-			}
-			else if (c == 2)
-			{
-				const uint16_t adv = (uint16_t)((i + 1 < len ? str[i + 1] : 0) | ((i + 2 < len ? str[i + 2] : 0) << 8));
-				i += 2;
-				pen += adv;
-			}
-			else if (c == 0x0a) { pen = lineBase + newlineAdv; lineBase = pen; }
-			continue;
-		}
-		if (c > maxChar) { pen += defAdv; continue; }
-		const int16_t goff = (int16_t)fword(D + 6 + c * 2);
-		if (goff == 0) { pen += defAdv; continue; }
-		const long g = D + goff;
-		const uint16_t metrics = fword(g);
-		long rows = g + 2;
-		const uint8_t mlow = (uint8_t)(metrics & 0xff), mhigh = (uint8_t)(metrics >> 8);
-		const long adv = (mlow & 0x0f) + 1;
-		int8_t width = (int8_t)(mlow & 0x0f);
-		if (mlow & 0x20) width++;
-		const int top = mhigh >> 4;
-		const int rowCount = (mhigh & 0x0f) + 1;
-		const long blitPen = pen + (long)top * pitch;
-		for (int pass = (flags & 4) ? 1 : 0; pass < 2; pass++)              // 0: the outline, 1: the glyph
-		{
-			long rp = rows, e0 = blitPen;
-			int ri = top;
-			uint8_t dl = 0, cl = 0;
-			for (int rc = rowCount; rc > 0; rc--)
-			{
-				const uint8_t ch = mRamp[ri & 31];
-				ri++;
-				if (width <= 4)
-				{
-					if (dl == 0) cl = fbyte(rp++);
-					dl = (uint8_t)~dl;
-					if (cl & 0xf0)
-					{
-						long e = e0;
-						int8_t dh = width;
-						do {
-							const int carry = cl & 0x80; cl = (uint8_t)(cl << 1);
-							if (carry) { if (pass == 0) mark(e); else { Put(e, ch); if (dbl) Put(e + half, ch); } }
-							e++;
-						} while (--dh > 0);
-					}
-					else cl = (uint8_t)(cl << 4);
-				}
-				else
-				{
-					cl = fbyte(rp++);
-					if (cl != 0)
-					{
-						long e = e0;
-						int8_t dh = width;
-						do {
-							const int carry = cl & 0x80; cl = (uint8_t)(cl << 1);
-							if (carry) { if (pass == 0) mark(e); else { Put(e, ch); if (dbl) Put(e + half, ch); } }
-							e++;
-						} while (--dh > 0);
-					}
-				}
-				e0 += pitch;
-			}
-		}
-		pen += adv;
 	}
 }
 
@@ -588,19 +337,19 @@ void InventoryPanelPainter::DrawInventoryTabs()
 void InventoryPanelPainter::FormatInventoryItemLabel(int32_t itemId, int32_t qty)
 {
 	if (itemId == 0) return;                                                // :1034
-	const uint32_t text = mA.labelText ? mA.labelText(itemId) : 0;          // :1035-1039
+	const uint32_t text = mIA.labelText ? mIA.labelText(itemId) : 0;          // :1035-1039
 	if (text == g_label_text && qty == g_label_qty) return;                 // :1040
 	g_label[2] = 0;                                                         // :1041
 	g_label_text = text;
 	g_label_qty = qty;
 	if (text == 0) return;                                                  // :1044
-	if (!mA.readLine) return;
-	if (qty == 0) { mA.readLine(g_label + 2, 0x61, text); return; }        // :1045-1054
+	if (!mIA.readLine) return;
+	if (qty == 0) { mIA.readLine(g_label + 2, 0x61, text); return; }        // :1045-1054
 	// :1055-1071. The stack buffer the original reads into is not cleared
 	// first; DBASE400 texts carry their own terminating zero (the test reads
 	// every label this one draws), so a cleared one prints the same.
 	uint8_t buf[0x64] = {};
-	mA.readLine(buf, 0x61, text);
+	mIA.readLine(buf, 0x61, text);
 	buf[0x63] = 0;
 	char out[0x100];
 	// "%s (%D)": Watcom's %D is a signed decimal (the test's labels with a count).
@@ -743,7 +492,7 @@ void InventoryPanelPainter::RenderInventoryPanel()
 		}
 		uint8_t loc[0x64] = {};
 		const uint32_t txt = rec->name;                                     // :1918
-		if (txt != 0 && mA.readLine && mA.readLine(loc + 2, 0x62, txt) != 0)
+		if (txt != 0 && mIA.readLine && mIA.readLine(loc + 2, 0x62, txt) != 0)
 		{
 			loc[0] = 1;
 			loc[1] = InvPanelTables::markerSelected;

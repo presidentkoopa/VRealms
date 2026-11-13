@@ -24,13 +24,9 @@
 //   format_inventory_item_label   inventory.c:1031-1072
 //   draw_ui_panel_count_element   menu_hud_ui.c:150-162
 //   blit_item_icon                inventory.c:2025-2148
-//   blit_reloc_das_image          das_assets.c:1392-1400
-//   blit_das_image_to_buffer      das_assets.c:1195-1378
-//   rle_decode_scroll_segment     blit_2d.c:296-327
-//   screen_xy_to_framebuffer_ptr  renderer.c:579-586
-//   draw_text_at_screen_xy        text_font.c:371-380
-//   draw_text_to_buffer           text_font.c:281-367 (and its two helpers, :193-279)
-//   measure_control_text_width    renderer.c:438-452
+// The 2D primitives it draws with (the DAS blits, the text, the run-length
+// decoder, screen addressing) are roth_uidraw's, shared with the menus and
+// the dialogue text.
 //   hit_test_dialogue_ui_action   dialogue_ui.c:546-604  the panel half
 //
 // The picture is the PANEL RECTANGLE only. What the original also does to
@@ -41,6 +37,7 @@
 //
 
 #include "roth_invscreen.h"
+#include "roth_uidraw.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -52,29 +49,6 @@ namespace roth
 {
 
 class Dbase100;
-
-// The original's font (g_font_descriptor, 0x70f12) is ROTH.EXE's own
-// initialised data, not one of the game files. FindRothExeFont finds it in
-// the bytes of the player's ROTH.EXE and accepts it only when it is exactly
-// the original's (an FNV-1a hash of the bytes the font uses, measured from the
-// running original by tools/invdraw_test); the bytes themselves are never
-// copied into this program.
-struct RothFont
-{
-	std::vector<uint8_t> bytes;     // the glyphs, then the descriptor
-	size_t desc = 0;                // where the descriptor starts in `bytes`
-	bool ok() const { return !bytes.empty(); }
-};
-// The span of the executable's data the font uses, around the descriptor: its
-// glyphs lie BELOW it (the offset table is signed, renderer.c:342), the lowest
-// at -0x4d6; the descriptor's 6 header bytes and 256 offsets end at +0x206.
-static const size_t ROTH_FONT_BEFORE = 0x4d6;
-static const size_t ROTH_FONT_AFTER = 0x206;
-extern const uint32_t ROTH_FONT_HASH;          // measured from the running original; see roth_invdraw.cpp
-uint32_t RothFontHash(const uint8_t *p, size_t n);
-// Search `exe` for the font and verify it. False with `error` set when the
-// file does not hold exactly the original's font.
-bool FindRothExeFont(const std::vector<uint8_t> &exe, RothFont &out, std::string &error);
 
 // The executable's small tables the panel's drawing reads. These ARE
 // transcribed (as the font's advance widths in roth_dialogue.cpp are), each
@@ -128,7 +102,7 @@ struct InvPanelAssets
 	std::function<uint32_t(int32_t itemId)> labelText;
 };
 
-class InventoryPanelPainter : public InventoryScreenDraw
+class InventoryPanelPainter : public InventoryScreenDraw, public UiCanvas
 {
 public:
 	static const int W = 0x120, H = 0x50;
@@ -139,14 +113,10 @@ public:
 	void Bind(InventoryScreen *screen, GameCore *core, const Dbase100 *db, const InvPanelAssets &assets, bool hires = false);
 
 	// The map's pack tables, when a map opens (the tints read them).
-	void SetPackTables(const uint8_t *shade, const uint8_t *blend) { mA.shade = shade; mA.blend = blend; }
+	void SetPackTables(const uint8_t *shade, const uint8_t *blend) { mIA.shade = shade; mIA.blend = blend; mA.shade = shade; mA.blend = blend; }
 
-	// The picture: Width() x Height() palette indices, row-major.
-	int Width() const { return W; }
-	int Height() const { return mHires ? H * 2 : H; }
-	const std::vector<uint8_t> &Pixels() const { return mPix; }
-	// Bumped on every change to the picture.
-	uint32_t Version() const { return mVersion; }
+	// The picture: Width() x Height() palette indices, row-major (UiCanvas;
+	// every pixel of the rectangle is written by the panel's own picture).
 
 	// The hotspot lists (0x80b74: the tabs; 0x80ba4 and on: the boxes, the
 	// cells, the arrows), in the order hit_test_dialogue_ui_action scans them.
@@ -171,9 +141,6 @@ public:
 	void FormatInventoryItemLabel(int32_t itemId, int32_t qty) override;
 	void RefreshInventoryGrid() override;
 
-	// What went wrong, if anything (a missing picture, no font): one line each.
-	const std::vector<std::string> &Problems() const { return mProblems; }
-
 	// ---- the drawing state the original keeps in globals ------------------------------
 	uint32_t g_inventory_arrow_state = 0;   // 0x811a0: bit 0 the up arrow is lit, bit 1 the down
 	uint32_t g_label_text = 0;              // 0x811a4: the label's cached text
@@ -187,32 +154,20 @@ private:
 	void DrawInventoryEntryLabel(int entry);
 	void DrawUiPanelCountElement();
 	void DrawItemIconInSlot(const uint8_t *icon, size_t size, int slot, uint32_t color);
-	// ---- the primitives -------------------------------------------------------
-	void BlitRelocDasImage(int x, int y, uint32_t offSlot);
-	void BlitDasImage(const uint8_t *img, size_t size, int x, int y, int mode);
+	// ---- the primitive of its own (the rest are UiCanvas's) ----------------------
 	void BlitItemIcon(const uint8_t *icon, size_t size, int x, int y, uint32_t ecx);
-	void DrawTextAtScreenXy(const uint8_t *str, size_t len, int x, int y, uint32_t flags);
-	int MeasureControlTextWidth(const uint8_t *s, size_t len) const;
-	void Put(long addr, uint8_t v);
-	long Addr(int x, int y) const;     // screen_xy_to_framebuffer_ptr, on the virtual screen
-	uint8_t mRamp[32] = {};            // draw_text_to_buffer's colour ramp (a static there too, text_font.c:301)
 	// ---- what the rules hold ---------------------------------------------------
 	int EntryIcon(int entry, const uint8_t **img, size_t *size) const;  // 0 none
 	bool ItemIcon(int32_t itemId, const uint8_t **img, size_t *size) const;
 	int32_t EntryItem(int entry) const;
 	int32_t EntryQty(int entry) const;
-	void Problem(const std::string &s);
 
 	InventoryScreen *mScreen = nullptr;
 	GameCore *mCore = nullptr;
 	const Dbase100 *mDb = nullptr;
-	InvPanelAssets mA;
-	bool mHires = false;
+	InvPanelAssets mIA;
 	bool mDrawn = false;
-	std::vector<uint8_t> mPix;
-	uint32_t mVersion = 0;
 	std::vector<InvHotspot> mTabHot, mHot;
-	std::vector<std::string> mProblems;
 };
 
 } // namespace roth

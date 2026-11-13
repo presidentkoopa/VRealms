@@ -100,7 +100,7 @@ public:
 	uint32_t BodyId() const;                // desc[1]
 	const std::string &TitleText() const { return mTitleText; }   // DEATH only
 	std::vector<Row> Rows() const;          // the visible rows, top to bottom
-	int Selected() const { return mSelected; }
+	int Selected() const { return mSelected; }     // -1 / -2: none (the pointer is off the rows)
 	// Slot lists: the first slot shown (the scroll offset, word[0xc]).
 	int Scroll() const { return mScroll; }
 	bool CanScrollUp() const;
@@ -109,7 +109,8 @@ public:
 	// ---- input -------------------------------------------------------------
 	// A pointer click on visible row `row` (0-based), or Enter on the selection.
 	void Choose(int row);
-	void Enter() { Choose(mSelected); }
+	// Enter (key 0x1c): the selection, or with none "cancelled" (menu_hud_ui.c:1743-1744).
+	void Enter() { if (mSelected < 0) Back(); else Choose(mSelected); }
 	// Esc: a box's "cancelled" (result 0), which each caller reads its own way.
 	void Back();
 	void Up();
@@ -117,6 +118,31 @@ public:
 	void ScrollUp();
 	void ScrollDown();
 	void Hover(int row) { if (row >= 0 && row < (int)Rows().size()) mSelected = row; }
+	// The pointer, as show_message_box's loop reads it (menu_hud_ui.c:1591-1607):
+	// `hit` is hit_test_ui_element's answer where the pointer is (MessageBoxPainter::
+	// LoopHit): a 1-based row, -1 the close box, -6 / -7 the arrows, -9 the
+	// picture, 0 nothing. On a new hit the selection follows it (hit - 1);
+	// on nothing, after the pointer took over, there is no selection (-2).
+	void PointerAt(int hit);
+	// A click with the pointer at `hit` (:1626-1638): an arrow scrolls, a row
+	// is chosen, the close box cancels.
+	void PointerClick(int hit);
+	// show_message_box's flags for the box on top, as its caller passes them
+	// (menu_hud_ui.c:2041, 2049, 2059, 2082-2095; run_settings_menu; savegame.c's
+	// prompt_save_overwrite: 0x200); 0 for DEATH, which is no box.
+	uint32_t ShowFlags() const { return mShowFlags; }
+	// Bumped every time a box is shown afresh (opened, or shown again after a
+	// box over it closed): the presentation composes its picture again.
+	uint32_t ShowSerial() const { return mShowSerial; }
+	// Whether the box under the top one stays on screen: the boxes
+	// run_settings_menu opens from inside their parent's loop (the confirmations,
+	// settings, movie clips) are drawn over it; the slot lists replace it.
+	bool ParentVisible() const;
+	Box Parent() const { return mStack.size() >= 2 ? mStack[mStack.size() - 2] : NONE; }
+	int ParentSelected() const;
+	// The descriptor show_message_box gets for a box (0 for DEATH).
+	static uint32_t DescriptorOf(Box b, bool frontEnd);
+	const std::vector<std::string> &SlotNames() const { return mSlotNames; }
 
 	// The pending outcome, once.
 	MenuOutcome Take() { MenuOutcome o = mOut; mOut = MenuOutcome(); return o; }
@@ -131,8 +157,21 @@ private:
 	void Emit(MenuOutcome::Kind k, int slot = 0, const std::string &name = std::string());
 	int SlotOfRow(int row) const { return mScroll + row + 1; }
 
+	void Show();
+	void Keep();                            // the top box's selection into its word[0xa], as its teardown does
 	std::vector<Box> mStack;
 	bool mFrontEnd = false;
+	bool mMainShown = false;                // run_main_menu's first show is 0x201, then 1
+	uint32_t mShowSerial = 0;
+	uint32_t mShowFlags = 0;
+	// Each descriptor's word[0xa] (the selection it opens with) and the slot
+	// lists' word[0xc] (their scroll), kept across shows as the EXE image keeps
+	// them; the starting values are the image's (quit? and new game? open on CANCEL).
+	int mSelWord[DEATH + 2] = {};
+	int mScrollWord[DEATH + 2] = {};
+	bool mWordsSet = false;
+	bool mKbNav = true;                     // [ebp+0x1e]
+	int mPrevHit = -2;                      // [ebp+0x12]
 	int mSelected = 0;
 	int mScroll = 0;
 	int mPendingSaveSlot = 0;

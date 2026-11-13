@@ -215,14 +215,17 @@ int main(int argc, char **argv)
 	m.Choose(4);
 	o = m.Take();
 	CHECK(o.kind == MenuOutcome::SAVE && o.slot == 9 && o.name == "The Study");
-	m.OpenOptions(); m.Choose(2); m.Choose(2);              // slot 3 holds a save: replace?
+	m.OpenOptions(); m.Choose(2);
+	CHECK(m.Scroll() == 4);                                // the scroll stays where it was (word[0xc], menu_hud_ui.c:1289, 2060)
+	for (int i = 0; i < 9; i++) m.ScrollUp();
+	m.Choose(2);                                           // slot 3 holds a save: replace?
 	CHECK(m.Current() == RealmsMenus::OVERWRITE_CONFIRM && !m.HasOutcome());
 	printf("         %s\n", Show(m).c_str());
 	CHECK(Show(m) == "Save a game: [OK to replace] [CANCEL]");
 	m.Choose(0);
 	o = m.Take();
 	CHECK(o.kind == MenuOutcome::SAVE && o.slot == 3);
-	m.OpenOptions(); m.Choose(2); m.Choose(2); m.Choose(1);
+	m.OpenOptions(); m.Choose(2); m.Choose(2); m.Choose(1);   // (scroll 0 kept from above)
 	CHECK(m.Take().kind == MenuOutcome::RESUME);
 
 	// ---- Esc, as each box reads "cancelled" -------------------------------------
@@ -239,8 +242,29 @@ int main(int argc, char **argv)
 	m.OpenMain(); m.Choose(2); m.Choose(1);
 	o = m.Take();
 	CHECK(o.kind == MenuOutcome::RUN_ACTION && o.slot == 6 && m.Current() == RealmsMenus::MOVIES);
-	m.Down(); m.Down(); m.Enter();
+	m.Down(); m.Down(); m.Enter();                         // from row 1: 2, then round to 0 (menu_hud_ui.c:1649-1656)
+	CHECK(m.Take().slot == 5);
+	m.Up(); m.Enter();                                     // from row 0 up to the last row
 	CHECK(m.Take().slot == 7);
+
+	// ---- the selection a box opens with, and the pointer (show_message_box's loop) ----
+	m = RealmsMenus();                                     // the words as the EXE image has them at boot
+	m.OpenOptions(); m.Choose(4);
+	CHECK(m.Current() == RealmsMenus::QUIT_CONFIRM && m.Selected() == 1);   // 0x71a00's word[0xa]: CANCEL
+	m.Enter();
+	CHECK(m.Current() == RealmsMenus::OPTIONS && m.Selected() == 4);        // shown again on the row it closed on
+	m.PointerAt(2);                                        // the pointer on row 2 (hit 2): selection 1
+	CHECK(m.Selected() == 1);
+	m.PointerAt(0);                                        // off the rows, the pointer in charge: no selection
+	CHECK(m.Selected() == -2);
+	m.Enter();                                             // Enter with none: cancelled
+	CHECK(m.Take().kind == MenuOutcome::RESUME);
+	m.OpenOptions(); m.PointerClick(-1);                   // the close box: cancelled
+	CHECK(m.Take().kind == MenuOutcome::RESUME);
+	m.OpenMain();
+	CHECK(m.ShowFlags() == 0x201);                         // run_main_menu's first show (menu_hud_ui.c:2082)
+	m.Choose(4); m.Back();
+	CHECK(m.Current() == RealmsMenus::MAIN && m.ShowFlags() == 1);
 
 	// ---- the death screen -----------------------------------------------------------
 	m.OpenDeath(false);

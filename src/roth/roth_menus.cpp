@@ -71,22 +71,66 @@ const Desc &BoxDesc(RealmsMenus::Box b, bool frontEnd)
 
 } // namespace
 
+// A box shown afresh: its selection and scroll from its descriptor's words
+// (menu_hud_ui.c:1545, 1289), the pointer's state reset (:1533-1536).
+void RealmsMenus::Show()
+{
+	if (!mWordsSet)
+	{
+		// The EXE image's word[0xa] at boot (tools/menudraw_test reads it): 0x71a00
+		// (quit?) and 0x71a2c (new game?) open on their second row, CANCEL.
+		for (int &w : mSelWord) w = 0;
+		for (int &w : mScrollWord) w = 0;
+		mSelWord[QUIT_CONFIRM] = 1;
+		mSelWord[NEWGAME_CONFIRM] = 1;
+		mWordsSet = true;
+	}
+	const Box b = Current();
+	mSelected = mSelWord[b];
+	mScroll = (b == LOAD || b == SAVE) ? mScrollWord[b] : 0;
+	mKbNav = true;
+	mPrevHit = -2;
+	mShowSerial++;
+	switch (b)
+	{
+	case MAIN: mShowFlags = mMainShown ? 1u : 0x201u; mMainShown = true; break;
+	case OPTIONS: mShowFlags = 0x8c1; break;
+	case LOAD: mShowFlags = mFrontEnd ? 0xdu : 0x4du; break;
+	case SAVE: mShowFlags = 0x4f; break;
+	case OVERWRITE_CONFIRM: mShowFlags = 0x200; break;
+	default: mShowFlags = 0; break;
+	}
+}
+
+// show_message_box's teardown keeps the selection when there is one
+// (menu_hud_ui.c:1887-1888); the slot lists hand their scroll to each other
+// (run_options_menu / run_main_menu, menu_hud_ui.c:2050, 2060, 2096).
+void RealmsMenus::Keep()
+{
+	const Box b = Current();
+	if (b == NONE) return;
+	if (mSelected >= 0) mSelWord[b] = mSelected;
+	if (b == LOAD || b == SAVE) { mScrollWord[LOAD] = mScroll; mScrollWord[SAVE] = mScroll; }
+}
+
 void RealmsMenus::Push(Box b)
 {
+	Keep();
 	mStack.push_back(b);
-	mSelected = 0;
-	mScroll = 0;
+	Show();
 }
 
 void RealmsMenus::Pop()
 {
+	Keep();
 	if (!mStack.empty()) mStack.pop_back();
-	mSelected = 0;
-	if (mStack.empty()) mFrontEnd = false;
+	if (mStack.empty()) { mFrontEnd = false; mSelected = 0; return; }
+	Show();                                 // the box under it is shown again (its caller's loop)
 }
 
 void RealmsMenus::CloseAll()
 {
+	Keep();
 	mStack.clear();
 	mSelected = 0;
 	mScroll = 0;
@@ -105,6 +149,7 @@ void RealmsMenus::OpenMain()
 {
 	CloseAll();
 	mFrontEnd = true;                       // g_menu_frontend_flag = 1, menu_hud_ui.c:2086
+	mMainShown = false;                     // the first show: flags 0x201 (:2082)
 	Push(MAIN);
 }
 
@@ -121,7 +166,7 @@ void RealmsMenus::OpenDeath(bool canLoad)
 	mDeathCanLoad = canLoad;
 	mTitleText = "You are dead";
 	Push(DEATH);
-	if (!canLoad) mSelected = 1;
+	mSelected = canLoad ? 0 : 1;
 }
 
 uint32_t RealmsMenus::TitleId() const { return BoxDesc(Current(), mFrontEnd).title; }
@@ -170,17 +215,77 @@ bool RealmsMenus::CanScrollDown() const { return (Current() == LOAD || Current()
 void RealmsMenus::ScrollUp() { if (CanScrollUp()) mScroll--; }
 void RealmsMenus::ScrollDown() { if (CanScrollDown()) mScroll++; }
 
+// The arrow keys (menu_hud_ui.c:1641-1657): at the first row of a list
+// with a range Up scrolls, else the selection moves and wraps; Down alike.
 void RealmsMenus::Up()
 {
-	if (mSelected > 0) { mSelected--; return; }
-	ScrollUp();
+	mKbNav = true;
+	const bool list = Current() == LOAD || Current() == SAVE;
+	if (mSelected == 0 && list) { ScrollUp(); return; }
+	mSelected--;
+	if (mSelected < 0) mSelected = (int)Rows().size() - 1;
 }
 
 void RealmsMenus::Down()
 {
+	mKbNav = true;
 	const int n = (int)Rows().size();
-	if (mSelected + 1 < n) { mSelected++; return; }
-	ScrollDown();
+	const bool list = Current() == LOAD || Current() == SAVE;
+	if (list && mSelected == n - 1) { ScrollDown(); return; }
+	mSelected++;
+	if ((unsigned)mSelected >= (unsigned)n) mSelected = 0;
+}
+
+void RealmsMenus::PointerAt(int hit)
+{
+	if (hit == -6 && !CanScrollUp()) hit = 0;                // :1595-1596
+	if (hit == -7 && !CanScrollDown()) hit = 0;
+	if (hit == 0) { if (!mKbNav) mSelected = -2; }           // :1597-1598
+	else if (hit != mPrevHit)                                // :1600-1606
+	{
+		mSelected = hit != -1 ? hit - 1 : -1;
+		mKbNav = false;
+	}
+	mPrevHit = hit;
+}
+
+void RealmsMenus::PointerClick(int hit)
+{
+	PointerAt(hit);
+	if (hit == -6 && CanScrollUp()) { ScrollUp(); return; }      // key 0xfe
+	if (hit == -7 && CanScrollDown()) { ScrollDown(); return; }  // key 0xfd
+	if (hit == -9) return;                                       // key 0x32: the gallery, not ported
+	if (hit == 0) return;
+	if (mSelected >= 0) Choose(mSelected);                       // key 0x1c
+	else if (mSelected > -2) Back();                             // key 1
+}
+
+bool RealmsMenus::ParentVisible() const
+{
+	const Box b = Current();
+	return mStack.size() >= 2 && (b == QUIT_CONFIRM || b == NEWGAME_CONFIRM || b == MOVIES || b == SETTINGS);
+}
+
+int RealmsMenus::ParentSelected() const
+{
+	return mStack.size() >= 2 ? mSelWord[mStack[mStack.size() - 2]] : 0;
+}
+
+uint32_t RealmsMenus::DescriptorOf(Box b, bool frontEnd)
+{
+	switch (b)
+	{
+	case MAIN: return 0x71bbd;
+	case OPTIONS: return 0x71b6d;
+	case LOAD: return 0x71c5d;
+	case SAVE: return 0x71c0d;
+	case QUIT_CONFIRM: return 0x71a00;
+	case NEWGAME_CONFIRM: return 0x71a2c;
+	case OVERWRITE_CONFIRM: return 0x71cad;
+	case MOVIES: return 0x71914;
+	case SETTINGS: return frontEnd ? 0x71a9c : 0x71a58;
+	default: return 0;
+	}
 }
 
 void RealmsMenus::Choose(int row)
