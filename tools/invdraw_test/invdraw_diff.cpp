@@ -25,6 +25,9 @@
 #include "../../src/roth/roth_invdraw.h"
 #include "../../src/roth/roth_install.h"
 #include "../../src/roth/roth_das.h"
+#include "../../src/roth/roth_invmouse.h"
+#include "../../src/roth/roth_invhand.h"
+#include "../../src/roth/roth_panelmap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,6 +216,110 @@ void WritePpm(const std::string &path, const uint8_t *px, int w, int h, const st
 	fclose(f);
 }
 
+// THE VR HANDS' PATH to a click (the "ptr" commands): the panel standing in the world as
+// roth_interface.cpp stands it (AddWorldPicture: 0.14 map units a pixel, yaw = the player's
+// + 180, BillboardBasis' axes with no tilt), a hand at 107.4 units a metre, its fingertip
+// and finger made to point at the pixel's centre, its gestures run tic by tic through
+// roth_invhand.h, the mouse it makes fed to roth_invmouse.h -- the same InvMouse the engine
+// gives every pointer on the panel. The original runs the same panel points through its own
+// handle_cursor_click (invprobe.c "ptr").
+struct VRPath
+{
+	PanelPlane plane;
+	InvHand hand;
+	InvMouse mouse;
+	double upm = 107.4;
+	int optionsOpened = 0;
+	int mapWrong = 0, events = 0;
+	VRPath()
+	{
+		const double PXW = 0.1 * 1.4, yaw = 27.0 + 180.0, r = yaw * M_PI / 180.0;
+		plane.right = PanelV3(-sin(r), cos(r), 0.0);
+		plane.up = PanelV3(0, 0, 1);
+		plane.front = PanelV3(cos(r), sin(r), 0.0);              // right x up: toward the player
+		plane.halfw = 0x120 * PXW * 0.5; plane.halfh = 0x50 * PXW * 0.5;
+		plane.centre = PanelV3(-311.0, 2044.5, 61.0);
+		plane.left = 0; plane.top = 0; plane.w = 0x120; plane.h = 0x50;
+		mouse.openOptions = [this] { optionsOpened = 1; };
+	}
+	static PanelV3 Unit(const PanelV3 &v) { return v * (1.0 / v.Length()); }
+	// via 0: the laser from 35 cm in front and 10 cm to the right; 1: the fingertip pressed
+	// onto the point; 2: the hand pointing away from the panel.
+	void Aim(InvHandInput &in, int x, int y, int via, double metres)
+	{
+		const PanelV3 at = PanelWorldOf(plane, x + 0.5, y + 0.5);
+		in.valid = true; in.haveRay = true; in.fromFinger = true;
+		in.grip = 1.f; in.trigger = 0.f; in.triggerTouch = false;
+		if (via == 1) { in.tip = at + plane.front * (metres * upm); in.dir = plane.front * -1.0; }
+		else
+		{
+			in.tip = at + plane.front * (0.35 * upm) + plane.right * (0.10 * upm) - plane.up * (0.05 * upm);
+			in.dir = via == 2 ? plane.front : Unit(at - in.tip);
+		}
+	}
+	// One tic of the hand: its mouse onto the panel (the hover), and its click.
+	uint16_t Tic(World &w, const InvHandInput &in, int x, int y, int via, int &clicks, uint16_t shape)
+	{
+		const InvHandOutput o = hand.Tick(plane, in, upm);
+		if (o.pointer)
+		{
+			if (o.px != x || o.py != y) { mapWrong++; printf("MAP hand's mouse at %d,%d for panel point %d,%d\n", o.px, o.py, x, y); }
+			shape = mouse.Hover(w.painter, w.screen, o.px, o.py);
+		}
+		if (o.click)
+		{
+			events++;
+			const int ex = via == 2 ? PANEL_NOWHERE : x, ey = via == 2 ? PANEL_NOWHERE : y;
+			if (o.cx != ex || o.cy != ey) { mapWrong++; printf("MAP click at %d,%d for panel point %d,%d\n", o.cx, o.cy, ex, ey); }
+			clicks++;
+			shape = mouse.Click(w.painter, w.screen, o.cx, o.cy, o.click);
+			printf("V %s: button %d at %d,%d -> action 0x%x\n", InvHandHowName(o.how), o.click, o.cx, o.cy, mouse.lastAction);
+		}
+		return shape;
+	}
+	// The original's "ptr x y code": code 0 the hover, 1 / 2 a primary / secondary click.
+	void Ptr(World &w, int x, int y, int code, int via)
+	{
+		hand.Reset();
+		InvHandInput in;
+		int clicks = 0;
+		uint16_t shape = 0;
+		if (code == 0 || via == 0 || via == 2)
+		{
+			Aim(in, x, y, via, 0);
+			shape = Tic(w, in, x, y, via, clicks, shape);           // pointing: the mouse comes onto the point
+			if (code != 0)
+			{
+				in.triggerTouch = true;                             // the index onto the trigger
+				in.dir = Unit(in.dir - plane.up * 0.4);             // the curling finger swings the ray
+				for (int t = 0; t < 40 && clicks == 0; t++)
+				{
+					if (code == 1 && t == 3) in.triggerTouch = false;   // a tap: lifted on the 4th tic
+					shape = Tic(w, in, x, y, via, clicks, shape);
+				}
+			}
+		}
+		else
+		{
+			Aim(in, x, y, 1, 0.10);
+			shape = Tic(w, in, x, y, via, clicks, shape);           // the fingertip 10 cm in front
+			Aim(in, x, y, 1, 0.01);
+			shape = Tic(w, in, x, y, via, clicks, shape);           // on the panel
+			for (int t = 0; t < 40 && clicks == 0; t++)
+			{
+				if (code == 1 && t == 2) Aim(in, x, y, 1, 0.10);     // a touch: backed off on the 3rd tic
+				shape = Tic(w, in, x, y, via, clicks, shape);
+			}
+		}
+		if (code != 0 && clicks != 1) { mapWrong++; printf("MAP %d click(s) for one gesture\n", clicks); }
+		Inventory &inv = w.core.Items();
+		printf("P %d %d %d shape=%x latch=%d list=%d pos=%d scroll=%d count=%d held=%d L=%d R=%d insp=%d close=%d opt=%d busy=%d\n",
+			x, y, code, shape, mouse.g_hover_latch, w.screen.ActiveList(), w.screen.CursorEntry(), w.screen.ScrollOffset(),
+			w.screen.EntryCount(), w.screen.HeldEntry(), inv.LeftHand(), inv.RightHand(), w.screen.g_inventory_inspect_request,
+			w.screen.g_ui_close_request, optionsOpened, (int)w.core.Interp().State().g_dialogue_busy_flag);
+	}
+};
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -278,6 +385,7 @@ int main(int argc, char **argv)
 	w.painter.Bind(&w.screen, &w.core, &w.db, a, false);
 
 	std::vector<Colour> pal = pack.Palette();
+	VRPath vr;
 
 	FILE *sf = fopen(argv[3], "r");
 	if (!sf) { fprintf(stderr, "no script %s\n", argv[3]); return 2; }
@@ -329,6 +437,13 @@ int main(int argc, char **argv)
 		else if (c == "cell") w.screen.ClickCell(x[0], x[1]);
 		else if (c == "handbox") w.screen.ClickHandBox(x[0], x[1]);
 		else if (c == "arrow") { if (x[0]) w.screen.ScrollDown(); else w.screen.ScrollUp(); }
+		else if (c == "ptr") vr.Ptr(w, x[0], x[1], x[2], x[3]);
+		else if (c == "ptrsweep")
+		{
+			const int st = x[0] > 0 ? x[0] : 5;
+			for (int y = -3; y <= 0x53; y += st) for (int xx = -3; xx <= 0x123; xx += st) vr.Ptr(w, xx, y, 0, 0);
+		}
+		else if (c == "noinspect") w.screen.g_inventory_inspect_request = -1;
 		else if (c == "dump")
 		{
 			const char *n = strchr(line, ' ');
@@ -396,5 +511,7 @@ int main(int argc, char **argv)
 	for (const std::string &pr : w.painter.Problems()) printf("PROBLEM %s\n", pr.c_str());
 	printf("SUMMARY dumps %d (%d with differences), pixels %ld compared, %ld differ; table/font checks %d bad\n",
 		dumpsCompared, dumpsBad, pixels, differing, bad);
-	return (dumpsBad == 0 && bad == 0) ? 0 : 1;
+	if (vr.events > 0 || vr.mapWrong > 0)
+		printf("PIX vr hands: %d click(s) made by the hand's gestures, %d landed off their panel point\n", vr.events, vr.mapWrong);
+	return (dumpsBad == 0 && bad == 0 && vr.mapWrong == 0) ? 0 : 1;
 }

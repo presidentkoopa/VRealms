@@ -16,10 +16,10 @@ for s in $SCRIPTS; do
 	mkdir -p "$W/$n.ppm"
 	"$W/invdraw_diff" "$DATA" "$W/$n.oracle.log" "$s" "$W/$n" "$W/$n.ppm" > "$W/$n.port.log" 2> "$W/$n.port.err"
 	rc=$?
-	F='^( state| hands .*entries| label=| hot0| hot1|> |H )'
+	F='^( state| hands .*entries| label=| hot0| hot1|> |H |P )'
 	grep -E "$F" "$W/$n.oracle.log" > "$W/$n.o"; grep -E "$F" "$W/$n.port.log" > "$W/$n.p"
 	diff "$W/$n.o" "$W/$n.p" > "$W/$n.diff"; drc=$?
-	echo "$n: $(grep '^SUMMARY' "$W/$n.port.log" | cut -c9-); state lines $( [ $drc = 0 ] && echo identical || echo "DIFFER ($W/$n.diff)"); hit-test points $(grep -c '^H ' "$W/$n.o")"
+	echo "$n: $(grep '^SUMMARY' "$W/$n.port.log" | cut -c9-); state lines $( [ $drc = 0 ] && echo identical || echo "DIFFER ($W/$n.diff)"); hit-test points $(grep -c '^H ' "$W/$n.o"), mouse points $(grep -c '^P ' "$W/$n.o")"
 	grep '^PIX' "$W/$n.port.log" | sed 's/^/   /'
 	[ $rc = 0 ] && [ $drc = 0 ] || bad=1
 done

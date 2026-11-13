@@ -79,8 +79,14 @@ static uint32_t ov_d300(struct roth_chain *c, const struct roth_api_v1 *api, uin
 { (void)api; if (g_done == 1) return 1; return roth_next_load_dbase300_chunk(c, idx); }
 static uint32_t ov_prime(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t clip)
 { (void)api; if (g_done == 1) return 0; return roth_next_prime_voice_clip(c, clip); }
+/* set_cursor_shape while the probe's mouse runs: the shape is recorded and nothing else is done (no
+ * cursor decode, no software cursor over the framebuffer the dumps read). */
+static int g_shape_capture; static uint32_t g_shape;
+static void ov_shape(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t id)
+{ (void)api; if (g_shape_capture) { g_shape = id & 0xffff; S16(0x708e4, id); return; } roth_next_set_cursor_shape(c, id); }
 static void reg(const struct roth_api_v1 *api, struct roth_registrar_v1 *r)
 {
+    roth_override(r, ROTH_FN_set_cursor_shape, ov_shape, 100);
     (void)api;
     roth_override(r, ROTH_FN_input_ring_dequeue, ov_dequeue, 100);
     roth_override(r, ROTH_FN_play_sound_effect, ov_sfx, 100);
@@ -189,6 +195,51 @@ static void initial(void)
     log_off();
 }
 
+/* The ORIGINAL's mouse at panel pixel (x, y): what handle_cursor_click (input.c:1260-1358) does with
+ * the mouse there -- the hover (code 0), or the hover and then a click of the primary (1) or the
+ * secondary (2) button, as a mouse that is moved onto the point and clicked makes it. The button's
+ * press edge and its held bit are set as poll_mouse_input leaves them on the click's frame
+ * (input.c:858-868). set_cursor_shape is overridden to record the shape and do nothing else (no
+ * cursor decode, no software cursor drawn over the panel), with the frame tick's 0x10 bit clear while
+ * it runs (put back after). Prints a P line: the shape, the hover latch, and the inventory state a click changes. */
+static void mouse_call(int x, int y, int code)
+{
+    int ax = (int)G32(0x80b24), ay = (int)G32(0x80b28);
+    S32(0x707b3, ax + x); S32(0x707b7, ay + y);           /* g_mouse_x / g_mouse_y */
+    S8(0x7e938, code == 1 ? 0xff : 0); S8(0x7e939, code == 2 ? 0xff : 0);
+    S8(0x7e929, code & 3);                                /* the buttons held */
+    S32(0x80b30, 0);                                      /* no key-made click */
+    uint16_t tk = G16(0x90bcc);
+    S16(0x90bcc, 0);
+    g_shape_capture = 1; g_shape = 0xffffffffu;
+    C0("handle_cursor_click");
+    g_shape_capture = 0;
+    S16(0x90bcc, tk);
+    S8(0x7e929, 0);
+}
+static void ptr(int x, int y, int code)
+{
+    if (code != 0) mouse_call(x, y, 0);                   /* the mouse comes onto the point */
+    mouse_call(x, y, code);
+    uint32_t v = G32(0x80b3c);
+    char insp[32];
+    /* in the port's terms (roth_invscreen.h): -1 none (the original's 0), an entry index, -2 / -3 the
+     * left / right hand box's item */
+    if (v == 0) strcpy(insp, "-1");
+    else if (v == G32(0x81034)) strcpy(insp, "-2");
+    else if (v == G32(0x81040)) strcpy(insp, "-3");
+    else snprintf(insp, sizeof insp, "%d", entidx(v));
+    int list = (int)G32(0x80b38);
+    log_on();
+    if (g_shape == 0xffffffffu) fprintf(OUT, "! set_cursor_shape was not reached through the override\n");
+    fprintf(OUT, "P %d %d %d shape=%x latch=%d list=%d pos=%d scroll=%d count=%d held=%d L=%d R=%d insp=%s close=%d opt=%d busy=%d\n",
+        x, y, code, g_shape & 0xffff, (int)G32(0x81300), list, (int)G32(0x80afc + list * 4), (int)G32(0x80b10 + list * 4),
+        (int)G32(0x80af4), entidx(G32(0x7fef0)), slotidx(G32(0x81038)), slotidx(G32(0x81044)), insp, (int)G32(0x80b2c),
+        (int)G32(0x7febc), (int)G32(0x83aea));
+    fflush(OUT);
+    log_off();
+}
+
 static void run_script(void)
 {
     FILE *f = fopen(g_script, "r");
@@ -237,6 +288,11 @@ static void run_script(void)
                 fprintf(OUT, "H %d %d %d\n", x, y, r);
             }
             fflush(OUT); log_off(); }
+        else if (!strcmp(cmd, "ptr")) ptr(a[0], a[1], a[2]);   /* a[3] = how the port's hand makes it (ignored here) */
+        else if (!strcmp(cmd, "ptrsweep")) {   /* the hover over the panel and a margin, every a[0] pixels */
+            int st = a[0] > 0 ? a[0] : 5;
+            for (int y = -3; y <= 0x53; y += st) for (int x = -3; x <= 0x123; x += st) ptr(x, y, 0); }
+        else if (!strcmp(cmd, "noinspect")) S32(0x80b3c, 0);   /* drop an examine request unopened (inventory.c:1834) */
         else if (!strcmp(cmd, "dump")) { char *n = strchr(line, ' '); dump(n ? n + 1 : "unnamed"); }
         else { log_on(); fprintf(OUT, "? unknown command\n"); fflush(OUT); log_off(); }
     }

@@ -17,6 +17,7 @@
 //
 
 #include <stdint.h>
+#include "roth_panelmap.h"
 
 class FLevelLocals;
 class AActor;
@@ -87,6 +88,28 @@ bool InterfaceUse(player_t *player);
 bool InterfacePointerBusy();
 // Which of them, for a log line: "menu", "popup", "inventory", "dialogue", or null.
 const char *InterfacePointerOwner();
+
+// THE VR HANDS ON A PANEL (roth_vrpick.cpp, roth_invhand.h). Each hand is the
+// original's mouse on the panel that owns the pointer: the inventory screen,
+// or the examine popup over it (a menu box and the dialogue are not worked by
+// the hands). The panel as a plane carrying the original's pixels
+// (roth_panelmap.h), its front on the side of `eye`: HANDPANEL_NONE when no
+// such panel is up.
+enum { HANDPANEL_NONE = 0, HANDPANEL_INVENTORY = 1, HANDPANEL_POPUP = 2 };
+int InterfaceHandPanel(const PanelV3 &eye, PanelPlane &out);
+// The hand's mouse at pixel (x, y) of that panel (`onPicture`: on the picture
+// itself): the hover, as the original's handle_cursor_click with no button
+// (roth_invmouse.h; the popup: its pointer). Returns the cursor shape the
+// original would show on the inventory (no cursor is drawn), else 0.
+uint16_t InterfaceHandPointer(int panel, int x, int y, bool onPicture);
+// A click of `button` (1 primary = the left button, 2 secondary = the right)
+// there: exactly what a click of the crosshair or the use key there does
+// (PanelClick / the popup's Press). Returns the inventory action it hit
+// (dispatch_dialogue_ui_action's), -1 for the popup.
+int InterfaceHandClick(int panel, int x, int y, bool onPicture, int button);
+// Whether a hand drove the pointer this tic: the crosshair / aim-pose hover
+// stands down on the next one so the cursor follows the finger alone.
+void InterfaceHandsDrivePointer(bool on);
 
 // The Realms menus (roth_menus.h), drawn as a world panel like the others and
 // clicked with the same beam or crosshair. While a box is up it is the only

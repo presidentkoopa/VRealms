@@ -88,6 +88,21 @@
 // reach -- fingertip contact, the palm -- is in METRES times VR_UnitsPerMeter(),
 // so a hand reaches as far on every map.
 //
+// ON THE INVENTORY SCREEN (and the examine popup over it) the hands do not
+// stand down: each is the original's MOUSE on the panel (roth_invhand.h for
+// the gestures, roth_panelmap.h for where the panel's pixels are, and the
+// click through the same code as every pointer's, roth_invmouse.h):
+//   points at the panel        the mouse is there: the laser, a dot where it
+//                              meets the picture; the cursor cell follows it
+//   index tap                  a PRIMARY (left) click there
+//   index held 18 tics         a SECONDARY (right) click there
+//   fingertip touch / held     the same two, where the fingertip touched
+// Either hand; which hand changes nothing (the original has one mouse). What
+// a click does -- examine, take onto the cursor, use on Adam, combine, swap,
+// into a hand box, a tab, an arrow, outside = commit and close -- is the
+// original's dispatch at that point. A menu box or the dialogue still owns
+// the pointer alone (the hands stand down for those).
+//
 // TEST (flat, no headset): roth_vrpicktest, with the hand test's poses
 // (roth_handtest) as the finger inputs. See the command at the bottom.
 //
@@ -103,6 +118,8 @@
 #include "roth_objects.h"
 #include "roth_inventory.h"
 #include "roth_handuse.h"
+#include "roth_invhand.h"
+#include "roth_panelmap.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -187,6 +204,13 @@ struct HandState
 	int dot[kDots] = {};
 	int marker = 0, ring = 0;
 	bool shown = false;      // any of them visible (so an idle hand touches none)
+
+	// on a panel (the inventory screen, the popup): the original's mouse (roth_invhand.h)
+	InvHand panel;
+	InvHandOutput pout;
+	bool panelWasOnPicture = false;
+	bool panelWasContact = false, panelWasTap = false, panelWasPointing = false;
+	int loggedPx = 0x7fffffff, loggedPy = 0x7fffffff;
 };
 
 struct VRPick
@@ -202,6 +226,11 @@ struct VRPick
 	double testPitch = 0, testYaw = 0;
 
 	const char *loggedStand = "";   // why the hands last stood down ("" = never reported)
+
+	// the panel the hands work (InterfaceHandPanel), and which hand is its mouse
+	int panelWhich = HANDPANEL_NONE;
+	int pointerRole = -1;
+	uint16_t loggedShape = 0;
 
 	// the cost counters (VRPickTick)
 	int    costTics = 0;
@@ -823,6 +852,142 @@ void TickHand(int role, AActor *pmo)
 	}
 }
 
+//--------------------------------------------------------------------------
+// On a panel: each hand is the original's mouse (see the header)
+//--------------------------------------------------------------------------
+
+PanelV3 PV(const DVector3 &v) { return PanelV3(v.X, v.Y, v.Z); }
+DVector3 DV(const PanelV3 &v) { return DVector3(v.x, v.y, v.z); }
+
+const char *PanelName(int which) { return which == HANDPANEL_POPUP ? "examine popup" : "inventory"; }
+
+void ForgetPanel()
+{
+	for (HandState &h : P.hand)
+	{
+		h.panel.Reset();
+		h.pout = InvHandOutput();
+		h.panelWasOnPicture = h.panelWasContact = h.panelWasTap = h.panelWasPointing = false;
+		h.loggedPx = h.loggedPy = 0x7fffffff;
+	}
+	P.pointerRole = -1;
+	P.loggedShape = 0;
+}
+
+void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane)
+{
+	HandState &h = P.hand[role];
+	ReadInputs(role, h);
+	InvHandInput in;
+	in.valid = h.valid;
+	in.trigger = h.trigger;
+	in.grip = h.grip;
+	in.triggerTouch = h.triggerTouch;
+	// The finger is only looked at while it can be the mouse: pointing (the grip
+	// held), or with a tap or a touch under way.
+	const bool wants = h.valid && (h.grip >= invhand::kPointGrip || h.panel.TapDown() || h.panel.InContact());
+	if (wants && FingerRay(role, h, pmo))
+	{
+		in.haveRay = true;
+		in.fromFinger = h.fromFinger;
+		in.tip = PV(h.tip);
+		in.dir = PV(h.dir);
+	}
+	h.pout = h.panel.Tick(plane, in, UPM());
+	h.pointing = h.panel.Pointing();
+
+	if (Logging())
+	{
+		if (h.pointing != h.panelWasPointing)
+			Printf("[roth_vrpick] %s hand %s the panel%s\n", RoleName(role), h.pointing ? "points at" : "stops pointing at",
+				h.pointing && !h.fromFinger ? " (from the aim pose: no fingertip, no touch)" : "");
+		if (h.panel.TapDown() && !h.panelWasTap)
+			Printf("[roth_vrpick] %s hand: index onto the trigger, the mouse held at %d,%d\n", RoleName(role), h.pout.px, h.pout.py);
+		if (h.panel.InContact() && !h.panelWasContact)
+			Printf("[roth_vrpick] %s hand: fingertip on the panel at %d,%d (%.1f units in front)\n", RoleName(role), h.pout.px, h.pout.py, h.pout.tipDist);
+		if (!h.panel.InContact() && h.panelWasContact && !h.pout.click)
+			Printf("[roth_vrpick] %s hand: fingertip off the panel with no click (%.1f units in front)\n", RoleName(role), h.pout.tipDist);
+	}
+	h.panelWasPointing = h.pointing;
+	h.panelWasTap = h.panel.TapDown();
+	h.panelWasContact = h.panel.InContact();
+
+	// ---- the laser and the dot ----
+	const InvHandOutput &o = h.pout;
+	if (!o.beam) { HideHand(h); return; }
+	h.shown = true;
+	const HandLock L = LockFor(role, pmo);
+	const double upm = UPM();
+	const DVector3 end = DV(o.beamEnd);
+	const PalEntry lit(255, 236, 214, 170), grey(255, 200, 200, 200);
+	for (int i = 0; i < kDots; i++)
+		PlaceBB(h.dot[i], BB_PANEL, L, h.tip + (end - h.tip) * ((i + 0.5) / kDots), kDotM * upm, o.dot ? lit : grey, o.dot ? 0.30 : 0.12);
+	if (o.dot)
+	{
+		// A hair toward the hand, so the panel does not cut it.
+		const DVector3 at = DV(o.dotAt) + DV(plane.front) * (0.004 * upm);
+		PlaceBB(h.marker, BB_PANEL, L, at, kMarkerM * 0.6 * upm, lit, 0.85);
+	}
+	else HideBB(h.marker);
+	HideBB(h.ring);
+}
+
+bool OnPicture(const PanelPlane &p, int x, int y)
+{
+	return x >= p.left && x < p.left + p.w && y >= p.top && y < p.top + p.h;
+}
+
+// The hands after both have ticked: which of them is the mouse (the hover),
+// and their clicks.
+void PanelPointerAndClicks(int which, const PanelPlane &plane)
+{
+	// THE MOUSE: the hand with a tap or a touch under way; else the hand that
+	// has just come onto the picture; else the one that was; else any hand
+	// whose laser meets the panel.
+	int owner = -1;
+	for (int r = 0; r < 2; r++) if (P.hand[r].pout.active && (owner < 0 || r == P.pointerRole)) owner = r;
+	if (owner < 0)
+		for (int r = 0; r < 2; r++)
+			if (P.hand[r].pout.onPicture && !P.hand[r].panelWasOnPicture) owner = r;
+	if (owner < 0 && P.pointerRole >= 0 && P.hand[P.pointerRole].pout.pointer) owner = P.pointerRole;
+	if (owner < 0) for (int r = 0; r < 2 && owner < 0; r++) if (P.hand[r].pout.pointer) owner = r;
+	if (owner >= 0)
+	{
+		HandState &h = P.hand[owner];
+		const uint16_t shape = InterfaceHandPointer(which, h.pout.px, h.pout.py, h.pout.onPicture);
+		if (Logging() && (owner != P.pointerRole || shape != P.loggedShape || (h.pout.px >> 2) != (h.loggedPx >> 2) || (h.pout.py >> 2) != (h.loggedPy >> 2)))
+		{
+			Printf("[roth_vrpick] %s hand is the mouse on the %s at %d,%d%s (the original's cursor shape 0x%x)\n", RoleName(owner),
+				PanelName(which), h.pout.px, h.pout.py, h.pout.onPicture ? "" : ", off its picture", (unsigned)shape);
+			h.loggedPx = h.pout.px; h.loggedPy = h.pout.py;
+			P.loggedShape = shape;
+		}
+	}
+	P.pointerRole = owner;
+
+	// THE CLICKS: each where its hand made it, the mouse moved there first.
+	for (int r = 0; r < 2; r++)
+	{
+		HandState &h = P.hand[r];
+		const InvHandOutput &o = h.pout;
+		if (!o.click) continue;
+		const bool on = OnPicture(plane, o.cx, o.cy);
+		if (r != P.pointerRole) { InterfaceHandPointer(which, o.cx, o.cy, on); P.pointerRole = r; }
+		Inventory *inv = InterfaceInventory();
+		const int rh0 = inv ? inv->RightHand() : -1, lh0 = inv ? inv->LeftHand() : -1, held0 = inv ? inv->Held() : -1;
+		const int act = InterfaceHandClick(which, o.cx, o.cy, on, o.click);
+		const int rh1 = inv ? inv->RightHand() : -1, lh1 = inv ? inv->LeftHand() : -1, held1 = inv ? inv->Held() : -1;
+		FString what = act >= 0 ? FStringf("action 0x%x", act) : FString("the popup's click");
+		Printf("[roth_vrpick] %s hand (%s side) %s on the %s at %d,%d%s: %s click -> %s; right hand slot %d -> %d, left hand slot %d -> %d,"
+			" held slot %d -> %d\n", RoleName(r), VRHandPose_SideForRole(r) == VRHandPose::SIDE_RIGHT ? "right" : "left",
+			InvHandHowName(o.how), PanelName(which), o.cx, o.cy, on ? "" : " (off its picture)",
+			o.click == 1 ? "PRIMARY" : "SECONDARY", what.GetChars(), rh0, rh1, lh0, lh1, held0, held1);
+		Haptic(r, 0.45, 35);
+	}
+	for (HandState &h : P.hand) h.panelWasOnPicture = h.pout.onPicture;
+	InterfaceHandsDrivePointer(P.pointerRole >= 0);
+}
+
 void ForgetLevel()
 {
 	P.level = nullptr;
@@ -834,6 +999,8 @@ void ForgetLevel()
 		h.havePick = false;
 		ResetGestures(h);
 	}
+	ForgetPanel();
+	P.panelWhich = HANDPANEL_NONE;
 }
 
 } // namespace (anonymous)
@@ -853,12 +1020,21 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	const bool on = roth_vrpick && pmo != nullptr && (HeadsetOn() || P.test);
 	const char *owner = InterfacePointerOwner();
 	const bool stand = modal || !on || player->health <= 0 || owner != nullptr;
+	// ON A PANEL (the inventory screen, the popup over it): the hands are its mouse.
+	PanelPlane plane;
+	int panel = HANDPANEL_NONE;
+	if (!modal && on && player->health > 0 && owner != nullptr)
+	{
+		const DVector3 eye = pmo->Pos() + DVector3(0, 0, player->viewheight);
+		panel = InterfaceHandPanel(PV(eye), plane);
+	}
 	if (Logging())
 	{
 		// WHY THE HANDS STAND DOWN, on each change: a menu or the death wait,
 		// a dead player, or a panel that owns the pointer (InterfacePointerOwner).
+		// On the inventory or the popup they do not: they are its mouse (reported below).
 		const char *why = modal ? "a menu or the death wait" : !on ? "the picker is off"
-			: player->health <= 0 ? "the player is dead" : owner;
+			: player->health <= 0 ? "the player is dead" : panel != HANDPANEL_NONE ? nullptr : owner;
 		if (why != P.loggedStand)
 		{
 			if (why != nullptr) Printf("[roth_vrpick] the hands stand down: %s\n", why);
@@ -867,7 +1043,26 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		}
 	}
 	const uint64_t t0 = I_nsTime();
-	for (int role = 0; role < 2; role++)
+
+	if (panel != P.panelWhich)
+	{
+		ForgetPanel();
+		for (HandState &h : P.hand) { h.havePick = false; ResetGestures(h); HideHand(h); }
+		if (Logging())
+		{
+			if (panel != HANDPANEL_NONE) Printf("[roth_vrpick] the hands work the %s (each is the original's mouse on it)\n", PanelName(panel));
+			else if (P.panelWhich != HANDPANEL_NONE) Printf("[roth_vrpick] the hands leave the %s\n", PanelName(P.panelWhich));
+		}
+		P.panelWhich = panel;
+	}
+	if (panel != HANDPANEL_NONE)
+	{
+		for (int role = 0; role < 2; role++) TickPanelHand(role, pmo, plane);
+		PanelPointerAndClicks(panel, plane);
+	}
+	else InterfaceHandsDrivePointer(false);
+
+	for (int role = 0; role < 2 && panel == HANDPANEL_NONE; role++)
 	{
 		if (stand)
 		{
@@ -885,7 +1080,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),
 	// and, under the flat test or roth_vrpick_debug, a line every 70 tics with
 	// the average and the worst tic in microseconds.
-	if (stand) return;
+	if (stand && panel == HANDPANEL_NONE) return;
 	const double us = (double)(I_nsTime() - t0) / 1000.0;
 	if (PerfLog::GroupsWanted()) PerfLog::AddCpuSample("game.vrpick", us / 1000.0);
 	P.costSum += us;
@@ -924,6 +1119,14 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        case: a candle and the Matchbox, 16, in STUDY1)
 //                                        In metres, because the hand is placed in metres
 //                                        (VR_UnitsPerMeter: 34 in flat, about 107 in the headset)
+//   roth_vrpicktest panel <x> <y> [metres]
+//                                        with the inventory (or the examine popup) up: aim the test ray
+//                                        at the centre of pixel (x, y) of its picture (the original's
+//                                        panel pixels: the inventory's are from its top left, 0..287 x
+//                                        0..79). With <metres>, also stand the player (across the floor
+//                                        only) so the TEST HAND's fingertip is <metres> in front of the
+//                                        panel at that column -- 0.10 hovers, -0.01 is through it, a
+//                                        touch. The row a touch lands on is the fingertip's height (logged).
 //   roth_vrpicktest off
 //
 // The gestures are the real ones, driven by the poses: an index tap is
@@ -939,7 +1142,7 @@ CCMD(roth_vrpicktest)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face|examine [metres]"
-			" | seek needs <item> [metres] | off\n");
+			" | seek needs <item> [metres] | panel <x> <y> [metres] | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
@@ -970,6 +1173,37 @@ CCMD(roth_vrpicktest)
 		P.testPitch = argv.argc() >= 3 ? atof(argv[2]) : 0.0;
 		P.testYaw = argv.argc() >= 4 ? atof(argv[3]) : 0.0;
 		Printf("roth_vrpicktest: aim pitch %.1f yaw %.1f off the view\n", P.testPitch, P.testYaw);
+		return;
+	}
+	if (!stricmp(argv[1], "panel") && argv.argc() >= 4)
+	{
+		AActor *pmo = players[consoleplayer].mo;
+		if (pmo == nullptr || players[consoleplayer].mo == nullptr) { Printf("roth_vrpicktest panel: no player\n"); return; }
+		const DVector3 eye = pmo->Pos() + DVector3(0, 0, players[consoleplayer].viewheight);
+		PanelPlane plane;
+		const int which = InterfaceHandPanel(PV(eye), plane);
+		if (which == HANDPANEL_NONE) { Printf("roth_vrpicktest panel: neither the inventory nor the examine popup is up\n"); return; }
+		const double x = atof(argv[2]) + 0.5, y = atof(argv[3]) + 0.5;
+		const DVector3 at = DV(PanelWorldOf(plane, x, y));
+		P.testAimAt = true;
+		P.testAim = at;
+		Printf("roth_vrpicktest panel: aiming at pixel %s,%s of the %s, world (%.2f %.2f %.2f)\n", argv[2], argv[3], PanelName(which), at.X, at.Y, at.Z);
+		if (argv.argc() >= 5)
+		{
+			const double metres = atof(argv[4]);
+			const int testRole = (P.testHands & 1) ? VR_MAINHAND : VR_OFFHAND;
+			HandState tmp;
+			if (!P.test || !FingerRay(testRole, tmp, pmo)) { Printf("roth_vrpicktest panel: no fingertip yet (roth_vrpicktest on, roth_handtest point first)\n"); return; }
+			const DVector3 target = at + DV(plane.front) * (metres * UPM());
+			const DVector3 move(target.X - tmp.tip.X, target.Y - tmp.tip.Y, 0.0);
+			pmo->SetOrigin(pmo->Pos() + move, false);
+			pmo->Vel.Zero();
+			pmo->ClearInterpolation();
+			PanelPoint lands;
+			const double d = PanelProject(plane, PV(tmp.tip + move), lands);
+			Printf("roth_vrpicktest panel: the player moved (%.2f %.2f) so the %s hand's fingertip is %.3f m (%.1f units) in front of the panel"
+				" over pixel %d,%d (its height picks the row)\n", move.X, move.Y, RoleName(testRole), d / UPM(), d, lands.px, lands.py);
+		}
 		return;
 	}
 	if (!stricmp(argv[1], "seek") && argv.argc() >= 3)

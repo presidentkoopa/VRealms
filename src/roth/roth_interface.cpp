@@ -29,6 +29,8 @@
 #include "roth_sound.h"
 #include "roth_raw.h"
 #include "roth_menus.h"
+#include "roth_invmouse.h"
+#include "roth_panelmap.h"
 
 #include <algorithm>
 #include <math.h>
@@ -207,7 +209,13 @@ struct Ui
 	};
 	Picture pics[PIC_COUNT];
 	uint8_t panelPal[0x300] = {};
-	int lastHoverAction = 0;                        // [0x81300]: handle_cursor_click's last hovered action
+	// The original's mouse on the inventory panel (handle_cursor_click's panel half, roth_invmouse.h):
+	// every pointer on the panel -- the crosshair or aim beam with the use key, the VR hands -- goes
+	// through it. Its g_hover_latch is [0x81300], the action the hover last moved the cursor for.
+	InvMouse mouse;
+	// A VR hand drove the pointer on the panel last tic (roth_vrpick.cpp): the aim-pose / crosshair
+	// hover (UpdateHover) stands down, so the cursor follows the pointing finger alone.
+	bool handsDrivePointer = false;
 	std::vector<uint8_t> dbase200;
 	std::string dbase300Path;
 	bool attached = false;
@@ -830,11 +838,9 @@ void UpdatePictureBillboards()
 	}
 }
 
-// Where a ray meets a picture's billboard, in the original's own pixels:
-// (left, top) its top left, as the original's mouse is. The renderer puts u
-// along the basis' right and v down from its top (hw_sprites.cpp emitQuad),
-// mirrored by bb_flipu.
-bool PanelPixel(const Ray &r, const Element &e, int &px, int &py)
+// A picture's billboard as roth_panelmap.h takes it: BillboardBasis' axes (the
+// renderer's), its front on the side of `eye`, the picture's own pixel rectangle.
+bool PlaneOf(const Element &e, const DVector3 &eye, PanelPlane &p)
 {
 	if (U.level == nullptr || e.picW <= 0 || e.picH <= 0) return false;
 	const FBillboard *bb = nullptr;
@@ -842,38 +848,43 @@ bool PanelPixel(const Ray &r, const Element &e, int &px, int &py)
 	if (bb == nullptr) return false;
 	DVector3 right, up, normal;
 	double hw, hh;
-	BillboardBasis(*bb, bb->pos, r.start, bb_tiltbias, bb_scale, right, up, normal, hw, hh);
-	const double denom = normal | r.dir;
-	if (fabs(denom) < 1e-9 || hw <= 0 || hh <= 0) return false;
-	const double t = (normal | (bb->pos - r.start)) / denom;
-	if (t <= 0.0) return false;
-	const DVector3 rel = (r.start + r.dir * t) - bb->pos;
-	double u = ((rel | right) / hw + 1.0) * 0.5;
-	const double v = (1.0 - (rel | up) / hh) * 0.5;
-	if (bb_flipu) u = 1.0 - u;
-	px = e.left + (int)floor(u * e.picW);
-	py = e.top + (int)floor(v * e.picH);
+	BillboardBasis(*bb, bb->pos, eye, bb_tiltbias, bb_scale, right, up, normal, hw, hh);
+	if (hw <= 0 || hh <= 0) return false;
+	p.centre = PanelV3(bb->pos.X, bb->pos.Y, bb->pos.Z);
+	p.right = PanelV3(right.X, right.Y, right.Z);
+	p.up = PanelV3(up.X, up.Y, up.Z);
+	const double side = (eye - bb->pos) | normal;
+	p.front = side >= 0 ? PanelV3(normal.X, normal.Y, normal.Z) : PanelV3(-normal.X, -normal.Y, -normal.Z);
+	p.halfw = hw;
+	p.halfh = hh;
+	p.flipu = bb_flipu;
+	// The picture's rows: the canvas' height, which is the original's logical rows while no
+	// line doubling is drawn (the engine binds every canvas without it: VideoMode 8).
+	p.left = e.left; p.top = e.top; p.w = e.picW; p.h = e.picH;
 	return true;
 }
 
-// A click on the panel at pixel (px, py): the action the original's hit test
-// gives there, fed to the rules as dispatch_dialogue_ui_action takes it
-// (dialogue_ui.c:1556-1808).
+// Where a ray meets a picture's billboard, in the original's own pixels:
+// (left, top) its top left, as the original's mouse is (roth_panelmap.h; the
+// same arithmetic this always did, tools/invhand_test M2).
+bool PanelPixel(const Ray &r, const Element &e, int &px, int &py)
+{
+	PanelPlane p;
+	if (!PlaneOf(e, r.start, p)) return false;
+	PanelPoint pt;
+	if (!PanelRay(p, PanelV3(r.start.X, r.start.Y, r.start.Z), PanelV3(r.dir.X, r.dir.Y, r.dir.Z), pt)) return false;
+	px = pt.px;
+	py = pt.py;
+	return true;
+}
+
+// A click on the panel at pixel (px, py): the original's mouse click there
+// (handle_cursor_click: its hit test, then dispatch_dialogue_ui_action),
+// roth_invmouse.h -- the one path every pointer's click on the panel takes.
 void PanelClick(int px, int py, int button)
 {
-	const int action = U.painter.HitTest(px, py);
-	if (action >= 0x17 && action <= 0x1b)                   // a tab: 0x17 + its category
-	{
-		for (int t = 0; t < 5; t++) if (TabCategory(t) == action - 0x17) U.screen.ClickTab(t);
-		U.lastHoverAction = 0x20;                           // :1638
-	}
-	else if (action >= 0x1c && action <= 0x25) U.screen.ClickCell(action - 0x1c, button);
-	else if (action == 0x26) U.screen.ClickOutside();       // the held item's box: commit and close
-	else if (action == 0x28) { U.screen.ScrollUp(); U.lastHoverAction = 0x20; }      // :1660
-	else if (action == 0x29) { U.screen.ScrollDown(); U.lastHoverAction = 0x20; }    // :1670
-	else if (action == 0x2a || action == 0x2b) U.screen.ClickHandBox(action - 0x2a, button);
-	else if (action == 0x2c) { if (U.menus != nullptr) U.menus->OpenOptions(); }      // the options: inventory.c:1799-1817
-	Printf("[roth_ui] panel click at %d,%d (button %d): action 0x%x\n", px, py, button, action);
+	U.mouse.Click(U.painter, U.screen, px, py, button);
+	Printf("[roth_ui] panel click at %d,%d (button %d): action 0x%x\n", px, py, button, U.mouse.lastAction);
 }
 
 void BuildPopup()
@@ -1225,7 +1236,8 @@ void UpdateHover(player_t *player)
 	if (U.popup.Active())
 	{
 		// The popup's own pointer: its frames read it (handle_cursor_click's hover).
-		PopupPointerAt(rays, n, nullptr);
+		// A VR hand that is the pointer sets it itself (InterfaceHandPointer).
+		if (!U.handsDrivePointer) PopupPointerAt(rays, n, nullptr);
 		U.hoverBb = bb;
 		return;
 	}
@@ -1236,20 +1248,13 @@ void UpdateHover(player_t *player)
 	U.dialogue.SetPointer(pos, row);
 	if (U.dialogue.PointerBelongsToDialogue())
 		U.dialogue.UpdateChoiceHighlight(pos, row);
-	// The inventory cursor follows the pointer over the grid (handle_cursor_click,
-	// input.c:1290-1297): a cell's action, when it is not the last one hovered.
-	if (e != nullptr && e->kind == E_INVPANEL && !U.screen.PopupUp() && n > 0)
+	// The inventory cursor follows the pointer over the grid (handle_cursor_click's
+	// hover, input.c:1290-1297; roth_invmouse.h): a cell's action, when it is not the
+	// last one hovered. Not while a VR hand is the pointer (roth_vrpick.cpp).
+	if (e != nullptr && e->kind == E_INVPANEL && !U.screen.PopupUp() && n > 0 && !U.handsDrivePointer)
 	{
 		int px = 0, py = 0;
-		if (PanelPixel(rays[0], *e, px, py))
-		{
-			const int act = U.painter.HitTest(px, py);
-			if (act >= 0x1c && act <= 0x25 && act != U.lastHoverAction)
-			{
-				U.lastHoverAction = act;
-				U.screen.HoverCell(act - 0x1c);
-			}
-		}
+		if (PanelPixel(rays[0], *e, px, py)) U.mouse.Hover(U.painter, U.screen, px, py);
 	}
 	U.hoverBb = bb;
 }
@@ -1383,6 +1388,7 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 	pa.readLine = [](uint8_t *dest, uint32_t maxlen, uint32_t off) { return U.dialogue.ReadNextDialogueLine(dest, maxlen, off, 0); };
 	pa.labelText = [](int32_t id) { return (U.db != nullptr && U.core != nullptr) ? ItemLabelText(*U.db, id, U.core->InvSink()) : 0u; };
 	U.painter.Bind(&U.screen, &core, &db, pa, false);       // the retail ROTH.INI's VideoMode 8: no line doubling
+	U.mouse.openOptions = [] { if (U.menus != nullptr) U.menus->OpenOptions(); };   // action 0x2c (inventory.c:1799-1817)
 	Printf("[roth_ui] inventory panel: ICONS.ALL %s, font %s\n", U.iconsAll.empty() ? "MISSING" : "ok",
 		U.font.ok() ? "ok" : exeErr.c_str());
 	{
@@ -1614,6 +1620,74 @@ const char *InterfacePointerOwner()
 }
 
 bool InterfacePointerBusy() { return InterfacePointerOwner() != nullptr; }
+
+//==========================================================================
+//
+// The VR hands on the panels (roth_vrpick.cpp; roth_invhand.h). The hand is
+// the original's mouse: where it points is a pixel of the panel's picture,
+// and its clicks go through the same code as every other pointer's.
+//
+//==========================================================================
+
+namespace
+{
+const Element *HandPanelElement(int &which)
+{
+	which = HANDPANEL_NONE;
+	const char *owner = InterfacePointerOwner();
+	if (owner == nullptr) return nullptr;
+	int kind = -1;
+	if (!strcmp(owner, "inventory")) { kind = E_INVPANEL; which = HANDPANEL_INVENTORY; }
+	else if (!strcmp(owner, "popup") && U.popup.Active()) { kind = E_POPUP; which = HANDPANEL_POPUP; }
+	if (kind < 0) { which = HANDPANEL_NONE; return nullptr; }
+	for (const Element &e : U.elements) if (e.kind == kind && e.picture >= 0) return &e;
+	which = HANDPANEL_NONE;
+	return nullptr;
+}
+} // namespace
+
+int InterfaceHandPanel(const PanelV3 &eye, PanelPlane &out)
+{
+	if (!U.attached) return HANDPANEL_NONE;
+	int which = HANDPANEL_NONE;
+	const Element *e = HandPanelElement(which);
+	if (e == nullptr || !PlaneOf(*e, DVector3(eye.x, eye.y, eye.z), out)) return HANDPANEL_NONE;
+	return which;
+}
+
+uint16_t InterfaceHandPointer(int panel, int x, int y, bool onPicture)
+{
+	if (!U.attached) return 0;
+	if (panel == HANDPANEL_INVENTORY && U.screen.IsOpen() && !U.screen.PopupUp())
+		return U.mouse.Hover(U.painter, U.screen, x, y);
+	if (panel == HANDPANEL_POPUP && U.popup.Active())
+	{
+		// As PopupPointerAt: off the popup's picture the pointer is on none of its rectangles.
+		if (onPicture) U.popup.SetPointer(x, y, 0);
+		else U.popup.SetPointer(-0x4000, -0x4000, 0);
+	}
+	return 0;
+}
+
+int InterfaceHandClick(int panel, int x, int y, bool onPicture, int button)
+{
+	if (!U.attached) return -1;
+	if (panel == HANDPANEL_INVENTORY && U.screen.IsOpen() && !U.screen.PopupUp())
+	{
+		PanelClick(x, y, button);
+		return U.mouse.lastAction;
+	}
+	if (panel == HANDPANEL_POPUP && U.popup.Active())
+	{
+		// As Press does for the popup (input.c:1310-1347, taken by its next frame).
+		InterfaceHandPointer(panel, x, y, onPicture);
+		U.popup.Press(button);
+		return -1;
+	}
+	return -1;
+}
+
+void InterfaceHandsDrivePointer(bool on) { U.handsDrivePointer = on; }
 
 bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 {
