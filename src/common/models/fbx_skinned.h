@@ -81,6 +81,54 @@ struct Vertex
 	uint32_t fbxIndex;		// the FBX polygon-vertex index
 };
 
+// One image a material property links to, as the FBX stores it. The bytes are the file's own embedded copy,
+// unchanged (an encoded PNG/JPG/...); empty when the FBX only names a file on the author's disk.
+struct EmbeddedImage
+{
+	std::string file;				// file name only ("" = the property links no texture)
+	std::string property;			// the material property it is linked to, e.g. "Maya|normalCamera"
+	std::vector<uint8_t> content;	// the embedded bytes, byte for byte (ufbx_texture.content)
+};
+
+// The material the mesh is drawn with, as ufbx maps it to PBR (ufbx_material.pbr): every map it links and the
+// scalar values beside them. With `mirrorskin` (below) it is the TWIN's material, not the mesh's own.
+struct Material
+{
+	std::string name;				// the material's name
+	std::string mesh;				// the mesh it belongs to (this mesh, or the mirrorskin twin)
+	std::string ownName;			// this mesh's own material (differs from name under mirrorskin)
+	EmbeddedImage baseColor;		// pbr.base_color (else fbx.diffuse_color)
+	EmbeddedImage normal;			// pbr.normal_map (Maya aiStandardSurface: normalCamera)
+	EmbeddedImage roughness;		// pbr.roughness (aiStandardSurface: specularRoughness)
+	EmbeddedImage metalness;		// pbr.metalness
+	EmbeddedImage occlusion;		// pbr.ambient_occlusion
+	bool metalnessHasValue = false;	double metalnessValue = 0;		// the scalar the map would replace
+	bool roughnessHasValue = false;	double roughnessValue = 0;
+};
+
+// MIRRORSKIN: "this mesh's UVs are the twin mesh's mirrored in u; draw it with the twin's material, the mirror
+// undone". Asked for by name in the selector (see ParseSelector) -- never guessed -- and checked at load on every
+// polygon corner; a mesh that is not such a twin is refused, not drawn with a wrong skin.
+struct MirrorSkin
+{
+	std::string twin;				// "" = off
+	double axis = 0;				// measured: u_this + u_twin on every corner (1 would be a mirror about 0.5)
+	double uSpread = 0;				// max |u_this + u_twin - axis| over the corners
+	double vSpread = 0;				// max |v_this - v_twin|
+	double positionDiff = 0;		// max |control point this - twin| (geometry space; information)
+	int faces = 0, corners = 0;
+	int reversedFaces = 0;			// faces whose corners run the other way round than the twin's
+};
+
+// The part of a MODELDEF name after "<file>.fbx:", parsed: `<mesh>[?<option>[,<option>...]]`.
+//   mirrorskin=<twin>   see MirrorSkin
+struct Selector
+{
+	std::string mesh;
+	std::string mirrorSkin;
+};
+bool ParseSelector(const char *text, Selector &out, std::string &err);
+
 struct Diag
 {
 	std::vector<std::string> skinnedMeshes;	// every skinned mesh in the file, by node name
@@ -97,8 +145,8 @@ struct Diag
 	double maxQuantError = 0;	// largest |byte/255 - exact| over every kept weight
 	int unweightedControlPoints = 0;
 	int blendShapeDeformers = 0;	// present in the file but not loaded (the engine has no morphs on this path)
-	std::string textureFile;	// the material's base colour texture, file name only ("" if none)
-	std::string materialName;
+	std::string textureFile;	// the drawn material's base colour texture, file name only ("" if none) = material.baseColor.file
+	std::string materialName;	// = material.name
 };
 
 struct Result
@@ -110,11 +158,13 @@ struct Result
 	int numFrames = 0;			// frames.size() / joints.size(); at least 1 (the rest pose)
 	std::vector<Vertex> verts;
 	std::vector<uint32_t> tris;	// 3 per triangle, wound as the engine's IQMs are (see fbx_skinned.cpp)
+	Material material;
+	MirrorSkin mirror;
 	Diag diag;
 };
 
-// meshSelector: the node name of the skinned mesh to load (case-insensitive). Empty: the file must
-// have exactly one skinned mesh. False with err set on any failure.
+// meshSelector: the node name of the skinned mesh to load (case-insensitive), optionally followed by options
+// (ParseSelector). Empty: the file must have exactly one skinned mesh. False with err set on any failure.
 bool Load(const void *data, size_t size, const char *meshSelector, Result &out, std::string &err);
 
 // Column-major 4x4 helpers shared with the test.

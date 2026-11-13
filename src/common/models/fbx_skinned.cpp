@@ -1,7 +1,8 @@
 /*
 ** fbx_skinned.cpp
 **
-** RS FORK -- one skinned mesh of an FBX file, read by ufbx, as plain arrays (see fbx_skinned.h).
+** RS FORK -- one skinned mesh of an FBX file, read by ufbx, as plain arrays (see fbx_skinned.h), with its
+** material's maps as the FBX embeds them (C5b) and, when the selector asks, a mirror twin's skin (C21).
 ** Engine-free: compiled into the engine (models_fbx.cpp) and into tools/fbxload_test as is.
 ** The checklist this answers to, item by item, is docs/FBX_LOADER.md ("C<n>" below).
 **
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <unordered_map>
@@ -143,6 +145,163 @@ static std::string BaseName(const ufbx_string &s)
 	return k == std::string::npos ? f : f.substr(k + 1);
 }
 
+//===========================================================================
+//
+// THE SELECTOR: `<mesh>[?<option>[,<option>...]]`, the part of a MODELDEF model name after "<file>.fbx:".
+// Options are named in full; an unknown one, an empty value or a repeated one refuses the load.
+//
+//===========================================================================
+
+bool ParseSelector(const char *text, Selector &out, std::string &err)
+{
+	out = Selector();
+	const std::string s = text ? text : "";
+	const size_t q = s.find('?');
+	out.mesh = s.substr(0, q);
+	if (q == std::string::npos) return true;
+	const std::string opts = s.substr(q + 1);
+	size_t at = 0;
+	while (at <= opts.size())
+	{
+		size_t end = opts.find(',', at);
+		if (end == std::string::npos) end = opts.size();
+		const std::string o = opts.substr(at, end - at);
+		const size_t eq = o.find('=');
+		const std::string key = o.substr(0, eq), val = eq == std::string::npos ? "" : o.substr(eq + 1);
+		if (IEquals(key.c_str(), "mirrorskin"))
+		{
+			if (val.empty()) { err = "mirrorskin needs the twin mesh's name (mirrorskin=<mesh>)"; return false; }
+			if (!out.mirrorSkin.empty()) { err = "mirrorskin given twice"; return false; }
+			out.mirrorSkin = val;
+		}
+		else { err = "unknown option '" + o + "' after '?' (known: mirrorskin=<mesh>)"; return false; }
+		at = end + 1;
+	}
+	return true;
+}
+
+static const ufbx_mesh *FindMeshByName(const ufbx_scene *scene, const std::string &name)
+{
+	for (size_t i = 0; i < scene->meshes.count; i++)
+		if (IEquals(MeshName(scene->meshes.data[i]).c_str(), name.c_str())) return scene->meshes.data[i];
+	return nullptr;
+}
+
+static const ufbx_material *MaterialOf(const ufbx_mesh *mesh)
+{
+	const ufbx_node *node = mesh->instances.count ? mesh->instances.data[0] : nullptr;
+	if (node && node->materials.count) return node->materials.data[0];
+	return mesh->materials.count ? mesh->materials.data[0] : nullptr;
+}
+
+// C5b: one map of the material: the texture's file name, the property it hangs on, and its embedded bytes.
+static void TakeImage(const ufbx_material *mat, const ufbx_texture *tex, EmbeddedImage &out)
+{
+	out = EmbeddedImage();
+	if (tex == nullptr) return;
+	out.file = BaseName(tex->relative_filename.length ? tex->relative_filename : tex->filename);
+	if (out.file.empty()) out.file = BaseName(tex->absolute_filename);
+	for (size_t k = 0; k < mat->textures.count; k++)
+		if (mat->textures.data[k].texture == tex) { out.property = mat->textures.data[k].material_prop.data; break; }
+	if (tex->type == UFBX_TEXTURE_FILE && tex->content.size > 0)
+	{
+		const uint8_t *b = (const uint8_t *)tex->content.data;
+		out.content.assign(b, b + tex->content.size);
+	}
+}
+
+static void TakeMaterial(const ufbx_material *mat, const std::string &meshName, Material &out)
+{
+	out.mesh = meshName;
+	if (mat == nullptr) return;
+	out.name = mat->name.data;
+	TakeImage(mat, mat->pbr.base_color.texture ? mat->pbr.base_color.texture : mat->fbx.diffuse_color.texture, out.baseColor);
+	TakeImage(mat, mat->pbr.normal_map.texture, out.normal);
+	TakeImage(mat, mat->pbr.roughness.texture, out.roughness);
+	TakeImage(mat, mat->pbr.metalness.texture, out.metalness);
+	TakeImage(mat, mat->pbr.ambient_occlusion.texture, out.occlusion);
+	out.metalnessHasValue = mat->pbr.metalness.has_value;
+	out.metalnessValue = mat->pbr.metalness.value_real;
+	out.roughnessHasValue = mat->pbr.roughness.has_value;
+	out.roughnessValue = mat->pbr.roughness.value_real;
+}
+
+//===========================================================================
+//
+// MIRRORSKIN, checked (fbx_skinned.h MirrorSkin). The twin must have the same polygons over the same control
+// points (polygon f of one = polygon f of the other, as a set of control points; the corner order may run the
+// other way round, which a mirrored mesh's does); each corner is matched to the twin's corner on the same
+// control point. Then on every corner u_this + u_twin must be one constant (the mirror's axis, measured) and
+// v_this = v_twin, to UV_TOLERANCE. Anything else refuses: a skin that does not line up is not drawn.
+//
+//===========================================================================
+
+static const double UV_TOLERANCE = 1e-4;	// UV units: 0.2 texel on a 2048 texture
+
+static bool MeasureMirror(const ufbx_mesh *mesh, const ufbx_mesh *twin, MirrorSkin &m, std::string &err)
+{
+	if (!mesh->vertex_uv.exists || !twin->vertex_uv.exists) { err = "mirrorskin: a mesh has no UVs"; return false; }
+	if (mesh->num_faces != twin->num_faces || mesh->num_indices != twin->num_indices)
+	{
+		err = "mirrorskin: " + std::to_string(mesh->num_faces) + " polygons / " + std::to_string(mesh->num_indices) + " corners here, "
+			+ std::to_string(twin->num_faces) + " / " + std::to_string(twin->num_indices) + " on the twin";
+		return false;
+	}
+	std::vector<double> sumU(mesh->num_indices), dV(mesh->num_indices);
+	for (size_t f = 0; f < mesh->num_faces; f++)
+	{
+		const ufbx_face a = mesh->faces.data[f], b = twin->faces.data[f];
+		if (a.num_indices != b.num_indices) { err = "mirrorskin: polygon " + std::to_string(f) + " has a different corner count on the twin"; return false; }
+		bool forward = true, backward = true;
+		for (uint32_t c = 0; c < a.num_indices; c++)
+		{
+			const uint32_t cp = mesh->vertex_indices.data[a.index_begin + c];
+			int found = -1, count = 0;
+			for (uint32_t d = 0; d < b.num_indices; d++)
+				if (twin->vertex_indices.data[b.index_begin + d] == cp) { found = (int)d; count++; }
+			if (count != 1) { err = "mirrorskin: polygon " + std::to_string(f) + " is not over the same control points on the twin"; return false; }
+			const ufbx_vec2 ua = ufbx_get_vertex_vec2(&mesh->vertex_uv, a.index_begin + c);
+			const ufbx_vec2 ub = ufbx_get_vertex_vec2(&twin->vertex_uv, b.index_begin + found);
+			sumU[a.index_begin + c] = ua.x + ub.x;
+			dV[a.index_begin + c] = ua.y - ub.y;
+			// corner order: forward if this corner's successor is the twin's successor
+			const uint32_t nextA = mesh->vertex_indices.data[a.index_begin + (c + 1) % a.num_indices];
+			if (twin->vertex_indices.data[b.index_begin + (found + 1) % b.num_indices] != nextA) forward = false;
+			if (twin->vertex_indices.data[b.index_begin + (found + b.num_indices - 1) % b.num_indices] != nextA) backward = false;
+		}
+		if (!forward && backward) m.reversedFaces++;
+	}
+	double mean = 0;
+	for (double v : sumU) mean += v;
+	mean /= (double)sumU.size();
+	m.axis = mean;
+	m.uSpread = m.vSpread = 0;
+	for (size_t i = 0; i < sumU.size(); i++)
+	{
+		m.uSpread = std::max(m.uSpread, fabs(sumU[i] - mean));
+		m.vSpread = std::max(m.vSpread, fabs(dV[i]));
+	}
+	m.faces = (int)mesh->num_faces;
+	m.corners = (int)mesh->num_indices;
+	m.positionDiff = 0;
+	if (mesh->num_vertices == twin->num_vertices)
+		for (size_t v = 0; v < mesh->num_vertices; v++)
+		{
+			const ufbx_vec3 p = mesh->vertices.data[v], q = twin->vertices.data[v];
+			m.positionDiff = std::max(m.positionDiff, std::max(fabs(p.x - q.x), std::max(fabs(p.y - q.y), fabs(p.z - q.z))));
+		}
+	else m.positionDiff = -1;
+	if (m.uSpread > UV_TOLERANCE || m.vSpread > UV_TOLERANCE)
+	{
+		char buf[256];
+		snprintf(buf, sizeof(buf), "mirrorskin: the UVs are not the twin's mirrored in u (u_this + u_twin varies by %.6f, v by %.6f; tolerance %g)",
+			m.uSpread, m.vSpread, UV_TOLERANCE);
+		err = buf;
+		return false;
+	}
+	return true;
+}
+
 namespace
 {
 	struct SceneGuard
@@ -185,11 +344,14 @@ static void JointLocals(const ufbx_scene *sc, const std::vector<uint32_t> &nodeI
 bool Load(const void *data, size_t size, const char *meshSelector, Result &out, std::string &err)
 {
 	out = Result();
+	Selector sel;
+	if (!ParseSelector(meshSelector, sel, err)) return false;
+	const char *meshName = sel.mesh.c_str();
 
-	// C1-C3: load. Embedded blobs (the 19 MB of PNGs) are not kept: the engine takes textures
-	// from its own files. Z up, right-handed; units untouched.
+	// C1-C3: load, with the embedded blobs (C5b: the material's maps are read from them). Z up,
+	// right-handed; units untouched.
 	ufbx_load_opts opts = {};
-	opts.ignore_embedded = true;
+	opts.ignore_embedded = false;
 	opts.generate_missing_normals = true;
 	opts.target_axes = ufbx_axes_right_handed_z_up;
 	opts.space_conversion = UFBX_SPACE_CONVERSION_TRANSFORM_ROOT;
@@ -212,9 +374,9 @@ bool Load(const void *data, size_t size, const char *meshSelector, Result &out, 
 		if (m->skin_deformers.count == 0) continue;
 		const std::string nm = MeshName(m);
 		out.diag.skinnedMeshes.push_back(nm);
-		if (meshSelector && *meshSelector ? IEquals(nm.c_str(), meshSelector) : true)
+		if (*meshName ? IEquals(nm.c_str(), meshName) : true)
 		{
-			if (mesh != nullptr && !(meshSelector && *meshSelector))
+			if (mesh != nullptr && !*meshName)
 			{
 				err = "more than one skinned mesh; name one after a colon (file.fbx:Mesh)";
 				mesh = nullptr;
@@ -225,7 +387,7 @@ bool Load(const void *data, size_t size, const char *meshSelector, Result &out, 
 	}
 	if (mesh == nullptr)
 	{
-		if (err.empty()) err = std::string("no skinned mesh named '") + (meshSelector ? meshSelector : "") + "'";
+		if (err.empty()) err = std::string("no skinned mesh named '") + meshName + "'";
 		err += "; skinned meshes in the file:";
 		for (auto &n : out.diag.skinnedMeshes) err += " " + n;
 		return false;
@@ -237,18 +399,24 @@ bool Load(const void *data, size_t size, const char *meshSelector, Result &out, 
 	out.meshName = MeshName(mesh);
 	out.diag.blendShapeDeformers = (int)mesh->blend_deformers.count;
 
-	// C5: material and its base colour texture (file name only; the engine looks it up beside the model).
-	const ufbx_material *mat = meshNode->materials.count ? meshNode->materials.data[0] : (mesh->materials.count ? mesh->materials.data[0] : nullptr);
-	if (mat)
+	// C5: the material, every map it links (C5b: with the embedded bytes) and its scalars. Under mirrorskin
+	// (C21) the twin's material is drawn and the mesh's own is only named.
+	const ufbx_material *ownMat = MaterialOf(mesh);
+	const ufbx_mesh *matMesh = mesh;
+	if (!sel.mirrorSkin.empty())
 	{
-		out.diag.materialName = mat->name.data;
-		const ufbx_texture *tex = mat->pbr.base_color.texture ? mat->pbr.base_color.texture : mat->fbx.diffuse_color.texture;
-		if (tex)
-		{
-			out.diag.textureFile = BaseName(tex->relative_filename.length ? tex->relative_filename : tex->filename);
-			if (out.diag.textureFile.empty()) out.diag.textureFile = BaseName(tex->absolute_filename);
-		}
+		// C21: mirrorskin, checked on every corner (MeasureMirror); u is un-mirrored in C16.
+		const ufbx_mesh *twin = FindMeshByName(scene, sel.mirrorSkin);
+		if (twin == nullptr) { err = "mirrorskin: no mesh named '" + sel.mirrorSkin + "' in the file"; return false; }
+		if (twin == mesh) { err = "mirrorskin: '" + sel.mirrorSkin + "' is this mesh"; return false; }
+		out.mirror.twin = MeshName(twin);
+		if (!MeasureMirror(mesh, twin, out.mirror, err)) return false;
+		matMesh = twin;
 	}
+	TakeMaterial(MaterialOf(matMesh), MeshName(matMesh), out.material);
+	out.material.ownName = ownMat ? ownMat->name.data : "";
+	out.diag.materialName = out.material.name;
+	out.diag.textureFile = out.material.baseColor.file;
 
 	// C6/C7: the skeleton = the nodes the skin's clusters bind to, ordered parents first by walking
 	// the scene tree; each joint's parent is its nearest ancestor that is also a joint.
@@ -464,7 +632,9 @@ bool Load(const void *data, size_t size, const char *meshSelector, Result &out, 
 		if (mesh->vertex_uv.exists)
 		{
 			const ufbx_vec2 uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, i);
-			o.uv[0] = (float)uv.x; o.uv[1] = (float)(1.0 - uv.y);	// FBX v runs up; texture rows run down (IQM)
+			// C21: under mirrorskin u is un-mirrored about the measured axis (= the twin's u at this corner, to uSpread)
+			const double u = out.mirror.twin.empty() ? uv.x : out.mirror.axis - uv.x;
+			o.uv[0] = (float)u; o.uv[1] = (float)(1.0 - uv.y);	// FBX v runs up; texture rows run down (IQM)
 		}
 		else { o.uv[0] = o.uv[1] = 0.f; }
 		for (int k = 0; k < 4; k++) { o.bone[k] = cpq[cp].b[k]; o.weight[k] = cpq[cp].w[k]; }

@@ -149,8 +149,10 @@ unsigned FindModel(const char * path, const char * modelfile, bool silent)
 
 	// RS FORK -- "<file>.fbx:<mesh>" names ONE skinned mesh of an FBX file (model_fbx.h): the file is
 	// the lump, the part after the colon picks the mesh (by its node's name) and with it the skeleton
-	// its skin binds to. The whole string stays the model's name, so the same file named with two
-	// meshes is two models. Only a name ending ".fbx" before the colon is split; nothing else changes.
+	// its skin binds to; options may follow the mesh after a '?' (fbx_skinned.h Selector, e.g.
+	// "hand_final.fbx:Hand_Low1?mirrorskin=Hand_Low"). The whole string stays the model's name, so the same
+	// file named with two meshes (or one mesh with other options) is two models. Only a name ending ".fbx"
+	// before the colon is split; nothing else changes.
 	FString lumpname = fullname;
 	FString fbxMesh;
 	bool isFBX = false;

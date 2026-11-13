@@ -7,6 +7,10 @@
 ** frame of every take of the file. A file with several skinned meshes is named once per mesh:
 **
 **     Model 0 "hand_final.fbx:Hand_Low"      (model.cpp FindModel: "<file>.fbx:<mesh node name>")
+**     Model 0 "hand_final.fbx:Hand_Low1?mirrorskin=Hand_Low"   (options after '?': fbx_skinned.h Selector)
+**
+** The material's maps the FBX embeds (normal, roughness, metalness) are registered as engine textures from the
+** file's own bytes and hung on the skin as the engine's PBR material (models_fbx.cpp E10).
 **
 ** The data is read by fbx_skinned.cpp (engine-free; tools/fbxload_test runs the same code against the
 ** file) into exactly what an IQM carries, and this class is an IQMModel underneath, so the IQM bone
@@ -28,7 +32,8 @@
 class FFBXModel : public IQMModel
 {
 public:
-	// mesh: the node name after the colon in the MODELDEF file name; empty = the file's only skinned mesh.
+	// mesh: what follows the colon in the MODELDEF file name -- the mesh's node name and any options
+	// (fbx_skinned.h ParseSelector); empty = the file's only skinned mesh.
 	explicit FFBXModel(const char *mesh) : MeshSelector(mesh ? mesh : "") {}
 
 	bool Load(const char* fn, int lumpnum, const char* buffer, int length) override;

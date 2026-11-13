@@ -13,10 +13,20 @@
 //   T5  hand length: wrist to the middle fingertip on the mesh; the MODELDEF scale for 0.19 m
 //   T6  handedness: Hand_Low is a right hand, Hand_Low1 a left hand (curl direction against the knuckle line)
 //   T7  faces: rest mesh outward (signed volume), normals agree with the faces, at rest and at a posed frame
+//   S1  the selector's options: an unknown or malformed option, a missing twin and a mesh as its own twin refused
+//   S2  mirrorskin (Hand_Low1?mirrorskin=Hand_Low, the MODELDEF's name): everything but the UVs and the material is
+//       Hand_Low1's own, unchanged
+//   S3  the mirror measured on every corner: one axis, spreads, polygons matched
+//   S4  every corner of the left hand samples the skin at the right hand's UV for the same polygon and control point
+//   S5  the material: Hand_Low's aiStandardSurface1 on both hands; its normal and roughness maps are the FBX's own
+//       embedded bytes (against ufbx's scene loaded separately), decoded by fbx_image.h (the engine's decode)
 //   --angles prints per-joint rotation angles and finger metrics for poses_ref.py to diff against.
-//   --dump writes the rest and posed meshes for render.py.
+//   --dump writes the rest and posed meshes for render.py (the left hand with mirrorskin, as the MODELDEF draws it).
+//   --maps DIR writes the maps' embedded bytes and their decoded pixels, and the left hand's corner UVs, for
+//       maps_ref.py (an FBX reader without ufbx, and libpng through OpenCV).
 
 #include "fbx_skinned.h"
+#include "fbx_image.h"
 #include "vr_handpose_math.h"
 #include "ufbx.h"
 
@@ -99,11 +109,12 @@ int main(int argc, char **argv)
 {
 	if (argc < 2) { fprintf(stderr, "usage: test_fbxload <fbx> [--dump DIR] [--angles f,f,...]\n"); return 2; }
 	const char *path = argv[1];
-	const char *dumpDir = nullptr;
+	const char *dumpDir = nullptr, *mapsDir = nullptr;
 	std::vector<int> angleFrames;
 	for (int i = 2; i < argc; i++)
 	{
 		if (!strcmp(argv[i], "--dump") && i + 1 < argc) dumpDir = argv[++i];
+		else if (!strcmp(argv[i], "--maps") && i + 1 < argc) mapsDir = argv[++i];
 		else if (!strcmp(argv[i], "--angles") && i + 1 < argc)
 		{
 			for (char *s = argv[++i]; *s;) { angleFrames.push_back(strtol(s, &s, 10)); if (*s == ',') s++; }
@@ -130,12 +141,13 @@ int main(int argc, char **argv)
 	}
 
 	const char *meshes[2] = { "Hand_Low", "Hand_Low1" };
+	const char *selectors[2] = { "Hand_Low", "Hand_Low1?mirrorskin=Hand_Low" };	// as vrealms_iwad/MODELDEF.txt names them
 	double handLen[2] = { 0, 0 };
 	for (int h = 0; h < 2; h++)
 	{
 		Result r; std::string err;
-		const bool ok = Load(file.data(), file.size(), meshes[h], r, err);
-		printf("\n==== %s: %s %s\n", meshes[h], ok ? "loaded" : "FAILED", err.c_str());
+		const bool ok = Load(file.data(), file.size(), selectors[h], r, err);
+		printf("\n==== %s: %s %s\n", selectors[h], ok ? "loaded" : "FAILED", err.c_str());
 		if (!ok) { gFails++; continue; }
 		const Diag &d = r.diag;
 		const int nj = (int)r.joints.size();
@@ -474,6 +486,144 @@ int main(int argc, char **argv)
 		}
 	}
 	printf("\nhand lengths: right %.5f, left %.5f file units\n", handLen[0], handLen[1]);
+
+	// ==== S: the selector, mirrorskin and the material's embedded maps
+	printf("\n==== S: the selector, mirrorskin, the material and its embedded maps\n");
+	{
+		const char *bad[] = { "Hand_Low1?mirrorskin", "Hand_Low1?mirrorskin=", "Hand_Low1?mirrorskin=NoSuchMesh", "Hand_Low1?mirrorskin=Hand_Low1",
+			"Hand_Low1?flipu", "Hand_Low1?mirrorskin=Hand_Low,mirrorskin=Hand_Low" };
+		bool allRefused = true;
+		for (const char *b : bad)
+		{
+			Result x; std::string err;
+			const bool ok = Load(file.data(), file.size(), b, x, err);
+			printf("  '%s': %s (%s)\n", b, ok ? "LOADED" : "refused", err.c_str());
+			allRefused = allRefused && !ok;
+		}
+		Check(allRefused, "S1 every malformed selector, missing twin and self-twin is refused");
+	}
+	Result R, L, Lraw;
+	{
+		std::string e1, e2, e3;
+		const bool ok = Load(file.data(), file.size(), "Hand_Low", R, e1) && Load(file.data(), file.size(), "Hand_Low1", Lraw, e2)
+			&& Load(file.data(), file.size(), "Hand_Low1?mirrorskin=Hand_Low", L, e3);
+		Check(ok, "S2 Hand_Low, Hand_Low1 and Hand_Low1?mirrorskin=Hand_Low load");
+		if (!ok) { printf("  %s %s %s\n", e1.c_str(), e2.c_str(), e3.c_str()); return 1; }
+	}
+	{
+		// S2: only the UVs and the material differ from the plain load
+		bool same = L.verts.size() == Lraw.verts.size() && L.tris == Lraw.tris && L.frames.size() == Lraw.frames.size() && L.joints.size() == Lraw.joints.size();
+		double uvRawDiff = 0;
+		for (size_t i = 0; same && i < L.verts.size(); i++)
+		{
+			const Vertex &a = L.verts[i], &b = Lraw.verts[i];
+			same = !memcmp(a.pos, b.pos, sizeof(a.pos)) && !memcmp(a.nrm, b.nrm, sizeof(a.nrm)) && !memcmp(a.bone, b.bone, sizeof(a.bone))
+				&& !memcmp(a.weight, b.weight, sizeof(a.weight)) && a.controlPoint == b.controlPoint && a.fbxIndex == b.fbxIndex && a.uv[1] == b.uv[1];
+			uvRawDiff = fmax(uvRawDiff, fabs(a.uv[0] - b.uv[0]));
+		}
+		for (size_t i = 0; same && i < L.frames.size(); i++) same = !memcmp(&L.frames[i], &Lraw.frames[i], sizeof(TRSd));
+		Check(same, "S2 mirrorskin: positions, normals, weights, triangles, joints and every frame identical to Hand_Low1's own; v unchanged");
+		printf("  u changed by up to %.6f (the un-mirroring)\n", uvRawDiff);
+
+		// S3
+		const MirrorSkin &m = L.mirror;
+		printf("  mirror: twin %s, axis %.9f (u_left + u_right on every corner), u spread %.3g, v spread %.3g, %d polygons / %d corners, "
+			"%d polygons wound the other way, control points differ by %.3g\n", m.twin.c_str(), m.axis, m.uSpread, m.vSpread, m.faces, m.corners, m.reversedFaces, m.positionDiff);
+		Check(m.twin == "Hand_Low" && m.uSpread < 1e-6 && m.vSpread < 1e-6 && m.corners == (int)L.verts.size(), "S3 Hand_Low1's UVs are Hand_Low's mirrored about one axis on every corner (spread < 1e-6)");
+		printf("  NOTE: the axis is %.6f, not 1: the file mirrored u about %.6f (the UV islands' centre), so u -> 1 - u would leave every point %.6f (%.1f texels at 2048) off\n",
+			m.axis, m.axis / 2, fabs(m.axis - 1), fabs(m.axis - 1) * 2048);
+
+		// S4: per corner, the left hand's UV vs the right hand's UV at the same polygon and control point (ufbx's own polygons)
+		const ufbx_mesh *mR = nullptr, *mL = nullptr;
+		for (size_t k = 0; k < ref->meshes.count; k++)
+		{
+			const char *nm = ref->meshes.data[k]->instances.data[0]->name.data;
+			if (!strcmp(nm, "Hand_Low")) mR = ref->meshes.data[k];
+			if (!strcmp(nm, "Hand_Low1")) mL = ref->meshes.data[k];
+		}
+		auto keyed = [](const ufbx_mesh *m, const Result &r) {
+			std::vector<uint32_t> faceOf(m->num_indices);
+			for (size_t f = 0; f < m->num_faces; f++)
+				for (uint32_t c = 0; c < m->faces.data[f].num_indices; c++) faceOf[m->faces.data[f].index_begin + c] = (uint32_t)f;
+			std::map<std::pair<uint32_t, uint32_t>, std::array<float, 2>> out;
+			for (const Vertex &v : r.verts) out[{ faceOf[v.fbxIndex], v.controlPoint }] = { v.uv[0], v.uv[1] };
+			return out;
+		};
+		const auto kR = keyed(mR, R), kL = keyed(mL, L), kRaw = keyed(mL, Lraw);
+		double worst = 0, worstRaw = 0;
+		size_t matched = 0;
+		for (const auto &e : kL)
+		{
+			auto it = kR.find(e.first);
+			if (it == kR.end()) continue;
+			matched++;
+			worst = fmax(worst, fmax(fabs(e.second[0] - it->second[0]), fabs(e.second[1] - it->second[1])));
+			const auto &raw = kRaw.at(e.first);
+			worstRaw = fmax(worstRaw, fmax(fabs(raw[0] - it->second[0]), fabs(raw[1] - it->second[1])));
+		}
+		printf("  %zu of %zu left corners matched to a right corner (same polygon, same control point): UV difference %.3g with mirrorskin, %.4f without\n",
+			matched, kL.size(), worst, worstRaw);
+		Check(matched == kL.size() && matched == L.verts.size() && worst < 1e-6, "S4 every corner of the left hand samples the right hand's skin at the matching point (UV difference < 1e-6)");
+	}
+	{
+		// S5: the material and its maps
+		const Material &mr = R.material, &ml = L.material, &mraw = Lraw.material;
+		printf("  right: material %s; left (mirrorskin): material %s of %s, own %s; left (plain): material %s, base colour '%s', normal '%s'\n",
+			mr.name.c_str(), ml.name.c_str(), ml.mesh.c_str(), ml.ownName.c_str(), mraw.name.c_str(), mraw.baseColor.file.c_str(), mraw.normal.file.c_str());
+		printf("  metalness: %s %.3f (map '%s'); roughness scalar %.3f (map '%s'); ambient occlusion map '%s'\n",
+			mr.metalnessHasValue ? "value" : "no value", mr.metalnessValue, mr.metalness.file.c_str(), mr.roughnessValue, mr.roughness.file.c_str(), mr.occlusion.file.c_str());
+		Check(mr.name == "aiStandardSurface1" && ml.name == "aiStandardSurface1" && ml.mesh == "Hand_Low" && ml.ownName == "blinn1"
+			&& mraw.name == "blinn1" && mraw.baseColor.file.empty() && mraw.normal.file.empty(), "S5 both hands draw aiStandardSurface1 (the left by mirrorskin; its own blinn1 links no texture)");
+
+		ufbx_load_opts eo = opts;
+		eo.ignore_embedded = false;
+		ufbx_scene *refE = ufbx_load_memory(file.data(), file.size(), &eo, &uerr);
+		const ufbx_material *um = nullptr;
+		for (size_t k = 0; refE && k < refE->materials.count; k++) if (!strcmp(refE->materials.data[k]->name.data, "aiStandardSurface1")) um = refE->materials.data[k];
+		struct Slot { const char *name; const EmbeddedImage *r, *l; const char *prop; };
+		const Slot slots[] = { { "basecolor", &mr.baseColor, &ml.baseColor, "Maya|baseColor" }, { "normal", &mr.normal, &ml.normal, "Maya|normalCamera" },
+			{ "roughness", &mr.roughness, &ml.roughness, "Maya|specularRoughness" } };
+		bool bytesOk = um != nullptr, decodeOk = true;
+		FILE *man = nullptr;
+		if (mapsDir) man = fopen((std::string(mapsDir) + "/maps.txt").c_str(), "w");
+		for (const Slot &sl : slots)
+		{
+			const ufbx_texture *t = nullptr;
+			for (size_t k = 0; um && k < um->textures.count; k++) if (!strcmp(um->textures.data[k].material_prop.data, sl.prop)) t = um->textures.data[k].texture;
+			const bool same = t && t->content.size == sl.r->content.size() && !memcmp(t->content.data, sl.r->content.data(), t->content.size)
+				&& sl.l->content == sl.r->content && sl.r->property == sl.prop;
+			bytesOk = bytesOk && same;
+			uint64_t fnv = 1469598103934665603ull;
+			for (uint8_t b : sl.r->content) { fnv ^= b; fnv *= 1099511628211ull; }
+			ImageInfo info;
+			const bool infoOk = ImageInfoOf(sl.r->content.data(), sl.r->content.size(), info);
+			int w = 0, hh = 0;
+			std::vector<uint8_t> rgba;
+			const bool dec = DecodeRGBA8(sl.r->content.data(), sl.r->content.size(), w, hh, rgba);
+			decodeOk = decodeOk && infoOk && dec && w == info.width && hh == info.height;
+			printf("  %-9s '%s' on %s: %zu embedded bytes (fnv1a %016llx)%s; %dx%d, %d channel(s) of %d bits; decoded %s\n", sl.name, sl.r->file.c_str(),
+				sl.r->property.c_str(), sl.r->content.size(), (unsigned long long)fnv, same ? ", byte for byte ufbx's own, same on both hands" : ", DIFFERS",
+				info.width, info.height, info.channels, info.bits, dec ? "ok" : "FAILED");
+			if (man && dec)
+			{
+				const std::string b = std::string(mapsDir) + "/" + sl.name;
+				FILE *o = fopen((b + ".bin").c_str(), "wb"); fwrite(sl.r->content.data(), 1, sl.r->content.size(), o); fclose(o);
+				o = fopen((b + ".rgba").c_str(), "wb"); fwrite(rgba.data(), 1, rgba.size(), o); fclose(o);
+				fprintf(man, "%s %s %s %d %d %d %d\n", sl.name, sl.r->file.c_str(), sl.r->property.c_str(), w, hh, info.channels, info.bits);
+			}
+		}
+		Check(bytesOk, "S5 the base colour, normal and roughness maps are the FBX's embedded bytes, byte for byte, on the properties they hang on");
+		Check(decodeOk, "S5 each decodes (fbx_image.h, the engine's decode) at its stored size");
+		if (man)
+		{
+			fclose(man);
+			// the left hand's corners, as the engine draws them, for maps_ref.py's independent check
+			FILE *o = fopen((std::string(mapsDir) + "/Hand_Low1_mirrorskin_uv.txt").c_str(), "w");
+			for (const Vertex &v : L.verts) fprintf(o, "%u %u %.9g %.9g\n", v.fbxIndex, v.controlPoint, v.uv[0], v.uv[1]);
+			fclose(o);
+		}
+		if (refE) ufbx_free_scene(refE);
+	}
 	ufbx_free_scene(ref);
 	printf("\n%s: %d failure(s)\n", gFails ? "FAIL" : "PASS", gFails);
 	return gFails ? 1 : 0;

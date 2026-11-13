@@ -15,8 +15,14 @@
 //   F4  fist (grip 1, trigger 1, both touches) through the engine path (StepSide converged, PosePalette, the
 //       engine's swapped palette): every fingertip within the palm region; with thumb curl 1 the hand equals the
 //       FBX's own fist frame; the tip (UP_TOP) carried.
-//   F5  point (grip 1, trigger 0, no trigger touch, thumb touch): the index exactly at rest.
-//       thumb up (grip 1, trigger 1, no thumb touch): the thumb exactly at rest.
+//   F5  point (grip 1, trigger 0, no trigger touch, thumb touch): the index exactly at rest in the palm (it rides the
+//       cupped palm, its own joints unturned). thumb up (grip 1, trigger 1, no thumb touch): the thumb likewise.
+//       open (nothing pressed): every joint of the hand, the palm included, exactly at rest.
+//   P1  THE PALM CUP (HANDPALM_joint, StepPalm): grip 1 converged gives the palm joint frame 318's local rotation;
+//       grip 0 leaves it (and the hand) at rest.
+//   P2  its smoothing: the fingers' rotation smoothing on the palm equals slerp(open, fist, the smoothed scalar curl).
+//   P3  the knuckles move as in the take: with the palm and every finger at curl 1, every joint's place in the hand
+//       against frame 318's (the hand's own motion removed), beside the same without the palm driven.
 //   --  dumps every state's mesh (the engine's 4 byte weights through the posed palette) for render.py.
 
 #include "fbx_skinned.h"
@@ -140,16 +146,19 @@ static double QAngleDeg(const double a[4], const double b[4])
 // The engine path for one set of inputs, converged: StepSide at 90 Hz until settled, then PosePalette on the
 // engine's swapped palette of the drawn frame. Returns the posed joint globals (file space) and the file-space
 // palette for skinning.
-struct Posed { Mats G; Mats P; SideState rot; };
+struct Posed { Mats G; Mats P; SideState rot; PalmState palm; CurlState curl; };
 static const float kS[16] = { 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1 };
 
 static Posed PoseHand(const Result &r, const Mats &Wrest, const HandRig &rig, const JointPose (*poses)[3], const CurlJoint (*table)[3],
-	const Inputs &in, int frames = 400)
+	const JointPose *palm, const Inputs &in, int frames = 400)
 {
 	const int nj = (int)r.joints.size();
 	Posed out;
-	CurlState cs;
-	for (int i = 0; i < frames; i++) StepSide(cs, out.rot, in, Retain(1.0 / 90.0), poses, table);
+	for (int i = 0; i < frames; i++)
+	{
+		StepSide(out.curl, out.rot, in, Retain(1.0 / 90.0), poses, table);
+		StepPalm(out.palm, in, Retain(1.0 / 90.0), palm);
+	}
 
 	Mats W0;
 	ComposeChain(r, &r.frames[(size_t)kDrawnFrame * nj], W0);
@@ -167,7 +176,8 @@ static Posed PoseHand(const Result &r, const Mats &Wrest, const HandRig &rig, co
 	std::vector<float> scratch;
 	std::vector<char> moved;
 	PosePalette(reinterpret_cast<const float (*)[16]>(pal.data()), reinterpret_cast<const float (*)[16]>(base.data()),
-		reinterpret_cast<const float (*)[16]>(inv.data()), nj, rig, out.rot, reinterpret_cast<float (*)[16]>(outPal.data()), scratch, moved);
+		reinterpret_cast<const float (*)[16]>(inv.data()), nj, rig, out.rot, reinterpret_cast<float (*)[16]>(outPal.data()), scratch, moved,
+		palm != nullptr ? out.palm.Q : nullptr);
 	out.G.resize(nj);
 	out.P.resize(nj);
 	for (int j = 0; j < nj; j++)
@@ -221,12 +231,13 @@ int main(int argc, char **argv)
 	fprintf(rj, "{\n");
 
 	const char *meshes[2] = { "Hand_Low", "Hand_Low1" };
+	const char *selectors[2] = { "Hand_Low", "Hand_Low1?mirrorskin=Hand_Low" };	// as vrealms_iwad/MODELDEF.txt names them
 	for (int h = 0; h < 2; h++)
 	{
 		const bool right = (h == 0);
 		const char sideCh = right ? 'R' : 'L';
 		Result r; std::string err;
-		if (!Load(file.data(), file.size(), meshes[h], r, err)) { printf("%s: %s\n", meshes[h], err.c_str()); return 2; }
+		if (!Load(file.data(), file.size(), selectors[h], r, err)) { printf("%s: %s\n", selectors[h], err.c_str()); return 2; }
 		const int nj = (int)r.joints.size();
 		std::map<std::string, int> idx;
 		for (int j = 0; j < nj; j++) idx[r.joints[j].name] = j;
@@ -271,6 +282,17 @@ int main(int argc, char **argv)
 			reinterpret_cast<const double (*)[4]>(qO.data()), reinterpret_cast<const double (*)[4]>(qF.data()), rig, poses, frames, palm, why, sizeof(why));
 		Check(built, "F1 %s: canonical frames measured on the %s side (%s)", meshes[h], right ? "right" : "left", built ? "every fold check passed" : why);
 		if (!built) continue;
+		JointPose palmPose;
+		const bool palmBuilt = BuildPalm(J, palmJ, reinterpret_cast<const double (*)[4]>(qD.data()), reinterpret_cast<const double (*)[4]>(qO.data()),
+			reinterpret_cast<const double (*)[4]>(qF.data()), rig, palmPose);
+		{
+			const TRSd &pr = r.joints[palmJ].rest, &pf = r.frames[(size_t)kFistFrame * nj + palmJ];
+			printf("  palm cup: %s, %zu joints below it; its local scale rest (%.6f %.6f %.6f), frame %d (%.6f %.6f %.6f); "
+				"local translation moves %.6f file units between frames %d and %d\n", kPalmJoint, rig.PalmBelow.size(), pr.s[0], pr.s[1], pr.s[2], kFistFrame,
+				pf.s[0], pf.s[1], pf.s[2], Len(Sub({ pf.t[0], pf.t[1], pf.t[2] }, { r.frames[(size_t)kOpenFrame * nj + palmJ].t[0], r.frames[(size_t)kOpenFrame * nj + palmJ].t[1],
+				r.frames[(size_t)kOpenFrame * nj + palmJ].t[2] })), kOpenFrame, kFistFrame);
+			Check(palmBuilt && palmPose.Have && rig.PalmBelow.size() == 20, "P0 %s: the palm joint, its two poses and the 20 joints below it (every finger joint and tip)", meshes[h]);
+		}
 		printf("  palm normal (out of the palm, the side the fingers fold to) %.5f %.5f %.5f\n", palm[0], palm[1], palm[2]);
 		double minFold = 9;
 		for (int f = 0; f < 5; f++)
@@ -484,7 +506,7 @@ int main(int argc, char **argv)
 		// ---- F4: the fist through the engine path
 		{
 			Inputs in; in.grip = 1; in.trigger = 1; in.triggerTouch = true; in.thumbTouch = true; in.valid = true;
-			Posed p = PoseHand(r, Wrest, rig, poses, table, in);
+			Posed p = PoseHand(r, Wrest, rig, poses, table, &palmPose, in);
 			bool inPalm = true;
 			printf("  F4 fist (grip 1, trigger 1, touches; thumb curl 0.6): tip to palm centre / hand length, side:");
 			for (int f = 0; f < 5; f++)
@@ -500,15 +522,19 @@ int main(int argc, char **argv)
 			printf("  F4 thumb at curl 0.6 (the rule's value for a touch): tip moved %.3f hand lengths from rest, %+.3f along the palm normal\n",
 				dT, Dot(Sub(Pos(p.G[tips[0]].data()), Pos(Wrest[tips[0]].data())), pn) / L);
 
-			// With every curl 1 each finger joint's LOCAL transform is the FBX fist frame's. Compared as locals because
-			// the take also turns HANDPALM_joint (the palm cups: the knuckles move), which no curl drives.
+			// With every curl 1 each finger joint's LOCAL transform is the FBX fist frame's (compared as locals: the
+			// palm's turn, P1-P3, moves them as a whole).
 			SideState full;
 			for (int f = 0; f < 5; f++) for (int j = 0; j < 3; j++) JointTarget(&poses[f][j], nullptr, 1.f, full.Q[f][j]);
 			full.Init = true;
-			std::vector<std::array<float, 16>> G(nj);
+			std::vector<std::array<float, 16>> G(nj), G0(nj);
 			for (int j = 0; j < nj; j++) for (int k = 0; k < 16; k++) G[j][k] = (float)Wrest[j][k];
+			G0 = G;
 			std::vector<char> moved;
-			ApplyFingerTurns(reinterpret_cast<float (*)[16]>(G.data()), nj, rig, full, moved);
+			moved.assign(nj, 0);
+			ApplyPalmTurn(reinterpret_cast<float (*)[16]>(G.data()), nj, rig, palmPose.Fist, moved);	// the palm at curl 1, first
+			Detail::TurnFingers(reinterpret_cast<float (*)[16]>(G.data()), nj, rig, full, moved);
+			ApplyFingerTurns(reinterpret_cast<float (*)[16]>(G0.data()), nj, rig, full, moved);		// the same without the palm
 			Mats WF;
 			ComposeChain(r, &r.frames[(size_t)kFistFrame * nj], WF);
 			double worstPos = 0, worstAng = 0;
@@ -534,13 +560,105 @@ int main(int argc, char **argv)
 				palmTurn = QAngleDeg(a, b);
 			}
 			printf("  F4 every curl 1 vs the FBX's frame %d, each finger joint and tip in its parent: worst rotation %.4f deg, worst offset %.6f file units; "
-				"HANDPALM_joint turns %.1f deg in that frame and is not driven (the knuckles stay at rest)\n", kFistFrame, worstAng, worstPos, palmTurn);
+				"HANDPALM_joint turns %.1f deg in that frame (P1-P3)\n", kFistFrame, worstAng, worstPos, palmTurn);
 			// The rotations are the frame's (float slerp at t = 1). The offset is THUMB_TOP_joint's translation, which the take
 			// animates by 0.004 units (0.4 mm) and the turn, as VAP's, never moves: rotations only.
 			Check(worstAng < 0.05 && worstPos * 0.11094212 * 1000 < 1.0, "F4 %s: every curl 1 gives each finger joint the FBX fist frame's local rotation (within %.4f deg; offsets within %.2f mm, the take's own THUMB_TOP translation)",
 				meshes[h], worstAng, worstPos * 0.11094212 * 1000);
 			char fn[1024];
 			snprintf(fn, sizeof(fn), "%s/%s_ctl_fist.txt", outDir.c_str(), meshes[h]); DumpMesh(fn, r, p.P);
+
+			// ---- P1: the palm joint, converged at grip 1, against frame 318's local rotation (and translation, which
+			// the turn does not move); the input above has grip 1.
+			auto localOf = [&](const double *gp, const double *gj, double out[16]) { double ip[16]; MatInvert(gp, ip); MatMul(ip, gj, out); };
+			auto rotAngle = [](const double *a, const double *b) {
+				// the angle of a^T b on the 3x3s with their column scales divided out
+				double A[9], B[9];
+				for (int c = 0; c < 3; c++)
+				{
+					const double la = sqrt(a[c * 4] * a[c * 4] + a[c * 4 + 1] * a[c * 4 + 1] + a[c * 4 + 2] * a[c * 4 + 2]);
+					const double lb = sqrt(b[c * 4] * b[c * 4] + b[c * 4 + 1] * b[c * 4 + 1] + b[c * 4 + 2] * b[c * 4 + 2]);
+					for (int k = 0; k < 3; k++) { A[c * 3 + k] = a[c * 4 + k] / la; B[c * 3 + k] = b[c * 4 + k] / lb; }
+				}
+				double tr = 0;
+				for (int c = 0; c < 3; c++) for (int k = 0; k < 3; k++) tr += A[c * 3 + k] * B[c * 3 + k];
+				return acos(fmax(-1.0, fmin(1.0, (tr - 1) / 2))) * 180 / M_PI;
+			};
+			const int pp = r.joints[palmJ].parent;
+			{
+				double lo[16], lf[16], l0[16];
+				localOf(p.G[pp].data(), p.G[palmJ].data(), lo);
+				localOf(WF[pp].data(), WF[palmJ].data(), lf);
+				Mats W0;
+				ComposeChain(r, &r.frames[(size_t)kOpenFrame * nj], W0);
+				localOf(W0[pp].data(), W0[palmJ].data(), l0);
+				const double ang = rotAngle(lo, lf), angOpen = rotAngle(l0, lf), dt = Len(Sub(Pos(lo), Pos(lf)));
+				printf("  P1 grip 1 (converged): %s's local rotation is %.4f deg from frame %d's (frame %d's is %.2f deg from it); its local translation %.6f file units from frame %d's (%.3f mm: the take's own, the turn moves rotations only)\n",
+					kPalmJoint, ang, kFistFrame, kOpenFrame, angOpen, dt, kFistFrame, dt * 0.11094212 * 1000);
+				Check(ang < 0.05, "P1 %s grip 1: the palm joint takes frame %d's local rotation (within %.4f deg)", meshes[h], kFistFrame, ang);
+			}
+			{
+				Inputs o; o.valid = true;
+				Posed q = PoseHand(r, Wrest, rig, poses, table, &palmPose, o);
+				double d = 0;
+				for (int j = 0; j < nj; j++) for (int k = 0; k < 16; k++) d = fmax(d, fabs(q.G[j][k] - Wrest[j][k]));
+				Check(d < 1e-5 && fabsf(q.palm.Q[3]) > 0.999999f, "P1 %s grip 0: the palm joint and every joint of the hand stay at rest (max matrix difference %.2g)", meshes[h], d);
+			}
+
+			// ---- P2: the palm's smoothing at 72-144 Hz with a moving grip: rotation smoothing = slerp by the smoothed scalar curl
+			{
+				double worstP2 = 0;
+				unsigned seed = 12345u + (unsigned)h;
+				auto rnd = [&seed]() { seed = seed * 1664525u + 1013904223u; return (seed >> 8) / 16777216.0; };
+				PalmState ps; CurlState cs; SideState rs;
+				for (int i = 0; i < 4000; i++)
+				{
+					Inputs gi; gi.valid = true;
+					gi.grip = (i / 37) % 3 == 0 ? 0.f : (float)rnd();
+					const double hz = 72 + 72 * rnd();
+					const float ret = Retain(1.0 / hz);
+					StepSide(cs, rs, gi, ret, poses, table);
+					StepPalm(ps, gi, ret, &palmPose);
+					float want[4];
+					QSlerp(palmPose.Open, palmPose.Fist, cs.Curl[FINGER_MIDDLE][0], want);
+					const double a[4] = { ps.Q[0], ps.Q[1], ps.Q[2], ps.Q[3] }, b[4] = { want[0], want[1], want[2], want[3] };
+					worstP2 = fmax(worstP2, QAngleDeg(a, b));
+				}
+				Check(worstP2 < 0.05, "P2 %s: over 4000 frames (72-144 Hz, grip moving), the palm's smoothed rotation is slerp(open, fist, the smoothed grip curl) within %.4f deg",
+					meshes[h], worstP2);
+			}
+
+			// ---- P3: every joint's place in the hand (Root_joint's frame) with palm and fingers at curl 1, against frame 318
+			{
+				const int hj = hand;
+				double ih[16], ihF[16];
+				double gh[16];
+				for (int k = 0; k < 16; k++) gh[k] = G[hj][k];
+				MatInvert(gh, ih);
+				MatInvert(WF[hj].data(), ihF);
+				double worstK = 0, worstAll = 0, worstK0 = 0, worstAll0 = 0, moveK = 0;
+				for (int j = 0; j < nj; j++)
+				{
+					if (j == hj) continue;
+					double g[16], g0[16], a[16], a0[16], b[16];
+					for (int k = 0; k < 16; k++) { g[k] = G[j][k]; g0[k] = G0[j][k]; }
+					MatMul(ih, g, a); MatMul(ih, g0, a0); MatMul(ihF, WF[j].data(), b);
+					const double d = Len(Sub(Pos(a), Pos(b))) * 0.11094212 * 1000, d0 = Len(Sub(Pos(a0), Pos(b))) * 0.11094212 * 1000;
+					bool knuckle = false;
+					for (int f = 0; f < 5; f++) if (joints[f][0] == j) knuckle = true;
+					if (knuckle)
+					{
+						worstK = fmax(worstK, d); worstK0 = fmax(worstK0, d0);
+						double rr[16];
+						MatMul(ih, Wrest[j].data(), rr);
+						moveK = fmax(moveK, Len(Sub(Pos(a), Pos(rr))) * 0.11094212 * 1000);
+					}
+					worstAll = fmax(worstAll, d); worstAll0 = fmax(worstAll0, d0);
+				}
+				printf("  P3 palm and fingers at curl 1 vs frame %d, every joint in the hand's frame: knuckles within %.3f mm (moved up to %.2f mm from rest), "
+					"every joint within %.3f mm; without the palm driven: %.2f mm / %.2f mm\n", kFistFrame, worstK, moveK, worstAll, worstK0, worstAll0);
+				Check(worstK < 0.5 && worstAll < 1.0, "P3 %s: the knuckles move as in the take (within %.3f mm of frame %d; every joint within %.3f mm)", meshes[h], worstK, kFistFrame, worstAll);
+			}
 		}
 
 		// ---- F5: point and thumb up; the other states for the sheet
@@ -549,9 +667,23 @@ int main(int argc, char **argv)
 		for (const St &s : states)
 		{
 			Inputs in; in.grip = s.grip; in.trigger = s.trigger; in.triggerTouch = s.tt; in.thumbTouch = s.th; in.valid = true;
-			Posed p = PoseHand(r, Wrest, rig, poses, table, in);
+			Posed p = PoseHand(r, Wrest, rig, poses, table, &palmPose, in);
 			char fn[1024];
 			snprintf(fn, sizeof(fn), "%s/%s_ctl_%s.txt", outDir.c_str(), meshes[h], s.name); DumpMesh(fn, r, p.P);
+			// a finger's joints and tip in the PALM joint's frame, posed vs rest: 0 = its own joints unturned (it may ride
+			// the cupped palm); and in the model, posed vs rest
+			auto fingerMovedInPalm = [&](int f) {
+				double ip[16], ir[16];
+				MatInvert(p.G[palmJ].data(), ip);
+				MatInvert(Wrest[palmJ].data(), ir);
+				double d = 0;
+				for (int j = 0; j < 4; j++)
+				{
+					const int jt = j < 3 ? joints[f][j] : tips[f];
+					d = fmax(d, Len(Sub(MatPoint(ip, Pos(p.G[jt].data())), MatPoint(ir, Pos(Wrest[jt].data())))));
+				}
+				return d * 0.11094212 * 1000;
+			};
 			auto fingerMoved = [&](int f) {
 				double d = 0;
 				for (int j = 0; j < 3; j++) d = fmax(d, Len(Sub(Pos(p.G[joints[f][j]].data()), Pos(Wrest[joints[f][j]].data()))));
@@ -559,19 +691,19 @@ int main(int argc, char **argv)
 			};
 			if (!strcmp(s.name, "point"))
 			{
-				const double d = fingerMoved(1);
-				Check(d < 0.01, "F5 %s point: the index stays at rest (joints and tip within %.4f mm)", meshes[h], d);
+				const double d = fingerMovedInPalm(1);
+				Check(d < 0.01, "F5 %s point: the index stays at rest in the palm (joints and tip within %.4f mm; it rides the cupped palm %.2f mm)", meshes[h], d, fingerMoved(1));
 			}
 			if (!strcmp(s.name, "thumbup"))
 			{
-				const double d = fingerMoved(0);
-				Check(d < 0.01, "F5 %s thumb up: the thumb stays at rest (within %.4f mm)", meshes[h], d);
+				const double d = fingerMovedInPalm(0);
+				Check(d < 0.01, "F5 %s thumb up: the thumb stays at rest in the palm (within %.4f mm; it rides the cupped palm %.2f mm)", meshes[h], d, fingerMoved(0));
 			}
 			if (!strcmp(s.name, "open"))
 			{
 				double d = 0;
-				for (int f = 0; f < 5; f++) d = fmax(d, fingerMoved(f));
-				Check(d < 0.01, "F5 %s open: every finger at rest (within %.4f mm)", meshes[h], d);
+				for (int j = 0; j < nj; j++) d = fmax(d, Len(Sub(Pos(p.G[j].data()), Pos(Wrest[j].data()))) * 0.11094212 * 1000);
+				Check(d < 0.01, "F5 %s open: every joint of the hand, the palm included, at rest (within %.4f mm)", meshes[h], d);
 			}
 		}
 		// the two frames used, as the FBX has them

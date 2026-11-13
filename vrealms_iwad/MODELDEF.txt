@@ -25,11 +25,15 @@
 // to be 0.19 m: 0.19 / 1.712605 = 0.11094212, at whatever units per metre the level has.
 //
 // SKIN. Hand_Low's own material (aiStandardSurface1) names lambert1_Base_Color.png, and the engine
-// finds it beside the file; no Skin line is needed. Hand_Low1's material (blinn1) has NO texture in
-// the FBX (a plain 0.5 grey), and its UVs are Hand_Low's mirrored (u -> 1 - u, to 0.0028), so the skin
-// texture lands on the wrong places on it (a nail on the palm: tools/fbxload_test/render.py, seen in a
-// software render, not in the engine). The Skin line below is there so the left hand is drawn at all;
-// what the left hand should wear is an open question for the owner.
+// finds it beside the file; no Skin line is needed. The material's normal map (lambert1_Normal_OpenGL.png,
+// 16-bit) and roughness map (lambert1_Roughness.png) exist only inside the FBX: the engine registers them
+// from the FBX's embedded bytes and hangs them on that skin as its PBR material (models_fbx.cpp E10).
+// Hand_Low1's own material (blinn1) links no texture, and its UVs are Hand_Low's mirrored in u. The owner
+// (2026-11-13): the left hand reads the right hand's skin with that flip undone. "?mirrorskin=Hand_Low" says
+// exactly that: draw Hand_Low1 with Hand_Low's material (base colour, normal and roughness maps) and its u
+// un-mirrored. The loader checks the claim on every polygon corner and logs the mirror's axis (measured
+// 1.002832, i.e. about the UV islands' centre 0.501416, not 0.5) -- a mesh that is not such a twin is
+// refused (fbx_skinned.cpp C21). No Skin line: a MODELDEF Skin would replace the material's skin.
 //
 // No Offset or angle offsets: the engine seats the mesh from its own wrist and knuckles
 // (vr_handpose_math.h ModelSeat). NoPixelStretch: the grip frame already carries the world's pixel
@@ -48,8 +52,7 @@ Model RealmsHandRight
 Model RealmsHandLeft
 {
 	Path "models/hands"
-	Model 0 "hand_final.fbx:Hand_Low1"
-	Skin 0 "lambert1_Base_Color.png"
+	Model 0 "hand_final.fbx:Hand_Low1?mirrorskin=Hand_Low"
 	Scale 0.11094212 0.11094212 0.11094212
 	NoAutoReverse
 	NoPixelStretch

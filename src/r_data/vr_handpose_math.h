@@ -303,6 +303,44 @@ inline void StepSide(CurlState &curl, SideState &rot, const Inputs &in, float re
 	Smooth(rot, target, retain);
 }
 
+//===========================================================================
+//
+// THE PALM CUP. NOT FROM UZDXREMA (no source drives a palm joint; VAP turns the fingers only). The owner,
+// 2026-11-13: "HANDPALM_joint follows grip from the open frame to the fist frame". hand_final.fbx's take turns
+// HANDPALM_joint -- the parent of all five fingers' first joints -- 22.4 degrees (right) / 16.1 (left) between
+// its open frame 0 and its fist frame 318: the palm cups and the knuckles move about 2 cm.
+//
+//   want   = the grip value the curl rule gives middle, ring and pinky (FingerCurls: 0 without a controller)
+//   target = QSlerp(open, fist, want)     the palm joint's two FBX poses (PalmPose, BuildPalm), relative to
+//                                          the frame the model draws, in the joint's own axes
+//   cur    = the fingers' smoothing exactly (Smooth): first frame the target, then slerp(cur, target, 1 - retain)
+//
+// Because the target always lies on the one arc open -> fist, smoothing the rotation toward it is the same
+// as slerping by the smoothed scalar curl (SmoothCurls): cur stays slerp(open, fist, c) with c = want +
+// (c - want) * retain (tools/fbxload_test P2 checks it frame by frame). The turn is applied BEFORE the
+// fingers' (PosePalette), on the joint globals, carrying every joint below the palm, so the fingers ride it
+// and then fold in their own frames as before.
+//
+//===========================================================================
+
+struct PalmState
+{
+	float Q[4] = { 0.f, 0.f, 0.f, 1.f };
+	bool  Init = false;
+};
+
+inline void StepPalm(PalmState &s, const Inputs &in, float retain, const JointPose *pose)
+{
+	float perFinger[FINGER_COUNT];
+	FingerCurls(in, perFinger);
+	const float want = perFinger[FINGER_MIDDLE];	// = grip (FingerCurls: middle = ring = pinky = grip)
+	float target[4] = { 0.f, 0.f, 0.f, 1.f };
+	if (pose != nullptr && pose->Have) QSlerp(pose->Open, pose->Fist, want, target);
+	if (!s.Init) { for (int k = 0; k < 4; ++k) s.Q[k] = target[k]; }
+	else { float o[4]; QSlerp(s.Q, target, 1.f - retain, o); for (int k = 0; k < 4; ++k) s.Q[k] = o[k]; }
+	s.Init = true;
+}
+
 
 //===========================================================================
 //
@@ -667,6 +705,8 @@ struct HandRig
 	int Joint[FINGER_COUNT][FINGER_JOINTS] = {};
 	float Frame[FINGER_COUNT][FINGER_JOINTS][3][3] = {};	// [f][j][column X/Y/Z][component]
 	std::vector<int> Below[FINGER_COUNT][FINGER_JOINTS];	// every descendant, ascending
+	int Palm = -1;											// the palm cup's joint (BuildPalm); -1 = not driven
+	std::vector<int> PalmBelow;								// every descendant of it, ascending
 };
 
 namespace Detail
@@ -729,69 +769,99 @@ inline void GlobalToPalette(const float g[16], const float invBase[16], float ou
 	Detail::Mul4(t, Detail::kSwap, out);
 }
 
-// VAP :1785-1836 on `G` (n joint globals). `moved[i]` is set for every joint written.
-inline void ApplyFingerTurns(float (*G)[16], int n, const HandRig &rig, const SideState &rot, std::vector<char> &moved)
+namespace Detail
 {
-	moved.assign(n, 0);
-	for (int f = 0; f < FINGER_COUNT; ++f)
+	// VAP :1799-1834 for one joint: D = F . R(q) . F^T (Fm[c][k]: column c of the canonical frame), after = before . D,
+	// everything in `below` carried by after . before^-1. The caller has already skipped |q.w| > 0.999999.
+	inline void TurnJoint(float (*G)[16], int n, int jt, const float (*Fm)[3], const float q[4], const std::vector<int> &below,
+		std::vector<char> &moved)
 	{
-		for (int j = 0; j < FINGER_JOINTS; ++j)
+		// Rq (VAP :1799-1805), F (:1806-1807), Dm.Col[c] = F.Apply(Rq.Apply(F.Unapply(e_c))) (:1808-1813)
+		const float x = q[0], y = q[1], z = q[2], w = q[3];
+		const float Rq[3][3] =
 		{
-			const float *q = rot.Q[f][j];
-			if (fabsf(q[3]) > 0.999999f) continue;   // no turn
-			const int jt = rig.Joint[f][j];
-			if (jt < 0 || jt >= n) continue;
+			{ 1.f - 2.f*(y*y + z*z), 2.f*(x*y + w*z), 2.f*(x*z - w*y) },
+			{ 2.f*(x*y - w*z), 1.f - 2.f*(x*x + z*z), 2.f*(y*z + w*x) },
+			{ 2.f*(x*z + w*y), 2.f*(y*z - w*x), 1.f - 2.f*(x*x + y*y) },
+		};
+		float D[16] = { 0 };
+		for (int c3 = 0; c3 < 3; ++c3)
+		{
+			const float e[3] = { c3 == 0 ? 1.f : 0.f, c3 == 1 ? 1.f : 0.f, c3 == 2 ? 1.f : 0.f };
+			float u[3], v[3];
+			for (int k = 0; k < 3; ++k) u[k] = Fm[k][0] * e[0] + Fm[k][1] * e[1] + Fm[k][2] * e[2];		// Unapply
+			for (int k = 0; k < 3; ++k) v[k] = Rq[0][k] * u[0] + Rq[1][k] * u[1] + Rq[2][k] * u[2];		// Apply
+			for (int k = 0; k < 3; ++k) D[c3 * 4 + k] = Fm[0][k] * v[0] + Fm[1][k] * v[1] + Fm[2][k] * v[2];	// Apply
+		}
+		D[15] = 1.f;	// FromMat3Pos(Dm, 0)
 
-			// Rq (VAP :1799-1805), F (:1806-1807), Dm.Col[c] = F.Apply(Rq.Apply(F.Unapply(e_c))) (:1808-1813)
-			const float x = q[0], y = q[1], z = q[2], w = q[3];
-			const float Rq[3][3] =
-			{
-				{ 1.f - 2.f*(y*y + z*z), 2.f*(x*y + w*z), 2.f*(x*z - w*y) },
-				{ 2.f*(x*y - w*z), 1.f - 2.f*(x*x + z*z), 2.f*(y*z + w*x) },
-				{ 2.f*(x*z + w*y), 2.f*(y*z - w*x), 1.f - 2.f*(x*x + y*y) },
-			};
-			const float (*Fm)[3] = rig.Frame[f][j];
-			float D[16] = { 0 };
-			for (int c3 = 0; c3 < 3; ++c3)
-			{
-				const float e[3] = { c3 == 0 ? 1.f : 0.f, c3 == 1 ? 1.f : 0.f, c3 == 2 ? 1.f : 0.f };
-				float u[3], v[3];
-				for (int k = 0; k < 3; ++k) u[k] = Fm[k][0] * e[0] + Fm[k][1] * e[1] + Fm[k][2] * e[2];		// Unapply
-				for (int k = 0; k < 3; ++k) v[k] = Rq[0][k] * u[0] + Rq[1][k] * u[1] + Rq[2][k] * u[2];		// Apply
-				for (int k = 0; k < 3; ++k) D[c3 * 4 + k] = Fm[0][k] * v[0] + Fm[1][k] * v[1] + Fm[2][k] * v[2];	// Apply
-			}
-			D[15] = 1.f;	// FromMat3Pos(Dm, 0)
+		float before[16], after[16];
+		memcpy(before, G[jt], sizeof(before));
+		Mul4(before, D, after);
+		memcpy(G[jt], after, sizeof(after));
+		moved[jt] = 1;
 
-			float before[16], after[16];
-			memcpy(before, G[jt], sizeof(before));
-			Detail::Mul4(before, D, after);
-			memcpy(G[jt], after, sizeof(after));
-			moved[jt] = 1;
+		// Carry the rest of this finger with it (VAP :1821-1834)
+		float invBefore[16];
+		if (!Inverse4(before, invBefore)) return;
+		float carry[16];
+		Mul4(after, invBefore, carry);
+		for (int d : below)
+		{
+			if (d < 0 || d >= n) continue;
+			Mul4(carry, G[d], G[d]);
+			moved[d] = 1;
+		}
+	}
 
-			// Carry the rest of this finger with it (VAP :1821-1834)
-			float invBefore[16];
-			if (!Detail::Inverse4(before, invBefore)) continue;
-			float carry[16];
-			Detail::Mul4(after, invBefore, carry);
-			for (int d : rig.Below[f][j])
+	// VAP :1785-1836 without clearing `moved` (PosePalette runs the palm first).
+	inline void TurnFingers(float (*G)[16], int n, const HandRig &rig, const SideState &rot, std::vector<char> &moved)
+	{
+		for (int f = 0; f < FINGER_COUNT; ++f)
+		{
+			for (int j = 0; j < FINGER_JOINTS; ++j)
 			{
-				if (d < 0 || d >= n) continue;
-				Detail::Mul4(carry, G[d], G[d]);
-				moved[d] = 1;
+				const float *q = rot.Q[f][j];
+				if (fabsf(q[3]) > 0.999999f) continue;   // no turn
+				const int jt = rig.Joint[f][j];
+				if (jt < 0 || jt >= n) continue;
+				TurnJoint(G, n, jt, rig.Frame[f][j], q, rig.Below[f][j], moved);
 			}
 		}
 	}
 }
 
-// The whole draw: palette -> globals, the turn, globals -> palette for every joint that moved, the
-// rest copied. base/invBase: the model's rest (IQM baseframe and its inverse). `scratch` is reused.
+// VAP :1785-1836 on `G` (n joint globals). `moved[i]` is set for every joint written.
+inline void ApplyFingerTurns(float (*G)[16], int n, const HandRig &rig, const SideState &rot, std::vector<char> &moved)
+{
+	moved.assign(n, 0);
+	Detail::TurnFingers(G, n, rig, rot, moved);
+}
+
+// The palm cup's turn (StepPalm): the same turn as a finger joint's, in the palm joint's own axes (identity frame:
+// D = R(q), q = the palm's local rotation away from the drawn frame), carrying every joint below it. Does not clear
+// `moved`.
+inline void ApplyPalmTurn(float (*G)[16], int n, const HandRig &rig, const float q[4], std::vector<char> &moved)
+{
+	if (q == nullptr || rig.Palm < 0 || rig.Palm >= n) return;
+	if (fabsf(q[3]) > 0.999999f) return;   // no turn
+	static const float kIdentity[3][3] = { { 1.f, 0.f, 0.f }, { 0.f, 1.f, 0.f }, { 0.f, 0.f, 1.f } };
+	Detail::TurnJoint(G, n, rig.Palm, kIdentity, q, rig.PalmBelow, moved);
+}
+
+// The whole draw: palette -> globals, the palm cup's turn (palmQ: the PalmState's rotation, null = none), the
+// fingers' turns, globals -> palette for every joint that moved, the rest copied. base/invBase: the model's
+// rest (IQM baseframe and its inverse). `scratch` is reused.
 inline void PosePalette(const float (*pal)[16], const float (*base)[16], const float (*invBase)[16], int n,
-	const HandRig &rig, const SideState &rot, float (*out)[16], std::vector<float> &scratch, std::vector<char> &moved)
+	const HandRig &rig, const SideState &rot, float (*out)[16], std::vector<float> &scratch, std::vector<char> &moved,
+	const float *palmQ = nullptr)
 {
 	scratch.resize((size_t)n * 16);
 	float (*G)[16] = reinterpret_cast<float (*)[16]>(scratch.data());
 	for (int i = 0; i < n; ++i) PaletteToGlobal(pal[i], base[i], G[i]);
-	ApplyFingerTurns(G, n, rig, rot, moved);
+	moved.assign(n, 0);
+	ApplyPalmTurn(G, n, rig, palmQ, moved);
+	Detail::TurnFingers(G, n, rig, rot, moved);
 	for (int i = 0; i < n; ++i)
 	{
 		if (moved[i]) GlobalToPalette(G[i], invBase[i], out[i]);
@@ -824,6 +894,7 @@ inline constexpr const char *kFingerJointNames[FINGER_COUNT][FINGER_JOINTS] =
 	{ "RING_BASE_joint",     "RING_MID_joint",     "RING_TOP_joint" },
 	{ "PINK_BASE_joint",     "PINK_MID_joint",     "PINK_TOP_joint" },
 };
+inline constexpr const char *kPalmJoint = "HANDPALM_joint";	// the palm cup's joint (StepPalm): parent of every finger
 inline constexpr int kDrawnFrame = 0;		// the frame the hands draw (MODELDEF FrameIndex ... 0)
 inline constexpr int kOpenFrame = 0;		// fbx_poses.json "open" 1 (Blender)
 inline constexpr int kFistFrame = 318;		// fbx_poses.json "fist" 319 (Blender)
@@ -877,6 +948,44 @@ inline bool BuildHand(const std::vector<RestJoint> &J, int hand, const int joint
 				P.Have = true;
 			}
 		}
+	}
+	return true;
+}
+
+//===========================================================================
+//
+// THE PALM CUP'S JOINT, BUILT ONCE PER MODEL AND SIDE (StepPalm): its two FBX poses relative to the drawn frame,
+// as PoseRotation makes a finger's but in the joint's OWN axes (identity frame: q = quat(local(drawn)^T .
+// local(pose))), and every joint below it for the carry. With a uniform local scale on the palm joint, turning
+// its global by that q gives it exactly the pose frame's local rotation (tools/fbxload_test P1). False (rig.Palm
+// stays -1, nothing driven) when the model has no such joint.
+//
+//===========================================================================
+
+inline bool BuildPalm(const std::vector<RestJoint> &J, int palm, const double (*qDrawn)[4], const double (*qOpen)[4], const double (*qFist)[4],
+	HandRig &rig, JointPose &pose)
+{
+	const int n = (int)J.size();
+	rig.Palm = -1;
+	rig.PalmBelow.clear();
+	pose = JointPose();
+	if (palm < 0 || palm >= n) return false;
+	rig.Palm = palm;
+	for (int i = 0; i < n; ++i)
+	{
+		int guard = 0;
+		for (int p = J[i].parent; p >= 0 && guard < 4096; p = J[p].parent, ++guard)
+			if (p == palm) { rig.PalmBelow.push_back(i); break; }
+	}
+	if (qDrawn != nullptr && qOpen != nullptr && qFist != nullptr)
+	{
+		FingerFrame I;
+		I.X[0] = 1; I.Y[1] = 1; I.Z[2] = 1;
+		double a[4], b[4];
+		PoseRotation(I, qDrawn[palm], qOpen[palm], a);
+		PoseRotation(I, qDrawn[palm], qFist[palm], b);
+		for (int k = 0; k < 4; ++k) { pose.Open[k] = (float)a[k]; pose.Fist[k] = (float)b[k]; }
+		pose.Have = true;
 	}
 	return true;
 }

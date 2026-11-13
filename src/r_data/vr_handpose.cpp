@@ -93,7 +93,11 @@
 ** 36. [FINGERLEN] finger bones lengthened per body               VAP:2336-2400  -> NOT PORTED: one rig, its own size.
 ** 37. the grasp (vr_grasp.cpp)                                                 -> NOT PORTED (lead: later task).
 ** 38. HANDPALM_joint: the take turns it 22.4 (right) / 16.1 (left) degrees in the fist (the palm cups, the knuckles
-**     move about 2 cm); no source drives it                     --             -> NOT DRIVEN: the palm stays at rest.
+**     move about 2 cm); no source drives it                     --             -> DRIVEN, NOT A PORT (owner, 2026-11-13:
+**     "HANDPALM_joint follows grip from the open frame to the fist frame"): its local rotation slerps from frame 0
+**     to frame 318 of its own hand's take by the grip curl, smoothed as the fingers are, turned before the fingers
+**     so they ride it -> math StepPalm, BuildPalm, ApplyPalmTurn; HandFor, UpdateCurls, VRHandPose_Apply here.
+**     [V: tools/fbxload_test P1-P3 on the real FBX, both hands -- reasoning only in the engine, not seen running.]
 **
 ** Placement (RIG, OXR)
 ** 39. grip pose located beside the aim pose, HMD-relative, yaw-corrected, raw quaternion
@@ -412,6 +416,7 @@ namespace
 		bool        posesOk[SIDE_COUNT] = { false, false };
 		HandRig     rig[SIDE_COUNT];
 		JointPose   poses[SIDE_COUNT][FINGER_COUNT][FINGER_JOINTS];
+		JointPose   palm[SIDE_COUNT];	// the palm cup's two poses (checklist 38)
 		std::vector<float> base, invBase;	// n x 16: the rest (IQM baseframe) and its inverse
 	};
 	TArray<FHandModelCache *> gModels;
@@ -538,6 +543,23 @@ namespace
 		}
 		c->handOk[side] = true;
 		c->posesOk[side] = haveFrames;
+		// the palm cup (checklist 38): only from the take's own frames; without them the palm is not driven
+		const int palmJ = model->FindJoint(FName(kPalmJoint));
+		double palmTurn = 0;
+		const bool palmOk = haveFrames && BuildPalm(J, palmJ, reinterpret_cast<const double (*)[4]>(qD.data()),
+			reinterpret_cast<const double (*)[4]>(qO.data()), reinterpret_cast<const double (*)[4]>(qF.data()), c->rig[side], c->palm[side]);
+		if (palmOk)
+		{
+			const float *a = c->palm[side].Open, *b = c->palm[side].Fist;
+			const double d = fabs((double)a[0] * b[0] + (double)a[1] * b[1] + (double)a[2] * b[2] + (double)a[3] * b[3]);
+			palmTurn = 2.0 * acos(d > 1.0 ? 1.0 : d) * (180.0 / 3.14159265358979323846);
+		}
+		else
+		{
+			c->rig[side].Palm = -1;
+			c->rig[side].PalmBelow.clear();
+			c->palm[side] = JointPose();
+		}
 		LoadCurlTable();
 		double minFold = 9;
 		for (int f = 0; f < FINGER_COUNT; f++) for (int j = 0; j < FINGER_JOINTS; j++) if (frames[f][j].fold < minFold) minFold = frames[f][j].fold;
@@ -549,6 +571,12 @@ namespace
 			Printf(TEXTCOLOR_ORANGE "VR hands: %s as the %s hand -- the take has %d frames, no fist frame %d: fingers posed from %s\n",
 				model->mFileName.GetChars(), sideName, model->NumFrames(), kFistFrame,
 				gTableLoaded ? "the FRIK curl table (vrhandcurl.txt)" : "nothing (no curl table either): they stay at rest");
+		if (palmOk)
+			Printf("VR hands: %s as the %s hand -- palm cup: %s follows grip from frame %d to frame %d (%.1f degrees), %d joints ride it\n",
+				model->mFileName.GetChars(), sideName, kPalmJoint, kOpenFrame, kFistFrame, palmTurn, (int)c->rig[side].PalmBelow.size());
+		else
+			Printf(TEXTCOLOR_ORANGE "VR hands: %s as the %s hand -- palm cup NOT driven (%s)\n", model->mFileName.GetChars(), sideName,
+				palmJ < 0 ? "no HANDPALM_joint" : "the take has no open and fist frames");
 		return true;
 	}
 
@@ -595,10 +623,12 @@ namespace
 {
 	CurlState gCurl[SIDE_COUNT];
 	SideState gRot[SIDE_COUNT];
+	PalmState gPalm[SIDE_COUNT];	// the palm cup (checklist 38)
 	uint64_t gCurlFrame = ~0ull;
 	double gCurlLastTime = 0.0;
 	// the poses of the model last drawn as each side (null: the table's fold, or none)
 	const JointPose (*gSidePoses[SIDE_COUNT])[FINGER_JOINTS] = { nullptr, nullptr };
+	const JointPose *gSidePalm[SIDE_COUNT] = { nullptr, nullptr };	// its palm's poses (null: not driven)
 
 	void ReadInputs(int side, Inputs &in)
 	{
@@ -645,6 +675,7 @@ namespace
 			Inputs in;
 			ReadInputs(side, in);
 			StepSide(gCurl[side], gRot[side], in, retain, gSidePoses[side], gTableLoaded ? gTable : nullptr);
+			StepPalm(gPalm[side], in, retain, gSidePalm[side]);
 		}
 	}
 }
@@ -668,6 +699,7 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 	if ((int)bones.Size() != n) return &bones;
 
 	gSidePoses[side] = c->posesOk[side] ? c->poses[side] : nullptr;
+	gSidePalm[side] = c->palm[side].Have ? &c->palm[side] : nullptr;
 	UpdateCurls();
 
 	static thread_local TArray<VSMatrix> posed;
@@ -682,7 +714,7 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 	}
 	PosePalette(reinterpret_cast<const float (*)[16]>(pal.data()), reinterpret_cast<const float (*)[16]>(c->base.data()),
 		reinterpret_cast<const float (*)[16]>(c->invBase.data()), n, c->rig[side], gRot[side],
-		reinterpret_cast<float (*)[16]>(out.data()), scratch, moved);
+		reinterpret_cast<float (*)[16]>(out.data()), scratch, moved, gSidePalm[side] != nullptr ? gPalm[side].Q : nullptr);
 	posed.Resize(n);
 	for (int i = 0; i < n; i++) posed[i].loadMatrix(&out[(size_t)i * 16]);
 	return &posed;

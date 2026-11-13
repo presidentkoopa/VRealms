@@ -3,12 +3,22 @@
 textured, from the front and the back, without the engine. Not the engine's renderer: it shows the mesh,
 its UVs, its normals and its winding as the loader leaves them, nothing about how the engine lights them.
 
-    python3 -I render.py DUMPDIR TEXTURE.png OUT.png name [name...]
+    python3 -I render.py [--normal NORMALMAP.png] DUMPDIR TEXTURE.png OUT.png name [name...]
 
 Each name is a dump file stem (Hand_Low_rest, Hand_Low1_500, ...). One row per name: view from -Y (the file's
 front, +Z up), then from +Y; each tile lit by a light from the viewer with the vertex normals, textured with
 the given texture at the vertex UVs (v already flipped by the loader). Back faces (by the IQM winding, which
-is clockwise from outside) are culled, so an inside-out mesh shows its far side.
+is clockwise from outside) are culled, so an inside-out mesh shows its far side. The dumps carry the UVs the
+engine draws: the left hand's are un-mirrored when it was loaded with mirrorskin (the MODELDEF's name).
+
+--normal adds two tiles per row, the same views lit by the same light through the normal map, decoded and framed
+as the engine's shader does (main.fp ApplyNormalMap: n = (texel - 128) / 127, green negated -- the map is
+OpenGL's, green up, and texture rows run down -- then the cotangent frame of Schueler's "normal mapping without
+precomputed tangents" (main.fp cotangent_frame) on the triangle's edges instead of screen derivatives). The
+engine writes cotangent_frame with its two cross products' operands swapped; its render space is (x, z, y), a
+mirror of the world, which turns every cross product round, so the swapped form there is this form in the
+file's right-handed space (reasoning, not compared with an engine frame). Still not the engine's renderer: one
+directional light, Lambert only, no roughness.
 """
 import sys
 
@@ -26,7 +36,7 @@ def load(p):
     return v[:, :3], v[:, 3:6], v[:, 6:8], t
 
 
-def render(P, N, UV, T, tex, view):
+def render(P, N, UV, T, tex, view, nmap=None):
     # view: +1 looks along +Y (from -Y), -1 along -Y (from +Y). Screen x = world x * view, y = world z.
     sx = P[:, 0] * view
     sy = P[:, 2]
@@ -68,9 +78,25 @@ def render(P, N, UV, T, tex, view):
         uv = ww @ UV[[a, b, c]]
         n = ww @ N[[a, b, c]]
         n /= np.linalg.norm(n, axis=1)[:, None] + 1e-12
-        lam = np.clip(n @ light, 0, 1) * 0.8 + 0.2
         tu = np.clip((uv[:, 0] % 1.0) * tw, 0, tw - 1).astype(int)
         tv = np.clip((uv[:, 1] % 1.0) * th, 0, th - 1).astype(int)
+        if nmap is not None:
+            # main.fp cotangent_frame with the triangle's edges for dFdx/dFdy (see the docstring)
+            dp1, dp2 = P[b] - P[a], P[c] - P[a]
+            duv1, duv2 = UV[b] - UV[a], UV[c] - UV[a]
+            dp2perp = np.cross(dp2[None, :], n)
+            dp1perp = np.cross(n, dp1[None, :])
+            t = dp2perp * duv1[0] + dp1perp * duv2[0]
+            bb = dp2perp * duv1[1] + dp1perp * duv2[1]
+            invmax = 1.0 / np.sqrt(np.maximum((t * t).sum(1), (bb * bb).sum(1)) + 1e-30)
+            nh, nw = nmap.shape[:2]
+            mu = np.clip((uv[:, 0] % 1.0) * nw, 0, nw - 1).astype(int)
+            mv = np.clip((uv[:, 1] % 1.0) * nh, 0, nh - 1).astype(int)
+            m = nmap[mv, mu, :3].astype(np.float64) * (255.0 / 127.0) / 255.0 - 128.0 / 127.0   # WITH_NORMALMAP_UNSIGNED
+            m[:, 1] = -m[:, 1]                                                                 # WITH_NORMALMAP_GREEN_UP
+            n = t * (invmax * m[:, 0])[:, None] + bb * (invmax * m[:, 1])[:, None] + n * m[:, 2][:, None]
+            n /= np.linalg.norm(n, axis=1)[:, None] + 1e-12
+        lam = np.clip(n @ light, 0, 1) * 0.8 + 0.2
         col = tex[tv, tu, :3] / 255.0
         zb[iy, ix] = z
         img[iy, ix] = col * lam[:, None]
@@ -78,20 +104,30 @@ def render(P, N, UV, T, tex, view):
 
 
 def main():
-    d, texp, out = sys.argv[1], sys.argv[2], sys.argv[3]
-    names = sys.argv[4:]
+    args = sys.argv[1:]
+    nmap = None
+    if args and args[0] == "--normal":
+        nmap = np.array(Image.open(args[1]).convert("RGB"))
+        args = args[2:]
+    d, texp, out = args[0], args[1], args[2]
+    names = args[3:]
     tex = np.array(Image.open(texp).convert("RGB"))
+    cols = 4 if nmap is not None else 2
     rows = []
     for nm in names:
         P, N, UV, T = load("%s/%s.txt" % (d, nm))
-        a = Image.fromarray(render(P, N, UV, T, tex, +1))
-        b = Image.fromarray(render(P, N, UV, T, tex, -1))
-        row = Image.new("RGB", (TILE * 2, TILE + 18), (0, 0, 0))
-        row.paste(a, (0, 18))
-        row.paste(b, (TILE, 18))
-        ImageDraw.Draw(row).text((4, 2), "%s: from -Y (front) | from +Y (back)" % nm, fill=(255, 255, 0))
+        tiles = [render(P, N, UV, T, tex, +1), render(P, N, UV, T, tex, -1)]
+        if nmap is not None:
+            tiles += [render(P, N, UV, T, tex, +1, nmap), render(P, N, UV, T, tex, -1, nmap)]
+        row = Image.new("RGB", (TILE * cols, TILE + 18), (0, 0, 0))
+        for i, t in enumerate(tiles):
+            row.paste(Image.fromarray(t), (TILE * i, 18))
+        label = "%s: from -Y (front) | from +Y (back)" % nm
+        if nmap is not None:
+            label += "   || the same through the normal map"
+        ImageDraw.Draw(row).text((4, 2), label, fill=(255, 255, 0))
         rows.append(row)
-    sheet = Image.new("RGB", (TILE * 2, sum(r.height for r in rows)))
+    sheet = Image.new("RGB", (TILE * cols, sum(r.height for r in rows)))
     y = 0
     for r in rows:
         sheet.paste(r, (0, y))
