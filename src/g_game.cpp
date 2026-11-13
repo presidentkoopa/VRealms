@@ -3121,9 +3121,12 @@ static void PutSaveWads (FSerializer &arc)
 	name = fileSystem.GetResourceFileName (fileSystem.GetIwadNum());
 	arc.AddString("Game WAD", name);
 
-	// Name of wad the map resides in
+	// Name of wad the map resides in. A Realms of the Haunting map is read from
+	// the player's own ROTH.RES, not from a lump (MapData::lumpnum stays -1), so
+	// it has no container and the name is null: AddString would strlen(nullptr).
+	// G_CheckSaveGameWads already accepts a save without this entry.
 	name = fileSystem.GetResourceFileName (fileSystem.GetFileContainer (primaryLevel->lumpnum));
-	arc.AddString("Map WAD", name);
+	if (name != nullptr) arc.AddString("Map WAD", name);
 }
 
 static void PutSaveComment (FSerializer &arc)
