@@ -77,3 +77,21 @@ The patch is `git diff --binary` against 375bcc07 and applies cleanly there. It 
   uncommitted in old worktrees is earlier states of files later rewritten on the branch.
 - Owner's interaction ideas (DistanceGrab + melee for switches, grabbable doorknobs, hands in the inventory)
   are on hold until he has tested the hands.
+
+## VR interaction and items: authorized by the owner (2026-11-13 04:21-05:08)
+- Owner: "I love this plan and I authorize you to engage and accomplish at your discretion, remember: innovative VR ideas
+  for a 30 year old game never meant to be in true 3d." Interaction and item presentation may be new; GAME LOGIC stays the
+  original's (every gesture ends in the original's verbs: use, examine, pickup, item-in-hand tests, combine, use on self).
+- Phase 1 picker on the branch (15c9da27): point = examine (dwell), index tap = far use, fingertip press / grip = near use,
+  through a port of classify_cursor_target_object (786,432 cases, 0 differ). Verified on the PC: the wall-face tap fires the
+  original's 0x18 trigger. Being fixed: item pickup by tap, examine by dwell, door by grip; the measured ranges.
+- Use range MEASURED on the original (7e63fce4, REMAROTH_MEASURED section 13): use z < 268, "too far" < 968, examine < 2467
+  world units, planar along the view yaw. GAME_inventory.md's "dist²" is wrong.
+- Voxels: the close-up films (DBASE300) are TURNTABLES of the 1996 3D renders (280 of 281 items). A voxelizer carving them at
+  load from the player's install is in progress (nothing derived ships). Owner: "willing to spend time and money on this
+  voxel shit so let's take our time and get it right."
+- Design dossiers in progress: docs/ITEM_DESIGN.md (inventory items: where Adam holds each, pose, carry, light, the lamp vs
+  the original's lantern light) and docs/WORLD_DESIGN.md (doors and knobs, candles/candelabras with merged lights, switches,
+  pickup sprites, books, furniture).
+- MARKED FOR LATER (owner, 05:08): larger textures for things painted on walls/furniture that VR players will want to open or
+  touch, e.g. desk drawers ("we may eventually have to look at larger textures as well for desk drawers, etc").
