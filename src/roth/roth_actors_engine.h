@@ -63,5 +63,9 @@ void ActorsSetHudPanel(int32_t panel);
 int32_t ActorsActiveAmmoId();
 // g_active_weapon_ammo (0x83e6c) += delta (inventory.c:266, 441).
 void ActorsAddWeaponAmmo(int delta);
+// Is the held weapon's actor (RealmsHeld / RealmsWeapon<index>) drawn at the VR main hand this tic
+// (FollowHandMode 1, not hidden)? Then `item` is its DBASE100 index and `cls` its class name. The VR hands'
+// weapon grip reads it (roth_hands.cpp; UZDXREMA VRRig_HandHoldsWeapon: "a weapon DRAWN in that hand").
+bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls);
 
 } // namespace roth

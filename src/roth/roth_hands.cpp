@@ -17,12 +17,22 @@
 // the next tic, so a load never doubles the hands; loaded in flat, they are
 // destroyed.
 //
+// WHAT THEY HOLD (roth_handhold.h): every tic the hands are told what is in
+// them -- the off hand the original's right-hand item (the inventory's
+// selected item), the main hand the weapon while RealmsHeld is drawn there --
+// and the fingers take the owner's hold or grip pose for it
+// (r_data/vr_handpose_math.h SelectHold, UZDXREMA VAP :466-656).
+//
 //---------------------------------------------------------------------------
 // SPDX-License-Identifier: GPL-3.0-or-later
 //---------------------------------------------------------------------------
 //
 
 #include "roth_hands.h"
+#include "roth_handhold.h"
+#include "roth_interface.h"
+#include "roth_inventory.h"
+#include "roth_actors_engine.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -77,9 +87,32 @@ void HandsEndLevel()
 	g_hand[0] = g_hand[1] = nullptr;
 }
 
+// What each role holds this tic (roth_handhold.h), published to the hands' fingers.
+static void PublishHeld()
+{
+	// the off hand: the original's right-hand item (g_selected_item_primary); 0 = nothing. The id is read
+	// sign-extended, as the HUD's icon reads it (roth_interface.cpp RightHandChanged): a hidden id holds nothing.
+	int item = 0;
+	int adam = 0;
+	if (Inventory *inv = InterfaceInventory())
+	{
+		adam = (int)inv->AdamItemId();
+		const int slot = inv->RightHand();
+		if (slot >= 0) item = (int16_t)inv->Slot(slot).id;
+	}
+	VRHandPose_SetHeld(VR_OFFHAND, HeldFor(item > 0 ? item : 0, false));
+	// the main hand: the weapon slot's thing, while its actor is drawn there. Adam's own item (his fists) is not a
+	// thing in the hand.
+	int32_t wpn = 0;
+	const char *cls = nullptr;
+	const bool drawn = ActorsHeldWeaponDrawn(wpn, cls) && wpn != adam;
+	VRHandPose_SetHeld(VR_MAINHAND, drawn ? HeldFor(wpn, true, cls) : VRHandPose::HeldState());
+}
+
 void HandsTick(FLevelLocals *level)
 {
 	if (level == nullptr) return;
+	PublishHeld();
 	AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
 	if (pmo != nullptr && pmo->Level != level) pmo = nullptr;
 
@@ -209,4 +242,63 @@ CCMD(roth_handtest)
 	VRHandTest_Set(true, in, turn);
 	Printf("roth_handtest: %s -- grip %.2f trigger %.2f, trigger touch %d, thumb touch %d, turn %.0f\n",
 		label, in.grip, in.trigger, (int)in.triggerTouch, (int)in.thumbTouch, turn);
+}
+
+//===========================================================================
+//
+// roth_handhold -- THE FLAT TEST'S HELD THING. Test-only, inert until typed.
+// While roth_handtest is on, a physical hand takes the hold or grip pose of the
+// thing given here (roth_handhold.h), in place of what the game has in it.
+//
+//   roth_handhold <right|left|both> <item>          an item, as the original's right hand holds it
+//   roth_handhold <right|left|both> weapon <item>   a weapon, as RealmsHeld is held
+//   roth_handhold <right|left|both> none            the game's again for that hand
+//   roth_handhold off                               the game's for both
+//
+//===========================================================================
+
+CCMD(roth_handhold)
+{
+	if (argv.argc() < 2)
+	{
+		Printf("roth_handhold <right|left|both> <item> | <right|left|both> weapon <item> | <right|left|both> none | off\n");
+		return;
+	}
+	if (!stricmp(argv[1], "off"))
+	{
+		for (int s = 0; s < VRHandPose::SIDE_COUNT; s++) VRHandTest_SetHeld(s, false, VRHandPose::HeldState());
+		Printf("roth_handhold: off\n");
+		return;
+	}
+	bool sides[VRHandPose::SIDE_COUNT] = { false, false };
+	if (!stricmp(argv[1], "right")) sides[VRHandPose::SIDE_RIGHT] = true;
+	else if (!stricmp(argv[1], "left")) sides[VRHandPose::SIDE_LEFT] = true;
+	else if (!stricmp(argv[1], "both")) sides[0] = sides[1] = true;
+	else { Printf("roth_handhold: '%s' is not right, left or both\n", argv[1]); return; }
+	if (argv.argc() < 3) { Printf("roth_handhold: what does the hand hold?\n"); return; }
+
+	bool on = true, weapon = false;
+	int item = 0;
+	if (!stricmp(argv[2], "none")) on = false;
+	else if (!stricmp(argv[2], "weapon"))
+	{
+		if (argv.argc() < 4) { Printf("roth_handhold: weapon <item>\n"); return; }
+		weapon = true;
+		item = atoi(argv[3]);
+	}
+	else item = atoi(argv[2]);
+
+	FString cls;
+	if (weapon) cls.Format("RealmsWeapon%d", item);
+	const VRHandPose::HeldState held = on ? roth::HeldFor(item, weapon, weapon ? cls.GetChars() : nullptr) : VRHandPose::HeldState();
+	for (int s = 0; s < VRHandPose::SIDE_COUNT; s++)
+		if (sides[s]) VRHandTest_SetHeld(s, on, held);
+	if (!on) { Printf("roth_handhold: %s -- the game's held thing again\n", argv[1]); return; }
+	const roth::ItemGrip *g = roth::ItemGripFor(item);
+	FString what;
+	if (g == nullptr) what = "no design in roth_handhold.h: the controller's pose";
+	else if (weapon) what = held.gripClass.empty() ? "gun_grip" : FStringf("grip_%s", held.gripClass.c_str());
+	else if (!held.pose.empty()) what = held.pose.c_str();
+	else what.Format("subject %s", VRHandPose::GripSubjectName(held.subject));
+	Printf("roth_handhold: %s holds %s %d (%s): %s\n", argv[1], weapon ? "weapon" : "item", item, g != nullptr ? g->name : "?", what.GetChars());
 }

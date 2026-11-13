@@ -120,8 +120,15 @@ gives them (take index = Blender − 1).
 
 **Wired in VRealms today** [F: HANDOFF_..._HANDS.md, CURRENT STATE]: open, fist, point, thumb up, finger gun and
 trigger, picked by the capacitive touches. The images are `docs/images/hands/poses_closeup.png` and `walk_Hand_Low.png`.
-None of the table's item grips is wired. **[P]** A held item names its grip, and the hand takes that composed pose
-while the item is held.
+**Item grips wired (2026-11-13)** [F: tools/hands_test test_holds, tools/fbxload_test H0-H2; not yet seen in the
+engine]: UZDXREMA's selection (vr_avatar_pose.cpp:466-656) and the whole table, each hand from its own take. The
+held item names its grip in `src/roth/roth_handhold.h`, from the dossiers below; the hand takes that pose while the
+item is held (the original's right-hand item in the VR off hand, the weapon at the main hand: section 1's [P]).
+- **The right take has no wrap_half, wrap_tight or cup** (it holds its two-finger gun from frame ~760 on while the
+  left wraps): on the right hand every wrap or cup pose is absent and the controller's pose stays. The left take has
+  no fingergun frame. Measured: `tools/fbxload_test/walk_poses.py` (check_hold_table). New frames for the right hand
+  are the owner's to author.
+- The pinch items use the cup (hold_round), UZDXREMA's own fallback; they still need the pinch frames below.
 
 **What is missing** [R, from the 40 items below]: a **pinch**. Of the first 40 items, 17 are small things a person
 holds between thumb and finger: a match, keys, gems, a feather, earplugs, rings, the wand's tip.

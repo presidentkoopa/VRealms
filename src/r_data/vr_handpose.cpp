@@ -37,8 +37,8 @@
 **     raised in thumbup/fingergun) and the grip says how far, as for the other fingers
 ** 14. no controller -> every finger 0                           VAP:450-454    -> math PoseRule (!valid): every amount 0
 ** 15. one value per finger copied to its 3 joints               VAP:456-458    -> math PoseTargets (one amount per finger)
-** 16. weapon in the hand (gun_grip / grip_<class> ...)          VAP:466-557    -> NOT PORTED: no weapon in these hands yet
-** 17. an object in the hand: hold_<subject>...                  VAP:558-656    -> NOT PORTED: nothing is held yet
+** 16. weapon in the hand (gun_grip / grip_<class> ...)          VAP:466-557    -> PORTED, items 48-60
+** 17. an object in the hand: hold_<subject>...                  VAP:558-656    -> PORTED, items 61-68
 ** 18. scalar curl smoothed (FCurlState)                         VAP:658-665    -> NOT PORTED: no bone reads it in the
 **     source; there is no scalar curl with poses
 ** 19. rotation target from the FRIK table, QAxisAngle           VAP:685-690    -> NOT PORTED (owner: no per-finger
@@ -96,6 +96,7 @@
 **     drawn frame: measured in the take, the fist's palm would swing the pointing index / raised thumb by tens of
 **     mm (the ~4 cm the owner saw). -> math kPoseSources (Palm), BuildPoses, StepPose, ApplyPalmTurn.
 **     [V: tools/fbxload_test S1-S4 on the real FBX, both hands -- reasoning only in the engine, not seen running.]
+**     (The held poses apply the same rule by its reason: item 72.)
 **
 ** Placement (RIG, OXR)
 ** 39. grip pose located beside the aim pose, HMD-relative, yaw-corrected, raw quaternion
@@ -116,6 +117,98 @@
 **     the wrist there the palm would sit a hand's width ahead of the real one.
 ** 46. "no controller, no hand"                                  VAP:1874-1877  -> ObjectToWorldMatrix falls back
 **     to the actor's own place (a speck at metre scale) and roth_hands.cpp hides the actor.
+**
+** A HAND HOLDING SOMETHING (VAP :466-656, :667-684; VA :60-176, 319-347; RIG :1802-1853; OXR-h = UZDXREMA
+** vk_openxrdevice.h; MKP and the owner's fbx_poses.json "FJ"). "math:N" = vr_handpose_math.h line N. Verified items
+** say how; the rest [R].
+**  [V 50-68, 70: tools/hands_test test_holds -- VAP :476-656 and :672-684 and OXR-h:105-131 cut out at build time and
+**   compiled beside the port; 48,000 hands (weapon / object / nothing, every grip class and subject, prop classes,
+**   the other hand's gun, both handednesses, tracked or not, the real one-sided table plus random holes): every
+**   choice and every joint target identical (difference 0). The VA probes are answered per side by the stub: item 49.]
+** 48. EGripSubject: None, Round, Shell, Inserting, Magazine, Grip, Forend, Foregrip, Slide, Support, Holster, Pouch, MAX
+**                                                               OXR-h:105-131  -> math:1019 (same values: test_holds)
+** 49. VRAvatar_NamedPose(name, finger) / VRAvatar_NamedPoseRot(name, side, finger, joint), names by stricmp
+**                                                               VA:319-347     -> math:1202 HoldHas, :1212 HoldRot, :1058
+**     DEPARTS: VA's NamedPose has no side, because UZDXREMA's table always carries both sides (MKP writes a pose one hand
+**     authored for the other side MIRRORED). Here a side has a pose only from its own take (owner: never mirror), so the
+**     probe is per side; a pose a side lacks is absent there, as VAP treats any missing pose (:577-579).
+** 50. weapon branch taken when a weapon is drawn in this hand    VAP:476        -> math:1289 SelectHold (HeldState.weapon)
+** 51. base = gun_grip; with a grip class: grip_<cls>, fire grip_<cls>_fire   VAP:484-491 -> math:1291-1298
+** 52. [GUNPOSE] grip_<prop class> wins when it has a middle finger, fire = grip_<prop>_fire
+**                                                               VAP:494-503    -> math:1299-1307
+** 53. middle, ring, pinky: per joint from base, else gun_grip  VAP:505-514    -> math:1308-1317
+** 54. [FBXGRIP] the thumb from base (else gun_grip) when that pose has a thumb rotation
+**                                                               VAP:522-535    -> math:1318-1327
+** 55. the index ready->fire only when a fire name exists and both have the index; t = trigger if tracked, else 0
+**                                                               VAP:543-556    -> math:1328-1337
+** 56. otherwise the index (and any finger no pose set) stays the controller's
+**                                                               VAP:470-472, 685-690 -> HoldTargets keeps the controller's
+**     target (PoseRule / PoseTargets, items 11-20): VAP's fallback there is its FRIK curl table, which is not ported (19).
+** 57. VRRig_HandHoldsWeapon / HandGripPose / HandPropClass: recorded as the weapon is DRAWN, stale -> none
+**                                                               RIG:1802-1826  -> HeldState, published every tic by the game
+**     layer (VRHandPose_SetHeld; src/roth/roth_hands.cpp PublishHeld: RealmsHeld drawn at the main hand,
+**     roth_actors_engine.cpp ActorsHeldWeaponDrawn). [R: not seen running]
+** 58. AActor::VRGripPose (the prop names its grip class)       actor.h:3401   -> NOT PORTED as an actor field: Realms
+**     weapons are not mod props; their class comes from src/roth/roth_handhold.h (the item dossiers).
+** 59. VRRig_HandGripSubject reads the console pawn's GripSubjectMain/Off, written by the OpenXR device's arbitration
+**     and script claims                                         RIG:1847-1853, OXR:4560-4820 -> NOT PORTED: Realms has no
+**     magazines, rounds or pumps to claim; the subject is the item in the hand (roth_handhold.h), published per tic.
+** 60. netplay: the held state through usercmd_t / the pawn       (UZDXREMA's rules) -> NOT PORTED: single player; the
+**     hands are presentation only (vr_handpose.h).
+** 61. object branch otherwise                                   VAP:558        -> math:1338
+** 62. subject -> name: Magazine hold_magazine, Round hold_round, Shell hold_shell, Inserting hold_inserting (fallback
+**     hold_round), Forend hold_forend, Foregrip hold_foregrip, Slide hold_slide, Support hold_support (fallback
+**     offhand_weapon_grip); None, Grip, Holster, Pouch: nothing  VAP:587-609    -> math:1340-1354
+** 63. per gun type: tries <base>_<other hand's prop>, <base>_<other hand's class>, <base>, for the name then the
+**     fallback (other hand's only while it holds a weapon)      VAP:622-636    -> math:1359-1370
+** 64. ONE POSE WINS WHOLE: the first try with any finger; every finger it has, the index included
+**                                                               VAP:637-654    -> math:1371-1379
+** 65. NOT IN THE SOURCE: HeldState.pose -- a held thing may name a pose of the table itself (the Lamp's fbx_curl, the
+**     frame its dossier names and no subject's pose uses); it takes the subject's name's place in 62-64. Checked by
+**     value (test_holds).                                                      -> math:1356
+** 66. the target: the index QSlerp(ready, fire, t) when both have it; else the named pose's rotation
+**                                                               VAP:672-684    -> math:1390 HoldTargets
+** 67. the targets then smoothed exactly as every other target (items 21-22)
+**                                                               VAP:691-696    -> math:1421 StepPoseHeld (Smooth)
+** 68. once per displayed frame, both sides, held states per ROLE (hidx), the other hand by role
+**                                                               VAP:433-438, 622 -> UpdateCurls (here)
+** 69. the poses: the owner's fbx_poses.json, every entry in his order (16 raw frames, 34 composed), Blender - 1
+**                                                               FJ, MKP main() -> math:1102 kOwnerPoses
+**     [V: walk_poses.py check_hold_table reads both: 50 of 50 equal. fbxload_test H0: every raw frame from take
+**      frame Blender - 1 equals mkfbxposes.py's own rotations for the hand that authored it, within 0.131 deg (right,
+**      11 frames) / 0.129 deg (left, 13 frames).]
+** 70. EACH HAND FROM ITS OWN TAKE; a raw pose only on the hand(s) that authored it ("both" / "A" right / "B" left)
+**                                                               MKP "MIRRORED from hand ..." -> NOT DONE (owner): math:1168
+**     [V: test_holds (the table's sides); fbxload_test H1 on the real FBX; walk_poses.py check_hold_table measures
+**      the other take for every one-sided frame a hold uses: none is there -- its nearest frame is 0.352-0.578 hand
+**      lengths away (fingertips in the hand's own frame), more than the two hands' shared frames differ (0.319).]
+**     THE RIGHT TAKE (Hand_Low) LACKS wrap_half (820), wrap_tight (837), cup (985) and twohand_support (985): from
+**     about frame 760 to the end it holds its two-finger gun while the left wraps and cups. So on the RIGHT hand
+**     gun_grip, every grip_<class> but grip_saw, offhand_weapon_grip, hold_magazine, hold_round, hold_shell,
+**     hold_slide, hold_forend, hold_support and every hold_support_<class> but _saw are ABSENT (the controller's
+**     pose). THE LEFT TAKE (Hand_Low1) LACKS twofinger_point (762), fingergun (803) and twohand_gun (985): `pointing`
+**     is absent on the left. NEEDS NEW AUTHORED FRAMES (owner): the right hand's wrap_half, wrap_tight and cup.
+**     (fbx_thumb_out, 944 left: the right take has a near frame, 745, moving -- no pose uses it; not substituted.)
+** 71. a pose = PoseRotation (item 29) from the drawn frame to each finger's take frame, built once per model and
+**     side                                                     MKP main()     -> math:1220 BuildHoldPoses; HandFor (here)
+**     [V: fbxload_test H2, both hands, every pose by name, every subject, every grip class at trigger 0 and 1, through
+**      SelectHold + StepPoseHeld converged at 90 Hz: every drawn joint rotation (and the palm's) within 8.3e-6 deg of
+**      the rotation made in double from its authored frame; through the float palette, every finger joint, tip and
+**      the palm within 1.6e-5 deg of the composition; each pose the hand lacks leaves exactly the controller's pose.]
+** 72. HANDPALM_joint in a held pose: NOT FROM THE SOURCE (UZDXREMA's avatars have no palm joint) -- item 38's rule by
+**     its reason: the palm takes the middle finger's frame whenever every straight finger of the pose comes from that
+**     frame (no straight finger rides a palm from another frame). It gives item 38's table for kPoseSources exactly
+**     (walk_poses.py checks both), and drives the palm in every whole frame and every composed pose but `pointing`.
+**     Item 38's wording ("no straight finger") fails the owner's frames: in curl (206) / halfcurl (193) the bend is the
+**     palm joint's own (59-64 deg) and the fingers on it are straight; without their palm they turn back from the hand
+**     (seen: fbxload_test software renders, fingers/holds_<hand>.png). While a finger is the controller's (a weapon with
+**     no fire pose), the palm stays in the drawn frame.                       -> math:1078 (Palm), :1390 HoldTargets
+** 73. which Realms thing is which subject / grip class: src/roth/roth_hands.cpp + roth_handhold.h (the item dossiers,
+**     docs/ITEM_DESIGN.md). Not a port: a design table, every row with the dossier's words.
+** 74. the log: one line per hand whenever what shapes it changes ("VR hands: the left hand (off hand) holds ...") --
+**     evidence of the choice in a run, not of the drawing.                     -> UpdateCurls, math:1436 DescribeHold
+** 75. roth_handhold (flat test): a physical hand's held thing in place of the game's while roth_handtest is on
+**                                                                              -> VRHandTest_SetHeld, roth_hands.cpp
 **
 ** The flat test (not in UZDXREMA; test-only)
 ** 47. roth_handtest: both hands in front of the camera, fixed grip axes, through the placement above
@@ -193,6 +286,8 @@ namespace
 		FVRHandTestInputs in;
 		float turn = 0.f;
 		float tilt = 0.f;
+		bool heldOn[SIDE_COUNT] = { false, false };	// roth_handhold: this side's held thing replaces the game's
+		HeldState held[SIDE_COUNT];
 	};
 	FHandTest gTest;
 
@@ -238,6 +333,13 @@ void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg)
 }
 
 bool VRHandTest_Active() { return gTest.on; }
+
+void VRHandTest_SetHeld(int side, bool on, const HeldState &held)
+{
+	if (side < 0 || side >= SIDE_COUNT) return;
+	gTest.heldOn[side] = on;
+	gTest.held[side] = on ? held : HeldState();
+}
 
 void VRHandTest_SetTilt(float tiltDeg) { gTest.tilt = tiltDeg; }
 
@@ -320,6 +422,7 @@ namespace
 		bool        handOk[SIDE_COUNT] = { false, false };
 		HandRig     rig[SIDE_COUNT];
 		HandPoses   poses[SIDE_COUNT];	// the authored poses (kPoseSources), checklist 11-20, 38
+		HoldPoses   hold[SIDE_COUNT];	// the owner's held-object and weapon-grip poses (kOwnerPoses), checklist 48-75
 		std::vector<float> base, invBase;	// n x 16: the rest (IQM baseframe) and its inverse
 	};
 	TArray<FHandModelCache *> gModels;
@@ -435,6 +538,25 @@ namespace
 			Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- fingers NOT posed: %s\n", model->mFileName.GetChars(), sideName, why);
 			return false;
 		}
+		// the held-object and weapon-grip poses (checklist 48-75): the owner's table, from this hand's own take only
+		if (!BuildHoldPoses(c->rig[side], frames, side, model->NumFrames(), getQ, c->hold[side], why, sizeof(why)))
+		{
+			Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- fingers NOT posed: %s\n", model->mFileName.GetChars(), sideName, why);
+			return false;
+		}
+		{
+			int have = 0;
+			FString lacks, palms;
+			for (int p = 0; p < kOwnerPoseCount; p++)
+			{
+				const OwnerPose &op = kOwnerPoses[p];
+				if (c->hold[side].Have[p]) { have++; if (c->hold[side].PalmDriven[p]) palms.AppendFormat("%s%s", palms.IsEmpty() ? "" : " ", op.name); }
+				else if (op.blender > 0) lacks.AppendFormat("%s%s (Blender %d, hand %s)", lacks.IsEmpty() ? "" : ", ", op.name, op.blender, op.hands == HANDS_A ? "A" : op.hands == HANDS_B ? "B" : "both");
+			}
+			Printf("VR hands: %s as the %s hand -- held-object and weapon-grip poses (UZDXREMA fbx_poses.json): %d of %d from its own take; "
+				"its take lacks %s, so the poses made of them are absent on this hand (never mirrored from the other); the palm follows the pose in: %s\n",
+				model->mFileName.GetChars(), sideName, have, kOwnerPoseCount, lacks.IsEmpty() ? "nothing" : lacks.GetChars(), palms.IsEmpty() ? "none" : palms.GetChars());
+		}
 		c->handOk[side] = true;
 		double minFold = 9;
 		for (int f = 0; f < FINGER_COUNT; f++) for (int j = 0; j < FINGER_JOINTS; j++) if (frames[f][j].fold < minFold) minFold = frames[f][j].fold;
@@ -499,6 +621,10 @@ namespace
 	double gCurlLastTime = 0.0;
 	// the poses of the model last drawn as each side (null: none built -- the fingers stay in the drawn frame)
 	const HandPoses *gSidePoses[SIDE_COUNT] = { nullptr, nullptr };
+	const HoldPoses *gSideHold[SIDE_COUNT] = { nullptr, nullptr };
+	// what each ROLE holds (VRHandPose_SetHeld), and what was last said about each side
+	HeldState gHeld[2];
+	std::string gHoldSaid[SIDE_COUNT];
 
 	void ReadInputs(int side, Inputs &in)
 	{
@@ -539,13 +665,36 @@ namespace
 		gCurlLastTime = now;
 		const float retain = Retain(dt);	// SanitiseDt inside: first frame or a hitch -> 1/90
 
+		// VAP :433-438: the role each side holds, by handedness; the held states are per role (VAP's hidx), and the
+		// flat test's (roth_handhold) replace a side's role's
+		HeldState held[2] = { gHeld[0], gHeld[1] };
+		for (int side = 0; side < SIDE_COUNT; ++side)
+			if (gTest.on && gTest.heldOn[side]) held[VRHandPose_RoleForSide(side)] = gTest.held[side];
+
 		for (int side = 0; side < SIDE_COUNT; ++side)
 		{
 			Inputs in;
 			ReadInputs(side, in);
-			StepPose(gRot[side], gPalm[side], in, retain, gSidePoses[side]);
+			const int role = VRHandPose_RoleForSide(side);
+			HoldChoice choice;
+			SelectHold(gSideHold[side], held[role], held[1 - role], in, choice);	// VAP :466-656
+			StepPoseHeld(gRot[side], gPalm[side], in, retain, gSidePoses[side], gSideHold[side], &choice);
+
+			// said once per change: what shapes this hand (a log line from a run is evidence of the choice, not of the drawing)
+			std::string said = DescribeHold(gSideHold[side], held[role], choice);
+			if (said != gHoldSaid[side])
+			{
+				gHoldSaid[side] = said;
+				Printf("VR hands: the %s hand (%s hand) holds %s\n", side == SIDE_RIGHT ? "right" : "left", role == VR_MAINHAND ? "main" : "off", said.c_str());
+			}
 		}
 	}
+}
+
+void VRHandPose_SetHeld(int role, const HeldState &held)
+{
+	if (role < 0 || role > 1) return;
+	gHeld[role] = held;
 }
 
 //===========================================================================
@@ -647,6 +796,7 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 	if ((int)bones.Size() != n) return &bones;
 
 	gSidePoses[side] = &c->poses[side];
+	gSideHold[side] = &c->hold[side];
 	// The posing's CPU cost, into the perf log as "fx.handpose" (both hands summed per frame), so a slow
 	// frame with the hands on can be told from one with the VR picker on (roth_vrpick.cpp, "game.vrpick").
 	const bool timed = PerfLog::GroupsWanted();

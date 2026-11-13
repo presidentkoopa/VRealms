@@ -9,6 +9,8 @@
 #   The maps (maps_ref.py) are checked against tools/fbx_hands' own FBX reader and libpng (OpenCV).
 #   The fingers (test_fingers.cpp, measure_ref.py) compare against UZDXREMA's own files: set UZDXREMA if its
 #   checkout is not at /home/claude/uzdxrema.
+#   The held-object and weapon-grip poses: test_fingers.cpp H0-H2 and walk_poses.py --owner (check_hold_table); with
+#   FBXLOAD_RENDER, fingers/holds_<hand>.png renders the hold poses each hand has.
 #   The poses (dump_take.cpp + walk_poses.py): both takes walked, the engine's kPoseSources checked against the walk;
 #   with FBXLOAD_RENDER also the contact sheets walk/poses_Hand_Low.png and walk/poses_Hand_Low1.png (the six states as
 #   composed, the owner's frames and the candidates, wrist at rest).
@@ -62,10 +64,13 @@ g++ -std=c++17 -O2 -Wall -Wextra -Isrc/common/models -Ilibraries/ufbx \
 "$OUT/dump_take" "$FBX" "$OUT/walk/take.json"
 SHEET=""
 [ -n "$FBXLOAD_RENDER" ] && SHEET="--sheet $TEX"
-python3 -I tools/fbxload_test/walk_poses.py $SHEET "$OUT/walk/take.json" "$OUT/walk" src/r_data/vr_handpose_math.h
+python3 -I tools/fbxload_test/walk_poses.py $SHEET --owner "$UZ/tools/avatar/fbx_poses.json" "$OUT/walk/take.json" "$OUT/walk" src/r_data/vr_handpose_math.h
 if [ -n "$FBXLOAD_RENDER" ]; then
 	for h in Hand_Low Hand_Low1; do
 		python3 -I tools/fbxload_test/render.py $NRM "$OUT/fingers" "$TEX" "$OUT/fingers/sheet_$h.png" \
 			${h}_ctl_open ${h}_ctl_fist ${h}_ctl_point ${h}_ctl_thumbup ${h}_ctl_fingergun ${h}_ctl_trigger
+		# the held-object poses the hand has (test_fingers H2 dumps them; a pose the hand's take lacks is not dumped)
+		HOLDS=$(cd "$OUT/fingers" && ls ${h}_hold_*.txt 2>/dev/null | sed 's/\.txt$//' | tr '\n' ' ')
+		[ -n "$HOLDS" ] && python3 -I tools/fbxload_test/render.py $NRM "$OUT/fingers" "$TEX" "$OUT/fingers/holds_$h.png" $HOLDS
 	done
 fi

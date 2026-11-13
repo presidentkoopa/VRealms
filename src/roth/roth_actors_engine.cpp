@@ -647,6 +647,17 @@ void ActorsSetHudPanel(int32_t panel) { g_actors.world.weapon.actions[0].SetD(0x
 int32_t ActorsActiveAmmoId() { return g_actors.world.weapon.actions[0].D(0x30); }
 void ActorsAddWeaponAmmo(int delta) { g_actors.world.weapon.ammo += delta; }
 
+bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls)
+{
+	item = 0;
+	cls = nullptr;
+	AActor *mo = g_actors.held;
+	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE) || mo->FollowHandMode != 1) return false;
+	item = mo->IntVar(FName("RealmsItem"));
+	cls = mo->GetClass()->TypeName.GetChars();
+	return item != 0;
+}
+
 void ActorsRebuildWeaponList()
 {
 	Inventory *inv = InterfaceInventory();

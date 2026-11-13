@@ -22,6 +22,7 @@
 
 class AActor;
 class FModel;
+namespace VRHandPose { struct HeldState; }
 
 // AActor::FollowHandMode values that ride a controller's GRIP pose instead of its aim pose
 // (models.cpp ObjectToWorldMatrix). 3 = the main hand's controller, 4 = the off hand's.
@@ -53,6 +54,12 @@ bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out);
 // hand's joints; otherwise a posed copy, valid until the next call on this thread.
 const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones);
 
+// WHAT EACH HAND HOLDS (UZDXREMA vr_rig.cpp:1802-1853: VRRig_HandHoldsWeapon, VRRig_HandGripPose,
+// VRRig_HandPropClass, VRRig_HandGripSubject), per ROLE (VR_MAINHAND / VR_OFFHAND), published by the game
+// layer once per tic (src/roth/roth_hands.cpp). The fingers then take the owner's held-object or weapon-grip
+// pose (vr_handpose_math.h SelectHold, VAP :466-656) while it holds. A default HeldState = holding nothing.
+void VRHandPose_SetHeld(int role, const VRHandPose::HeldState &held);
+
 // THE INDEX FINGER AND THE PALM, for pointing and touching (src/roth/roth_vrpick.cpp): the index
 // fingertip (INDEX_UP_TOP_joint), its knuckle (INDEX_BASE_joint), the palm (HANDPALM_joint), and the
 // wrist and middle knuckle (the hand's axis, which a curled index does not follow), in
@@ -78,6 +85,9 @@ void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg);
 bool VRHandTest_Active();
 // The test hands' fingers tipped from up (0) toward straight ahead (90), about the camera's right.
 void VRHandTest_SetTilt(float tiltDeg);
+// The flat test's held thing for a PHYSICAL hand (VRHandPose::SIDE_*), in place of the game's while `on`
+// (roth_handhold, src/roth/roth_hands.cpp).
+void VRHandTest_SetHeld(int side, bool on, const VRHandPose::HeldState &held);
 // The inputs the flat test gives both hands. False while it is off.
 bool VRHandTest_Inputs(FVRHandTestInputs &out);
 // Where roth_hands.cpp stands the test hand actors, in map units (so they are not culled): the

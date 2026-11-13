@@ -19,6 +19,9 @@
 **     of every finger joint (:476-555);
 **   tools/avatar/mkfbxposes.py ("MKP") a joint's pose rotation from two FBX frames, in that frame
 **     (main(), the `D = ...; quat(F^T D F)` lines, and quat()).
+**   VAP :466-656 and :667-684, a hand holding a weapon or an object: which named pose shapes each finger and its
+**     rotation target (SelectHold, HoldTargets), with the poses of the owner's tools/avatar/fbx_poses.json
+**     (kOwnerPoses), each hand from its own take only.
 ** NOT FROM A SOURCE: which authored frame each pose is (kPoseSources, chosen by walking the takes,
 ** tools/fbxload_test/walk_poses.py) and which touches pick which pose (PoseRule), on the owner's word.
 ** The checklist, source line -> here, is at the top of vr_handpose.cpp. Where this departs from a
@@ -36,6 +39,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace VRHandPose
@@ -988,6 +992,471 @@ inline bool BuildPoses(const HandRig &rig, const FingerFrame frames[FINGER_COUNT
 	if (rig.Palm >= 0) rot(I, rig.Palm, kOpenFrame, out.PalmOpen);
 	out.Have = true;
 	return true;
+}
+
+
+//===========================================================================
+//
+// A HAND HOLDING SOMETHING: UZDXREMA vr_avatar_pose.cpp ("VAP") :466-656 (which pose shapes a hand round a drawn
+// weapon or a held object), :667-684 (that pose as the joint's rotation target), and the poses it looks up --
+// the owner's tools/avatar/fbx_poses.json, the table mkfbxposes.py turned into wadsrc/static/vrhandpose.txt.
+// The checklist (source line -> here) is items 16-17 and 48-75 at the top of vr_handpose.cpp.
+//
+// EACH HAND FROM ITS OWN TAKE. mkfbxposes.py writes a pose one FBX hand authored for the OTHER side too, mirrored
+// ("A pose only one hand authored is also written for the other side, mirrored, and says so"). That is never done
+// here (owner: two separate hands, never cloned or mirrored): a side has a pose only when its own take has every
+// frame the pose reads. Measured (tools/fbxload_test/walk_poses.py, check_hold_table): the right take (Hand_Low,
+// the owner's "A") holds its two-finger gun from about frame 760 to the end while the left take wraps, cups and
+// supports, so the right take has no wrap_half, wrap_tight, cup, thumb_out or twohand_support frame anywhere, and
+// the left take has no twofinger_point, fingergun or twohand_gun frame. A pose a side lacks is ABSENT for that
+// side, exactly as VAP treats a pose a table does not carry ("ADDITIVE AND SILENT IF ABSENT", :577-579): the hand
+// keeps the controller's pose.
+//
+//===========================================================================
+
+// UZDXREMA vk_openxrdevice.h:105-131 EGripSubject: the same names, the same values (tools/hands_test checks them
+// against the source's own enum, cut out of that header).
+enum EGripSubject
+{
+	GRIPSUBJ_None = 0,
+	GRIPSUBJ_Round,      // one pistol or rifle cartridge -- fingertip pinch
+	GRIPSUBJ_Shell,      // a shotgun shell -- fatter, and a fuller grip
+	GRIPSUBJ_Inserting,  // that round being pushed home, thumb driving it
+	GRIPSUBJ_Magazine,   // magazine, clip or speedloader -- wrapped in the palm
+	GRIPSUBJ_Grip,       // a pistol grip: a one-handed gun, or a longarm's firing hand
+	GRIPSUBJ_Forend,     // pump or handguard -- a fat cylinder across the palm
+	GRIPSUBJ_Foregrip,   // vertical foregrip, as on an SMG
+	GRIPSUBJ_Slide,      // slide or charging handle -- pinched from the sides
+	GRIPSUBJ_Support,    // supporting the OTHER hand's weapon, wrapped round its fist
+	GRIPSUBJ_Holster,    // inside a WEAPON holster volume: reaching, not yet holding
+	GRIPSUBJ_Pouch,
+	GRIPSUBJ_MAX
+};
+
+inline const char *GripSubjectName(int s)
+{
+	static const char *const n[GRIPSUBJ_MAX] = { "None", "Round", "Shell", "Inserting", "Magazine", "Grip", "Forend",
+		"Foregrip", "Slide", "Support", "Holster", "Pouch" };
+	return (s >= 0 && s < GRIPSUBJ_MAX) ? n[s] : "?";
+}
+
+// What one hand -- a ROLE, VAP's hidx (VR_MAINHAND 0 / VR_OFFHAND 1) -- has hold of this frame. UZDXREMA's rig answers
+// these (vr_rig.cpp:1802-1853); here the game layer publishes them (vr_handpose.h VRHandPose_SetHeld).
+struct HeldState
+{
+	bool weapon = false;			// VRRig_HandHoldsWeapon: a weapon is DRAWN in this hand
+	std::string gripClass;			// VRRig_HandGripPose: its grip class ("pistol", ...); "" = NAME_None
+	std::string propClass;			// VRRig_HandPropClass: its prop's class; "" = NAME_None
+	int subject = GRIPSUBJ_None;	// VRRig_HandGripSubject
+	// NOT IN THE SOURCE: a pose of the owner's table named directly, for a held thing whose design (docs/ITEM_DESIGN.md)
+	// names an authored frame no subject's pose uses (the Lamp: fbx_curl). Taken as the subject's name is (VAP :610-655,
+	// the same tries and the same "one pose wins whole"); "" = none.
+	std::string pose;
+	int item = 0;					// for the log only: what the game holds there (a DBASE100 index), 0 none
+};
+
+inline bool EqualNoCase(const char *a, const char *b)	// stricmp, as VRAvatar_NamedPose compares names (VA:323, 338)
+{
+	if (a == nullptr || b == nullptr) return false;
+	for (; *a && *b; ++a, ++b)
+	{
+		char x = *a, y = *b;
+		if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+		if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+		if (x != y) return false;
+	}
+	return *a == *b;
+}
+
+//---------------------------------------------------------------------------
+// THE OWNER'S POSE TABLE: UZDXREMA tools/avatar/fbx_poses.json, every entry, in its order (walk_poses.py
+// check_hold_table reads both and refuses any difference).
+//   raw       a Blender frame and the hand(s) that authored it: "both", "A" (Hand_Low, the right hand: MKP's "own
+//             sides: hand A = R") or "B" (Hand_Low1, the left); take frame = Blender - 1 (checklist item 30).
+//   composed  each finger WHOLE from a raw pose named in the table (MKP main(), "a finger is never assembled from
+//             two frames; a hand may be").
+// Palm: the raw pose HANDPALM_joint takes its frame from, or null: the palm stays in the drawn frame. NOT FROM THE
+// SOURCE (UZDXREMA's avatars have no palm joint; mkfbxposes.py writes finger rotations only). Checklist item 38's rule,
+// by its own reason: a palm must never carry a STRAIGHT finger authored in another frame (measured: the fist's palm
+// would swing the pointing index 47 / 33 mm). So the palm takes the frame the middle finger comes from whenever every
+// straight finger of the pose comes from that frame too: every whole frame, and every composed pose here but
+// `pointing` (its straight index is fbx_fingergun's, its palm would be the fist's). Applied to kPoseSources, this is
+// exactly item 38's table (fist driven; point, thumb up and finger gun not: walk_poses.py checks both). Item 38's
+// wording ("no straight finger") cannot be used for the owner's frames: in fbx_curl (206) and fbx_halfcurl (193)
+// the bend is the palm joint's own (59-64 deg) and the fingers on it are straight, so the fingers without their
+// palm turn BACK from the hand -- a shape the take never has (fbxload_test renders, holds_<hand>.png).
+//---------------------------------------------------------------------------
+
+enum { HANDS_BOTH = 0, HANDS_A, HANDS_B };
+
+struct OwnerPose
+{
+	const char *name;
+	int blender;							// raw: the Blender frame; composed: 0
+	int hands;								// raw: HANDS_*
+	const char *finger[FINGER_COUNT];		// composed: thumb, index, middle, ring, pinky from these raw poses
+	const char *palm;						// see above
+};
+
+#define VRHP_ALL(x) { x, x, x, x, x }
+inline constexpr OwnerPose kOwnerPoses[] =
+{
+	// raw: FBX frames, each a whole hand
+	{ "fbx_open",               1, HANDS_BOTH, {}, "fbx_open" },
+	{ "fbx_relaxed",          154, HANDS_BOTH, {}, "fbx_relaxed" },
+	{ "fbx_halfcurl",         193, HANDS_BOTH, {}, "fbx_halfcurl" },
+	{ "fbx_curl",             206, HANDS_BOTH, {}, "fbx_curl" },
+	{ "fbx_fist",             319, HANDS_BOTH, {}, "fbx_fist" },
+	{ "fbx_crossed",          304, HANDS_BOTH, {}, "fbx_crossed" },
+	{ "fbx_twofinger_point",  762, HANDS_A,    {}, "fbx_twofinger_point" },
+	{ "fbx_fingergun",        803, HANDS_A,    {}, "fbx_fingergun" },
+	{ "fbx_wrap_half",        820, HANDS_B,    {}, "fbx_wrap_half" },
+	{ "fbx_wrap_tight",       837, HANDS_B,    {}, "fbx_wrap_tight" },
+	{ "fbx_cup",              985, HANDS_B,    {}, "fbx_cup" },
+	{ "fbx_thumb_out",        944, HANDS_B,    {}, "fbx_thumb_out" },
+	{ "fbx_twohand_gun",      985, HANDS_A,    {}, "fbx_twohand_gun" },
+	{ "fbx_twohand_support",  985, HANDS_B,    {}, "fbx_twohand_support" },
+	{ "open",                   1, HANDS_BOTH, {}, "open" },
+	{ "fist",                 319, HANDS_BOTH, {}, "fist" },
+	// composed: the names the engine looks up (thumb, index, middle, ring, pinky)
+	{ "gun_grip",             0, 0, { "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_tight", "fbx_wrap_tight" }, "fbx_wrap_tight" },
+	{ "grip_pistol",          0, 0, { "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_tight", "fbx_wrap_tight" }, "fbx_wrap_tight" },
+	{ "grip_pistol_fire",     0, 0, VRHP_ALL("fbx_wrap_tight"), "fbx_wrap_tight" },
+	{ "grip_shotgun",         0, 0, { "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_tight", "fbx_wrap_tight" }, "fbx_wrap_tight" },
+	{ "grip_shotgun_fire",    0, 0, VRHP_ALL("fbx_wrap_tight"), "fbx_wrap_tight" },
+	{ "grip_ssg",             0, 0, { "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_tight", "fbx_wrap_tight" }, "fbx_wrap_tight" },
+	{ "grip_ssg_fire",        0, 0, VRHP_ALL("fbx_wrap_tight"), "fbx_wrap_tight" },
+	{ "grip_rifle",           0, 0, { "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_tight", "fbx_wrap_tight" }, "fbx_wrap_tight" },
+	{ "grip_rifle_fire",      0, 0, VRHP_ALL("fbx_wrap_tight"), "fbx_wrap_tight" },
+	{ "grip_rocket",          0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "grip_rocket_fire",     0, 0, { "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_half", "fbx_wrap_half" }, "fbx_wrap_half" },
+	{ "grip_plasma",          0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "grip_plasma_fire",     0, 0, { "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_half", "fbx_wrap_half" }, "fbx_wrap_half" },
+	{ "grip_bfg",             0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "grip_bfg_fire",        0, 0, { "fbx_wrap_half", "fbx_wrap_tight", "fbx_wrap_half", "fbx_wrap_half", "fbx_wrap_half" }, "fbx_wrap_half" },
+	{ "grip_saw",             0, 0, VRHP_ALL("fbx_fist"), "fbx_fist" },
+	{ "offhand_weapon_grip",  0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "melee_grip",           0, 0, VRHP_ALL("fbx_fist"), "fbx_fist" },
+	{ "pointing",             0, 0, { "fbx_fist", "fbx_fingergun", "fbx_fist", "fbx_fist", "fbx_fist" }, nullptr },
+	{ "hold_magazine",        0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_inserting",       0, 0, VRHP_ALL("fbx_relaxed"), "fbx_relaxed" },
+	{ "hold_round",           0, 0, VRHP_ALL("fbx_cup"), "fbx_cup" },
+	{ "hold_shell",           0, 0, VRHP_ALL("fbx_cup"), "fbx_cup" },
+	{ "hold_slide",           0, 0, VRHP_ALL("fbx_wrap_tight"), "fbx_wrap_tight" },
+	{ "hold_forend",          0, 0, VRHP_ALL("fbx_wrap_tight"), "fbx_wrap_tight" },
+	{ "hold_foregrip",        0, 0, VRHP_ALL("fbx_fist"), "fbx_fist" },
+	{ "hold_support",         0, 0, VRHP_ALL("fbx_twohand_support"), "fbx_twohand_support" },
+	{ "hold_support_shotgun", 0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_support_ssg",     0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_support_rifle",   0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_support_plasma",  0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_support_rocket",  0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_support_bfg",     0, 0, VRHP_ALL("fbx_wrap_half"), "fbx_wrap_half" },
+	{ "hold_support_saw",     0, 0, VRHP_ALL("fbx_fist"), "fbx_fist" },
+};
+#undef VRHP_ALL
+inline constexpr int kOwnerPoseCount = (int)(sizeof(kOwnerPoses) / sizeof(kOwnerPoses[0]));
+
+inline int FindOwnerPose(const char *name)
+{
+	for (int i = 0; i < kOwnerPoseCount; ++i) if (EqualNoCase(kOwnerPoses[i].name, name)) return i;
+	return -1;
+}
+
+// The take frame a RAW pose gives `side`, or -1: that side's take did not author it (HANDS_A is the right hand's
+// alone, HANDS_B the left's), and it is never mirrored over from the other hand.
+inline int OwnerRawFrame(int raw, int side)
+{
+	if (raw < 0 || raw >= kOwnerPoseCount || kOwnerPoses[raw].blender <= 0) return -1;
+	const OwnerPose &p = kOwnerPoses[raw];
+	const bool mine = p.hands == HANDS_BOTH || (p.hands == HANDS_A && side == SIDE_RIGHT) || (p.hands == HANDS_B && side == SIDE_LEFT);
+	return mine ? p.blender - 1 : -1;
+}
+
+// The take frame finger `f` of pose `p` reads on `side` (-1: not on this side); -2 = the table is malformed.
+inline int OwnerFingerFrame(int p, int f, int side)
+{
+	const OwnerPose &op = kOwnerPoses[p];
+	if (op.blender > 0) return OwnerRawFrame(p, side);
+	const int raw = FindOwnerPose(op.finger[f]);
+	if (raw < 0 || kOwnerPoses[raw].blender <= 0) return -2;
+	return OwnerRawFrame(raw, side);
+}
+
+// One side's poses from the table, built once per model and side (BuildHoldPoses).
+struct HoldPoses
+{
+	bool  Have[kOwnerPoseCount] = {};								// this side's own take has every frame the pose reads
+	int   Frame[kOwnerPoseCount][FINGER_COUNT] = {};				// those take frames (-1: not on this side)
+	float Q[kOwnerPoseCount][FINGER_COUNT][FINGER_JOINTS][4] = {};	// PoseRotation, relative to the drawn frame
+	bool  PalmDriven[kOwnerPoseCount] = {};
+	int   PalmFrame[kOwnerPoseCount] = {};
+	float PalmQ[kOwnerPoseCount][4] = {};
+	float PalmOpen[4] = { 0.f, 0.f, 0.f, 1.f };						// the palm in the drawn frame
+	bool  Built = false;
+};
+
+// VRAvatar_NamedPose(pose, finger, ...) for this side (VA:334-347): does the pose carry finger f? The owner's poses
+// carry whole hands, so a pose this side has carries every finger. DEPARTS from VA in being per side: VA's probe is
+// side-free because UZDXREMA's table always has both sides, the missing one mirrored (see above).
+inline bool HoldHas(const HoldPoses *hp, int p, int f)
+{
+	return hp != nullptr && hp->Built && p >= 0 && p < kOwnerPoseCount && f >= 0 && f < FINGER_COUNT && hp->Have[p];
+}
+inline int HoldFind(const HoldPoses *hp, const std::string &name, int f)	// the pose's index if HoldHas, else -1
+{
+	const int p = FindOwnerPose(name.c_str());
+	return HoldHas(hp, p, f) ? p : -1;
+}
+// VRAvatar_NamedPoseRot(pose, side, f, j, q) (VA:319-332), for this side.
+inline bool HoldRot(const HoldPoses *hp, int p, int f, int j, float q[4])
+{
+	if (!HoldHas(hp, p, f) || j < 0 || j >= FINGER_JOINTS) return false;
+	for (int k = 0; k < 4; ++k) q[k] = hp->Q[p][f][j][k];
+	return true;
+}
+
+template<class GetQ>
+inline bool BuildHoldPoses(const HandRig &rig, const FingerFrame frames[FINGER_COUNT][FINGER_JOINTS], int side, int numFrames,
+	GetQ getQ, HoldPoses &out, char *why, size_t whyLen)
+{
+	out = HoldPoses();
+	if (side < 0 || side >= SIDE_COUNT) { snprintf(why, whyLen, "no such side %d", side); return false; }
+	auto rot = [&](const FingerFrame &F, int joint, int frame, float q[4]) {
+		double qd[4], qp[4], r[4];
+		getQ(kDrawnFrame, joint, qd);
+		getQ(frame, joint, qp);
+		PoseRotation(F, qd, qp, r);
+		for (int k = 0; k < 4; ++k) q[k] = (float)r[k];
+	};
+	FingerFrame I;
+	I.X[0] = 1; I.Y[1] = 1; I.Z[2] = 1;
+	if (rig.Palm >= 0) rot(I, rig.Palm, kDrawnFrame, out.PalmOpen);
+	for (int p = 0; p < kOwnerPoseCount; ++p)
+	{
+		bool have = true;
+		for (int f = 0; f < FINGER_COUNT; ++f)
+		{
+			const int fr = OwnerFingerFrame(p, f, side);
+			if (fr == -2) { snprintf(why, whyLen, "the pose table is malformed at %s (finger %d)", kOwnerPoses[p].name, f); return false; }
+			out.Frame[p][f] = fr;
+			if (fr < 0 || fr >= numFrames) have = false;
+		}
+		out.PalmFrame[p] = -1;
+		if (kOwnerPoses[p].palm != nullptr)
+		{
+			const int raw = FindOwnerPose(kOwnerPoses[p].palm);
+			if (raw < 0 || kOwnerPoses[raw].blender <= 0) { snprintf(why, whyLen, "the pose table is malformed at %s (palm)", kOwnerPoses[p].name); return false; }
+			out.PalmFrame[p] = OwnerRawFrame(raw, side);
+			if (out.PalmFrame[p] < 0 || out.PalmFrame[p] >= numFrames || rig.Palm < 0) have = false;
+		}
+		out.Have[p] = have;
+		if (!have) continue;
+		for (int f = 0; f < FINGER_COUNT; ++f)
+			for (int j = 0; j < FINGER_JOINTS; ++j) rot(frames[f][j], rig.Joint[f][j], out.Frame[p][f], out.Q[p][f][j]);
+		if (out.PalmFrame[p] >= 0) { out.PalmDriven[p] = true; rot(I, rig.Palm, out.PalmFrame[p], out.PalmQ[p]); }
+	}
+	out.Built = true;
+	return true;
+}
+
+//---------------------------------------------------------------------------
+// WHICH POSE SHAPES THE HAND: VAP :476-656, line for line. VAP's srcPose (which named pose set each joint; empty =
+// the controller did) is Src (an index into kOwnerPoses; -1 = the controller); idxReady / idxFire / idxT the index
+// finger's ready/fire pair and the trigger blending it. VAP's `want` (the scalar curls) is not kept: no bone reads
+// it here (checklist 18). tools/hands_test runs VAP's own lines beside this: difference 0.
+//---------------------------------------------------------------------------
+
+struct HoldChoice
+{
+	int   Src[FINGER_COUNT][FINGER_JOINTS];
+	int   IdxReady = -1, IdxFire = -1;
+	float IdxT = 0.f;
+	HoldChoice() { for (int f = 0; f < FINGER_COUNT; ++f) for (int j = 0; j < FINGER_JOINTS; ++j) Src[f][j] = -1; }
+	bool Any() const
+	{
+		for (int f = 0; f < FINGER_COUNT; ++f) for (int j = 0; j < FINGER_JOINTS; ++j) if (Src[f][j] >= 0) return true;
+		return IdxReady >= 0;
+	}
+};
+
+// `mine`: this hand's held state; `other`: the other hand's (VAP :622-626); `in`: this hand's controller (the trigger
+// for the index blend, VAP :545).
+inline void SelectHold(const HoldPoses *hp, const HeldState &mine, const HeldState &other, const Inputs &in, HoldChoice &out)
+{
+	out = HoldChoice();
+	if (hp == nullptr || !hp->Built) return;
+	if (mine.weapon)																				// :476
+	{
+		const std::string &cls = mine.gripClass;													// :484
+		std::string base = "gun_grip";																// :485
+		std::string fire;																			// :486
+		if (!cls.empty())																			// :487-491
+		{
+			base = "grip_" + cls;
+			fire = "grip_" + cls + "_fire";
+		}
+		{																							// :494-503 [GUNPOSE]
+			const std::string &prop = mine.propClass;
+			const std::string own = "grip_" + prop;
+			if (!prop.empty() && HoldFind(hp, own, FINGER_MIDDLE) >= 0)
+			{
+				base = own;
+				fire = own + "_fire";
+			}
+		}
+		static const int wrapped[] = { FINGER_MIDDLE, FINGER_RING, FINGER_PINKY };					// :505
+		for (int f : wrapped)																		// :506-514
+		{
+			for (int j = 0; j < FINGER_JOINTS; ++j)
+			{
+				int p;
+				if ((p = HoldFind(hp, base, f)) >= 0) out.Src[f][j] = p;
+				else if ((p = HoldFind(hp, "gun_grip", f)) >= 0) out.Src[f][j] = p;
+			}
+		}
+		{																							// :522-535 [FBXGRIP] the thumb
+			int tsrc = -1;
+			float qprobe[4];
+			const int pb = FindOwnerPose(base.c_str()), pg = FindOwnerPose("gun_grip");
+			if (HoldRot(hp, pb, FINGER_THUMB, 0, qprobe)) tsrc = pb;
+			else if (HoldRot(hp, pg, FINGER_THUMB, 0, qprobe)) tsrc = pg;
+			if (tsrc >= 0)
+				for (int j = 0; j < FINGER_JOINTS; ++j)
+					if (HoldHas(hp, tsrc, FINGER_THUMB)) out.Src[FINGER_THUMB][j] = tsrc;
+		}
+		if (!fire.empty())																			// :543-556 the index, ready to fire
+		{
+			const float t = in.valid ? in.trigger : 0.f;											// :545
+			for (int j = 0; j < FINGER_JOINTS; ++j)
+			{
+				const int pr = HoldFind(hp, base, FINGER_INDEX), pf = HoldFind(hp, fire, FINGER_INDEX);
+				if (pr >= 0 && pf >= 0) { out.IdxReady = pr; out.IdxFire = pf; out.IdxT = t; }
+			}
+		}
+	}
+	else																							// :558
+	{
+		const int subj = mine.subject;																// :587
+		const char *sname = nullptr;																// :588
+		const char *sfall = nullptr;																// :589
+		switch (subj)																				// :590-609
+		{
+			case GRIPSUBJ_Magazine:  sname = "hold_magazine"; break;
+			case GRIPSUBJ_Round:     sname = "hold_round";    break;
+			case GRIPSUBJ_Shell:     sname = "hold_shell";    break;
+			case GRIPSUBJ_Inserting: sname = "hold_inserting"; sfall = "hold_round"; break;
+			case GRIPSUBJ_Forend:    sname = "hold_forend";   break;
+			case GRIPSUBJ_Foregrip:  sname = "hold_foregrip"; break;
+			case GRIPSUBJ_Slide:     sname = "hold_slide";    break;
+			case GRIPSUBJ_Support:   sname = "hold_support";  sfall = "offhand_weapon_grip"; break;
+			default: break;   // None, Grip, Holster, Pouch: not a held object
+		}
+		// NOT IN THE SOURCE (HeldState::pose): a pose the held thing names itself takes the subject's place.
+		if (!mine.pose.empty()) { sname = mine.pose.c_str(); sfall = nullptr; }
+		if (sname != nullptr)																		// :610
+		{
+			const std::string gunCls = other.weapon ? other.gripClass : std::string();				// :622-624
+			const std::string gunProp = other.weapon ? other.propClass : std::string();			// :625-626
+			std::string tries[6];																	// :627
+			int ntries = 0;																			// :628
+			const char *bases[2] = { sname, sfall };												// :629
+			for (const char *b : bases)																// :630-636
+			{
+				if (b == nullptr) continue;
+				if (!gunProp.empty()) tries[ntries++] = std::string(b) + "_" + gunProp;
+				if (!gunCls.empty()) tries[ntries++] = std::string(b) + "_" + gunCls;
+				tries[ntries++] = b;
+			}
+			int use = -1;																			// :637
+			for (int t = 0; t < ntries && use < 0; ++t)												// :638-643
+				for (int f = 0; f < FINGER_COUNT && use < 0; ++f)
+					use = HoldFind(hp, tries[t], f);
+			if (use >= 0)																			// :644-654
+				for (int f = 0; f < FINGER_COUNT; ++f)
+					for (int j = 0; j < FINGER_JOINTS; ++j)
+						if (HoldHas(hp, use, f)) out.Src[f][j] = use;
+		}
+	}
+}
+
+// THE ROTATION TARGETS: VAP :674-684 over the controller's targets. `target` / `palm` come in as the controller's
+// pose (PoseTargets) and leave with the held pose where it sets a joint; where VAP falls back to its curl table
+// (:685-690) the controller's pose stays (checklist 19).
+// THE PALM, NOT FROM THE SOURCE (item 38's rule, kOwnerPoses "Palm"): while every finger joint is the held pose's, the
+// palm takes the frame of the pose the middle finger comes from where that pose drives it, else the drawn frame; while
+// any finger is still the controller's (a weapon with no fire pose leaves the index there), the drawn frame -- that
+// finger can be straight and is not from the pose's frame, and a turned palm would swing it (item 38).
+inline void HoldTargets(const HoldPoses *hp, const HoldChoice &ch, float target[FINGER_COUNT][FINGER_JOINTS][4], float palm[4])
+{
+	if (hp == nullptr || !hp->Built || !ch.Any()) return;
+	bool all = true;
+	for (int f = 0; f < FINGER_COUNT; ++f)
+	{
+		for (int j = 0; j < FINGER_JOINTS; ++j)
+		{
+			float wq[4];																			// :672
+			bool have = false;																		// :673
+			if (f == FINGER_INDEX && ch.IdxReady >= 0)												// :674-682
+			{
+				float qa[4], qb[4];
+				if (HoldRot(hp, ch.IdxReady, f, j, qa) && HoldRot(hp, ch.IdxFire, f, j, qb))
+				{
+					QSlerp(qa, qb, ch.IdxT, wq); have = true;
+				}
+			}
+			if (!have && ch.Src[f][j] >= 0)															// :683-684
+				have = HoldRot(hp, ch.Src[f][j], f, j, wq);
+			if (have) { for (int k = 0; k < 4; ++k) target[f][j][k] = wq[k]; }
+			else all = false;
+		}
+	}
+	const int p = ch.Src[FINGER_MIDDLE][0];
+	const float *pq = (all && p >= 0 && hp->PalmDriven[p]) ? hp->PalmQ[p] : hp->PalmOpen;
+	for (int k = 0; k < 4; ++k) palm[k] = pq[k];
+}
+
+// StepPose with a held thing: the controller's targets (PoseRule, PoseTargets), the held pose over them (HoldTargets),
+// then the same smoothing (Smooth; the palm likewise). With hold or choice null it is StepPose exactly.
+inline void StepPoseHeld(SideState &rot, PalmState &palm, const Inputs &in, float retain, const HandPoses *poses,
+	const HoldPoses *hold, const HoldChoice *choice)
+{
+	PoseInputs pi;
+	PoseRule(in, pi);
+	float target[FINGER_COUNT][FINGER_JOINTS][4], pt[4];
+	PoseTargets(poses, pi, target, pt);
+	if (hold != nullptr && choice != nullptr) HoldTargets(hold, *choice, target, pt);
+	Smooth(rot, target, retain);
+	if (!palm.Init) { for (int k = 0; k < 4; ++k) palm.Q[k] = pt[k]; }
+	else { float o[4]; QSlerp(palm.Q, pt, 1.f - retain, o); for (int k = 0; k < 4; ++k) palm.Q[k] = o[k]; }
+	palm.Init = true;
+}
+
+// One line on what shapes the hand, for the log.
+inline std::string DescribeHold(const HoldPoses *hp, const HeldState &mine, const HoldChoice &ch)
+{
+	char b[256];
+	const bool holding = mine.weapon || mine.subject != GRIPSUBJ_None || !mine.pose.empty();
+	if (!holding) return "nothing held: the controller's pose";
+	std::string what;
+	if (mine.weapon) { snprintf(b, sizeof(b), "a weapon (grip class %s, prop %s)", mine.gripClass.empty() ? "none" : mine.gripClass.c_str(), mine.propClass.empty() ? "none" : mine.propClass.c_str()); what = b; }
+	else if (!mine.pose.empty()) what = "the pose " + mine.pose;
+	else what = std::string("subject ") + GripSubjectName(mine.subject);
+	if (mine.item > 0) { snprintf(b, sizeof(b), " (item %d)", mine.item); what += b; }
+	if (hp == nullptr || !hp->Built) return what + ": no poses built for this hand";
+	if (!ch.Any()) return what + ": no pose of the owner's table for it on this hand (its own take lacks the frames) -- the controller's pose";
+	std::string s = what + ":";
+	static const char *const fn[FINGER_COUNT] = { "thumb", "index", "middle", "ring", "pinky" };
+	for (int f = 0; f < FINGER_COUNT; ++f)
+	{
+		if (f == FINGER_INDEX && ch.IdxReady >= 0) { snprintf(b, sizeof(b), " index %s->%s by the trigger;", kOwnerPoses[ch.IdxReady].name, kOwnerPoses[ch.IdxFire].name); s += b; continue; }
+		const int p = ch.Src[f][0];
+		snprintf(b, sizeof(b), " %s %s;", fn[f], p >= 0 ? kOwnerPoses[p].name : "the controller");
+		s += b;
+	}
+	const int pm = ch.Src[FINGER_MIDDLE][0];
+	snprintf(b, sizeof(b), " palm %s", (pm >= 0 && hp->PalmDriven[pm]) ? "from the pose" : "in the drawn frame");
+	return s + b;
 }
 
 } // namespace VRHandPose

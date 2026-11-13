@@ -24,7 +24,12 @@ is what its role needs (CHECKS below), and the extended finger / raised thumb is
 stated margin of it. With --sheet TEXTURE, OUT_DIR/poses_<hand>.png: the six states as the table composes them, the
 owner's frames and the close candidates, each drawn with the wrist at rest.
 
-    python3 -I walk_poses.py [--sheet TEXTURE.png] TAKE.json OUT_DIR vr_handpose_math.h
+    python3 -I walk_poses.py [--sheet TEXTURE.png] [--owner fbx_poses.json] TAKE.json OUT_DIR vr_handpose_math.h
+
+With --owner (UZDXREMA tools/avatar/fbx_poses.json) the engine's held-object / weapon-grip table (kOwnerPoses) is checked
+too (check_hold_table): every entry equal to the owner's file, each hand's own frames measured, a pose one hand authored
+shown to be absent from the other hand's take (its nearest frame there is further from it than the two hands' shared
+frames are from each other), and the palm rule.
 """
 import json
 import math
@@ -131,8 +136,12 @@ class Hand:
 def main():
     args = sys.argv[1:]
     tex = None
-    if args and args[0] == "--sheet":
-        tex = args[1]
+    owner = None
+    while args and args[0] in ("--sheet", "--owner"):
+        if args[0] == "--sheet":
+            tex = args[1]
+        else:
+            owner = args[1]
         args = args[2:]
     take, out, header = args[0], args[1], args[2]
     d = json.load(open(take))
@@ -140,6 +149,8 @@ def main():
     write_csv(hands, out)
     search(hands, out)
     fails = check_table(hands, header)
+    if owner:
+        fails += check_hold_table(hands, header, owner)
     if tex:
         for h in hands:
             contact_sheet(h, read_table(header)[h.name], tex, "%s/poses_%s.png" % (out, h.name))
@@ -552,6 +563,151 @@ def contact_sheet(h, tab, tex, out):
     for lab, c in cands:
         E.append((lab, locals_for(h, c)))
     sheet(h, E, tex, out, cols=2)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# THE HELD-OBJECT AND WEAPON-GRIP TABLE (vr_handpose_math.h kOwnerPoses) against the owner's fbx_poses.json and the takes
+# ---------------------------------------------------------------------------------------------------------------------
+
+def read_owner_table(header):
+    import re
+    txt = open(header).read()
+    blk = txt[txt.index("inline constexpr OwnerPose kOwnerPoses[] ="):]
+    blk = blk[:blk.index("};")]
+    hands = {"HANDS_BOTH": "both", "HANDS_A": "A", "HANDS_B": "B"}
+    out = {}
+    order = []
+    for line in blk.splitlines():
+        m = re.match(r'\s*\{\s*"([^"]+)",\s*(\d+),\s*(HANDS_\w+|0),\s*(\{[^}]*\}|VRHP_ALL\("[^"]+"\)),\s*(nullptr|"[^"]+")\s*\},', line)
+        if not m:
+            continue
+        name, blender, hs, fing, palm = m.groups()
+        palm = None if palm == "nullptr" else palm.strip('"')
+        if int(blender) > 0:
+            out[name] = {"raw": [int(blender), hands[hs]], "palm": palm}
+        else:
+            a = re.match(r'VRHP_ALL\("([^"]+)"\)', fing)
+            fl = [a.group(1)] * 5 if a else re.findall(r'"([^"]+)"', fing)
+            assert len(fl) == 5, line
+            out[name] = {"fingers": dict(zip(FINGERS, fl)), "palm": palm}
+        order.append(name)
+    return out, order
+
+
+def tip_sig(h, fr):
+    W = h.world(fr)
+    v = []
+    for fn in FINGERS:
+        m = h.finger_metrics(W, fn)
+        v += [m["tf"], m["tk"], m["tn"]]
+    return np.array(v)
+
+
+def check_hold_table(hands, header, owner_path):
+    fails = 0
+
+    def check(ok, msg):
+        nonlocal fails
+        print("  %s  %s" % ("PASS" if ok else "FAIL", msg))
+        if not ok:
+            fails += 1
+
+    owner = json.load(open(owner_path))
+    tab, order = read_owner_table(header)
+    print("\n== THE HELD-OBJECT AND WEAPON-GRIP TABLE (%s kOwnerPoses) against %s and both takes" % (header, owner_path))
+    want = [k for k in owner if not k.startswith("//")]
+    check(order == want, "the table has the owner's %d poses, in his order (%d in the engine)" % (len(want), len(order)))
+    same = 0
+    for k in want:
+        o, t = owner[k], tab.get(k)
+        if t is None:
+            check(False, "%s is missing from the engine's table" % k)
+            continue
+        if isinstance(o, list):
+            ok = "raw" in t and t["raw"] == [o[0], o[1]]
+        else:
+            ok = "fingers" in t and all(t["fingers"][fn] == o["fingers"][fn] for fn in FINGERS)
+        if ok:
+            same += 1
+        else:
+            check(False, "%s differs: owner %s, engine %s" % (k, o, t))
+    check(same == len(want), "every entry equals the owner's (raw: Blender frame and hand; composed: each finger's pose): %d of %d" % (same, len(want)))
+
+    H = {"R": hands[0], "L": hands[1]}
+    authored = lambda hs, s: hs == "both" or (hs == "A" and s == "R") or (hs == "B" and s == "L")
+    raw = {k: v["raw"] for k, v in tab.items() if "raw" in v}
+
+    # the hands' own frames, measured
+    print("  each raw pose in each hand's own take (take = Blender - 1): index..pinky ext/closed/-, thumb closed/up/out, palm, motion deg/frame")
+    for k, (b, hs) in raw.items():
+        for s in ("R", "L"):
+            h = H[s]
+            fr = b - 1
+            c, m, tg = classify(h, h.world(fr))
+            print("     %-20s %s take %4d %-9s: index %-6s middle %-6s ring %-6s pinky %-6s thumb %-10s palm %5.1f motion %.2f" % (
+                k, s, fr, "authored" if authored(hs, s) else "NOT ITS", c["index"], c["middle"], c["ring"], c["pinky"],
+                ",".join(c["thumb"]) or "-", h.jang(fr, h.palm), h_motion(h, fr)))
+
+    # a pose one hand authored is absent from the other hand's take: its nearest frame there is further from it than the
+    # two hands' shared frames are from each other (fingertips in each hand's own palm frame, hand lengths)
+    shared = [b - 1 for k, (b, hs) in raw.items() if hs == "both"]
+    tol = max(np.linalg.norm(tip_sig(H["R"], fr) - tip_sig(H["L"], fr)) for fr in shared)
+    print("  the two hands' shared frames (%s) differ from each other by up to %.3f (fingertips in the hand's own frame, hand lengths): "
+          "a frame further than that from a pose is not that pose" % (", ".join(str(x) for x in sorted(set(shared))), tol))
+    sigs = {s: [tip_sig(H[s], g) for g in range(H[s].n)] for s in ("R", "L")}
+    for k, (b, hs) in raw.items():
+        if hs == "both":
+            continue
+        src = "R" if hs == "A" else "L"
+        dst = "L" if src == "R" else "R"
+        target = tip_sig(H[src], b - 1)
+        d = [(np.linalg.norm(sigs[dst][g] - target), g) for g in range(H[dst].n)]
+        d.sort()
+        best, g = d[0]
+        used = sorted(n for n, v in tab.items() if "fingers" in v and k in v["fingers"].values())
+        if not used:
+            print("  NOTE  %s (Blender %d, hand %s): no composed pose uses it; the %s take's nearest frame %d is %.3f away (tolerance %.3f), %s -- "
+                  "not mirrored, and not substituted" % (k, b, hs, "right" if dst == "R" else "left", g, best, tol,
+                                                         "held" if held(H[dst], "index", g) and held(H[dst], "middle", g) else "moving"))
+            continue
+        check(best > tol, "%s (Blender %d, hand %s): absent from the %s take -- its nearest frame there, %d, is %.3f away (> %.3f), %s" % (
+            k, b, hs, "right" if dst == "R" else "left", g, best, tol,
+            "held" if held(H[dst], "index", g) and held(H[dst], "middle", g) else "moving") + "; used by " + ", ".join(used))
+
+    # the palm rule (checklist item 38, by its reason): the palm takes the middle finger's frame exactly when every straight
+    # finger of the pose comes from that frame (no straight finger rides a palm from another frame)
+    def palm_rule(h, src):
+        W = h.world_of(locals_for(h, dict(src, palm=None)))
+        straight = [fn for fn in FINGERS if h.finger_metrics(W, fn)["straight"] >= (0.95 if fn == "thumb" else STRAIGHT)]
+        return all(src[fn] == src["middle"] for fn in straight), straight
+
+    # the same rule gives item 38's table for the controller poses (kPoseSources)
+    for hi, nm in enumerate(["Hand_Low", "Hand_Low1"]):
+        t = read_table(header)[nm]
+        for pn in POSES:
+            src = {fn: t[pn][fn] for fn in FINGERS}
+            drive, straight = palm_rule(hands[hi], src)
+            check(drive == (t[pn]["palm"] is not None) and (not drive or t[pn]["palm"] == src["middle"]),
+                  "%s %s (kPoseSources): the rule says palm %s, the table has %s; straight fingers %s" % (
+                      nm, pn, ("from %d" % src["middle"]) if drive else "not driven",
+                      t[pn]["palm"] if t[pn]["palm"] is not None else "not driven",
+                      ", ".join("%s (%d)" % (fn, src[fn]) for fn in straight) or "none"))
+    for k in order:
+        t = tab[k]
+        fing = {fn: k for fn in FINGERS} if "raw" in t else t["fingers"]
+        for s in ("R", "L"):
+            h = H[s]
+            if not all(authored(raw[fing[fn]][1], s) for fn in FINGERS):
+                continue
+            src = {fn: raw[fing[fn]][0] - 1 for fn in FINGERS}
+            drive, straight = palm_rule(h, src)
+            driven = t["palm"] is not None
+            ok = driven == drive and (not driven or raw[t["palm"]][0] - 1 == src["middle"])
+            if not ok or k in ("hold_magazine", "hold_round", "hold_forend", "hold_foregrip", "hold_inserting", "fbx_curl", "gun_grip", "grip_rocket_fire", "pointing"):
+                check(ok, "%s %s: palm %s; straight fingers: %s" % (k, s, ("driven from %d" % (raw[t["palm"]][0] - 1)) if driven else "not driven",
+                                                                    ", ".join("%s (%d)" % (fn, src[fn]) for fn in straight) or "none"))
+    print("  (the palm rule held for every other pose on every hand that has it)")
+    return fails
 
 
 if __name__ == "__main__":
