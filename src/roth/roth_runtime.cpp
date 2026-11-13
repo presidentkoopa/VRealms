@@ -84,6 +84,7 @@
 #include "d_eventbase.h"   // event_t, for FlowResponder
 #include "keydef.h"
 #include <time.h>
+#include "hw_vrmodes.h"     // VR_MeasuredHeadHeight (the flat test's reach check, PickTestTarget)
 #include "gi.h"            // gameinfo.ConfigName, for the start map
 
 // Declared in p_map.cpp at GLOBAL scope, next to the use path it reports on.
@@ -7867,10 +7868,23 @@ bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 
 			const DVector2 right(fwd.Y, -fwd.X);
 			// The player's spot: the eye <ahead> behind the hand; with the hand in
 			// line, the body shifted so the HAND is in front of the target.
-			const DVector2 sxy = alignHand ? c.aim.XY() + o * (hand.metresOff + hand.ahead) - right * hand.right
+			// For a grip the hand is <metres> outside the object's pick box (the
+			// box GrabNear measures the palm to), not <metres> from its centre:
+			// a candelabrum's box is wider than the hand's reach.
+			double face = 0;
+			if (alignHand && c.want.actor != nullptr)
+			{
+				DVector3 lo, hi;
+				ObjectPickBox(c.want.actor, lo, hi);
+				const double hx = 0.5 * (hi.X - lo.X), hy = 0.5 * (hi.Y - lo.Y);
+				face = std::min(fabs(o.X) > 1e-6 ? hx / fabs(o.X) : 1e9, fabs(o.Y) > 1e-6 ? hy / fabs(o.Y) : 1e9);
+				if (face > 1e8) face = 0;
+			}
+			const DVector2 sxy = alignHand ? c.aim.XY() + o * (face + hand.metresOff + hand.ahead) - right * hand.right
 			                               : c.aim.XY() + o * (hand.ahead + hand.metresOff);
 			FString at;
 			at.Format("roth_vrpicktest:   %s heading %+.0f: stand (%.0f %.0f)", name.GetChars(), turn * (180.0 / M_PI), sxy.X, sxy.Y);
+			if (alignHand) at.AppendFormat(", the box's face %.1f from its centre", face);
 			sector_t *ss = g.level->PointInSector(sxy);
 			if (ss == nullptr) { Printf("%s -- no sector there\n", at.GetChars()); continue; }
 			const double fz = ss->floorplane.ZatPoint(sxy), cz = ss->ceilingplane.ZatPoint(sxy);
@@ -7881,17 +7895,35 @@ bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 
 			}
 			// The test grip hangs (TEST_UP + lift) metres under the eye, drawn
 			// through the level's pixel stretch (vr_handpose.cpp TestGrip), so in
-			// map units it is (up + lift units) / stretch below the eye.
+			// map units it is (up + lift units) / stretch below the eye: liftUnits
+			// is in the test grip's own units (VR_UnitsPerMeter now), which is
+			// what places the drawn palm -- and the palm GrabNear measures from --
+			// at the target's height.
+			//
+			// CAN A PLAYER'S HAND BE THERE? Not judged in those units: in flat the
+			// metre is the player's vr_vunits_per_meter (34), not the headset's,
+			// so the eye 144 units up would be 4.2 "metres" tall. The body's own
+			// measure is the eye: in the headset the original's eye height above
+			// the feet IS the player's head height (the eye anchor, hw_vrmodes.h
+			// VR_SetEyeHeightAnchor), at any units per metre. So the palm's height
+			// is judged as a fraction of the eye's height above the feet: from
+			// 0.25 (a hand at a low shelf, 0.40 m for a 1.60 m eye) to 1.25 (a
+			// raised hand, 2.00 m) -- the -1.2 / +0.4 m of a 1.60 m eye, as a
+			// proportion so it holds for every player and every scale.
 			const DVector3 eye(sxy.X, sxy.Y, fz + vh);
 			double liftUnits = 0;
 			if (alignHand)
 			{
 				liftUnits = (c.aim.Z - eye.Z) * ps - hand.up;
-				const double m = liftUnits / std::max(1e-3, hand.upm);
-				if (m < -1.2 || m > 0.4)
+				const double frac = vh > 1e-3 ? (c.aim.Z - fz) / vh : 0.0;
+				const double head = VR_MeasuredHeadHeight();
+				const FString body = head > 0.f ? FStringf("%.2f m on the measured %.2f m head", frac * head, (double)head)
+				                                : FString("no head measured");
+				if (frac < 0.25 || frac > 1.25)
 				{
-					Printf("%s sector %d, eye z %.0f, target z %.0f -- the hand would have to move %.2f m (allowed -1.20..+0.40)\n",
-						at.GetChars(), ss->sectornum, eye.Z, c.aim.Z, m);
+					Printf("%s sector %d, eye z %.0f (%.0f above the feet), target z %.0f -- the palm would be at %.2f of the eye's"
+						" height above the feet (%s; a hand reaches 0.25..1.25)\n", at.GetChars(), ss->sectornum, eye.Z, vh, c.aim.Z,
+						frac, body.GetChars());
 					continue;
 				}
 			}
@@ -7983,9 +8015,10 @@ bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 
 						taken == nullptr ? "nothing usable" : FStringf("%s at %.1f (not a target)", pickName(takenPick).GetChars(), takenD).GetChars());
 					continue;
 				}
-				Printf("%s, hand (%.0f %.0f %.0f), lift %.2f m -- the grip would take %s at %.1f (cursor type %d shape 0x%x)\n",
-					at.GetChars(), hp.X, hp.Y, hp.Z, liftUnits / std::max(1e-3, hand.upm), pickName(takenPick).GetChars(), takenD,
-					(int)takenC.type, (unsigned)takenC.shape);
+				Printf("%s, hand (%.0f %.0f %.0f) at %.2f of the eye's height above the feet (test grip lift %.2f m at %.1f units"
+					" per metre) -- the grip would take %s at %.1f, within %.1f (cursor type %d shape 0x%x)\n",
+					at.GetChars(), hp.X, hp.Y, hp.Z, vh > 1e-3 ? (hp.Z - fz) / vh : 0.0, liftUnits / std::max(1e-3, hand.upm), hand.upm,
+					pickName(takenPick).GetChars(), takenD, hand.grabRadius, (int)takenC.type, (unsigned)takenC.shape);
 			}
 			else if (hand.clearRadius > 0)
 			{
