@@ -543,11 +543,12 @@ namespace
 		}
 		c->handOk[side] = true;
 		c->posesOk[side] = haveFrames;
-		// the palm cup (checklist 38): only from the take's own frames; without them the palm is not driven
+		// THE PALM IS NOT DRIVEN (owner, 2026-11-13, in the headset): cupping it with grip carried every finger
+		// with it, so a pointing index swung ~4 cm. As UZDXREMA: only the 15 finger joints move. BuildPalm and
+		// StepPalm (vr_handpose_math.h) stay, unused.
 		const int palmJ = model->FindJoint(FName(kPalmJoint));
 		double palmTurn = 0;
-		const bool palmOk = haveFrames && BuildPalm(J, palmJ, reinterpret_cast<const double (*)[4]>(qD.data()),
-			reinterpret_cast<const double (*)[4]>(qO.data()), reinterpret_cast<const double (*)[4]>(qF.data()), c->rig[side], c->palm[side]);
+		const bool palmOk = false;
 		if (palmOk)
 		{
 			const float *a = c->palm[side].Open, *b = c->palm[side].Fist;
@@ -575,8 +576,8 @@ namespace
 			Printf("VR hands: %s as the %s hand -- palm cup: %s follows grip from frame %d to frame %d (%.1f degrees), %d joints ride it\n",
 				model->mFileName.GetChars(), sideName, kPalmJoint, kOpenFrame, kFistFrame, palmTurn, (int)c->rig[side].PalmBelow.size());
 		else
-			Printf(TEXTCOLOR_ORANGE "VR hands: %s as the %s hand -- palm cup NOT driven (%s)\n", model->mFileName.GetChars(), sideName,
-				palmJ < 0 ? "no HANDPALM_joint" : "the take has no open and fist frames");
+			Printf("VR hands: %s as the %s hand -- the palm is not driven (only the fingers move, as UZDXREMA)%s\n", model->mFileName.GetChars(), sideName,
+				palmJ < 0 ? "; no HANDPALM_joint" : "");
 		return true;
 	}
 
