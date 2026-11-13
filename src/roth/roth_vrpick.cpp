@@ -15,6 +15,15 @@
 //   squeezes the grip with the palm      Activate(Use)                     the same; an item goes through
 //     on it                                                                  give_item_by_dbase_id and flies
 //
+// A USE CARRIES THE ITEM OF THE HAND THAT MAKES IT (roth_handuse.h, DoUse).
+// The original has no item-on-object verb: its click runs the object's chain,
+// and the chain's RAW 0x27 tests the right-hand item. So the hand on the RIGHT
+// side, which holds the original's right-hand item, uses with it selected;
+// the other hand uses with nothing selected, as the original does when no item
+// is. Touching the candle with the hand holding the Matchbox lights it; the
+// empty hand gets the original's auto-select (the Matchbox goes to the right
+// hand and nothing else happens).
+//
 // and every one is gated by the original's own click rules on that
 // classification (run_gameplay_frame, roth_runtime.h CursorClass): an examine
 // needs a cursor of type 3 or 5 with something to examine, a use a cursor of
@@ -92,6 +101,8 @@
 #include "roth_interface.h"
 #include "roth_hands.h"
 #include "roth_objects.h"
+#include "roth_inventory.h"
+#include "roth_handuse.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -435,12 +446,40 @@ void Haptic(int role, double amp, double ms)
 	VR_ScriptHaptic(role, amp, ms);
 }
 
+// The right-hand item's id (sign-extended, as the hands read it), 0 for none.
+int RightHandItem(const Inventory *inv)
+{
+	if (inv == nullptr || inv->RightHand() < 0) return 0;
+	return (int16_t)inv->Slot(inv->RightHand()).id;
+}
+
+// EVERY USE A HAND MAKES -- the index tap, the fingertip press, the grip --
+// is the original's left click, through the port's use path (Activate), WITH
+// THE ITEM THAT HAND HOLDS (roth_handuse.h): the hand on the RIGHT side holds
+// the original's right-hand item and uses the object with it selected; the
+// other hand holds none and uses it as the original does with nothing
+// selected. The item test in the object's chain (RAW 0x27) decides the rest,
+// unchanged.
 bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how)
 {
 	if (!c.CanUse()) return false;
+	const bool itemHand = VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT;
+	Inventory *inv = InterfaceInventory();
+	const int before = RightHandItem(inv);
+	HandUse scope;
+	if (inv != nullptr) scope = HandUseBegin(*inv, itemHand);
 	const bool acted = Activate(p, pmo, TrigEvent::Use);
-	Printf("[roth_vrpick] %s hand %s: USE %s at depth %.0f (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
-		PickKindName(p), c.depth, (int)c.type, (unsigned)c.shape, acted ? "acted" : "nothing happened");
+	const int during = RightHandItem(inv);      // what the use left in the right hand
+	const HandUseAfter after = inv != nullptr ? HandUseEnd(*inv, scope) : HandUseAfter::ItemHand;
+	const int now = RightHandItem(inv);
+	Printf("[roth_vrpick] %s hand (%s) %s: USE %s at depth %.0f (cursor type %d shape 0x%x) %s -> %s\n", RoleName(role),
+		itemHand ? "right side" : "left side", how, PickKindName(p), c.depth, (int)c.type, (unsigned)c.shape,
+		itemHand ? (before ? FStringf("with the right-hand item %d", before).GetChars() : "with no right-hand item")
+		         : (before ? FStringf("with no item (the right hand's %d set aside, as the original with nothing selected)", before).GetChars()
+		                   : "with no item"),
+		acted ? "acted" : "nothing happened");
+	if (during != before || now != before || after != HandUseAfter::ItemHand)
+		Printf("[roth_vrpick]   the right hand: %d before, %d after the use, %d now (%s)\n", before, during, now, HandUseAfterName(after));
 	Haptic(role, acted ? 0.45 : 0.15, acted ? 35 : 12);
 	return acted;
 }
@@ -874,10 +913,15 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //
 //   roth_vrpicktest on [main|off|both]   start (default: the main hand only)
 //   roth_vrpicktest aim <pitch> [yaw]    the test ray's direction off the view (degrees, + up / + left)
-//   roth_vrpicktest seek item|door|face [metres]
+//   roth_vrpicktest seek item|door|face|examine [metres]
 //                                        stand the player so the TEST HAND is <metres> (default 1.0)
 //                                        in front of the nearest pickable item / door leaf / wall face
 //                                        with a use trigger, facing it, and aim the test ray at it.
+//                                        The test hand is the main hand, or the off hand when only it is on.
+//   roth_vrpicktest seek needs <item> [metres]
+//                                        the same, at the nearest object or wall face whose use chain
+//                                        tests DBASE100 item <item> with RAW 0x27 (the item-on-the-world
+//                                        case: a candle and the Matchbox, 16, in STUDY1)
 //                                        In metres, because the hand is placed in metres
 //                                        (VR_UnitsPerMeter: 34 in flat, about 107 in the headset)
 //   roth_vrpicktest off
@@ -894,7 +938,8 @@ CCMD(roth_vrpicktest)
 	using namespace roth;
 	if (argv.argc() < 2)
 	{
-		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face [metres] | off\n");
+		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face|examine [metres]"
+			" | seek needs <item> [metres] | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
@@ -930,10 +975,16 @@ CCMD(roth_vrpicktest)
 	{
 		AActor *pmo = players[consoleplayer].mo;
 		if (pmo == nullptr) { Printf("roth_vrpicktest seek: no player\n"); return; }
-		const double metres = argv.argc() >= 4 ? atof(argv[3]) : 1.0;
+		// "needs <item>" takes one more word: the DBASE100 item the target's chain tests.
+		const bool needs = !stricmp(argv[2], "needs");
+		if (needs && (argv.argc() < 4 || atoi(argv[3]) <= 0)) { Printf("roth_vrpicktest seek needs <item> [metres]\n"); return; }
+		const int at = needs ? 4 : 3;
+		const double metres = argv.argc() > at ? atof(argv[at]) : 1.0;
 		// Where the test hand hangs off the eye: roth_hands.cpp stands it at
-		// VRHandTest_ActorSpot, the same placement the test grip uses.
-		const int side = VRHandPose_SideForRole(VR_MAINHAND);
+		// VRHandTest_ActorSpot, the same placement the test grip uses. THE TEST
+		// HAND: the main hand unless only the off hand is on.
+		const int testRole = (P.testHands & 1) ? VR_MAINHAND : VR_OFFHAND;
+		const int side = VRHandPose_SideForRole(testRole);
 		DVector3 spot0;
 		VRHandTest_ActorSpot(side, DVector3(0, 0, 0), 0.0, spot0);   // yaw 0: ahead +x, right -y
 		PickTestHand hand;
@@ -943,6 +994,7 @@ CCMD(roth_vrpicktest)
 		hand.metresOff = metres * UPM();
 		// A grip test wants nothing else within the palm's reach.
 		hand.clearRadius = metres < 0.3 ? (kGrabRadius + 0.05) * UPM() : 0.0;
+		hand.needsItem = needs ? atoi(argv[3]) : 0;
 		DVector3 aim, stand;
 		if (!PickTestTarget(argv[2], pmo, hand, aim, stand)) { Printf("roth_vrpicktest seek: no reachable %s on this map\n", argv[2]); return; }
 		const double yawDeg = atan2(aim.Y - stand.Y, aim.X - stand.X) * (180.0 / M_PI);
@@ -953,8 +1005,9 @@ CCMD(roth_vrpicktest)
 		pmo->ClearInterpolation();
 		P.testAimAt = true;
 		P.testAim = aim;
-		Printf("roth_vrpicktest seek %s: aiming at (%.0f %.0f %.0f), standing at (%.0f %.0f %.0f): the hand %.2f m"
-			" (%.1f units) from it\n", argv[2], aim.X, aim.Y, aim.Z, stand.X, stand.Y, stand.Z, metres, metres * UPM());
+		Printf("roth_vrpicktest seek %s%s%s: aiming at (%.0f %.0f %.0f), standing at (%.0f %.0f %.0f): the %s hand (%s side) %.2f m"
+			" (%.1f units) from it\n", argv[2], needs ? " " : "", needs ? argv[3] : "", aim.X, aim.Y, aim.Z, stand.X, stand.Y, stand.Z,
+			RoleName(testRole), side == VRHandPose::SIDE_RIGHT ? "right" : "left", metres, metres * UPM());
 		return;
 	}
 	Printf("roth_vrpicktest: unknown '%s'\n", argv[1]);

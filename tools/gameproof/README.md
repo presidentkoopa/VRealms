@@ -55,6 +55,13 @@ snapshot first, so tests are independent; the port does the same with its own st
   `cmd_set_inventory_filter`, `run_command_dbase100_record`) on the retail records, from the
   four inventories; each 0x27 also with the 0x36-latched pending action that precedes it in
   its map; each 0x29 also with a world-object give context.
+- **H** -- the item test per VR hand (`src/roth/roth_handuse.h`): every retail 0x27 record, then
+  `cmd_remove_item` on its key, from the four inventories, easy flag off and on, with the right hand
+  holding the setup's own item, the tested item, or nothing. The original is run with the right hand
+  as each VR hand leaves it (the item hand: unchanged; the other hand: nothing selected); the port
+  starts from the same right hand and goes through `HandUseBegin`. The restore after the use
+  (`HandUseEnd`) has no counterpart in the original: `replay` checks it against its own rule and
+  prints the count on stderr (and exits 3 if it is ever broken).
 
 Each test prints: every logged call in order with arguments and return values (nesting by
 indent), then the state: flags changed, inventory slots changed, hands, Adam slot,

@@ -456,7 +456,9 @@ const char *PickKindName(const Pick &p);
 // reach from a spot `metresOff` in front of it, and that spot (on its floor).
 // The hand is placed relative to the eye (ahead, right, up, in units). With
 // clearRadius > 0 no other object may be within it of the hand (a grip test).
-struct PickTestHand { double ahead = 0, right = 0, up = 0, metresOff = 0, clearRadius = 0; };
+// "needs": an object or a wall face whose USE chain tests item `needsItem`
+// with RAW 0x27 (the item-on-the-world test).
+struct PickTestHand { double ahead = 0, right = 0, up = 0, metresOff = 0, clearRadius = 0; int needsItem = 0; };
 bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVector3 &aim, DVector3 &stand);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13

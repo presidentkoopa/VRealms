@@ -95,6 +95,10 @@ EXTERN_CVAR(Bool, roth_useray_debug)
 namespace roth
 {
 
+// Defined further down in namespace roth (beside ActivateLine); the 0x27
+// decision line in IfNotItem reads it first.
+EXTERN_CVAR(Bool, roth_trigger_debug)
+
 namespace
 {
 
@@ -1271,8 +1275,26 @@ int IfNotFlag(Command *rec, Handlers &h)
 int IfNotItem(Command *rec, Handlers &h)
 {
 	if (!g_core.IsAttached()) { g.unhandledOps[0x27]++; return CMD_NOTHING; }
-	return RunItemCmd(rec, &h, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &host) {
+	// THE DECISION LINE (roth_trigger_debug): what the item test read and what it
+	// answered -- the right hand before and after (an auto-select moves it), and
+	// the chain's interrupt (1: auto-selected, the click does nothing; 2: the
+	// if-next tail, raw_commands.c:4651-4658).
+	const Inventory &inv = g_core.Items();
+	const int rightBefore = inv.RightHand() >= 0 ? (int16_t)inv.Slot(inv.RightHand()).id : 0;
+	const int res = RunItemCmd(rec, &h, [](ItemCmdState &st, ItemCmdRecord &r, ItemCmdHost &host) {
 		return CmdIfNotItem(g_core, st, r, host); });
+	if (roth_trigger_debug)
+	{
+		const uint8_t f6 = rec->fireFlags;
+		const int rightAfter = inv.RightHand() >= 0 ? (int16_t)inv.Slot(inv.RightHand()).id : 0;
+		Printf("roth_trigger: 0x27 if-not-item %u (rec[6] 0x%02x: %s): right hand %d -> %d, auto-selected %d,"
+			" interrupt %d -> %s\n", (unsigned)rec->key, (unsigned)f6,
+			(f6 & 8) ? ((f6 & 4) ? "list query" : "list append") : (f6 & 4) ? "last item"
+			: !(f6 & 2) ? "count: carried anywhere" : (f6 & 0x20) ? "select: in a hand, no auto-select" : "select: in a hand, auto-select",
+			rightBefore, rightAfter, (int)inv.AutoSelected(), (int)h.interrupt,
+			res == CMD_NOTHING ? "nothing" : res == CMD_ACTED ? "acted" : "latched");
+	}
+	return res;
 }
 
 // give_item's context (raw_commands.c:4801-4822): the object the player just
@@ -7667,6 +7689,54 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 	std::vector<Cand> cands;
 
 	const bool examine = !stricmp(kind, "examine");
+	const bool needs = !stricmp(kind, "needs");
+
+	// "needs": the use chains that test the item. A chain is walked as its
+	// links run (nextIndex), to the next trigger; every 0x27 whose key is the
+	// item counts, whatever its mode (rec[6]), which is reported.
+	auto chainTests = [&](const std::vector<Binding> &bs, uint8_t &f6) -> bool
+	{
+		for (const Binding &b : bs)
+		{
+			if (b.event != TrigEvent::Use) continue;
+			int guard = 0;
+			for (uint16_t k = b.chain; k != 0 && guard < 64; guard++)
+			{
+				const Command *c = Rec(k);
+				if (c == nullptr || (guard > 0 && c->isTrigger)) break;
+				if (c->opcode == 0x27 && c->key == (uint16_t)hand.needsItem) { f6 = c->fireFlags; return true; }
+				k = c->nextIndex;
+			}
+		}
+		return false;
+	};
+	if (needs)
+	{
+		if (hand.needsItem <= 0) return false;
+		for (size_t s = 0; s < g.map.objects.size(); s++)
+			for (size_t i = 0; i < g.map.objects[s].size(); i++)
+			{
+				const Object &o = g.map.objects[s][i];
+				if (o.commandID == 0) continue;
+				auto bit = g.byObject.find((int)o.commandID);
+				uint8_t f6 = 0;
+				if (bit == g.byObject.end() || !chainTests(bit->second, f6)) continue;
+				AActor *mo = FindObjectActor((int)s, (int)i);
+				if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
+				DVector3 lo, hi;
+				ObjectPickBox(mo, lo, hi);
+				Cand c;
+				c.aim = DVector3((lo.X + hi.X) * 0.5, (lo.Y + hi.Y) * 0.5, (lo.Z + hi.Z) * 0.5);
+				c.out = from.XY() - c.aim.XY();
+				c.want.kind = Pick::Prop;
+				c.want.actor = mo;
+				c.d2 = (c.aim.XY() - from.XY()).LengthSquared();
+				cands.push_back(c);
+				Printf("roth_vrpicktest: object %d/%d (id %u) tests item %d (RAW 0x27, rec[6] 0x%02x: %s)\n", (int)s, (int)i,
+					(unsigned)o.commandID, hand.needsItem, (unsigned)f6, (f6 & 8) ? "list" : (f6 & 4) ? "last item"
+					: !(f6 & 2) ? "carried anywhere" : (f6 & 0x20) ? "in a hand, no auto-select" : "in a hand, auto-select");
+			}
+	}
 	if (!stricmp(kind, "item") || examine)
 	{
 		if (!TheDbase100().IsLoaded()) return false;
@@ -7689,7 +7759,7 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 				cands.push_back(c);
 			}
 	}
-	else if (!stricmp(kind, "door") || !stricmp(kind, "face"))
+	if (!stricmp(kind, "door") || !stricmp(kind, "face") || needs)
 	{
 		const bool door = !stricmp(kind, "door");
 		auto pass = [&](int sideIdx)
@@ -7720,6 +7790,16 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 		// A door: a BROAD side of a leaf (one with a room face), so the test
 		// stands in the room, not in the doorway facing a thickness edge.
 		if (door) { for (const auto &kv : g.doorLeafSide) if (g.doorLeafRoomFace.count(kv.first)) pass(kv.first); }
+		else if (needs)
+		{
+			for (const auto &kv : g.bySide)
+			{
+				uint8_t f6 = 0;
+				if (!chainTests(kv.second, f6)) continue;
+				pass(kv.first);
+				Printf("roth_vrpicktest: wall side %d tests item %d (RAW 0x27, rec[6] 0x%02x)\n", kv.first, hand.needsItem, (unsigned)f6);
+			}
+		}
 		else
 		{
 			for (const auto &kv : g.bySide)

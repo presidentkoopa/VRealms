@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """compare.py <oracle.trace> <port.trace> [--show N]
 Diff the original's trace (gameprobe.c) against the port's (replay.cpp), test by test.
-A test is everything from one 'A ...' / 'I ...' / 'R ...' header line to the next.
+A test is everything from one 'A ...' / 'I ...' / 'R ...' / 'H ...' header line to the next.
 Prints, per section, how many tests match exactly and, for each mismatch, the first
 divergent line of both sides. Exit status 0 only when every test matches."""
 import sys, collections
@@ -10,7 +10,7 @@ def tests(path):
     out, order, cur = {}, [], None
     for line in open(path, errors='replace'):
         line = line.rstrip('\n')
-        if line[:2] in ('A ', 'B ', 'Q ', 'I ', 'R ') or line in ('BOOT', 'END') or line.startswith('ENV '):
+        if line[:2] in ('A ', 'B ', 'Q ', 'I ', 'R ', 'H ') or line in ('BOOT', 'END') or line.startswith('ENV '):
             cur = line if not line.startswith('ENV ') else 'ENV'
             if cur == 'ENV':
                 out['ENV'] = [line]; order.append('ENV'); cur = 'S0'; out['S0'] = []; order.append('S0'); continue

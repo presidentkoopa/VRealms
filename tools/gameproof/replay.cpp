@@ -21,6 +21,7 @@
 
 #include "../../src/roth/roth_gamecore.h"
 #include "../../src/roth/roth_itemcmds.h"
+#include "../../src/roth/roth_handuse.h"
 #include "../../src/roth/roth_sfx.h"
 
 #include <stdarg.h>
@@ -552,6 +553,88 @@ void SectionRaw(const char *path)
 	fclose(f);
 }
 
+// ---- section H -------------------------------------------------------------------------
+//
+// gameprobe.c section_hands. The original is run with the right hand as the VR hand leaves it
+// (r0 for the item hand, nothing for the other); here every test starts from r0 and the VR scope
+// (roth_handuse.h HandUseBegin) makes the difference, so equal traces mean the other hand's use IS
+// the original's use with nothing selected. HandUseEnd (the restore) runs after the state is
+// printed; it has no counterpart in the original, so it is checked here against its own rule and
+// counted on stderr.
+
+int g_handFail = 0;
+int g_handAfter[5] = {};
+
+int FirstSlotWith(uint16_t id)
+{
+	if (id == 0) return -1;
+	for (int i = 0; i < Inventory::SLOT_COUNT; i++) if (g_core.Items().Slot(i).id == id) return i;
+	return -1;
+}
+
+void SectionHands(const char *path)
+{
+	FILE *f = path ? fopen(path, "r") : nullptr;
+	if (!f) { fprintf(g_out, "H none\n"); return; }
+	static const char *const r0name[3] = { "own", "item", "none" };
+	char line[256];
+	while (fgets(line, sizeof line, f))
+	{
+		unsigned op, mod, f6, key, pendkey, n;
+		if (sscanf(line, "%x %x %x %u %u %u", &op, &mod, &f6, &key, &pendkey, &n) != 6 || op != 0x27) continue;
+		for (int k = 0; k < 4; k++) for (int easy = 0; easy < 2; easy++)
+		for (int rk = 0; rk < 3; rk++) for (int hand = 0; hand < 2; hand++)
+		{
+			Begin(k);
+			Inventory &inv = g_core.Items();
+			const int r0 = rk == 0 ? inv.RightHand() : rk == 1 ? FirstSlotWith((uint16_t)key) : -1;
+			if (rk == 1 && r0 < 0) continue;
+			inv.SetEasySelect(easy != 0);
+			inv.SetRightHand(r0);                                  // the probe writes 0x81044 directly: no icon call
+			const HandUse scope = HandUseBegin(inv, hand == 0);
+			ItemCmdRecord rec; rec.modifier = (uint8_t)mod; rec.fireFlags = (uint8_t)f6; rec.key = (uint16_t)key;
+			ItemCmdRecord rem; rem.key = (uint16_t)key;
+			PendingHost host; host.pend.modifier = 0; host.pend.fireFlags = 0x10; host.pend.key = (uint16_t)pendkey;
+			ItemCmdState st;
+			st.pendingRecord = pendkey ? 1 : 0;
+			if ((f6 & 8) && (f6 & 4)) { st.list[0] = (int32_t)key; st.list[1] = (int32_t)key + 1; st.listCount = 2; }
+			fprintf(g_out, "H op=27 mod=%02x f6=%02x key=%u pend=%u setup=%d easy=%d r0=%s:%d hand=%s\n", mod, f6, key, pendkey,
+				k, easy, r0name[rk], r0, hand == 0 ? "item" : "other");
+			const int32_t r = CmdIfNotItem(g_core, st, rec, host);
+			Ev("= %d mod=%02x pendmod=%02x pending=%d interrupt=%u latch=%u listn=%d right=%d auto=%u", r == 0 ? 0 : (r == -1 ? -1 : 1),
+				rec.modifier, host.pend.modifier, st.pendingRecord != 0 ? 1 : 0, (unsigned)st.interrupt, st.dialogueLatch ? 1u : 0u,
+				st.listCount, inv.RightHand(), inv.AutoSelected() ? 1u : 0u);
+			const int32_t r2 = CmdRemoveItem(g_core, st, rem);
+			Ev("remove = %d right=%d", r2 == 0 ? 0 : (r2 == -1 ? -1 : 1), inv.RightHand());
+			g_core.Interp().FinishDialogueRecordEval();
+			Drive(0);
+			if (g_events <= EVENT_LIMIT) DumpState("S", false);
+
+			// THE RESTORE, by its own rule (roth_handuse.h).
+			const int during = inv.RightHand();
+			const uint16_t idThen = r0 >= 0 ? inv.Slot(r0).id : 0;
+			const HandUseAfter after = HandUseEnd(inv, scope);
+			g_handAfter[(int)after]++;
+			bool ok;
+			switch (after)
+			{
+			case HandUseAfter::ItemHand:     ok = hand == 0 && inv.RightHand() == during; break;
+			case HandUseAfter::NothingHeld:  ok = hand == 1 && r0 < 0 && inv.RightHand() == during; break;
+			case HandUseAfter::Restored:     ok = hand == 1 && during < 0 && inv.RightHand() == r0 && idThen == scope.savedId; break;
+			case HandUseAfter::GameSelected: ok = hand == 1 && r0 >= 0 && during >= 0 && inv.RightHand() == during; break;
+			case HandUseAfter::ItemGone:     ok = hand == 1 && during < 0 && inv.RightHand() < 0 && idThen != scope.savedId; break;
+			default: ok = false;
+			}
+			if (!ok && g_handFail++ < 10)
+				fprintf(stderr, "replay H: restore rule broken: key %u setup %d r0 %d hand %d during %d now %d (%s)\n",
+					key, k, r0, hand, during, inv.RightHand(), HandUseAfterName(after));
+		}
+	}
+	fclose(f);
+	fprintf(stderr, "replay H: after the use -- item hand %d, nothing held %d, restored %d, the use selected %d, item gone %d;"
+		" restore rule broken %d\n", g_handAfter[0], g_handAfter[1], g_handAfter[2], g_handAfter[3], g_handAfter[4], g_handFail);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -563,7 +646,7 @@ int main(int argc, char **argv)
 	if (file.empty() || g_text.empty() || !g_db.Load(file.data(), file.size())) { fprintf(stderr, "replay: no DBASE100/DBASE400 in %s\n", dir.c_str()); return 1; }
 
 	// The plan and the stub answers come from the oracle trace.
-	char sections[16] = "ABQIR"; int lo = 1, hi = 0;
+	char sections[16] = "ABQIRH"; int lo = 1, hi = 0;
 	std::vector<std::pair<uint32_t, uint32_t>> patches; bool patchUnknown = false;
 	{
 		FILE *o = fopen(argv[2], "r");
@@ -626,7 +709,8 @@ int main(int argc, char **argv)
 	if (strchr(sections, 'I')) SectionInventory();
 	if (strchr(sections, 'Q')) SectionQueue(lo, hi);
 	if (strchr(sections, 'R')) SectionRaw(argc > 4 ? argv[4] : nullptr);
+	if (strchr(sections, 'H')) SectionHands(argc > 4 ? argv[4] : nullptr);
 	fprintf(g_out, "END\n");
 	fclose(g_out);
-	return 0;
+	return g_handFail != 0 ? 3 : 0;
 }

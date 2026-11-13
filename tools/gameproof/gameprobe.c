@@ -18,6 +18,9 @@
  *   R         cmd_if_not_item / cmd_give_item / cmd_remove_item / cmd_set_inventory_filter /
  *             run_command_dbase100_record on record bytes taken from the retail maps
  *             ($PROOF_RAWRECS), from the same starting inventories.
+ *   H         every retail 0x27 (then 0x2a on its key) with the right hand as each VR hand leaves it:
+ *             the item hand with the right-hand item selected, the other hand with nothing selected
+ *             (src/roth/roth_handuse.h), easy flag off and on.
  *
  * While a test runs, the callees that belong to presentation or to the map (dialogue windows,
  * GDV, images, sound, music, the map's command chains, the item icon, the weapon HUD) are
@@ -473,6 +476,70 @@ static void section_raw(void)
     fclose(f);
 }
 
+/* ------------------------------------------------------------------ section H: the item test per VR hand */
+
+/* The VR hands' use (src/roth/roth_handuse.h): the hand on the right side holds the original's right-hand
+ * item, the other hand holds none. So the original is asked here, for every retail 0x27 record, from every
+ * starting inventory, with the easy flag off and on, and with the right hand holding r0 -- the setup's own
+ * item ("own"), the tested item ("item", its first slot; skipped when it is not carried) or nothing ("none"):
+ *   hand=item   the right hand is r0           (the click with r0 selected)
+ *   hand=other  the right hand is 0            (the click with nothing selected, E/inventory.c:259-262)
+ * then cmd_remove_item on the same key (a chain that takes the item, E/inventory.c:283-320), and the
+ * state. The port (replay.cpp) starts every one of them from r0 and goes through HandUseBegin, so the
+ * "other" lines say: whatever the right hand held, the other hand's use is the original's use with nothing
+ * selected. The restore after the use (HandUseEnd) has no counterpart in the original and is not in the
+ * trace: replay.cpp checks it on its own and prints a count. */
+static int first_slot_with(uint16_t id)
+{
+    if (id == 0) return -1;
+    for (int i = 0; i < 256; i++) if (RAM->u16(A_SLOTS + i * 4) == id) return i;
+    return -1;
+}
+
+static void section_hands(void)
+{
+    const char *path = getenv("PROOF_RAWRECS"); FILE *f = path ? fopen(path, "r") : 0;
+    if (!f) { fprintf(g_out, "H none\n"); return; }
+    char line[256];
+    static uint8_t rec[32], pend[32], rem[32];
+    static const char *const r0name[3] = { "own", "item", "none" };
+    uint32_t slots = (uint32_t)(uintptr_t)RAM->to_ptr(A_SLOTS);
+    while (fgets(line, sizeof line, f)) {
+        volatile unsigned op, mod, f6, key, pendkey; unsigned n;
+        if (sscanf(line, "%x %x %x %u %u %u", &op, &mod, &f6, &key, &pendkey, &n) != 6 || op != 0x27) continue;
+        for (volatile int k = 0; k < 4; k++) for (volatile int easy = 0; easy < 2; easy++)
+        for (volatile int rk = 0; rk < 3; rk++) for (volatile int hand = 0; hand < 2; hand++) {
+            begin(k);
+            int r0 = rk == 0 ? slot_index(RAM->u32(A_RIGHT)) : rk == 1 ? first_slot_with((uint16_t)key) : -1;
+            if (rk == 1 && r0 < 0) continue;                     /* the tested item is not carried */
+            RAM->set_u32(A_EASY, (uint32_t)easy);
+            int right = hand == 0 ? r0 : -1;
+            RAM->set_u32(A_RIGHT, right < 0 ? 0 : slots + (uint32_t)right * 4);
+            memset(rec, 0, sizeof rec); memset(pend, 0, sizeof pend); memset(rem, 0, sizeof rem);
+            rec[2] = (uint8_t)mod; rec[3] = (uint8_t)op; rec[6] = (uint8_t)f6; rec[8] = (uint8_t)key; rec[9] = (uint8_t)(key >> 8);
+            pend[3] = 0x2b; pend[6] = 0x10; pend[8] = (uint8_t)pendkey; pend[9] = (uint8_t)(pendkey >> 8);
+            rem[3] = 0x2a; rem[8] = (uint8_t)key; rem[9] = (uint8_t)(key >> 8);
+            RAM->set_u32(A_PENDING, pendkey ? (uint32_t)(uintptr_t)pend : 0); RAM->set_u8(A_INTERRUPT, 0); RAM->set_u8(A_DLGLATCH, 0);
+            RAM->set_u32(A_IFLISTN, 0); RAM->set_u32(A_GIVECTX, 0); RAM->set_u32(A_ACTOBJ2, 0);
+            if ((f6 & 8) && (f6 & 4)) { RAM->set_u32(A_IFLIST, key); RAM->set_u32(A_IFLIST + 4, key + 1); RAM->set_u32(A_IFLISTN, 2); }
+            fprintf(g_out, "H op=27 mod=%02x f6=%02x key=%u pend=%u setup=%d easy=%d r0=%s:%d hand=%s\n", mod, f6, key, pendkey,
+                (int)k, (int)easy, r0name[rk], r0, hand == 0 ? "item" : "other");
+            if (setjmp(g_runaway)) continue;
+            int32_t r = FN(int32_t, cmd_if_not_item, uint32_t)((uint32_t)(uintptr_t)rec);
+            uint32_t p = RAM->u32(A_PENDING);
+            ev("= %d mod=%02x pendmod=%02x pending=%d interrupt=%u latch=%u listn=%d right=%d auto=%u", r == 0 ? 0 : (r == -1 ? -1 : 1),
+               rec[2], pend[2], p == 0 ? 0 : 1, RAM->u8(A_INTERRUPT), RAM->u8(A_DLGLATCH), (int)RAM->u32(A_IFLISTN),
+               slot_index(RAM->u32(A_RIGHT)), RAM->u32(A_AUTOSEL));
+            int32_t r2 = FN(int32_t, cmd_remove_item, uint32_t)((uint32_t)(uintptr_t)rem);
+            ev("remove = %d right=%d", r2 == 0 ? 0 : (r2 == -1 ? -1 : 1), slot_index(RAM->u32(A_RIGHT)));
+            FN(void, finish_dialogue_record_eval, void)();
+            drive(0);
+            dump_state("S", 0);
+        }
+    }
+    fclose(f);
+}
+
 /* ------------------------------------------------------------------ section Q: three 0x2b in one chain */
 
 /* Two chains with nothing ending the first one's line in between, as when the player sets off a
@@ -511,7 +578,7 @@ static void frame(const struct roth_api_v1 *api)
     g_done = 1;
     { sigset_t t; sigemptyset(&t); sigaddset(&t, SIGALRM); sigaddset(&t, SIGVTALRM); sigaddset(&t, SIGPROF);
       sigprocmask(SIG_BLOCK, &t, 0); }                                   /* no timer tick from here on */
-    const char *what = getenv("PROOF_SECTIONS"); if (!what || !*what) what = "ABQIR";
+    const char *what = getenv("PROOF_SECTIONS"); if (!what || !*what) what = "ABQIRH";
     int lo = 1, hi = (int)P32(RAM->u32(A_BASE) + 0x18);
     { const char *s = getenv("PROOF_ACTIONS"); if (s) sscanf(s, "%d %d", &lo, &hi); }
     fprintf(g_out, "ENV mode=%d actions=%u items=%u bitmap=%u seq=%d chunk=%u musvol=%u overlay=%d panel=%d popup=%d hpmax=%u plan=%s %d %d\n", g_mode,
@@ -531,6 +598,7 @@ static void frame(const struct roth_api_v1 *api)
     if (strchr(what, 'I')) section_inventory();
     if (strchr(what, 'Q')) section_queue(lo, hi);
     if (strchr(what, 'R')) section_raw();
+    if (strchr(what, 'H')) section_hands();
     fprintf(g_out, "END\n"); fclose(g_out);
     fprintf(stderr, "[gameprobe] done\n");
     _Exit(0);
