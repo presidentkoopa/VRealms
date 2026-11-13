@@ -25,6 +25,7 @@ Branch: `lane/gamelayer` on `presidentkoopa/VRealms`. Owner's local copy: `E:\DO
 - Stock Doom menu graphics (M_DOOM...) give menudef script errors at startup; harmless, not ours.
 
 **Owner in the headset (2026-11-12, 23:51): "impressed, looks amazing"; seen issues, for later:**
+- "Chairs, tables and couches look good" (the original's 3D meshes): seen in the headset by the owner.
 - "Some scaling issues" -- not yet said which; ask.
 - "Some sprites are always facing/turning to me: door sigils, the sword, some items in the study." Checked: the original fixes the orientation of 110 STUDY1 objects (renderType bit 7) and the engine builds exactly those 110 as wall sprites (roth_STUDY1.log "fixed angle 110"; tools/propcheck STUDY1: 110 fixed-quad, 89 billboard, 43 mesh). The ones turning are billboards in the original too (camera-facing). Fixing their facing in VR is a VR adaptation: the owner decides when the flat port is done (CLAUDE.md 1:1 rule).
 
