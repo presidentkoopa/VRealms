@@ -84,6 +84,20 @@ struct UiAssets
 	const RothFont *font = nullptr;     // null: no text is drawn (and Problems() says why)
 };
 
+// THE OWNER'S FONT (2026-11-13: "get my font in there until I say otherwise"). With text as
+// runs on, draw_text_to_buffer writes no glyph pixels: each line of text it would have drawn is
+// kept as a run -- the string, the box the original's glyphs would fill (picture pixels) and the
+// colour of its ramp -- and the interface draws the run in the owner's JFO font (the SDF atlas
+// sdfmono) at that box. Off by default, so every pixel test still draws the original's glyphs.
+void UiSetTextAsRuns(bool on);
+bool UiTextAsRuns();
+struct UiTextRun
+{
+	int x = 0, y = 0, w = 0, h = 0;     // picture pixels (rows as the picture has them)
+	std::string text;
+	uint8_t colour = 0;                 // palette index: the middle of the glyph's ramp
+};
+
 class UiCanvas
 {
 public:
@@ -159,6 +173,9 @@ public:
 
 	void Problem(const std::string &s);
 
+	// Text drawn as runs (UiSetTextAsRuns): the runs now on the picture.
+	const std::vector<UiTextRun> &TextRuns() const { return mRuns; }
+
 	// The virtual screen: wide and tall enough that the screen and what is
 	// written around it fit; never allocated.
 	static const long VPITCH = 0x1000;
@@ -176,6 +193,12 @@ protected:
 	// string without its own 01 <colour> prefix takes the last one set. Here it
 	// is one per canvas.
 	uint8_t mRamp[32] = {};
+	// Text as runs: a run is dropped when what it stood on is cleared, filled or restored, or a
+	// new run is drawn over it (the original would have overwritten those pixels).
+	std::vector<UiTextRun> mRuns;
+	void AddRun(const UiTextRun &r);
+	void TextRuns(const uint8_t *str, size_t len, long dest, uint32_t flags);
+	void DropRuns(int x, int y, int w, int h);      // picture pixels
 };
 
 } // namespace roth

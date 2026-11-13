@@ -57,6 +57,13 @@ EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoin
 #include "r_data/sprites.h"
 
 
+// THE OWNER'S FONT for every picture's text (2026-11-13: "get my font in there until I say
+// otherwise"): the JFO distance-field atlas (sdfmono) instead of the original's glyphs, at the
+// original's text positions (roth_uidraw.h UiSetTextAsRuns). Not saved; on until he says otherwise.
+CUSTOM_CVAR(Bool, roth_ui_font_jfo, true, CVAR_NOSAVE | CVAR_NOINITCALL)
+{
+	roth::UiSetTextAsRuns(self);
+}
 EXTERN_CVAR(Float, bb_scale)
 EXTERN_CVAR(Float, bb_tiltbias)
 EXTERN_CVAR(Bool, bb_flipu)
@@ -690,6 +697,14 @@ void AddWorldPicture(int id, int ox, int oy, double lift, int kind, bool hittabl
 	if (U.elements.empty()) return;
 	Element &e = U.elements.back();
 	e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
+	// The picture's text, in the owner's font (roth_uidraw.h UiSetTextAsRuns), on the boxes the
+	// original's glyphs would fill, just in front of the picture. Not clickable: the picture is.
+	for (const UiTextRun &r : c->TextRuns())
+	{
+		const double sx = ox + c->Left() + r.x + r.w * 0.5, sy = oy + c->Top() + r.y + r.h * 0.5;
+		Add((sx - PANEL_CX) * PXW, (PANEL_CY - sy) * PXW, lift + 0.1, r.w * PXW, r.h * PXW, BB_TEXT, 0,
+			Color(r.colour), r.text.c_str(), 1.0, E_PICTURE, 0, false);
+	}
 }
 
 // A HEAD-LOCKED picture: where it is on the original's 640 x 480 screen,
@@ -743,6 +758,12 @@ void AddHeadPicture(int id)
 	if (U.elements.empty()) return;
 	Element &e = U.elements.back();
 	e.kind = E_PICTURE; e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
+	for (const UiTextRun &r : c->TextRuns())       // the owner's font, as AddWorldPicture
+	{
+		const double sx = c->Left() + r.x + r.w * 0.5, sy = c->Top() + r.y + r.h * 0.5;
+		AddViewLocked(DIST * 0.999, (sx - 320) * ux, (240 - sy) * uy, r.w * ux, r.h * uy, BB_TEXT,
+			Color(r.colour), r.text.c_str(), 1.0);
+	}
 }
 
 // The dialogue text: the original's renderers (roth_dlgdraw) over the
@@ -1324,6 +1345,7 @@ void InterfaceHudRenderWeaponHud() { if (U.hudBound) HudRenderWeaponHud(); }
 
 void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 {
+	UiSetTextAsRuns(roth_ui_font_jfo);
 	U.core = &core;
 	U.db = &db;
 	U.dialogue.Bind(&core.Interp(), &db);

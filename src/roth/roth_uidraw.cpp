@@ -149,6 +149,30 @@ void UiCanvas::SetRect(int left, int top, int w, int h, bool hires)
 	mHires = hires;
 	mPix.assign((size_t)mW * Height(), 0);
 	mMask.assign((size_t)mW * Height(), 0);
+	mRuns.clear();
+	mVersion++;
+}
+
+static bool gTextAsRuns = false;
+void UiSetTextAsRuns(bool on) { gTextAsRuns = on; }
+bool UiTextAsRuns() { return gTextAsRuns; }
+
+void UiCanvas::DropRuns(int x, int y, int w, int h)
+{
+	for (size_t i = 0; i < mRuns.size();)
+	{
+		const UiTextRun &r = mRuns[i];
+		const bool hit = r.x < x + w && x < r.x + r.w && r.y < y + h && y < r.y + r.h;
+		if (hit) { mRuns.erase(mRuns.begin() + (long)i); mVersion++; }
+		else i++;
+	}
+}
+
+void UiCanvas::AddRun(const UiTextRun &r)
+{
+	if (r.text.empty() || r.w <= 0 || r.h <= 0) return;
+	DropRuns(r.x, r.y, r.w, r.h);
+	mRuns.push_back(r);
 	mVersion++;
 }
 
@@ -210,6 +234,8 @@ void UiCanvas::RestoreRegion(const Saved &s)
 {
 	if (!s.ok) return;
 	const long a0 = Addr(s.x, s.y);
+	if (!mRuns.empty())
+		DropRuns((int)(a0 % VPITCH - VORG - mLeft), (int)(a0 / VPITCH - VORG - (mHires ? (long)mTop * 2 : (long)mTop)), s.w, s.rows);
 	for (int r = 0; r < s.rows; r++)
 		for (int c = 0; c < s.w; c++)
 		{
@@ -319,6 +345,8 @@ void UiCanvas::FillRect(int x, int y, int w, int h, uint8_t color)
 	int rows = h;
 	if (mHires) rows += rows;
 	long a = Addr(x, y);
+	if (!mRuns.empty())
+		DropRuns((int)(a % VPITCH - VORG - mLeft), (int)(a / VPITCH - VORG - (mHires ? (long)mTop * 2 : (long)mTop)), w, rows < 1 ? 1 : rows);
 	do {
 		for (int c = 0; c < w; c++) Put(a + c, color);
 		a += VPITCH;
@@ -461,6 +489,7 @@ void UiCanvas::DrawTextToBuffer(const uint8_t *str, size_t len, long dest, uint3
 	const long D = (long)mA.font->desc;
 	auto fbyte = [&](long i) -> uint8_t { return (i >= 0 && i < (long)fb.size()) ? fb[(size_t)i] : 0; };
 	auto fword = [&](long i) -> uint16_t { return (uint16_t)(fbyte(i) | (fbyte(i + 1) << 8)); };
+	if (gTextAsRuns) { TextRuns(str, len, dest, flags); return; }
 	long pitch = VPITCH;
 	if (flags & 1) pitch += pitch;                                          // :303
 	const uint32_t maxChar = fword(D), lineStep = fword(D + 2), defAdv = fword(D + 4);
@@ -552,6 +581,83 @@ void UiCanvas::DrawTextToBuffer(const uint8_t *str, size_t len, long dest, uint3
 		}
 		pen += adv;
 	}
+}
+
+// draw_text_to_buffer's walk, the same pen arithmetic as above (text_font.c:300-367), writing
+// no pixel: each stretch of one line in one colour becomes a run (UiSetTextAsRuns).
+void UiCanvas::TextRuns(const uint8_t *str, size_t len, long dest, uint32_t flags)
+{
+	const std::vector<uint8_t> &fb = mA.font->bytes;
+	const long D = (long)mA.font->desc;
+	auto fbyte = [&](long i) -> uint8_t { return (i >= 0 && i < (long)fb.size()) ? fb[(size_t)i] : 0; };
+	auto fword = [&](long i) -> uint16_t { return (uint16_t)(fbyte(i) | (fbyte(i + 1) << 8)); };
+	long pitch = VPITCH;
+	if (flags & 1) pitch += pitch;
+	const uint32_t maxChar = fword(D), lineStep = fword(D + 2), defAdv = fword(D + 4);
+	const long newlineAdv = (long)lineStep * pitch;
+	long pen = dest + pitch + 1, lineBase = pen;
+	const int rowMul = (flags & 1) ? 2 : 1;
+	auto px = [&](long a) { return (int)(a % VPITCH - VORG - mLeft); };
+	auto py = [&](long a) { return (int)(a / VPITCH - VORG - (mHires ? (long)mTop * 2 : (long)mTop)); };
+	UiTextRun run;
+	bool open = false;
+	int x1 = 0;
+	auto flush = [&]() {
+		if (open)
+		{
+			while (!run.text.empty() && run.text.back() == ' ') run.text.pop_back();
+			run.w = x1 - run.x;
+			AddRun(run);
+		}
+		open = false;
+		run = UiTextRun();
+	};
+	auto put = [&](char ch, int top, int rowCount, long adv) {
+		if (!open)
+		{
+			if (ch == ' ') return;          // a run starts at its first glyph
+			open = true;
+			run.x = px(pen);
+			run.y = py(lineBase) - rowMul;  // the pen starts one row below the line's top (pen = dest + pitch + 1)
+			run.h = (int)lineStep * rowMul;
+			run.colour = mRamp[(top + rowCount / 2) & 31];
+		}
+		run.text.push_back(ch);
+		x1 = px(pen) + (int)adv;
+	};
+	for (size_t i = 0; i < len; i++)
+	{
+		const uint8_t c = str[i];
+		if (c == 0) break;
+		if (c == 0x0d || c == 0x0a) { flush(); pen = lineBase + newlineAdv; lineBase = pen; continue; }
+		if (c < 0x0d)
+		{
+			if (c == 1)
+			{
+				flush();
+				const uint8_t color = i + 1 < len ? str[++i] : 0;
+				for (int k = 0; k < 12; k++)
+					mRamp[k] = (flags & 8) ? color : (mA.shade ? mA.shade[(k << 8) | color] : color);
+			}
+			else if (c == 2)
+			{
+				const uint16_t adv = (uint16_t)((i + 1 < len ? str[i + 1] : 0) | ((i + 2 < len ? str[i + 2] : 0) << 8));
+				i += 2;
+				flush();
+				pen += adv;
+			}
+			continue;
+		}
+		if (c > maxChar) { if (c == ' ') put(' ', 0, 1, (long)defAdv); pen += defAdv; continue; }
+		const int16_t goff = (int16_t)fword(D + 6 + c * 2);
+		if (goff == 0) { put(' ', 0, 1, (long)defAdv); pen += defAdv; continue; }
+		const uint16_t metrics = fword(D + goff);
+		const uint8_t mlow = (uint8_t)(metrics & 0xff), mhigh = (uint8_t)(metrics >> 8);
+		const long adv = (mlow & 0x0f) + 1;
+		put((char)c, mhigh >> 4, (mhigh & 0x0f) + 1, adv);
+		pen += adv;
+	}
+	flush();
 }
 
 } // namespace roth
