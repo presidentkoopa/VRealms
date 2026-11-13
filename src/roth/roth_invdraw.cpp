@@ -61,8 +61,8 @@
 //  draw_ui_panel_count_element, menu_hud_ui.c:150-162
 //  44  tile 0xc8 at (label x - 2, 2); text {1, 0x76768} at (label x, 2) when not empty ... DrawUiPanelCountElement
 //  blit_item_icon, inventory.c:2073-2148
-//  45  header skips (flag 4: 8, no flag 2: 0x300, then 8); ALWAYS run-length (it never tests flag 1) ... BlitItemIcon
-//  46  index 0 not drawn; modes 2 (every other row), 1 (plain), 0 (doubled); colour <= 0xff00 -> blend + colour, else shade + colour >> 8 ... BlitItemIcon
+//  45  header skips (flag 4: 8, no flag 2: 0x300, then 8); ALWAYS run-length (it never tests flag 1) ... UiCanvas::BlitItemIcon (moved to roth_uidraw for the HUD)
+//  46  index 0 not drawn; modes 2 (every other row), 1 (plain), 0 (doubled); colour <= 0xff00 -> blend + colour, else shade + colour >> 8 ... UiCanvas::BlitItemIcon
 //  The primitives 47-58 are roth_uidraw's (moved there unchanged, with its own
 //  checklist, so the menus and the dialogue text share them):
 //  blit_reloc_das_image + blit_das_image_to_buffer, das_assets.c:1392-1400, 1195-1378
@@ -130,7 +130,6 @@ namespace
 {
 
 uint16_t U16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
-uint32_t U32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
 } // namespace
 
@@ -184,17 +183,8 @@ int32_t InventoryPanelPainter::EntryQty(int entry) const
 // its record's +0x0c resource of DBASE200.DAT, a dword size and the picture.
 bool InventoryPanelPainter::ItemIcon(int32_t itemId, const uint8_t **img, size_t *size) const
 {
-	if (mDb == nullptr || mIA.dbase200 == nullptr || itemId <= 0) return false;
-	const DbItem *rec = mDb->Item(itemId);
-	if (rec == nullptr || !rec->ok || rec->icon == 0) return false;
-	const uint64_t off = (uint64_t)rec->icon << 3;
-	const std::vector<uint8_t> &d = *mIA.dbase200;
-	if (off + 4 > d.size()) return false;
-	const uint32_t n = U32(d.data() + off);
-	if (n < 8 || off + 4 + n > d.size()) return false;
-	*img = d.data() + off + 4;
-	*size = n;
-	return true;
+	if (mDb == nullptr || mIA.dbase200 == nullptr) return false;
+	return ItemIconPicture(*mDb, *mIA.dbase200, itemId, img, size);
 }
 
 int InventoryPanelPainter::EntryIcon(int entry, const uint8_t **img, size_t *size) const
@@ -208,60 +198,7 @@ int InventoryPanelPainter::EntryIcon(int entry, const uint8_t **img, size_t *siz
 //
 //==========================================================================
 
-// blit_item_icon (inventory.c:2073-2148) at panel (x, y). `ecx` is the
-// original's mode word: low byte the row mode, bits 8-23 the tint.
-void InventoryPanelPainter::BlitItemIcon(const uint8_t *icon, size_t size, int x, int y, uint32_t ecx)
-{
-	if (icon == nullptr || size < 8) return;
-	const int w = U16(icon + 4), rows = U16(icon + 6);
-	const uint32_t color = ecx & 0xffff00u;
-	const int mode = (int)(ecx & 0xff);
-	const size_t p = DasPayloadAt(icon);
-	if (w <= 0 || rows <= 0 || p > size) return;
-	std::vector<uint8_t> px;
-	UiDecodeRle(icon + p, size - p, (size_t)w * rows, px);                   // :2093-2147: always the run-length decoder
-	const uint8_t *table = nullptr;
-	uint32_t base = 0;
-	size_t tableSize = 0;
-	if (color != 0)                                                         // :2121-2123
-	{
-		if (color <= 0xff00u) { table = mA.blend; base = color; tableSize = 0x10000; }
-		else { table = mA.shade; base = color >> 8; tableSize = 0x4000; }
-		if (table == nullptr) { Problem("no shade or blend table in the map's pack: tinted icons are drawn untinted"); }
-	}
-	auto ink = [&](uint8_t v) -> uint8_t {
-		if (table == nullptr) return v;
-		const size_t i = (size_t)(base & ~0xffu) + v;                      // cmap_lut, inventory.c:2038-2041
-		return i < tableSize ? table[i] : v;
-	};
-	long a = Addr(x, y);
-	const long stride = VPITCH - w;
-	if (mode == 2)                                                          // :2096-2103, 2124-2131
-	{
-		for (int r = 0; r < rows; r += 2)
-		{
-			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) Put(a, ink(v)); }
-			a += stride;
-		}
-	}
-	else if (mode == 0)                                                     // :2104-2111, 2132-2139
-	{
-		const long second = color == 0 ? w : stride + w;
-		for (int r = 0; r < rows; r++)
-		{
-			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) { Put(a, ink(v)); Put(a + second, ink(v)); } }
-			a += color == 0 ? w + stride : stride;
-		}
-	}
-	else
-	{
-		for (int r = 0; r < rows; r++)
-		{
-			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) Put(a, ink(v)); }
-			a += stride;
-		}
-	}
-}
+// blit_item_icon is UiCanvas::BlitItemIcon (roth_uidraw), shared with the HUD.
 
 //==========================================================================
 //

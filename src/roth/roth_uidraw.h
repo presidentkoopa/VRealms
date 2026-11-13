@@ -29,6 +29,8 @@
 //   draw_text_at_screen_xy        text_font.c:371-380
 //   draw_text_to_buffer           text_font.c:300-367 (and its two helpers, :193-279)
 //   measure_control_text_width    renderer.c:436-452
+//   blit_item_icon                inventory.c:2073-2148
+//   load_item_icon_resource       inventory.c:973-996
 //
 
 #include <stdint.h>
@@ -67,6 +69,11 @@ bool FindRothExeFont(const std::vector<uint8_t> &exe, RothFont &out, std::string
 bool UiDecodeRle(const uint8_t *src, size_t avail, size_t total, std::vector<uint8_t> &out);
 // Where a DAS picture's pixels start (das_assets.c:1197-1216; inventory.c:2079-2093).
 size_t DasPayloadAt(const uint8_t *img);
+
+// load_item_icon_resource (inventory.c:973-996): an item's icon in
+// DBASE200.DAT (its record's +0x0c resource: a size dword, then the picture).
+class Dbase100;
+bool ItemIconPicture(const Dbase100 &db, const std::vector<uint8_t> &dbase200, int32_t itemId, const uint8_t **img, size_t *size);
 
 // What the primitives read from outside.
 struct UiAssets
@@ -136,6 +143,11 @@ public:
 	// stops at its 0.
 	void DrawTextAtScreenXy(const uint8_t *str, size_t len, int x, int y, uint32_t flags);
 	void DrawTextToBuffer(const uint8_t *str, size_t len, long dest, uint32_t flags);
+	// blit_item_icon (inventory.c:2073-2148) at screen (x, y): `ecx` is the
+	// original's mode word, low byte the row mode (2 every other row, 1 plain,
+	// 0 doubled), bits 8-23 the tint (<= 0xff00 the blend table, else the shade
+	// tables at >> 8). Index 0 is not drawn.
+	void BlitItemIcon(const uint8_t *icon, size_t size, int x, int y, uint32_t ecx);
 	// measure_control_text_width (renderer.c:436-452).
 	int MeasureControlTextWidth(const uint8_t *s, size_t len) const;
 

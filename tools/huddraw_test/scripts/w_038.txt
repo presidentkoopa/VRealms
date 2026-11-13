@@ -1,0 +1,124 @@
+# Weapon 38: given with ammunition 48 48 48, equipped (render_weapon_hud on the equip counter, as the game loop does), then
+# pulls of the trigger (render_weapon_view per round, a reload's redraw_weapon_hud_panel, an empty weapon's
+# equip_first_usable_weapon) and recharge ticks (render_weapon_view(1) when the shown charge moves), the
+# screen dumped after each. (The weapons lane's scripts give these items, in hex.)
+env
+exe 0x71864 84
+wtable
+exe 0x7675e 1
+exe 0x75ef0 4
+exe 0x708e6 0x57
+font
+mouse 100 100
+peek 30
+deselect
+unequip
+weaponhud
+layout
+give 38
+give 48
+give 48
+give 48
+equip 38
+weaponhud
+world 227
+hud 2
+dump w38_equip
+fire
+weaponhud
+world 228
+hud 2
+dump w38_fire1
+fire
+weaponhud
+world 229
+hud 2
+dump w38_fire2
+fire
+weaponhud
+world 230
+hud 2
+dump w38_fire3
+fire
+weaponhud
+world 231
+hud 2
+dump w38_fire4
+fire
+weaponhud
+world 232
+hud 2
+dump w38_fire5
+fire
+weaponhud
+world 233
+hud 2
+dump w38_fire6
+fire
+weaponhud
+world 234
+hud 2
+dump w38_fire7
+fire
+weaponhud
+world 235
+hud 2
+dump w38_fire8
+recharge 40
+world 236
+hud 2
+dump w38_rc1
+recharge 40
+world 237
+hud 2
+dump w38_rc2
+recharge 40
+world 238
+hud 2
+dump w38_rc3
+recharge 40
+world 239
+hud 2
+dump w38_rc4
+recharge 40
+world 240
+hud 2
+dump w38_rc5
+fire
+fire
+fire
+fire
+weaponhud
+world 241
+hud 2
+dump w38_fire12
+fire
+weaponhud
+world 242
+hud 2
+dump w38_fire13
+fire
+weaponhud
+world 243
+hud 2
+dump w38_fire14
+fire
+weaponhud
+world 244
+hud 2
+dump w38_fire15
+fire
+weaponhud
+world 245
+hud 2
+dump w38_fire16
+remove 48
+weaponhud
+world 246
+hud 2
+dump w38_removed
+give 48
+weaponhud
+world 247
+hud 2
+dump w38_regiven

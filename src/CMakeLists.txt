@@ -983,6 +983,7 @@ set (PCH_SOURCES
 	roth/roth_invdraw.cpp
 	roth/roth_uidraw.cpp
 	roth/roth_menudraw.cpp
+	roth/roth_huddraw.cpp
 	roth/roth_dlgdraw.cpp
 	roth/roth_icons.cpp
 	roth/roth_interface.cpp

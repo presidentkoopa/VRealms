@@ -1,0 +1,121 @@
+# Weapon 19: given, equipped (render_weapon_hud on the equip counter, as the game loop does), then
+# pulls of the trigger (render_weapon_view per round, a reload's redraw_weapon_hud_panel, an empty weapon's
+# equip_first_usable_weapon) and recharge ticks (render_weapon_view(1) when the shown charge moves), the
+# screen dumped after each. (The weapons lane's scripts give these items, in hex.)
+env
+exe 0x71864 84
+wtable
+exe 0x7675e 1
+exe 0x75ef0 4
+exe 0x708e6 0x57
+font
+mouse 100 100
+peek 30
+deselect
+unequip
+weaponhud
+layout
+give 19
+equip 19
+weaponhud
+world 143
+hud 2
+dump w19_equip
+fire
+weaponhud
+world 144
+hud 2
+dump w19_fire1
+fire
+weaponhud
+world 145
+hud 2
+dump w19_fire2
+fire
+weaponhud
+world 146
+hud 2
+dump w19_fire3
+fire
+weaponhud
+world 147
+hud 2
+dump w19_fire4
+fire
+weaponhud
+world 148
+hud 2
+dump w19_fire5
+fire
+weaponhud
+world 149
+hud 2
+dump w19_fire6
+fire
+weaponhud
+world 150
+hud 2
+dump w19_fire7
+fire
+weaponhud
+world 151
+hud 2
+dump w19_fire8
+recharge 40
+world 152
+hud 2
+dump w19_rc1
+recharge 40
+world 153
+hud 2
+dump w19_rc2
+recharge 40
+world 154
+hud 2
+dump w19_rc3
+recharge 40
+world 155
+hud 2
+dump w19_rc4
+recharge 40
+world 156
+hud 2
+dump w19_rc5
+fire
+fire
+fire
+fire
+weaponhud
+world 157
+hud 2
+dump w19_fire12
+fire
+weaponhud
+world 158
+hud 2
+dump w19_fire13
+fire
+weaponhud
+world 159
+hud 2
+dump w19_fire14
+fire
+weaponhud
+world 160
+hud 2
+dump w19_fire15
+fire
+weaponhud
+world 161
+hud 2
+dump w19_fire16
+remove 19
+weaponhud
+world 162
+hud 2
+dump w19_removed
+give 19
+weaponhud
+world 163
+hud 2
+dump w19_regiven

@@ -197,10 +197,12 @@ void ActorWorld::TriggerFire(int32_t aimX, int32_t aimY)
 				if ((uint32_t)q < (uint32_t)step) break;
 				n++;
 				SetQty((uint16_t)(q - step));
+				h.HudWeaponView(0);                  // WC:812
 			}
 			w.shotScale = n;
 		}
 		w.item = (int16_t)Qty();                  // WC:817-822
+		h.HudWeaponView(0);                       // WC:820
 		e = 0; w.active = 0;
 		goto commit;
 	}
@@ -234,6 +236,7 @@ reload:                                                      // WC:843-856
 		w.item -= w.ammoCap;
 		w.pendingDef = 0;
 		SetQty((uint16_t)(Qty() - (uint16_t)w.ammoCap));
+		h.HudWeaponPanel();                       // WC:874
 		goto commit;
 	}
 	w.pendingDef = 0;                                        // WC:847-853: the third commit's shot
@@ -398,7 +401,10 @@ void ActorWorld::RechargeFrame(int fts)
 		cur += step;
 		mHost->SetSlotQuantity(r.slot, (uint16_t)cur);
 		weaponEvents |= WE_RECHARGE;
-		if (r.slot == w.heldSlot) w.item = cur;
+		if (r.slot != w.heldSlot) continue;                  // WC:963
+		w.item = cur;                                        // WC:964
+		if (r.full == 1 || ((uint32_t)cur >> 8) != target)   // WC:966-971
+			mHost->HudWeaponView(1);                         // WC:979
 	}
 }
 

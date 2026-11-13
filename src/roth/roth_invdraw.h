@@ -154,8 +154,6 @@ private:
 	void DrawInventoryEntryLabel(int entry);
 	void DrawUiPanelCountElement();
 	void DrawItemIconInSlot(const uint8_t *icon, size_t size, int slot, uint32_t color);
-	// ---- the primitive of its own (the rest are UiCanvas's) ----------------------
-	void BlitItemIcon(const uint8_t *icon, size_t size, int x, int y, uint32_t ecx);
 	// ---- what the rules hold ---------------------------------------------------
 	int EntryIcon(int entry, const uint8_t **img, size_t *size) const;  // 0 none
 	bool ItemIcon(int32_t itemId, const uint8_t **img, size_t *size) const;

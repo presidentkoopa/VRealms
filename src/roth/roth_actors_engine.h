@@ -52,5 +52,16 @@ void ActorsSetWeaponAmmo(int count);
 void ActorsUnequipWeapon(int adamItem);
 // rebuild_weapon_inventory_list (WC:488), from the inventory as it stands.
 void ActorsRebuildWeaponList();
+// The weapon globals the HUD reads (roth_huddraw's HudWeapon): the held
+// item's quantity 0x83e70, the clips 0x83e6c, the cap 0x83e74, the panel
+// number (attrs + 0x48), and the equip counter 0x810c4.
+void ActorsHudWeapon(int32_t &item, int32_t &ammo, int32_t &ammoCap, int32_t &panel, int &equips);
+// render_weapon_hud's write-back of a panel number above 0xf (WC:1015-1016).
+void ActorsSetHudPanel(int32_t panel);
+// [0x811e4]: the active weapon's ammunition item, as the 32-bit global the
+// inventory compares a sign-extended id with (inventory.c:263-264, 438-439).
+int32_t ActorsActiveAmmoId();
+// g_active_weapon_ammo (0x83e6c) += delta (inventory.c:266, 441).
+void ActorsAddWeaponAmmo(int delta);
 
 } // namespace roth

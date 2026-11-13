@@ -278,6 +278,13 @@ public:
 	virtual void ConsumeHeldWeapon() {}
 	// play_sound_effect(id, 0xfcff) (WC:885).
 	virtual void WeaponSound(int id) { (void)id; }
+	// The weapon panel's redraws, where the original's weapon logic calls them
+	// (the HUD draws them, roth_huddraw): render_weapon_view(arg) -- 0 for
+	// each round a pull spends (WC:812, 820), 1 for a recharge step that
+	// changed the shown charge (WC:979) -- and redraw_weapon_hud_panel on a
+	// reload (WC:874).
+	virtual void HudWeaponView(int arg) { (void)arg; }
+	virtual void HudWeaponPanel() {}
 	// The frame count of a DBASE200 picture (load_dbase200_sprite_cached,
 	// das_assets.c:489, with the loader's frame-count repair), 0 if none.
 	virtual int WeaponFrames(int32_t sprite) { (void)sprite; return 0; }

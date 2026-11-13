@@ -1,0 +1,153 @@
+# The corner peek (draw_character_portrait_corner, run_gameplay_frame's timer): the pointer moved into
+# the top left corner, the box growing (timer < 10), Adam's item fading in through the shade tables
+# (10..24), settled (25), the pointer leaving and the timer running down; the shadow blends the world.
+env
+exe 0x71864 84
+wtable
+exe 0x7675e 1
+exe 0x75ef0 4
+exe 0x708e6 0x57
+font
+mouse 100 100
+peek 30
+unequip
+weaponhud
+layout
+deselect
+mouse 5 5
+peek 2
+world 555
+hud 2
+dump peek_in0
+peek 2
+world 556
+hud 2
+dump peek_in1
+peek 2
+world 557
+hud 2
+dump peek_in2
+peek 2
+world 558
+hud 2
+dump peek_in3
+peek 2
+world 559
+hud 2
+dump peek_in4
+peek 2
+world 560
+hud 2
+dump peek_in5
+peek 2
+world 561
+hud 2
+dump peek_in6
+peek 2
+world 562
+hud 2
+dump peek_in7
+peek 2
+world 563
+hud 2
+dump peek_in8
+peek 2
+world 564
+hud 2
+dump peek_in9
+peek 2
+world 565
+hud 2
+dump peek_in10
+peek 2
+world 566
+hud 2
+dump peek_in11
+peek 2
+world 567
+hud 2
+dump peek_in12
+peek 2
+world 568
+hud 2
+dump peek_in13
+peek 1
+world 569
+hud 2
+dump peek_one0
+peek 1
+world 570
+hud 2
+dump peek_one1
+peek 1
+world 571
+hud 2
+dump peek_one2
+peek 1
+world 572
+hud 2
+dump peek_one3
+mouse 31 31
+peek 3
+world 573
+hud 2
+dump peek_edge
+mouse 32 5
+peek 3
+world 574
+hud 2
+dump peek_out0
+peek 3
+world 575
+hud 2
+dump peek_out1
+peek 3
+world 576
+hud 2
+dump peek_out2
+peek 3
+world 577
+hud 2
+dump peek_out3
+peek 3
+world 578
+hud 2
+dump peek_out4
+peek 3
+world 579
+hud 2
+dump peek_out5
+peek 3
+world 580
+hud 2
+dump peek_out6
+peek 3
+world 581
+hud 2
+dump peek_out7
+peek 3
+world 582
+hud 2
+dump peek_out8
+peek 3
+world 583
+hud 2
+dump peek_out9
+mouse 0 0
+peek 30
+world 584
+hud 2
+dump peek_full
+damage 700
+world 585
+hud 2
+dump peek_with_hit
+give 9
+give 51
+give 51
+equip 9
+weaponhud
+select 51
+world 586
+hud 2
+dump peek_all

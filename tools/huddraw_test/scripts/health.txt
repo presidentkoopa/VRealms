@@ -1,0 +1,59 @@
+# The health panel: full, after hits (the bar redrawn by render_player_health_bar on the flag the hit
+# sets), below half (the low bar 0x298), the one-pixel floor, empty, a change with no flag (the bar
+# stays as it was: the original only redraws on the flag), refresh_hud_layout's own drawing (the fill
+# only), another maximum. The corner peek is put away first (pointer away from the corner) and no
+# weapon or right-hand item shows. With the executable's tables and the font.
+env
+exe 0x71864 84
+wtable
+exe 0x7675e 1
+exe 0x75ef0 4
+exe 0x708e6 0x57
+font
+mouse 100 100
+peek 30
+deselect
+unequip
+weaponhud
+layout
+world 1
+hud 2
+dump h_full
+damage 300
+world 2
+hud 2
+dump h_hit1
+damage 900
+world 3
+hud 2
+dump h_low
+damage 840
+world 4
+hud 2
+dump h_one
+damage 100
+world 5
+hud 2
+dump h_zero
+health 2048
+world 6
+hud 2
+dump h_stale
+layout
+world 7
+hud 2
+dump h_relayout
+damage 1
+world 8
+hud 2
+dump h_hit_after_layout
+maxhealth 3000
+health 1700
+layout
+world 9
+hud 2
+dump h_max3000
+damage 5
+world 10
+hud 2
+dump h_max3000_hit

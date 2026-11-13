@@ -1,0 +1,121 @@
+# Weapon 221: given, equipped (render_weapon_hud on the equip counter, as the game loop does), then
+# pulls of the trigger (render_weapon_view per round, a reload's redraw_weapon_hud_panel, an empty weapon's
+# equip_first_usable_weapon) and recharge ticks (render_weapon_view(1) when the shown charge moves), the
+# screen dumped after each. (The weapons lane's scripts give these items, in hex.)
+env
+exe 0x71864 84
+wtable
+exe 0x7675e 1
+exe 0x75ef0 4
+exe 0x708e6 0x57
+font
+mouse 100 100
+peek 30
+deselect
+unequip
+weaponhud
+layout
+give 221
+equip 221
+weaponhud
+world 353
+hud 2
+dump w221_equip
+fire
+weaponhud
+world 354
+hud 2
+dump w221_fire1
+fire
+weaponhud
+world 355
+hud 2
+dump w221_fire2
+fire
+weaponhud
+world 356
+hud 2
+dump w221_fire3
+fire
+weaponhud
+world 357
+hud 2
+dump w221_fire4
+fire
+weaponhud
+world 358
+hud 2
+dump w221_fire5
+fire
+weaponhud
+world 359
+hud 2
+dump w221_fire6
+fire
+weaponhud
+world 360
+hud 2
+dump w221_fire7
+fire
+weaponhud
+world 361
+hud 2
+dump w221_fire8
+recharge 40
+world 362
+hud 2
+dump w221_rc1
+recharge 40
+world 363
+hud 2
+dump w221_rc2
+recharge 40
+world 364
+hud 2
+dump w221_rc3
+recharge 40
+world 365
+hud 2
+dump w221_rc4
+recharge 40
+world 366
+hud 2
+dump w221_rc5
+fire
+fire
+fire
+fire
+weaponhud
+world 367
+hud 2
+dump w221_fire12
+fire
+weaponhud
+world 368
+hud 2
+dump w221_fire13
+fire
+weaponhud
+world 369
+hud 2
+dump w221_fire14
+fire
+weaponhud
+world 370
+hud 2
+dump w221_fire15
+fire
+weaponhud
+world 371
+hud 2
+dump w221_fire16
+remove 221
+weaponhud
+world 372
+hud 2
+dump w221_removed
+give 221
+weaponhud
+world 373
+hud 2
+dump w221_regiven

@@ -45,12 +45,18 @@
 //  19  outline: index 1 on 4 neighbours (6 in hi-res) unless flag 4 (text_font.c:193-245) .... DrawTextToBuffer
 //  20  glyph pixels: ramp[top + row]; hi-res also the row below (text_font.c:252-279) ....... DrawTextToBuffer
 //  21  the ramp is a static: a prefix-less string inherits the last colour ........... per canvas (mRamp)
+//  blit_item_icon, inventory.c:2073-2148 (moved from roth_invdraw, its 45-46)
+//  23  NEW here: header skips; ALWAYS run-length; index 0 not drawn; modes 2 / 1 / 0;
+//      colour <= 0xff00 -> blend + colour, else shade + colour >> 8 ................ BlitItemIcon
+//  load_item_icon_resource, inventory.c:973-996 (moved from roth_invdraw)
+//  24  NEW here: the record's +0x0c resource of DBASE200: a size dword, the picture ...... ItemIconPicture
 //  measure_control_text_width, renderer.c:436-452
 //  22  sum of advances of bytes >= 0x20; 1 skips 1, 2 skips 2 ............................... MeasureControlTextWidth
 //
 
 #include "roth_uidraw.h"
 #include "roth_dialogue.h"
+#include "roth_dbase100.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -347,6 +353,79 @@ void UiCanvas::ShadeRemapBlit(int x, int y, int w, int rows, uint8_t row)
 		} while (--c > 0);
 		a += VPITCH;
 	} while (--h > 0);
+}
+
+// blit_item_icon (inventory.c:2073-2148) at screen (x, y). Moved here from
+// roth_invdraw.cpp (its checklist items 45-46) for the HUD's corner icon. `ecx` is the
+// original's mode word: low byte the row mode, bits 8-23 the tint.
+void UiCanvas::BlitItemIcon(const uint8_t *icon, size_t size, int x, int y, uint32_t ecx)
+{
+	if (icon == nullptr || size < 8) return;
+	const int w = U16(icon + 4), rows = U16(icon + 6);
+	const uint32_t color = ecx & 0xffff00u;
+	const int mode = (int)(ecx & 0xff);
+	const size_t p = DasPayloadAt(icon);
+	if (w <= 0 || rows <= 0 || p > size) return;
+	std::vector<uint8_t> px;
+	UiDecodeRle(icon + p, size - p, (size_t)w * rows, px);                   // :2093-2147: always the run-length decoder
+	const uint8_t *table = nullptr;
+	uint32_t base = 0;
+	size_t tableSize = 0;
+	if (color != 0)                                                         // :2121-2123
+	{
+		if (color <= 0xff00u) { table = mA.blend; base = color; tableSize = 0x10000; }
+		else { table = mA.shade; base = color >> 8; tableSize = 0x4000; }
+		if (table == nullptr) { Problem("no shade or blend table in the map's pack: tinted icons are drawn untinted"); }
+	}
+	auto ink = [&](uint8_t v) -> uint8_t {
+		if (table == nullptr) return v;
+		const size_t i = (size_t)(base & ~0xffu) + v;                      // cmap_lut, inventory.c:2038-2041
+		return i < tableSize ? table[i] : v;
+	};
+	long a = Addr(x, y);
+	const long stride = VPITCH - w;
+	if (mode == 2)                                                          // :2096-2103, 2124-2131
+	{
+		for (int r = 0; r < rows; r += 2)
+		{
+			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) Put(a, ink(v)); }
+			a += stride;
+		}
+	}
+	else if (mode == 0)                                                     // :2104-2111, 2132-2139
+	{
+		const long second = color == 0 ? w : stride + w;
+		for (int r = 0; r < rows; r++)
+		{
+			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) { Put(a, ink(v)); Put(a + second, ink(v)); } }
+			a += color == 0 ? w + stride : stride;
+		}
+	}
+	else
+	{
+		for (int r = 0; r < rows; r++)
+		{
+			for (int c = 0; c < w; c++, a++) { const uint8_t v = px[(size_t)r * w + c]; if (v) Put(a, ink(v)); }
+			a += stride;
+		}
+	}
+}
+
+// load_item_icon_resource (inventory.c:973-996): an item's icon, its
+// record's +0x0c resource of DBASE200.DAT, a dword size and the picture.
+// Moved here from roth_invdraw.cpp (InventoryPanelPainter::ItemIcon).
+bool ItemIconPicture(const Dbase100 &db, const std::vector<uint8_t> &d, int32_t itemId, const uint8_t **img, size_t *size)
+{
+	if (itemId <= 0) return false;
+	const DbItem *rec = db.Item(itemId);
+	if (rec == nullptr || !rec->ok || rec->icon == 0) return false;
+	const uint64_t off = (uint64_t)rec->icon << 3;
+	if (off + 4 > d.size()) return false;
+	const uint32_t n = U32(d.data() + off);
+	if (n < 8 || off + 4 + n > d.size()) return false;
+	*img = d.data() + off + 4;
+	*size = n;
+	return true;
 }
 
 //==========================================================================

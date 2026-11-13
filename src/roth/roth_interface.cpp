@@ -18,6 +18,8 @@
 #include "roth_menudraw.h"
 #include "roth_dlgdraw.h"
 #include "roth_uidraw.h"
+#include "roth_huddraw.h"
+#include "roth_runtime.h"
 #include "roth_icons.h"
 #include "roth_install.h"
 #include "roth_texture.h"
@@ -27,6 +29,7 @@
 #include "roth_raw.h"
 #include "roth_menus.h"
 
+#include <algorithm>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -105,6 +108,10 @@ public:
 	void RebuildWeaponList() override { ActorsRebuildWeaponList(); }
 	void ResetWeaponHud() override { notBuilt["weapon HUD"]++; }
 	void RightHandChanged(int slot) override;
+	// The HUD's (inventory.c:263-267, 438-442, 486, 1411).
+	bool IsActiveAmmo(int32_t itemId) override { return itemId == ActorsActiveAmmoId(); }
+	void AmmoDisplayChanged(int delta) override;
+	void HeldItemSlideReset() override;
 	void RefreshPanel() override;
 	void ClearTabCursors() override;
 	bool PanelCloseRequested() override;
@@ -142,7 +149,7 @@ struct Element
 
 // The pictures drawn as the original draws them, each through its own pair of
 // textures (see UploadPicture).
-enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_COUNT };
+enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_HUDTOP, PIC_HUDHELD, PIC_COUNT };
 
 struct Fly
 {
@@ -166,6 +173,19 @@ struct Ui
 	// drawn as the original draws them.
 	DialogueTextPainter choicePainter, linePainter, tmsgPainter;
 	MessageBoxPainter boxes[2];                     // [0] the box on top, [1] the one under it when it stays on screen
+	// The HUD, drawn as the original draws it (roth_huddraw): its top strip
+	// and the held item's corner, head-locked where the original's screen has them.
+	HudPainter hud;
+	bool hudBound = false;
+	FLevelLocals *hudLevel = nullptr;
+	int32_t hudLastHealth = 0;
+	int hudLastEquips = 0;
+	bool hudInvOpen = false;
+	// Over the rendered view, a shadow pixel of shade row r is black at
+	// alpha hudBehind[r], measured from the map's own shade table and palette
+	// (see InterfaceSetPalette); a translucent pixel is its colour at 128
+	// (the blend table is a 50/50 mix, measured likewise).
+	uint8_t hudBehind[32] = {};
 	RealmsMenus::Box boxOf[2] = { RealmsMenus::NONE, RealmsMenus::NONE };
 	uint32_t menuSerial = 0xffffffffu;              // RealmsMenus::ShowSerial() the box pictures were composed for
 	std::vector<uint8_t> iconsAll;                  // DATA\ICONS.ALL
@@ -230,9 +250,19 @@ void RuntimeInvSink::UnequipWeapon()
 	ActorsUnequipWeapon(U.core != nullptr ? (int)U.core->Items().AdamItemId() : 0);
 }
 
+void RuntimeInvSink::AmmoDisplayChanged(int delta)
+{
+	U.hud.g_weapon_panel_dirty = 1;                          // [0x83e80] = 1
+	ActorsAddWeaponAmmo(delta);                             // g_active_weapon_ammo += delta
+}
+
+void RuntimeInvSink::HeldItemSlideReset() { U.hud.g_held_slide = 0; }
+
 void RuntimeInvSink::RightHandChanged(int slot)
 {
 	if (U.core == nullptr || U.db == nullptr) return;
+	// update_selected_item_icon (inventory.c:1461-1493): the HUD's held icon.
+	if (U.hudBound) U.hud.UpdateSelectedItemIcon(slot < 0 ? 0 : (int16_t)U.core->Items().Slot(slot).id);
 	// The original refreshes the hand icon every frame (update_selected_item_icon,
 	// inventory.c:1676); the log line is only for a change.
 	static int32_t lastLogged = INT32_MIN;
@@ -594,7 +624,11 @@ class PictureTexture : public FTexture
 	TArray<uint8_t> Image;
 public:
 	PictureTexture() { Masked = true; bTranslucent = 1; }
-	void SetPicture(const UiCanvas &c, const uint8_t *pal)
+	// `behind`: null, a pixel not drawn by the routines is transparent; else
+	// (the HUD) a pixel blended over the view is drawn as that blend over the
+	// engine's view: mask 2 (blend table, the picture's index the source) its
+	// colour at alpha 128, mask 0x20 + r (shade row r) black at alpha behind[r].
+	void SetPicture(const UiCanvas &c, const uint8_t *pal, const uint8_t *behind = nullptr)
 	{
 		const int w = c.Width() > 0 ? c.Width() : 1, h = c.Height() > 0 ? c.Height() : 1;
 		FTexture::SetSize(w, h);
@@ -603,8 +637,18 @@ public:
 		const std::vector<uint8_t> &px = c.Pixels(), &mk = c.Mask();
 		for (size_t i = 0; i < px.size() && i < mk.size() && i < (size_t)w * h; i++)
 		{
-			if (mk[i] != 1) continue;
 			uint8_t *d = Image.Data() + i * 4;
+			if (behind != nullptr && mk[i] == 2)
+			{
+				d[0] = pal[px[i] * 3 + 2]; d[1] = pal[px[i] * 3 + 1]; d[2] = pal[px[i] * 3 + 0]; d[3] = 128;
+				continue;
+			}
+			if (behind != nullptr && mk[i] >= 0x20)
+			{
+				d[0] = d[1] = d[2] = 0; d[3] = behind[(mk[i] - 0x20) & 31];
+				continue;
+			}
+			if (mk[i] != 1) continue;
 			d[0] = pal[px[i] * 3 + 2];
 			d[1] = pal[px[i] * 3 + 1];
 			d[2] = pal[px[i] * 3 + 0];
@@ -630,6 +674,8 @@ const UiCanvas *CanvasOf(int id)
 	case PIC_TMSG: return &U.tmsgPainter;
 	case PIC_BOX0: return &U.boxes[0];
 	case PIC_BOX1: return &U.boxes[1];
+	case PIC_HUDTOP: return &U.hud.TopStrip();
+	case PIC_HUDHELD: return &U.hud.HeldIcon();
 	default: return nullptr;
 	}
 }
@@ -665,7 +711,8 @@ FTextureID UploadPicture(int id)
 		}
 		p.active ^= 1;
 		FGameTexture *g = p.tex[p.active];
-		static_cast<PictureTexture *>(g->GetTexture())->SetPicture(*c, U.panelPal);
+		const bool hud = id == PIC_HUDTOP || id == PIC_HUDHELD;
+		static_cast<PictureTexture *>(g->GetTexture())->SetPicture(*c, U.panelPal, hud ? U.hudBehind : nullptr);
 		g->SetSize(c->Width() > 0 ? c->Width() : 1, c->Height() > 0 ? c->Height() : 1);
 		g->CleanHardwareData();
 		p.shown = c->Version();
@@ -979,6 +1026,84 @@ void BuildMenu()
 	if (U.boxOf[0] != RealmsMenus::NONE) AddWorldPicture(PIC_BOX0, 0, 0, 3.5, E_MENUBOX, true);
 }
 
+// The HUD's two pictures, head-locked where the original's screen has them
+// (the same screen model as the subtitle, AddHeadPicture): the top strip (the
+// health panel, the weapon panel, the corner peek) and the bottom right corner
+// (the selected item's icon). Shown once a level has drawn them; under the
+// inventory, a dialogue or a menu they keep what the last game frame drew.
+void BuildHud()
+{
+	if (!U.hudBound || U.hudLevel == nullptr) return;
+	AddHeadPicture(PIC_HUDTOP);
+	AddHeadPicture(PIC_HUDHELD);
+}
+
+HudWeapon HudWeaponNow()
+{
+	HudWeapon w;
+	int equips = 0;
+	ActorsHudWeapon(w.item, w.ammo, w.ammoCap, w.panel, equips);
+	return w;
+}
+
+// render_weapon_hud(1, &attrs), its write-back and its tail (WC:994-1058).
+void HudRenderWeaponHud()
+{
+	const HudWeapon w = HudWeaponNow();
+	const int32_t p = U.hud.RenderWeaponHud(w);
+	if (p != w.panel) ActorsSetHudPanel(p);
+	if (p != 0) ActorsRebuildWeaponList();                  // WC:1057
+}
+
+// The HUD's part of the original's frame, once a tic (two of its 70 Hz ticks).
+void TickHud(FLevelLocals *level)
+{
+	if (!U.hudBound) return;
+	const int32_t hp = PlayerHealth(), maxhp = PlayerMaxHealth();
+	int32_t item = 0, ammo = 0, cap = 0, panel = 0;
+	int equips = 0;
+	ActorsHudWeapon(item, ammo, cap, panel, equips);
+	if (U.hudLevel != level)
+	{
+		// The game's start or a load (game_core.c:838-843): the health bar's
+		// flag set, repaint_hud_and_present's refresh_hud_layout, the held
+		// icon enabled and rebuilt.
+		U.hudLevel = level;
+		U.hud.g_health_bar_dirty = 1;
+		U.hud.RefreshHudLayout(hp, maxhp);
+		U.hud.g_held_icon_enabled = 1;
+		const int r = U.core != nullptr ? U.core->Items().RightHand() : -1;
+		U.hud.UpdateSelectedItemIcon(r < 0 ? 0 : (int16_t)U.core->Items().Slot(r).id);
+		U.hudLastHealth = hp;
+		U.hudLastEquips = equips - 1;                       // the weapon panel drawn on the first frame
+	}
+	// Every write of the health raises 0x83e7c (WC:32, R:9820, R:10015) but
+	// DBASE100 op 0x26's zero (dbase100.c:904), which goes to death.
+	if (hp != U.hudLastHealth) { U.hudLastHealth = hp; if (hp != 0) U.hud.g_health_bar_dirty = 1; }
+	// The inventory closing returns to the game through repaint_hud_and_present
+	// (menu_hud_ui.c:468-478).
+	const bool invOpen = U.screen.IsOpen();
+	if (U.hudInvOpen && !invOpen) U.hud.RefreshHudLayout(hp, maxhp);
+	U.hudInvOpen = invOpen;
+	// gameplay_frame_step runs in the game's own mode only (game_core.c:486-490,
+	// 870-878): not under the inventory, a dialogue or a menu, whose screens
+	// keep the HUD the last frame drew.
+	const bool gameplay = !invOpen && !(U.menus != nullptr && U.menus->IsOpen()) && U.dialogue.View().kind == DialogueView::NONE;
+	if (!gameplay) return;
+	if (equips != U.hudLastEquips) { U.hudLastEquips = equips; HudRenderWeaponHud(); }   // game_core.c:873-876
+	// run_gameplay_frame's corner timer: the original's pointer in the top
+	// left 0x20 x 0x20 of its screen. This engine has no pointer on the view
+	// in play (the hands and the view aim), so the peek is never asked for.
+	U.hud.CornerPeekTimer(false, 2);
+	// tick_weapon_hud_ammo_anim already ran in ActorsTick (ActorWorld::RechargeFrame).
+	U.hud.DrawFrame(2, hp, maxhp, [] { return HudWeaponNow(); }, U.core != nullptr ? (int32_t)U.core->Items().AdamItemId() : 0);
+	for (const std::string &pr : U.hud.Problems())
+	{
+		static std::vector<std::string> said;
+		if (std::find(said.begin(), said.end(), pr) == said.end()) { said.push_back(pr); Printf("[roth_hud] %s\n", pr.c_str()); }
+	}
+}
+
 void Rebuild(player_t *player)
 {
 	const std::string sig = Signature();
@@ -989,11 +1114,12 @@ void Rebuild(player_t *player)
 	else if (!U.anchored) Anchor(player);
 	ClearBillboards();
 	U.signature = sig;
-	if (menuUp) { BuildMenu(); return; }        // modal: nothing else is shown or clicked under it
+	if (menuUp) { BuildMenu(); BuildHud(); return; }   // modal: nothing else is clicked under it; the HUD the last frame drew stays (the box draws over the original's frozen frame)
 	BuildDialogue();
 	BuildTimedMessage();
 	BuildInventory();
 	BuildPopup();
+	BuildHud();
 }
 
 //==========================================================================
@@ -1220,6 +1346,10 @@ void RuntimeInvSink::PickupFlyStarted(int32_t x, int32_t y, int32_t z, uint16_t 
 //
 //==========================================================================
 
+void InterfaceHudWeaponView(int arg) { if (U.hudBound) U.hud.RenderWeaponView(arg, HudWeaponNow()); }
+void InterfaceHudWeaponPanel() { if (U.hudBound) U.hud.RedrawWeaponHudPanel(HudWeaponNow()); }
+void InterfaceHudRenderWeaponHud() { if (U.hudBound) HudRenderWeaponHud(); }
+
 void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 {
 	U.core = &core;
@@ -1262,6 +1392,15 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 	U.painter.Bind(&U.screen, &core, &db, pa, false);       // the retail ROTH.INI's VideoMode 8: no line doubling
 	Printf("[roth_ui] inventory panel: ICONS.ALL %s, font %s\n", U.iconsAll.empty() ? "MISSING" : "ok",
 		U.font.ok() ? "ok" : exeErr.c_str());
+	{
+		HudAssets ha;
+		ha.ui = U.painter.Assets();
+		ha.dbase200 = &U.dbase200;
+		ha.db = &db;
+		U.hud.Bind(ha);
+		U.hudBound = true;
+		U.hudLevel = nullptr;
+	}
 	U.dialogue.speechAvailable = SoundSpeechAvailable();          // audio.c:1210
 	U.dialogue.screenPitch = 640;           // the retail ROTH.INI's VideoMode 8
 	U.attached = true;
@@ -1325,6 +1464,24 @@ void InterfaceSetPalette(const TextureSet &art)
 		U.shade.assign(pk->ShadeTables(), pk->ShadeTables() + 0x4000);
 		U.blend.assign(pk->BlendTable(), pk->BlendTable() + 0x10000);
 		U.painter.SetPackTables(U.shade.data(), U.blend.data());
+		U.hud.SetPackTables(U.shade.data(), U.blend.data());
+		// What a shade row does to the view, in RGB, for the HUD's shadow over
+		// the engine's view: the brightness each row keeps, averaged over the
+		// palette's colours (on the retail packs a row keeps a fixed fraction,
+		// within 4 levels a channel; the blend table is a 50/50 mix, within 9).
+		for (int r = 0; r < 32; r++)
+		{
+			double sum = 0.0; int n = 0;
+			for (int d = 1; d < 256; d++)
+			{
+				const Colour &D = (*pal)[(size_t)d], &B = (*pal)[(size_t)U.shade[((size_t)r << 8) | (size_t)d]];
+				const double ld = (double)D.r + D.g + D.b, lb = (double)B.r + B.g + B.b;
+				if (ld > 30.0) { sum += lb / ld; n++; }
+			}
+			const double keep = n > 0 ? sum / n : 1.0;
+			const double a = (1.0 - (keep > 1.0 ? 1.0 : keep)) * 255.0 + 0.5;
+			U.hudBehind[r] = (uint8_t)(a < 0 ? 0 : a > 255 ? 255 : a);
+		}
 	}
 }
 
@@ -1373,6 +1530,7 @@ void InterfaceTick(FLevelLocals *level)
 	TickFly(player);
 	UpdateHover(player);
 	TickMenuPictures();
+	TickHud(level);
 	Rebuild(player);
 	UpdatePictureBillboards();
 }

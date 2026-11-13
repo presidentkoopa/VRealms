@@ -156,6 +156,9 @@ public:
 		ActorsUnequipWeapon((int)inv->AdamItemId());
 	}
 	void WeaponSound(int id) override { SoundPlayEffect((uint32_t)id, 0xfcff); }   // WC:885
+	// The weapon panel's redraws (WC:812, 820, 874, 979): the HUD's.
+	void HudWeaponView(int arg) override { InterfaceHudWeaponView(arg); }
+	void HudWeaponPanel() override { InterfaceHudWeaponPanel(); }
 	int WeaponFrames(int32_t sprite) override
 	{
 		uint32_t size = 0;
@@ -630,6 +633,20 @@ void ActorsUnequipWeapon(int adamItem)
 	Printf("Realms: weapon put away (Adam's item %d, %d action(s))\n", adamItem, g_actors.world.weapon.slots);
 }
 
+void ActorsHudWeapon(int32_t &item, int32_t &ammo, int32_t &ammoCap, int32_t &panel, int &equips)
+{
+	const ActorWorld::PlayerWeapon &w = g_actors.world.weapon;
+	item = w.item;
+	ammo = w.ammo;
+	ammoCap = w.ammoCap;
+	panel = w.actions[0].D(0x48);
+	equips = w.equips;
+}
+
+void ActorsSetHudPanel(int32_t panel) { g_actors.world.weapon.actions[0].SetD(0x48, panel); }
+int32_t ActorsActiveAmmoId() { return g_actors.world.weapon.actions[0].D(0x30); }
+void ActorsAddWeaponAmmo(int delta) { g_actors.world.weapon.ammo += delta; }
+
 void ActorsRebuildWeaponList()
 {
 	Inventory *inv = InterfaceInventory();
@@ -651,13 +668,14 @@ void EngineHost::EquipFirstUsableWeapon()
 	auto count = [&](int16_t id) { return inv->Query(TheDbase100(), (uint16_t)id, 0, nullptr); };
 	int id = 0;
 	const int slot = world->FindUsableWeapon(carried, count, id);
-	if (slot < 0) { inv->SetLeftHand(-1); ActorsUnequipWeapon((int)inv->AdamItemId()); return; }   // reset_weapon_hud
+	if (slot < 0) { inv->SetLeftHand(-1); ActorsUnequipWeapon((int)inv->AdamItemId()); InterfaceHudRenderWeaponHud(); return; }   // reset_weapon_hud (WC:933-935)
 	if (slot == world->weapon.heldSlot) return;
 	if (slot == inv->RightHand()) inv->SetRightHand(-1, InterfaceInventorySink());
 	world->ResetWeaponFireTiming();
 	inv->SetLeftHand(slot);                                  // 0x81038 = the slot (WC:1427)
 	const int ammo = ActorsEquipWeapon(slot, id);
 	if (ammo != 0) ActorsSetWeaponAmmo(inv->Query(TheDbase100(), (uint16_t)ammo, 0, InterfaceInventorySink()));
+	InterfaceHudRenderWeaponHud();                           // WC:1429
 }
 
 void ActorsDrainConsole();

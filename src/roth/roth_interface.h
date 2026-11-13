@@ -56,6 +56,13 @@ int32_t InterfaceInspectPopupActive();
 void InterfaceArmPanelExit();
 void InterfaceRequestPanelClose();
 
+// The HUD (roth_huddraw): the weapon panel's redraws where the original's
+// weapon logic calls them -- render_weapon_view(arg) (WC:812, 820, 979),
+// redraw_weapon_hud_panel (WC:874), render_weapon_hud (WC:935, 1429).
+void InterfaceHudWeaponView(int arg);
+void InterfaceHudWeaponPanel();
+void InterfaceHudRenderWeaponHud();
+
 // The map's pack palette: what the text colour bytes and the icons index.
 // From the loader, right after it opens the pack (rothmap.cpp).
 void InterfaceSetPalette(const TextureSet &art);
