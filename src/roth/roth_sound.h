@@ -36,6 +36,8 @@ void SoundEndLevel();
 // (play_nearby_sfx_emitters), update_active_sounds, the door followers, and
 // the queued console commands.
 void SoundTick(FLevelLocals *level);
+// The same while the inventory screen pauses the world: only the sounds the panel starts and the speech.
+void SoundPauseTick(FLevelLocals *level);
 
 // ---- the play entry points -----------------------------------------------
 // `id` is a sample ROW, as every original caller passes it (stored id - 1).

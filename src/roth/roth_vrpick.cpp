@@ -51,12 +51,24 @@
 // type 3 within the use range. Where the original shows no cursor, the hand
 // shows no marker.
 //
-// NOTHING HERE SUPPRESSES OR EMITS A KEY. The trigger and the grip keep their
-// bindings (the shared doomxr.ini: the main trigger is +attack, the main grip
-// the shift layer); the picker reads the same analogue values the hands' poses
-// read (vr_handpose.cpp). So on a hand that holds no weapon a pull still sends
-// its key as well (the main trigger: +attack, with Adam's fists) -- the owner's
-// to decide; this file only adds the examine.
+// THE ATTACK (owner, 2026-11-13: "we will probably use offhand for a lot of
+// environmental interaction, but we need to design with left and right hand
+// support in mind"). The trigger examines on EITHER hand and never sends attack
+// unless that hand holds a drawn weapon. The bindings stay (the shared
+// doomxr.ini: the main trigger is +attack); with the hands on (a headset, or
+// roth_vrpicktest), VRPickTick holds the fire button back -- player->ButtonMask
+// for BT_ATTACK and ActorsSetFireButtonAllowed(false) for the ROTH weapon tick --
+// while the main hand holds no weapon, so examining never swings Adam's fists. A
+// weapon hand's trigger keeps firing. A grip on NOTHING (no usable target in
+// reach or along the finger) is the original's secondary click on that cursor
+// type (roth_handclick.h, ported from run_gameplay_frame, E/game_core.c:651-731,
+// differential-tested in tools/handclick_test): an attack target attacks; open
+// space attacks only while the primary (the trigger) has been held 0x0c frame
+// ticks, otherwise nothing. The attack goes through ActorsRequestFire, the same
+// TriggerFire the fire button reaches. Flat mouse and keyboard are untouched.
+// While a dialogue owns the pointer, a hand's press is the dialogue's click
+// (InterfaceHandDialogueClick): a click during a playing line skips it, as the
+// original's (dialogue_ui.c:552-553).
 //
 // EXAMINE BY DWELL (0.8 s on a target, a closing ring) is gone: the trigger
 // replaced it (owner, 2026-11-13). So is the index tap: the grip uses.
@@ -121,9 +133,12 @@
 #include "roth_handuse.h"
 #include "roth_invhand.h"
 #include "roth_panelmap.h"
+#include "roth_handclick.h"
+#include "roth_actors_engine.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
+#include "d_event.h"
 #include "g_levellocals.h"
 #include "c_cvars.h"
 #include "c_dispatch.h"
@@ -173,6 +188,7 @@ struct HandState
 	bool  pressReady = false, wasPressReady = false;  // the fingertip press's point pose (grip held, index off)
 	bool  gripClosed = false, trigDown = false;       // the two buttons, with their hysteresis
 	bool  primed = false;        // the buttons were read last tic: a button already down is not a press
+	int   trigTicks = 0;         // the trigger held this long (the original's 70 Hz steer clock, roth_handclick.h)
 
 	// the ray and what is at its end
 	bool        haveRay = false;
@@ -192,10 +208,12 @@ struct HandState
 	bool  aimHave = false;       // ... met something
 	DVector3 aimTip, aimDir, aimHit;
 	uint16_t aimShape = 0;
+	uint8_t  aimType = 1;        // ... its cursor type (1 nothing, 3 usable, 5 blocked / attack target)
 	bool  pokeArmed = true;
 	double lastPokeDist = 1e9;   // last tic's distance from the tip, and its ray
 	DVector3 lastTip, lastDir;
 	uint16_t lastShape = 0;
+	uint8_t  lastType = 1;
 	Pick  hover;            // the last target the hand could act on (haptic tick)
 	Pick  logged;           // the last target reported (debug line)
 	uint16_t loggedShape = 0;
@@ -232,6 +250,7 @@ struct VRPick
 	// the panel the hands work (InterfaceHandPanel), and which hand is its mouse
 	int panelWhich = HANDPANEL_NONE;
 	int pointerRole = -1;
+	bool loggedFireAllowed = true;
 	uint16_t loggedShape = 0;
 
 	// the cost counters (VRPickTick)
@@ -685,6 +704,27 @@ void DrawBeam(int role, HandState &h, AActor *pmo, const DVector3 &end, bool hit
 	h.lineShown = 0;
 }
 
+// The two buttons' press edges (pressed at 0.70, let go at 0.35, for both). A
+// button already down when the hand comes back (a controller found, the hands
+// back from a menu or a panel) is not a press. The trigger's held time is the
+// original's steer clock: 0 on the tic it is pressed, then the 70 Hz ticks
+// (game_core.c:702-708; roth_handclick.h).
+void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
+{
+	const bool gripWasClosed = h.gripClosed;
+	if (!h.valid) h.gripClosed = false;
+	else if (h.grip >= kGripClose) h.gripClosed = true;
+	else if (h.grip <= kGripOpen) h.gripClosed = false;
+	const bool trigWasDown = h.trigDown;
+	if (!h.valid) h.trigDown = false;
+	else if (h.trigger >= kGripClose) h.trigDown = true;
+	else if (h.trigger <= kGripOpen) h.trigDown = false;
+	gripEdge = h.primed && h.gripClosed && !gripWasClosed;
+	trigEdge = h.primed && h.trigDown && !trigWasDown;
+	h.trigTicks = !h.trigDown ? 0 : trigWasDown ? h.trigTicks + 2 : 0;   // a tic is two 70 Hz ticks (ROTH_FRAME_TICKS_PER_TIC)
+	h.primed = h.valid;
+}
+
 // THE OWNER'S BUTTONS (2026-11-13): the TRIGGER is the original's PRIMARY click
 // (examine), the GRIP its SECONDARY (use). See the header.
 void TickHand(int role, AActor *pmo)
@@ -699,19 +739,8 @@ void TickHand(int role, AActor *pmo)
 	// The fingertip press keeps its own readiness, unchanged: the point pose with
 	// the grip held (>= 0.5) and the index off the trigger.
 	h.pressReady = h.valid && h.grip >= kPointGrip && !h.triggerTouch;
-	const bool gripWasClosed = h.gripClosed;
-	if (!h.valid) h.gripClosed = false;
-	else if (h.grip >= kGripClose) h.gripClosed = true;
-	else if (h.grip <= kGripOpen) h.gripClosed = false;
-	const bool trigWasDown = h.trigDown;
-	if (!h.valid) h.trigDown = false;
-	else if (h.trigger >= kGripClose) h.trigDown = true;
-	else if (h.trigger <= kGripOpen) h.trigDown = false;
-	// A button already down when the hand comes back (a controller found, the
-	// hands back from a menu or a panel) is not a press.
-	const bool gripEdge = h.primed && h.gripClosed && !gripWasClosed;
-	const bool trigEdge = h.primed && h.trigDown && !trigWasDown;
-	h.primed = h.valid;
+	bool gripEdge = false, trigEdge = false;
+	ReadButtons(h, gripEdge, trigEdge);
 
 	if (Logging())
 	{
@@ -774,6 +803,7 @@ void TickHand(int role, AActor *pmo)
 		h.aimDir = h.lastDir;
 		h.aimHit = before.hitPos;
 		h.aimShape = h.lastShape;
+		h.aimType = h.lastType;
 	}
 	if (h.pointing) h.aimHeld = false;
 
@@ -810,9 +840,30 @@ void TickHand(int role, AActor *pmo)
 			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
 			gripActed = true;
 		}
-		else if (!gripActed && Logging())
-			Printf("[roth_vrpick] %s hand grip: %s\n", RoleName(role), !h.pointing ? "not pointing, nothing in reach"
-				: h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
+		else if (!gripActed)
+		{
+			// NOTHING IN REACH TO USE AND NOTHING USABLE POINTED AT: the original's
+			// secondary click on the cursor's type (roth_handclick.h, differential-tested
+			// against run_gameplay_frame, tools/handclick_test): an attack target (type 5)
+			// is attacked; nothing (type 1) is attacked only while the primary -- the
+			// trigger -- has been held 12 ticks (the original's steering); else nothing.
+			// The cursor: what the finger points at, or the aim it held when the index
+			// went onto the trigger.
+			const int type = h.pointing ? (h.havePick ? (int)h.cls.type : 1) : (h.aimHeld && h.aimHave) ? (int)h.aimType : 1;
+			const SecondaryVerb v = SecondaryClick(type, h.trigDown, h.trigTicks);
+			if (v == SECONDARY_ATTACK || v == SECONDARY_ATTACK_AIMED)
+			{
+				ActorsRequestFire();
+				gripActed = true;
+				Haptic(role, 0.45, 35);
+				Printf("[roth_vrpick] %s hand grip: ATTACK -- the original's secondary click on cursor type %d%s: %s\n", RoleName(role), type,
+					h.trigDown ? FStringf(" with the trigger held %d ticks", h.trigTicks).GetChars() : "", SecondaryVerbName(v));
+			}
+			else if (Logging())
+				Printf("[roth_vrpick] %s hand grip: %s (cursor type %d%s: %s)\n", RoleName(role), !h.pointing ? "not pointing, nothing in reach"
+					: h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray", type,
+					h.trigDown ? FStringf(", the trigger held %d ticks", h.trigTicks).GetChars() : "", SecondaryVerbName(v));
+		}
 		if (gripActed) h.pokeArmed = false;
 	}
 
@@ -878,6 +929,7 @@ void TickHand(int role, AActor *pmo)
 	h.lastTip = h.tip;
 	h.lastDir = h.dir;
 	h.lastShape = h.havePick ? h.cls.shape : 0;
+	h.lastType = h.havePick ? h.cls.type : 1;
 
 	// ---- HAPTIC TICK on coming onto something actionable ----
 	const bool actionable = h.pointing && h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
@@ -1082,6 +1134,26 @@ void PanelPointerAndClicks(int which, const PanelPlane &plane)
 	InterfaceHandsDrivePointer(P.pointerRole >= 0);
 }
 
+// While the dialogue owns the pointer: a press of either button of either hand
+// is a click at what the hand points at (InterfaceHandDialogueClick: the line is
+// skipped, or the choice row under the ray is picked), once per press.
+void TickDialogueHand(int role, AActor *pmo)
+{
+	HandState &h = P.hand[role];
+	ReadInputs(role, h);
+	bool gripEdge = false, trigEdge = false;
+	ReadButtons(h, gripEdge, trigEdge);
+	h.pointing = false;
+	h.havePick = false;
+	ResetGestures(h);
+	HideHand(h);
+	if (!(gripEdge || trigEdge) || !FingerRay(role, h, pmo)) return;
+	const bool took = InterfaceHandDialogueClick(PV(h.tip), PV(h.dir));
+	Printf("[roth_vrpick] %s hand %s: a click on the dialogue -> %s\n", RoleName(role), trigEdge ? "trigger" : "grip",
+		took ? "taken (the line skipped, or the choice under the ray)" : "the dialogue no longer owns the pointer");
+	Haptic(role, 0.3, 25);
+}
+
 void ForgetLevel()
 {
 	P.level = nullptr;
@@ -1117,6 +1189,32 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	const bool on = roth_vrpick && pmo != nullptr && (HeadsetOn() || P.test);
 	const char *owner = InterfacePointerOwner();
 	const bool stand = modal || !on || player->health <= 0 || owner != nullptr;
+
+	// THE FIRE BUTTON (owner, 2026-11-13: "the trigger examines on either hand,
+	// and never sends attack unless that hand holds a drawn weapon"). While the
+	// hands are live (a headset, or the flat test), BT_ATTACK -- the main hand's
+	// trigger through the binding -- reaches the weapon only while the main hand
+	// holds one (HandHoldsWeapon; the main hand is either side, VR_MAINHAND):
+	// WeaponTick's gate, and the player's ButtonMask for anything else that
+	// reads the button. The hands' own attack is the grip's (TickHand). In flat
+	// the button is untouched.
+	if (player != nullptr)
+	{
+		const bool handsOwnAttack = roth_vrpick && pmo != nullptr && (HeadsetOn() || P.test);
+		const bool allowed = !handsOwnAttack || HandHoldsWeapon(VR_MAINHAND);
+		ActorsSetFireButtonAllowed(allowed);
+		if (allowed) player->ButtonMask &= ~BT_ATTACK;
+		else player->ButtonMask |= BT_ATTACK;
+		if (Logging() && allowed != P.loggedFireAllowed)
+		{
+			Printf("[roth_vrpick] the fire button (attack) %s\n", allowed ? (handsOwnAttack ? "reaches the weapon: the main hand holds one" : "reaches the weapon")
+				: "is held back: the main hand holds no weapon (its trigger examines; the grip attacks, as the original's secondary click)");
+			P.loggedFireAllowed = allowed;
+		}
+	}
+	// THE DIALOGUE OWNS THE POINTER (a choice menu, a line waiting for a click):
+	// either hand's press is the original's click there (game_core.c:597-632).
+	const bool dialogueOwns = !modal && on && player->health > 0 && owner != nullptr && !strcmp(owner, "dialogue");
 	// ON A PANEL (the inventory screen, the popup over it): the hands are its mouse.
 	PanelPlane plane;
 	int panel = HANDPANEL_NONE;
@@ -1160,7 +1258,9 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	}
 	else InterfaceHandsDrivePointer(false);
 
-	for (int role = 0; role < 2 && panel == HANDPANEL_NONE; role++)
+	if (dialogueOwns)
+		for (int role = 0; role < 2; role++) TickDialogueHand(role, pmo);
+	for (int role = 0; role < 2 && panel == HANDPANEL_NONE && !dialogueOwns; role++)
 	{
 		if (stand)
 		{
@@ -1179,7 +1279,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),
 	// and, under the flat test or roth_vrpick_debug, a line every 70 tics with
 	// the average and the worst tic in microseconds.
-	if (stand && panel == HANDPANEL_NONE) return;
+	if (stand && panel == HANDPANEL_NONE && !dialogueOwns) return;
 	const double us = (double)(I_nsTime() - t0) / 1000.0;
 	if (PerfLog::GroupsWanted()) PerfLog::AddCpuSample("game.vrpick", us / 1000.0);
 	P.costSum += us;

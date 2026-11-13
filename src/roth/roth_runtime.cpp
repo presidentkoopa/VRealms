@@ -4627,6 +4627,13 @@ void CmdPresentParticles()
 
 // The per-frame half, in tick_world_effects' order (raw_commands.c:3288-3299):
 // the speed request is latched and cleared, then the particles move.
+// update_frame_time_scale's half of the command core's frame (game_core.c:329-346),
+// which the inventory's mode 3 runs too (:883): the pain flash decays; nothing ticks.
+void CmdPauseFrame()
+{
+	g_cmd.DecayDamageFlash();
+}
+
 void CmdTick()
 {
 	g_cmd.LatchSpeedReduction();
@@ -8160,10 +8167,60 @@ void TickLevelLogic(FLevelLocals *level)
 	// below, so neither takes the hands away. Presentation only.
 	HandsTick(level);
 
+	// THE INVENTORY SCREEN PAUSES THE WORLD, as the original's does (owner,
+	// 2026-11-13: "pause like the original"). With the panel up the original's
+	// frame loop is in mode 3 (g_player_movement_enabled, set by
+	// render_inventory_panel, inventory.c:1865; the examine popup runs inside it,
+	// file_config.c:900-1144), and mode 3 runs only (game_core.c:844-922):
+	//   1. service_audio_sequence, voice_stream_pump, every mode (:845-846)
+	//        -> InterfaceTick (DialogueUi::Frame), SoundPauseTick
+	//   2. update_frame_time_scale: the pain flash decays (:883; game_core.c:329-346)
+	//        -> CmdPauseFrame (CmdCore::DecayDamageFlash only)
+	//   3. handle_cursor_click, redraw_inventory_cursor_cell, render_text_ui(0),
+	//      update_inventory_screen (:884-898) -> InterfaceTick, VRPickTick (the
+	//      hands are the panel's mouse: their input and drawing run here)
+	//   4. the frame tail: pending game actions, the health test (:922-952)
+	//        -> TickGameFlow, TickMenus (the options box over the inventory)
+	// and NOT, so they stand still (gameplay_frame_step :478-507, run_gameplay_frame,
+	// keymap_dispatch, the mode-1 branch :869-878):
+	//   5. tick_dynamic_entities: the actors and their bullets, tick_world_effects
+	//      (the speed latch, the particles, the effect pool, the delay timers,
+	//      the platforms, the hazards) -> CmdTick, the delays, TickEffects,
+	//      DrivePlatforms, ActorsTick are not called
+	//   6. tick_item_pickup_lock -> InterfaceTick skips Items().TickPickupLock while paused
+	//   7. update_player_tick: the player's movement and his weapon, the sound
+	//      nodes (player.c:420) -> HoldPlayer; WeaponTick is in ActorsTick; SoundTick's
+	//      node pump not called
+	//   8. the world view and update_active_sounds (render_world.c:84) -> SoundTick not called
+	//   9. the command chains the world's timers would fire -> DrainDeferred,
+	//      DrainPendingDoors not called
+	// The engine's own thinkers stand still too (the level's freeze, bit 4 of
+	// FLevelLocals::frozenstate: every actor but the player's, AActor::isFrozen;
+	// the hand actors are NOTIMEFREEZE, roth_hands.cpp).
+	const bool invPause = !g_flow.Dying() && (InterfaceInventoryPanelOpen() != 0 || InterfaceInspectPopupActive() != 0);
+	level->frozenstate = invPause ? (level->frozenstate | 4) : (level->frozenstate & ~4);
+	{
+		static bool wasPaused = false;
+		static int pausedAt = 0;
+		if (invPause != wasPaused)
+		{
+			if (invPause)
+			{
+				pausedAt = ActorsTickCount();
+				Printf("[roth_runtime] the inventory pauses the world (the original's mode 3): actors at tick %d, map time %d\n", pausedAt, level->maptime);
+			}
+			else
+				Printf("[roth_runtime] the world resumes: actors at tick %d (%d ticked while paused), map time %d\n", ActorsTickCount(),
+					ActorsTickCount() - pausedAt, level->maptime);
+			wasPaused = invPause;
+		}
+	}
+
 	// The command core's per-frame half -- the speed latch, the particles, the
 	// pain flash -- comes first in tick_world_effects (raw_commands.c:3290-3297),
 	// before the effect pool and its delay timers.
-	CmdTick();
+	if (invPause) CmdPauseFrame();
+	else CmdTick();
 
 	// Health at 0: the death block and its wait (game_core.c:948-1020). The
 	// frame loop tests health after the world has ticked.
@@ -8173,7 +8230,7 @@ void TickLevelLogic(FLevelLocals *level)
 	// tick under it. The panels, the sound and a movie the menu asked for
 	// (the movie clips) still run.
 	TickMenus();
-	HoldPlayer(g_menus.IsOpen() || g_flow.Dying());
+	HoldPlayer(g_menus.IsOpen() || g_flow.Dying() || invPause);
 	if (g_menus.IsOpen() || g_flow.Dying())
 	{
 		InterfaceTick(level);
@@ -8181,6 +8238,16 @@ void TickLevelLogic(FLevelLocals *level)
 		SoundTick(level);
 		MoviePump();
 		DrainTimedCommands(level);   // tests drive menus with roth_at
+		return;
+	}
+	if (invPause)
+	{
+		// Mode 3 (see above): the panel, its mouse (the hands), the speech.
+		DrainTimedCommands(level);   // tests drive the inventory with roth_at
+		InterfaceTick(level);
+		VRPickTick(level, false);
+		SoundPauseTick(level);
+		MoviePump();
 		return;
 	}
 

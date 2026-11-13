@@ -45,19 +45,21 @@ Not seen: anything in the headset.
   candle tops and cup rims (per-flame compositing must carry them).
 - `docs/VR_INTERACTION_RESEARCH.md`: how VR adventure/horror games and VR ports handle each interaction, top 15.
 
-## 4. Questions for the owner
+## 4. Questions for the owner (1-4 answered the same evening; 5-6 open)
 
-Owner's answers 2026-11-13 18:0x: (1) "we will probably use offhand for a lot of environmental interaction, but we
-need to design with left and right hand support in mind" -> trigger examines on either hand, attack only from a hand
-holding a weapon, grip on nothing = the original's secondary-on-nothing (attack); everything symmetric for left-handed
-players. (2) Pause like the original. (3) Match the original (a click during a playing line skips it). Being built.
-
-
-1. The trigger still sends its normal bound key: on the main hand that is attack, so examining also swings Adam's
-   fists. Proposal: the trigger sends attack only when that hand holds a weapon.
-2. The world keeps running while the inventory is open; the original pauses it. Proposal: pause like the original.
-3. In the original a click during a playing dialogue line skips the line; our inventory clicks under the pointer
-   (mouse and keys too, as before today). Keep, or match the original?
+1. ANSWERED. The trigger examines on either hand and never sends attack unless that hand holds a drawn weapon; a
+   weapon hand's trigger keeps firing; a grip on nothing is the original's secondary click (the attack, from
+   E/game_core.c:651-731). The owner: "we will probably use offhand for a lot of environmental interaction, but we
+   need to design with left and right hand support in mind." Done in `roth_handclick.h` (oracle test
+   `tools/handclick_test`, 140 cases, 0 differ) and `roth_vrpick.cpp` VRPickTick (the fire button held back with
+   no weapon in the main hand).
+2. ANSWERED: pause like the original. While the inventory or the examine popup is open the world stops (monsters,
+   the player's weapon, the playsim), as the original's mode 3 (E/game_core.c:862-921); the hands still work the
+   panel. Done in `roth_runtime.cpp` TickLevelLogic (checklist there); log lines "the inventory pauses the world" /
+   "the world resumes ... (0 ticked while paused)".
+3. ANSWERED: match the original. A click during a playing dialogue line skips the line, for mouse, keys and both
+   hands (E/input.c:1271-1279, :1319-1331; dialogue_ui.c:552-553). Done in `roth_invmouse.h` (items 3, 8, 12, 15,
+   24); oracle test `tools/invdraw_test/scripts/busy.txt`.
 4. ANSWERED (owner): unlit wicks catch by themselves 15 s after the first wick.
 5. Opening the never-opening desks (STUDY1, CHURCH1) would be new content, not a VR presentation of the original.
 6. VR_INTERACTION_RESEARCH "Phase B" ideas (sockets, drawers, books, torch beam, lamp light...) need the owner's go.

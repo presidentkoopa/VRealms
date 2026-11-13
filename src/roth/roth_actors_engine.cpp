@@ -422,6 +422,19 @@ void DrawAndPresent(int ticks)
 // shot aimed from the hand ray in VR and from the view in flat, the recharge.
 // Everything it reads comes through the usercmd: the button and, in VR,
 // AttackAngle/AttackPitch, which the engine rebuilds from it on every peer.
+// THE VR HANDS AND THE ATTACK (owner, 2026-11-13: the trigger examines on either
+// hand and never sends attack unless that hand holds a drawn weapon). The fire
+// button (BT_ATTACK, in VR the main hand's trigger through the binding) reaches
+// the weapon only while it is allowed (roth_vrpick.cpp VRPickTick: always in
+// flat; in VR only while the main hand holds a weapon), and the hands' own
+// attack -- the original's secondary click on an attack target, or on nothing
+// while steering (roth_handclick.h) -- is a trigger_weapon_fire of its own,
+// once, at the next weapon tick: key_fire_weapon's trigger_weapon_fire(0, 0)
+// (WC:911-916) or the cursor's aimed one (game_core.c:673-685), the aim in VR
+// being the hand's ray either way (below).
+static bool g_fireButtonAllowed = true;
+static bool g_fireRequested = false;
+
 void WeaponTick(int ticks)
 {
 	ActorWorld &w = g_actors.world;
@@ -440,7 +453,9 @@ void WeaponTick(int ticks)
 	const int handAngle = (int)lround((aimYaw.Degrees() - 90.0) * (512.0 / 360.0)) & 511;
 	int32_t yawOffset = ((int)w.player.angle - handAngle) & 511;
 	if (yawOffset >= 256) yawOffset -= 512;
-	if (pmo->player->cmd.buttons & BT_ATTACK) w.TriggerFire(0, 0);   // key_fire_weapon (WC:912)
+	const bool button = (pmo->player->cmd.buttons & BT_ATTACK) && g_fireButtonAllowed;
+	if (button || g_fireRequested) w.TriggerFire(0, 0);   // key_fire_weapon (WC:912)
+	g_fireRequested = false;
 	w.WeaponFrame(ticks, yawOffset);
 	w.RechargeFrame(ticks);
 	w.player.pitch = 0;
@@ -646,6 +661,11 @@ void ActorsHudWeapon(int32_t &item, int32_t &ammo, int32_t &ammoCap, int32_t &pa
 void ActorsSetHudPanel(int32_t panel) { g_actors.world.weapon.actions[0].SetD(0x48, panel); }
 int32_t ActorsActiveAmmoId() { return g_actors.world.weapon.actions[0].D(0x30); }
 void ActorsAddWeaponAmmo(int delta) { g_actors.world.weapon.ammo += delta; }
+
+// Outside the anonymous namespace: declared in roth_actors_engine.h (the MSVC link trap).
+void ActorsSetFireButtonAllowed(bool allowed) { g_fireButtonAllowed = allowed; }
+void ActorsRequestFire() { g_fireRequested = true; }
+int ActorsTickCount() { return g_actors.ticks; }
 
 bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls)
 {

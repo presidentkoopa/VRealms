@@ -67,5 +67,11 @@ void ActorsAddWeaponAmmo(int delta);
 // (FollowHandMode 1, not hidden)? Then `item` is its DBASE100 index and `cls` its class name. The VR hands'
 // weapon grip reads it (roth_hands.cpp; UZDXREMA VRRig_HandHoldsWeapon: "a weapon DRAWN in that hand").
 bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls);
+// The VR hands and the attack (roth_vrpick.cpp): whether the fire button (BT_ATTACK) reaches
+// the weapon, and the hands' own attack -- one trigger_weapon_fire at the next weapon tick.
+void ActorsSetFireButtonAllowed(bool allowed);
+void ActorsRequestFire();
+// How many 70 Hz ticks the actors have run (a log line: none while the inventory pauses the world).
+int ActorsTickCount();
 
 } // namespace roth

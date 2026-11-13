@@ -1,0 +1,66 @@
+# A DIALOGUE LINE BUSY UNDER THE INVENTORY: the original's hit test answers 0x27 everywhere (dialogue_ui.c:552-553),
+# so every click -- on the panel, beside it, the S / U keys -- skips the line (dialogue_voice_force_end at the
+# mouse, input.c:1319-1331) instead of clicking, and the hover hovers no cell (:1271-1303). "dlg busy gate queue" sets
+# the line's state on both sides; "skey 0|1" is the S / U key's click (code 8). The port's clicks are the VR hands'
+# gestures (pointer.txt), through the same InvMouse every pointer uses.
+exe 0x71208 0x15e
+exe 0x7675d 0x14
+exe 0x75e2c 0x10
+font
+env
+give 9
+give 12
+give 18
+give 20
+give 21
+give 22
+give 30
+give 31
+give 32
+give 34
+give 37
+give 44
+give 46
+give 47
+give 52
+give 55
+give 56
+give 57
+give 58
+give 59
+open
+frame 0
+dump b_open
+ptr 168 29 0 0
+dlg 1 0 0
+ptr 199 29 0 0
+ptr 199 29 2 0
+dlg 1 0x10000 1
+ptr 230 29 0 0
+ptr 230 29 1 0
+dlg 1 0x6ffff 0
+ptr 45 8 0 0
+ptr 45 8 1 0
+ptr 137 60 2 1
+ptr -50 -50 0 0
+ptr -50 -50 1 0
+dlg 1 0x7ffff 2
+ptr 261 29 1 1
+skey 0
+dlg 1 0x20000 0
+skey 1
+frame 1
+dump b_busy
+dlg 0 0 0
+ptr 168 29 0 0
+skey 0
+ptr 199 29 0 0
+skey 1
+noinspect
+frame 2
+dump b_keys
+ptr 230 29 2 0
+ptr 230 29 1 0
+noinspect
+frame 3
+dump b_after

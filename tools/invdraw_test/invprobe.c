@@ -219,8 +219,26 @@ static void mouse_call(int x, int y, int code)
 }
 static void ptr(int x, int y, int code)
 {
+    if (code == 8) {                                      /* the S (a) / U key's click: update_inventory_screen sets
+                                                           * g_inventory_ui_action 1 / 2 (inventory.c:1708, 1724); the next
+                                                           * frame's handle_cursor_click makes it a click with code 8 at the
+                                                           * mouse where it is (:1268); the frame's update_inventory_screen
+                                                           * then clears it (:1694) */
+        uint16_t tk = G16(0x90bcc);
+        S8(0x7e938, 0); S8(0x7e939, 0); S8(0x7e929, 0);
+        S32(0x80b30, y);
+        S16(0x90bcc, 0);
+        g_shape_capture = 1; g_shape = 0xffffffffu;
+        C0("handle_cursor_click");
+        g_shape_capture = 0;
+        S16(0x90bcc, tk);
+        S32(0x80b30, 0);
+        x = (int)G32(0x707b3) - (int)G32(0x80b24); y = (int)G32(0x707b7) - (int)G32(0x80b28);
+    }
+    else {
     if (code != 0) mouse_call(x, y, 0);                   /* the mouse comes onto the point */
     mouse_call(x, y, code);
+    }
     uint32_t v = G32(0x80b3c);
     char insp[32];
     /* in the port's terms (roth_invscreen.h): -1 none (the original's 0), an entry index, -2 / -3 the
@@ -232,10 +250,11 @@ static void ptr(int x, int y, int code)
     int list = (int)G32(0x80b38);
     log_on();
     if (g_shape == 0xffffffffu) fprintf(OUT, "! set_cursor_shape was not reached through the override\n");
-    fprintf(OUT, "P %d %d %d shape=%x latch=%d list=%d pos=%d scroll=%d count=%d held=%d L=%d R=%d insp=%s close=%d opt=%d busy=%d\n",
+    fprintf(OUT, "P %d %d %d shape=%x latch=%d list=%d pos=%d scroll=%d count=%d held=%d L=%d R=%d insp=%s close=%d opt=%d busy=%d"
+        " gate=%x dev4=%d lastpos=%d sel=%d\n",
         x, y, code, g_shape & 0xffff, (int)G32(0x81300), list, (int)G32(0x80afc + list * 4), (int)G32(0x80b10 + list * 4),
         (int)G32(0x80af4), entidx(G32(0x7fef0)), slotidx(G32(0x81038)), slotidx(G32(0x81044)), insp, (int)G32(0x80b2c),
-        (int)G32(0x7febc), (int)G32(0x83aea));
+        (int)G32(0x7febc), (int)G32(0x83aea), G32(0x83125), (int)G32(0x7f564), (int)G32(0x83b16), (int)G32(0x71370));
     fflush(OUT);
     log_off();
 }
@@ -293,6 +312,9 @@ static void run_script(void)
             int st = a[0] > 0 ? a[0] : 5;
             for (int y = -3; y <= 0x53; y += st) for (int x = -3; x <= 0x123; x += st) ptr(x, y, 0); }
         else if (!strcmp(cmd, "noinspect")) S32(0x80b3c, 0);   /* drop an examine request unopened (inventory.c:1834) */
+        else if (!strcmp(cmd, "dlg")) {    /* a dialogue line's state: busy, the freeze gate, the queued actions */
+            S32(0x83aea, a[0]); S32(0x83125, a[1]); S32(0x81e3e, a[2]); }
+        else if (!strcmp(cmd, "skey")) ptr(0, a[0] ? 2 : 1, 8);  /* the S (0) / U (1) key */
         else if (!strcmp(cmd, "dump")) { char *n = strchr(line, ' '); dump(n ? n + 1 : "unnamed"); }
         else { log_on(); fprintf(OUT, "? unknown command\n"); fflush(OUT); log_off(); }
     }

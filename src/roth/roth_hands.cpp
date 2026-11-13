@@ -179,6 +179,8 @@ void HandsTick(FLevelLocals *level)
 		if (mo == nullptr) continue;
 
 		mo->FollowHandMode = (role == VR_MAINHAND) ? FOLLOWHAND_GRIP_MAIN : FOLLOWHAND_GRIP_OFF;
+		// The hands work the inventory while it pauses the world (the level's freeze, roth_runtime.cpp).
+		mo->flags5 |= MF5_NOTIMEFREEZE;
 		mo->SetOrigin(at, true);
 		mo->Angles.Yaw = pmo->Angles.Yaw;
 

@@ -213,6 +213,8 @@ struct Ui
 	// every pointer on the panel -- the crosshair or aim beam with the use key, the VR hands -- goes
 	// through it. Its g_hover_latch is [0x81300], the action the hover last moved the cursor for.
 	InvMouse mouse;
+	// What that mouse reads of the dialogue (a busy line takes every click: InvMouse 15).
+	std::unique_ptr<InvMouseDialogueUi> mouseDlg;
 	// A VR hand drove the pointer on the panel last tic (roth_vrpick.cpp): the aim-pose / crosshair
 	// hover (UpdateHover) stands down, so the cursor follows the pointing finger alone.
 	bool handsDrivePointer = false;
@@ -1127,6 +1129,20 @@ void PopupPointerAt(const Ray *rays, int n, int *which)
 	U.popup.SetPointer(-0x4000, -0x4000, 0);
 }
 
+// Where a pointer is, as the original's mouse on the INVENTORY screen reads it:
+// panel pixels (screen minus the panel's anchor). On the inventory's picture;
+// on the choice menu's (the original's screen coordinates it is drawn at); or
+// nowhere (off both: the original's "outside the panel").
+void InventoryPointerAt(const Ray &r, int &px, int &py)
+{
+	px = py = PANEL_NOWHERE;
+	const Element *e = HitElement(r);
+	if (e == nullptr) return;
+	int x = 0, y = 0;
+	if (e->kind == E_INVPANEL && PanelPixel(r, *e, x, y)) { px = x; py = y; }
+	else if (e->kind == E_DLGPANEL && PanelPixel(r, *e, x, y)) { px = x - U.mouse.anchorX; py = y - U.mouse.anchorY; }
+}
+
 // A click with nothing of ours under the pointer.
 bool ClickNothing()
 {
@@ -1196,6 +1212,22 @@ bool Press(player_t *player, int forcedButton)
 		U.popup.Press(forcedButton ? forcedButton : (which == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY));
 		return true;
 	}
+	if (!menuUp && U.screen.IsOpen() && !U.screen.PopupUp())
+	{
+		// THE INVENTORY SCREEN: every click is its handle_cursor_click's at the
+		// pointer (input.c:1310-1347, roth_invmouse.h) -- on the panel, beside it
+		// (0x26: commit and close), or anywhere while a line is busy (0x27: the
+		// line is skipped, dialogue_ui.c:552-553). The main hand (or the view) is
+		// the primary button, the off hand the secondary.
+		int which = 0, px = PANEL_NOWHERE, py = PANEL_NOWHERE;
+		for (int i = 0; i < n; i++)
+		{
+			InventoryPointerAt(rays[i], px, py);
+			if (px != PANEL_NOWHERE) { which = i; break; }
+		}
+		PanelClick(px, py, forcedButton ? forcedButton : (which == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY));
+		return true;
+	}
 	for (int i = 0; i < n; i++)
 	{
 		const Element *e = HitElement(rays[i]);
@@ -1246,16 +1278,22 @@ void UpdateHover(player_t *player)
 	int pos = 0, row = -1;
 	if (n > 0) ChoicePointer(rays[0], e, pos, row);
 	U.dialogue.SetPointer(pos, row);
-	if (U.dialogue.PointerBelongsToDialogue())
-		U.dialogue.UpdateChoiceHighlight(pos, row);
-	// The inventory cursor follows the pointer over the grid (handle_cursor_click's
-	// hover, input.c:1290-1297; roth_invmouse.h): a cell's action, when it is not the
-	// last one hovered. Not while a VR hand is the pointer (roth_vrpick.cpp).
-	if (e != nullptr && e->kind == E_INVPANEL && !U.screen.PopupUp() && n > 0 && !U.handsDrivePointer)
+	// THE INVENTORY SCREEN's mouse is handle_cursor_click's (game_core.c:883-885):
+	// its hover (roth_invmouse.h) -- the cursor cell follows the pointer over the
+	// grid, and while a line is busy it is the dialogue's choice highlight -- every
+	// frame, wherever the pointer is. Not while a VR hand is the pointer
+	// (roth_vrpick.cpp). Outside the inventory, the game frame's own (game_core.c:556-569).
+	if (U.screen.IsOpen() && !U.screen.PopupUp())
 	{
-		int px = 0, py = 0;
-		if (PanelPixel(rays[0], *e, px, py)) U.mouse.Hover(U.painter, U.screen, px, py);
+		if (n > 0 && !U.handsDrivePointer)
+		{
+			int px = PANEL_NOWHERE, py = PANEL_NOWHERE;
+			InventoryPointerAt(rays[0], px, py);
+			U.mouse.Hover(U.painter, U.screen, px, py);
+		}
 	}
+	else if (U.dialogue.PointerBelongsToDialogue())
+		U.dialogue.UpdateChoiceHighlight(pos, row);
 	U.hoverBb = bb;
 }
 
@@ -1389,6 +1427,11 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 	pa.labelText = [](int32_t id) { return (U.db != nullptr && U.core != nullptr) ? ItemLabelText(*U.db, id, U.core->InvSink()) : 0u; };
 	U.painter.Bind(&U.screen, &core, &db, pa, false);       // the retail ROTH.INI's VideoMode 8: no line doubling
 	U.mouse.openOptions = [] { if (U.menus != nullptr) U.menus->OpenOptions(); };   // action 0x2c (inventory.c:1799-1817)
+	// The dialogue under the mouse: a busy line takes the click (dialogue_ui.c:552-553). The
+	// choice rows are where the choice picture stands on the original's screen (ChoiceRowAt).
+	U.mouseDlg.reset(new InvMouseDialogueUi(U.dialogue, core.Interp().State(),
+		[](int sx, int sy) { return U.dialogue.MenuUp() ? U.choicePainter.ChoiceRowAt(sx, sy) : -1; }));
+	U.mouse.dlg = U.mouseDlg.get();
 	Printf("[roth_ui] inventory panel: ICONS.ALL %s, font %s\n", U.iconsAll.empty() ? "MISSING" : "ok",
 		U.font.ok() ? "ok" : exeErr.c_str());
 	{
@@ -1594,8 +1637,13 @@ void InterfaceTick(FLevelLocals *level)
 	if (U.screen.IsOpen() && !U.popup.Active()) U.painter.RedrawInventoryCursorCell((uint16_t)(level->maptime * 2));
 	if (!U.popup.Active()) U.screen.Post();              // update_inventory_screen's tail
 	TickPopup(level);                                    // the popup's own loops
-	U.core->Items().TickPickupLock(2);                   // tick_item_pickup_lock
-	TickFly(player);
+	// tick_item_pickup_lock and the fly-in it times: gameplay_frame_step's
+	// (game_core.c:489), which the inventory screen's mode 3 does not run.
+	if (!U.screen.IsOpen() && !U.screen.PopupUp())
+	{
+		U.core->Items().TickPickupLock(2);
+		TickFly(player);
+	}
 	UpdateHover(player);
 	TickMenuPictures();
 	TickHud(level);
@@ -1689,6 +1737,15 @@ int InterfaceHandClick(int panel, int x, int y, bool onPicture, int button)
 
 void InterfaceHandsDrivePointer(bool on) { U.handsDrivePointer = on; }
 
+bool InterfaceHandDialogueClick(const PanelV3 &start, const PanelV3 &dir)
+{
+	if (!U.attached || !U.dialogue.PointerBelongsToDialogue()) return false;
+	Ray r;
+	r.start = DVector3(start.x, start.y, start.z);
+	r.dir = DVector3(dir.x, dir.y, dir.z);
+	return ClickDialogue(&r, HitElement(r));
+}
+
 bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 {
 	if (!U.attached || U.db == nullptr || U.core == nullptr || mo == nullptr) return false;
@@ -1780,8 +1837,8 @@ static void KeyVerb(player_t *player, const std::string &verb, int arg)
 		else if (verb == "tab") s.KeyTab(arg);
 		else if (verb == "nexttab") s.KeyNextTab();
 		else if (verb == "examine") s.KeyExamine();
-		else if (verb == "hold") s.KeyHold();
-		else if (verb == "use") s.KeyUse();
+		else if (verb == "hold") U.mouse.KeyClick(s, false);    // a click with code 8: a busy line is skipped
+		else if (verb == "use") U.mouse.KeyClick(s, true);
 		return;
 	}
 	const Dbase100InterpState &st = U.core->Interp().State();

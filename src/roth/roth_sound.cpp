@@ -964,6 +964,17 @@ void SoundEndLevel()
 	S.level = nullptr;
 }
 
+// While the inventory screen pauses the world (roth_runtime.cpp): the sounds
+// the panel itself starts (an item used, combined) and the speech; no sound
+// node pump (update_player_tick's), no doors, no update_active_sounds (the
+// world view's, render_world.c:84) -- the original's mode 3 runs none of them.
+void SoundPauseTick(FLevelLocals *level)
+{
+	if (!S.levelUp || level == nullptr || level != S.level || soundEngine == nullptr) return;
+	DrainPending();
+	if (S.voiceChan.IsValid() && !soundEngine->IsPlaying(S.voiceChan)) S.voiceChan = FSoundHandle();
+}
+
 void SoundTick(FLevelLocals *level)
 {
 	if (!S.levelUp || level == nullptr || level != S.level || soundEngine == nullptr) return;

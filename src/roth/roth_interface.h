@@ -110,6 +110,11 @@ int InterfaceHandClick(int panel, int x, int y, bool onPicture, int button);
 // Whether a hand drove the pointer this tic: the crosshair / aim-pose hover
 // stands down on the next one so the cursor follows the finger alone.
 void InterfaceHandsDrivePointer(bool on);
+// THE DIALOGUE OWNS THE POINTER (a choice menu up, or a line waiting for a click:
+// InterfacePointerOwner "dialogue"): a VR hand's button press is a click of the
+// original's there (game_core.c:604-632) -- it skips the line, or picks the choice
+// row the hand's ray is on. False when the dialogue does not own the pointer.
+bool InterfaceHandDialogueClick(const PanelV3 &start, const PanelV3 &dir);
 
 // The Realms menus (roth_menus.h), drawn as a world panel like the others and
 // clicked with the same beam or crosshair. While a box is up it is the only

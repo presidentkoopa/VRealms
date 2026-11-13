@@ -30,6 +30,7 @@
 #include "../../src/roth/roth_panelmap.h"
 
 #include <stdio.h>
+#include <memory>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
@@ -242,6 +243,30 @@ struct VRPath
 		plane.left = 0; plane.top = 0; plane.w = 0x120; plane.h = 0x50;
 		mouse.openOptions = [this] { optionsOpened = 1; };
 	}
+	std::unique_ptr<InvMouseDialogueUi> dlg;
+	void BindDialogue(World &w)
+	{
+		dlg.reset(new InvMouseDialogueUi(w.host, w.core.Interp().State()));
+		mouse.dlg = dlg.get();
+	}
+	void Print(World &w, int x, int y, int code, uint16_t shape)
+	{
+		Inventory &inv = w.core.Items();
+		const Dbase100InterpState &st = w.core.Interp().State();
+		printf("P %d %d %d shape=%x latch=%d list=%d pos=%d scroll=%d count=%d held=%d L=%d R=%d insp=%d close=%d opt=%d busy=%d"
+			" gate=%x dev4=%d lastpos=%d sel=%d\n",
+			x, y, code, shape, mouse.g_hover_latch, w.screen.ActiveList(), w.screen.CursorEntry(), w.screen.ScrollOffset(),
+			w.screen.EntryCount(), w.screen.HeldEntry(), inv.LeftHand(), inv.RightHand(), w.screen.g_inventory_inspect_request,
+			w.screen.g_ui_close_request, optionsOpened, (int)st.g_dialogue_busy_flag, (unsigned)st.g_move_freeze_gate,
+			mouse.g_dev_mode_flag_4, (int)w.host.g_choice_last_pos, (int)st.g_choice_selected_index);
+	}
+	// The S (use false) / U key: a click with code 8 at the mouse (InvMouse::KeyClick).
+	void Key(World &w, bool use)
+	{
+		const uint16_t shape = mouse.KeyClick(w.screen, use);
+		Print(w, mouse.mouseX, mouse.mouseY, 8, shape);
+	}
+
 	static PanelV3 Unit(const PanelV3 &v) { return v * (1.0 / v.Length()); }
 	// via 0: the laser from 35 cm in front and 10 cm to the right; 1: the fingertip pressed
 	// onto the point; 2: the hand pointing away from the panel. The hand points with the
@@ -321,11 +346,7 @@ struct VRPath
 			shape = Tic(w, in, x, y, via, clicks, shape);
 		}
 		if (code != 0 && clicks != 1) { mapWrong++; printf("MAP %d click(s) for one gesture\n", clicks); }
-		Inventory &inv = w.core.Items();
-		printf("P %d %d %d shape=%x latch=%d list=%d pos=%d scroll=%d count=%d held=%d L=%d R=%d insp=%d close=%d opt=%d busy=%d\n",
-			x, y, code, shape, mouse.g_hover_latch, w.screen.ActiveList(), w.screen.CursorEntry(), w.screen.ScrollOffset(),
-			w.screen.EntryCount(), w.screen.HeldEntry(), inv.LeftHand(), inv.RightHand(), w.screen.g_inventory_inspect_request,
-			w.screen.g_ui_close_request, optionsOpened, (int)w.core.Interp().State().g_dialogue_busy_flag);
+		Print(w, x, y, code, shape);
 	}
 };
 
@@ -395,6 +416,7 @@ int main(int argc, char **argv)
 
 	std::vector<Colour> pal = pack.Palette();
 	VRPath vr;
+	vr.BindDialogue(w);
 
 	FILE *sf = fopen(argv[3], "r");
 	if (!sf) { fprintf(stderr, "no script %s\n", argv[3]); return 2; }
@@ -453,6 +475,12 @@ int main(int argc, char **argv)
 			for (int y = -3; y <= 0x53; y += st) for (int xx = -3; xx <= 0x123; xx += st) vr.Ptr(w, xx, y, 0, 0);
 		}
 		else if (c == "noinspect") w.screen.g_inventory_inspect_request = -1;
+		else if (c == "dlg")
+		{
+			Dbase100InterpState &st = w.core.Interp().State();
+			st.g_dialogue_busy_flag = x[0]; st.g_move_freeze_gate = x[1]; st.g_dialogue_action_queue_count = x[2];
+		}
+		else if (c == "skey") vr.Key(w, x[0] != 0);
 		else if (c == "dump")
 		{
 			const char *n = strchr(line, ' ');
