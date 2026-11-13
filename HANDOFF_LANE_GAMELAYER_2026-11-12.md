@@ -4,6 +4,29 @@ Read this first. It replaces `HANDOFF_LANE_GAMELAYER_2026-11-11.md`. Older hando
 
 Branch: `lane/gamelayer` on `presidentkoopa/VRealms`. Owner's local copy: `E:\DOOMWork\REMAROTH`. The owner's build is kept at the branch tip through the bridge.
 
+## 0. Evening update (2026-11-12, after the pause) -- read this first
+
+**Verified on the owner's PC (bridge runs n2-p1, w1-w2):**
+- `rothdiff` holds its end-of-batch quit while `roth_at` commands are pending (`FinishBatch`, roth_diff.cpp). `rothdiff_shot ... <pitch> - <settle>`: `-` keeps the default storey so a test can set a short settle.
+- **Saving from a Realms map crashed**: the map is read from ROTH.RES, `lumpnum` -1, null "Map WAD" name -> strlen(null) (g_game.cpp PutSaveWads). Fixed.
+- **Quicksave crashed**: `FBillboard::attachedTo` was uninitialised (TObjPtr has no constructor) and the save writes it for every billboard. Fixed in g_levellocals.h. The serializer now names a dead object pointer's field and owner (serializer.cpp) instead of crashing in RecurseWriteFields. GC also marks attached billboards' actors (g_level.cpp).
+- **Loading** a quicksave works (map restored, props found again). Interface billboards are `BBFL_NOSAVE` and are not written into saves; before that a load brought back a dead "Save a game" panel.
+- **Weapons merged** (commit 1664e8c1). All 15: 0 weapon, 0 inventory, 0 tick differences. The earlier differences were the probe: SIGALRM re-entered its log writes (actprobe.c now blocks it). Suite on the merged tree: gameproof 694/694 (0 1 2 4 7), dialogue identical, cmdcore STUDY1/CHURCH1/CAVERNS identical, gameflow 80/80, menus 38/38. On the PC: ZScript compiles, `RealmsWeapon9` raises and fires on the trigger.
+- **JFO font** (JDUI by Zedas, Blackmore1014 edit; the owner's JDUI_Ultimate.zip) is the Realms text atlas: `vrealms_iwad/sdffonts/sdfmono.*`, made by `tools/sdffont/mksdf_bitmap.py`. Capitals only. Loaded, 0 missing glyphs.
+- Subtitle line re-wrapped to 170 font px and drawn 1.6x.
+
+**The UI panels are invented, and must be replaced (owner, 2026-11-12, angry and right).** The inventory, the menus (options, save slots), the dialogue choice box and the subtitle backing are our own billboard layouts, not the original's. New CLAUDE.md rule: draw them from the install's own pictures, placed by the original's drawing code, tested pixel for pixel. An agent is doing the inventory in worktree `/home/claude/wt_invdraw` (engine-free `roth_invdraw` into an 8-bit buffer, pixel differential against ROTH.C, one textured billboard in the engine). Then the same for: the menus (`menu_hud_ui.c`, show_message_box), the dialogue panel (`dialogue_ui.c`), and the HUD bars at the top (not drawn at all now).
+
+**Seen but not resolved (reasoning only):**
+- Weapon 9 beside the original's frames: the ghoul's pose differs by about a frame. Its logic state matches at that tick (engine dump tick 142 vs original tick 140: st 19, hp 500, same position), so this looks like capture timing; not proven.
+- The original's firing frame shows a brighter room, but its camera had moved (knockback) and ours is pinned by the test. Not a fair comparison; not investigated further.
+- No in-game key for quicksave/quickload (the original has both, input.c:144-145). A default binding would write into the shared ini: the owner decides.
+- Stock Doom menu graphics (M_DOOM...) give menudef script errors at startup; harmless, not ours.
+
+**FBX hands:** report at `docs/FBX_HANDS_REPORT.md` (six questions for the owner at its end). Reader: `tools/fbx_hands/`.
+
+**Tools added:** `tools/crashscan/stackscan.py` (minidump stack -> return addresses; `llvm-symbolizer --obj=doomxr.exe` with the exe and pdb staged from the PC gives the lines). Crash reports land in `build-dxr/RelWithDebInfo/crash_<time>/`.
+
 ## 1. How this lane works now (keep it this way)
 
 ### The two engines
