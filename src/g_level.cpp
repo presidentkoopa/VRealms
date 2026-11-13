@@ -2469,12 +2469,12 @@ void FLevelLocals::Mark()
 	}
 	// [VRealms] An attached billboard's actor. P_Ticker drops the billboard on
 	// the first tic its actor reads null, but nothing told the collector about
-	// the pointer, so when no tic ran between the Destroy and the sweep (a
-	// Realms menu holds the game) the actor was freed under it and the next
-	// save wrote a dangling object (crash_20261112-195342: "field 'attachedto'
-	// ... points to a destroyed object"). Marking it is the TObjPtr contract:
-	// a destroyed actor's pointer is nulled here, before the sweep, and a live
-	// one is already alive through the thinker list.
+	// the pointer: if no tic ran between the Destroy and the sweep (a Realms
+	// menu holds the game) the actor could be freed under it. Marking it is the
+	// TObjPtr contract -- a destroyed actor's pointer is nulled here, before the
+	// sweep; a live one is already alive through the thinker list. (Not the
+	// 2026-11-12 quicksave crash: that was the field never being initialised,
+	// see FBillboard::attachedTo.)
 	for (auto &bb : Billboards)
 	{
 		GC::Mark(bb.attachedTo);

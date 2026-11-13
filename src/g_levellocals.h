@@ -333,8 +333,15 @@ struct FBillboard
 	// does not itself keep the actor alive -- "attached billboards die with
 	// their actor" means exactly that: once this resolves null the billboard
 	// is dropped, never the other way round.
-	TObjPtr<AActor*> attachedTo;
-	DVector3 attachOffset;
+	//
+	// INITIALISED HERE, because TObjPtr has no constructor: a stack-made
+	// FBillboard (every panel the Realms interface builds) carried whatever
+	// was on the stack, and the save writes this field for EVERY billboard --
+	// so a quicksave serialized a garbage pointer as an object and crashed
+	// (crash_20261112-195342; then "field 'attachedto' points to a destroyed
+	// object" once the serializer checked).
+	TObjPtr<AActor*> attachedTo = MakeObjPtr<AActor*>(nullptr);
+	DVector3 attachOffset = DVector3(0, 0, 0);
 
 	// Where this actually ended up last time it was drawn. View-locked
 	// billboards have no fixed world position -- theirs is resolved per
