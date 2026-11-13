@@ -1,0 +1,51 @@
+DBASE100: 281 inventory records; by category (tab): 0:151 1:16 2:29 3:36 4:49
+  pickable (not flagged unpickable, not category 2) 223; weapons 15; with a close-up film 280; OnInspect comment 129; OnUse/combine 30; document pages 40; information topics 52
+
+map        objects   items  pickbl |  0x08  0x18  0x19  0x30  0x31  0x32 | candle
+ABAGATE2        16       0       0 |     1     0     0     0     0     1 |      0
+AELF           184      28      10 |     6     5     0     4     1     5 |    363
+ANUBIS          64      15       6 |     5    10     2     7     4     5 |      9
+AQUA1          156      30      30 |    21     5     6     2     8    13 |      0
+AQUA2           93       0       0 |     1     1     0     2     3     1 |      0
+CAVERNS        108      29      12 |    13     0     0     7     6     2 |    600
+CAVERNS2        70       0       0 |     0     0     0     1     1     1 |    116
+CAVERNS3       169      30      19 |    14    13     0    10     6     9 |    622
+CHURCH1        155      28       8 |    26    36     8    18    15    50 |     64
+DOMINION        31      30      16 |     5     8     0     1     0     5 |    380
+DOPPLE          40      16       0 |     1     1     0     0     0     1 |    188
+ELOHIM1         10       9       9 |     3     0     0     1     0     0 |      0
+GNARL1           8       0       0 |     6     0     0     0     0     0 |      0
+GRAVE          175      21      11 |    14     7     0     1     2     9 |    325
+LRINTH          29      28      28 |     1     0     1     0     0     0 |      0
+LRINTH1          9       9       9 |     1     0     2     0     1     0 |      0
+MAS3           120      32      20 |     7     3     1     4     3     2 |    222
+MAS4            91      25      16 |     4     1     0     4     1     0 |    242
+MAS6            29       0       0 |     7     2     0     3     3     2 |     31
+MAS7            31       6       3 |     3     2     2     3     5     5 |    266
+MAUSO1EA       116      21      10 |    10     7     0    10     1     8 |    221
+MAUSO1EB        67       6       3 |     7     1     0     4     0     1 |     74
+MAZE            42      12       0 |     2     0     0     0     0     0 |    338
+OPTEMP1         21       1       0 |     0     0     0     1     0     0 |     26
+RAQUIA1         90      13       0 |     1     0     0     0     0     0 |      0
+RAQUIA2         12       3       3 |     7     1     1     0     0     0 |      0
+RAQUIA3         75      26      26 |     6     1     0     0     0     2 |      0
+RAQUIA4         52       0       0 |     1     0     0     0     0     0 |      0
+RAQUIA5        213     107     107 |    26    13     9     7    17     7 |      0
+SALVAT         106      28      27 |    50    22     0     0     0     0 |     79
+SOULST2        200      56      38 |     7     0     0     1     4     4 |    161
+SOULST3         94       9       4 |     7     0     0     1     2     6 |      6
+STUDY1         274      48      33 |    44    38    13    39    10    34 |    223
+STUDY2         294      34      14 |    15    18     1    20     6     8 |    457
+STUDY3          71      12       8 |    15    10     1     8     8     3 |    122
+STUDY4         157      16      12 |     7     3     1    11     2    11 |    148
+TEMPLE1        188       9       0 |     6     6     0     6     3     4 |    101
+TGATE1F        264      11       1 |     7     0     0     1     2    19 |    518
+TGATE1G        200       1       0 |     0     0     0     0     0    12 |    250
+TGATE1H        425       8       0 |     4     0     0     1     1     0 |    510
+TGATE1I        193       1       0 |     0     0     0     0     0     0 |    110
+TOWER1         435       0       0 |     1     2     0     1     1    15 |    524
+VICAR           74      11       0 |    10    18     0     9     8     8 |     47
+VICAR1          73       7       2 |     5     6     0     3     1     6 |     84
+ALL           5324     776     485 |   377   240    48   191   125   259 |   7427
+
+44 maps; 97 distinct inventory records placed as objects

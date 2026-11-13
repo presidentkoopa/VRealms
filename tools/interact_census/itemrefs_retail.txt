@@ -1,0 +1,68 @@
+RAW 0x27 (test the item in hand) by item: 67 distinct items, 161 tests
+  item   0 x7   AQUA1 CAVERNS CHURCH1 GRAVE RAQUIA5 
+  item   4 x8   STUDY1 STUDY3 
+  item   6 x3   AQUA1 
+  item   9 x1   MAS3 
+  item  14 x3   AELF MAS3 
+  item  16 x6   STUDY1 STUDY4 
+  item  18 x1   MAS3 
+  item  20 x1   RAQUIA5 
+  item  21 x1   STUDY1 
+  item  22 x1   MAUSO1EA 
+  item  28 x2   ANUBIS 
+  item  33 x4   AELF CAVERNS3 STUDY1 
+  item  35 x3   GNARL1 STUDY1 
+  item  37 x2   CAVERNS 
+  item  49 x2   STUDY2 
+  item  53 x1   SOULST3 
+  item  60 x3   GNARL1 STUDY1 
+  item  84 x1   GRAVE 
+  item  97 x3   MAZE SOULST3 TGATE1F 
+  item  98 x1   RAQUIA5 
+  item 101 x1   CHURCH1 
+  item 102 x1   CHURCH1 
+  item 103 x2   RAQUIA5 
+  item 105 x1   RAQUIA5 
+  item 106 x2   RAQUIA5 
+  item 109 x1   RAQUIA3 
+  item 113 x5   RAQUIA5 
+  item 114 x2   RAQUIA5 
+  item 115 x2   RAQUIA5 
+  item 116 x2   RAQUIA3 
+  item 122 x2   RAQUIA5 
+  item 123 x2   RAQUIA5 
+  item 125 x1   RAQUIA5 
+  item 127 x3   ANUBIS 
+  item 128 x2   CHURCH1 
+  item 129 x1   CHURCH1 
+  item 130 x1   AQUA1 
+  item 131 x3   AQUA1 
+  item 134 x1   AQUA1 
+  item 135 x1   AQUA1 
+  item 142 x1   RAQUIA5 
+  item 144 x1   ANUBIS 
+  item 150 x18  CHURCH1 VICAR VICAR1 
+  item 152 x2   AQUA1 
+  item 153 x1   AQUA1 
+  item 154 x2   RAQUIA5 
+  item 155 x2   AQUA1 
+  item 156 x5   AQUA1 
+  item 167 x2   CAVERNS3 VICAR 
+  item 171 x2   VICAR1 
+  item 172 x1   GRAVE 
+  item 173 x1   STUDY3 
+  item 175 x12  CHURCH1 VICAR VICAR1 
+  item 185 x1   CHURCH1 
+  item 193 x2   CHURCH1 
+  item 194 x2   AQUA1 
+  item 202 x2   RAQUIA5 
+  item 212 x1   RAQUIA5 
+  item 215 x1   RAQUIA3 
+  item 216 x2   RAQUIA5 
+  item 218 x1   VICAR 
+  item 219 x1   VICAR 
+  item 220 x1   GRAVE 
+  item 223 x4   DOMINION 
+  item 236 x1   STUDY2 
+  item 249 x1   CAVERNS 
+  item 256 x1   CHURCH1 
