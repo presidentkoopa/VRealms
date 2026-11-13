@@ -1,0 +1,159 @@
+WICKSPOTS: candle pictures, unlit against lit
+Pairs found in the maps' click chains (0x0d with key 0 on the clicked object):
+  DEMO1[4185]  -> DEMO1[4186]  by VICAR1 #28/#5
+  DEMO[4098]   -> DEMO[4148]   by CAVERNS #67/#71 STUDY1 #18/#21 STUDY1 #212/#213 STUDY2 #183/#185 STUDY3 #124/#128 STUDY4 #59/#63 STUDY4 #67/#74
+  DEMO[4124]   -> DEMO[4190]   by STUDY2 #153/#154 STUDY4 #29/#23 TEMPLE1 #73/#77
+  DEMO[4186]   -> DEMO[4187]   by STUDY1 #4/#7
+Placements drawn fixed-angle (renderType & 0x80) per kind; 0 = every placement is a billboard: DEMO[4098] 0/21 DEMO[4186] 0/2 DEMO[4124] 0/10 DEMO1[4185] 0/1 DEMO[4148] 0/12 DEMO1[4103] 0/32 DEMO2[4099] 0/8 DEMO1[4104] 1/4 DEMO4[4215] 0/19 DEMO4[4258] 0/18 DEMO[4135] 0/18 DEMO[4117] 0/11 DEMO1[4131] 0/3 DEMO4[4232] 0/1 DEMO[4189] 0/86
+
+PAIR DEMO1[4185] -> DEMO1[4186]   (scripted swap)
+  unlit DEMO1[4185]  picture      10 x  17 texels, 1 frame(s), 2 units/texel, shift +0 -> 20 x 34 units
+  lit   DEMO1[4186]  anim         16 x  24 texels, 4 frame(s), 2 units/texel, shift +0 -> 32 x 48 units  (image_type bit 0x02 set; index 0 read as a hole, the object rule)
+  alignment: unlit texel (x, y) lies on lit texel (x +3, y +7)
+  unlit texels that fall outside the lit picture: 0
+  changed texels: 33 in any frame (28 in frame 0: 12 appear where the unlit picture is clear, 0 vanish, 16 recoloured); texels animated between lit frames: 15
+  changed but never animated: 18   animated but not changed from unlit: 0
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    6..9     0..7     4x8     15     (  7.8,   4.0)     (  7.5,   8)        (  -1.0,   32.0)
+  OTHER changed texels (not part of a flame): 15 in 3 group(s)
+    box x  4..6  y  21..21     3 texels, mean rgb 170  90  37, elsewhere
+    box x  6..9  y   9..11     9 texels, mean rgb 206 141  43, under flame 1 (+1 rows)
+    box x  9..11 y  21..21     3 texels, mean rgb 170  90  37, elsewhere
+
+PAIR DEMO[4098] -> DEMO[4148]   (scripted swap)
+  unlit DEMO[4098]   picture      55 x 164 texels, 1 frame(s), 1 units/texel, shift +4 -> 55 x 164 units
+  lit   DEMO[4148]   anim         55 x 171 texels, 4 frame(s), 1 units/texel, shift +4 -> 55 x 171 units  (image_type bit 0x02 set; index 0 read as a hole, the object rule)
+  alignment: unlit texel (x, y) lies on lit texel (x +0, y +7)
+  unlit texels that fall outside the lit picture: 0
+  changed texels: 258 in any frame (233 in frame 0: 61 appear where the unlit picture is clear, 0 vanish, 172 recoloured); texels animated between lit frames: 85
+  changed but never animated: 173   animated but not changed from unlit: 0
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    2..5    18..25    4x8     17     (  4.3,  22.1)     (  4.5,  26)        ( -23.0,  141.0)
+    2   12..15    5..12    4x8     17     ( 14.3,   9.1)     ( 14.5,  13)        ( -13.0,  154.0)
+    3   26..29    0..7     4x8     17     ( 27.7,   4.1)     ( 27.5,   8)        (  +0.0,  159.0)
+    4   38..41    5..12    4x8     17     ( 40.3,   9.1)     ( 40.5,  13)        ( +13.0,  154.0)
+    5   49..52   18..25    4x8     17     ( 50.7,  22.1)     ( 50.5,  26)        ( +23.0,  141.0)
+  OTHER changed texels (not part of a flame): 168 in 20 group(s)
+    box x  1..8  y  39..40    11 texels, mean rgb 128  78  39, elsewhere
+    box x  2..6  y  26..32    19 texels, mean rgb 170 122  44, under flame 1 (+0 rows)
+    box x 10..15 y  28..29     8 texels, mean rgb 155  84  35, elsewhere
+    box x 11..16 y  13..18    17 texels, mean rgb 188 136  42, under flame 2 (+0 rows)
+    box x 17..23 y  38..40     7 texels, mean rgb 141 119 100, elsewhere
+    box x 23..26 y  21..23     8 texels, mean rgb 137  74  30, elsewhere
+    box x 25..29 y   8..13    12 texels, mean rgb 202 139  38, under flame 3 (+0 rows)
+    box x 25..26 y  33..34     3 texels, mean rgb 108 108 106, elsewhere
+    box x 25..29 y  39..39     5 texels, mean rgb 145 119  93, elsewhere
+    box x 26..27 y 115..119    6 texels, mean rgb  59  57  59, elsewhere
+    box x 28..31 y  21..21     4 texels, mean rgb 145  82  39, elsewhere
+    box x 28..29 y  33..34     3 texels, mean rgb  95  95  94, elsewhere
+    box x 31..38 y  38..40     8 texels, mean rgb 133 115  99, elsewhere
+    box x 37..43 y  14..18    21 texels, mean rgb 161 114  48, under flame 4 (+1 rows)
+    box x 37..39 y  28..29     5 texels, mean rgb 144  80  33, elsewhere
+    box x 39..39 y  20..21     2 texels, mean rgb 125  91  46, under flame 4 (+7 rows)
+    box x 41..41 y  28..28     1 texels, mean rgb 210 113  49, elsewhere
+    box x 43..44 y  28..29     3 texels, mean rgb 124  71  30, elsewhere
+    box x 46..53 y  39..40     9 texels, mean rgb 167  85  33, elsewhere
+    box x 47..52 y  26..30    16 texels, mean rgb 188 127  32, under flame 5 (+0 rows)
+
+PAIR DEMO[4124] -> DEMO[4190]   (scripted swap)
+  unlit DEMO[4124]   picture      18 x  53 texels, 1 frame(s), 1 units/texel, shift +4 -> 18 x 53 units
+  lit   DEMO[4190]   anim         18 x  59 texels, 4 frame(s), 1 units/texel, shift +4 -> 18 x 59 units
+  alignment: unlit texel (x, y) lies on lit texel (x +0, y +6)
+  unlit texels that fall outside the lit picture: 0
+  changed texels: 31 in any frame (26 in frame 0: 12 appear where the unlit picture is clear, 2 vanish, 12 recoloured); texels animated between lit frames: 17
+  changed but never animated: 14   animated but not changed from unlit: 0
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    7..10    0..7     4x8     17     (  8.7,   4.1)     (  8.5,   8)        (  -0.5,   47.0)
+  OTHER changed texels (not part of a flame): 13 in 1 group(s)
+    box x  6..10 y   8..11    13 texels, mean rgb 163 112  58, under flame 1 (+0 rows)
+
+PAIR DEMO[4186] -> DEMO[4187]   (scripted swap)
+  unlit DEMO[4186]   picture      55 x 163 texels, 1 frame(s), 1 units/texel, shift +0 -> 55 x 163 units
+  lit   DEMO[4187]   anim         55 x 171 texels, 4 frame(s), 1 units/texel, shift +0 -> 55 x 171 units
+  alignment: unlit texel (x, y) lies on lit texel (x +0, y +8)
+  unlit texels that fall outside the lit picture: 0
+  changed texels: 44 in any frame (39 in frame 0: 13 appear where the unlit picture is clear, 0 vanish, 26 recoloured); texels animated between lit frames: 17
+  changed but never animated: 27   animated but not changed from unlit: 0
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1   26..29    0..7     4x8     17     ( 27.7,   4.1)     ( 27.5,   8)        (  +0.0,  163.0)
+  OTHER changed texels (not part of a flame): 26 in 5 group(s)
+    box x 23..26 y  21..23     7 texels, mean rgb 143  75  29, elsewhere
+    box x 25..29 y   8..13    12 texels, mean rgb 202 139  38, under flame 1 (+0 rows)
+    box x 25..27 y  39..39     3 texels, mean rgb 162 129  95, elsewhere
+    box x 29..31 y  21..21     3 texels, mean rgb 170  90  37, elsewhere
+    box x 29..29 y  39..39     1 texels, mean rgb 142 113  85, elsewhere
+
+KINDS WITH NO SCRIPTED PARTNER: what animates in the lit ones, and the nearest same-size picture in the same pack
+
+  DEMO[4148]   anim     55 x 171 texels,  4 frames, 1 units/texel, shift +4 -> 55 x 171 units; flickering texels 85
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    2..5    18..25    4x8     17     (  4.3,  22.1)     (  4.5,  26)        ( -23.0,  141.0)
+    2   12..15    5..12    4x8     17     ( 14.3,   9.1)     ( 14.5,  13)        ( -13.0,  154.0)
+    3   26..29    0..7     4x8     17     ( 27.7,   4.1)     ( 27.5,   8)        (  +0.0,  159.0)
+    4   38..41    5..12    4x8     17     ( 40.3,   9.1)     ( 40.5,  13)        ( +13.0,  154.0)
+    5   49..52   18..25    4x8     17     ( 50.7,  22.1)     ( 50.5,  26)        ( +23.0,  141.0)
+  nearest still picture of the same width in DEMO: [4098], 13% of opaque texels differ (no unlit partner)
+
+  DEMO1[4103]  anim     55 x 171 texels,  4 frames, 1 units/texel, shift +0 -> 55 x 171 units; flickering texels 85
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    2..5    18..25    4x8     17     (  4.3,  22.1)     (  4.5,  26)        ( -23.0,  145.0)
+    2   12..15    5..12    4x8     17     ( 14.3,   9.1)     ( 14.5,  13)        ( -13.0,  158.0)
+    3   26..29    0..7     4x8     17     ( 27.7,   4.1)     ( 27.5,   8)        (  +0.0,  163.0)
+    4   38..41    5..12    4x8     17     ( 40.3,   9.1)     ( 40.5,  13)        ( +13.0,  158.0)
+    5   49..52   18..25    4x8     17     ( 50.7,  22.1)     ( 50.5,  26)        ( +23.0,  145.0)
+  nearest still picture of the same width in DEMO1: [4122], 71% of opaque texels differ (no unlit partner)
+
+  DEMO2[4099]  anim     24 x  96 texels,  4 frames, 2 units/texel, shift +0 -> 48 x 192 units; flickering texels 117
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    0..5     9..21    6x13    40     (  3.1,  15.9)     (  2.5,  22)        ( -19.0,  148.0)
+    2    8..13    0..10    6x11    37     ( 11.2,   5.4)     ( 10.5,  11)        (  -3.0,  170.0)
+    3   18..23    9..21    6x13    40     ( 20.9,  15.9)     ( 21.5,  22)        ( +19.0,  148.0)
+  nearest still picture of the same width in DEMO2: [161], 100% of opaque texels differ (no unlit partner)
+
+  DEMO1[4104]  anim     16 x  47 texels,  4 frames, 1 units/texel, shift +0 -> 16 x 47 units; flickering texels 17
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    6..9     0..7     4x8     17     (  7.7,   4.1)     (  7.5,   8)        (  -0.5,   39.0)
+  nearest still picture of the same width in DEMO1: [724], 95% of opaque texels differ (no unlit partner)
+
+  DEMO4[4215]  anim     13 x  47 texels,  9 frames, 2 units/texel, shift +0 -> 26 x 94 units; flickering texels 35
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    4..8    14..16    5x3     10     (  7.1,  15.6)     (  7.5,  17)        (  +2.0,   60.0)   GLOW under group 2, not a flame
+    2    5..7     2..12    3x11    25     (  6.7,   7.4)     (  7.0,  13)        (  +1.0,   68.0)
+  nearest still picture of the same width in DEMO4: [4224], 23% of opaque texels differ (no unlit partner)
+
+  DEMO4[4258]  anim     13 x  50 texels,  9 frames, 2 units/texel, shift +0 -> 26 x 100 units; flickering texels 35
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    4..8    13..15    5x3     10     (  7.1,  14.6)     (  7.5,  16)        (  +2.0,   68.0)   GLOW under group 2, not a flame
+    2    5..7     1..11    3x11    25     (  6.7,   6.4)     (  7.0,  12)        (  +1.0,   76.0)
+  nearest still picture of the same width in DEMO4: [4224], 91% of opaque texels differ (no unlit partner)
+
+  DEMO[4135]   anim     16 x  24 texels,  4 frames, 2 units/texel, shift +0 -> 32 x 48 units; flickering texels 15
+  FLAMES (groups of texels that flicker between the lit frames), left to right. Texels: x right, y down from the lit
+  picture's top-left. World: units from the anchor, x across (right as drawn), h up.
+    #  box x0..x1 y0..y1   size  texels   centroid (x, y)   wick point (x, y)   wick world (x, h)
+    1    6..9     0..7     4x8     15     (  7.8,   4.0)     (  7.5,   8)        (  -1.0,   32.0)
+  nearest still picture of the same width in DEMO: [204], 99% of opaque texels differ (no unlit partner)
+  DEMO[4117]   picture  36 x  69 texels,  1 frame(s), 1 u/t, shift +8
+  DEMO1[4131]  picture  36 x  69 texels,  1 frame(s), 1 u/t, shift +4
+  DEMO4[4232]  picture  36 x  41 texels,  1 frame(s), 1 u/t, shift +0
+  DEMO[4189]   picture  55 x 150 texels,  1 frame(s), 1 u/t, shift +4; nearest ANIMATED picture of the same width in DEMO: [4148], 21% of opaque texels differ
