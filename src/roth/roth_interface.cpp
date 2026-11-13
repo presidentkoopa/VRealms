@@ -45,6 +45,7 @@
 #include "c_cvars.h"
 #include "r_utility.h"   // r_viewpoint.FieldOfView, for the flat screen scale
 EXTERN_CVAR(Int, vr_mode) // flat or VR, for the flat screen scale (file scope on purpose)
+EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoint.cpp)
 #include "printf.h"
 #include "textures.h"
 #include "texturemanager.h"
@@ -753,20 +754,30 @@ void AddWorldPicture(int id, int ox, int oy, double lift, int kind, bool hittabl
 // that screen standing DIST ahead of the eye; the view is the whole screen
 // (ViewSize 0), so its centre (320, 240) is ahead.
 //
-// FLAT: the original's screen IS the view, so its 640 pixels span the view's
-// horizontal field at 4:3 -- the region the engine's FOV is defined on (a
-// wider window adds view at the sides, not above) -- and every pixel lands
-// where the original's screen has it. At a fixed 0.1 unit/pixel the 640 x 480
-// screen covered only ~72 of a 90-degree view: the HUD sat smaller and in from
-// the corners (owner's PC, run h1, 2026-11-12). VR keeps PX: no VR
-// adaptation is decided yet (CLAUDE.md). vr_mode is declared at file scope
-// above: inside this anonymous namespace it would name a different variable.
-static double ScreenUnitsPerPixel()
+// FLAT: the original's screen IS its view, and the flat projection is built
+// to be the original's (rothmap.cpp: fov 91.82, r_view_vstretch FY/FX), so a
+// screen pixel spans, at DIST, exactly what it spans in the original:
+//   across  2*DIST*tan(fov/2)/640                     (FX = 309.77)
+//   down    2*DIST*tan(fov/2)/(fovratio)/480           (FY = 355.06)
+// with fovratio as the hardware renderer forms it (hw_entrypoint.cpp:746-764:
+// 4/3 on a widescreen view, the view's ratio otherwise, times r_view_vstretch).
+// A fixed 0.1 unit/pixel put the HUD small and in from the corners (run h1);
+// one square scale from the horizontal term put it above the view (run h2).
+// VR keeps PX: no VR adaptation is decided yet (CLAUDE.md). vr_mode and
+// r_view_vstretch are declared at file scope above: inside this anonymous
+// namespace they would name different variables.
+static void ScreenUnitsPerPixel(double &across, double &down)
 {
-	if (vr_mode != 0) return PX;
+	across = down = PX;
+	if (vr_mode != 0) return;
 	const double fov = r_viewpoint.GetFieldOfView().Degrees();
-	if (!(fov > 1.0 && fov < 179.0)) return PX;
-	return 2.0 * DIST * tan(fov * (M_PI / 360.0)) / 640.0;
+	if (!(fov > 1.0 && fov < 179.0)) return;
+	const double t = tan(fov * (M_PI / 360.0));
+	const double wr = r_viewwindow.WidescreenRatio;
+	double fovratio = wr >= 1.3 ? 1.333333 : (wr > 0.1 ? wr : 1.333333);
+	if (r_view_vstretch > 0.0f) fovratio *= r_view_vstretch;
+	across = 2.0 * DIST * t / 640.0;
+	down = 2.0 * DIST * (t / fovratio) / 480.0;
 }
 
 void AddHeadPicture(int id)
@@ -775,9 +786,10 @@ void AddHeadPicture(int id)
 	if (c == nullptr || c->Width() <= 0 || c->Height() <= 0) return;
 	const FTextureID tex = UploadPicture(id);
 	if (!tex.isValid()) return;
-	const double u = ScreenUnitsPerPixel();
+	double ux = PX, uy = PX;
+	ScreenUnitsPerPixel(ux, uy);
 	const double cx = c->Left() + c->Width() * 0.5, cy = c->Top() + c->Height() * 0.5;
-	AddViewLocked(DIST, (cx - 320) * u, (240 - cy) * u, c->Width() * u, c->Height() * u, BB_TEXTURE, PalEntry(255, 255, 255, 255), nullptr, 1.0, tex.GetIndex());
+	AddViewLocked(DIST, (cx - 320) * ux, (240 - cy) * uy, c->Width() * ux, c->Height() * uy, BB_TEXTURE, PalEntry(255, 255, 255, 255), nullptr, 1.0, tex.GetIndex());
 	if (U.elements.empty()) return;
 	Element &e = U.elements.back();
 	e.kind = E_PICTURE; e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
