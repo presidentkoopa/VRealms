@@ -253,6 +253,10 @@ public:
 		uint8_t rate = 0;             // otherwise: block+0x1b
 	};
 	const PictureFrames &Frames(int index, Log *log);
+	// A picture that is not in this pack (a DBASE200 weapon frame), in this
+	// pack's palette, index 0 a hole; `rowMajor` is w * h, rows top down.
+	// Registered once under `name`.
+	FTextureID LoosePicture(const char *name, const std::vector<uint8_t> &rowMajor, int w, int h);
 
 	// The decoded pack, for callers that need something other than a picture out
 	// of it -- a 3D mesh, or just the kind of an entry. Null until Open succeeds.

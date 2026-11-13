@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 #include "roth_actors.h"
+#include "roth_das.h"
 #include "roth_raw.h"
 #include "roth_dbase100.h"
 
@@ -24,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <ctype.h>
 #include <algorithm>
 #include <strings.h>
 #include <dirent.h>
@@ -62,7 +64,114 @@ struct TestHost : ActorHost
 	bool DoorInPool(int sector) override { return std::find(doors.begin(), doors.end(), sector) != doors.end(); }
 	int selected = 0;
 	int SelectedItem() override { return selected; }
+
+	// The weapon's outside world, from the oracle's INVS / WPN lines: the
+	// inventory slots (id, quantity), the flash byte, Adam's item.
+	ActorWorld *world = nullptr;
+	const Dbase100 *db = nullptr;
+	std::map<int, int> slotIds;
+	std::vector<uint8_t> dbase200;
+	int adam = 0, hooks = 0;
+	void RemoveItem(int16_t id) override
+	{
+		hooks++;
+		for (auto &e : slotIds)
+			if (e.second == id)
+			{
+				if (mSlotQty[e.first] > 1) mSlotQty[e.first]--;
+				else { e.second = 0; mSlotQty[e.first] = 0; }
+				return;
+			}
+	}
+	void NoAmmoMessage(int msg) override { printf("NOAMMO %d\n", msg); }
+	void EquipFirstUsableWeapon() override
+	{
+		hooks++;
+		std::vector<ActorWorld::CarriedSlot> carried;
+		for (const auto &e : slotIds) if (e.second != 0) carried.push_back({ e.first, (uint16_t)e.second, (uint16_t)mSlotQty[e.first] });
+		auto count = [&](int16_t want) { int n = 0; for (const auto &e : slotIds) if (e.second == want) n += mSlotQty[e.first]; return n; };
+		int id = 0;
+		const int slot = world->FindUsableWeapon(carried, count, id);
+		if (slot < 0) { world->EquipWeapon(adam, -1); return; }      // reset_weapon_hud
+		if (slot == world->weapon.heldSlot) return;
+		world->ResetWeaponFireTiming();
+		const int16_t ammo = world->EquipWeapon(id, slot);
+		if (ammo != 0) world->SetWeaponAmmo(count(ammo));
+	}
+	void ConsumeHeldWeapon() override
+	{
+		hooks++;
+		const int s = world->weapon.heldSlot;
+		if (s >= 0) { slotIds[s] = 0; mSlotQty[s] = 0; }
+		world->EquipWeapon(adam, -1);
+	}
+	int WeaponFrames(int32_t sprite) override
+	{
+		// load_dbase200_sprite_cached (das_assets.c:489-516): at sprite * 8 a
+		// size dword, then the frame records.
+		const size_t at = (size_t)(uint32_t)sprite * 8;
+		if (sprite == 0 || at + 4 > dbase200.size()) return 0;
+		const uint32_t size = (uint32_t)dbase200[at] | ((uint32_t)dbase200[at + 1] << 8) | ((uint32_t)dbase200[at + 2] << 16) | ((uint32_t)dbase200[at + 3] << 24);
+		if (size == 0 || at + 4 + size > dbase200.size()) return 0;
+		const uint8_t *fr = dbase200.data() + at + 4;
+		return RunLengthRepairedCount(fr, size, 0, size, fr[8] | (fr[9] << 8));
+	}
+	std::string Invs() const
+	{
+		std::string o;
+		int n = 0;
+		for (const auto &e : slotIds) if (e.second != 0) n++;
+		char b[64];
+		snprintf(b, sizeof b, "INVS n=%d acc=%u rn=%d :", n, world->weapon.rechargeAccum, (int)world->weapon.recharge.size());
+		o = b;
+		for (const auto &e : slotIds) if (e.second != 0)
+		{
+			auto q = mSlotQty.find(e.first);
+			snprintf(b, sizeof b, " %d:%d:%d", e.first, e.second, q == mSlotQty.end() ? 0 : q->second);
+			o += b;
+		}
+		o += " |";
+		for (const auto &r : world->weapon.recharge) { snprintf(b, sizeof b, " %d:%u:%u", r.slot, r.full, r.rate); o += b; }
+		return o;
+	}
 };
+
+// The oracle's WPN line into the port's weapon state (a sync), and its
+// comparable part (everything before " fl=").
+static void ParseWpn(const char *l, ActorWorld &w, TestHost &host)
+{
+	ActorWorld::PlayerWeapon &p = w.weapon;
+	unsigned ctr, spr, end, timer, rng, bob, fl; int held, qty, hs, idx;
+	sscanf(l, "WPN lock=%d done=%d ctr=%x anim=%d lower=%d timer=%u def=%d spr=%x rate=%d end=%u act=%d n=%d item=%d ammo=%d cap=%d scale=%d rng=%x xo=%d yo=%d sway=%d bob=%u held=%d qty=%d hs=%d fl=%u idx=%d adam=%d w4=%d",
+		&p.lock, &p.shotDone, &ctr, &p.anim, &p.lower, &timer, &p.pendingDef, &spr, &p.rate, &end, &p.active, &p.slots, &p.item, &p.ammo, &p.ammoCap, &p.shotScale, &rng,
+		&p.xoff, &p.yoff, &p.sway, &bob, &held, &qty, &hs, &fl, &idx, &host.adam, &p.word8a0f4);
+	p.counter = (uint16_t)ctr; p.sprite = (int32_t)spr; p.cycleEnd = end; p.timer = timer; p.rng = (uint16_t)rng; p.bob = bob;
+	p.held = held != 0; p.heldSlot = hs;
+	w.lightFlash = (uint8_t)fl;
+	if (idx > 0) { const int keep = p.slots; ParseWeaponActions(*host.db, idx, p.actions, 4); p.slots = keep; }
+}
+static std::string WpnHead(const std::string &l) { const size_t k = l.find(" idx="); return k == std::string::npos ? l : l.substr(0, k); }
+static void ParseInvs(const char *l, ActorWorld &w, TestHost &host)
+{
+	unsigned acc; int n, rn, used = 0;
+	if (sscanf(l, "INVS n=%d acc=%u rn=%d :%n", &n, &acc, &rn, &used) < 3) return;
+	host.slotIds.clear(); host.mSlotQty.clear();
+	w.weapon.rechargeAccum = acc;
+	w.weapon.recharge.clear();
+	const char *q = l + used;
+	bool second = false;
+	while (*q)
+	{
+		while (*q == ' ') q++;
+		if (*q == '|') { second = true; q++; continue; }
+		if (!*q) break;
+		int a, b, c, k = 0;
+		if (sscanf(q, "%d:%d:%d%n", &a, &b, &c, &k) != 3) break;
+		if (!second) { host.slotIds[a] = b; host.mSlotQty[a] = c; }
+		else w.weapon.recharge.push_back({ a, (uint16_t)b, (uint16_t)c });
+		q += k;
+	}
+}
 
 int main(int argc, char **argv)
 {
@@ -165,8 +274,11 @@ int main(int argc, char **argv)
 	}
 
 	TestHost host;
+	host.db = &db;
+	host.dbase200 = Slurp(FindFile(data, "DBASE200.DAT"));
 	ActorWorld w;
 	w.Begin(&map, &db, &tables, &host);
+	host.world = &w;
 
 	// Player inputs from the oracle's log.
 	if (argc > 4)
@@ -205,8 +317,11 @@ int main(int argc, char **argv)
 		{
 			l[strcspn(l, "\n")] = 0;
 			if (!strncmp(l, "== ", 3)) { if (in) break; in = (want == l); continue; }
-			if (in && (!strncmp(l, "TICK ", 5) || !strncmp(l, "FRAME", 5) || !strncmp(l, "CMD ", 4))) break;
+			if (in && (!strncmp(l, "TICK ", 5) || !strncmp(l, "FRAME", 5) || !strncmp(l, "CMD ", 4) ||
+				!strncmp(l, "PT ", 3) || !strncmp(l, "RC ", 3) || !strncmp(l, "TRIG ", 5) || !strcmp(l, "RWL"))) break;
 			if (!in) continue;
+			if (!strncmp(l, "WPN ", 4)) { ParseWpn(l, w, host); continue; }
+			if (!strncmp(l, "INVS ", 5)) { ParseInvs(l, w, host); continue; }
 			if (!strncmp(l, "GLB", 3))
 			{
 				unsigned rd, ra, rs1, rs2, na, np; int sched, hp, mhp, arm, fl;
@@ -332,6 +447,13 @@ int main(int argc, char **argv)
 	auto replay = [&](const char *startLabel)
 	{
 		std::string lab = startLabel;
+		// " weapon": the port runs its own weapon (WeaponFrame / TriggerFire /
+		// RechargeFrame / RebuildWeaponList at the PT / TRIG / RC / RWL lines)
+		// and its shots are its own; the oracle's WPN and INVS lines after each
+		// are compared with the port's, and its SHOT lines are not injected.
+		const bool weaponMode = lab.size() > 7 && lab.compare(lab.size() - 7, 7, " weapon") == 0;
+		if (weaponMode) lab.resize(lab.size() - 7);
+		int wpnLines = 0, wpnBad = 0, wpnGarbled = 0, invGarbled = 0, invLines = 0, invBad = 0, trigs = 0;
 		if (lab.size() > 7 && lab.compare(lab.size() - 7, 7, " simple") == 0) lab.resize(lab.size() - 7);
 		sync(lab.c_str());
 		Replayer rp; rp.w = &w; rp.map = &map;
@@ -344,6 +466,60 @@ int main(int argc, char **argv)
 		std::vector<std::string> pending;   // WAKE / FIRE lines before a TICK
 		std::vector<std::string> block;
 		int tick = -1;
+		auto applyWeapon = [&](const std::string &e) -> bool
+		{
+			const char *c = e.c_str();
+			if (!strncmp(c, "PT fts=", 7)) { w.WeaponFrame(atoi(c + 7)); return true; }
+			if (!strncmp(c, "RC fts=", 7)) { w.RechargeFrame(atoi(c + 7)); return true; }
+			if (!strncmp(c, "TRIG ", 5)) { int a = 0, b = 0; sscanf(c, "TRIG %d %d", &a, &b); w.TriggerFire(a, b); trigs++; return true; }
+			if (!strcmp(c, "RWL"))
+			{
+				std::vector<std::pair<int, uint16_t>> used;
+				for (const auto &u : host.slotIds) if (u.second != 0) used.push_back(std::make_pair(u.first, (uint16_t)u.second));
+				w.RebuildWeaponList(used);
+				return true;
+			}
+			if (!strncmp(c, "WPN ", 4))
+			{
+				std::string mine = w.DumpWeapon();
+				mine.erase(mine.find_last_not_of("\n") + 1);
+				wpnLines++;
+				// A line the probe's log garbled (two writers interleaved: a field
+				// with no digits) is counted apart, not compared.
+				bool garbled = false;
+				{
+					auto split = [](const std::string &x) { std::vector<std::string> v; size_t a = 0; while (a < x.size()) { size_t b = x.find(' ', a); if (b == std::string::npos) b = x.size(); v.push_back(x.substr(a, b - a)); a = b + 1; } return v; };
+					const std::vector<std::string> A = split(WpnHead(e)), B = split(mine);
+					if (A.size() != B.size()) garbled = true;
+					for (size_t k = 0; !garbled && k < A.size(); k++)
+					{
+						const size_t ea = A[k].find('='), eb = B[k].find('=');
+						if (ea != eb || A[k].compare(0, ea == std::string::npos ? 0 : ea, B[k], 0, eb == std::string::npos ? 0 : eb) != 0 || ea + 1 >= A[k].size()) garbled = true;
+						else if ((A[k].compare(0, 4, "ctr=") == 0 || A[k].compare(0, 4, "rng=") == 0) && A[k].size() != 8) garbled = true;
+					}
+				}
+				if (garbled) { wpnGarbled++; return true; }
+				if (WpnHead(e) != mine) { if (wpnBad++ < 6) printf("WPN differs at tick %d\n  orig %s\n  port %s\n", tick, WpnHead(e).c_str(), mine.c_str()); }
+				return true;
+			}
+			if (!strncmp(c, "INVS ", 5))
+			{
+				invLines++;
+				{
+					// garbled in the log: the same shape token by token or it is not a reading
+					const std::string mine = host.Invs();
+					auto shape = [](const std::string &x) { std::string o; for (char ch : x) if (ch == ' ' || ch == ':' || ch == '=' || ch == '|') o += ch; return o; };
+					bool bad = shape(mine) != shape(e) && e.size() != mine.size();
+					for (size_t k = 0; k + 1 < e.size(); k++)
+						if ((e[k] == ':' || e[k] == '=') && !(isdigit((unsigned char)e[k + 1]) || e[k + 1] == '-') && !(e[k] == ':' && e[k + 1] == ' ')) bad = true;
+					if (bad) { invGarbled++; return true; }
+				}
+				if (host.Invs() != e) { if (invBad++ < 6) printf("INVS differs at tick %d\n  orig %s\n  port %s\n", tick, c, host.Invs().c_str()); }
+				return true;
+			}
+			if (!strncmp(c, "SHOT ", 5) || !strncmp(c, "FIRE ", 5)) return true;
+			return false;
+		};
 		auto runTick = [&]()
 		{
 			if (tick < 0) return;
@@ -367,6 +543,7 @@ int main(int argc, char **argv)
 				for (const std::string &e : pending)
 				{
 					int s, i;
+					if (weaponMode && applyWeapon(e)) continue;
 					if (sscanf(e.c_str(), "WAKE %d.%d", &s, &i) == 2) w.WakeOnFirstDraw(w.UidAt(s, i));
 					else if (!strncmp(e.c_str(), "FIRE ", 5)) w.FirePlayer((uint16_t)atoi(e.c_str() + 5));
 					else if (!strncmp(e.c_str(), "ANIM obj=", 9))
@@ -391,6 +568,7 @@ int main(int argc, char **argv)
 				for (const std::string &e : pending)
 				{
 					int s, i;
+					if (weaponMode && applyWeapon(e)) continue;
 					if (sscanf(e.c_str(), "WAKE %d.%d", &s, &i) == 2) w.WakeOnFirstDraw(w.UidAt(s, i));
 					else if (!strncmp(e.c_str(), "FIRE ", 5)) w.FirePlayer((uint16_t)atoi(e.c_str() + 5));
 					else if (!strncmp(e.c_str(), "ANIM obj=", 9))
@@ -422,9 +600,13 @@ int main(int argc, char **argv)
 			if (!strncmp(l, "COL ", 4)) { block.push_back(l); continue; }
 			if (!strncmp(l, "SWP ", 4)) { rp.swp.push_back(l); continue; }
 			if (!strncmp(l, "WAKE ", 5) || !strncmp(l, "FIRE ", 5) || !strncmp(l, "FRAME", 5) || !strncmp(l, "ANIM ", 5)) { pending.push_back(l); continue; }
+			if (weaponMode && (!strncmp(l, "PT ", 3) || !strncmp(l, "RC ", 3) || !strncmp(l, "TRIG ", 5) || !strcmp(l, "RWL") ||
+				!strncmp(l, "WPN ", 4) || !strncmp(l, "INVS ", 5) || !strncmp(l, "SHOT ", 5))) { pending.push_back(l); continue; }
 		}
 		if (f) fclose(f);
 		printf("REPLAY ticks=%d question-mismatches=%d\n", tick, rp.qmis);
+		if (weaponMode) printf("WEAPON triggers=%d, weapon states compared %d (differ %d, garbled in the log %d), inventory states compared %d (differ %d, garbled %d), inventory hooks %d\n",
+			trigs, wpnLines - wpnGarbled, wpnBad, wpnGarbled, invLines - invGarbled, invBad, invGarbled, host.hooks);
 		if (rp.judge) printf("JUDGE simple collision agreed with the original on %d of %d answers\n", rp.agreed, rp.judged);
 		w.SetCollision(nullptr);
 	};
@@ -440,6 +622,7 @@ int main(int argc, char **argv)
 		if (sscanf(ln, "%d %15s %199[^\n]", &tick, op, args) < 2) continue;
 		if (!strcmp(op, "sync")) { sync(args); continue; }
 		if (!strcmp(op, "replay")) { replay(args); continue; }
+		if (!strcmp(op, "wdump")) { fputs(w.DumpWeapon().c_str(), stdout); puts(host.Invs().c_str()); continue; }
 		if (!strcmp(op, "unhide")) { int s = 0, i = 0; sscanf(args, "%d %d", &s, &i); if (Object *o = w.Find(w.UidAt(s, i))) o->flags &= 0x7f; continue; }
 		if (!strcmp(op, "dump")) { printf("== %s\n", args); fputs(w.Dump().c_str(), stdout); }
 		else if (!strcmp(op, "glb"))

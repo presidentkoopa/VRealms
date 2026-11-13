@@ -318,6 +318,24 @@ const TextureSet::PictureFrames &TextureSet::Frames(int index, Log *log)
 	return pf;
 }
 
+FTextureID TextureSet::LoosePicture(const char *name, const std::vector<uint8_t> &rowMajor, int w, int h)
+{
+	FTextureID id = TexMan.CheckForTexture(name, ETextureType::Override);
+	if (id.isValid()) return id;
+	if (w <= 0 || h <= 0 || rowMajor.size() < (size_t)w * h) return FNullTextureID();
+	// The stored layout the paletted image takes is column-major (see Sprite).
+	std::vector<uint8_t> cols((size_t)w * h);
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++) cols[(size_t)x * h + y] = rowMajor[(size_t)y * w + x];
+	FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard, mTranslation);
+	auto *image = new FPalettedMemoryImage(KeepObjectPixels(cols), remap, w, h, true, true);
+	auto *tex = MakeGameTexture(new FImageTexture(image), name, ETextureType::Override);
+	tex->SetOffsets(w / 2, h);
+	tex->SetOffsetsNotForFont();
+	mSpritesRegistered++;
+	return TexMan.AddGameTexture(tex);
+}
+
 //==========================================================================
 //
 // MeshSkin -- see roth_texture.h.

@@ -1,0 +1,29 @@
+1 ticktrace 1
+2 call give_item de 0 0 0
+3 dump start
+150 pull
+162 pull
+174 pull
+186 pull
+198 pull
+210 pull
+222 pull
+234 pull
+246 pull
+258 pull
+270 pull
+282 pull
+294 pull
+306 pull
+318 pull
+330 pull
+342 pull
+354 pull
+366 pull
+378 pull
+390 pull
+402 pull
+414 pull
+426 pull
+438 pull
+460 quit

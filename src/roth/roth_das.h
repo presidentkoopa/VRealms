@@ -253,6 +253,23 @@ struct Mesh
 bool MeshFaceTexCoords(const Mesh &mesh, const MeshFace &face, int texW, int texH,
 	float u[4], float v[4]);
 
+// A run-length animated picture held on its own (a DBASE200 weapon view, as
+// load_dbase200_sprite_cached reads it, das_assets.c:489-516): the frame
+// records from `frames`, `bytes` long, with the loader's frame-count repair.
+Image DecodeRunLengthPicture(const uint8_t *frames, size_t bytes);
+int RunLengthRepairedCount(const uint8_t *d, size_t dsize, size_t p, size_t end, int count);
+
+// One frame of a DBASE200 weapon picture as draw_player_viewmodel_sprite
+// (weapon_combat.c:1071-1110) and its blitter (blit_2d.c, b2_vm_sprite_core)
+// read it: the frame chain from `frames` (the payload after the size dword),
+// the frame's flags (8: has pixels, 0x10: +8 header, 4: an offset record
+// x, w, y, h, 2 clear: a 0x300-byte palette), then one {u16 x, u16 count}
+// record a row and the rows' texels; 0 is transparent. `x`/`y` are where the
+// picture's top left lands on the original's 320 x 200 screen, relative to
+// the point the caller draws at. `count` is the repaired frame count.
+struct ViewmodelFrame { bool ok = false; int x = 0, y = 0, w = 0, h = 0; std::vector<uint8_t> pixels; };
+ViewmodelFrame DecodeViewmodelFrame(const uint8_t *frames, size_t bytes, int frame);
+
 class Pack
 {
 public:

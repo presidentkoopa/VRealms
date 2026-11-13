@@ -54,6 +54,7 @@
 
 #include <stdint.h>
 #include <map>
+#include <functional>
 #include <vector>
 #include <string>
 
@@ -260,6 +261,26 @@ public:
 	virtual int32_t PainFlash() { return mFlash; }            // 0x89f3b
 	virtual void SetPainFlash(int32_t v) { mFlash = v; }
 	int32_t mHealth = 0x800, mMaxHealth = 0x800, mArmour = 0, mFlash = 0;   // the defaults' store
+	// ---- the weapon's outside world (the inventory, the HUD, sound) ----
+	// An inventory slot's quantity word (slot +2).
+	virtual int SlotQuantity(int slot) { return mSlotQty.count(slot) ? mSlotQty[slot] : 0; }
+	virtual void SetSlotQuantity(int slot, int q) { mSlotQty[slot] = (uint16_t)q; }
+	std::map<int, int> mSlotQty;
+	// remove_item(id) (inventory.c:283) and its count afterwards.
+	virtual void RemoveItem(int16_t id) { (void)id; }
+	// show_no_ammo_message(5 or 6) (WC:466).
+	virtual void NoAmmoMessage(int msg) { (void)msg; }
+	// equip_first_usable_weapon (WC:1379): the host walks the inventory and
+	// equips through the inventory, which lands in EquipWeapon.
+	virtual void EquipFirstUsableWeapon() {}
+	// consume_held_item(left hand) then activate_weapon_item(0, 0)
+	// (player.c:506-509).
+	virtual void ConsumeHeldWeapon() {}
+	// play_sound_effect(id, 0xfcff) (WC:885).
+	virtual void WeaponSound(int id) { (void)id; }
+	// The frame count of a DBASE200 picture (load_dbase200_sprite_cached,
+	// das_assets.c:489, with the loader's frame-count repair), 0 if none.
+	virtual int WeaponFrames(int32_t sprite) { (void)sprite; return 0; }
 	// play_entity_sound(id, ..., x, y): a sound at a place. `sound` is the
 	// stored value minus one, as the original passes it.
 	virtual void SoundAt(int sound, int x, int y) { (void)sound; (void)x; (void)y; }
@@ -546,24 +567,119 @@ public:
 	std::map<uint16_t, PictureClock> pictureClocks;
 
 	// ---- the player's weapon (roth_actor_weapon.cpp) ----
-	// activate_weapon_item (WC:426-464): the item's actions parsed into the
-	// four-slot table (WC:434-436), the item word, and the ammo model --
-	// actions slot 0's byte +0x31 bit 7 says the weapon needs no ammo (ammo
-	// 0, cap 0x100); otherwise cap 1 and the ammo is the inventory's count of
-	// the ammo item (slot 0's word +0x30), which the caller asks the
-	// inventory for (query_player_inventory, WC:450) and hands to
-	// SetWeaponAmmo. EquipWeapon returns that ammo item, 0 for none.
-	// `item` 0 is fists (WC:432-441: no record, nothing parsed).
+	// The weapon globals of the original, by meaning, with their addresses.
+	// The table is g_active_weapon_attrs; `active` is g_active_weapon_ptr as
+	// an index into it (-1 = the null pointer the original repairs on use).
 	struct PlayerWeapon
 	{
-		WeaponAction actions[4];
+		WeaponAction actions[4];  // 0x811b4
 		int slots = 0;            // 0x812f4
-		int32_t item = 0;         // 0x83e70
+		int active = -1;          // 0x7fe00
+		bool held = false;        // 0x81038 != 0: a weapon item is in the left hand
+		int heldSlot = -1;        // which inventory slot 0x81038 points at
+		int32_t item = 0;         // 0x83e70: the held item's quantity word, mirrored
 		int32_t ammo = 0, ammoCap = 0;   // 0x83e6c, 0x83e74
 		int equips = 0;           // 0x810c4, the HUD's redraw counter
+		int32_t lock = 0;         // 0x7fdd0: 0 idle, -1 pulled, else the shot's frame
+		int32_t shotDone = 0;     // 0x7fdd4
+		uint16_t counter = 0;     // 0x7fdd8
+		int32_t anim = 0;         // 0x7fddc: 0 up, 1 raising, 2 lowering, 3 down
+		int32_t lower = 0;        // 0x7fde0: how far the weapon is lowered (0..0x64)
+		int32_t spriteShown = 0;  // 0x7fde4
+		int32_t xoff = 0, yoff = 0;      // 0x7fde8, 0x7fdec
+		uint32_t timer = 0;       // 0x7fdf0
+		int32_t pendingDef = 0;   // 0x7fdf4: the bullet item the shot will fire
+		int32_t sprite = 0;       // 0x7fdf8: the DBASE200 picture of the weapon view
+		int32_t rate = 0;         // 0x7fdfc: counter units a frame of the shot
+		uint32_t cycleEnd = 0;    // 0x7fe04: the frame the shot cycle ends on
+		uint16_t rng = 0;         // 0x7fe08: rng_range's own state
+		int32_t shotScale = 0;    // 0x7fe0c: a burst's damage multiplier
+		int32_t aimX = 0, aimY = 0;      // 0x7fe10, 0x7fe14: the trigger's screen aim
+		int32_t sway = 0, lead = 0, leadSet = 0;   // 0x7fe18, 0x7fe1c, 0x7fe20
+		int32_t bodyRequest = 0;  // 0x84920: what the player's own billboard is asked to do
+		uint32_t bob = 0;         // 0x7fdcc: the weapon view's bob phase
+		int32_t item0 = 0;        // the DBASE100 index the table was parsed from
+		int presState = 0;        // the presentation's last state, and when it began
+		uint32_t presSince = 0, presClock = 0;
+		int32_t word8a0f4 = 0;    // 0x8a0f4: read by the action choice (player.c:543), written by nothing
+		// The recharging weapons (rebuild_weapon_inventory_list, WC:488-517):
+		// the inventory slot, its full charge and its rate. 0x83d84, 0x83e04.
+		struct Recharge { int slot; uint16_t full, rate; };
+		std::vector<Recharge> recharge;
+		uint32_t rechargeAccum = 0;   // 0x83e08
 	} weapon;
-	int16_t EquipWeapon(int itemIndex);
+	// activate_weapon_item (WC:426-464). `itemIndex` the DBASE100 index of
+	// the weapon; `held` whether a left-hand slot carries it (an unequip has
+	// none and passes the Adam item, as the original reads 0x81054) and
+	// `heldQuantity` that slot's quantity word. Returns the ammo item the
+	// caller counts in the inventory (query_player_inventory, WC:450) and
+	// hands to SetWeaponAmmo; 0 when the weapon takes none.
+	int16_t EquipWeapon(int itemIndex, int heldSlot = -1);
+	// rebuild_weapon_inventory_list (WC:488-517) over the used inventory
+	// slots in slot order: (slot index, id word).
+	void RebuildWeaponList(const std::vector<std::pair<int, uint16_t>> &usedSlots);
+	// tick_weapon_hud_ammo_anim (WC:945-990), once a frame: the recharging
+	// weapons' quantity words climb toward full.
+	void RechargeFrame(int fts);
 	void SetWeaponAmmo(int32_t count) { weapon.ammo = count; }
+	// equip_first_usable_weapon's search (WC:1379-1418): the first carried
+	// weapon (record category 1, not hidden) that has charge (a recharging
+	// weapon's quantity >> 8), a quantity, or ammo in the inventory, and a
+	// shot. `carried` in slot order; `ammoCount` is query_player_inventory.
+	// Returns the slot (and its id in `id`), -1 when there is none -- then
+	// the original re-arms Adam's hands (reset_weapon_hud, WC:922).
+	struct CarriedSlot { int slot; uint16_t id; uint16_t quantity; };
+	int FindUsableWeapon(const std::vector<CarriedSlot> &carried, const std::function<int(int16_t)> &ammoCount, int &id) const;
+	// arm_weapon_fire (R:10961) and reset_weapon_fire_timing (WC:309).
+	void ArmWeaponFire();
+	void ResetWeaponFireTiming();
+	// trigger_weapon_fire (WC:773-910): the trigger. `aimX`/`aimY` the
+	// screen point (0, 0 for the key; WC:912-917).
+	void TriggerFire(int32_t aimX = 0, int32_t aimY = 0);
+	// The weapon half of update_player_tick (player.c:420-640), once a frame,
+	// `fts` ticks after the last: the lowering and raising, the shot
+	// released on its frame (fire_pending_weapon_shot, WC:747-765), the end
+	// of the cycle, the held item used up, the choice of action, the view's
+	// bob. The picture's frame count comes from the host (WeaponFrames).
+	// `aimYaw` is the 512-a-turn offset the shot leaves at (a hand ray).
+	void WeaponFrame(int fts, int32_t aimYaw = 0);
+	// What the weapon view shows now: the DBASE200 picture, its frame, and
+	// where (the original's 0x139a0 arguments).
+	struct WeaponView { int32_t sprite = 0; int frame = 0; int32_t x = 0, y = 0; bool shown = false; };
+	WeaponView CurrentWeaponView() const { return mWeaponView; }
+
+	// ---- what the weapon is doing, for whatever draws it ----
+	// The original's own states, named from its variables (player.c:463-501,
+	// the anim word 0x7fddc and the fire lock 0x7fdd0):
+	//   Away    anim 0: put away, not drawn (after 0x578 ticks idle)
+	//   Raise   anim 2: coming into view, 0x64 units at 4 a tick (25 ticks)
+	//   Ready   anim 3, no shot: held, idle
+	//   Fire    the fire lock is set: the shot cycle, frame = the lock,
+	//           `rate` ticks a frame, ending on the picture's last frame
+	//   Reload  a Fire cycle drawn with the third action (the ammo item
+	//           consumed by the trigger, WC:847-853) -- the reload picture
+	//   Lower   anim 1: going out of view, 25 ticks
+	enum WeaponStateId { WS_AWAY = 0, WS_RAISE, WS_READY, WS_FIRE, WS_RELOAD, WS_LOWER };
+	// Things that happen on one tic, OR'd into `weaponEvents` as they happen;
+	// the reader clears it.
+	enum WeaponEvent { WE_PULL = 1, WE_SHOT = 2, WE_AMMO = 4, WE_RELOAD = 8, WE_NOAMMO = 0x10, WE_EQUIP = 0x20, WE_CYCLE_END = 0x40, WE_RECHARGE = 0x80 };
+	uint32_t weaponEvents = 0;
+	struct WeaponPresentation
+	{
+		int32_t item = 0;          // the DBASE100 index of what is held (0 none)
+		int state = WS_AWAY;
+		int frame = 0;             // the original's weapon picture frame
+		int frameCount = 0;        // frames in that picture
+		int32_t sprite = 0;        // the DBASE200 picture
+		uint32_t ticksInState = 0; // Realms ticks since the state began
+		uint32_t stateLength = 0;  // the state's length in the original, Realms ticks (0: open-ended)
+		double progress = 0.0;     // 0..1 through it
+		int x = 0, y = 0;          // where the original draws the picture (320 x 200)
+		int charge = -1, chargeFull = 0;   // a recharging weapon's quantity >> 8 and its full charge
+	};
+	WeaponPresentation PresentWeapon() const;
+	// The weapon state in one line, the probe's WPN format.
+	std::string DumpWeapon() const;
 
 	// spawn_object_from_das_resource (DAS:208).
 	bool SpawnFromResource(ObjectUid uid, uint16_t id, int variant);
@@ -694,6 +810,9 @@ public:
 	ActorHost *Host() { return mHost; }
 
 private:
+	WeaponView mWeaponView;
+	uint32_t WeaponRng(uint32_t range);                       // rng_range, R:10835
+	void FirePendingShot(int action, int32_t aimYaw);         // fire_pending_weapon_shot, WC:747
 	Map *mMap = nullptr;
 	const Dbase100 *mDb = nullptr;
 	const CreatureTables *mTables = nullptr;

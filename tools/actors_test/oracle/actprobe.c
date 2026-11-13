@@ -6,13 +6,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include "roth_sdk.h"
 #define U32(a) (*(volatile uint32_t *)(uintptr_t)(a))
 #define U16(a) (*(volatile uint16_t *)(uintptr_t)(a))
 #define U8(a)  (*(volatile uint8_t  *)(uintptr_t)(a))
 static const struct roth_game_ram_api_v1 *g;
 static FILE *out;
-static int g_frames, g_trace, g_ticktrace, g_vistrace;
+/* The log has two writers on the game thread: the overrides (main loop) and on_frame_game, which the
+ * SIGALRM tick also reaches (vsync_timer_tick -> the software cursor's int 0x33 poll -> frame_pump).
+ * musl's stdio is not re-entrant: a tick landing inside an fprintf/fflush re-flushed the same buffer
+ * and wrote a whole chunk twice (W150's replay counted those duplicated PT/RC lines as extra ticks).
+ * Every write section therefore holds SIGALRM blocked; the pending tick is delivered on release. */
+static int g_logdepth; static sigset_t g_logold;
+static void log_on(void) { if (g_logdepth++ == 0) { sigset_t s; sigemptyset(&s); sigaddset(&s, SIGALRM); sigprocmask(SIG_BLOCK, &s, &g_logold); } }
+static void log_off(void) { if (--g_logdepth == 0) sigprocmask(SIG_SETMASK, &g_logold, 0); }
+static int g_frames, g_trace, g_ticktrace, g_vistrace, g_trig;
 struct line { int frame; char op[16]; char args[200]; };
 static struct line g_script[4096]; static int g_nscript, g_pc;
 static char *g_syms;
@@ -74,9 +83,10 @@ static void dump_env(void)
 }
 typedef uint32_t (*fn1)(uint32_t);
 typedef uint32_t (*fn4)(uint32_t, uint32_t, uint32_t, uint32_t);
+static void dump_weapon(void); static void dump_inv(void);
 static void run(struct line *l)
 {
-    if (!strcmp(l->op, "dump")) { dump_env(); fprintf(out, "== %s\n", l->args); dump_globals(); dump_objects(); dump_pools(); }
+    if (!strcmp(l->op, "dump")) { dump_env(); fprintf(out, "== %s\n", l->args); dump_globals(); dump_weapon(); dump_inv(); dump_objects(); dump_pools(); }
     else if (!strcmp(l->op, "glb")) { dump_env(); fprintf(out, "== %s\n", l->args); dump_globals(); dump_pools(); }
     else if (!strcmp(l->op, "trace")) g_trace = atoi(l->args);
     else if (!strcmp(l->op, "w8")) { uint32_t a, v; sscanf(l->args, "%x %x", &a, &v); g->set_u8(a, (uint8_t)v); }
@@ -123,6 +133,7 @@ static void run(struct line *l)
     else if (!strcmp(l->op, "dbrec")) {          /* an item record's bytes as the running game holds them */
         int idx = atoi(l->args); uint32_t off = U32(g->u32(0x81e20) + idx * 4); uint32_t rec = g->u32(0x81e1c) + off;
         fprintf(out, "DBREC %d off=%x", idx, off); for (int k = 0; k < 0x60 && off; k++) fprintf(out, "%s%02x", k % 4 ? "" : " ", U8(rec + k)); fprintf(out, "\n"); }
+    else if (!strcmp(l->op, "pull")) g_trig = 1;   /* pull the trigger at the next update_player_tick (a deterministic point; frame ops run from the timer) */
     else if (!strcmp(l->op, "quit")) { fflush(out); _Exit(0); }
     else fprintf(stderr, "[actprobe] unknown op %s\n", l->op);
 }
@@ -140,6 +151,7 @@ static void run(struct line *l);
 static void ov_tick(struct roth_chain *c, const struct roth_api_v1 *api)
 {
     g = api->game_ram;
+    log_on();
     if (g->u8(0x7674a) == 1) {
         if (g_left <= 0) { g_left = (int)(int8_t)g->u32(0x85324); if (g_left < 1) g_left = 1; if (g_ticktrace) fprintf(out, "FRAME fts=%u\n", g->u32(0x85324)); }
         g_left--;
@@ -152,9 +164,10 @@ static void ov_tick(struct roth_chain *c, const struct roth_api_v1 *api)
             fprintf(out, "TICK %d\n", g_tick); dump_env(); dump_globals(); dump_pools(); dump_pool_objects();
         }
     }
+    log_off();
     roth_next_update_dynamic_entities(c);
     for (int i = 0; i < 16; i++) g_prevact[i] = U32(P(0x91e04) + i * 0x22 + 4) != 0;
-    if (out) fflush(out);
+    log_on(); if (out) fflush(out); log_off();
 }
 static uint32_t g_mv_ent;
 static void ov_move(struct roth_chain *c, const struct roth_api_v1 *api, int32_t dx, int32_t dy, uint32_t ebx, uint32_t ecx)
@@ -169,11 +182,11 @@ static int ov_collide(struct roth_chain *c, const struct roth_api_v1 *api, uint3
     if (!g_inmove || !g_ticktrace) return roth_next_find_sector_and_collide(c, q, frame);
     char b[32]; objref(U32(g_mv_ent + 4), b);
     uint8_t *fp = (uint8_t *)frame;
-    fprintf(out, "COL self=%s from=%08x,%08x,%08x to=%08x,%08x sec=%04x step=%04x hgt=%04x rad=%04x bud=%08x", b,
-        g->u32(0x90ab4), g->u32(0x90ab8), g->u32(0x8c124), g->u32(0x8c120), g->u32(0x8c128), g->u16(0x90c12), g->u16(0x90bde), g->u16(0x8c0e8), (uint16_t)g->u32(0x8c130), *(uint32_t *)(fp + 0x24));
+    log_on(); fprintf(out, "COL self=%s from=%08x,%08x,%08x to=%08x,%08x sec=%04x step=%04x hgt=%04x rad=%04x bud=%08x", b,
+        g->u32(0x90ab4), g->u32(0x90ab8), g->u32(0x8c124), g->u32(0x8c120), g->u32(0x8c128), g->u16(0x90c12), g->u16(0x90bde), g->u16(0x8c0e8), (uint16_t)g->u32(0x8c130), *(uint32_t *)(fp + 0x24)); log_off();
     int cf = roth_next_find_sector_and_collide(c, q, frame);
-    fprintf(out, " -> loc=%d x=%08x y=%08x z=%08x back=%08x,%08x hit=%02x fz=%04x cz=%04x sec=%04x\n", !cf, g->u32(0x8c120), g->u32(0x8c128), g->u32(0x8c124),
-        g->u32(0x90ab4), g->u32(0x90ab8), g->u8(0x8c1e0), *(uint16_t *)fp, *(uint16_t *)(fp + 2), g->u16(0x90c12));
+    log_on(); fprintf(out, " -> loc=%d x=%08x y=%08x z=%08x back=%08x,%08x hit=%02x fz=%04x cz=%04x sec=%04x\n", !cf, g->u32(0x8c120), g->u32(0x8c128), g->u32(0x8c124),
+        g->u32(0x90ab4), g->u32(0x90ab8), g->u8(0x8c1e0), *(uint16_t *)fp, *(uint16_t *)(fp + 2), g->u16(0x90c12)); log_off();
     return cf;
 }
 static void ov_sweep(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t vx, uint32_t dest, uint32_t vy, uint32_t mag, uint32_t vz, uint32_t ent)
@@ -181,20 +194,20 @@ static void ov_sweep(struct roth_chain *c, const struct roth_api_v1 *api, uint32
     g = api->game_ram;
     if (!g_ticktrace) { roth_next_sweep_move_with_collision(c, vx, dest, vy, mag, vz, ent); return; }
     char b[32], hb[32]; uint32_t o = U32(ent); objref(o, b);
-    fprintf(out, "SWP self=%s x=%08x y=%08x z=%08x sec=%04x vx=%d vy=%d vz=%d spd=%u w=%u own=%04x", b,
-        ((uint32_t)U16(o) << 16) | U16(ent + 10), ((uint32_t)U16(o + 2) << 16) | U16(ent + 12), ((uint32_t)U16(o + 10) << 16) | U16(ent + 14), U16(ent + 6), (int32_t)vx, (int32_t)vy, (int32_t)vz, mag, g->u32(0x90fdc), U16(ent + 0x1a));
+    log_on(); fprintf(out, "SWP self=%s x=%08x y=%08x z=%08x sec=%04x vx=%d vy=%d vz=%d spd=%u w=%u own=%04x", b,
+        ((uint32_t)U16(o) << 16) | U16(ent + 10), ((uint32_t)U16(o + 2) << 16) | U16(ent + 12), ((uint32_t)U16(o + 10) << 16) | U16(ent + 14), U16(ent + 6), (int32_t)vx, (int32_t)vy, (int32_t)vz, mag, g->u32(0x90fdc), U16(ent + 0x1a)); log_off();
     roth_next_sweep_move_with_collision(c, vx, dest, vy, mag, vz, ent);
     uint32_t ho = U32(dest + 0x1c); objref(ho, hb);
-    fprintf(out, " -> x=%08x y=%08x z=%08x sec=%04x hit=%02x ho=%s\n", U32(dest), U32(dest + 4), U32(dest + 8), U16(dest + 0x18), U8(dest + 0x1a), hb);
+    log_on(); fprintf(out, " -> x=%08x y=%08x z=%08x sec=%04x hit=%02x ho=%s\n", U32(dest), U32(dest + 4), U32(dest + 8), U16(dest + 0x18), U8(dest + 0x1a), hb); log_off();
 }
 static uint32_t ov_sound(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t id, uint32_t param, uint32_t bx, uint32_t cx)
 {
-    (void)api; if (g_ticktrace) fprintf(out, "SND %d at %d,%d\n", (int)id, (int16_t)bx, (int16_t)cx);
+    (void)api; if (g_ticktrace) { log_on(); fprintf(out, "SND %d at %d,%d\n", (int)id, (int16_t)bx, (int16_t)cx); log_off(); }
     return roth_next_play_entity_sound(c, id, param, bx, cx);
 }
 static int32_t ov_chain(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t src)
 {
-    (void)api; if (g_ticktrace) fprintf(out, "CHAIN\n");
+    (void)api; if (g_ticktrace) { log_on(); fprintf(out, "CHAIN\n"); log_off(); }
     return roth_next_begin_object_command_chain(c, src);
 }
 static uint32_t ov_anim(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t rec, uint32_t surf)
@@ -208,8 +221,8 @@ static uint32_t ov_anim(struct roth_chain *c, const struct roth_api_v1 *api, uin
     uint32_t r = roth_next_select_surface_anim_frame(c, rec, surf);
     uint32_t W = U16(surf + 0x1a + 4), H = U16(surf + 0x1a + 6), hsh = 2166136261u;
     for (uint32_t k = 0; k < W * H && r; k++) { hsh ^= U8(r + 0x10 + k); hsh *= 16777619u; }
-    fprintf(out, "ANIM obj=%s key=%x tpf=%u cnt=%u last=%u magic=%u ctr=%u -> %u shown=%u W=%u H=%u fnv=%08x\n", b, surf, U16(surf + 0x14), U16(surf + 0x22), last, U16(surf + 0x1a), before, slot ? U16(slot + 0x1a) : 0,
-        U16(surf + 0x18), W, H, hsh);
+    log_on(); fprintf(out, "ANIM obj=%s key=%x tpf=%u cnt=%u last=%u magic=%u ctr=%u -> %u shown=%u W=%u H=%u fnv=%08x\n", b, surf, U16(surf + 0x14), U16(surf + 0x22), last, U16(surf + 0x1a), before, slot ? U16(slot + 0x1a) : 0,
+        U16(surf + 0x18), W, H, hsh); log_off();
     return r;
 }
 /* resolve_face_surface_id: what a slotted creature wears from view index `off`, with its inputs */
@@ -220,10 +233,10 @@ static uint32_t ov_face(struct roth_chain *c, const struct roth_api_v1 *api, uin
     char b[32]; objref(U32(rec + 4), b);
     uint32_t mt = g->u32(0x85cf4); uint8_t pain = U8(rec + 0x21);
     uint32_t obj = U32(rec + 4);
-    fprintf(out, "FACE obj=%s mon=%d st=%02x f9=%02x fa=%02x pain=%02x ci=%u rot=%02x va=%04x xv=%d dep=%d", b, (int)((base - mt) / 0x68), U8(rec + 8), U8(rec + 9), U8(rec + 10), pain, off,
-        obj ? U8(obj + 6) : 0, g->u16(0x909f8), (int32_t)g->u32(0x85224 + 0x3c), (int32_t)g->u32(0x85264));
+    log_on(); fprintf(out, "FACE obj=%s mon=%d st=%02x f9=%02x fa=%02x pain=%02x ci=%u rot=%02x va=%04x xv=%d dep=%d", b, (int)((base - mt) / 0x68), U8(rec + 8), U8(rec + 9), U8(rec + 10), pain, off,
+        obj ? U8(obj + 6) : 0, g->u16(0x909f8), (int32_t)g->u32(0x85224 + 0x3c), (int32_t)g->u32(0x85264)); log_off();
     uint32_t r = roth_next_resolve_face_surface_id(c, rec, base, off);
-    fprintf(out, " -> %04x pain=%02x\n", r & 0xffff, U8(rec + 0x21));
+    log_on(); fprintf(out, " -> %04x pain=%02x\n", r & 0xffff, U8(rec + 0x21)); log_off();
     return r;
 }
 /* advance_das_sprite_animation_frame: a standard animated picture's step when drawn */
@@ -233,7 +246,61 @@ static void ov_adv(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t
     if (!g_ticktrace) { roth_next_advance_das_sprite_animation_frame(c, blk); return; }
     uint16_t f0 = U16(blk + 0x18); uint8_t t0 = U8(blk + 0x1a); uint16_t gate = U16(blk + 0x10), now = g->u16(0x90c0a);
     roth_next_advance_das_sprite_animation_frame(c, blk);
-    fprintf(out, "ADV blk=%x count=%u rate=%02x frame %d->%d timer %02x->%02x fts=%u gate=%u now=%u\n", blk, U16(blk + 0x16), U8(blk + 0x1b), (int16_t)f0, (int16_t)U16(blk + 0x18), t0, U8(blk + 0x1a), g->u32(0x85324), gate, now);
+    log_on(); fprintf(out, "ADV blk=%x count=%u rate=%02x frame %d->%d timer %02x->%02x fts=%u gate=%u now=%u\n", blk, U16(blk + 0x16), U8(blk + 0x1b), (int16_t)f0, (int16_t)U16(blk + 0x18), t0, U8(blk + 0x1a), g->u32(0x85324), gate, now); log_off();
+}
+/* ---- the player's weapon: the trigger, the per-frame tick, the shot ---- */
+static void dump_weapon(void)
+{
+    uint32_t act = g->u32(0x7fe00), sec = g->u32(0x81038);
+    fprintf(out, "WPN lock=%d done=%d ctr=%04x anim=%d lower=%d timer=%u def=%d spr=%x rate=%d end=%u act=%d n=%d item=%d ammo=%d cap=%d scale=%d rng=%04x xo=%d yo=%d sway=%d bob=%u held=%d qty=%d hs=%d fl=%u idx=%d adam=%d w4=%d\n",
+        (int32_t)g->u32(0x7fdd0), (int32_t)g->u32(0x7fdd4), g->u16(0x7fdd8), (int32_t)g->u32(0x7fddc), (int32_t)g->u32(0x7fde0), g->u32(0x7fdf0),
+        (int32_t)g->u32(0x7fdf4), g->u32(0x7fdf8), (int32_t)g->u32(0x7fdfc), g->u32(0x7fe04), act ? (int)((act - P(0x811b4)) / 0x50) : -1, (int32_t)g->u32(0x812f4),
+        (int32_t)g->u32(0x83e70), (int32_t)g->u32(0x83e6c), (int32_t)g->u32(0x83e74), (int32_t)g->u32(0x7fe0c), g->u16(0x7fe08), (int32_t)g->u32(0x7fde8), (int32_t)g->u32(0x7fdec),
+        (int32_t)g->u32(0x7fe18), g->u32(0x7fdcc), sec != 0, sec ? (int)U16(sec + 2) : -1, sec ? (int)((sec - P(0x80c30)) / 4) : -1, g->u8(0x853f6), (int32_t)g->u32(0x811b4 + 0x38), (int32_t)g->u32(0x81054), (int32_t)g->u32(0x8a0f4));
+}
+static void dump_inv(void)
+{
+    int n = (int)g->u32(0x80c2c); fprintf(out, "INVS n=%d acc=%u rn=%d :", n, g->u32(0x83e08), (int)g->u32(0x83e04));
+    for (int i = 0, left = n; i < 0x100 && left > 0; i++) { uint16_t id = U16(P(0x80c30) + i * 4); if (!id) continue; left--; fprintf(out, " %d:%d:%d", i, (int16_t)id, U16(P(0x80c30) + i * 4 + 2)); }
+    fprintf(out, " |");
+    for (int i = 0; i < (int)g->u32(0x83e04) && i < 16; i++) { uint32_t e = P(0x83d84) + i * 8; fprintf(out, " %d:%u:%u", (int)((U32(e) - P(0x80c30)) / 4), U16(e + 4), U16(e + 6)); }
+    fprintf(out, "\n");
+}
+static void ov_rc(struct roth_chain *c, const struct roth_api_v1 *api)
+{
+    g = api->game_ram;
+    roth_next_tick_weapon_hud_ammo_anim(c);
+    if (g_ticktrace) { log_on(); fprintf(out, "RC fts=%u\n", g->u32(0x85324)); dump_weapon(); dump_inv(); log_off(); }
+}
+static void ov_rwl(struct roth_chain *c, const struct roth_api_v1 *api)
+{
+    g = api->game_ram;
+    if (g_ticktrace) { log_on(); fprintf(out, "RWL\n"); log_off(); }
+    roth_next_rebuild_weapon_inventory_list(c);
+    if (g_ticktrace) { log_on(); dump_inv(); log_off(); }
+}
+static void ov_ptick(struct roth_chain *c, const struct roth_api_v1 *api)
+{
+    g = api->game_ram;
+    if (g_trig) { g_trig = 0; typedef uint32_t (*f4)(uint32_t, uint32_t, uint32_t, uint32_t);
+        ((f4)(uintptr_t)sym("trigger_weapon_fire"))(0, 0, 0, 0); }   /* ov_trig logs it */
+    roth_next_update_player_tick(c);   /* the frame scale is set INSIDE it (update_player_movement): log the one the weapon used */
+    if (g_ticktrace) { log_on(); fprintf(out, "PT fts=%u\n", g->u32(0x85324)); dump_weapon(); dump_inv(); log_off(); }
+}
+static uint32_t ov_trig(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t a, uint32_t d, uint32_t b, uint32_t cc)
+{
+    g = api->game_ram;
+    if (g_ticktrace) { log_on(); fprintf(out, "TRIG %d %d\n", (int32_t)a, (int32_t)d); log_off(); }
+    uint32_t r = roth_next_trigger_weapon_fire(c, a, d, b, cc);
+    if (g_ticktrace) { log_on(); dump_weapon(); dump_inv(); log_off(); }
+    return r;
+}
+static uint32_t ov_shot(struct roth_chain *c, const struct roth_api_v1 *api, uint32_t item, uint32_t ax, uint32_t ay)
+{
+    g = api->game_ram;
+    uint32_t r = roth_next_spawn_projectile_from_aim(c, item, ax, ay);
+    if (g_ticktrace) { log_on(); fprintf(out, "SHOT %u %d %d -> %d\n", item, (int32_t)ax, (int32_t)ay, r != 0); log_off(); }
+    return r;
 }
 /* ---- visibility trace: every tree the renderer builds in a frame: its root, window, camera, sectors ---- */
 #define VMAX 8
@@ -292,6 +359,11 @@ static void on_overrides(const struct roth_api_v1 *api, struct roth_registrar_v1
     roth_override(reg, ROTH_FN_select_surface_anim_frame, ov_anim, 0);
     roth_override(reg, ROTH_FN_build_sector_render_tree_recursive, ov_tree, 0);
     roth_override(reg, ROTH_FN_resolve_face_surface_id, ov_face, 0);
+    roth_override(reg, ROTH_FN_update_player_tick, ov_ptick, 0);
+    roth_override(reg, ROTH_FN_tick_weapon_hud_ammo_anim, ov_rc, 0);
+    roth_override(reg, ROTH_FN_rebuild_weapon_inventory_list, ov_rwl, 0);
+    roth_override(reg, ROTH_FN_trigger_weapon_fire, ov_trig, 0);
+    roth_override(reg, ROTH_FN_spawn_projectile_from_aim, ov_shot, 0);
     roth_override(reg, ROTH_FN_advance_das_sprite_animation_frame, ov_adv, 0);
 }
 static void frame(const struct roth_api_v1 *api)
@@ -299,10 +371,12 @@ static void frame(const struct roth_api_v1 *api)
     g = api->game_ram;
     if (g->u8(0x7674a) != 1) return;
     g_frames++;
+    log_on();
     vis_flush();
     while (g_pc < g_nscript && g_script[g_pc].frame < 100000 && g_script[g_pc].frame <= g_frames) { run(&g_script[g_pc]); g_pc++; fflush(out); }
     if (g_trace) { dump_env(); dump_globals(); dump_pools(); }
     fflush(out);
+    log_off();
 }
 static void on_load(const struct roth_api_v1 *api)
 {

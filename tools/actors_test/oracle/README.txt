@@ -61,3 +61,38 @@ op weaponcmp compares ParseWeaponActions with the WEAP lines. Two fields are
 not the file's: ops 0x19 and 0x21 are sound keys the original rewrites in
 place at start-up (resolve_dbase100_sound_ids, audio.c:1896-1919), so those
 bytes are taken from the original and counted.
+
+The fire state machine (2026-11-12): probe overrides update_player_tick (PT,
+logged after it with the frame scale it set, then WPN and INVS),
+trigger_weapon_fire (TRIG, WPN, INVS), tick_weapon_hud_ammo_anim (RC),
+rebuild_weapon_inventory_list (RWL, INVS) and spawn_projectile_from_aim
+(SHOT). Op "pull" pulls the trigger at the start of the next
+update_player_tick: frame ops run from the timer, and a trigger fired from
+there lands in the middle of other writes to the log.
+The log has two writers on the game thread: the overrides, and on_frame_game,
+which the SIGALRM tick also reaches (vsync_timer_tick -> the software
+cursor's int 0x33 poll -> frame_pump). musl's stdio is not re-entrant
+(fflush zeroes wpos/wbase/wend, src/musl/src/stdio/fflush.c), so a tick
+landing inside an fprintf or fflush wrote chunks twice or dropped bytes.
+Before the fix that showed up as W150's 165/2506 "differences" (a duplicated
+PT/RC/TICK 364 chunk replayed as an extra tick) and W19/W38/W68's single
+ones (a byte missing from the original's line); W221's one segfault at tick
+67 is not reproduced (13 reruns with the old probe, 12 with the new) and is
+probably the same race. Every write section of the probe now holds SIGALRM
+blocked (log_on/log_off); the tick is delivered when it is released. The
+replay still counts lines of the wrong shape as "garbled"; with the fix there
+are none. The original is deterministic at the tick level (two runs:
+identical TICK/GLB/PRJ/AOB/SHOT/TRIG lines and identical sequences of WPN and
+INVS changes); only the number of drawn frames per tick (PT/RC lines with
+fts=0) follows the wall clock, and the replay is driven by those lines.
+run.sh and diffcmds.sh take ACTP_DIR (a private probe dir with its own
+plugin.so, games/ and cmds/), diffcmds.sh takes ACTORS_TEST (the port binary),
+so a worktree can test its own build without touching /home/claude/actp.
+diffcmds.sh drops the WPN/INVS lines the dump op now writes: the command
+replay does not run the weapon.
+weapons/swpn_<index>.txt: STUDY1 at -864,3412 facing 466, give the weapon
+(and three of its ammo item when it has one), dump, pull every 12 frames from
+150 to 438. Replay: actors_test DATA STUDY1 <(echo "0 replay start weapon")
+orig.log > port.log; python3 cmpticks.py orig.log port.log. The port runs its
+own weapon from the PT/TRIG/RC/RWL lines, compares every WPN/INVS line, and
+its shots are its own (SHOT lines are not injected).

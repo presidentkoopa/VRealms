@@ -326,6 +326,130 @@ void Pack::ApplyFrameDelta(std::vector<uint8_t> &frame, size_t p) const
 	}
 }
 
+// repair_das_rle_frame_count (renderer.c:10187-10208): of the `count` frame
+// records starting at `p`, how many say the same count and link on to a next
+// record no further than `end`. The last record's link is 0.
+int RunLengthRepairedCount(const uint8_t *d, size_t dsize, size_t p, size_t end, int count)
+{
+	if (!(RdU16(d + p) & 0x10)) return count;
+	// A do-while, as the original's: a record that claims 0 frames still has
+	// its first link tested, and counts 1 if it is good (a DBASE200 weapon
+	// picture with count 0 plays one frame).
+	int valid = 0;
+	size_t q = p;
+	do
+	{
+		if (q + 0x10 > dsize) break;
+		if (RdU16(d + q + 8) != (uint16_t)count) break;
+		const int32_t next = (int32_t)RdU32(d + q + 0xc);
+		if (next < 1) break;
+		q += (size_t)next;
+		if (q > end) break;
+		valid++;
+	} while (valid < count);
+	return valid;
+}
+
+// decode_das_anim_frame's frame walk (das_assets.c:1503-1580): `count` frames
+// from the record at `p` (magic 0x17: +4 stride, +6 height, +0xc link,
+// +0x10 left, +0x12 span, +0x14 top, +0x16 rows, +0x18 the run-length
+// stream: a byte below 0xf1 is a pixel, otherwise (b - 0xf0) copies of the
+// next byte). One row or a one-pixel span is an empty frame.
+void DecodeRunLengthFrames(const uint8_t *d, size_t dsize, size_t p, int count, bool allFrames, Image &img)
+{
+	if (p + 0x18 > dsize) return;
+	const int W = RdU16(d + p + 4), H = RdU16(d + p + 6);
+	img.width = W; img.height = H;
+	for (int f = 0; f < count && f < 256 && W > 0 && H > 0; f++)
+	{
+		if (p + 0x18 > dsize) break;
+		std::vector<uint8_t> out((size_t)W * H, 0);
+		const int left = RdU16(d + p + 0x10), span = RdU16(d + p + 0x12);
+		const int top = RdU16(d + p + 0x14), rows = RdU16(d + p + 0x16);
+		if (rows != 1 && span != 1)
+		{
+			size_t o = (size_t)top * W + left, src = p + 0x18;
+			for (int r = 0; r < rows; r++)
+			{
+				int n = span;
+				while (n > 0 && src < dsize)
+				{
+					const uint8_t a = d[src++];
+					if (a < 0xf1) { if (o < out.size()) out[o] = a; o++; n--; }
+					else
+					{
+						const int c = a - 0xf0;
+						n -= c;
+						const uint8_t v = src < dsize ? d[src++] : 0;
+						for (int k = 0; k < c; k++) { if (o < out.size()) out[o] = v; o++; }
+					}
+				}
+				o += (size_t)(W - span);
+			}
+		}
+		img.frames.push_back(std::move(out));
+		if (!allFrames) break;
+		const uint32_t next = RdU32(d + p + 0xc);
+		if (next == 0) break;
+		p += next;
+	}
+}
+
+ViewmodelFrame DecodeViewmodelFrame(const uint8_t *d, size_t bytes, int frame)
+{
+	ViewmodelFrame out;
+	if (d == nullptr || bytes < 0x10) return out;
+	size_t p = 0;
+	int w = RdU16(d + 4), h = RdU16(d + 6);                  // weapon_combat.c:1078-1079: the first header's
+	uint16_t di = RdU16(d);
+	while (frame != 0 && (di & 0x10) && p + 0x10 <= bytes &&
+		(int16_t)(RdU16(d + p + 8) - 1) > (int16_t)RdU16(d + p + 0xa))
+	{
+		const int32_t next = (int32_t)RdU32(d + p + 0xc);
+		if (next < 1) break;
+		p += (size_t)next;
+		frame--;
+		if (p + 2 > bytes) return out;
+		di = RdU16(d + p);
+	}
+	if (!(di & 8)) return out;                               // :1087
+	size_t q = p + 8;
+	if (di & 0x10) q += 8;
+	int x = 0, y = 0;
+	if (di & 4)                                              // :1090-1096
+	{
+		if (q + 8 > bytes) return out;
+		x = RdU16(d + q); w = RdU16(d + q + 2); y = RdU16(d + q + 4); h = RdU16(d + q + 6);
+		q += 8;
+	}
+	if (!(di & 2)) q += 0x300;
+	if (w <= 0 || h <= 0 || q + (size_t)h * 4 > bytes) return out;
+	out.x = x; out.y = y; out.w = w; out.h = h;
+	out.pixels.assign((size_t)w * h, 0);
+	size_t src = q + (size_t)h * 4;
+	for (int r = 0; r < h; r++)                              // b2_vm_sprite_core, one source row a record
+	{
+		const uint32_t rec = RdU32(d + q + (size_t)r * 4);
+		const int off = (int)(rec & 0xffff), cnt = (int)(rec >> 16);
+		if (rec != 0)
+			for (int k = 0; k < (cnt > 0 ? cnt : 1) && src + k < bytes; k++)
+				if (off + k < w) out.pixels[(size_t)r * w + off + k] = d[src + k];
+		src += (size_t)cnt;
+	}
+	out.ok = true;
+	return out;
+}
+
+Image DecodeRunLengthPicture(const uint8_t *frames, size_t bytes)
+{
+	Image img;
+	if (frames == nullptr || bytes < 0x18 || RdU16(frames) != 0x17) return img;
+	const int count = RunLengthRepairedCount(frames, bytes, 0, bytes, RdU16(frames + 8));
+	img.rle = true;
+	DecodeRunLengthFrames(frames, bytes, 0, count, true, img);
+	return img;
+}
+
 Image Pack::ReadImage(int index, bool allFrames, bool runLength) const
 {
 	Image img;
@@ -420,58 +544,13 @@ Image Pack::ReadImage(int index, bool allFrames, bool runLength) const
 				{
 					const size_t bytes = (size_t)e->size * 2u * ((e->flags2 & 3) ? 8u : 1u);
 					const size_t end = p + (bytes > 0x20 ? bytes - 0x20 : 0);
-					int valid = 0;
-					size_t q = p;
-					while (valid < count && q + 0x10 <= mSize)
-					{
-						if (RdU16(mData + q + 8) != (uint16_t)count) break;
-						const int32_t next = (int32_t)RdU32(mData + q + 0xc);
-						if (next < 1) break;
-						q += (size_t)next;
-						if (q > end) break;
-						valid++;
-					}
-					count = valid;
+					count = RunLengthRepairedCount(mData, mSize, p, end, count);
 				}
-				const int W = RdU16(mData + p + 4), H = RdU16(mData + p + 6);
 				img.modifier = mData[base];
 				img.imageType = mData[base + 1];
-				img.width = W; img.height = H;
 				img.rle = true;
 				img.ticksPerFrame = RdU16(mData + base + 10);
-				for (int f = 0; f < count && f < 256 && W > 0 && H > 0; f++)
-				{
-					if (p + 0x18 > mSize) break;
-					std::vector<uint8_t> out((size_t)W * H, 0);
-					const int left = RdU16(mData + p + 0x10), span = RdU16(mData + p + 0x12);
-					const int top = RdU16(mData + p + 0x14), rows = RdU16(mData + p + 0x16);
-					if (rows != 1 && span != 1)
-					{
-						size_t o = (size_t)top * W + left, src = p + 0x18;
-						for (int r = 0; r < rows; r++)
-						{
-							int n = span;
-							while (n > 0 && src < mSize)
-							{
-								const uint8_t a = mData[src++];
-								if (a < 0xf1) { if (o < out.size()) out[o] = a; o++; n--; }
-								else
-								{
-									const int c = a - 0xf0;
-									n -= c;
-									const uint8_t v = src < mSize ? mData[src++] : 0;
-									for (int k = 0; k < c; k++) { if (o < out.size()) out[o] = v; o++; }
-								}
-							}
-							o += (size_t)(W - span);
-						}
-					}
-					img.frames.push_back(std::move(out));
-					if (!allFrames) break;
-					const uint32_t next = RdU32(mData + p + 0xc);
-					if (next == 0) break;
-					p += next;
-				}
+				DecodeRunLengthFrames(mData, mSize, p, count, allFrames, img);
 			}
 			break;
 		}

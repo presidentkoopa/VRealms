@@ -21,6 +21,8 @@
 #include "roth_sound.h"
 #include "roth_texture.h"
 #include "roth_das.h"
+#include "roth_interface.h"
+#include "roth_inventory.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -29,6 +31,9 @@
 #include "playsim/p_local.h"
 #include "printf.h"
 #include "c_dispatch.h"
+#include "d_event.h"
+#include "r_data/models.h"
+#include "model_memorymesh.h"
 
 #include <map>
 #include <memory>
@@ -93,6 +98,20 @@ struct ArtPacks
 	}
 };
 ArtPacks g_art;
+std::vector<uint8_t> g_dbase200;   // read only; the weapon pictures (load_dbase200_sprite_cached)
+
+// The frame records of DBASE200 picture `sprite` (das_assets.c:495-512: at
+// sprite * 8 a size dword, then the payload), or null.
+const uint8_t *WeaponPicture(int32_t sprite, uint32_t &size)
+{
+	size = 0;
+	const size_t at = (size_t)(uint32_t)sprite * 8;
+	if (sprite <= 0 || at + 4 > g_dbase200.size()) return nullptr;
+	const uint8_t *b = g_dbase200.data() + at;
+	size = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+	if (size == 0 || at + 4 + size > g_dbase200.size()) { size = 0; return nullptr; }
+	return b + 4;
+}
 
 class EngineHost : public ActorHost
 {
@@ -106,6 +125,45 @@ public:
 	int32_t MaxHealth() override { return PlayerMaxHealth(); }
 	int32_t Armour() override { return PlayerArmour(); }
 	bool DoorInPool(int sector) override { return RealmsDoorOpen(sector); }
+	// ---- the weapon's outside world: the game core's inventory ----
+	int SlotQuantity(int slot) override
+	{
+		Inventory *inv = InterfaceInventory();
+		return (inv != nullptr && slot >= 0 && slot < Inventory::SLOT_COUNT) ? inv->Slot(slot).quantity : 0;
+	}
+	void SetSlotQuantity(int slot, int q) override
+	{
+		if (Inventory *inv = InterfaceInventory()) inv->SetQuantity(slot, (uint16_t)q);
+	}
+	void RemoveItem(int16_t id) override
+	{
+		if (Inventory *inv = InterfaceInventory()) inv->RemoveItem(TheDbase100(), (uint16_t)id, InterfaceInventorySink());
+	}
+	void NoAmmoMessage(int msg) override
+	{
+		// show_no_ammo_message (WC:466): DBASE100 text 5 or 6 as a timed line.
+		Printf("Realms: %s\n", msg == 5 ? "the weapon is out of charge" : "no ammunition");
+	}
+	void EquipFirstUsableWeapon() override;
+	void ConsumeHeldWeapon() override
+	{
+		// player.c:506-509: the held item used up, then activate_weapon_item(0, 0).
+		Inventory *inv = InterfaceInventory();
+		if (inv == nullptr) return;
+		const int slot = world->weapon.heldSlot;
+		if (slot >= 0) inv->ConsumeSlot(TheDbase100(), slot, InterfaceInventorySink());
+		inv->SetLeftHand(-1);
+		ActorsUnequipWeapon((int)inv->AdamItemId());
+	}
+	void WeaponSound(int id) override { SoundPlayEffect((uint32_t)id, 0xfcff); }   // WC:885
+	int WeaponFrames(int32_t sprite) override
+	{
+		uint32_t size = 0;
+		const uint8_t *fr = WeaponPicture(sprite, size);
+		if (fr == nullptr) return 0;
+		return RunLengthRepairedCount(fr, size, 0, size, fr[8] | (fr[9] << 8));   // das_assets.c:510
+	}
+
 	PictureTiming Timing(uint16_t id) override
 	{
 		PictureTiming t;
@@ -207,6 +265,11 @@ struct State
 	// What each dressed object showed from the player's view last tic, for
 	// roth_actors: the das id (bit 15 the mirror) and its frame.
 	std::map<ObjectUid, std::pair<uint16_t, int>> wearing;
+	// The held weapon's actor (RealmsHeld) and the cards built for weapons with
+	// no model: (picture, frame, vr) -> sprite bound to a card mesh.
+	AActor *held = nullptr;
+	std::map<std::pair<std::pair<int32_t, int>, std::pair<bool, const PClass *>>, int> cards;
+	int lastPull = -1, lastShot = -1, lastAmmo = -1, lastReload = -1, lastNoAmmo = -1, lastEquip = -1, lastCycleEnd = -1;
 };
 
 State g_actors;
@@ -350,6 +413,176 @@ void DrawAndPresent(int ticks)
 		}
 }
 
+// THE WEAPON, once a tic after the tic's ticks (the original's frame runs
+// update_player_tick after tick_dynamic_entities): the trigger from the fire
+// button (BT_ATTACK -- in VR the main-hand trigger), the frame step with the
+// shot aimed from the hand ray in VR and from the view in flat, the recharge.
+// Everything it reads comes through the usercmd: the button and, in VR,
+// AttackAngle/AttackPitch, which the engine rebuilds from it on every peer.
+void WeaponTick(int ticks)
+{
+	ActorWorld &w = g_actors.world;
+	AActor *pmo = ThePlayer(g_actors.level);
+	if (pmo == nullptr || pmo->player == nullptr) return;
+	const bool vr = pmo->OverrideAttackPosDir;
+	const DAngle aimYaw = vr ? pmo->AttackAngle : pmo->Angles.Yaw;
+	const DAngle aimPitch = vr ? pmo->AttackPitch : pmo->Angles.Pitch;
+	// The original's view pitch: p looks up at atan(p / 128), +-126 (0x90a74).
+	double t = -aimPitch.Tan() * 128.0;
+	if (t > 126.0) t = 126.0;
+	if (t < -126.0) t = -126.0;
+	w.player.pitch = (int32_t)lround(t);
+	// spawn_projectile_from_aim takes its screen aim as an offset subtracted
+	// from the player's angle (WC:620-634); the hand's own yaw, as that offset.
+	const int handAngle = (int)lround((aimYaw.Degrees() - 90.0) * (512.0 / 360.0)) & 511;
+	int32_t yawOffset = ((int)w.player.angle - handAngle) & 511;
+	if (yawOffset >= 256) yawOffset -= 512;
+	if (pmo->player->cmd.buttons & BT_ATTACK) w.TriggerFire(0, 0);   // key_fire_weapon (WC:912)
+	w.WeaponFrame(ticks, yawOffset);
+	w.RechargeFrame(ticks);
+	w.player.pitch = 0;
+}
+
+// A card for a weapon with no model: the original's picture, frame `frame`,
+// as a quad mesh bound to `cls`. In VR centred on the picture (it rides the
+// hand); flat, laid out on the original's 320 x 200 screen around its centre,
+// so the card in front of the eye stands where the original drew it.
+int WeaponCard(const PClass *cls, int32_t sprite, int frame, bool vr)
+{
+	const auto key = std::make_pair(std::make_pair(sprite, frame), std::make_pair(vr, cls));
+	auto it = g_actors.cards.find(key);
+	if (it != g_actors.cards.end()) return it->second;
+	int sn = -1;
+	uint32_t size = 0;
+	const uint8_t *fr = WeaponPicture(sprite, size);
+	ViewmodelFrame vf;
+	if (fr != nullptr) vf = DecodeViewmodelFrame(fr, size, frame);
+	if (vf.ok && g_art.level && g_art.level->IsOpen())
+	{
+		const FString texName = FStringf("ROTH_WPN_%X_%02d", (unsigned)sprite, frame);
+		const FTextureID tex = g_art.level->LoosePicture(texName.GetChars(), vf.pixels, vf.w, vf.h);
+		if (tex.isValid())
+		{
+			FMemoryMeshData m;
+			const double u = vr ? 0.06 : 0.1;                // world units a texel
+			const double cx = vr ? vf.x + vf.w * 0.5 : 160.0, cy = vr ? vf.y + vf.h * 0.5 : 100.0;
+			const double x0 = vf.x - cx, x1 = vf.x + vf.w - cx, y0 = vf.y - cy, y1 = vf.y + vf.h - cy;
+			// Model space: x, y up, z. VR: the hand's frame is X right, Y up,
+			// forward -Z, so the card stands in x-y. Flat: the actor faces the
+			// view, model +x is forward and +z is left, so the card stands in y-z.
+			auto V = [&](double px, double py) {
+				return vr ? FVector3((float)(px * u), (float)(-py * u), 0.f)
+				          : FVector3(0.f, (float)(-py * u), (float)(-px * u));
+			};
+			m.vertices.Push(V(x0, y0)); m.vertices.Push(V(x1, y0)); m.vertices.Push(V(x1, y1)); m.vertices.Push(V(x0, y1));
+			FMemoryMeshFace f;
+			f.count = 4;
+			f.vertex[0] = 0; f.vertex[1] = 1; f.vertex[2] = 2; f.vertex[3] = 3;
+			f.uv[0] = FVector2(0.f, 0.f); f.uv[1] = FVector2(1.f, 0.f); f.uv[2] = FVector2(1.f, 1.f); f.uv[3] = FVector2(0.f, 1.f);
+			f.skin = tex;
+			m.faces.Push(f);
+			m.doubleSided = true;
+			const FString mkey = FStringf("weaponcard/%s/%X/%d/%d", cls->TypeName.GetChars(), (unsigned)sprite, frame, vr ? 1 : 0);
+			sn = BindMemoryMesh(mkey.GetChars(), std::move(m), const_cast<PClassActor *>(static_cast<const PClassActor *>(cls)), nullptr);
+		}
+	}
+	g_actors.cards[key] = sn;
+	return sn;
+}
+
+// THE HELD WEAPON IN THE WORLD. One RealmsHeld actor (RealmsWeapon<index>
+// when that class exists), told every tic what the original's weapon is
+// doing, and drawn at the main hand in VR, in front of the eye in flat.
+void PresentHeld()
+{
+	ActorWorld &w = g_actors.world;
+	AActor *pmo = ThePlayer(g_actors.level);
+	if (pmo == nullptr || g_actors.level == nullptr) return;
+	const ActorWorld::WeaponPresentation pr = w.PresentWeapon();
+	const uint32_t ev = w.weaponEvents;
+	w.weaponEvents = 0;
+	const int now = g_actors.level->maptime;
+	if (ev & ActorWorld::WE_PULL) g_actors.lastPull = now;
+	if (ev & ActorWorld::WE_SHOT) g_actors.lastShot = now;
+	if (ev & ActorWorld::WE_AMMO) g_actors.lastAmmo = now;
+	if (ev & ActorWorld::WE_RELOAD) g_actors.lastReload = now;
+	if (ev & ActorWorld::WE_NOAMMO) g_actors.lastNoAmmo = now;
+	if (ev & ActorWorld::WE_EQUIP) g_actors.lastEquip = now;
+	if (ev & ActorWorld::WE_CYCLE_END) g_actors.lastCycleEnd = now;
+
+	PClassActor *cls = PClass::FindActor(FName(FStringf("RealmsWeapon%d", (int)pr.item).GetChars()));
+	if (cls == nullptr) cls = PClass::FindActor("RealmsHeld");
+	if (cls == nullptr) return;
+	AActor *&mo = g_actors.held;
+	if (mo != nullptr && (mo->ObjectFlags & OF_EuthanizeMe)) mo = nullptr;
+	if (mo != nullptr && mo->GetClass() != cls) { mo->Destroy(); mo = nullptr; }
+	if (mo == nullptr) mo = AActor::StaticSpawn(g_actors.level, cls, pmo->Pos(), NO_REPLACE);
+	if (mo == nullptr) return;
+
+	mo->IntVar(FName("RealmsItem")) = pr.item;
+	mo->IntVar(FName("RealmsState")) = pr.state;
+	mo->IntVar(FName("RealmsFrame")) = pr.frame;
+	mo->IntVar(FName("RealmsFrameCount")) = pr.frameCount;
+	mo->IntVar(FName("RealmsStateTics")) = (int)pr.ticksInState;
+	mo->IntVar(FName("RealmsStateLength")) = (int)pr.stateLength;
+	mo->FloatVar(FName("RealmsProgress")) = pr.progress;
+	mo->IntVar(FName("RealmsCharge")) = pr.charge;
+	mo->IntVar(FName("RealmsChargeFull")) = pr.chargeFull;
+	mo->IntVar(FName("RealmsPullTic")) = g_actors.lastPull;
+	mo->IntVar(FName("RealmsShotTic")) = g_actors.lastShot;
+	mo->IntVar(FName("RealmsAmmoTic")) = g_actors.lastAmmo;
+	mo->IntVar(FName("RealmsReloadTic")) = g_actors.lastReload;
+	mo->IntVar(FName("RealmsNoAmmoTic")) = g_actors.lastNoAmmo;
+	mo->IntVar(FName("RealmsEquipTic")) = g_actors.lastEquip;
+	mo->IntVar(FName("RealmsCycleEndTic")) = g_actors.lastCycleEnd;
+
+	const bool vr = pmo->OverrideAttackPosDir;
+	const bool hidden = pr.state == ActorWorld::WS_AWAY || pr.item == 0 || pr.sprite == 0 || pmo->health <= 0;
+	if (hidden) { mo->renderflags |= RF_INVISIBLE; return; }
+	mo->renderflags &= ~RF_INVISIBLE;
+
+	// The modder's mesh when there is one: the class's own sprite, frame letter
+	// = the original's frame. Otherwise the card.
+	const int frame = pr.frame < 0 ? 0 : (pr.frame > 28 ? 28 : pr.frame);
+	const AActor *def = GetDefaultByType(cls);
+	const int stock = (def != nullptr && def->SpawnState != nullptr) ? def->SpawnState->sprite : -1;
+	if (stock >= 0 && FindModelFrame(cls, stock, frame, false) != nullptr) { mo->sprite = stock; mo->frame = (uint8_t)frame; }
+	else
+	{
+		const int card = WeaponCard(cls, pr.sprite, pr.frame, vr);
+		if (card < 0) { mo->renderflags |= RF_INVISIBLE; g_actors.host.counts["held weapon with no model and no picture"]++; return; }
+		mo->sprite = card;
+		mo->frame = 0;
+	}
+
+	if (vr)
+	{
+		// FollowHandMode 1: the model rides the main controller at draw rate.
+		// The actor stands at the shooting point so it is culled with the hand.
+		mo->FollowHandMode = 1;
+		mo->SetOrigin(pmo->AttackPos, true);
+		mo->Angles.Yaw = pmo->AttackAngle;
+	}
+	else
+	{
+		// In front of the eye, where the original's 320 x 200 picture stands:
+		// the card is laid out about the screen's centre, and the view's bob
+		// and sway (the original's draw point) move it.
+		mo->FollowHandMode = 0;
+		const double u = 0.1, dist = 16.0;
+		const DAngle yaw = pmo->Angles.Yaw, pitch = pmo->Angles.Pitch;
+		const DVector3 fwd(yaw.Cos() * pitch.Cos(), yaw.Sin() * pitch.Cos(), -pitch.Sin());
+		const DVector3 left(-yaw.Sin(), yaw.Cos(), 0.0);
+		const DVector3 up = fwd ^ left;
+		const double eyeZ = pmo->player->viewz;
+		const DVector3 eye(pmo->X(), pmo->Y(), eyeZ);
+		const DVector3 at = eye + fwd * dist - left * (pr.x * u) - up * (pr.y * u);
+		mo->SetOrigin(at, true);
+		mo->Angles.Yaw = yaw;
+		mo->Angles.Pitch = pitch;
+	}
+}
+
 void SyncPlayer()
 {
 	AActor *pmo = ThePlayer(g_actors.level);
@@ -375,29 +608,58 @@ void SyncPlayer()
 
 bool ActorsActive() { return g_actors.active; }
 
-int ActorsEquipWeapon(int itemIndex)
+int ActorsEquipWeapon(int slot, int itemIndex)
 {
 	ActorWorld &w = g_actors.world;
-	const int16_t ammoItem = w.EquipWeapon(itemIndex);
-	Printf("Realms: weapon %d equipped: %d action(s), %s\n", itemIndex, w.weapon.slots,
-		ammoItem != 0 ? FStringf("ammo item %d", (int)ammoItem).GetChars() : "needs no ammo");
+	const int16_t ammoItem = w.EquipWeapon(itemIndex, slot);
+	Printf("Realms: weapon %d equipped from slot %d: %d action(s), %s\n", itemIndex, slot, w.weapon.slots,
+		ammoItem != 0 ? FStringf("ammo item %d", (int)ammoItem).GetChars() : "no ammo item");
 	return ammoItem;
 }
 
 void ActorsSetWeaponAmmo(int count)
 {
 	g_actors.world.SetWeaponAmmo(count);
-	Printf("Realms: weapon ammo %d\n", count);
 }
 
-void ActorsUnequipWeapon()
+void ActorsUnequipWeapon(int adamItem)
 {
-	// activate_weapon_item(0, 0) (WC:430-441). NOT YET FAITHFUL: with no
-	// record the original parses the item at 0x81054 (the primary
-	// selection's +0x10) instead; here it is fists with no actions.
-	g_actors.world.EquipWeapon(0);
-	Printf("Realms: weapon put away (fists)\n");
+	// activate_weapon_item(0, 0) (WC:430-441): no slot, and the item parsed is
+	// the one latched at 0x81054 -- Adam's own, whose actions are his hands.
+	g_actors.world.EquipWeapon(adamItem, -1);
+	Printf("Realms: weapon put away (Adam's item %d, %d action(s))\n", adamItem, g_actors.world.weapon.slots);
 }
+
+void ActorsRebuildWeaponList()
+{
+	Inventory *inv = InterfaceInventory();
+	if (inv == nullptr) return;
+	std::vector<std::pair<int, uint16_t>> used;
+	for (int i = 0; i < Inventory::SLOT_COUNT && (int)used.size() < inv->Count(); i++)
+		if (inv->Slot(i).id != 0) used.push_back(std::make_pair(i, inv->Slot(i).id));
+	g_actors.world.RebuildWeaponList(used);
+}
+
+// equip_first_usable_weapon (WC:1379-1435).
+void EngineHost::EquipFirstUsableWeapon()
+{
+	Inventory *inv = InterfaceInventory();
+	if (inv == nullptr) return;
+	std::vector<ActorWorld::CarriedSlot> carried;
+	for (int i = 0; i < Inventory::SLOT_COUNT && (int)carried.size() < inv->Count(); i++)
+		if (inv->Slot(i).id != 0) carried.push_back({ i, inv->Slot(i).id, inv->Slot(i).quantity });
+	auto count = [&](int16_t id) { return inv->Query(TheDbase100(), (uint16_t)id, 0, nullptr); };
+	int id = 0;
+	const int slot = world->FindUsableWeapon(carried, count, id);
+	if (slot < 0) { inv->SetLeftHand(-1); ActorsUnequipWeapon((int)inv->AdamItemId()); return; }   // reset_weapon_hud
+	if (slot == world->weapon.heldSlot) return;
+	if (slot == inv->RightHand()) inv->SetRightHand(-1, InterfaceInventorySink());
+	world->ResetWeaponFireTiming();
+	inv->SetLeftHand(slot);                                  // 0x81038 = the slot (WC:1427)
+	const int ammo = ActorsEquipWeapon(slot, id);
+	if (ammo != 0) ActorsSetWeaponAmmo(inv->Query(TheDbase100(), (uint16_t)ammo, 0, InterfaceInventorySink()));
+}
+
 void ActorsDrainConsole();
 
 void ActorsBeginLevel(Map &map, FLevelLocals *level, Log *log)
@@ -431,6 +693,13 @@ void ActorsBeginLevel(Map &map, FLevelLocals *level, Log *log)
 	g_actors.loadedArt.clear();
 	g_actors.dressed.clear();
 	g_actors.wearing.clear();
+	if (g_dbase200.empty())
+	{
+		const std::string pics = inst.DataFile("DBASE200.DAT");
+		if (!pics.empty()) g_dbase200 = ReadWhole(pics);
+	}
+	g_actors.cards.clear();
+	g_actors.held = nullptr;
 	g_art.shared.reset(new TextureSet());
 	g_art.level.reset(new TextureSet());
 	if (!g_art.shared->Open(inst.SharedPack().c_str(), inst.PackFile(inst.SharedPack().c_str()), log) && log)
@@ -471,6 +740,8 @@ void ActorsEndLevel()
 	g_actors.spriteForViews.clear();
 	g_actors.dressed.clear();
 	g_actors.wearing.clear();
+	g_actors.cards.clear();
+	g_actors.held = nullptr;
 	g_actors.active = false;
 	g_actors.level = nullptr;
 }
@@ -487,8 +758,11 @@ void ActorsTick(FLevelLocals *level, int ticks)
 	for (int t = 0; t < ticks; t++) { g_actors.world.Tick(); g_actors.ticks++; }
 	g_actors.world.frameClock = g_actors.ticks;
 	g_actors.host.RekeyIfNeeded();
+	WeaponTick(ticks);
+	g_actors.host.RekeyIfNeeded();
 	// After the frame's ticks: what is drawn this frame.
 	DrawAndPresent(ticks);
+	PresentHeld();
 	g_actors.host.RekeyIfNeeded();
 	ActorsDrainConsole();
 }
@@ -528,7 +802,7 @@ int ActorsCommand(uint8_t op, Command &rec, int &activeObjectSector, int &active
 // is running is QUEUED and run from the level tick, like roth_dialogue: a
 // bridge script's commands arrive before the map exists.
 namespace roth { namespace {
-struct PendingConsole { bool dump = false; int shoot = 0; int atTic = 0; };
+struct PendingConsole { bool dump = false; int shoot = 0; int atTic = 0; int give = 0; bool trigger = false; bool weapon = false; };
 std::vector<PendingConsole> g_consoleQueue;
 }
 void ActorsDrainConsole()
@@ -540,6 +814,32 @@ void ActorsDrainConsole()
 	for (const PendingConsole &c : q)
 	{
 		if (c.atTic > now) { later.push_back(c); continue; }
+		if (c.give != 0)
+		{
+			Inventory *inv = InterfaceInventory();
+			const int32_t r = inv != nullptr ? inv->GiveItem(TheDbase100(), c.give, nullptr, InterfaceInventorySink()) : 0;
+			Printf("roth_give %d -> %s (tic %d)\n", c.give, r ? "given" : "not given", now);
+			continue;
+		}
+		if (c.trigger)
+		{
+			g_actors.world.TriggerFire(0, 0);
+			Printf("roth_trigger (tic %d): %s", now, g_actors.world.DumpWeapon().c_str());
+			continue;
+		}
+		if (c.weapon)
+		{
+			const ActorWorld::WeaponPresentation pr = g_actors.world.PresentWeapon();
+			static const char *names[] = { "Away", "Raise", "Ready", "Fire", "Reload", "Lower" };
+			Printf("roth_weapon (tic %d): item %d %s frame %d/%d picture %x, %u of %u ticks (%.2f), drawn at %d,%d, charge %d/%d\n  %s",
+				now, (int)pr.item, names[pr.state], pr.frame, pr.frameCount, (unsigned)pr.sprite, pr.ticksInState, pr.stateLength,
+				pr.progress, pr.x, pr.y, pr.charge, pr.chargeFull, g_actors.world.DumpWeapon().c_str());
+			if (g_actors.held != nullptr)
+				Printf("  held actor %s sprite %d frame %d at %.0f,%.0f,%.0f%s%s\n", g_actors.held->GetClass()->TypeName.GetChars(),
+					g_actors.held->sprite, g_actors.held->frame, g_actors.held->X(), g_actors.held->Y(), g_actors.held->Z(),
+					(g_actors.held->renderflags & RF_INVISIBLE) ? " (hidden)" : "", g_actors.held->FollowHandMode == 1 ? " (rides the main hand)" : "");
+			continue;
+		}
 		if (c.dump)
 		{
 			Printf("roth_actors: tick %u, health %d/%d, armour %d\n", g_actors.ticks,
@@ -573,6 +873,29 @@ CCMD(roth_actors)
 {
 	roth::PendingConsole c; c.dump = true;
 	if (argv.argc() >= 2) c.atTic = atoi(argv[1]);         // roth_actors [level tic]
+	roth::g_consoleQueue.push_back(c);
+}
+
+// roth_give <DBASE100 index> [tic]: give_item, as the original's scripts do
+// (a weapon equips itself). roth_trigger [tic]: pull the trigger once.
+// roth_weapon [tic]: what the weapon is doing and what is drawn for it.
+CCMD(roth_give)
+{
+	if (argv.argc() < 2 || atoi(argv[1]) <= 0) { Printf("usage: roth_give <DBASE100 index> [level tic]\n"); return; }
+	roth::PendingConsole c; c.give = atoi(argv[1]);
+	if (argv.argc() >= 3) c.atTic = atoi(argv[2]);
+	roth::g_consoleQueue.push_back(c);
+}
+CCMD(roth_trigger)
+{
+	roth::PendingConsole c; c.trigger = true;
+	if (argv.argc() >= 2) c.atTic = atoi(argv[1]);
+	roth::g_consoleQueue.push_back(c);
+}
+CCMD(roth_weapon)
+{
+	roth::PendingConsole c; c.weapon = true;
+	if (argv.argc() >= 2) c.atTic = atoi(argv[1]);
 	roth::g_consoleQueue.push_back(c);
 }
 

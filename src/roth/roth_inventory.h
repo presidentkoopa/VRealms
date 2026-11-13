@@ -212,6 +212,9 @@ public:
 	void Reset();
 
 	const InventorySlot &Slot(int i) const { return mSlots[(size_t)i]; }
+	// A slot's quantity word, written by the weapon (trigger_weapon_fire and
+	// tick_weapon_hud_ammo_anim decrement, reload and recharge it in place).
+	void SetQuantity(int i, uint16_t q) { if (i >= 0 && i < SLOT_COUNT) mSlots[(size_t)i].quantity = q; }
 	int Count() const { return mCount; }
 	int LeftHand() const { return mLeft; }
 	int RightHand() const { return mRight; }

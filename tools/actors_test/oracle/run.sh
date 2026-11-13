@@ -1,7 +1,7 @@
 #!/bin/bash
 # run.sh MAP x y ang script out.log [frames]   -- runs the original with actprobe
 set -u
-OB=/home/claude/oracle_build; P=/home/claude/actp
+OB=/home/claude/oracle_build; P=${ACTP_DIR:-/home/claude/actp}   # ACTP_DIR: a private probe dir (plugin.so, games/)
 MAP=$1; X=$2; Y=$3; A=$4; SCRIPT=$(realpath $5); OUT=$(realpath -m $6); FR=${7:-400}
 DATA="/mnt/user-data/uploads/Realms of the Haunting/DATA"
 RAW=$(find "$DATA/M" -maxdepth 1 -iname "$MAP.RAW" | head -1)

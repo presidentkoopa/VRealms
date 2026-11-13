@@ -40,6 +40,10 @@ class TextureSet;
 void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install);
 // The inventory's sink, for GameCore::Attach.
 InventorySink *InterfaceInventorySink();
+// The game core's inventory, null before InterfaceAttach (the weapon reads and
+// writes slot quantities through it).
+class Inventory;
+Inventory *InterfaceInventory();
 
 // The calls of the interpreter that belong to the dialogue window. CoreHost
 // forwards these here (they replace the console stopgap).

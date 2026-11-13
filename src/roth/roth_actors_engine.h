@@ -45,8 +45,12 @@ bool ActorsActive();
 // activate_weapon_item on the actor rules' player weapon. Equip returns the
 // ammo item the caller must count in the inventory (0 for none), and the
 // count goes back through ActorsSetWeaponAmmo.
-int ActorsEquipWeapon(int itemIndex);
+int ActorsEquipWeapon(int slot, int itemIndex);
 void ActorsSetWeaponAmmo(int count);
-void ActorsUnequipWeapon();
+// activate_weapon_item(0, 0): no slot; the original parses the item latched at
+// 0x81054, Adam's own (restore_active_held_item), which the caller passes.
+void ActorsUnequipWeapon(int adamItem);
+// rebuild_weapon_inventory_list (WC:488), from the inventory as it stands.
+void ActorsRebuildWeaponList();
 
 } // namespace roth

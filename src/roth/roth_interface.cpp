@@ -94,9 +94,9 @@ class RuntimeInvSink : public InventorySink
 public:
 	std::map<std::string, int> notBuilt;
 
-	void UnequipWeapon() override { ActorsUnequipWeapon(); }
+	void UnequipWeapon() override;
 	void EquipWeapon(int slot, int32_t itemId) override;
-	void RebuildWeaponList() override { notBuilt["weapon list"]++; }
+	void RebuildWeaponList() override { ActorsRebuildWeaponList(); }
 	void ResetWeaponHud() override { notBuilt["weapon HUD"]++; }
 	void RightHandChanged(int slot) override;
 	void RefreshPanel() override;
@@ -178,10 +178,16 @@ void RuntimeInvSink::EquipWeapon(int slot, int32_t itemId)
 	// weapon and say which ammo item it takes; the count comes from the
 	// inventory, through Query, whose side effect (it clears the
 	// auto-selected flag) the original has here too (weapon_combat.c:450).
-	(void)slot;
-	const int ammoItem = ActorsEquipWeapon((int)itemId);
+	const int ammoItem = ActorsEquipWeapon(slot, (int)itemId);
 	if (ammoItem != 0 && U.core != nullptr && U.db != nullptr)
 		ActorsSetWeaponAmmo(U.core->Items().Query(*U.db, (uint16_t)ammoItem, 0, this));
+}
+
+void RuntimeInvSink::UnequipWeapon()
+{
+	// activate_weapon_item(0, 0): Adam's own item (0x81054, latched by
+	// restore_active_held_item) is what the original parses.
+	ActorsUnequipWeapon(U.core != nullptr ? (int)U.core->Items().AdamItemId() : 0);
 }
 
 void RuntimeInvSink::RightHandChanged(int slot)
@@ -1028,6 +1034,7 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 }
 
 InventorySink *InterfaceInventorySink() { return &U.invSink; }
+Inventory *InterfaceInventory() { return U.core != nullptr ? &U.core->Items() : nullptr; }
 
 void InterfaceSetMenus(RealmsMenus *menus) { U.menus = menus; }
 
