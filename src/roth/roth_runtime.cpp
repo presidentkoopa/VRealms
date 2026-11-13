@@ -7750,12 +7750,14 @@ bool FlowResponder(const event_t *ev)
 	const int k = ev->data1;
 	if (g_menus.IsOpen())
 	{
-		if (g_menus.Current() == RealmsMenus::DEATH && k == KEY_SPACE)
+		if (g_menus.Current() == RealmsMenus::DEATH)
 		{
-			// Scancode 0x39 in the death wait (game_core.c:984-997): the last
-			// slot, or, with none, the end of the wait.
-			if (g_menus.Rows()[0].enabled) g_menus.Choose(0); else g_menus.Back();
-			return true;
+			// The death wait reads two keys and nothing else (game_core.c:986-1000):
+			// scancode 1 (Esc) ends the wait; scancode 0x39 (Space) loads the last
+			// slot, or, with none, ends the wait.
+			if (k == KEY_SPACE) { g_menus.DeathKey(true); return true; }
+			if (k == KEY_ESCAPE) { g_menus.DeathKey(false); return true; }
+			return false;
 		}
 		switch (k)
 		{

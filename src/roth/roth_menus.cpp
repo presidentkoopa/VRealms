@@ -164,9 +164,7 @@ void RealmsMenus::OpenDeath(bool canLoad)
 {
 	CloseAll();
 	mDeathCanLoad = canLoad;
-	mTitleText = "You are dead";
 	Push(DEATH);
-	mSelected = canLoad ? 0 : 1;
 }
 
 uint32_t RealmsMenus::TitleId() const { return BoxDesc(Current(), mFrontEnd).title; }
@@ -190,14 +188,7 @@ std::vector<RealmsMenus::Row> RealmsMenus::Rows() const
 		}
 		return out;
 	}
-	if (b == DEATH)
-	{
-		Row load; load.label = "Load the last saved game"; load.enabled = mDeathCanLoad;
-		Row cont; cont.label = "Continue";
-		out.push_back(load);
-		out.push_back(cont);
-		return out;
-	}
+	if (b == DEATH) return out;                         // the death wait has no box and no rows (game_core.c:978-1003)
 	for (uint32_t id : BoxDesc(b, mFrontEnd).rows)
 	{
 		Row row;
@@ -338,12 +329,15 @@ void RealmsMenus::Choose(int row)
 		mOut.kind = MenuOutcome::RUN_ACTION;
 		mOut.slot = 5 + row;                                // values 0x00400005..7
 		break;
-	case DEATH:
-		Emit(row == 0 ? MenuOutcome::DEATH_LOAD : MenuOutcome::DEATH_END);
-		break;
 	default:
 		break;
 	}
+}
+
+void RealmsMenus::DeathKey(bool space)
+{
+	if (Current() != DEATH) return;
+	Emit(space && mDeathCanLoad ? MenuOutcome::DEATH_LOAD : MenuOutcome::DEATH_END);
 }
 
 void RealmsMenus::Back()

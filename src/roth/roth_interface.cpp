@@ -125,7 +125,6 @@ enum ElementKind
 	E_INVPANEL,                                         // the inventory panel's picture; a click is mapped to its hotspots
 	E_POP_MAG, E_POP_INFO, E_POP_TOPIC, E_POP_CLOSE, E_POP_PGUP, E_POP_PGDN, E_POP_BACKING,
 	E_MENUBOX,                                          // a message box's picture; a click is mapped by hit_test_ui_element
-	E_MENU_BACKING, E_MENU_ROW, E_MENU_BACK,            // the death screen's (an invented layout: the original has no box there)
 	E_PICTURE,                                          // a picture shown, not clicked (the subtitle, the timed message, a box under another)
 };
 
@@ -507,7 +506,7 @@ const Element *HitElement(const Ray &r)
 		const DVector3 rel = (r.start + r.dir * t) - bb->pos;
 		if (fabs(rel | right) > hw || fabs(rel | up) > hh) continue;
 		// A backing loses to anything drawn on it at the same depth.
-		if (best != nullptr && fabs(t - bestT) < 0.5 && (e.kind == E_POP_BACKING || e.kind == E_MENU_BACKING)) continue;
+		if (best != nullptr && fabs(t - bestT) < 0.5 && (e.kind == E_POP_BACKING)) continue;
 		bestT = t;
 		best = &e;
 	}
@@ -891,51 +890,6 @@ std::string InterfaceText(uint32_t id)
 	return U.dialogue.LineText(off, 0x50);
 }
 
-// The death screen. AN INVENTED LAYOUT, kept until the owner decides: the
-// original draws no box here -- its death wait (game_core.c:978-1003) shows
-// the world for up to 300 ticks and takes Esc or the quickload key, nothing
-// else -- so there is no picture of the original's to draw. Its rows are
-// this port's way to give those two keys to a player with no keyboard.
-void BuildDeathBox()
-{
-	if (U.menus == nullptr || !U.menus->IsOpen()) return;
-	RealmsMenus &m = *U.menus;
-	const std::vector<RealmsMenus::Row> rows = m.Rows();
-	std::vector<std::string> text;
-	for (const RealmsMenus::Row &r : rows) text.push_back(r.textId ? InterfaceText(r.textId) : r.label);
-	const std::string title = m.TitleText();
-	const std::string body;
-	double widest = TextPixels(title);
-	if (!body.empty()) widest = std::max(widest, (double)TextPixels(body));
-	for (const std::string &t : text) widest = std::max(widest, (double)TextPixels(t));
-	const double S = 1.6;                                   // the menu reads larger than a subtitle
-	const double rowH = ROWH * S * 1.5;
-	const double W = widest * PX * S + 8.0;
-	const int head = body.empty() ? 1 : 2;
-	const double H = (rows.size() + head) * rowH + 4.0;
-	const double L = 3.0;
-	Add(0, 0, L, W, H, BB_PANEL, 0, PalEntry(255, 8, 8, 12), nullptr, 0.9, E_MENU_BACKING, 0, true);
-	double z = H / 2 - rowH * 0.5 - 1.0;
-	Add(0, z, L + 0.1, TextPixels(title) * PX * S, ROWH * S, BB_TEXT, 0, Color(U.dialogue.markerSelected), title.c_str(), 1.0, E_NONE, 0, false);
-	z -= rowH;
-	if (!body.empty())
-	{
-		Add(0, z, L + 0.1, TextPixels(body) * PX * S, ROWH * S, BB_TEXT, 0, Color(U.dialogue.defaultMessageColor[0]), body.c_str(), 1.0, E_NONE, 0, false);
-		z -= rowH;
-	}
-	for (size_t i = 0; i < rows.size(); i++)
-	{
-		const bool lit = (int)i == m.Selected();
-		const bool on = rows[i].enabled;
-		Add(0, z, L + 0.1, W - 3.0, rowH * 0.9, BB_PANEL, 0, lit ? PalEntry(255, 70, 60, 40) : PalEntry(255, 24, 24, 24), nullptr,
-			lit ? 0.7 : 0.3, E_MENU_ROW, (int)i, true);
-		const PalEntry col = !on ? PalEntry(255, 110, 110, 110) : Color(lit ? U.dialogue.markerSelected : U.dialogue.defaultMessageColor[0]);
-		if (!text[i].empty())
-			Add(0, z, L + 0.2, TextPixels(text[i]) * PX * S, ROWH * S, BB_TEXT, 0, col, text[i].c_str(), 1.0, E_NONE, 0, false);
-		z -= rowH;
-	}
-	Add(W / 2 - 2.0, H / 2 - 2.0, L + 0.2, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "x", 1.0, E_MENU_BACK, 0, true);
-}
 
 // The slot names buffer read_savegame_slot_names fills (savegame.c:1262-1294):
 // 9 cells of 0x30 bytes, {0, '~'} for a slot with no save.
@@ -1015,7 +969,9 @@ void TickMenuPictures()
 void BuildMenu()
 {
 	if (U.menus == nullptr || !U.menus->IsOpen()) return;
-	if (U.menus->Current() == RealmsMenus::DEATH) { BuildDeathBox(); return; }
+	// The death wait draws nothing: the original shows the world and reads
+	// two keys (game_core.c:978-1003; FlowResponder has them).
+	if (U.menus->Current() == RealmsMenus::DEATH) return;
 	// show_message_box's own picture of each box on screen (roth_menudraw):
 	// the one under, when it stays, then the one on top, a little in front;
 	// only the top one takes the pointer, through hit_test_ui_element.
@@ -1057,8 +1013,6 @@ void ClickElement(const Element &e, int button)
 	case E_POP_CLOSE: U.screen.PopupClose(); break;
 	case E_POP_PGUP: U.screen.PopupPageUp(); break;
 	case E_POP_PGDN: U.screen.PopupPageDown(); break;
-	case E_MENU_ROW: if (U.menus != nullptr) { U.menus->Choose(e.arg); Printf("[roth_menu] row %d chosen: %s\n", e.arg, U.menus->Describe().c_str()); } break;
-	case E_MENU_BACK: if (U.menus != nullptr) U.menus->Back(); break;
 	default: break;
 	}
 }
@@ -1127,13 +1081,7 @@ bool Press(player_t *player, int forcedButton)
 	{
 		const Element *e = HitElement(rays[i]);
 		if (e == nullptr) continue;
-		if (menuUp)
-		{
-			// The death screen's rows (an invented layout; see BuildDeathBox).
-			if (e->kind < E_MENU_ROW) continue;
-			ClickElement(*e, InventoryScreen::PRIMARY);
-			return true;
-		}
+		if (menuUp) return false;                 // the death wait takes no clicks (game_core.c:986-1000)
 		// The main hand (or the view) is the primary button, the off hand the
 		// secondary: the original needs both on the inventory.
 		const int button = forcedButton ? forcedButton : (i == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY);
@@ -1163,11 +1111,8 @@ void UpdateHover(player_t *player)
 	const int bb = e ? e->bb : 0;
 	if (U.menus != nullptr && U.menus->IsOpen())
 	{
-		if (U.menus->Current() == RealmsMenus::DEATH)
-		{
-			if (bb != U.hoverBb && e != nullptr && e->kind == E_MENU_ROW) U.menus->Hover(e->arg);
-		}
-		else U.menus->PointerAt(n > 0 ? MenuHit(rays[0], e) : 0);   // every frame, as the loop does (:1591-1607)
+		if (U.menus->Current() != RealmsMenus::DEATH)   // the death wait has no pointer (game_core.c:986-1000)
+			U.menus->PointerAt(n > 0 ? MenuHit(rays[0], e) : 0);   // every frame, as the loop does (:1591-1607)
 		U.hoverBb = bb;
 		return;
 	}

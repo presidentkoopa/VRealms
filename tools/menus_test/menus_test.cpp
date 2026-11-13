@@ -267,13 +267,14 @@ int main(int argc, char **argv)
 	CHECK(m.Current() == RealmsMenus::MAIN && m.ShowFlags() == 1);
 
 	// ---- the death screen -----------------------------------------------------------
+	// No box and no rows: two keys (game_core.c:986-1000).
 	m.OpenDeath(false);
-	CHECK(!m.Rows()[0].enabled && m.Selected() == 1);
-	m.Choose(0);
-	CHECK(!m.HasOutcome());
-	m.Back();
+	CHECK(m.Rows().empty());
+	m.DeathKey(true);                                      // Space with no last slot: the wait ends
 	CHECK(m.Take().kind == MenuOutcome::DEATH_END);
-	m.OpenDeath(true); m.Choose(0);
+	m.OpenDeath(true); m.DeathKey(false);                  // Esc: the wait ends
+	CHECK(m.Take().kind == MenuOutcome::DEATH_END);
+	m.OpenDeath(true); m.DeathKey(true);                   // Space with a last slot: load it
 	CHECK(m.Take().kind == MenuOutcome::DEATH_LOAD);
 
 	// ---- what the choices do to the game, against the original ----------------------

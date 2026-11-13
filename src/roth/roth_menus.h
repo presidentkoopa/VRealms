@@ -89,6 +89,10 @@ public:
 	// The death wait (game_core.c:978-1003) as a box with its two keys as rows.
 	// `canLoad`: a slot has been saved or loaded this session (g@0x7138c != -1).
 	void OpenDeath(bool canLoad);
+	bool DeathCanLoad() const { return mDeathCanLoad; }   // a last slot to load (game_core.c:989)
+	// The death wait's two keys (game_core.c:986-1000): Space (scancode 0x39)
+	// loads the last slot, or with none ends the wait; Esc (scancode 1) ends it.
+	void DeathKey(bool space);
 	void CloseAll();
 
 	Box Current() const { return mStack.empty() ? NONE : mStack.back(); }
