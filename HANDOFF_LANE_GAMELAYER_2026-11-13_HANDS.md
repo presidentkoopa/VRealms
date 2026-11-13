@@ -51,3 +51,10 @@ The patch is `git diff --binary` against 375bcc07 and applies cleanly there. It 
 - OWNER'S IDEAS, ON HOLD until the FBX hands are tested (owner: "wait on the work I just said until fbx is done and I test"):
   - a mash-up of DistanceGrab and Melee: melee hits switches (light switches); doorknobs designated grabbable, grabbed to open;
   - hands in the inventory: reach in, or a selection laser from each hand while it is open; put items in the use boxes, light candles, comment on items.
+
+## Owner's decisions, 2026-11-13 02:40
+- Left hand skin: read the right hand's skin with the u flip undone (Hand_Low1's UVs are Hand_Low's at 1-u on all 1,667 points; its material blinn1 has no texture).
+- Bring in the FBX's embedded normal map (16-bit) and roughness map, both hands.
+- Palm cup: HANDPALM_joint follows grip from the open frame to the fist frame.
+- Open = Blender frame 1 (take 0), fist = 319 (take 318): keep (seen in frames_right.png beside 144 and 689).
+- Thumb: keep UZDXREMA's 0.6 toward the fist frame's thumb on touch.
