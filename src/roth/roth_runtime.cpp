@@ -7617,15 +7617,16 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 	struct Cand { DVector3 aim; DVector2 out; Pick want; double d2; };
 	std::vector<Cand> cands;
 
-	if (!stricmp(kind, "item"))
+	const bool examine = !stricmp(kind, "examine");
+	if (!stricmp(kind, "item") || examine)
 	{
 		if (!TheDbase100().IsLoaded()) return false;
 		for (size_t s = 0; s < g.map.objects.size(); s++)
 			for (size_t i = 0; i < g.map.objects[s].size(); i++)
 			{
 				const Object &o = g.map.objects[s][i];
-				if (o.renderType & 0x13) continue;
-				if (!IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)))) continue;
+				if (!examine && (o.renderType & 0x13)) continue;
+				if (!examine && !IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)))) continue;
 				AActor *mo = FindObjectActor((int)s, (int)i);
 				if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
 				DVector3 lo, hi;
@@ -7662,6 +7663,8 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 			c.want.kind = door ? Pick::DoorLeaf : Pick::WallFace;
 			c.want.line = ln;
 			c.want.side = (ln->sidedef[1] == sd) ? 1 : 0;
+			if (door) { auto lt = g.doorLeafSide.find(sideIdx); if (lt != g.doorLeafSide.end()) c.want.leafTag = lt->second; }
+			c.want.hitPos = DVector3(mid.X, mid.Y, 0);
 			c.d2 = (mid - from.XY()).LengthSquared();
 			cands.push_back(c);
 		};
@@ -7707,6 +7710,16 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 			return got.kind == c.want.kind && got.line == c.want.line;
 		};
 		if (!reaches(eye) || !reaches(hp)) continue;
+		// AND THE ORIGINAL'S CURSOR MUST ALLOW THE VERB the test is for, from
+		// that spot: a use for an item, a door or a face; an examine for
+		// "examine". (A pickable item need not have anything to examine.)
+		{
+			Pick want = c.want;
+			want.hitPos = c.aim;
+			const double z = (c.aim.XY() - sxy) | fwd;
+			const CursorClass cc = ClassifyPick(want, who, PickDepthOfZ(z));
+			if (examine ? !cc.CanExamine() : !cc.CanUse()) continue;
+		}
 		if (hand.clearRadius > 0)
 		{
 			bool clear = true;

@@ -123,6 +123,7 @@ namespace
 constexpr double kPokeIn      = 0.025;   // fingertip contact
 constexpr double kPokeOut     = 0.06;    // re-arm distance
 constexpr double kGrabReach   = 0.20;    // palm, along the hand
+constexpr double kGrabBack    = 0.08;    // the grip's ray starts this far behind the palm
 constexpr double kGrabRadius  = 0.15;    // palm to an object's box
 constexpr double kNoHitBeam   = 0.60;    // the beam's length with nothing at its end
 constexpr int    kDwellTics   = 28;      // 0.8 s
@@ -146,12 +147,16 @@ struct HandState
 	bool        haveRay = false;
 	DVector3    tip, dir, palm;
 	bool        fromFinger = false;
+	const char *rayWhy = nullptr;   // why there is no ray (a log line)
+	const char *loggedRayWhy = nullptr;
+	int         loggedInputs = -1;  // the input state last reported
 	bool        havePick = false;
 	Pick        pick;
 	CursorClass cls;
 
 	// gestures
 	Pick  dwellTarget;
+	Pick  noDwell;          // the last target reported as not examinable (a log line)
 	int   dwellTics = 0;
 	bool  dwellDone = false;
 	bool  tapDown = false;
@@ -183,6 +188,8 @@ struct VRPick
 	DVector3 testAim;
 	double testPitch = 0, testYaw = 0;
 
+	const char *loggedStand = "";   // why the hands last stood down ("" = never reported)
+
 	// the cost counters (VRPickTick)
 	int    costTics = 0;
 	double costSum = 0, costMax = 0;
@@ -190,6 +197,24 @@ struct VRPick
 VRPick P;
 
 const char *RoleName(int role) { return role == VR_MAINHAND ? "main" : "off"; }
+
+// The decision lines (what each hand is doing and why) are printed under the
+// flat test or roth_vrpick_debug only.
+bool Logging() { return P.test || roth_vrpick_debug; }
+
+// Why a click on this classification would not use / examine, for a log line.
+FString WhyNotUse(const CursorClass &c)
+{
+	if (c.CanUse()) return "usable";
+	if (c.type != 3) return FStringf("not usable: cursor type %d (use needs 3)", (int)c.type);
+	return FStringf("not usable: depth %.0f >= 600 (planar %.0f >= 268)", c.depth, (c.depth - 64.0) / 2.0);
+}
+FString WhyNotExamine(const CursorClass &c)
+{
+	if (c.CanExamine()) return "examinable";
+	if (c.examinable == 0) return "nothing to examine (no examine trigger, no OnInspect block)";
+	return FStringf("not examinable: cursor type %d (examine needs 3 or 5)", (int)c.type);
+}
 
 double UPM()
 {
@@ -332,11 +357,15 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 {
 	h.haveRay = false;
 	h.fromFinger = false;
+	h.rayWhy = nullptr;
 	const int side = VRHandPose_SideForRole(role);
 	AActor *ha = HandActor(side);
 	FModel *model = ha != nullptr ? Model_ActorModel(ha) : nullptr;
 	FVRHandPoints pts;
-	if (model != nullptr && VRHandPose_FingerPoints(model, side, pts))
+	if (ha == nullptr) h.rayWhy = "no hand actor";
+	else if (model == nullptr) h.rayWhy = "the hand actor draws no model";
+	else if (!VRHandPose_FingerPoints(model, side, pts)) h.rayWhy = "the hand model lacks INDEX_UP_TOP / INDEX_BASE / HANDPALM";
+	else
 	{
 		DVector3 tip, base, palm;
 		if (Model_ActorPointToWorld(ha, pts.tip, tip) && Model_ActorPointToWorld(ha, pts.indexBase, base)
@@ -349,7 +378,9 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 				h.tip = tip; h.dir = d / len; h.palm = palm;
 				h.haveRay = h.fromFinger = true;
 			}
+			else h.rayWhy = "the fingertip and its knuckle coincide";
 		}
+		else h.rayWhy = "no draw transform for the hand";
 	}
 	if (!h.haveRay && !P.test && pmo != nullptr && pmo->OverrideAttackPosDir)
 	{
@@ -444,6 +475,9 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		if (d <= r) near.push_back({ d, mo });
 	}
 	std::sort(near.begin(), near.end(), [](const std::pair<double, AActor *> &a, const std::pair<double, AActor *> &b) { return a.first < b.first; });
+	if (Logging())
+		Printf("[roth_vrpick] %s hand grip closes: palm at (%.1f %.1f %.1f), %d object(s) within %.1f units (%.2f m)\n",
+			RoleName(role), h.palm.X, h.palm.Y, h.palm.Z, (int)near.size(), r, kGrabRadius);
 	Pick objPick;
 	CursorClass objCls;
 	bool haveObj = false;
@@ -455,25 +489,40 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		p.hitPos = n.second->PosPlusZ(n.second->Height * 0.5);
 		p.dist = n.first;
 		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, p.hitPos - h.palm));
+		if (Logging())
+			Printf("[roth_vrpick]   object %.1f units from the palm: cursor type %d shape 0x%x -> %s\n",
+				n.first, (int)c.type, (unsigned)c.shape, WhyNotUse(c).GetChars());
 		if (!c.CanUse()) continue;
 		objPick = p; objCls = c; haveObj = true;
 		break;
 	}
+	// THE SURFACE ALONG THE HAND, from a little BEHIND the palm: a palm laid
+	// flat on a door is already level with it, or a hair through it, and a ray
+	// starting at the palm would begin past the very surface it is pressed on.
+	// So the ray starts kGrabBack behind the palm, and a hit counts from there
+	// to kGrabReach in front of it.
+	const double back = kGrabBack * upm;
 	Pick rayPick;
 	CursorClass rayCls;
 	bool haveRay = false;
-	if (PickFrom(pmo, h.palm, h.dir, kGrabReach * upm, rayPick))
+	if (PickFrom(pmo, h.palm - h.dir * back, h.dir, back + kGrabReach * upm, rayPick))
 	{
+		rayPick.dist -= back;   // from the palm; negative: just behind it
 		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.dir));
 		haveRay = rayCls.CanUse();
+		if (Logging())
+			Printf("[roth_vrpick]   surface along the hand: %s %.1f units from the palm: cursor type %d shape 0x%x -> %s\n",
+				PickKindName(rayPick), rayPick.dist, (int)rayCls.type, (unsigned)rayCls.shape, WhyNotUse(rayCls).GetChars());
 	}
+	else if (Logging())
+		Printf("[roth_vrpick]   surface along the hand: nothing from %.1f behind the palm to %.1f in front\n", back, kGrabReach * upm);
 	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
 	// the cursor: a door handle on the door is taken before the door, the door
 	// before a key lying a hand's width beyond it.
 	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist)) return DoUse(role, objPick, objCls, pmo, "grip on an object");
 	if (haveRay) return DoUse(role, rayPick, rayCls, pmo, "grip on a surface");
-	if (P.test || roth_vrpick_debug)
-		Printf("[roth_vrpick] %s hand grip: nothing usable within reach (%d object(s) near the palm)\n", RoleName(role), (int)near.size());
+	if (Logging())
+		Printf("[roth_vrpick] %s hand grip: nothing usable within reach\n", RoleName(role));
 	return false;
 }
 
@@ -508,7 +557,22 @@ void TickHand(int role, AActor *pmo)
 	// index tap is under way (or starting), and on the tic the grip closes.
 	const bool gripEdge = h.gripClosed && !gripWasClosed;
 	const bool tapStarting = !h.tapDown && h.wasPointing && h.triggerTouch;
-	if (!h.valid || !(h.pointing || h.tapDown || tapStarting || gripEdge) || !FingerRay(role, h, pmo))
+	if (Logging())
+	{
+		const int state = (h.valid ? 1 : 0) | (h.pointing ? 2 : 0) | (h.gripClosed ? 4 : 0) | (h.triggerTouch ? 8 : 0) | (h.thumbTouch ? 16 : 0);
+		if (state != h.loggedInputs)
+		{
+			h.loggedInputs = state;
+			Printf("[roth_vrpick] %s hand inputs: %s grip %.2f trigger %.2f, trigger touch %d, thumb touch %d -> %s%s\n", RoleName(role),
+				h.valid ? "" : "NO CONTROLLER,", h.grip, h.trigger, (int)h.triggerTouch, (int)h.thumbTouch,
+				h.pointing ? "pointing" : "not pointing", h.gripClosed ? ", grip closed" : "");
+		}
+	}
+	const bool busy = h.valid && (h.pointing || h.tapDown || tapStarting || gripEdge);
+	if (busy && !FingerRay(role, h, pmo) && Logging() && h.rayWhy != h.loggedRayWhy)
+		Printf("[roth_vrpick] %s hand: no ray -- %s\n", RoleName(role), h.rayWhy ? h.rayWhy : "unknown");
+	if (busy) h.loggedRayWhy = h.haveRay ? nullptr : h.rayWhy;
+	if (!busy || !h.haveRay)
 	{
 		h.havePick = false;
 		ResetGestures(h);
@@ -579,6 +643,8 @@ void TickHand(int role, AActor *pmo)
 
 	if (!h.pointing)
 	{
+		if (Logging() && h.dwellTics > 0 && !h.dwellDone)
+			Printf("[roth_vrpick] %s hand dwell: broken off at %d/%d tics (the hand stopped pointing)\n", RoleName(role), h.dwellTics, kDwellTics);
 		h.dwellTarget = Pick{};
 		h.dwellTics = 0;
 		h.dwellDone = false;
@@ -617,15 +683,31 @@ void TickHand(int role, AActor *pmo)
 	// ---- DWELL (examine) ----
 	if (h.havePick && h.cls.CanExamine())
 	{
-		if (!SamePickTarget(h.pick, h.dwellTarget)) { h.dwellTarget = h.pick; h.dwellTics = 0; h.dwellDone = false; }
-		if (!h.dwellDone && ++h.dwellTics >= kDwellTics)
+		if (!SamePickTarget(h.pick, h.dwellTarget))
 		{
-			h.dwellDone = true;
-			DoExamine(role, h.pick, h.cls, pmo, "dwell");
+			h.dwellTarget = h.pick; h.dwellTics = 0; h.dwellDone = false;
+			if (Logging()) Printf("[roth_vrpick] %s hand dwell: starts on %s (cursor type %d shape 0x%x, %d to examine)\n",
+				RoleName(role), PickKindName(h.pick), (int)h.cls.type, (unsigned)h.cls.shape, h.cls.examinable);
+		}
+		if (!h.dwellDone)
+		{
+			++h.dwellTics;
+			if (Logging() && h.dwellTics % 7 == 0 && h.dwellTics < kDwellTics)
+				Printf("[roth_vrpick] %s hand dwell: %d/%d tics on %s\n", RoleName(role), h.dwellTics, kDwellTics, PickKindName(h.pick));
+			if (h.dwellTics >= kDwellTics)
+			{
+				h.dwellDone = true;
+				DoExamine(role, h.pick, h.cls, pmo, "dwell");
+			}
 		}
 	}
 	else
 	{
+		if (Logging() && h.havePick && !SamePickTarget(h.pick, h.noDwell))
+			Printf("[roth_vrpick] %s hand dwell: none on %s -- %s\n", RoleName(role), PickKindName(h.pick), WhyNotExamine(h.cls).GetChars());
+		h.noDwell = h.havePick ? h.pick : Pick{};
+		if (Logging() && h.dwellTics > 0 && !h.dwellDone)
+			Printf("[roth_vrpick] %s hand dwell: broken off at %d/%d tics\n", RoleName(role), h.dwellTics, kDwellTics);
 		h.dwellTarget = Pick{};
 		h.dwellTics = 0;
 		h.dwellDone = false;
@@ -696,7 +778,21 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	player_t *player = level->GetConsolePlayer();
 	AActor *pmo = player != nullptr ? player->mo : nullptr;
 	const bool on = roth_vrpick && pmo != nullptr && (HeadsetOn() || P.test);
-	const bool stand = modal || !on || player->health <= 0 || InterfacePointerBusy();
+	const char *owner = InterfacePointerOwner();
+	const bool stand = modal || !on || player->health <= 0 || owner != nullptr;
+	if (Logging())
+	{
+		// WHY THE HANDS STAND DOWN, on each change: a menu or the death wait,
+		// a dead player, or a panel that owns the pointer (InterfacePointerOwner).
+		const char *why = modal ? "a menu or the death wait" : !on ? "the picker is off"
+			: player->health <= 0 ? "the player is dead" : owner;
+		if (why != P.loggedStand)
+		{
+			if (why != nullptr) Printf("[roth_vrpick] the hands stand down: %s\n", why);
+			else Printf("[roth_vrpick] the hands are live\n");
+			P.loggedStand = why;
+		}
+	}
 	const uint64_t t0 = I_nsTime();
 	for (int role = 0; role < 2; role++)
 	{

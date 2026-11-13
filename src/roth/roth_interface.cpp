@@ -1603,13 +1603,17 @@ bool InterfaceUse(player_t *player)
 	return Press(player, 0);
 }
 
-bool InterfacePointerBusy()
+const char *InterfacePointerOwner()
 {
-	if (!U.attached) return false;
-	if (U.menus != nullptr && U.menus->IsOpen()) return true;
-	if (U.popup.Active() || U.screen.IsOpen() || U.screen.PopupUp()) return true;
-	return U.dialogue.PointerBelongsToDialogue();
+	if (!U.attached) return nullptr;
+	if (U.menus != nullptr && U.menus->IsOpen()) return "menu";
+	if (U.popup.Active() || U.screen.PopupUp()) return "popup";
+	if (U.screen.IsOpen()) return "inventory";
+	if (U.dialogue.PointerBelongsToDialogue()) return "dialogue";
+	return nullptr;
 }
+
+bool InterfacePointerBusy() { return InterfacePointerOwner() != nullptr; }
 
 bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 {

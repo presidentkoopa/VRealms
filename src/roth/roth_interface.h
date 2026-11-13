@@ -85,6 +85,8 @@ bool InterfaceUse(player_t *player);
 // VR hands' world picker (roth_vrpick.cpp) stands down and leaves the beam to
 // the panel, as the original's cursor belongs to whichever of them is up.
 bool InterfacePointerBusy();
+// Which of them, for a log line: "menu", "popup", "inventory", "dialogue", or null.
+const char *InterfacePointerOwner();
 
 // The Realms menus (roth_menus.h), drawn as a world panel like the others and
 // clicked with the same beam or crosshair. While a box is up it is the only
