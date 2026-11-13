@@ -1,0 +1,12 @@
+# the door panel (pick type 6) after dev_open_nearest_door: row and column scans at d=60..340
+D -40 3803 128 12562 0 0 open
+W 200
+P -16 3803 128 12562 0 0 dpan_60 | row 8 col 8
+P 24 3803 128 12562 0 0 dpan_100 | row 8 col 8
+P 64 3803 128 12588 0 0 dpan_140 | row 8 col 8
+P 104 3803 128 12588 0 0 dpan_180 | row 8 col 8
+P 144 3803 128 12588 0 0 dpan_220 | row 8 col 8
+P 184 3803 128 12588 0 0 dpan_260 | row 8 col 8
+P 224 3803 128 12588 0 0 dpan_300 | row 8 col 8
+P 264 3803 128 12588 0 0 dpan_340 | row 8 col 8
+Q

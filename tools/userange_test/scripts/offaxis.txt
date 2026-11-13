@@ -1,0 +1,5 @@
+# off-axis and pitch: a row scan across face 1386 at d=100 and 200, and at pitch -100
+P 748 3760 384 6972 0 0 w200 | row 8
+P 848 3760 384 6972 0 0 w100 | row 8
+P 848 3760 384 6972 0 -100 w100p | row 8
+Q

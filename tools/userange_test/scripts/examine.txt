@@ -1,0 +1,4 @@
+# examine on face 807 (0x32 rec 145) at depth 564 and on item 45 (OnInspect) at depth 2368
+E -334 3380 384 4424 0 0 face807E_250
+E -1284 3380 384 4476 0 0 item45E_1150 | s 0 40
+Q

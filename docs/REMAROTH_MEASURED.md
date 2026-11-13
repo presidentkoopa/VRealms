@@ -922,3 +922,151 @@ Do not re-check: the art (real and named on all 120 sides), the colour key (0),
 the sector light (160), `R_RothShade` (cannot output black), polyobject spawn
 (30/30, no errors), presence (the use ray hits and swings it), or placement
 (above).
+
+---
+
+## 13. Use range, the "too far" band and examine reach, in world units — measured 2026-11-13
+
+Measured on the running original (the headless ROTH.C build at `/home/claude/oracle_build`), STUDY1, with the
+probe `tools/userange_test/rangeprobe.c`. **World units** here means .RAW map units, the units of the player's
+x/y at 0x90a8e/0x90a96. They are also the port's units: `ForcedPlayerRadius` 28 is the original's 0x1c.
+
+### The result
+
+| band | condition in the code | in world units |
+|---|---|---|
+| use (left click fires) | pick depth **< 600** | **z < 268** |
+| "too far" cursor 0x398 / 0x3a0 | 600 ≤ depth < 2000 | 268 ≤ z < 968 |
+| examine (right click possible) | depth **< 5000** | **z < 2467** (±2) |
+
+`z` is the **horizontal distance from the player's x,y to the picked point, measured along the view yaw**. It is
+planar depth: it is not measured along the pick ray, and it does not include height. The pick depth is
+**depth = 2·z + 64**. Exact checks: on axis-aligned lines with integer distances it gave 2d + 64 every time
+(d = 40…980). A fit over 1592 random wall picks gave depth = 2.0022·z + 62.2.
+
+**For the port:** `Level->ForcedPlayerUseRange = 268`, provided the use trace measures horizontal distance along
+the yaw (reasoning only, not checked in the port). Examine reach is **2467**, and the "too far" cursor edge is
+**968**. All three hold for every kind of target measured, at every pitch.
+
+### What is compared (settles GAME_core.md 4.4 against GAME_inventory.md 4)
+
+- `activate_targeted_object`, `E/input.c:1031`: `if ((int32_t)RD32(rec + 0x20) >= 0x258) return edx;`. This is
+  a **signed compare of the pick record's depth word** at 0x90a68 (`0x90a48 + 0x20`). It is **not** a squared
+  distance. Two passages are therefore wrong:
+  - GAME_inventory.md 4 ("dist² ≥ 0x258") and its acceptance test 10.1 ("25 units, d² = 625 > 0x258": at 25 units
+    the depth is about 114, so the item is picked up);
+  - the "distance^2 thresholds" in ROTH.C's own comment at `input.c:1108-1109`.
+- `classify_cursor_target_object` (`input.c:1111-1245`) compares the same word:
+  - < 0x258 (`:1123, :1163, :1177, :1214`);
+  - < 0x7d0 (`:1168, :1189, :1217`);
+  - < 0x1388 gates the examine probe (`:1145`).
+- The examine click (`examine_object_under_cursor`, `input.c:979`) has **no distance test of its own**. Its reach
+  comes from `run_gameplay_frame` (`game_core.c:634-638`): a type-3 cursor with an examine count of 0 becomes
+  type 1, and the count is only raised inside the < 0x1388 block.
+- Who writes the depth word. It is the **last** hit the renderer's pick pass records (`render_world_scene`,
+  `renderer.c:9440-9600`):
+  - sprites: (perspective step · 2) >> shift (`renderer.c:3283`);
+  - walls and door panels: (2·[0x8a304] << sh) / [0x8a300] (`:4510`);
+  - floors and ceilings: the row's 16-bit step · 2 (`:13007`);
+  - a further term is added under [0x90a49] (`:9576`). It was zero in every pick measured here: the depth stayed
+    constant across a perpendicular wall from dx −264 to +272.
+
+  The formulas differ by kind. Measured, they all give the same 2z + 64.
+- Pick types, as they are set in the renderer:
+
+  | type | what | set at |
+  |---|---|---|
+  | 1 | ceiling | `renderer.c:8962-8968` |
+  | 2 | floor | `renderer.c:8981-8987` |
+  | 3 | wall face | `renderer.c:9021` |
+  | 4 | object | `renderer.c:9043, 6629, 6656` |
+  | 5 | parallax sky; its depth is stale | `renderer.c:5412` |
+  | 6 | swinging door panel, rwss types 0/4 | `renderer.c:6430` |
+  | 7 / 8 | mid-platform underside / top | `renderer.c:9074, 9090` |
+
+  Record word +8 is the face's .RAW file offset and +0xa is the sector's (measured).
+
+### Measured (verified: the original's own record, `classify` and `activate` return values, probe hooks)
+
+Activate was called by the probe on the original's pick, with EDX = 0x268 (as `game_core.c:697` does). The
+"fired" evidence is what each hook logged:
+
+- `fire_command_contact_trigger`: logged, and **suppressed** so that no dialogue or movie stops the run;
+- `toggle_door_open_state`: logged, and run;
+- pickup: the object is gone from the pick afterwards.
+
+| target | depth 598 (z 267) | depth 600 (z 268) | depth 602 (z 269) |
+|---|---|---|---|
+| wall face 1386, 0x18 rec 167 (key 3) | cursor 0x248; activate **fires the 0x18 record key 3** | 0x398; activate returns at the gate, nothing fires | same as 600 |
+| wall face 2323 onto door sector 66 (0x18 key 0x2e, has an examine) | 0x250; **fires key 0x2e** | 0x3a0; nothing | same as 600 |
+| item 17 on a table (obj z = 74), pick row 84 | 0x250; activate passes the gate, **the object leaves the world** (the same pixel then picks the table top, type 8) | 0x3a0; refused | refused |
+| item 45 on the floor (obj 169.0), row 190 | 0x250; passes the gate (returns 0x240) | 0x3a0; refused (0x268 before any test) | refused |
+| item 51 (obj z = 60), row 102 | 0x250 | 0x3a0 | 0x3a0 |
+| floor 320, 0x19 rec 38 (key 3), row 192 / 190 | depth 596: 0x248; **fires the 0x19 record key 3** | — | depth 602: 0x398; nothing |
+| door panel (type 6), opened by the retail Space-key routine | depth 515: 0x248; **toggle_door_open_state fires** | — | depth 711: 0x398; nothing |
+
+The other edges:
+
+- **"Too far" edge:** on face 2323, d = 965 gave depth 1995 with cursor 0x3a0, and d = 970 gave 2005 with 0x278
+  (examine only).
+- **Examine:**
+  - face 807 (0x32 rec 145) at depth 564: `examine_world_object` fires;
+  - item 45 at depth 2368 (z 1152): its OnInspect (`eval_dialogue_record_condition_with_cleanup`) fires.
+- **The 5000 edge** had no clear 2470-unit sightline onto an examine target in STUDY1. It was taken in two steps:
+  1. the original's `classify` was run on real records (wall, door wall, item, 0x32 face, floor, door panel) with
+     the depth word replaced by 596…601, 1998…2001, 4998…5001 and −1 (`scripts/inject.txt`, logged as INJ). The
+     edges fall exactly at 600, 2000 and 5000; −1 counts as near (a signed compare). This tests the code's
+     thresholds, not the geometry;
+  2. the depth was then converted with the wall fit, which is linear to z ≈ 2420 (depth 4875) in the random
+     sample: 5000 corresponds to z = 2466.2 by the fit, and to 2468 by 2z + 64.
+
+**Independent of pitch.** With the wall at the same distance, depth was the same at pitch −126, −100, −60, 0, 60
+and 126, and at rows −100, 0 and +100: 560 at d = 248 and 600 at d = 268. The original's pitch is a shear. It moves
+which point lies under the cursor, so a floor point looked at straight down still measures its horizontal distance.
+The floor depth at pitch 0 and eye height 144 is 102200/dy + 64, where dy is the row below the view centre. This is
+2·(144·FY/dy) + 64 with FY = 355 (§1). Floor transitions at sector edges confirmed z = 51100/dy within the 4-row
+scan.
+
+**Independent of target height and kind.**
+- A wall gave the same depth on every row.
+- Sprites gave 2d + 64 on every row of the sprite, on the floor (z 0) and on tables (z 60, 74).
+- The kinds above (0x18 faces, a door-wall face, a type-6 door panel, items, a 0x19 floor) share one edge.
+
+**Off axis it is planar.** Across face 1386 (perpendicular, d = 100 and 200), the depth was constant from screen
+column −264 to +272. A pick near the screen edge therefore reaches farther along its ray than at the centre (with
+FX = 310, up to about 1.44× at the edge; reasoning from §1).
+
+### Two things that look like range but are not
+
+- **The 0x18/0x19 record's bounding box.** The rectangle at the record's +0x0c…+0x12 is compared with the pick
+  record's words +4/+6 (`raw_commands.c:3029-3035, 3071-3075`). In ROTH.C's own comment those words are "the
+  player position". For floor picks the renderer writes the hit **texel** coordinates there (`renderer.c:13001-13002`;
+  for walls `:4489-4494`).
+
+  Measured on floor 320 at d = 270 and 300: inside use depth, rows with texV 0x21…0x33 gave cursor 0x248 and rows
+  with texV ≥ 0x34 gave 0x240. So **where on the surface** the cursor lies decides whether it is clickable. Distance
+  does not. Which quantity the box was meant to hold is reasoning only.
+- **What happens past the gate depends on the item.** Item 45 returned 0x240 past the gate. Item 17 left the
+  world, but the `give_item_by_dbase_id` hook was never reached, so its pickup ran through its own click chain
+  (`run_leftclick_object_trigger`, `input.c:1053-1069`). Item 51 returned 0x268 at depth 598. That is the same
+  code as a refusal, so whether item 51 fired was not checked. All of this is the item's logic, not range.
+
+### Method and reproduction
+
+`tools/userange_test/` contains:
+
+| file | what it is |
+|---|---|
+| `rangeprobe.c` | Overrides `run_gameplay_frame`, which runs after the frame's 3D pass, where the original picks (`game_core.c:578`, after `gameplay_frame_step` at `:877`). Per script step it writes the pose and waits 3 frames. It then calls the original's `render_world_view` at each sample pixel, logs the 0x24-byte record at 0x90a48, and hands the record to the original's `classify_cursor_target_object`. Op `A` / `E` / `U` also call `activate_targeted_object` / `examine_object_under_cursor` (hooks above); `D` runs the Space-key `dev_open_nearest_door` (`input.c:185-194`) with its dev gate set for the call; `inj` replaces the depth word before `classify`. Log writes hold SIGALRM blocked. |
+| `run.sh MAP script out.log` | Builds the probe and runs one script. |
+| `userange.py` | Script generators (`random`, `line`, `pose`) and the analyses (`walls`, `fit`, `objs`). |
+| `targets.cpp` | Lists a map's triggers, doors and items with geometry, through `src/roth`'s readers. |
+| `scripts/` | The runs quoted above. |
+
+The random wall sample is `userange.py random RAW 300 1 0 c` and `… 1500 11 0 c`, analysed with `userange.py fit`.
+It avoids sectors with a command ID: teleporting into one fired its logic and stopped gameplay frames. One run of
+far teleports crashed the original with a segfault. That was not investigated, and none of the quoted runs is
+affected.
+
+Every quoted script was re-run, and the record and cursor lines were identical. The exception is a swinging door
+panel: it moves with the wall clock, and between two runs it read 711 and then 716.

@@ -1,0 +1,31 @@
+# open and close the door by face 2323, then walk back along the doorway axis: depth 120..2027, the 600 and 2000 edges
+D -40 3803 128 12562 0 0 open
+W 200
+U 64 3803 128 12588 0 0 close | s -240 0
+W 300
+P -56 3803 128 12562 0 0 cpan_20 | c row 32
+P -36 3803 128 12562 0 0 cpan_40 | c row 32
+P -16 3803 128 12562 0 0 cpan_60 | c row 32
+P 24 3803 128 12562 0 0 cpan_100 | c row 32
+P 64 3803 128 12588 0 0 cpan_140 | c row 32
+P 104 3803 128 12588 0 0 cpan_180 | c row 32
+P 144 3803 128 12588 0 0 cpan_220 | c row 32
+P 184 3803 128 12588 0 0 cpan_260 | c row 32
+P 188 3803 128 12588 0 0 cpan_264 | c row 32
+P 189 3803 128 12588 0 0 cpan_265 | c row 32
+P 190 3803 128 12588 0 0 cpan_266 | c row 32
+P 191 3803 128 12588 0 0 cpan_267 | c row 32
+P 192 3803 128 12588 0 0 cpan_268 | c row 32
+P 193 3803 128 12588 0 0 cpan_269 | c row 32
+P 194 3803 128 12588 0 0 cpan_270 | c row 32
+P 224 3803 128 12588 0 0 cpan_300 | c row 32
+P 264 3803 128 12588 0 0 cpan_340 | c row 32
+P 324 3803 128 12588 0 0 cpan_400 | c row 32
+P 524 3803 128 6972 0 0 cpan_600 | c row 32
+P 824 3803 128 6972 0 0 cpan_900 | c row 32
+P 884 3803 128 7284 0 0 cpan_960 | c row 32
+P 889 3803 128 7284 0 0 cpan_965 | c row 32
+P 894 3803 128 7284 0 0 cpan_970 | c row 32
+P 899 3803 128 7284 0 0 cpan_975 | c row 32
+P 904 3803 128 7284 0 0 cpan_980 | c row 32
+Q

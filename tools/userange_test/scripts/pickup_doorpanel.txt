@@ -1,0 +1,13 @@
+# activate at depth 598/600/602 on items 17 (z=74) and 51 (z=60); a door panel (pick type 6) opened by the Space-key routine, then used at 711 and 515
+A 543 3432 384 7336 0 0 item17A_269 | s 0 84
+A 544 3432 384 7336 0 0 item17A_268 | s 0 84
+A 545 3432 384 7336 0 0 item17A_267 | s 0 84
+P 545 3432 384 7336 0 0 item17after_267 | s 0 84
+A 469 2070 384 12822 0 0 item51A_269 | s 0 102
+A 470 2070 384 12822 0 0 item51A_268 | s 0 102
+A 471 2070 384 12822 0 0 item51A_267 | s 0 102
+D -40 3803 128 12562 0 0 open
+W 200
+A 264 3803 128 12588 0 0 panelA_340 | s -104 0
+A 184 3803 128 12588 0 0 panelA_260 | s -120 0
+Q
