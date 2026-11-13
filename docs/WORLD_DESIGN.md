@@ -437,7 +437,7 @@ the original's one click:
   rims, plus a few stem texels. Per-flame compositing must carry those texels with their flame (assign by column) or
   the candelabrum shows orange rims over dark wicks.
 - Presentation may be better but must end up showing the same thing as the original, so wicks left unlit catch by
-  themselves after a few seconds [owner to confirm the delay].
+  themselves **15 seconds** after the first wick (owner, 2026-11-13).
 - **One light per candelabrum** (owner's decision): one soft, flickering dynamic light that grows with each lit wick,
   and stays (the original never puts a candle out).
 

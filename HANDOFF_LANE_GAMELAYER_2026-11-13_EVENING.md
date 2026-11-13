@@ -45,14 +45,20 @@ Not seen: anything in the headset.
   candle tops and cup rims (per-flame compositing must carry them).
 - `docs/VR_INTERACTION_RESEARCH.md`: how VR adventure/horror games and VR ports handle each interaction, top 15.
 
-## 4. Questions for the owner (asked, not answered yet)
+## 4. Questions for the owner
+
+Owner's answers 2026-11-13 18:0x: (1) "we will probably use offhand for a lot of environmental interaction, but we
+need to design with left and right hand support in mind" -> trigger examines on either hand, attack only from a hand
+holding a weapon, grip on nothing = the original's secondary-on-nothing (attack); everything symmetric for left-handed
+players. (2) Pause like the original. (3) Match the original (a click during a playing line skips it). Being built.
+
 
 1. The trigger still sends its normal bound key: on the main hand that is attack, so examining also swings Adam's
    fists. Proposal: the trigger sends attack only when that hand holds a weapon.
 2. The world keeps running while the inventory is open; the original pauses it. Proposal: pause like the original.
 3. In the original a click during a playing dialogue line skips the line; our inventory clicks under the pointer
    (mouse and keys too, as before today). Keep, or match the original?
-4. Unlit wicks catching by themselves after a few seconds (so the end state matches the original): how long?
+4. ANSWERED (owner): unlit wicks catch by themselves 15 s after the first wick.
 5. Opening the never-opening desks (STUDY1, CHURCH1) would be new content, not a VR presentation of the original.
 6. VR_INTERACTION_RESEARCH "Phase B" ideas (sockets, drawers, books, torch beam, lamp light...) need the owner's go.
 
