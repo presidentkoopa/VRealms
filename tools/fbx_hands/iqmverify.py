@@ -10,10 +10,14 @@ Written separately from fbx2iqm.py and imports nothing from it: the IQM is decod
   V0  structure: what the engine's loader (src/common/models/models_iqm.cpp) accepts
   V1  every take frame (1278 per hand): IQM joint local rotation vs the FBX, max angle error per joint;
       translations too; Root_joint and HANDPALM_joint must hold the bind in every frame
-  V2  frames 0-10 and 1289-1299: each finger joint's rotation from bind vs the recipe
-      (recipe_solved.json: axes, adduction, ceilings, applied curls), per pose and joint
+  V2  frames 0-10 and 1289-1299: an authored pose's finger joints must equal the FBX curves of the slot
+      rig (recipe_solved.json "slots_rig", sampled here) at its take frame, wrist at the bind; a
+      curl-table pose's finger joints must match the recipe (axes, adduction, ceilings, applied curls);
+      1298 must equal the slot rig's FBX take frame 230 the same way
+  V2X frames 0-10 and 1289-1299 of hand_l.iqm are the reflection of hand_r.iqm's (both hands take the
+      slots of the one rig, as the owner mirrors his one hand)
   V3  wrist (origin) to middle fingertip at frame 0 from the skinned mesh, in map units
-  V5  handedness and the file axes: thumb side, palm side, forward
+  V5  handedness and the file axes: thumb side, palm side (from take frame 500, the FBX's held fist), forward
   TX  a textured render of frame 0 (palm and back) from the IQM's own UVs -> sheets/texture_check.png
 """
 import argparse
@@ -151,9 +155,14 @@ def main():
             fails.append(what)
 
     results = {}
+    files = {}
+    slot_top = solved["slots_rig"]
+    slot_id = [o for o, n in sc.objs.items() if n.name == "Model" and sc.name(o) == slot_top][0]
+    slot_hand = Hand(sc, slot_top, slot_id)
     for side, fname, top in (("right", "hand_r.iqm", "GLOBAL_MAIN_CONTROL_R"), ("left", "hand_l.iqm", "GLOBAL_MAIN_CONTROL_R1")):
         path = os.path.join(a.models, fname)
         m = IqmFile(path)
+        files[side] = m
         left = side == "left"
         log("=" * 20 + " %s (%d bytes)" % (path, m.size))
         # ---------------------------------------------------------------- V0
@@ -226,14 +235,42 @@ def main():
         root_t = max(np.abs(m.ch[f, J["Root_joint"], 0:3]).max() for f in range(m.nf))
         check(root_t < 1e-4 and np.abs(m.jt[J["Root_joint"]]).max() < 1e-4, "Root_joint at the origin in the bind and in all 1300 frames (max |t| %.2e)" % root_t)
         results[side] = {"take_max_rot_err_deg": worst, "take_max_t_err": maxterr}
+
+        def authored_err(m_, J_, row, fbx_frame, Dm=Dm, s=s):
+            """(max finger-joint rotation error, max wrist-vs-bind error) in degrees, and the max
+            finger-joint translation error, of IQM row `row` against the slot rig's FBX take frame."""
+            rmax, wmax, tmax = 0.0, 0.0, 0.0
+            for n in m_.jname:
+                j = J_[n]
+                Li = m_.local(row, j)
+                if n in ("Root_joint", "HANDPALM_joint"):
+                    wmax = max(wmax, angle_deg(m_.bind_local(j)[:3, :3], Li[:3, :3]))
+                    continue
+                fj = slot_hand.joints[n]
+                R = slot_hand.sample(fj, "Lcl Rotation", fbx_frame); T = slot_hand.sample(fj, "Lcl Translation", fbx_frame)
+                Lf = np.array(local_matrix(slot_hand.mp[fj], R, T))
+                rmax = max(rmax, angle_deg(Dm @ Lf[:3, :3] @ Dm, Li[:3, :3]))
+                tmax = max(tmax, np.linalg.norm(s * (Dm @ Lf[:3, 3]) - Li[:3, 3]))
+            return (rmax, wmax), tmax
         # ---------------------------------------------------------------- V2
         log("V2 baked and hold poses vs the recipe (recipe_solved.json)")
         rs = solved[side]
         AX, AAX, ADD = rs["AXES"], rs["ADDUCT_AXES"], rs["ADDUCT"]
         fingers = ["INDEX", "MIDDLE_F", "RING", "PINK", "THUMB"]
         worst2 = 0.0
+        n_auth = 0
         for fr in rs["frames"]:
             f, name, applied = fr["frame"], fr["name"], fr["applied"]
+            if fr.get("source_frame_1based") is not None:
+                # [TEP:1192-1201 / 1235-1241] an authored frame, verbatim, pose_only: every finger joint
+                # equals the slot rig's FBX curves at that take frame; Root_joint and HANDPALM_joint
+                # hold the bind.
+                ra, ta = authored_err(m, J, f, fr["fbx_take_frame"])
+                n_auth += 1
+                log("  %4d %-13s AUTHORED: %s FBX take frame %d; max finger-joint rotation error %.5f deg, "
+                    "translation %.5f map units; wrist vs bind %.5f deg" % (f, name, slot_top, fr["fbx_take_frame"], ra[0], ta, ra[1]))
+                worst2 = max(worst2, ra[0], ra[1], 0.0 if ta < 1e-3 else 999.0)
+                continue
             cells = []
             for fi, fg in enumerate(fingers):
                 c = applied[fi]
@@ -250,15 +287,22 @@ def main():
                                                       angle_deg(np.eye(3), exp), angle_deg(np.eye(3), rel)))
             log("  %4d %-13s table %-22s applied %-22s" % (f, name, fr["table"], applied))
             log("        expected/measured deg: " + "  ".join(cells))
-        check(worst2 < 0.05, "frames 0-10, 1289-1297: every finger joint within 0.05 deg of the recipe's rotation (max %.5f)" % worst2)
+        check(worst2 < 0.05, "frames 0-10, 1289-1297: %d authored rows within 0.05 deg of their FBX take frames (wrist at bind); every finger joint of the other %d within 0.05 deg of the recipe's rotation (max %.5f)" % (n_auth, len(rs["frames"]) - n_auth, worst2))
         # 1298, 1299
+        ra, ta = authored_err(m, J, 1298, solved[side]["reach_claw_fbx_take_frame"])
+        check(max(ra) < 0.05 and ta < 1e-3, "1298 reach_claw = %s FBX take frame %d (the owner's row 241): finger joints "
+              "within %.5f deg / %.5f map units, wrist at the bind (%.5f deg)"
+              % (slot_top, solved[side]["reach_claw_fbx_take_frame"], ra[0], ta, ra[1]))
         e98 = np.abs(m.ch[1298] - m.ch[241]).max()
         sal = m.ch[5].copy()
         for n in m.jname:
             if n.startswith("MIDDLE_F"):
                 sal[J[n], 3:7] = m.ch[0, J[n], 3:7]
         e99 = np.abs(m.ch[1299] - sal).max()
-        check(e98 < 1e-9, "1298 reach_claw = row 241 channel for channel (max diff %.1e)" % e98)
+        if not left:
+            check(e98 < 1e-9, "1298 reach_claw = row 241 channel for channel (max diff %.1e)" % e98)
+        else:
+            log("  (left: row 241 is this hand's own take; 1298 is the slot rig's frame, checked above; differs from row 241 by %.3f)" % e98)
         check(e99 < 1e-9, "1299 salute = row 5 with MIDDLE_F_* rotation channels of row 0 (max diff %.1e)" % e99)
         results[side]["recipe_max_err_deg"] = worst2
         # ---------------------------------------------------------------- V3
@@ -278,23 +322,23 @@ def main():
 
         def tip(i_, v):
             return v[i_]
-        v3 = m.skin(3)
         thumbv = [i for i in range(m.nv) if dom[i] in ("THUMB_TOP_joint", "THUMB_UP_TOP_joint")]
         thumb_tip = v0[max(thumbv, key=lambda i: np.linalg.norm(v0[i]))]
         fwd = v0[far] / np.linalg.norm(v0[far])
-        tips = []
-        for fg in ("INDEX", "MIDDLE_F", "RING", "PINK"):
-            tv = [i for i in range(m.nv) if dom[i] in ("%s_TOP_joint" % fg, "%s_UP_TOP_joint" % fg)]
-            k = max(tv, key=lambda i: np.linalg.norm(v0[i]))
-            tips.append(v3[k] - v0[k])
-        palm_dir = np.mean(tips, 0)
-        palm_dir -= fwd * (palm_dir @ fwd)       # the part of the closing motion across the hand
+        # The closing direction, from the FBX's own held fist (take frame 500: FBX report, frames
+        # 319-685), not from a pose slot the picker may fill with any frame: how the middle knuckles
+        # (the MID joints) move from open to that fist, across the hand.
+        Wf = m.worlds(TAKE0 + 500)
+        mids = [Wf[J["%s_MID_joint" % fg]][:3, 3] - W0[J["%s_MID_joint" % fg]][:3, 3]
+                for fg in ("INDEX", "MIDDLE_F", "RING", "PINK")]
+        palm_dir = np.mean(mids, 0)
+        palm_dir -= fwd * (palm_dir @ fwd)
         palm_dir /= np.linalg.norm(palm_dir)
         knuck = np.mean([W0[J[n]][:3, 3] for n in ("INDEX_BASE_joint", "MIDDLE_F_BASE_joint", "RING_BASE_joint", "PINK_BASE_joint")], 0)
         side_v = thumb_tip - knuck
         side_v -= fwd * (side_v @ fwd)
         h = float(np.cross(side_v, fwd) @ palm_dir)
-        log("  forward (middle tip) %s; thumb tip %s; fingertips close (across the hand, open->fist) towards %s" % (np.round(fwd, 3), np.round(thumb_tip, 2), np.round(palm_dir, 3)))
+        log("  forward (middle tip) %s; thumb tip %s; middle knuckles close (open -> take fist, across the hand) towards %s" % (np.round(fwd, 3), np.round(thumb_tip, 2), np.round(palm_dir, 3)))
         log("  chirality (thumb side x forward) . (curl direction) = %+.3f  (+ = right hand, - = left)" % h)
         check((h > 0) == (not left), "%s hand is a %s hand" % (fname, "left" if left else "right"))
         check(fwd[0] > 0.98, "fingers point +X (forward)")
@@ -307,6 +351,19 @@ def main():
         results[side]["uv"] = m.arrays[1][2].astype(float)
         results[side]["v0"] = v0
         results[side]["tris"] = m.tris
+    # ---------------------------------------------------------------- V2X
+    log("V2X hand_l.iqm's recipe rows vs hand_r.iqm's, reflected")
+    mr, ml = files["right"], files["left"]
+    Jr = {n: i for i, n in enumerate(mr.jname)}
+    rows = list(range(0, 11)) + list(range(1289, 1300))
+    wr, wt = 0.0, 0.0
+    for f in rows:
+        for n in mr.jname:
+            Lr, Ll = mr.local(f, Jr[n]), ml.local(f, ml.jname.index(n))
+            wr = max(wr, angle_deg(DM @ Lr[:3, :3] @ DM, Ll[:3, :3]))
+            wt = max(wt, np.linalg.norm(DM @ Lr[:3, 3] - Ll[:3, 3]))
+    check(wr < 0.01 and wt < 1e-3, "frames 0-10 and 1289-1299: left = right reflected across XZ, every joint "
+          "(max %.5f deg, %.6f map units; 16-bit channel quantisation)" % (wr, wt))
     # textured render of frame 0 from the IQMs' own UVs
     try:
         from PIL import Image, ImageDraw

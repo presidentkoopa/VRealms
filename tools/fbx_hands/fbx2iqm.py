@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hand_final.fbx -> hand_r.iqm + hand_l.iqm for the Realms game package. Build time; no Blender.
 
-    python3 -I tools/fbx_hands/fbx2iqm.py [--fbx PATH] [--tex PATH] [--out DIR] [--keep-tips]
+    python3 -I tools/fbx_hands/fbx2iqm.py [--fbx PATH] [--tex PATH] [--out DIR] [--keep-tips] [--tails blender|mesh]
 
 Reads ONLY the FBX (tools/fbx_hands/fbxread.py) and its skin texture. No existing IQM hand is read.
 
@@ -24,13 +24,21 @@ UNITS: map units. 0.19 m from the wrist to the middle fingertip (mesh) at Realms
 follow-hand path (src/r_data/models.cpp:375-381, ObjectToWorldMatrix divides VR_UnitsPerMeter out).
 
 FRAMES (RS_Hands' map, hand_frames.txt):
-    0-10       the 11 curl-table poses (handrecipe.py, a port of RS_Hands tools_export_poses.py)
+    0-10       the 11 baked poses (handrecipe.py, a port of RS_Hands tools_export_poses.py): an authored
+               take frame where the script's picker finds one, the curl table where it does not
     11-1288    FBX Take 001 frames 0-1277, this hand's own curves
     1289-1297  hold_round hold_shell insert hold_slide hold_mag hold_foregrip hold_forend reach support
+               (picked or solved the same way)
     1298       reach_claw = row 241 verbatim, 1299 salute = row 5 with MIDDLE_F_* rotations from row 0
                (RS_Hands tools/iqm_append_pose.py)
+    Frames 0-10 and 1289-1299 are made ONCE, on the rig that skins mesh Hand_Low (GLOBAL_MAIN_CONTROL_R,
+    the armature tools_export_poses.py reads [TEP:75-76]), and BOTH hands take them (the left reflected):
+    the owner's set is that one hand, mirrored for the other side. Row 1298 is therefore FBX take frame
+    230 of that rig in both files. Frames 11-1288 stay each hand's own take.
 Root_joint and HANDPALM_joint (the wrist) hold their bind transform in EVERY frame: the controller owns
-the wrist. Only the finger joints move (rotations; the FBX's own small finger-joint translation keys
+the wrist. (The owner's own reach_claw keeps 38 degrees of authored wrist, iqm_append_pose.py:46-55;
+here it is zeroed like every other row. Whether the wrist may ever be animated is the owner's open
+question.) Only the finger joints move (rotations; the FBX's own small finger-joint translation keys
 are kept as authored).
 
 SKIN: each UP_TOP joint's weight is merged into its TOP joint (the take never rotates UP_TOP), then each
@@ -429,8 +437,49 @@ def skin_cpu(verts, parents, bind_locals, frame_locals):
 
 
 # --------------------------------------------------------------------------------------- build
-def build_hand(fh, left, frame_xf, log, merge_tips, attr=None):
-    """frame_xf = (Q, r, s): bind space -> file frame. Returns everything write_iqm needs."""
+def recipe_slots(fh, log, tails):
+    """The 20 recipe slots (poses 0-10, holds 1289-1297) and reach_claw's source row, in FBX bind
+    space, from ONE rig: tools_export_poses.py works on the armature of mesh Hand_Low [TEP:75-76]
+    (here GLOBAL_MAIN_CONTROL_R) and the owner mirrors that one hand for both sides (README: both
+    model blocks use hand_left.iqm with Scale -1). So both of our hands take these slots; the left
+    hand reflects them as data like everything else. The two rigs' bind matrices are identical
+    (checked in main), so a slot's bind-space worlds are valid on either rig."""
+    rig = HR.Rig(fh.names, fh.parents, fh.TL, fh.fingertips(), log=log, tails=tails)
+    rig.solve()
+    take, _ = fh.take_worlds()
+    rig.pick_sources(take)               # [TEP:780-1075]
+    # [TEP:1188-1213] / [TEP:1228-1249]: an authored frame beats the curl table, every finger
+    # joint verbatim (pose_only: Root_joint and HANDPALM_joint stay at the bind).
+    frames, pose_info = [], []
+    for name, curls in rig.poses:
+        src = rig.POSE_SOURCE.get(name)
+        if src is not None:
+            frames.append([w.copy() for w in take[src - 1]])
+            pose_info.append((name, curls, None, None, True, src))
+            continue
+        W, got, basis = rig.pose_worlds(curls, clamp=True)
+        frames.append(W)
+        pose_info.append((name, curls, got, basis, True, None))
+    for name, curls in rig.holds:
+        src = rig.HOLD_SOURCE.get(name)
+        if src is not None:
+            frames.append([w.copy() for w in take[src - 1]])
+            pose_info.append((name, curls, None, None, name == "reach", src))
+            continue
+        W, got, basis = rig.pose_worlds(curls, clamp=(name == "reach"))
+        frames.append(W)
+        pose_info.append((name, curls, got, basis, name == "reach", None))
+    assert len(frames) == 20
+    # 1298 reach_claw: the owner's row 241 = source frame 231 = FBX take frame 230 OF THIS RIG
+    # (iqm_append_pose.py:41-55). Root_joint and HANDPALM_joint at the bind, as in every row here.
+    claw = [w.copy() for w in take[REACH_CLAW_ROW - SOURCE_BASE]]
+    return dict(rig=rig, poses=frames[:11], holds=frames[11:], pose_info=pose_info, claw=claw,
+                top=fh.top_name, claw_take_frame=REACH_CLAW_ROW - SOURCE_BASE)
+
+
+def build_hand(fh, left, frame_xf, log, merge_tips, slots, attr=None):
+    """frame_xf = (Q, r, s): bind space -> file frame. slots: recipe_slots() of the right rig.
+    Returns everything write_iqm needs."""
     Q, r, s = frame_xf
     D = D_MIRROR if left else np.eye(3)
     QD = D @ Q
@@ -456,31 +505,21 @@ def build_hand(fh, left, frame_xf, log, merge_tips, attr=None):
             res.append((L[:3, 3].copy(), q))
         return res
 
-    # ---- the recipe, on this hand's own (unmirrored) rig
-    rig = HR.Rig(fh.names, fh.parents, fh.TL, fh.fingertips(), log=log)
-    rig.solve()
-    bind_W = to_file_world(rig.worlds())
+    bind_W = to_file_world([fh.TL[i].copy() for i in range(22)])
     bind_locals = locals_of(bind_W)
     for j in range(22):
         if bind_locals[j][1][3] < 0:
             bind_locals[j] = (bind_locals[j][0], -bind_locals[j][1])
 
-    frames_bindspace, pose_info = [], []
-    for name, curls in rig.poses:
-        W, got, basis = rig.pose_worlds(curls, clamp=True)
-        frames_bindspace.append(W)
-        pose_info.append((name, curls, got, basis, True))
     take, take_locals = fh.take_worlds()
-    frames_bindspace += take
-    for name, curls in rig.holds:
-        W, got, basis = rig.pose_worlds(curls, clamp=(name == "reach"))
-        frames_bindspace.append(W)
-        pose_info.append((name, curls, got, basis, name == "reach"))
+    frames_bindspace = slots["poses"] + take + slots["holds"]
     assert len(frames_bindspace) == HOLD_BASE + 9
+    pose_info = slots["pose_info"]
 
     frame_locals = [locals_of(to_file_world(W), bind_locals) for W in frames_bindspace]
-    # 1298 reach_claw: row 241 verbatim (iqm_append_pose.py:41-55, grafts=[])
-    frame_locals.append([(t.copy(), q.copy()) for t, q in frame_locals[REACH_CLAW_ROW]])
+    # 1298 reach_claw: the owner's row 241 verbatim (iqm_append_pose.py:41-55, grafts=[]), i.e. FBX take
+    # frame 230 of the slot rig, wrist at the bind (see HANDOFF note: animating the wrist is open)
+    frame_locals.append(locals_of(to_file_world(slots["claw"]), bind_locals))
     # 1299 salute: row 5, MIDDLE_F* rotation channels (TRS_ROT = 3..6) from row 0 (iqm_append_pose.py:56-66)
     sal = [(t.copy(), q.copy()) for t, q in frame_locals[SALUTE_BASE_ROW]]
     for j, n in enumerate(fh.names):
@@ -595,7 +634,7 @@ def build_hand(fh, left, frame_xf, log, merge_tips, attr=None):
         "ubyte rounding error max %.5f; every vertex sums to 255"
         % (n_drop, " after merging UP_TOP into TOP" if merge_tips else "", max_drop, max_q))
     verts = {"pos": pos, "nrm": nrm, "uv": np.array(vuv), "tan": tan, "bi": bi, "bw": bw}
-    return dict(rig=rig, bind_locals=bind_locals, frame_locals=frame_locals, verts=verts, tris=tris,
+    return dict(rig=slots["rig"], bind_locals=bind_locals, frame_locals=frame_locals, verts=verts, tris=tris,
                 adj=adj.astype(np.uint32), pose_info=pose_info, take_locals=take_locals, max_drop=max_drop)
 
 
@@ -604,6 +643,9 @@ def main():
     ap.add_argument("--fbx", default=DEFAULT_FBX)
     ap.add_argument("--tex", default=None)
     ap.add_argument("--out", default=os.path.join(REPO, "vrealms_iwad", "models", "hands"))
+    ap.add_argument("--tails", choices=("mesh", "blender"), default="blender",
+                    help="where the recipe says a finger ends: the mesh fingertip, or Blender's import "
+                         "bone tail (emulated; see handrecipe.Rig)")
     ap.add_argument("--keep-tips", action="store_true",
                     help="do NOT merge each UP_TOP joint's weight into its TOP joint before cutting to 4. "
                          "Merging is the default (the take never rotates UP_TOP). The recipe's poses do "
@@ -625,6 +667,8 @@ def main():
     left = FbxHand(sc, "GLOBAL_MAIN_CONTROL_R1", log)
     bind_diff = max(np.abs(right.TL[i] - left.TL[i]).max() for i in range(22))
     log("bind matrices, hand A vs hand B: max difference %.2e" % bind_diff)
+    if bind_diff > 1e-12:
+        raise SystemExit("the two rigs' binds differ: the right rig's recipe slots cannot be shared")
 
     # ---- the file frame, from the right hand's bind pose
     TL = right.TL
@@ -649,16 +693,26 @@ def main():
 
     solved = {"units_per_metre": UNITS_PER_METRE, "hand_length_m": HAND_LENGTH_M, "scale": s,
               "Q_rows_fbx_to_file": Q.tolist(), "root_fbx": r.tolist(), "mesh_length_fbx": L_mesh,
-              "joint_length_fbx": L_joint, "merge_tips": a.merge_tips, "taper": HR.TAPER}
+              "joint_length_fbx": L_joint, "merge_tips": a.merge_tips, "taper": HR.TAPER, "tails": a.tails}
+    log("")
+    log("=" * 30 + " RECIPE on %s / %s (TEP's armature: the one skinning mesh Hand_Low [TEP:75-76])"
+        % (right.top_name, right.mesh_name))
+    slots = recipe_slots(right, log, a.tails)
+    solved["slots_rig"] = right.top_name
     for side, fh, is_left, fname in (("RIGHT", right, False, "hand_r.iqm"), ("LEFT", left, True, "hand_l.iqm")):
         log("")
         log("=" * 30 + " %s hand: %s / %s" % (side, fh.top_name, fh.mesh_name))
-        b = build_hand(fh, is_left, (Q, r, s), log, a.merge_tips, attr=right)
+        b = build_hand(fh, is_left, (Q, r, s), log, a.merge_tips, slots, attr=right)
         rig = b["rig"]
-        log("  poses 0-10 (table curls -> applied after the ceiling):")
-        for k, (name, curls, got, basis, cl) in enumerate(b["pose_info"]):
+        log("  frames 0-10 and 1289-1299 from the recipe on %s%s; frames 11-1288 this hand's own take"
+            % (slots["top"], ", reflected" if is_left else ""))
+        log("  poses (authored take frame of %s, or table curls -> applied after the ceiling):" % slots["top"])
+        for k, (name, curls, got, basis, cl, src) in enumerate(b["pose_info"]):
             fr = k if k < 11 else HOLD_BASE + (k - 11)
-            log("    %4d %-13s table %s -> applied %s%s" % (fr, name, curls, got, "" if cl else "  (unclamped)"))
+            if src is not None:
+                log("    %4d %-13s AUTHORED source frame %d = FBX take frame %d (table %s not used)" % (fr, name, src, src - 1, curls))
+            else:
+                log("    %4d %-13s table %s -> applied %s%s" % (fr, name, curls, got, "" if cl else "  (unclamped)"))
         log("  axes: fingers %s, thumb %s; adduction %s; ceilings %s; pinch gap %.2fcm"
             % (rig.finger_axes_kind, rig.thumb_axes_kind, {k: v for k, v in rig.ADDUCT.items()}, rig.MAX_CURL, rig.pinch_gap_cm))
         anims = [(n, i, 1, 60.0) for i, (n, _) in enumerate(HR.POSES)]
@@ -667,18 +721,23 @@ def main():
         anims.append(("fist_authored", FIST_AUTHORED, 1, 60.0))
         comment = ("hand_final.fbx %s (%s) -> tools/fbx_hands/fbx2iqm.py. File frame: +X wrist->middle fingertip, "
                    "+Y left, +Z back of hand (palm -Z), origin Root_joint, map units (0.19 m at %.1f u/m). "
-                   "Frames 0-10 curl-table poses, 11-1288 FBX Take 001 0-1277 (root and wrist at bind), "
-                   "1289-1299 hold poses. Weights cut to 4%s."
-                   % (fh.mesh_name, side.lower(), UNITS_PER_METRE, ", UP_TOP merged into TOP" if a.merge_tips else ""))
+                   "Frames 0-10 and 1289-1299 RS_Hands tools_export_poses.py slots (authored take frames of %s where "
+                   "its picker matched, curl table otherwise; 1298-1299 as iqm_append_pose.py), 11-1288 FBX Take 001 "
+                   "0-1277 of this hand. Root and wrist at bind in every frame. Weights cut to 4%s."
+                   % (fh.mesh_name, side.lower(), UNITS_PER_METRE, slots["top"], ", UP_TOP merged into TOP" if a.merge_tips else ""))
         solved[side.lower()] = {
             "fbx_top": fh.top_name, "mesh": fh.mesh_name, "mirrored": is_left,
+            "slots_rig": slots["top"], "reach_claw_fbx_take_frame": slots["claw_take_frame"],
             "finger_axes": rig.finger_axes_kind, "thumb_axes": rig.thumb_axes_kind,
             "AXES": {k: list(map(float, v)) for k, v in rig.AXES.items()},
             "ADDUCT_AXES": {k: list(map(float, v)) for k, v in rig.ADDUCT_AXES.items()},
             "ADDUCT": rig.ADDUCT, "MAX_CURL": rig.MAX_CURL, "cm_units": rig.CM, "pinch_gap_cm": rig.pinch_gap_cm,
             "fold_check_cm": rig.fold,
+            "tails": rig.tails, "blender_bone_lengths": dict(zip(fh.names, rig.blen)),
             "frames": [{"frame": (k if k < 11 else HOLD_BASE + (k - 11)), "name": name, "table": curls,
-                        "applied": got, "clamped": cl} for k, (name, curls, got, basis, cl) in enumerate(b["pose_info"])],
+                        "applied": got, "clamped": cl, "source_frame_1based": src,
+                        "fbx_take_frame": (src - 1 if src is not None else None)}
+                       for k, (name, curls, got, basis, cl, src) in enumerate(b["pose_info"])],
         }
         path = os.path.join(a.out, fname)
         size, nfc, masks = write_iqm(path, fh.mesh_name, TEXTURE_NAME, fh.names, fh.parents, b["bind_locals"],

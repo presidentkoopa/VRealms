@@ -33,12 +33,16 @@
   "TOP": 0.78,
   "UP_TOP": 0.35
  },
+ "tails": "blender",
+ "slots_rig": "GLOBAL_MAIN_CONTROL_R",
  "right": {
   "fbx_top": "GLOBAL_MAIN_CONTROL_R",
   "mesh": "Hand_Low",
   "mirrored": false,
+  "slots_rig": "GLOBAL_MAIN_CONTROL_R",
+  "reach_claw_fbx_take_frame": 230,
   "finger_axes": "cardinal",
-  "thumb_axes": "free",
+  "thumb_axes": "cardinal",
   "AXES": {
    "INDEX_BASE_joint": [
     0.0,
@@ -77,7 +81,7 @@
    ],
    "MIDDLE_F_UP_TOP_joint": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "RING_BASE_joint": [
@@ -96,8 +100,8 @@
     0.0
    ],
    "RING_UP_TOP_joint": [
-    -1.0,
     0.0,
+    1.0,
     0.0
    ],
    "PINK_BASE_joint": [
@@ -117,50 +121,50 @@
    ],
    "PINK_UP_TOP_joint": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "THUMB_BASE_joint": [
-    -0.8365163037378079,
-    -0.25881904510252085,
-    0.4829629131445341
+    0.0,
+    1.0,
+    0.0
    ],
    "THUMB_MID_joint": [
-    -0.7162037569172396,
-    0.16001921630081872,
-    0.6792981885682483
+    0.0,
+    1.0,
+    0.0
    ],
    "THUMB_TOP_joint": [
-    -0.10400931288826805,
-    -0.6655367654670551,
-    -0.7390824559169028
+    0.0,
+    -1.0,
+    0.0
    ],
    "THUMB_UP_TOP_joint": [
-    -0.3519276101870963,
-    0.5654631274473851,
-    0.7459211812821924
+    -1.0,
+    0.0,
+    0.0
    ]
   },
   "ADDUCT_AXES": {
    "INDEX": [
-    1.8090624937528466e-16,
-    -0.17364817766693041,
-    0.984807753012208
+    -0.17101007166283436,
+    -0.17364817766693033,
+    0.9698463103929542
    ],
    "MIDDLE_F": [
-    6.030208312509489e-17,
-    -0.17364817766693033,
-    0.9848077530122081
+    -0.33682408883346504,
+    0.17364817766693044,
+    -0.9254165783983235
    ],
    "RING": [
-    6.030208312509489e-17,
-    -0.17364817766693033,
-    0.9848077530122081
+    0.33682408883346504,
+    -0.17364817766693044,
+    0.9254165783983235
    ],
    "PINK": [
-    0.3420201433256689,
-    6.123233995736767e-17,
-    0.9396926207859084
+    0.33682408883346504,
+    -0.17364817766693044,
+    0.9254165783983235
    ]
   },
   "ADDUCT": {
@@ -170,34 +174,59 @@
    "PINK": -4.0
   },
   "MAX_CURL": {
-   "INDEX": 65,
-   "MIDDLE_F": 60,
-   "RING": 65,
+   "INDEX": 60,
+   "MIDDLE_F": 65,
+   "RING": 110,
    "PINK": 110
   },
   "cm_units": 0.0679684416494722,
-  "pinch_gap_cm": 2.7073668652269443,
+  "pinch_gap_cm": 2.1798070297182366,
   "fold_check_cm": {
    "INDEX": [
-    9.890875962261697,
-    0.15896852404674294
+    10.812147467566067,
+    -0.91395378544738
    ],
    "MIDDLE_F": [
-    12.022259399399545,
-    0.557467365570339
+    12.41809046511655,
+    0.3026380240774824
    ],
    "RING": [
-    10.345820743591657,
-    -0.41356849570461085
+    10.460774039174023,
+    -0.28363257753938426
    ],
    "PINK": [
-    8.268489870838925,
-    -0.3699036518925275
+    8.624926277536652,
+    -0.4034097487399119
    ],
    "THUMB": [
-    6.978333617240647,
-    -2.169037194776033
+    9.131000980774665,
+    1.1614577299712556
    ]
+  },
+  "tails": "blender",
+  "blender_bone_lengths": {
+   "Root_joint": 0.5193759079387026,
+   "HANDPALM_joint": 0.5136915755763146,
+   "INDEX_BASE_joint": 0.25781981291536266,
+   "MIDDLE_F_BASE_joint": 0.2800394406736128,
+   "RING_BASE_joint": 0.24445450123260254,
+   "PINK_BASE_joint": 0.1947421140831244,
+   "THUMB_BASE_joint": 0.16723044319170868,
+   "INDEX_MID_joint": 0.17129909667454774,
+   "MIDDLE_F_MID_joint": 0.22014024991032893,
+   "RING_MID_joint": 0.19317670167680595,
+   "PINK_MID_joint": 0.14601729799772029,
+   "THUMB_MID_joint": 0.22461189355608416,
+   "INDEX_TOP_joint": 0.1270245210047375,
+   "MIDDLE_F_TOP_joint": 0.1347331932736305,
+   "RING_TOP_joint": 0.1204089056119098,
+   "PINK_TOP_joint": 0.09959140064768844,
+   "THUMB_TOP_joint": 0.18414512470932412,
+   "INDEX_UP_TOP_joint": 0.1270245210047375,
+   "MIDDLE_F_UP_TOP_joint": 0.1347331932736305,
+   "RING_UP_TOP_joint": 0.1204089056119098,
+   "PINK_UP_TOP_joint": 0.09959140064768844,
+   "THUMB_UP_TOP_joint": 0.18414512470932412
   },
   "frames": [
    {
@@ -217,7 +246,9 @@
      0,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 1,
@@ -231,12 +262,14 @@
     ],
     "applied": [
      0,
-     60,
      65,
+     90,
      90,
      14
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 2,
@@ -249,13 +282,15 @@
      0
     ],
     "applied": [
-     65,
+     60,
      0,
      0,
      0,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 3,
@@ -267,33 +302,25 @@
      90,
      30
     ],
-    "applied": [
-     65,
-     60,
-     65,
-     90,
-     30
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 689,
+    "fbx_take_frame": 688
    },
    {
     "frame": 4,
     "name": "pinch",
     "table": [
-     90,
+     60,
      85,
      90,
      90,
-     40
+     90
     ],
-    "applied": [
-     65,
-     60,
-     65,
-     90,
-     40
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 312,
+    "fbx_take_frame": 311
    },
    {
     "frame": 5,
@@ -306,13 +333,15 @@
      0
     ],
     "applied": [
-     65,
      60,
      65,
      90,
+     90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 6,
@@ -324,14 +353,10 @@
      90,
      25
     ],
-    "applied": [
-     65,
-     60,
-     65,
-     90,
-     25
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 336,
+    "fbx_take_frame": 335
    },
    {
     "frame": 7,
@@ -345,12 +370,14 @@
     ],
     "applied": [
      0,
-     60,
      65,
+     90,
      90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 8,
@@ -362,14 +389,10 @@
      90,
      25
     ],
-    "applied": [
-     30,
-     60,
-     65,
-     90,
-     25
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 314,
+    "fbx_take_frame": 313
    },
    {
     "frame": 9,
@@ -383,12 +406,14 @@
     ],
     "applied": [
      30,
-     60,
      65,
+     90,
      90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 10,
@@ -401,70 +426,60 @@
      0
     ],
     "applied": [
-     65,
      60,
      65,
      90,
+     90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 1289,
     "name": "hold_round",
     "table": [
-     90,
+     60,
      80,
      80,
      80,
-     40
+     90
     ],
-    "applied": [
-     90,
-     80,
-     80,
-     80,
-     40
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 315,
+    "fbx_take_frame": 314
    },
    {
     "frame": 1290,
     "name": "hold_shell",
     "table": [
-     90,
+     60,
      55,
      50,
      45,
-     40
+     90
     ],
-    "applied": [
-     90,
-     55,
-     50,
-     45,
-     40
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 692,
+    "fbx_take_frame": 691
    },
    {
     "frame": 1291,
     "name": "insert",
     "table": [
-     90,
+     60,
      55,
      50,
      45,
-     58
+     108
     ],
-    "applied": [
-     90,
-     55,
-     50,
-     45,
-     58
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 313,
+    "fbx_take_frame": 312
    },
    {
     "frame": 1292,
@@ -474,16 +489,12 @@
      40,
      35,
      30,
-     40
+     30
     ],
-    "applied": [
-     90,
-     40,
-     35,
-     30,
-     40
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 693,
+    "fbx_take_frame": 692
    },
    {
     "frame": 1293,
@@ -495,14 +506,10 @@
      95,
      12
     ],
-    "applied": [
-     95,
-     95,
-     95,
-     95,
-     12
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 691,
+    "fbx_take_frame": 690
    },
    {
     "frame": 1294,
@@ -512,16 +519,12 @@
      80,
      80,
      80,
-     45
+     35
     ],
-    "applied": [
-     80,
-     80,
-     80,
-     80,
-     45
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 690,
+    "fbx_take_frame": 689
    },
    {
     "frame": 1295,
@@ -531,16 +534,12 @@
      70,
      70,
      70,
-     45
+     65
     ],
-    "applied": [
-     70,
-     70,
-     70,
-     70,
-     45
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 316,
+    "fbx_take_frame": 315
    },
    {
     "frame": 1296,
@@ -552,14 +551,10 @@
      -12,
      -15
     ],
-    "applied": [
-     -12,
-     -12,
-     -12,
-     -12,
-     -15
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 194,
+    "fbx_take_frame": 193
    },
    {
     "frame": 1297,
@@ -571,14 +566,10 @@
      75,
      8
     ],
-    "applied": [
-     70,
-     75,
-     75,
-     75,
-     8
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 317,
+    "fbx_take_frame": 316
    }
   ]
  },
@@ -586,8 +577,10 @@
   "fbx_top": "GLOBAL_MAIN_CONTROL_R1",
   "mesh": "Hand_Low1",
   "mirrored": true,
+  "slots_rig": "GLOBAL_MAIN_CONTROL_R",
+  "reach_claw_fbx_take_frame": 230,
   "finger_axes": "cardinal",
-  "thumb_axes": "free",
+  "thumb_axes": "cardinal",
   "AXES": {
    "INDEX_BASE_joint": [
     0.0,
@@ -626,7 +619,7 @@
    ],
    "MIDDLE_F_UP_TOP_joint": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "RING_BASE_joint": [
@@ -645,8 +638,8 @@
     0.0
    ],
    "RING_UP_TOP_joint": [
-    -1.0,
     0.0,
+    1.0,
     0.0
    ],
    "PINK_BASE_joint": [
@@ -666,50 +659,50 @@
    ],
    "PINK_UP_TOP_joint": [
     0.0,
-    -1.0,
+    1.0,
     0.0
    ],
    "THUMB_BASE_joint": [
-    -0.8365163037378079,
-    -0.25881904510252085,
-    0.4829629131445341
+    0.0,
+    1.0,
+    0.0
    ],
    "THUMB_MID_joint": [
-    -0.7162037569172396,
-    0.16001921630081872,
-    0.6792981885682483
+    0.0,
+    1.0,
+    0.0
    ],
    "THUMB_TOP_joint": [
-    -0.10400931288826805,
-    -0.6655367654670551,
-    -0.7390824559169028
+    0.0,
+    -1.0,
+    0.0
    ],
    "THUMB_UP_TOP_joint": [
-    -0.3519276101870963,
-    0.5654631274473851,
-    0.7459211812821924
+    -1.0,
+    0.0,
+    0.0
    ]
   },
   "ADDUCT_AXES": {
    "INDEX": [
-    1.8090624937528466e-16,
-    -0.17364817766693041,
-    0.984807753012208
+    -0.17101007166283436,
+    -0.17364817766693033,
+    0.9698463103929542
    ],
    "MIDDLE_F": [
-    6.030208312509489e-17,
-    -0.17364817766693033,
-    0.9848077530122081
+    -0.33682408883346504,
+    0.17364817766693044,
+    -0.9254165783983235
    ],
    "RING": [
-    6.030208312509489e-17,
-    -0.17364817766693033,
-    0.9848077530122081
+    0.33682408883346504,
+    -0.17364817766693044,
+    0.9254165783983235
    ],
    "PINK": [
-    0.3420201433256689,
-    6.123233995736767e-17,
-    0.9396926207859084
+    0.33682408883346504,
+    -0.17364817766693044,
+    0.9254165783983235
    ]
   },
   "ADDUCT": {
@@ -719,34 +712,59 @@
    "PINK": -4.0
   },
   "MAX_CURL": {
-   "INDEX": 65,
-   "MIDDLE_F": 60,
-   "RING": 65,
+   "INDEX": 60,
+   "MIDDLE_F": 65,
+   "RING": 110,
    "PINK": 110
   },
   "cm_units": 0.0679684416494722,
-  "pinch_gap_cm": 2.7073668652269443,
+  "pinch_gap_cm": 2.1798070297182366,
   "fold_check_cm": {
    "INDEX": [
-    9.890875962261697,
-    0.15896852404674294
+    10.812147467566067,
+    -0.91395378544738
    ],
    "MIDDLE_F": [
-    12.022259399399545,
-    0.557467365570339
+    12.41809046511655,
+    0.3026380240774824
    ],
    "RING": [
-    10.345820743591657,
-    -0.41356849570461085
+    10.460774039174023,
+    -0.28363257753938426
    ],
    "PINK": [
-    8.268489870838925,
-    -0.3699036518925275
+    8.624926277536652,
+    -0.4034097487399119
    ],
    "THUMB": [
-    6.978333617240647,
-    -2.169037194776033
+    9.131000980774665,
+    1.1614577299712556
    ]
+  },
+  "tails": "blender",
+  "blender_bone_lengths": {
+   "Root_joint": 0.5193759079387026,
+   "HANDPALM_joint": 0.5136915755763146,
+   "INDEX_BASE_joint": 0.25781981291536266,
+   "MIDDLE_F_BASE_joint": 0.2800394406736128,
+   "RING_BASE_joint": 0.24445450123260254,
+   "PINK_BASE_joint": 0.1947421140831244,
+   "THUMB_BASE_joint": 0.16723044319170868,
+   "INDEX_MID_joint": 0.17129909667454774,
+   "MIDDLE_F_MID_joint": 0.22014024991032893,
+   "RING_MID_joint": 0.19317670167680595,
+   "PINK_MID_joint": 0.14601729799772029,
+   "THUMB_MID_joint": 0.22461189355608416,
+   "INDEX_TOP_joint": 0.1270245210047375,
+   "MIDDLE_F_TOP_joint": 0.1347331932736305,
+   "RING_TOP_joint": 0.1204089056119098,
+   "PINK_TOP_joint": 0.09959140064768844,
+   "THUMB_TOP_joint": 0.18414512470932412,
+   "INDEX_UP_TOP_joint": 0.1270245210047375,
+   "MIDDLE_F_UP_TOP_joint": 0.1347331932736305,
+   "RING_UP_TOP_joint": 0.1204089056119098,
+   "PINK_UP_TOP_joint": 0.09959140064768844,
+   "THUMB_UP_TOP_joint": 0.18414512470932412
   },
   "frames": [
    {
@@ -766,7 +784,9 @@
      0,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 1,
@@ -780,12 +800,14 @@
     ],
     "applied": [
      0,
-     60,
      65,
+     90,
      90,
      14
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 2,
@@ -798,13 +820,15 @@
      0
     ],
     "applied": [
-     65,
+     60,
      0,
      0,
      0,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 3,
@@ -816,33 +840,25 @@
      90,
      30
     ],
-    "applied": [
-     65,
-     60,
-     65,
-     90,
-     30
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 689,
+    "fbx_take_frame": 688
    },
    {
     "frame": 4,
     "name": "pinch",
     "table": [
-     90,
+     60,
      85,
      90,
      90,
-     40
+     90
     ],
-    "applied": [
-     65,
-     60,
-     65,
-     90,
-     40
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 312,
+    "fbx_take_frame": 311
    },
    {
     "frame": 5,
@@ -855,13 +871,15 @@
      0
     ],
     "applied": [
-     65,
      60,
      65,
      90,
+     90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 6,
@@ -873,14 +891,10 @@
      90,
      25
     ],
-    "applied": [
-     65,
-     60,
-     65,
-     90,
-     25
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 336,
+    "fbx_take_frame": 335
    },
    {
     "frame": 7,
@@ -894,12 +908,14 @@
     ],
     "applied": [
      0,
-     60,
      65,
+     90,
      90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 8,
@@ -911,14 +927,10 @@
      90,
      25
     ],
-    "applied": [
-     30,
-     60,
-     65,
-     90,
-     25
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 314,
+    "fbx_take_frame": 313
    },
    {
     "frame": 9,
@@ -932,12 +944,14 @@
     ],
     "applied": [
      30,
-     60,
      65,
+     90,
      90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 10,
@@ -950,70 +964,60 @@
      0
     ],
     "applied": [
-     65,
      60,
      65,
      90,
+     90,
      0
     ],
-    "clamped": true
+    "clamped": true,
+    "source_frame_1based": null,
+    "fbx_take_frame": null
    },
    {
     "frame": 1289,
     "name": "hold_round",
     "table": [
-     90,
+     60,
      80,
      80,
      80,
-     40
+     90
     ],
-    "applied": [
-     90,
-     80,
-     80,
-     80,
-     40
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 315,
+    "fbx_take_frame": 314
    },
    {
     "frame": 1290,
     "name": "hold_shell",
     "table": [
-     90,
+     60,
      55,
      50,
      45,
-     40
+     90
     ],
-    "applied": [
-     90,
-     55,
-     50,
-     45,
-     40
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 692,
+    "fbx_take_frame": 691
    },
    {
     "frame": 1291,
     "name": "insert",
     "table": [
-     90,
+     60,
      55,
      50,
      45,
-     58
+     108
     ],
-    "applied": [
-     90,
-     55,
-     50,
-     45,
-     58
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 313,
+    "fbx_take_frame": 312
    },
    {
     "frame": 1292,
@@ -1023,16 +1027,12 @@
      40,
      35,
      30,
-     40
+     30
     ],
-    "applied": [
-     90,
-     40,
-     35,
-     30,
-     40
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 693,
+    "fbx_take_frame": 692
    },
    {
     "frame": 1293,
@@ -1044,14 +1044,10 @@
      95,
      12
     ],
-    "applied": [
-     95,
-     95,
-     95,
-     95,
-     12
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 691,
+    "fbx_take_frame": 690
    },
    {
     "frame": 1294,
@@ -1061,16 +1057,12 @@
      80,
      80,
      80,
-     45
+     35
     ],
-    "applied": [
-     80,
-     80,
-     80,
-     80,
-     45
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 690,
+    "fbx_take_frame": 689
    },
    {
     "frame": 1295,
@@ -1080,16 +1072,12 @@
      70,
      70,
      70,
-     45
+     65
     ],
-    "applied": [
-     70,
-     70,
-     70,
-     70,
-     45
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 316,
+    "fbx_take_frame": 315
    },
    {
     "frame": 1296,
@@ -1101,14 +1089,10 @@
      -12,
      -15
     ],
-    "applied": [
-     -12,
-     -12,
-     -12,
-     -12,
-     -15
-    ],
-    "clamped": true
+    "applied": null,
+    "clamped": true,
+    "source_frame_1based": 194,
+    "fbx_take_frame": 193
    },
    {
     "frame": 1297,
@@ -1120,14 +1104,10 @@
      75,
      8
     ],
-    "applied": [
-     70,
-     75,
-     75,
-     75,
-     8
-    ],
-    "clamped": false
+    "applied": null,
+    "clamped": false,
+    "source_frame_1based": 317,
+    "fbx_take_frame": 316
    }
   ]
  }
