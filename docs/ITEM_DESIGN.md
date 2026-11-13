@@ -1028,3 +1028,25 @@ Documents are 40 records with Document blocks [F: dbase100_dump]. They share one
 - fold it away into the coat.
 
 That design should be written once, as its own section, when the first document comes up.
+
+---
+
+## OWNER'S DECISIONS (2026-11-13, 05:35-05:55)
+
+**The principle (owner, verbatim):** "we need to start thinking about vr features versus vanilla. we want to keep vanilla
+functionality but have our VR stuff be the goal." Every original path keeps working (the click verbs, point-and-tap); the
+VR way is the designed, featured way.
+
+1. **Lamp (item 15): the light comes FROM the lamp.** The original's player light (the flickering cone of the "candle"
+   sectors, C/renderer.c:9193-9198, 13411-13428; not tied to the Lamp in the original) is emitted from the lamp in Adam's
+   hand in VR, so it shines where it is held. Not 1:1 with the original's frame; chosen by the owner.
+2. **Candles: ONE soft, optimised, flickering dynamic light per candle holder that GROWS as each wick is lit.** Each wick
+   swaps to lit as it catches; the original's script (lit picture, the room's light step) still fires as the game says.
+   The original lights all flames of a holder in one picture swap; lighting them one at a time means drawing the flames at
+   the wicks ourselves (easiest once the holders are voxels).
+3. **Lighting a candle: both ways.** The match flame touching the wick is the VR way (the goal); the original's
+   point-and-tap with the matchbox selected keeps working (vanilla).
+4. **The Magical Torch (items 151/175, CHURCH1/Vicarage): the BEAM REVEALS the wards.** It is the puzzle item that makes the
+   green lemniscatic wards visible (Belial's wand, item 150, dispels them). In VR a pale magic beam comes from the lens and a
+   ward shows only where the beam falls, like UV light. Vanilla stays available: holding it shows the wards as the original
+   does (a setting).
