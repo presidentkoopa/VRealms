@@ -711,7 +711,15 @@ void AddWorldPicture(int id, int ox, int oy, double lift, int kind, bool hittabl
 static void ScreenUnitsPerPixel(double &across, double &down)
 {
 	across = down = PX;
-	if (vr_mode != 0) return;
+	if (vr_mode != 0)
+	{
+		// The headset stretches the world vertically by the level's pixelstretch (rothmap.cpp,
+		// the original's FY/FX); a head-locked picture is drawn in the world, so its height is
+		// divided by it to keep the original's pixels square, as on its own screen.
+		const double ps = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.0;
+		if (ps > 0.0) down = PX / ps;
+		return;
+	}
 	const double fov = r_viewpoint.GetFieldOfView().Degrees();
 	if (!(fov > 1.0 && fov < 179.0)) return;
 	const double t = tan(fov * (M_PI / 360.0));

@@ -39,7 +39,8 @@
 #include "roth/roth_log.h"
 #include "roth/roth_texture.h"
 #include "roth/roth_objects.h"
-#include "hw_vrmodes.h"   // VR_SetUnitsPerMeterOverride
+#include "hw_vrmodes.h"   // VR_SetUnitsPerMeterOverride, VR_SetEyeHeightAnchor, VRMode
+#include "c_dispatch.h"   // CCMD roth_vr_remeasure
 #include "roth/roth_runtime.h"
 #include "roth/roth_interface.h"
 #include "c_cvars.h"
@@ -130,22 +131,40 @@ CVAR(Bool, roth_platforms, false, CVAR_NOINITCALL)
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
 
-// The headset's metre for Realms (see the VR world scale block in the loader).
-// The study's doors are 218 units tall; a standard door is 2.03 m.
-static const double ROTH_DOOR_HEIGHT_UNITS = 218.0;
-static const double REAL_DOOR_HEIGHT_METRES = 2.03;
-static bool gRothVRScaleActive = false;   // a Realms level set the override
-static double RothVRUnitsPerMetre();
-// NOT archived (CLAUDE.md: the ini is shared with the hands build). 0 = the
-// door anchor; anything else is units per metre, applied at once.
+// THE ORIGINAL'S VERTICAL STRETCH: its projection draws a vertical unit FY/FX times as tall as a
+// horizontal one (measured from the original's own output at 640x480, tools/oracle flatfit.py:
+// FX = 309.77, FY = 355.06). Flat applies it to the projection (r_view_vstretch, below); in the
+// headset the lens owns the projection, so it is applied to the world (pixelstretch) instead.
+static const float ROTH_VIEW_VSTRETCH = 355.06f / 309.77f;   // 1.1462
+
+// The headset's metre for Realms (see the VR world scale block in the loader): the original's
+// eye height mapped onto the player's own (hw_vrmodes.h, the eye anchor).
+static bool gRothVRScaleActive = false;   // a Realms level is loaded
+static float gRothVREyeUnits = 0.f;       // that level's eye above the feet, map units
+static float gRothVRStretch = 1.f;        // and its vertical stretch in the headset
+static void RothApplyVRScale();
+// NOT archived (CLAUDE.md: the ini is shared with the hands build). 0 = the eye anchor;
+// anything else is units per metre, applied at once.
 CUSTOM_CVAR(Float, roth_vr_units_per_metre, 0.f, CVAR_NOINITCALL)
 {
-	if (gRothVRScaleActive) VR_SetUnitsPerMeterOverride((float)RothVRUnitsPerMetre());
+	if (gRothVRScaleActive) RothApplyVRScale();
 }
-static double RothVRUnitsPerMetre()
+static void RothApplyVRScale()
 {
-	if (roth_vr_units_per_metre > 0.f) return roth_vr_units_per_metre;
-	return ROTH_DOOR_HEIGHT_UNITS / REAL_DOOR_HEIGHT_METRES;   // 107.4
+	if (roth_vr_units_per_metre > 0.f)
+	{
+		VR_SetEyeHeightAnchor(0.f, 1.f);
+		VR_SetUnitsPerMeterOverride(roth_vr_units_per_metre);
+		return;
+	}
+	VR_SetUnitsPerMeterOverride(0.f);	// until a head is measured: the player's own vr_vunits_per_meter
+	VR_SetEyeHeightAnchor(gRothVREyeUnits, gRothVRStretch);
+}
+// Take the head's height again on the next tracked frame (stand or sit as you will play).
+CCMD(roth_vr_remeasure)
+{
+	VR_RemeasureHeadHeight();
+	Printf("roth_vr_remeasure: the head's height is taken again on the next tracked frame\n");
 }
 // The player's own field of view is NOT written by this loader: it is the
 // player's archived setting. Realms' projection is the level's
@@ -567,30 +586,28 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			" units still uncalibrated: GAME_core.md 5.2 step 8",
 			Level->ForcedPlayerUseRange);
 
-		// THE HEADSET'S METRE. In VR the world's size is set by how many units
-		// the engine calls a metre (vr_vunits_per_meter is 34, Doom's). ROTH.C
-		// has no metres at all: this number is a CHOICE, and it is made from a
-		// real object rather than from a convention.
+		// THE HEADSET'S METRE, FROM THE ORIGINAL. ROTH.C has no metres, but it does place the
+		// player's eye: eye = player_z + g_player_height, 2 * meta[0x0A] = 144 by default
+		// (map_load.c:206-207, PL:185; docs/SURF_rothc_truth.md row 27), and it draws the world
+		// with a vertical stretch of FY/FX = 1.1462. In the headset the player's eye is his own
+		// head; so the metre is the one that puts his head exactly where the original's camera
+		// was:  units per metre = eye units * stretch / his head's height above the floor,
+		// measured by the headset on its first tracked frame (hw_vrmodes.h, the eye anchor;
+		// roth_vr_remeasure takes it again).
 		//
-		// History: it was 34 * 154/56 = 93.5 (Doom's convention scaled by the
-		// player's height). The owner, in the headset (2026-11-13): "rooms look
-		// too wide, ceilings look too high". At 93.5 the study's doors -- every
-		// one 218 units tall, 128 wide (tools/doorcheck STUDY1) -- are 2.33 m,
-		// and its 384-unit rooms 4.1 m: the whole world too big, uniformly.
+		// History: 93.5 (Doom's 34 scaled by player height), then 107.4 from a 2.03 m door --
+		// both numbers chosen here, not the original's. The owner in the headset (2026-11-13):
+		// "I seem to be too short, rooms too wide, ceilings too high".
 		//
-		// Anchored on the door: 218 units = 2.03 m (a standard 80-inch door),
-		// 107.4 units a metre. Only the metre changes: the geometry stays the
-		// original's, and the original's own proportions with it.
-		//
-		// roth_vr_units_per_metre (NOT saved) overrides it live, so the owner can
-		// judge it by feel in the headset; 0 = the door anchor. The override is
-		// per level and cleared by P_SetupLevel; vr_vunits_per_meter (archived,
-		// shared with every other game) is never written. See hw_vrmodes.h.
-		const double upm = RothVRUnitsPerMetre();
-		VR_SetUnitsPerMeterOverride((float)upm);
+		// roth_vr_units_per_metre (NOT saved) overrides it live; 0 = the eye anchor.
+		// vr_vunits_per_meter (archived, shared) is never written. Flat: nothing changes.
+		gRothVREyeUnits = (float)Level->ForcedPlayerViewHeight;
+		gRothVRStretch = VRMode::GetVRMode(true)->IsVR() ? ROTH_VIEW_VSTRETCH : 1.f;
 		gRothVRScaleActive = true;
-		log.Line("  VR world scale %.1f units/metre (%s; the cvar's 34 is Doom's, and is untouched)",
-			upm, roth_vr_units_per_metre > 0.f ? "roth_vr_units_per_metre" : "door anchor: 218 units = 2.03 m");
+		RothApplyVRScale();
+		log.Line("  VR world scale: %s (eye %.0f units above the feet, vertical stretch %.4f in the headset)",
+			roth_vr_units_per_metre > 0.f ? "roth_vr_units_per_metre" : "the original's eye on the player's measured head",
+			gRothVREyeUnits, gRothVRStretch);
 	}
 
 	// Realms maps carry no BSP, blockmap or reject, so all of it is generated.
@@ -1263,10 +1280,18 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	// below is applied to the flat-screen PROJECTION only and is ignored in VR,
 	// where the lens sets the projection. See hw_entrypoint.cpp.
 	{
-		const float ROTH_VIEW_VSTRETCH = 355.06f / 309.77f;   // 1.1462
 		r_view_vstretch = ROTH_VIEW_VSTRETCH;
-		log.Line("  view vertical stretch %.4f  (Realms FY/FX; flat screen only)",
-			ROTH_VIEW_VSTRETCH);
+		// IN THE HEADSET the lens sets the projection and r_view_vstretch is ignored
+		// (hw_entrypoint.cpp), so the same stretch goes on the world instead: pixelstretch
+		// scales world Y in the view matrix (hw_drawinfo.cpp, planemult), and every VR
+		// metre <-> unit conversion divides by it (vk_openxrdevice.cpp), so the head, the
+		// controllers and the eye anchor above all agree. Flat keeps 1.0 (MAPINFO): the
+		// projection already carries it there, and doing both would stretch twice.
+		const double ps = VRMode::GetVRMode(true)->IsVR() ? (double)ROTH_VIEW_VSTRETCH : 1.0;
+		Level->info->pixelstretch = (float)ps;
+		Level->pixelstretch = ps;
+		log.Line("  view vertical stretch %.4f  (Realms FY/FX; %s)",
+			ROTH_VIEW_VSTRETCH, ps != 1.0 ? "headset: on the world, pixelstretch" : "flat: on the projection");
 	}
 
 	//----------------------------------------------------------------------

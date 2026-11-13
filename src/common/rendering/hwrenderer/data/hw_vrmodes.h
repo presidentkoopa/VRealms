@@ -442,3 +442,16 @@ void VR_RenderNetWaitShellContents(int width, int height, bool outside2D = false
 // the start of every level load so a game that says nothing gets the cvar back.
 float VR_UnitsPerMeter();
 void  VR_SetUnitsPerMeterOverride(float unitsPerMeter);   // 0 = use the cvar
+
+// THE EYE ANCHOR: a game whose metre is not a constant but "the player's eye is where the
+// original's camera was". The loader states the original's eye height above the feet in map
+// units and its vertical stretch; the headset device reports the tracked head's height above
+// the stage floor (metres) on its first tracked frame; then
+//     units per metre = eyeUnits * pixelStretch / headMetres
+// so the head lands exactly at the original's eye (VR head height is metres * upm / stretch).
+// The measured height is kept across levels; VR_RemeasureHeadHeight takes it again on the next
+// tracked frame. Cleared with the override at every level load.
+void  VR_SetEyeHeightAnchor(float eyeUnits, float pixelStretch);   // eyeUnits 0 = off
+void  VR_ReportHeadHeight(float metresAboveFloor);                  // the device, every tracked frame
+void  VR_RemeasureHeadHeight();
+float VR_MeasuredHeadHeight();                                      // 0 = not measured yet

@@ -659,6 +659,42 @@ void VR_SetUnitsPerMeterOverride(float unitsPerMeter)
 {
 	gVRUnitsPerMeterOverride = unitsPerMeter > 0.f ? unitsPerMeter : 0.f;
 }
+
+// The eye anchor (hw_vrmodes.h).
+static float gVREyeAnchorUnits = 0.f;
+static float gVREyeAnchorStretch = 1.f;
+static float gVRHeadMetres = 0.f;		// kept across levels: the same person in the same room
+static bool  gVRRemeasure = false;
+
+static void ApplyEyeAnchor()
+{
+	if (gVREyeAnchorUnits > 0.f && gVRHeadMetres > 0.f)
+	{
+		const float upm = gVREyeAnchorUnits * gVREyeAnchorStretch / gVRHeadMetres;
+		VR_SetUnitsPerMeterOverride(upm);
+		Printf("VR world scale %.1f units/metre: head %.2f m above the floor = the original's eye, %.0f units above the feet (vertical stretch %.4f)\n",
+			upm, gVRHeadMetres, gVREyeAnchorUnits, gVREyeAnchorStretch);
+	}
+}
+
+void VR_SetEyeHeightAnchor(float eyeUnits, float pixelStretch)
+{
+	gVREyeAnchorUnits = eyeUnits > 0.f ? eyeUnits : 0.f;
+	gVREyeAnchorStretch = pixelStretch > 0.f ? pixelStretch : 1.f;
+	ApplyEyeAnchor();
+}
+
+void VR_ReportHeadHeight(float metresAboveFloor)
+{
+	if (!(metresAboveFloor > 0.f)) return;		// the stage floor is y = 0; nothing at or below it is a head
+	if (gVRHeadMetres > 0.f && !gVRRemeasure) return;
+	gVRHeadMetres = metresAboveFloor;
+	gVRRemeasure = false;
+	ApplyEyeAnchor();
+}
+
+void VR_RemeasureHeadHeight() { gVRRemeasure = true; }
+float VR_MeasuredHeadHeight() { return gVRHeadMetres; }
 CVAR(Float, vr_height_adjust, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // METERS
 CVAR(Float, vr_openxr_fov_adjust_deg, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // DEGREES PER SIDE
 CVAR(Float, vr_openxr_eye_shift_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)

@@ -5662,6 +5662,12 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	}
 
 	updateHmdPose(r_viewpoint);
+	// The eye anchor's measurement (hw_vrmodes.h): the head's height above the STAGE floor, only
+	// while the position is really tracked. In LOCAL space y = 0 is wherever the head started, not
+	// the floor, so nothing is reported there (the local height anchor below covers that case).
+	if (xrUsingStageSpace && (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0
+		&& (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_TRACKED_BIT) != 0)
+		VR_ReportHeadHeight((float)((double)hmdPosition[1] + (double)vr_height_adjust));
 	xrVirtualScreenVisible = false;
 	xrVirtualScreenBackdropVisible = false;
 	xrVirtualScreenImageIndex = -1;

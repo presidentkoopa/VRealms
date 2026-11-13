@@ -502,7 +502,11 @@ static const MeshBinding *EnsureMesh(const std::string &packName, int index,
 	// which is what memset leaves behind.
 	smf.xscale = smf.yscale = smf.zscale = 1.f;
 	// One-sided, as the original draws them. See BuildMeshData.
-	smf.setFlags(MDL_FORCECULLBACKFACES);
+	// NoPixelStretch: the original draws its meshes through the same projection as its walls, so
+	// they take the world's vertical stretch with them (in the headset, rothmap.cpp pixelstretch
+	// 1.1462; flat is 1.0, where this changes nothing). Without it the engine undoes the stretch
+	// for models only, and the furniture would come out squat beside the walls.
+	smf.setFlags(MDL_FORCECULLBACKFACES | MDL_NOPIXELSTRETCH);
 	smf.type = PropClass();
 	smf.sprite = (short)b.spriteNum;
 	smf.frame = 0;
@@ -583,6 +587,7 @@ int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Lo
 	for (unsigned i = 0; i < smf.surfaceskinIDs.Size(); i++)
 		smf.surfaceskinIDs[i] = FNullTextureID();
 	smf.xscale = smf.yscale = smf.zscale = 1.f;
+	smf.setFlags(MDL_NOPIXELSTRETCH);       // stretched with the world, as the props above
 	smf.type = cls;
 	smf.sprite = (short)spriteNum;
 	smf.frame = 0;

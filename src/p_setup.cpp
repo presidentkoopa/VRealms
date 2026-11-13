@@ -636,6 +636,7 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 	// the next map loaded -- see VR_UnitsPerMeter in hw_vrmodes.h. The Realms
 	// loader sets it again from the map's own player height.
 	VR_SetUnitsPerMeterOverride(0.f);
+	VR_SetEyeHeightAnchor(0.f, 1.f);
 
 	// This is motivated as follows:
 
