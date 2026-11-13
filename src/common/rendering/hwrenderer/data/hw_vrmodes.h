@@ -71,6 +71,19 @@ enum
 // same rule.
 int VR_ControllerForHand(int hand);
 
+// RS FORK -- WHAT A CONTROLLER SAYS ABOUT THE FINGERS. Ported from UZDXREMA
+// (hw_vrmodes.h:77-88, VR_BODY_HANDS_SPEC.md B.3 item 2). Raw, as the runtime reports it: no
+// curl, no blending, no per-finger meaning. Turning these into a hand is the VR hands' job
+// (r_data/vr_handpose.cpp), which is a mapping with a source, a different kind of decision from
+// reading a device.
+struct VRFingerInput
+{
+	float trigger = 0.f;      // 0..1
+	float grip = 0.f;         // 0..1
+	bool  triggerTouch = false;
+	bool  thumbTouch = false;
+};
+
 struct HWDrawInfo;
 struct HWViewpointUniforms;
 
@@ -209,6 +222,18 @@ struct VRMode
 	virtual bool SubmitFrame() const { return true; }
 
 	virtual bool GetHandTransform(int hand, VSMatrix* out) const { return false; }
+	// RS FORK -- THE GRIP POSE AND THE FINGERS, ported from UZDXREMA (hw_vrmodes.h:236-246, :259-261).
+	//
+	// GetGripTransform is OpenXR's GRIP pose, not the aim pose GetHandTransform answers with: the
+	// place and turn of the player's closed hand on the controller, in world render space, unit =
+	// one METRE (scaled by VR_UnitsPerMeter, with GetHandTransform's own -Z and pixel stretch), its
+	// axes OpenXR's grip axes -- -Z through the ring of the fingers, +X into the right palm and away
+	// from the left. `hand` is VR_MAINHAND / VR_OFFHAND. The aim pose is what points a gun, with the
+	// gun's pitch bias and vr_weaponRotate in it; where a hand IS must not inherit those.
+	//
+	// GetFingerInput is what the fingers are doing, straight off the controller.
+	virtual bool GetGripTransform(int hand, VSMatrix* out) const { return false; }
+	virtual bool GetFingerInput(int hand, struct VRFingerInput& out) const { return false; }
 	// THE FRAME EVERYTHING WORN IS PLACED IN, at the display's clock.
 	//
 	// The hand transforms above let a world model ride a controller at draw rate.

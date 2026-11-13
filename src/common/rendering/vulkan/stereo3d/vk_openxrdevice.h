@@ -198,6 +198,14 @@ public:
 	virtual bool GetHmdTransform(VSMatrix* out, DVector3 bodyOfs = DVector3(0, 0, 0), float* outBodyYaw = nullptr, double yawOverride = NAN) const override;
 	virtual bool GetHmdBaseTransform(VSMatrix* out, double* outPixelStretch, float* outBodyYaw) const override;
 	virtual bool GetHandTransform(int hand, VSMatrix* out) const override;
+	// RS FORK -- the grip pose and the fingers (hw_vrmodes.h). Ported from UZDXREMA
+	// vk_openxrdevice.h:201-206 and .cpp:7879-7900, 7912-7921, 7957-7963.
+	virtual bool GetGripTransform(int hand, VSMatrix* out) const override;
+	virtual bool GetFingerInput(int hand, struct VRFingerInput& out) const override;
+	// An offset from the headset (metres, already turned onto the body yaw, as xrGripOffset) and a
+	// raw tracking-space orientation, into world render space -- GetHandTransform's construction
+	// with the quaternion applied whole instead of through Euler angles.
+	bool OffsetToWorld(const float ofs[3], const float rotXR[4], VSMatrix* out) const;
 	virtual bool RenderPlayerSpritesInScene() const { return true; }
 	virtual bool GetTeleportLocation(DVector3 &out) const override;
 	virtual void Vibrate(float duration, int channel, float intensity) const override;
@@ -271,9 +279,9 @@ protected:
 	mutable XrSpace xrHandSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 	// MEASUREMENT ONLY. xrPoseAction above is bound to /input/aim/pose on every
 	// interaction profile -- the pointer ray, not the fist. These bind the grip
-	// pose alongside it so the difference between the two can be logged. Nothing
-	// reads them for placement; they exist to put a number on how far the frame
-	// the engine calls "the hand" is from the player's actual hand.
+	// pose alongside it so the difference between the two can be logged. The VR
+	// hands read them for placement now (xrGripPoses below, GetGripTransform);
+	// everything that rides the aim pose still does.
 	mutable XrAction xrGripPoseAction = XR_NULL_HANDLE;
 	mutable XrSpace xrGripSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 	mutable XrAction xrSelectAction = XR_NULL_HANDLE;
@@ -327,6 +335,18 @@ protected:
 
 	// Capacitive finger contact per hand, as FINGERTOUCH_* bits.
 	mutable int xrFingerTouch[2] = { 0, 0 };
+
+	// RS FORK -- THE GRIP POSE, located beside the aim pose every frame and never mixed with it
+	// (UZDXREMA vk_openxrdevice.h:333-339). Position HMD-relative and yaw-corrected, the same
+	// conversion weaponoffset gets, so GetGripTransform builds its matrix as GetHandTransform does.
+	// Indexed by controller (0 left, 1 right), like xrGripSpaces.
+	mutable XrPosef xrGripPoses[2] = { { {0,0,0,1}, {0,0,0} }, { {0,0,0,1}, {0,0,0} } };
+	mutable float   xrGripOffset[2][3] = { { 0,0,0 }, { 0,0,0 } };
+	mutable bool    xrGripPoseValid[2] = { false, false };
+
+	// RS FORK -- the finger values, copied out of UpdateControllerState's own handInput (a local
+	// there) for GetFingerInput. By controller (UZDXREMA vk_openxrdevice.h:344-346).
+	mutable VRFingerInput xrFingerInput[2];
 	// Tap-vs-combo resolution for grip. A grip press that STARTS inside a
 	// holster arms a pending store; if any other button joins it before
 	// release then it was a modifier combo and the store is cancelled. So the

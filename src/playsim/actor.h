@@ -1483,6 +1483,13 @@ public:
 	//        The default, and what every existing caller keeps getting.
 	//     1  the main hand, whatever the MODELDEF says.
 	//     2  the off hand, whatever the MODELDEF says.
+	//     3  RS FORK -- the main hand's controller GRIP pose, not its aim pose:
+	//        the VR hands (r_data/vr_handpose.h). The frame is the grip times
+	//        UZDXREMA's DefaultHandFit (X fingers, Y back of the hand, Z the
+	//        thumb axis) in METRES, not map units, and the model's own measured
+	//        seat is applied first (ModelSeat), so MODELDEF Scale is metres per
+	//        model unit. Not mirrored, not frozen by gun fit mode.
+	//     4  the same for the off hand.
 	//
 	// WHY AN OVERRIDE AND NOT JUST AN OFFSET. A MODELDEF flag is per CLASS, and
 	// which hand a thing is in is a property of the MOMENT. The case that forced

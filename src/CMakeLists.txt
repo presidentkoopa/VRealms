@@ -982,6 +982,7 @@ set (PCH_SOURCES
 	roth/roth_invscreen.cpp
 	roth/roth_invdraw.cpp
 	roth/roth_uidraw.cpp
+	roth/roth_hands.cpp
 	roth/roth_menudraw.cpp
 	roth/roth_huddraw.cpp
 	roth/roth_dlgdraw.cpp
@@ -1188,6 +1189,7 @@ set (PCH_SOURCES
 	r_data/r_sections.cpp
 	r_data/models.cpp
 	r_data/model_reach.cpp
+	r_data/vr_handpose.cpp
 	r_data/model_fit.cpp
 	r_data/model_handdrive.cpp
 	r_data/level_solid_query.cpp

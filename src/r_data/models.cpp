@@ -44,6 +44,7 @@
 #include "model_jointfollow.h" // RS fork -- piece E: a child riding a joint as drawn (JointFollowCarry)
 #include "c_dispatch.h"   // RS fork -- the modelsurfaces CCMD at the end of this file
 #include "v_text.h"       // RS fork -- TEXTCOLOR_* for the same
+#include "vr_handpose.h" // RS fork -- the VR hands: grip-pose follow modes 3/4, their seat and fingers
 
 
 #ifdef _MSC_VER
@@ -1583,6 +1584,14 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 		: ((flags & MDL_FOLLOWOFFHAND) ? VR_OFFHAND : -1);
 	if (followHandMode == 1)      followHand = VR_MAINHAND;
 	else if (followHandMode == 2) followHand = VR_OFFHAND;
+	// RS FORK -- THE VR HANDS (r_data/vr_handpose.h). Modes 3 and 4 ride the main and off hand's
+	// controller GRIP pose instead of its aim pose: the frame is VRHandPose_HandFrame -- the grip
+	// times UZDXREMA's DefaultHandFit, in METRES -- and the model's own measured seat goes on last
+	// (below, after the pivot). See the note on AActor::FollowHandMode.
+	const bool gripFollow = (followHandMode == FOLLOWHAND_GRIP_MAIN || followHandMode == FOLLOWHAND_GRIP_OFF);
+	if (gripFollow) followHand = (followHandMode == FOLLOWHAND_GRIP_MAIN) ? VR_MAINHAND : VR_OFFHAND;
+	bool gripSeat = false;
+	int gripSide = 0;
 	// [FIT] THE OFF HAND GETS THE MIRROR IMAGE OF A GUN'S SIDEWAYS OFFSET.
 	//
 	// Gun fit mode fits a gun once, in one hand, and the other hand is meant to
@@ -1595,7 +1604,32 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 	// the placement sliders keep exactly the behaviour they had. Every gun's
 	// sideways Offset was 0 when this went in, so nothing moved on the day.
 	bool fitMirrorX = false;
-	if (!followedActor && !followedBody && followHand >= 0)
+	if (!followedActor && !followedBody && followHand >= 0 && gripFollow)
+	{
+		// RS FORK -- the grip-pose hand. No unit conversion (the frame stays in metres, so a hand is
+		// its real size on every map whatever VR_UnitsPerMeter says), no mirror (each hand is its own
+		// mesh and ModelSeat carries the reflection the loader's axis swap needs), and FollowHandRot
+		// turns about the hand frame's axes (X fingers, Y back of the hand, Z thumb axis) unmirrored.
+		// No frame (no headset, no grip this frame): the ordinary world placement below, at metre
+		// scale -- a speck -- and the game layer hides the actor (UZDXREMA: "no controller, no hand").
+		if (VRHandPose_HandFrame(followHand, objectToWorldMatrix))
+		{
+			if (followHandRot.X != 0.0 || followHandRot.Y != 0.0 || followHandRot.Z != 0.0)
+			{
+				objectToWorldMatrix.rotate((float)followHandRot.X, 0, 1, 0);
+				objectToWorldMatrix.rotate(-(float)followHandRot.Y, 1, 0, 0);
+				objectToWorldMatrix.rotate(-(float)followHandRot.Z, 0, 0, 1);
+			}
+			followedHand = true;
+			gripSeat = true;
+			gripSide = VRHandPose_SideForRole(followHand);
+		}
+		else
+		{
+			objectToWorldMatrix.loadIdentity();
+		}
+	}
+	else if (!followedActor && !followedBody && followHand >= 0)
 	{
 		auto vrmode = VRMode::GetVRModeCached(true);
 		bool handMirrored = false;	// AActor::FollowHandRot, below
@@ -2042,6 +2076,17 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 		objectToWorldMatrix.translate(-pivotx / xscale,
 			-pivotz / (zscale * stretch),
 			-pivoty / yscale);
+	}
+
+	// RS FORK -- THE VR HAND'S SEAT (vr_handpose_math.h ModelSeat), measured from the model's own
+	// wrist and knuckles: model -> the hand frame, the grip socket at the origin. Last written, so
+	// it is the FIRST thing applied to a vertex; MODELDEF Scale, Offset and the angle offsets then act
+	// in the hand frame (X fingers, Y back of the hand, Z thumb axis), in metres. A hand MODELDEF
+	// sets NoPixelStretch: the grip frame already carries the world's pixel stretch.
+	if (gripSeat && modelIDs.Size() > 0 && modelIDs[0] >= 0)
+	{
+		VSMatrix seat;
+		if (VRHandPose_ModelSeat(Models[modelIDs[0]], gripSide, seat)) objectToWorldMatrix.multMatrix(seat);
 	}
 
 	if (!(flags & MDL_CORRECTPIXELSTRETCH) && !(flags & MDL_NOPIXELSTRETCH) && modelIDs.Size() > 0)	// NoPixelStretch (GZSelaco 1e7fd30b59)
@@ -3111,6 +3156,9 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			// OnlyOffsets fallback above arrive here, stock overrides already in. Never
 			// on the base-pose fallback below, which is not a palette. Hands boneData
 			// back untouched unless RenderModel opened a pose window for this actor.
+			// RS FORK -- THE VR HANDS' FINGERS (vr_handpose.h), first: a hand actor's finger joints
+			// posed from its controller, before any draw pose. &bones back for everything else.
+			if (boneData) boneData = VRHandPose_Apply(frameinfo.actor, mdl, i, *boneData);
 			if (boneData) boneData = ModelDrawPose_Apply(frameinfo.actor, mdl, i, *boneData);
 
 			// [RS FORK] Upstream's new CalculateBonesOnlyOffsets path only covers
@@ -3135,7 +3183,9 @@ static inline void RenderModelFrame(FModelRenderer *renderer, int i, const FSpri
 			// RS FORK -- the same, for a model that uploads its own bones inside RenderFrame.
 			// A posed palette gets its own upload for THIS draw only: boneStartingPosition is
 			// shared with the next model index and stays as it was.
-			const TArray<VSMatrix> *posed = ModelDrawPose_Apply(frameinfo.actor, mdl, i, *boneData);
+			// RS FORK -- the VR hands' fingers first, as in the branch above.
+			const TArray<VSMatrix> *handed = VRHandPose_Apply(frameinfo.actor, mdl, i, *boneData);
+			const TArray<VSMatrix> *posed = ModelDrawPose_Apply(frameinfo.actor, mdl, i, *handed);
 			if (mdl->ApplyBoneLengths(boneLengthOverrides, *posed, boneLengthPalette)) posedBoneStart = screen->mBones->UploadBones(boneLengthPalette);
 			else if (posed != boneData) posedBoneStart = screen->mBones->UploadBones(*posed);
 		}

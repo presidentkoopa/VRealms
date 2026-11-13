@@ -41,6 +41,7 @@
 #include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
 #include "roth_movie.h"       // the GDV player: movies the flow asks for
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
+#include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
 
 #include <map>
 #include <vector>
@@ -5799,6 +5800,7 @@ void EndLevel()
 	g.fired = 0;
 	g.unhandledOps.clear();
 	ActorsEndLevel();
+	HandsEndLevel();
 	SoundEndLevel();
 	// g_progressFlags is NOT cleared -- see the header.
 }
@@ -7089,6 +7091,10 @@ void TickLevelLogic(FLevelLocals *level)
 	// An arrival point waits for a player to exist, which it does not at
 	// BeginLevel time.
 	ConsumeArrival();
+
+	// The VR hands' actors (roth_hands.h): before the menu and death returns
+	// below, so neither takes the hands away. Presentation only.
+	HandsTick(level);
 
 	// The command core's per-frame half -- the speed latch, the particles, the
 	// pain flash -- comes first in tick_world_effects (raw_commands.c:3290-3297),

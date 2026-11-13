@@ -1,0 +1,14 @@
+const SOURCE_BASE  = 11;
+const SOURCE_COUNT = 1278;
+const HOLD_BASE    = 1289;
+const POSE_HOLD_ROUND    = HOLD_BASE + 0;
+const POSE_HOLD_SHELL    = HOLD_BASE + 1;
+const POSE_INSERT        = HOLD_BASE + 2;
+const POSE_HOLD_SLIDE    = HOLD_BASE + 3;
+const POSE_HOLD_MAG      = HOLD_BASE + 4;
+const POSE_HOLD_FOREGRIP = HOLD_BASE + 5;
+const POSE_HOLD_FOREND   = HOLD_BASE + 6;
+const POSE_REACH         = HOLD_BASE + 7;
+const POSE_SUPPORT       = HOLD_BASE + 8;
+const POSE_REACH_CLAW    = HOLD_BASE + 9;
+const POSE_SALUTE        = HOLD_BASE + 10;

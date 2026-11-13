@@ -60,6 +60,7 @@ version "5.0.0"
 #include "zscript/actors/morph.zs"
 #include "zscript/actors/loaderprop.zs"
 #include "zscript/actors/realmsheld.zs"
+#include "zscript/actors/realmshands.zs"
 
 // 3D Platform by FishyClock, GPL-3.0, https://github.com/FishyClock/3Dplatform
 // The library's two core files, unmodified; see zscript/fishy/CREDITS.txt.

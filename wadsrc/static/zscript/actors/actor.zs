@@ -405,6 +405,9 @@ class Actor : Thinker native
 	// what its MODELDEF says:
 	//     0  the MODELDEF decides (FollowMainHand / FollowOffHand). The default.
 	//     1  the main hand.    2  the off hand.
+	//     3  the main hand's GRIP pose, 4 the off hand's: the VR hands (engine
+	//        r_data/vr_handpose.h). In metres, seated from the model's own wrist
+	//        and knuckles, fingers posed from the controller at draw rate.
 	//
 	// The case it exists for: an off hand reaching for a pistol's slide. The
 	// slide belongs to the gun and the gun rides the MAIN controller, so the

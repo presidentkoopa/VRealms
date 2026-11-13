@@ -2501,12 +2501,19 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 
 	// Capacitive touch paths.
 	//
-	// Suggested ONLY for the Oculus Touch profile below. A suggested binding
-	// naming a path the profile does not define makes
+	// Suggested per profile, only where the profile defines the path. A suggested
+	// binding naming a path the profile does not define makes
 	// xrSuggestInteractionProfileBindings reject the ENTIRE profile rather than
-	// the single binding, which presents as the controller losing all input --
-	// so these are withheld from Vive, WMR and the simple profile, none of
-	// which define them.
+	// the single binding, which presents as the controller losing all input.
+	//
+	// RS FORK -- THE VR HANDS read these (thumb on the controller or off it, index
+	// on the trigger or off it; r_data/vr_handpose_math.h), so every profile with
+	// a capacitive sensor now has it bound, each path checked against that
+	// profile's input list (Unity's OpenXR profile tables, which copy the spec's):
+	//   Oculus Touch  thumbrest, thumbstick, X/Y/A/B touch -> thumb; trigger touch
+	//   Valve Index   thumbstick, trackpad, A/B touch -> thumb; trigger touch
+	//   Vive, WMR     trackpad touch -> thumb (no trigger sensor)
+	// The simple profile has none.
 	XrPath leftThumbrestTouchPath = XR_NULL_PATH;
 	XrPath rightThumbrestTouchPath = XR_NULL_PATH;
 	XrPath leftThumbstickTouchPath = XR_NULL_PATH;
@@ -2515,6 +2522,8 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	XrPath leftYTouchPath = XR_NULL_PATH;
 	XrPath rightATouchPath = XR_NULL_PATH;
 	XrPath rightBTouchPath = XR_NULL_PATH;
+	XrPath leftATouchPath = XR_NULL_PATH;	// RS FORK -- the Index has A and B on both hands
+	XrPath leftBTouchPath = XR_NULL_PATH;
 	XrPath leftTriggerTouchPath = XR_NULL_PATH;
 	XrPath rightTriggerTouchPath = XR_NULL_PATH;
 	xrStringToPath(xrInstance, "/user/hand/left/input/thumbrest/touch", &leftThumbrestTouchPath);
@@ -2525,6 +2534,8 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	xrStringToPath(xrInstance, "/user/hand/left/input/y/touch", &leftYTouchPath);
 	xrStringToPath(xrInstance, "/user/hand/right/input/a/touch", &rightATouchPath);
 	xrStringToPath(xrInstance, "/user/hand/right/input/b/touch", &rightBTouchPath);
+	xrStringToPath(xrInstance, "/user/hand/left/input/a/touch", &leftATouchPath);
+	xrStringToPath(xrInstance, "/user/hand/left/input/b/touch", &leftBTouchPath);
 	xrStringToPath(xrInstance, "/user/hand/left/input/trigger/touch", &leftTriggerTouchPath);
 	xrStringToPath(xrInstance, "/user/hand/right/input/trigger/touch", &rightTriggerTouchPath);
 
@@ -2577,6 +2588,8 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(viveBindings, xrGripPoseAction, rightGripPosePath);
 	AddBinding(viveBindings, xrHapticAction, leftHapticPath);
 	AddBinding(viveBindings, xrHapticAction, rightHapticPath);
+	AddBinding(viveBindings, xrThumbTouchAction, leftTrackpadTouchPath);	// RS FORK -- the VR hands' thumb
+	AddBinding(viveBindings, xrThumbTouchAction, rightTrackpadTouchPath);
 	SuggestBindingsForProfile(xrInstance, viveProfile, "Vive", viveBindings);
 
 	std::vector<XrActionSuggestedBinding> touchBindings;
@@ -2641,6 +2654,20 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(indexBindings, xrGripPoseAction, rightGripPosePath);
 	AddBinding(indexBindings, xrHapticAction, leftHapticPath);
 	AddBinding(indexBindings, xrHapticAction, rightHapticPath);
+	// RS FORK -- the VR hands' thumb and index. NOTE, NOT CHANGED HERE: the X/Y
+	// bindings above name /user/hand/left/input/x/click and y/click, which the
+	// Index profile does not define (its left hand has A and B), so by the rule
+	// at the touch paths this whole profile may already be rejected.
+	AddBinding(indexBindings, xrThumbTouchAction, leftThumbstickTouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, rightThumbstickTouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, leftTrackpadTouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, rightTrackpadTouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, leftATouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, leftBTouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, rightATouchPath);
+	AddBinding(indexBindings, xrThumbTouchAction, rightBTouchPath);
+	AddBinding(indexBindings, xrTriggerTouchAction, leftTriggerTouchPath);
+	AddBinding(indexBindings, xrTriggerTouchAction, rightTriggerTouchPath);
 	SuggestBindingsForProfile(xrInstance, indexProfile, "Valve Index", indexBindings);
 
 	std::vector<XrActionSuggestedBinding> wmrBindings;
@@ -2665,6 +2692,8 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(wmrBindings, xrGripPoseAction, rightGripPosePath);
 	AddBinding(wmrBindings, xrHapticAction, leftHapticPath);
 	AddBinding(wmrBindings, xrHapticAction, rightHapticPath);
+	AddBinding(wmrBindings, xrThumbTouchAction, leftTrackpadTouchPath);	// RS FORK -- the VR hands' thumb
+	AddBinding(wmrBindings, xrThumbTouchAction, rightTrackpadTouchPath);
 	SuggestBindingsForProfile(xrInstance, wmrProfile, "WMR", wmrBindings);
 
 	XrSessionActionSetsAttachInfo attachInfo{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
@@ -3995,6 +4024,49 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 
 	const bool mainHandValid = updateHandPose(mainHand, weaponoffset, weaponangles, weaponLinearVel, weaponAngularVel, &weaponVelValid);
 	const bool offHandValid = updateHandPose(offHand, offhandoffset, offhandangles, offhandLinearVel, offhandAngularVel, &offhandVelValid);
+
+	// RS FORK -- THE FINGERS AND THE GRIP POSES, for the VR hands (r_data/vr_handpose.cpp).
+	// Ported from UZDXREMA vk_openxrdevice.cpp:4343-4374.
+	//
+	// The finger values out to where a getter can reach them: handInput is a local here.
+	for (int fh = 0; fh < 2; ++fh)
+	{
+		xrFingerInput[fh].trigger      = handInput[fh].triggerValue;
+		xrFingerInput[fh].grip         = handInput[fh].gripValue;
+		xrFingerInput[fh].triggerTouch = handInput[fh].triggerTouch;
+		xrFingerInput[fh].thumbTouch   = handInput[fh].thumbTouch;
+	}
+
+	// The grip pose: the same locate, at the same predicted display time, on the grip spaces that
+	// were created beside the aim spaces and never located before. KEPT SEPARATE FROM THE AIM POSE:
+	// weaponangles is an aim frame, with the gun's pitch bias and vr_weaponRotate in it; where the
+	// player's fist is, and which way the palm faces, is a different question. Position converted
+	// as updateHandPose converts its own (HMD-relative, then yaw-rotated into the local frame);
+	// orientation kept as the RAW quaternion, never decomposed to Euler.
+	// Not ported: UZDXREMA's RigPoseOverride (its Linux headless rig), which this engine lacks.
+	for (int gh = 0; gh < 2; ++gh)
+	{
+		xrGripPoseValid[gh] = false;
+		if (xrGripSpaces[gh] == XR_NULL_HANDLE) continue;
+
+		XrSpaceLocation gl{ XR_TYPE_SPACE_LOCATION };
+		if (XR_FAILED(xrLocateSpace(xrGripSpaces[gh], xrSpace, xrFrameState.predictedDisplayTime, &gl)))
+			continue;
+		if ((gl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) == 0) continue;
+		if ((gl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) == 0) continue;
+
+		xrGripPoses[gh] = gl.pose;
+
+		float go[3] = { gl.pose.position.x - hmdPosition[0],
+		                gl.pose.position.y - hmdPosition[1],
+		                gl.pose.position.z - hmdPosition[2] };
+		const float gYaw = GetViewpointYaw() - hmdorientation[1];
+		DVector2 gRot = DVector2(go[0], go[2]).Rotated(-gYaw);
+		xrGripOffset[gh][0] = (float)gRot.Y;
+		xrGripOffset[gh][1] = go[1];
+		xrGripOffset[gh][2] = (float)gRot.X;
+		xrGripPoseValid[gh] = true;
+	}
 
 	// ======================================================================
 	// A0 HARNESS -- measure before changing anything.
@@ -7249,6 +7321,57 @@ bool VKOpenXRDeviceMode::GetHandTransform(int hand, VSMatrix* mat) const
 		return true;
 	}
 	return false;
+}
+
+// RS FORK -- THE GRIP POSE AS A MATRIX (hw_vrmodes.h GetGripTransform). Ported from UZDXREMA
+// vk_openxrdevice.cpp:7876-7921, without its GRIPCHECK harness (:7848-7874, :7922-7951), which
+// compared this construction with the one before UZDXREMA's own refactor and has nothing to compare
+// against here.
+//
+// GetHandTransform's construction step for step -- the eye, the metres, the -Z, the height, the pixel
+// stretch, the body yaw minus the headset's own (the quaternion carries that) -- with the raw grip
+// quaternion multiplied in whole instead of yaw/pitch/roll. VR_UnitsPerMeter() where UZDXREMA reads
+// vr_vunits_per_meter, as this engine's GetHandTransform does (a Realms map overrides the units).
+// Not ported for VR_UseCinematicScreenLayer, which GetHandTransform special-cases and UZDXREMA's
+// OffsetToWorld does not.
+bool VKOpenXRDeviceMode::OffsetToWorld(const float ofs[3], const float rotXR[4], VSMatrix* mat) const
+{
+	if (mat == nullptr) return false;
+	player_t* player = &players[consoleplayer];
+	if (!player) return false;
+
+	const double pixelstretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
+
+	mat->loadIdentity();
+	mat->translate((float)r_viewpoint.CenterEyePos.X,
+	               (float)r_viewpoint.CenterEyePos.Z - GetDoomPlayerHeightWithoutCrouch(player),
+	               (float)r_viewpoint.CenterEyePos.Y);
+	mat->scale((float)VR_UnitsPerMeter(), (float)VR_UnitsPerMeter(), (float)-VR_UnitsPerMeter());
+	mat->translate(-ofs[0], (hmdPosition[1] + ofs[1] + (float)vr_height_adjust) / (float)pixelstretch, ofs[2]);
+	mat->scale(1, 1 / (float)pixelstretch, 1);
+	mat->rotate(-90 + doomYaw - hmdorientation[1], 0, 1, 0);
+	mat->multQuaternion(FVector4(rotXR[0], rotXR[1], rotXR[2], rotXR[3]));
+	return true;
+}
+
+bool VKOpenXRDeviceMode::GetGripTransform(int hand, VSMatrix* mat) const
+{
+	if (mat == nullptr) return false;
+	const int ctrl = VR_ControllerForHand(hand);
+	if (ctrl < 0 || ctrl > 1 || !xrGripPoseValid[ctrl]) return false;
+
+	const XrQuaternionf& q = xrGripPoses[ctrl].orientation;
+	const float rot[4] = { q.x, q.y, q.z, q.w };
+	return OffsetToWorld(xrGripOffset[ctrl], rot, mat);
+}
+
+// WHAT THE FINGERS ARE DOING, RAW (UZDXREMA vk_openxrdevice.cpp:7955-7963).
+bool VKOpenXRDeviceMode::GetFingerInput(int hand, VRFingerInput& out) const
+{
+	const int ctrl = VR_ControllerForHand(hand);
+	if (ctrl < 0 || ctrl > 1) return false;
+	out = xrFingerInput[ctrl];
+	return true;
 }
 
 bool VKOpenXRDeviceMode::GetTeleportLocation(DVector3 &out) const
