@@ -129,6 +129,24 @@ CVAR(Bool, roth_platforms, false, CVAR_NOINITCALL)
 // The flat-screen vertical projection stretch, defined in hw_entrypoint.cpp.
 // Realms does not project with square pixels; see where this is set below.
 EXTERN_CVAR(Float, r_view_vstretch)
+
+// The headset's metre for Realms (see the VR world scale block in the loader).
+// The study's doors are 218 units tall; a standard door is 2.03 m.
+static const double ROTH_DOOR_HEIGHT_UNITS = 218.0;
+static const double REAL_DOOR_HEIGHT_METRES = 2.03;
+static bool gRothVRScaleActive = false;   // a Realms level set the override
+static double RothVRUnitsPerMetre();
+// NOT archived (CLAUDE.md: the ini is shared with the hands build). 0 = the
+// door anchor; anything else is units per metre, applied at once.
+CUSTOM_CVAR(Float, roth_vr_units_per_metre, 0.f, CVAR_NOINITCALL)
+{
+	if (gRothVRScaleActive) VR_SetUnitsPerMeterOverride((float)RothVRUnitsPerMetre());
+}
+static double RothVRUnitsPerMetre()
+{
+	if (roth_vr_units_per_metre > 0.f) return roth_vr_units_per_metre;
+	return ROTH_DOOR_HEIGHT_UNITS / REAL_DOOR_HEIGHT_METRES;   // 107.4
+}
 // The player's own field of view is NOT written by this loader: it is the
 // player's archived setting. Realms' projection is the level's
 // (FLevelLocals::ForcedPlayerFOV, applied at the player spawn).
@@ -549,36 +567,30 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			" units still uncalibrated: GAME_core.md 5.2 step 8",
 			Level->ForcedPlayerUseRange);
 
-		// AND THE SAME FACT AGAIN, FOR THE HEADSET. Making the player the right
-		// number of UNITS tall fixes the flat-screen view, and does nothing at
-		// all in VR: there the world's size is set by how many units the engine
-		// calls a metre, and vr_vunits_per_meter is 34 because Doom's player is
-		// 56 units. Left alone, a 154-unit player stands 4.5 m tall and the
-		// manor reads as giant from inside the headset -- the same complaint the
-		// comment above is about, in the one place the fix above cannot reach.
+		// THE HEADSET'S METRE. In VR the world's size is set by how many units
+		// the engine calls a metre (vr_vunits_per_meter is 34, Doom's). ROTH.C
+		// has no metres at all: this number is a CHOICE, and it is made from a
+		// real object rather than from a convention.
 		//
-		// Derived, not tuned: keep the player's REAL-WORLD height what the cvar
-		// already implies for Doom, and scale by how much bigger Realms' units
-		// are. 34 * 154/56 = 93.5, which puts the eye at 144 units = 1.54 m.
+		// History: it was 34 * 154/56 = 93.5 (Doom's convention scaled by the
+		// player's height). The owner, in the headset (2026-11-13): "rooms look
+		// too wide, ceilings look too high". At 93.5 the study's doors -- every
+		// one 218 units tall, 128 wide (tools/doorcheck STUDY1) -- are 2.33 m,
+		// and its 384-unit rooms 4.1 m: the whole world too big, uniformly.
 		//
-		// NOT the cvar itself. It is CVAR_ARCHIVE | CVAR_GLOBALCONFIG -- writing
-		// it would resize every other game this engine runs, permanently, from
-		// loading one Realms map. The override is per level and is cleared by
-		// P_SetupLevel. See VR_UnitsPerMeter in hw_vrmodes.h.
-		// FROM THE STANDING HEIGHT, NOT ForcedPlayerHeight. Those were the same
-		// number until the collision height became g_min_fit (96) above, and
-		// reading the field here would quietly rescale the whole world from
-		// 93.5 to 58.3 units a metre -- the headset's idea of how big the manor
-		// is, changed by a collision fix. How tall the player STANDS is the
-		// human-scale anchor, so it is spelled out here and the two uses can no
-		// longer drift into each other.
-		const double standingHeight = ph + 10.;
-		const double DOOM_PLAYER_HEIGHT = 56.0, DOOM_UNITS_PER_METRE = 34.0;
-		const double upm = DOOM_UNITS_PER_METRE
-			* (standingHeight / DOOM_PLAYER_HEIGHT);
+		// Anchored on the door: 218 units = 2.03 m (a standard 80-inch door),
+		// 107.4 units a metre. Only the metre changes: the geometry stays the
+		// original's, and the original's own proportions with it.
+		//
+		// roth_vr_units_per_metre (NOT saved) overrides it live, so the owner can
+		// judge it by feel in the headset; 0 = the door anchor. The override is
+		// per level and cleared by P_SetupLevel; vr_vunits_per_meter (archived,
+		// shared with every other game) is never written. See hw_vrmodes.h.
+		const double upm = RothVRUnitsPerMetre();
 		VR_SetUnitsPerMeterOverride((float)upm);
-		log.Line("  VR world scale %.1f units/metre (Realms; the cvar's %.0f is"
-			" Doom's, and is untouched)", upm, DOOM_UNITS_PER_METRE);
+		gRothVRScaleActive = true;
+		log.Line("  VR world scale %.1f units/metre (%s; the cvar's 34 is Doom's, and is untouched)",
+			upm, roth_vr_units_per_metre > 0.f ? "roth_vr_units_per_metre" : "door anchor: 218 units = 2.03 m");
 	}
 
 	// Realms maps carry no BSP, blockmap or reject, so all of it is generated.
