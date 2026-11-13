@@ -311,6 +311,7 @@ endif()
 
 list( APPEND PROJECT_LIBRARIES "zwidget" )
 list( APPEND PROJECT_LIBRARIES "webp" )
+list( APPEND PROJECT_LIBRARIES "ufbx" )	# RS FORK -- the FBX model loader (common/models/fbx_skinned.cpp)
 
 message("Building for target architecture: ${TARGET_ARCHITECTURE}")
 
@@ -1298,6 +1299,8 @@ set (PCH_SOURCES
 	common/models/models_ue1.cpp
 	common/models/models_obj.cpp
 	common/models/models_iqm.cpp
+	common/models/models_fbx.cpp
+	common/models/fbx_skinned.cpp
 	# A model whose geometry is handed over in memory rather than parsed from a
 	# file, for loaders and generators that already hold the triangles.
 	common/models/model_memorymesh.cpp
@@ -1651,6 +1654,7 @@ include_directories(
 	../libraries/ZVulkan/include
 	../libraries/ZWidget/include
 	../libraries/webp/include
+	../libraries/ufbx
 	../libraries/range_map/include
 	${SYSTEM_SOURCES_DIR}
 )

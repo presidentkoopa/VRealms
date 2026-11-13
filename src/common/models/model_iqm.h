@@ -164,8 +164,11 @@ public:
 	template<bool useIn, bool useOut>
 	const TArray<VSMatrix>* CalculateBonesIQMSpecialized(int frame1, int frame2, float inter, int frame1_prev, float inter1_prev, int frame2_prev, float inter2_prev, const ModelAnimFramePrecalculatedIQM* precalculated, const TArray<TRS>* animationData, TArray<BoneOverride> *in, BoneInfo *out, double time);
 
-private:
-	void LoadGeometry();
+// RS FORK -- protected, not private, so FFBXModel (model_fbx.h) can fill these from an FBX file and draw
+// through this class's bone path unchanged. LoadGeometry() is virtual for the same reason: an FBX model
+// keeps its vertices built at Load and does not re-read its file. Nothing else changes for an IQM.
+protected:
+	virtual void LoadGeometry();
 	void LoadGeometry(FileSys::FileData* lumpData) override;
 	void UnloadGeometry();
 

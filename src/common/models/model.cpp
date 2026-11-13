@@ -29,6 +29,7 @@
 #include "model_md3.h"
 #include "model_kvx.h"
 #include "model_iqm.h"
+#include "model_fbx.h"
 #include "i_time.h"
 #include "voxels.h"
 #include "texturemanager.h"
@@ -145,7 +146,26 @@ unsigned FindModel(const char * path, const char * modelfile, bool silent)
 
 	if (path) fullname.Format("%s%s", path, modelfile);
 	else fullname = modelfile;
-	int lump = fileSystem.CheckNumForFullName(fullname.GetChars());
+
+	// RS FORK -- "<file>.fbx:<mesh>" names ONE skinned mesh of an FBX file (model_fbx.h): the file is
+	// the lump, the part after the colon picks the mesh (by its node's name) and with it the skeleton
+	// its skin binds to. The whole string stays the model's name, so the same file named with two
+	// meshes is two models. Only a name ending ".fbx" before the colon is split; nothing else changes.
+	FString lumpname = fullname;
+	FString fbxMesh;
+	bool isFBX = false;
+	{
+		const ptrdiff_t colon = fullname.LastIndexOf(':');
+		const ptrdiff_t slash = fullname.LastIndexOf('/');
+		const FString head = (colon > slash && colon >= 4) ? fullname.Left(colon) : fullname;
+		if (head.Len() >= 4 && !stricmp(head.GetChars() + head.Len() - 4, ".fbx"))
+		{
+			isFBX = true;
+			lumpname = head;
+			if (colon > slash && colon >= 4) fbxMesh = fullname.Mid(colon + 1);
+		}
+	}
+	int lump = fileSystem.CheckNumForFullName(lumpname.GetChars());
 
 	if (lump<0)
 	{
@@ -168,7 +188,11 @@ unsigned FindModel(const char * path, const char * modelfile, bool silent)
 	auto lumpd = fileSystem.ReadFile(lump);
 	const char * buffer = lumpd.string();
 
-	if ( (size_t)fullname.LastIndexOf("_d.3d") == fullname.Len()-5 )
+	if (isFBX)
+	{
+		model = new FFBXModel(fbxMesh.GetChars());
+	}
+	else if ( (size_t)fullname.LastIndexOf("_d.3d") == fullname.Len()-5 )
 	{
 		FString anivfile = fullname.GetChars();
 		anivfile.Substitute("_d.3d","_a.3d");

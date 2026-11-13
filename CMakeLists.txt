@@ -434,6 +434,9 @@ add_subdirectory( libraries/ZWidget )
 
 add_subdirectory( libraries/webp )
 
+# RS FORK -- ufbx: the FBX model loader's reader (src/common/models/fbx_skinned.cpp).
+add_subdirectory( libraries/ufbx )
+
 if( HAVE_VM_JIT AND UNIX )
 	check_symbol_exists( "backtrace" "execinfo.h" HAVE_BACKTRACE )
 	if( NOT HAVE_BACKTRACE )

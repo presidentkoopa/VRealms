@@ -93,6 +93,7 @@
 #include "model_reach_math.h"
 #include "actor.h"
 #include "model.h"
+#include "model_fbx.h"
 #include "models.h"
 #include "hw_vrmodes.h"
 #include "r_utility.h"
@@ -261,6 +262,7 @@ namespace
 		FModel     *model = nullptr;
 		int         numJoints = -1;
 		bool        fingersOk = false;
+		bool        poseMapMissing = false;	// an FBX take: no frame is a pose target yet
 		int         joint[FINGER_COUNT][FINGER_JOINTS] = {};
 		TArray<int> parents;
 		PoseTable   poses;
@@ -290,8 +292,15 @@ namespace
 			c->parents[i] = p < 0 ? -1 : p;
 		}
 
+		// THE POSE TARGETS are frames 0 1 3 7 8 (POSE_* in vr_handpose_math.h) only in a file written
+		// with RS_Hands' frame map, as the converter's IQMs were. An FBX model's frames are its takes as
+		// recorded (model_fbx.h): its frame 1 is the take 1/60 s in, not "point". No map from the take to
+		// the five targets has been chosen (docs/FBX_LOADER.md, the open question), so an FBX hand's
+		// fingers are NOT posed: it shows the frame its actor state draws, and says so below.
+		c->poseMapMissing = dynamic_cast<FFBXModel *>(model) != nullptr;
+
 		// THE FINGERS: every joint present, and the model long enough to carry frame POSE_MAX_USED.
-		bool ok = model->NumFrames() > POSE_MAX_USED;
+		bool ok = !c->poseMapMissing && model->NumFrames() > POSE_MAX_USED;
 		for (int f = 0; f < FINGER_COUNT && ok; f++)
 			for (int j = 0; j < FINGER_JOINTS && ok; j++)
 			{
@@ -334,7 +343,9 @@ namespace
 
 		Printf("VR hands: %s -- fingers %s (%d frames), seat %s; grip socket R (%.2f %.2f %.2f) L (%.2f %.2f %.2f) file units\n",
 			model->mFileName.GetChars(),
-			c->fingersOk ? "posed from frames 0 1 3 7 8" : "NOT posed (joints or frames missing)",
+			c->fingersOk ? "posed from frames 0 1 3 7 8"
+				: c->poseMapMissing ? "NOT posed: pose targets not mapped yet (an FBX take; the hand shows the frame its state draws)"
+				: "NOT posed (joints or frames missing)",
 			model->NumFrames(),
 			(c->seatOk[0] && c->seatOk[1]) ? "measured" : "NOT measured (wrist/knuckle joints missing)",
 			sock[0].x, sock[0].y, sock[0].z, sock[1].x, sock[1].y, sock[1].z);
