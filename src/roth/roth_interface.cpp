@@ -57,13 +57,6 @@ EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoin
 #include "r_data/sprites.h"
 
 
-// THE OWNER'S FONT for every picture's text (2026-11-13: "get my font in there until I say
-// otherwise"): the JFO distance-field atlas (sdfmono) instead of the original's glyphs, at the
-// original's text positions (roth_uidraw.h UiSetTextAsRuns). Not saved; on until he says otherwise.
-CUSTOM_CVAR(Bool, roth_ui_font_jfo, true, CVAR_NOSAVE | CVAR_NOINITCALL)
-{
-	roth::UiSetTextAsRuns(self);
-}
 EXTERN_CVAR(Float, bb_scale)
 EXTERN_CVAR(Float, bb_tiltbias)
 EXTERN_CVAR(Bool, bb_flipu)
@@ -697,8 +690,9 @@ void AddWorldPicture(int id, int ox, int oy, double lift, int kind, bool hittabl
 	if (U.elements.empty()) return;
 	Element &e = U.elements.back();
 	e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
-	// The picture's text, in the owner's font (roth_uidraw.h UiSetTextAsRuns), on the boxes the
-	// original's glyphs would fill, just in front of the picture. Not clickable: the picture is.
+	// Text runs (roth_uidraw.h UiSetTextAsRuns), drawn in the JFO font on the boxes the original's
+	// glyphs would fill. Nothing turns runs on today, so there are none: kept for the letters and
+	// maps (owner, 2026-11-13), whose low-res cursive may later be overlaid in this font.
 	for (const UiTextRun &r : c->TextRuns())
 	{
 		const double sx = ox + c->Left() + r.x + r.w * 0.5, sy = oy + c->Top() + r.y + r.h * 0.5;
@@ -1345,7 +1339,6 @@ void InterfaceHudRenderWeaponHud() { if (U.hudBound) HudRenderWeaponHud(); }
 
 void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 {
-	UiSetTextAsRuns(roth_ui_font_jfo);
 	U.core = &core;
 	U.db = &db;
 	U.dialogue.Bind(&core.Interp(), &db);

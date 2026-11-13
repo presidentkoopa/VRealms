@@ -84,11 +84,12 @@ struct UiAssets
 	const RothFont *font = nullptr;     // null: no text is drawn (and Problems() says why)
 };
 
-// THE OWNER'S FONT (2026-11-13: "get my font in there until I say otherwise"). With text as
-// runs on, draw_text_to_buffer writes no glyph pixels: each line of text it would have drawn is
-// kept as a run -- the string, the box the original's glyphs would fill (picture pixels) and the
-// colour of its ramp -- and the interface draws the run in the owner's JFO font (the SDF atlas
-// sdfmono) at that box. Off by default, so every pixel test still draws the original's glyphs.
+// TEXT AS RUNS: with it on, draw_text_to_buffer writes no glyph pixels; each line of text it
+// would have drawn is kept as a run -- the string, the box the original's glyphs would fill
+// (picture pixels) and the colour of its ramp -- and the interface draws the run in the JFO font
+// (the SDF atlas sdfmono). OFF, and nothing in the game turns it on: the owner (2026-11-13) wants
+// the original's font in the game. Kept for later: the letters and maps, whose low-res cursive
+// may be overlaid in this font when those items are handled.
 void UiSetTextAsRuns(bool on);
 bool UiTextAsRuns();
 struct UiTextRun
