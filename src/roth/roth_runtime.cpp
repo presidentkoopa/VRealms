@@ -45,6 +45,7 @@
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
 
+#include <algorithm>
 #include <map>
 #include <vector>
 #include <string>
@@ -64,6 +65,8 @@
 #include "d_player.h"
 #include <math.h>
 #include "playsim/po_man.h"
+#include "r_data/sprites.h"  // the sprite tables, for an object's pick box
+#include "r_state.h"
 #include "texturemanager.h"   // ReapplyWallFace: a swapped-in picture's size
 #include "p_trace.h"       // Trace, for the floor-click probe in UseFlat
 #include "printf.h"
@@ -6457,8 +6460,14 @@ bool UseFlat(AActor *who, TrigEvent want)
 		who->Angles.Yaw.Sin() * pitch.Cos(),
 		-pitch.Sin());
 
+	// THE REACH IS PLANAR, measured: the original's pick depth is 2z + 64 with
+	// z the horizontal distance along the yaw, at every pitch
+	// (REMAROTH_MEASURED.md 13), and UseRange is that z (rothmap.cpp). A
+	// pitched ray reaches the same z only 1/cos(pitch) further along itself,
+	// so it is traced that far and the hit is then held to z < UseRange.
+	const double planarSpan = std::max(0.05, pitch.Cos());
 	FTraceResults res;
-	if (!Trace(start, who->Sector, dir, range, ActorFlags::FromInt(0), 0,
+	if (!Trace(start, who->Sector, dir, range / planarSpan, ActorFlags::FromInt(0), 0,
 		who, res, TRACE_NoSky))
 	{
 		// SAY SO. A silent false here is indistinguishable from "the sector had
@@ -6482,6 +6491,16 @@ bool UseFlat(AActor *who, TrigEvent want)
 			" from z %.1f pitch %.1f\n", (int)res.HitType,
 			res.Sector != nullptr ? res.Sector->sectornum : -1,
 			res.HitPos.Z, start.Z, pitch.Degrees());
+	}
+
+	{
+		const double z = (res.HitPos.XY() - who->Pos().XY()) | who->Angles.Yaw.ToVector(1.0);
+		if (z >= range)
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: flat probe -- hit at planar %.1f, past the use range %.0f\n", z, range);
+			return false;
+		}
 	}
 
 	// EVERYTHING PAST THE TRACE IS NOW UseFlatAt, so a pick made from a VR hand
@@ -6616,11 +6635,16 @@ struct PickScan
 {
 	Pick best;
 	bool found = false;
+	// The nearest surface the ray met at all, Realms meaning or not: what an
+	// object behind it is hidden by (PickObjects).
+	double firstSurface = 1e18;
 };
 
 static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 {
 	PickScan &s = *(PickScan *)data;
+	if (res.HitType == TRACE_HitWall || res.HitType == TRACE_HitFloor || res.HitType == TRACE_HitCeiling)
+		s.firstSurface = std::min(s.firstSurface, res.Distance);
 
 	switch (res.HitType)
 	{
@@ -6714,6 +6738,44 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 	return TRACE_Continue;
 }
 
+// The box a Realms object's actor is picked by (see PickFrom).
+void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi)
+{
+	double half = mo->radius, bottom = mo->Z(), top = mo->Z() + mo->Height;
+	if (mo->sprite >= 0 && mo->sprite < (int)sprites.Size() && sprites[mo->sprite].numframes > 0)
+	{
+		const int fi = sprites[mo->sprite].spriteframes + std::min<int>(mo->frame, sprites[mo->sprite].numframes - 1);
+		FGameTexture *tex = fi >= 0 && fi < (int)SpriteFrames.Size() ? TexMan.GetGameTexture(SpriteFrames[fi].Texture[0], true) : nullptr;
+		if (tex != nullptr && tex->isValid() && tex->GetDisplayWidth() > 0)
+		{
+			const double sx = fabs(mo->Scale.X), sy = fabs(mo->Scale.Y);
+			half = std::max(1.0, tex->GetDisplayWidth() * sx * 0.5);   // the picture, not Actor's default radius 20
+			top = mo->Z() + tex->GetDisplayTopOffset() * sy + mo->SpriteOffset.Y;
+			bottom = top - tex->GetDisplayHeight() * sy;
+			if (top < bottom) std::swap(top, bottom);
+		}
+	}
+	lo = DVector3(mo->X() - half, mo->Y() - half, bottom);
+	hi = DVector3(mo->X() + half, mo->Y() + half, top);
+}
+
+// Slab test: where the ray first enters the box (0 when it starts inside).
+static bool RayBox(const DVector3 &o, const DVector3 &d, const DVector3 &lo, const DVector3 &hi, double &t)
+{
+	double t0 = 0.0, t1 = 1e18;
+	const double O[3] = { o.X, o.Y, o.Z }, D[3] = { d.X, d.Y, d.Z }, L[3] = { lo.X, lo.Y, lo.Z }, H[3] = { hi.X, hi.Y, hi.Z };
+	for (int k = 0; k < 3; k++)
+	{
+		if (fabs(D[k]) < 1e-12) { if (O[k] < L[k] || O[k] > H[k]) return false; continue; }
+		double a = (L[k] - O[k]) / D[k], b = (H[k] - O[k]) / D[k];
+		if (a > b) std::swap(a, b);
+		t0 = std::max(t0, a); t1 = std::min(t1, b);
+		if (t0 > t1) return false;
+	}
+	t = t0;
+	return true;
+}
+
 bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 	double range, Pick &out)
 {
@@ -6738,6 +6800,40 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 	FTraceResults res;
 	Trace(start, from, dir, range, ActorFlags::FromInt(0xffffffff), 0, who, res,
 		TRACE_NoSky, PickScanCallback, &scan);
+
+	// THE OBJECTS, tested here and not by the tracer: a Realms prop is a
+	// LoaderProp, +NOINTERACTION, which keeps it out of the blockmap the
+	// tracer walks (loaderprop.zs), so no trace has ever met one -- measured on
+	// the owner's PC, 2026-11-13: a ray aimed at an item's centre reported the
+	// floor behind it. Each object's actor is a box: its sprite's rectangle
+	// (width and height times its scale, hung from its top offset) or, for a
+	// mesh, its radius and height. The original picks the first OPAQUE texel
+	// of the sprite (E/renderer.c:3261-3283); a box is coarser than that, and
+	// says so here rather than claiming the texel test.
+	const double objLimit = std::min({ range, scan.firstSurface, scan.found ? scan.best.dist : 1e18 });
+	{
+		double bestT = objLimit;
+		AActor *bestMo = nullptr;
+		for (size_t sct = 0; sct < g.map.objects.size(); sct++)
+			for (size_t i = 0; i < g.map.objects[sct].size(); i++)
+			{
+				AActor *mo = FindObjectActor((int)sct, (int)i);
+				if (mo == nullptr || mo == who || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
+				DVector3 lo, hi;
+				ObjectPickBox(mo, lo, hi);
+				double t;
+				if (RayBox(start, dir, lo, hi, t) && t >= 0 && t < bestT) { bestT = t; bestMo = mo; }
+			}
+		if (bestMo != nullptr)
+		{
+			scan.best = Pick{};
+			scan.best.kind   = Pick::Prop;
+			scan.best.actor  = bestMo;
+			scan.best.hitPos = start + dir * bestT;
+			scan.best.dist   = bestT;
+			scan.found = true;
+		}
+	}
 
 	if (!scan.found)
 	{
@@ -7031,9 +7127,9 @@ bool UseByHand(player_t *player, TrigEvent want)
 //     under/top                                  -> ResolvePick, from Pick
 //  2. +0x1a the wall band (REMAROTH_MEASURED.md: dir_mask1 = band bits)
 //                                                -> Pick::band
-//  3. +0x20 depth, bands 0x258 / 0x7d0 / 0x1388 -> the caller's `depth` against
-//     PickUseRange / PickFarRange / PickProbeRange (DEPARTS: world distance
-//     from the eye, see roth_runtime.h)
+//  3. +0x20 depth, bands 0x258 / 0x7d0 / 0x1388 -> the caller's `depth`, 2z + 64
+//     with z planar along the ray's yaw (MEASURED, REMAROTH_MEASURED.md 13; for
+//     a hand the ray's yaw stands for the view's, roth_runtime.h)
 //  4. a closed door is its room face; type 6 only while the leaf is away from
 //     shut (RC/doors.c: the pool record exists only then)
 //                                                -> ResolvePick (DoorLeaf). A
@@ -7135,17 +7231,22 @@ bool UseByHand(player_t *player, TrigEvent want)
 //
 //==========================================================================
 
-double PickUseRange(AActor *who)
+double PickPlanarZ(AActor *who, const DVector3 &hit, const DVector3 &rayDir)
 {
-	// THE ONE PLACE. The loader sets it (rothmap.cpp, ROTH_USE_RANGE_PROVISIONAL);
-	// a pawn spawned under it copies it into UseRange. Read the level's value
-	// first so a recalibration reaches this without a respawn.
-	if (who != nullptr && who->Level != nullptr && who->Level->ForcedPlayerUseRange > 0)
-		return who->Level->ForcedPlayerUseRange;
-	return who != nullptr ? who->FloatVar(NAME_UseRange) : 0.0;
+	if (who == nullptr) return 0.0;
+	DVector2 u(rayDir.X, rayDir.Y);
+	if (u.Length() < 0.05) u = who->Angles.Yaw.ToVector(1.0);
+	else u /= u.Length();
+	return (hit.XY() - who->Pos().XY()) | u;
 }
-double PickFarRange(AActor *who)   { return PickUseRange(who) * (2000.0 / 600.0); }
-double PickProbeRange(AActor *who) { return PickUseRange(who) * (5000.0 / 600.0); }
+
+double PickTraceRange(const DVector3 &rayDir)
+{
+	// The examine edge (depth 5000 = z 2468), plus a hand's reach ahead of the
+	// player's x,y, stretched by how far the ray climbs or falls.
+	const double flat = std::max(0.05, DVector2(rayDir.X, rayDir.Y).Length());
+	return (2468.0 + 64.0) / flat;
+}
 
 const char *PickKindName(const Pick &p)
 {
@@ -7404,10 +7505,7 @@ CursorClass ClassifyPick(const Pick &p, AActor *who, double depth)
 	// of them is the same as asking only those the path reaches.
 	CursorFacts f;
 	f.recType = r.type;
-	f.depth = depth;
-	f.useR = PickUseRange(who);
-	f.farR = PickFarRange(who);
-	f.probeR = PickProbeRange(who);
+	f.depth = depth;   // against the original's own 0x258 / 0x7d0 / 0x1388 (CursorFacts' defaults)
 	if (r.type == 4)
 	{
 		const uint16_t id = r.obj->commandID;                 // def + 0x0e
@@ -7525,8 +7623,10 @@ bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stan
 				if (o.renderType & 0x13) continue;
 				if (!IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)))) continue;
 				AActor *mo = FindObjectActor((int)s, (int)i);
-				if (mo == nullptr) continue;
-				const DVector3 c = mo->PosPlusZ(mo->Height * 0.5);
+				if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
+				DVector3 lo, hi;
+				ObjectPickBox(mo, lo, hi);
+				const DVector3 c((lo.X + hi.X) * 0.5, (lo.Y + hi.Y) * 0.5, (lo.Z + hi.Z) * 0.5);   // the middle of what is picked
 				consider(c, from.XY() - c.XY(), mo->Sector ? mo->Sector->floorplane.ZatPoint(mo->Pos().XY()) : mo->Z());
 			}
 	}
@@ -7551,7 +7651,9 @@ bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stan
 			const double vh = who->player != nullptr ? who->player->viewheight : 41.0;
 			consider(DVector3(mid.X, mid.Y, std::max(fz + 8.0, std::min(fz + vh - 4.0, cz - 8.0))), n, fz);
 		};
-		if (door) { for (const auto &kv : g.doorLeafSide) pass(kv.first); }
+		// A door: a BROAD side of a leaf (one with a room face), so the test
+		// stands in the room, not in the doorway facing a thickness edge.
+		if (door) { for (const auto &kv : g.doorLeafSide) if (g.doorLeafRoomFace.count(kv.first)) pass(kv.first); }
 		else
 		{
 			for (const auto &kv : g.bySide)

@@ -198,7 +198,7 @@ Record at 0x90a48:
 - < 0x7d0 (2000) = "too far" cursor (0x398/0x3a0);
 - < 0x1388 (5000) = the examine-trigger probe range.
 
-The depth units are **[open]**: they are the projection's perspective step, not world distance. For VR, replace the pick with a ray cast that yields the same record fields. The 600 threshold must be recalibrated to world units by measuring in ROTH.C [inferred].
+The depth is the projection's perspective step, not world distance. **Measured** (REMAROTH_MEASURED.md 13): depth = 2z + 64, z the horizontal distance from the player's x,y to the picked point along the view yaw, for every kind of target and at every pitch. So use z < 268, "too far" 268 ≤ z < 968, examine z < 2467 (±2).
 
 ### 4.5 What a click fires
 - **Left (use)**, `activate_targeted_object`:

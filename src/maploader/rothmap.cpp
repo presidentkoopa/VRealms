@@ -559,31 +559,29 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		log.Line("  radius         %.0f units (Doom's default is 16) -- fixed by"
 			" the original at 0x1c; 0x70 is its 4r", Level->ForcedPlayerRadius);
 
-		// AND HOW FAR HE CAN REACH. PROVISIONAL -- read the next paragraph
-		// before changing it, and before trusting it.
+		// AND HOW FAR HE CAN REACH: 268 units, MEASURED on the running original
+		// (docs/REMAROTH_MEASURED.md section 13, tools/userange_test).
 		//
 		// The original gates "use" on the renderer's PICK DEPTH, not on world
-		// distance: < 0x258 (600) is use range, < 0x7d0 is the "too far"
-		// cursor, < 0x1388 is the examine probe (E/input.c:1031, :1112-1258;
-		// docs/GAME_core.md 4.4). Those depth units are marked [open] in the
-		// spec, which says in as many words that the 600 has to be recalibrated
-		// to world units by measuring in ROTH.C. GAME_core.md 5.2 step 8 is the
-		// measurement: find the depth where the cursor changes, confirm 599
-		// fires and 601 does not.
+		// distance: < 0x258 (600) is use range, < 0x7d0 the "too far" cursor,
+		// < 0x1388 the examine probe (E/input.c:1031, :1112-1245). Measured,
+		// depth = 2z + 64, where z is the HORIZONTAL distance from the player's
+		// x,y to the picked point along the view yaw -- the same for walls,
+		// doors, floors and sprites, at every pitch. So depth 600 is z = 268.
 		//
-		// THE 600 BELOW IS THAT BAND NUMBER READ AS WORLD UNITS. It is NOT the
-		// calibrated answer and must not be quoted as one. It is here because
-		// the alternative is worse: Doom's 64 is a 56-unit player's arm, and at
-		// 93.5 units to the metre it gives this 154-unit player 0.68 m of
-		// reach, while UseFlat and the hand pick BOTH read this field and the
-		// hand pick is documented to let the beam "cross rooms". 600 is 6.4 m,
-		// which does. Reach is interface, which ROTH_BETTER.md 13 leaves free;
-		// WHICH records a press may fire is logic, and that is untouched.
-		const double ROTH_USE_RANGE_PROVISIONAL = 600.;
-		Level->ForcedPlayerUseRange = ROTH_USE_RANGE_PROVISIONAL;
-		log.Line("  use range      %.0f units PROVISIONAL (Doom's default is 64"
-			" = 0.68 m here) -- the original's band is a PICK DEPTH of 600,"
-			" units still uncalibrated: GAME_core.md 5.2 step 8",
+		// WHAT 268 MEANS ON THIS SIDE. P_UseLines walks a 2D segment from the
+		// player's x,y along the yaw, UseRange long (p_map.cpp), so a line at
+		// planar distance z along the yaw is reached exactly when z <= 268: one
+		// to one for the centre of the view, which is the only place the use
+		// key aims. (The original's cursor can also pick off the centre, still
+		// with the same planar z; the use key has no cursor.) roth::UseFlat's
+		// floor probe traces a PITCHED ray, so it lengthens its trace by the
+		// pitch and gates on the same planar z (roth_runtime.cpp). The VR
+		// hands classify by the depth itself (roth_runtime.h PickDepth).
+		const double ROTH_USE_RANGE = 268.;
+		Level->ForcedPlayerUseRange = ROTH_USE_RANGE;
+		log.Line("  use range      %.0f units (Doom's default is 64) -- the original's"
+			" pick depth 600 = 2z + 64, measured (REMAROTH_MEASURED.md 13)",
 			Level->ForcedPlayerUseRange);
 
 		// THE HEADSET'S METRE, FROM THE ORIGINAL. ROTH.C has no metres, but it does place the

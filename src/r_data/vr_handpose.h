@@ -74,6 +74,8 @@ struct FVRHandTestInputs
 };
 void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg);
 bool VRHandTest_Active();
+// The test hands' fingers tipped from up (0) toward straight ahead (90), about the camera's right.
+void VRHandTest_SetTilt(float tiltDeg);
 // The inputs the flat test gives both hands. False while it is off.
 bool VRHandTest_Inputs(FVRHandTestInputs &out);
 // Where roth_hands.cpp stands the test hand actors, in map units (so they are not culled): the

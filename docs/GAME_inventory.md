@@ -6,7 +6,7 @@ Source root abbreviations: `E/` = `/mnt/user-data/uploads/VRealms/tools/ROTH.C/r
 
 ## 1. What the player experiences
 
-1. Adam left-clicks a nearby pickable sprite, meaning one within squared distance 0x258 (`E/input.c:1031`). The sprite leaves the world (`E/input.c:1084`), flies toward the camera for 0x1c ticks (`E/inventory.c:106-139`), and lands in the pack (`E/inventory.c:1077`, `give_item`). A weapon is equipped straight away (`E/inventory.c:418-428`). Any other item becomes the selected right-hand item (`E/inventory.c:433-434`), and its icon slides into the bottom-right corner of the view (`E/inventory.c:1498-1521`).
+1. Adam left-clicks a nearby pickable sprite, meaning one whose pick depth is below 0x258 (`E/input.c:1031`), which is a planar distance of under 268 world units along the view yaw (depth = 2z + 64, measured: REMAROTH_MEASURED.md 13). The sprite leaves the world (`E/input.c:1084`), flies toward the camera for 0x1c ticks (`E/inventory.c:106-139`), and lands in the pack (`E/inventory.c:1077`, `give_item`). A weapon is equipped straight away (`E/inventory.c:418-428`). Any other item becomes the selected right-hand item (`E/inventory.c:433-434`), and its icon slides into the bottom-right corner of the view (`E/inventory.c:1498-1521`).
 2. The inventory is a panel with five category tabs (`E/inventory.c:1526-1555`), a scrolling 10-cell grid (`E/inventory.c:1951-1979`), two hand slots (left = weapon, right = selected item; `E/inventory.c:1213-1247`, `E/inventory.c:1339-1340`), an "Adam" portrait slot showing his name (`E/inventory.c:1905-1927`), and a name line with a count, e.g. "name (n)" (`E/inventory.c:1026-1072`).
 3. Clicking a cell with nothing held opens the close-up (`E/dialogue_ui.c:1770, 1791-1796`). Picking a cell up with the other button attaches it to the cursor (`E/dialogue_ui.c:1767-1788`). Then:
    - clicking the same cell again uses the item on Adam (`E/dialogue_ui.c:1745-1749`);
@@ -69,7 +69,7 @@ Trigger codes (`BTI/DBASE100.md:76-86`):
 - **System messages** use DBASE100 interface indices through `resolve_dbase100_text`: 0x2a "can't use", 0x2d "used", 0x29 "can't combine", 0x28 "combined" (`E/inventory.c:718,737,828,847`). A missing entry falls back to "Missing Text" (`E/dbase100.c:420`).
 
 ### 2.5 World object → inventory record
-- The picked hit-record has type at +1, def pointer at +0xE, and dist² at +0x20 (`E/input.c:895-896`).
+- The picked hit-record has type at +1, def pointer at +0xE, and the pick DEPTH at +0x20 (`E/input.c:895-896`): a renderer depth word, not a squared distance; depth = 2z + 64 with z the horizontal distance along the view yaw (REMAROTH_MEASURED.md 13, measured).
 - For type 4, `u16 def[+4]` is the id matched against record +2 (`E/input.c:1077,1211`).
 - def matches the 16-byte RAW object: posX +0, posY +2, textureIndex +4, textureSource +5, flags +7, posZ +0xA (`RR:28`). `give_item` reads exactly those offsets (`E/inventory.c:445-454`).
 - So **id = textureIndex | textureSource<<8**. Only source ≥ 2 (ADEMO) objects can be items (id ≥ 0x200) [inferred].
@@ -110,7 +110,7 @@ Trigger codes (`BTI/DBASE100.md:76-86`):
 ## 4. Operations as rules
 
 **Pick up**: `activate_targeted_object` (0x164c9), `E/input.c:1026-1101`.
-1. Refuse if dist² ≥ 0x258.
+1. Refuse if the pick depth ≥ 0x258 (a signed compare; z ≥ 268 world units, REMAROTH_MEASURED.md 13). It is not a squared distance.
 2. For type 4:
    - If def+9 & 0x12, refuse.
    - Keyed (&1): run `find_unflagged_object_by_key` then `run_leftclick_object_trigger`. There is no pickup.
@@ -377,7 +377,7 @@ Trigger codes (`BTI/DBASE100.md:76-86`):
 
 ## 10. Acceptance tests (run REMAROTH and ROTH.C side by side, same save)
 
-1. **Pickup gate.** Stand 25 units (d² = 625 > 0x258) from an ADEMO item sprite and click: the object stays and the cursor is 0x240. Step closer and click: the object disappears, `g_inventory_count` goes up by 1, and the slot id equals the DBASE100 table index whose record+2 equals `textureIndex|source<<8`.
+1. **Pickup gate.** Stand so the item sprite is 269 units away along the view yaw (depth 602) and click: the object stays (the cursor is 0x3a0 or 0x398 and activate returns at the gate). Stand at 267 units (depth 598) and click (past the gate the outcome is the item's own logic, REMAROTH_MEASURED.md 13: pick a plain pickable item with no click chain): the object disappears, `g_inventory_count` goes up by 1, and the slot id equals the DBASE100 table index whose record+2 equals `textureIndex|source<<8`.
 2. **Staff.** Pick up the Creator's Staff (index 11, render id 0x294, `BTI/DBASE100_inventory_examples.md:349-371`). Expect:
    - it is equipped in the left hand (`g_selected_item_secondary` = its slot);
    - the weapon list is rebuilt;

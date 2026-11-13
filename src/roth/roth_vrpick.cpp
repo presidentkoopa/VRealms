@@ -73,9 +73,11 @@
 // ray comes onto something the hand could act on, a firmer one when an action
 // fires.
 //
-// RANGES come from the one provisional use range (PickUseRange, the level's
-// ForcedPlayerUseRange) and the original's own ratios; reach distances are in
-// METRES times VR_UnitsPerMeter(), so a hand reaches as far on every map.
+// RANGES are the original's own: the pick depth 2z + 64 against 600 / 2000 /
+// 5000, z measured from the player's x,y along the ray's yaw (measured,
+// REMAROTH_MEASURED.md 13; roth_runtime.h says why the ray's yaw). A hand's own
+// reach -- fingertip contact, the palm -- is in METRES times VR_UnitsPerMeter(),
+// so a hand reaches as far on every map.
 //
 // TEST (flat, no headset): roth_vrpicktest, with the hand test's poses
 // (roth_handtest) as the finger inputs. See the command at the bottom.
@@ -373,12 +375,8 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 	return h.haveRay;
 }
 
-DVector3 Eye(AActor *pmo)
-{
-	return DVector3(pmo->X(), pmo->Y(), pmo->player != nullptr ? pmo->player->viewz : pmo->Center());
-}
-
-double DepthOf(AActor *pmo, const Pick &p) { return (p.hitPos - Eye(pmo)).Length(); }
+// The pick record's depth for a pick made along `dir` (roth_runtime.h).
+double DepthOf(AActor *pmo, const Pick &p, const DVector3 &dir) { return PickDepthOfZ(PickPlanarZ(pmo, p.hitPos, dir)); }
 
 //--------------------------------------------------------------------------
 // Acting
@@ -392,9 +390,9 @@ void Haptic(int role, double amp, double ms)
 
 bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how)
 {
-	if (!c.CanUse(PickUseRange(pmo))) return false;
+	if (!c.CanUse()) return false;
 	const bool acted = Activate(p, pmo, TrigEvent::Use);
-	Printf("[roth_vrpick] %s hand %s: USE %s at %.0f units (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
+	Printf("[roth_vrpick] %s hand %s: USE %s at depth %.0f (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
 		PickKindName(p), c.depth, (int)c.type, (unsigned)c.shape, acted ? "acted" : "nothing happened");
 	Haptic(role, acted ? 0.45 : 0.15, acted ? 35 : 12);
 	return acted;
@@ -404,7 +402,7 @@ bool DoExamine(int role, const Pick &p, const CursorClass &c, AActor *pmo, const
 {
 	if (!c.CanExamine()) return false;
 	const bool acted = ExaminePick(p, pmo);
-	Printf("[roth_vrpick] %s hand %s: EXAMINE %s at %.0f units (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
+	Printf("[roth_vrpick] %s hand %s: EXAMINE %s at depth %.0f (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
 		PickKindName(p), c.depth, (int)c.type, (unsigned)c.shape, acted ? "examined" : "nothing happened");
 	Haptic(role, acted ? 0.35 : 0.12, acted ? 30 : 12);
 	return acted;
@@ -427,10 +425,12 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		if (mo == pmo || (mo->ObjectFlags & OF_EuthanizeMe)) continue;
 		int rs, ri;
 		if (!ObjectForActor(mo, rs, ri)) continue;
-		// distance from the palm to the actor's box
-		const double dx = std::max(0.0, fabs(h.palm.X - mo->X()) - mo->radius);
-		const double dy = std::max(0.0, fabs(h.palm.Y - mo->Y()) - mo->radius);
-		const double dz = std::max(0.0, std::max(mo->Z() - h.palm.Z, h.palm.Z - (mo->Z() + mo->Height)));
+		// distance from the palm to the box the object is picked by
+		DVector3 lo, hi;
+		ObjectPickBox(mo, lo, hi);
+		const double dx = std::max(0.0, std::max(lo.X - h.palm.X, h.palm.X - hi.X));
+		const double dy = std::max(0.0, std::max(lo.Y - h.palm.Y, h.palm.Y - hi.Y));
+		const double dz = std::max(0.0, std::max(lo.Z - h.palm.Z, h.palm.Z - hi.Z));
 		const double d = sqrt(dx * dx + dy * dy + dz * dz);
 		if (d <= r) near.push_back({ d, mo });
 	}
@@ -442,15 +442,15 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		p.actor = n.second;
 		p.hitPos = n.second->PosPlusZ(n.second->Height * 0.5);
 		p.dist = n.first;
-		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p));
-		if (!c.CanUse(PickUseRange(pmo))) continue;
+		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, p.hitPos - h.palm));
+		if (!c.CanUse()) continue;
 		return DoUse(role, p, c, pmo, "grip on an object");
 	}
 	Pick p;
 	if (PickFrom(pmo, h.palm, h.dir, kGrabReach * upm, p))
 	{
-		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p));
-		if (c.CanUse(PickUseRange(pmo))) return DoUse(role, p, c, pmo, "grip on a surface");
+		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, h.dir));
+		if (c.CanUse()) return DoUse(role, p, c, pmo, "grip on a surface");
 	}
 	if (P.test || roth_vrpick_debug)
 		Printf("[roth_vrpick] %s hand grip: nothing usable within reach (%d object(s) near the palm)\n", RoleName(role), (int)near.size());
@@ -491,14 +491,13 @@ void TickHand(int role, AActor *pmo)
 	}
 
 	const double upm = UPM();
-	const double useR = PickUseRange(pmo);
 
 	// THE PICK, every tic the hand is there: the gestures below need it the
 	// tic the index lifts, and the beam needs it while pointing.
 	const Pick before = h.havePick ? h.pick : Pick{};
 	const bool hadPick = h.havePick;
-	h.havePick = PickFrom(pmo, h.tip, h.dir, PickProbeRange(pmo), h.pick);
-	h.cls = h.havePick ? ClassifyPick(h.pick, pmo, DepthOf(pmo, h.pick)) : CursorClass{};
+	h.havePick = PickFrom(pmo, h.tip, h.dir, PickTraceRange(h.dir), h.pick);
+	h.cls = h.havePick ? ClassifyPick(h.pick, pmo, DepthOf(pmo, h.pick, h.dir)) : CursorClass{};
 
 	if (roth_vrpick_debug || P.test)
 	{
@@ -507,9 +506,9 @@ void TickHand(int role, AActor *pmo)
 		if (changed)
 		{
 			if (h.havePick)
-				Printf("[roth_vrpick] %s hand %s: %s at %.0f units from the eye, %.0f from the %s: cursor type %d shape 0x%x"
+				Printf("[roth_vrpick] %s hand %s: %s at planar %.0f (depth %.0f), %.0f along the ray from the %s: cursor type %d shape 0x%x"
 					" (record type %d, examinable %d%s)\n", RoleName(role), h.pointing ? "points" : "rests",
-					PickKindName(h.pick), h.cls.depth, h.pick.dist, h.fromFinger ? "fingertip" : "aim pose",
+					PickKindName(h.pick), (h.cls.depth - 64.0) / 2.0, h.cls.depth, h.pick.dist, h.fromFinger ? "fingertip" : "aim pose",
 					(int)h.cls.type, (unsigned)h.cls.shape, (int)h.cls.recType, h.cls.examinable,
 					h.cls.outOfRange ? ", out of range" : "");
 			else
@@ -573,7 +572,7 @@ void TickHand(int role, AActor *pmo)
 		&& ((before.hitPos - h.tip) | h.lastDir) <= kPokeIn * upm)
 	{
 		h.pokeArmed = false;
-		const CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before));
+		const CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before, h.lastDir));
 		DoUse(role, before, c, pmo, "fingertip press (through)");
 	}
 	else if (!h.havePick || h.pick.dist > kPokeOut * upm) h.pokeArmed = true;
@@ -598,7 +597,7 @@ void TickHand(int role, AActor *pmo)
 	}
 
 	// ---- HAPTIC TICK on coming onto something actionable ----
-	const bool actionable = h.havePick && (h.cls.CanUse(useR) || h.cls.CanExamine());
+	const bool actionable = h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
 	if (actionable && !SamePickTarget(h.pick, h.hover)) { h.hover = h.pick; Haptic(role, 0.12, 12); }
 	else if (!actionable) h.hover = Pick{};
 
@@ -684,14 +683,18 @@ void VRPickTick(FLevelLocals *level, bool modal)
 // runs in flat with the hand test's inputs (roth_handtest <pose> sets the
 // grip, trigger and touches), from the test hands' own fingertips, so a
 // capture shows the beam leaving the finger and a log line says what the
-// original's cursor would be and what each gesture did.
+// original's cursor would be and what each gesture did. While it is on, the
+// test hands' fingers are tipped forward (VRHandTest_SetTilt 90), so the drawn
+// finger points the way the test ray goes rather than at the ceiling.
 //
 //   roth_vrpicktest on [main|off|both]   start (default: the main hand only)
 //   roth_vrpicktest aim <pitch> [yaw]    the test ray's direction off the view (degrees, + up / + left)
-//   roth_vrpicktest seek item|door|face [standoff]
-//                                        stand the player <standoff> units (default 96) in front of the
-//                                        nearest pickable item / door leaf / wall face with a use
-//                                        trigger, facing it, and aim the test ray at it
+//   roth_vrpicktest seek item|door|face [metres]
+//                                        stand the player so the TEST HAND is <metres> (default 1.0)
+//                                        in front of the nearest pickable item / door leaf / wall face
+//                                        with a use trigger, facing it, and aim the test ray at it.
+//                                        In metres, because the hand is placed in metres
+//                                        (VR_UnitsPerMeter: 34 in flat, about 107 in the headset)
 //   roth_vrpicktest off
 //
 // The gestures are the real ones, driven by the poses: an index tap is
@@ -706,13 +709,14 @@ CCMD(roth_vrpicktest)
 	using namespace roth;
 	if (argv.argc() < 2)
 	{
-		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face [standoff] | off\n");
+		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face [metres] | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
 	{
 		P.test = false;
 		P.testAimAt = false;
+		VRHandTest_SetTilt(0.f);
 		Printf("roth_vrpicktest: off\n");
 		return;
 	}
@@ -722,11 +726,11 @@ CCMD(roth_vrpicktest)
 		P.testHands = 1;
 		if (argv.argc() >= 3 && !stricmp(argv[2], "off")) P.testHands = 2;
 		if (argv.argc() >= 3 && !stricmp(argv[2], "both")) P.testHands = 3;
-		Printf("roth_vrpicktest: on, %s; use range %.0f, too far %.0f, probe %.0f; %.1f units per metre\n",
+		VRHandTest_SetTilt(90.f);
+		Printf("roth_vrpicktest: on, %s; the original's bands: use z < 268, too far < 968, examine < 2468"
+			" (depth 2z + 64 against 600 / 2000 / 5000); flat use key range %.0f; %.1f units per metre\n",
 			P.testHands == 1 ? "main hand" : P.testHands == 2 ? "off hand" : "both hands",
-			players[consoleplayer].mo ? PickUseRange(players[consoleplayer].mo) : 0.0,
-			players[consoleplayer].mo ? PickFarRange(players[consoleplayer].mo) : 0.0,
-			players[consoleplayer].mo ? PickProbeRange(players[consoleplayer].mo) : 0.0, UPM());
+			players[consoleplayer].mo ? players[consoleplayer].mo->FloatVar(NAME_UseRange) : 0.0, UPM());
 		return;
 	}
 	if (!stricmp(argv[1], "aim"))
@@ -743,19 +747,28 @@ CCMD(roth_vrpicktest)
 		if (pmo == nullptr) { Printf("roth_vrpicktest seek: no player\n"); return; }
 		DVector3 aim, stand;
 		if (!PickTestTarget(argv[2], pmo, aim, stand)) { Printf("roth_vrpicktest seek: no %s on this map\n", argv[2]); return; }
-		const double standoff = argv.argc() >= 4 ? atof(argv[3]) : 96.0;
+		const double metres = argv.argc() >= 4 ? atof(argv[3]) : 1.0;
 		DVector2 out = stand.XY() - aim.XY();
 		if (out.Length() > 1e-6) out = out / out.Length();
+		// How far ahead of the player's x,y the test hand stands: where
+		// roth_hands.cpp puts it, from the same placement the test grip uses.
+		const int side = VRHandPose_SideForRole(VR_MAINHAND);
+		const double yawDeg = atan2(-out.Y, -out.X) * (180.0 / M_PI);
+		DVector3 spot;
+		VRHandTest_ActorSpot(side, DVector3(0, 0, 0), yawDeg, spot);
+		const double handAhead = DVector2(spot.X, spot.Y) | DVector2(-out.X, -out.Y);
+		const double standoff = handAhead + metres * UPM();
 		const DVector3 at(aim.X + out.X * standoff, aim.Y + out.Y * standoff, stand.Z);
 		pmo->SetOrigin(at, false);
 		pmo->Vel.Zero();
-		pmo->Angles.Yaw = DAngle::fromRad(atan2(aim.Y - at.Y, aim.X - at.X));
+		pmo->Angles.Yaw = DAngle::fromDeg(yawDeg);
 		pmo->Angles.Pitch = nullAngle;
 		pmo->ClearInterpolation();
 		P.testAimAt = true;
 		P.testAim = aim;
-		Printf("roth_vrpicktest seek %s: aiming at (%.0f %.0f %.0f), standing at (%.0f %.0f %.0f), %.0f units off\n",
-			argv[2], aim.X, aim.Y, aim.Z, at.X, at.Y, at.Z, standoff);
+		Printf("roth_vrpicktest seek %s: aiming at (%.0f %.0f %.0f), standing at (%.0f %.0f %.0f): the hand %.2f m"
+			" (%.1f units) from it, the player %.1f units\n", argv[2], aim.X, aim.Y, aim.Z, at.X, at.Y, at.Z, metres,
+			metres * UPM(), standoff);
 		return;
 	}
 	Printf("roth_vrpicktest: unknown '%s'\n", argv[1]);

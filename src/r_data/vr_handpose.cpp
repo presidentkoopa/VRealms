@@ -190,6 +190,7 @@ namespace
 		bool on = false;
 		FVRHandTestInputs in;
 		float turn = 0.f;
+		float tilt = 0.f;
 	};
 	FHandTest gTest;
 
@@ -218,6 +219,10 @@ namespace
 		out.rotate((float)(-90.0 + yaw), 0.f, 1.f, 0.f);
 		out.translate((float)(side == SIDE_RIGHT ? TEST_SIDE : -TEST_SIDE), (float)TEST_UP, (float)-TEST_FWD);
 		out.rotate(side == SIDE_RIGHT ? -gTest.turn : gTest.turn, 0.f, 1.f, 0.f);
+		// `tilt` tips the fingers from straight up toward straight ahead about the camera's right
+		// axis (90 = the fingers point away from the camera, palm down): the VR picker's flat test
+		// (roth_vrpicktest) points the hand at what it aims at.
+		if (gTest.tilt != 0.f) out.rotate(-gTest.tilt, 1.f, 0.f, 0.f);
 		out.multMatrix(kTestGripAxes[side]);
 		return true;
 	}
@@ -231,6 +236,8 @@ void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg)
 }
 
 bool VRHandTest_Active() { return gTest.on; }
+
+void VRHandTest_SetTilt(float tiltDeg) { gTest.tilt = tiltDeg; }
 
 bool VRHandTest_Inputs(FVRHandTestInputs &out)
 {

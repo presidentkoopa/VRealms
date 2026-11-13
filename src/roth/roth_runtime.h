@@ -342,6 +342,12 @@ struct Pick
 bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 	double range, Pick &out);
 
+// The box a Realms object's actor is picked and reached by: its sprite's
+// rectangle (width and height times its scale, hung from its top offset), or
+// for a mesh its radius and height. The original picks opaque texels; this is
+// coarser and says so (PickFrom).
+void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi);
+
 // Act on a pick: faces go to the face dispatch WITH the hit position (which is
 // what finally lets the wall-band gate run), flats to UseFlatAt, leaves to
 // SwingDoor. Returns true if something acted, so the caller can treat the
@@ -376,12 +382,21 @@ bool UseByHand(player_t *player, TrigEvent want);
 //   examine  (primary)   type 3 or 5, and something to examine (count != 0)
 //   use      (secondary) type 3; activate_targeted_object gates depth < 600
 //
-// THE DEPTH is the original's renderer metric (+0x20 of the pick record),
-// which is a perspective step, not a distance. Here it is the straight-line
-// distance from the player's eye to the hit, and the three bands are the
-// level's use range (FLevelLocals::ForcedPlayerUseRange, PROVISIONAL until it
-// is calibrated against ROTH.C) and that range times the original's own ratios
-// 2000/600 and 5000/600. ONE number moves all three.
+// THE DEPTH is the original's renderer metric (+0x20 of the pick record).
+// MEASURED on the running original (docs/REMAROTH_MEASURED.md 13): depth =
+// 2z + 64, z the HORIZONTAL distance from the player's x,y to the picked point
+// along the view yaw -- for every kind of target, at every pitch, and planar
+// off the view centre too. So the bands are z < 268 (use), < 968 (too far),
+// < 2468 (the examine probe), and they are applied here as the original
+// applies them: the depth 2z + 64 against 600 / 2000 / 5000.
+//
+// FOR A HAND, z is measured from the player's x,y along the HAND RAY's yaw.
+// The original's yaw is the camera's because its pointer is the camera's
+// cursor: z is depth along the axis the pointer looks down. A hand's pointer
+// looks down its own ray, and measuring along the head's yaw instead would let
+// a hand pointed sideways reach without limit (z = 0 at 90 degrees). From the
+// player's x,y, not the hand's, because the original's reach is the body's:
+// the player's position is where its camera stands.
 //
 //==========================================================================
 
@@ -393,20 +408,25 @@ struct CursorClass
 	uint8_t  flags = 0;       // 0x7fdac: bit 1 an examine trigger matched, bit 2 blocked / keyed
 	int      examinable = 0;  // 0x7fdb0: examine triggers + an OnInspect block
 	bool     outOfRange = false; // 0x7fdb4
-	double   depth = 0;       // the stand-in for +0x20 (see above)
+	double   depth = 0;       // +0x20, as 2z + 64 (see above)
 
-	// What a click may do, by run_gameplay_frame's rules (roth_cursor.h).
+	// What a click may do, by run_gameplay_frame's rules (roth_cursor.h):
+	// activate_targeted_object's own gate is depth < 0x258 (E/input.c:1031).
 	bool CanExamine() const { return (type == 3 || type == 5) && examinable != 0; }
-	bool CanUse(double useRange) const { return type == 3 && depth < useRange; }
+	bool CanUse() const { return type == 3 && depth < 0x258; }
 };
 
-// The three reach bands, from the one provisional constant.
-double PickUseRange(AActor *who);
-double PickFarRange(AActor *who);
-double PickProbeRange(AActor *who);
+// z for a pick (see above): from the player's x,y along the ray's yaw (the
+// player's own yaw when the ray is nearly vertical).
+double PickPlanarZ(AActor *who, const DVector3 &hit, const DVector3 &rayDir);
+// The pick record's depth for that z: 2z + 64 (REMAROTH_MEASURED.md 13).
+inline double PickDepthOfZ(double z) { return 2.0 * z + 64.0; }
+// How long a ray in `rayDir` must be traced to reach the examine band's planar
+// edge (z 2468) from wherever on the player it starts.
+double PickTraceRange(const DVector3 &rayDir);
 
 // classify_cursor_target_object on a pick (its decision is roth_cursor.h, engine-free and
-// tested against the original's own text by tools/vrpick_test). `depth` is the stand-in above.
+// tested against the original's own text by tools/vrpick_test). `depth` is 2z + 64 (above).
 CursorClass ClassifyPick(const Pick &p, AActor *who, double depth);
 
 // examine_object_under_cursor (E/input.c:979-1015): the right-click. The
