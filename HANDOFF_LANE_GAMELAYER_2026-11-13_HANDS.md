@@ -41,3 +41,13 @@ The patch is `git diff --binary` against 375bcc07 and applies cleanly there. It 
 ## Open questions for the owner
 - May the wrist ever be animated? Currently the controller owns it in every frame.
 - The weapon in the posed hand: RealmsHeld still rides the aim pose. That is a later step; see the engine report in the patch's `vr_handpose.cpp` header.
+
+## Update 2026-11-13 01:35 (after the owner's corrections)
+- IQM hands and the converter removed (cac07ed1). The engine reads `hand_final.fbx` itself (ufbx, 69e2e065; docs/FBX_LOADER.md).
+  Verified on the owner's PC (bridge hf_01..04): built, packed; log "FBX model models/hands/hand_final.fbx:Hand_Low ... 1279 at 60 fps", Hand_Low1 "skin det -1 (mirrored)"; `hands_fbx_open_t0/t90/t180.png` show both hands drawn, textured, in flat.
+  Not done: fingers are NOT posed (no pose map: point, thumb-up, ready are not frames of the take; owner to decide); left hand's texture wrong (Hand_Low1 has no texture in the FBX, its UVs are the right's mirrored); 5th skin weight dropped (<= 2 mm).
+- VR scale now from the original: eye 144 units above the feet on the player's measured head, vertical stretch 1.1462 on the world in the headset (71d92ff2). Built; not seen in the headset. `roth_vr_remeasure`, `roth_vr_units_per_metre`.
+- UI font: the original's again (1f8c3aa5). The JFO run path is kept, off, for letters and maps later.
+- OWNER'S IDEAS, ON HOLD until the FBX hands are tested (owner: "wait on the work I just said until fbx is done and I test"):
+  - a mash-up of DistanceGrab and Melee: melee hits switches (light switches); doorknobs designated grabbable, grabbed to open;
+  - hands in the inventory: reach in, or a selection laser from each hand while it is open; put items in the use boxes, light candles, comment on items.
