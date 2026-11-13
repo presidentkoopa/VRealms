@@ -7,6 +7,7 @@ Start a session by reading the newest `HANDOFF_*.md` at the repo root (today `HA
 - Never comment on the owner's hours, schedule, job or life. Never tell him to rest.
 - No shortcuts, workarounds, or switches that hide unfinished work. ROTH.C proves it can be done properly.
 - Cosmetic polish waits until the owner asks for it. Gameplay and logic come first.
+- **The game is read from the native install. Never design anything the original already has.** Its screens, panels, menus, fonts and pictures are in the install; draw them from there, placed by the original's own drawing code (ROTH.C), and check them pixel for pixel against the original's frame. A layout of our own (boxes, text tabs, colours) is invented work. (2026-11-12: the inventory, menus and dialogue box were drawn as our own layouts.)
 - The owner's `doomxr.ini` is shared with his hands build: never set or write archived settings from the engine or from tests.
 - Never use screen control (computer use) on the owner's PC. Test through the REMAROTH bridge's hidden desktop.
 - Never use `git stash`: all worktrees share one stash list.
