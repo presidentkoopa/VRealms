@@ -1,8 +1,8 @@
 /*
 ** vr_handpose_math.h
 **
-** THE FINGERS OF THE VR HANDS, AS PURE MATH: controller input -> which pose each finger heads
-** for -> the rotation each finger joint is drawn at, smoothed at the display rate.
+** THE VR HANDS, AS PURE MATH: the controller's finger input, the display-rate smoothing, and where
+** the hand sits on the controller (its frame from the wrist and knuckles, the grip socket).
 **
 ** Nothing of the engine in it -- floats and arrays only -- so the exact code the renderer runs is
 ** compiled and run by tools/hands_test/ outside the engine. vr_handpose.cpp owns the engine half:
@@ -14,8 +14,9 @@
 ** 2026-11-12: "react to capacitive touch, too, so I can point and thumb and grab").
 **
 ** CONVENTIONS. A quaternion is float[4] = (x, y, z, w), the order FQuaternion and UZDXREMA's
-** gRot use. A pose is a frame of the hand model (the RS_Hands frame map below); a finger's target
-** is "slerp from pose A to pose B by t", per joint, in the joint's own local (bone) space.
+** gRot use. NO FINGER POSES: the pose layer (which frame is open, point, fist ...) was RS_Hands'
+** frame map and is removed (owner, 2026-11-13: "start over, use the hands in DXR"). The fingers will
+** be posed from the DXR hands (hand_final.fbx) once the owner says how.
 **
 **---------------------------------------------------------------------------
 */
@@ -47,18 +48,6 @@ enum
 	SIDE_COUNT
 };
 
-// THE RS_HANDS FRAME MAP (rs_hands_ref/README.md "Baked poses, frames 0-10"; rs_hands.zs:186-214),
-// which the converter writes as frames 0-10 of hand_r.iqm / hand_l.iqm. Only these five are targets.
-enum
-{
-	POSE_OPEN     = 0,	// every finger at rest
-	POSE_POINT    = 1,	// index 0, middle/ring/pinky 85/90/90, thumb 14 (README: the thumb fixed for a straight index)
-	POSE_FIST     = 3,	// index 85, middle/ring/pinky 85/90/90, thumb 30
-	POSE_GRIP_TU  = 7,	// grip, thumb lifted (thumb 0)
-	POSE_READY_TD = 8,	// index 30 resting on the trigger, thumb 25 down on the controller
-	POSE_MAX_USED = 8
-};
-
 // What one controller says about the fingers, raw (UZDXREMA hw_vrmodes.h:82-88 VRFingerInput,
 // and FVRRigHandState's trigger/gripValue/triggerTouch/thumbTouch, vr_rig.h:78-79).
 struct Inputs
@@ -70,78 +59,8 @@ struct Inputs
 	bool  valid = false;		// a controller pose this frame (UZDXREMA rig.Valid(hidx), :452)
 };
 
-// One finger's target: slerp(pose[from], pose[to], t), per joint.
-struct FingerTarget
-{
-	int   from = POSE_OPEN;
-	int   to = POSE_OPEN;
-	float t = 0.f;
-};
-
 inline float Clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 
-//===========================================================================
-//
-// THE TARGETS. UZDXREMA UpdateCurls :441-454, with the owner's touch rule.
-//
-// UZDXREMA (:444-448), the starting point:
-//     index  = trigger > 0 ? trigger : (triggerTouch ? 0.3 : 0)
-//     middle = ring = pinky = grip
-//     thumb  = thumbTouch ? 0.6 : 0
-// as fractions of ONE fold (FRIK's table), so 0.3 is "a little" and 0.6 is "most of the way".
-//
-// HERE every finger heads for a POSE of this hand, per joint, and the touches choose which:
-//
-//   middle, ring, pinky: open -> fist by the analog grip. Same input as :445-447; the fist frame is
-//       the fold instead of FRIK's angle table.
-//
-//   index: rests where the touch says, and the trigger pulls it from there into the fist:
-//       base = triggerTouch ? ready_td (index 30, on the trigger) : open (straight)
-//       index = slerp(base, fist, trigger)
-//     DEPARTS FROM :444 IN TWO WAYS, both the owner's rule. The resting pose on a touch is
-//     ready_td's index (the recipe's "index resting on the trigger") rather than 0.3 of a fold.
-//     And the pull starts FROM that rest: :444 drops the touch the moment the trigger moves, so a
-//     finger resting at 0.3 jumps back to 0.01 on the first millimetre of travel; here it is one
-//     continuous motion from resting to pulled. Without a touch (a controller with no capacitive
-//     trigger) it is exactly :444's curve, open -> fist by the trigger.
-//
-//   thumb: down on the controller while touching, up and out when not:
-//       not touching: grip_tu's thumb (the recipe's "thumb lifted")
-//       touching:     ready_td's thumb (25, "thumb wrapped") while the index is on or pulling the
-//                     trigger; point's thumb (14) while the index is off it.
-//     DEPARTS FROM :448. UZDXREMA folds the thumb 0.6 on a touch and leaves it at rest otherwise;
-//     the owner asked for the thumb up/out off the controller and down on it, which is two poses,
-//     not one fold. The two "down" thumbs are the recipe's own: rs_hands_ref/README.md "What changed
-//     in this release" -- point's thumb was cut from 25 to 14 because with a straight index nothing
-//     stops a 25 thumb and it swings clear of the hand -- and rs_hands.zs PoseFor (:359-362) picks
-//     ready_td/gripfire (25) with the index on the trigger and point (14) with it off.
-//
-//   no controller (!valid): every finger open. UZDXREMA :450-454, unchanged: "an open hand, not a
-//       frozen one".
-//
-//===========================================================================
-
-inline void Targets(const Inputs &in, FingerTarget out[FINGER_COUNT])
-{
-	if (!in.valid)
-	{
-		for (int f = 0; f < FINGER_COUNT; ++f) out[f] = FingerTarget{ POSE_OPEN, POSE_OPEN, 0.f };
-		return;
-	}
-	const float trigger = Clamp01(in.trigger);
-	const float grip = Clamp01(in.grip);
-
-	const int idxBase = in.triggerTouch ? POSE_READY_TD : POSE_OPEN;
-	out[FINGER_INDEX] = FingerTarget{ idxBase, POSE_FIST, trigger };
-
-	out[FINGER_MIDDLE] = FingerTarget{ POSE_OPEN, POSE_FIST, grip };
-	out[FINGER_RING]   = FingerTarget{ POSE_OPEN, POSE_FIST, grip };
-	out[FINGER_PINKY]  = FingerTarget{ POSE_OPEN, POSE_FIST, grip };
-
-	const bool indexOnTrigger = in.triggerTouch || trigger > 0.f;
-	const int thumbPose = !in.thumbTouch ? POSE_GRIP_TU : (indexOnTrigger ? POSE_READY_TD : POSE_POINT);
-	out[FINGER_THUMB] = FingerTarget{ thumbPose, thumbPose, 0.f };
-}
 
 //===========================================================================
 //
@@ -190,24 +109,6 @@ inline void QSlerp(const float a[4], const float b[4], float t, float out[4])
 	for (int k = 0; k < 4; ++k) out[k] /= n;
 }
 
-// The poses one model carries for the finger joints: [pose][finger][joint] = local rotation.
-struct PoseTable
-{
-	float Q[POSE_MAX_USED + 1][FINGER_COUNT][FINGER_JOINTS][4] = {};
-};
-
-// This frame's target rotation for every finger joint.
-inline void TargetRotations(const FingerTarget tgt[FINGER_COUNT], const PoseTable &poses,
-	float out[FINGER_COUNT][FINGER_JOINTS][4])
-{
-	for (int f = 0; f < FINGER_COUNT; ++f)
-	{
-		const FingerTarget &ft = tgt[f];
-		for (int j = 0; j < FINGER_JOINTS; ++j)
-			QSlerp(poses.Q[ft.from][f][j], poses.Q[ft.to][f][j], Clamp01(ft.t), out[f][j]);
-	}
-}
-
 //===========================================================================
 //
 // THE DRAWN ROTATIONS, smoothed. UZDXREMA FRotState (:385-390) and :691-696, unchanged:
@@ -240,15 +141,6 @@ inline void Smooth(SideState &s, const float target[FINGER_COUNT][FINGER_JOINTS]
 	s.Init = true;
 }
 
-// One whole frame for one hand: inputs -> targets -> smoothed joint rotations.
-inline void Step(SideState &s, const Inputs &in, const PoseTable &poses, double dt)
-{
-	FingerTarget tgt[FINGER_COUNT];
-	Targets(in, tgt);
-	float want[FINGER_COUNT][FINGER_JOINTS][4];
-	TargetRotations(tgt, poses, want);
-	Smooth(s, want, Retain(dt));
-}
 
 //===========================================================================
 //

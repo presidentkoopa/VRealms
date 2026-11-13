@@ -22,42 +22,11 @@
 **  6. desktop source: fire/altfire as 0/1 on the main hand      RIG:614-624    -> NOT PORTED: no hands in flat
 **     (owner: nothing in flat); the flat TEST supplies its own inputs (roth_handtest, item 33).
 **
-** The curl rule (VAP UpdateCurls :419-698)
-**  7. once per displayed frame (rig.FrameIndex)                 VAP:421-423    -> UpdateSide, screen->FrameCount, per side
-**  8. dt from screen->FrameTime ms, first frame/hitch -> 1/90   VAP:425-429    -> math SanitiseDt; UpdateSide
-**  9. retain = 0.75^(dt*90)                                     VAP:431        -> math Retain
-** 10. handedness: side -> main/off by vr_control_scheme < 10    VAP:433-438    -> VRHandPose_RoleForSide
-** 11. index = trigger, or 0.3 on trigger touch alone            VAP:444        -> math Targets: DEPARTS (owner's
-**     touch rule): rests at ready_td's index on a touch, straight without; the trigger pulls from that rest
-**     into the fist, continuously (:444 drops the touch on the first millimetre of pull).
-** 12. middle, ring, pinky = grip                                VAP:445-447    -> math Targets: open -> fist by grip
-** 13. thumb = 0.6 on thumb touch, else 0                        VAP:448        -> math Targets: DEPARTS (owner's
-**     touch rule): off = grip_tu's thumb (up/out), on = ready_td's thumb (index on the trigger) or point's
-**     (index off it) -- RS_Hands' own pairing, rs_hands.zs PoseFor :359-362 and its README thumb fix.
-** 14. no controller -> every finger open                         VAP:450-454    -> math Targets (!valid)
-** 15. one value per finger copied to its three joints           VAP:456-458    -> math TargetRotations: a POSE per
-**     finger, so each joint takes that pose's own rotation for that joint (the curl table's per-joint
-**     degrees are what a pose frame already carries).
-** 16. drawn weapon: grip_<prop>/grip_<class>/gun_grip poses, [FBXGRIP] thumb, index ready->fire by the
-**     analog trigger                                            VAP:476-562    -> NOT PORTED: the weapon stays as
-**     it is (RealmsHeld); "weapon in the posed hand" is a later step.
-** 17. held non-weapon object: hold_<subject>[_<class>]          VAP:563-650    -> NOT PORTED: no grabbing yet (the
-**     poses are in the model, frames 1289-1299, for when it comes).
-** 18. scalar curl smoothing gCurl                               VAP:376-379, 658-664 -> NOT PORTED: nothing draws
-**     from it (the bones are turned by gRot alone, :1794).
-** 19. target rotation: a pose's `rot` quaternion, else QAxisAngle(FRIK fold axis, degrees * curl)
-**                                                               VAP:666-690, 410-414 -> math TargetRotations:
-**     slerp(pose A, pose B, t) on the model's own frames, in each joint's local (bone) space. For a pure
-**     fold this is the same curve (QAxisAngle(axis, deg*c) == slerp(identity, full fold, c)); the fold
-**     comes from the FBX recipe frames instead of FRIK's table (vrhandcurl.txt), as the lead asked.
-** 20. QSlerp (shortest arc, lerp past 0.9995, renormalise)      VAP:392-408    -> math QSlerp, verbatim
-** 21. rotation smoothing: init = target, then slerp(cur, target, 1 - retain)
-**                                                               VAP:691-696    -> math Smooth, verbatim
-** 22. applied as D = F.R(q).F^T on the joint's global, descendants carried
-**                                                               VAP:1770-1830  -> VRHandPose_Apply: the joint's
-**     LOCAL rotation replaced (ModelReach::FJointPoseWork, model_reach_math.h, this engine's draw-pose
-**     path), children follow through the hierarchy. Equivalent: F is the canonical frame UZDXREMA needs
-**     to put a FRIK axis into a foreign rig; a frame of this rig is already in its own joint space.
+** The curl rule (VAP UpdateCurls :419-698), items 7-22: REMOVED (owner, 2026-11-13: "start over, use
+** the hands in DXR"). They drove the fingers toward RS_Hands' pose frames (0 open, 1 point, 3 fist,
+** 7 grip_tu, 8 ready_td) and RS_Hands' thumb pairing, which the owner never gave. Kept: the input
+** reading (1-5), the rate (math Retain/SanitiseDt), QSlerp and Smooth (math), for when the DXR hands'
+** fingers are posed the way the owner says.
 ** 23. [FINGERLEN] finger bones lengthened per body               VAP:2336-2400  -> NOT PORTED: one rig, its own size.
 ** 24. the grasp (vr_grasp.cpp)                                                 -> NOT PORTED (lead: later task).
 **
@@ -82,8 +51,8 @@
 **     to the actor's own place (a speck at metre scale) and roth_hands.cpp hides the actor.
 **
 ** The flat test (not in UZDXREMA; test-only)
-** 33. roth_handtest: both hands in front of the camera, fixed grip axes, the given inputs, through the
-**     whole path above (fit, seat, finger pose, smoothing). Inert until typed.
+** 33. roth_handtest: both hands in front of the camera, fixed grip axes, through the placement above
+**     (fit, seat). Inert until typed.
 **
 **---------------------------------------------------------------------------
 */
@@ -255,17 +224,12 @@ namespace
 	{
 		"Root_joint", "INDEX_BASE_joint", "MIDDLE_F_BASE_joint", "RING_BASE_joint", "PINK_BASE_joint"
 	};
-	const int kPosesUsed[] = { POSE_OPEN, POSE_POINT, POSE_FIST, POSE_GRIP_TU, POSE_READY_TD };
 
 	struct FHandModelCache
 	{
 		FModel     *model = nullptr;
 		int         numJoints = -1;
-		bool        fingersOk = false;
-		bool        poseMapMissing = false;	// an FBX take: no frame is a pose target yet
-		int         joint[FINGER_COUNT][FINGER_JOINTS] = {};
 		TArray<int> parents;
-		PoseTable   poses;
 		bool        seatOk[SIDE_COUNT] = { false, false };
 		VSMatrix    seat[SIDE_COUNT];
 	};
@@ -292,34 +256,6 @@ namespace
 			c->parents[i] = p < 0 ? -1 : p;
 		}
 
-		// THE POSE TARGETS are frames 0 1 3 7 8 (POSE_* in vr_handpose_math.h) only in a file written
-		// with RS_Hands' frame map, as the converter's IQMs were. An FBX model's frames are its takes as
-		// recorded (model_fbx.h): its frame 1 is the take 1/60 s in, not "point". No map from the take to
-		// the five targets has been chosen (docs/FBX_LOADER.md, the open question), so an FBX hand's
-		// fingers are NOT posed: it shows the frame its actor state draws, and says so below.
-		c->poseMapMissing = dynamic_cast<FFBXModel *>(model) != nullptr;
-
-		// THE FINGERS: every joint present, and the model long enough to carry frame POSE_MAX_USED.
-		bool ok = !c->poseMapMissing && model->NumFrames() > POSE_MAX_USED;
-		for (int f = 0; f < FINGER_COUNT && ok; f++)
-			for (int j = 0; j < FINGER_JOINTS && ok; j++)
-			{
-				c->joint[f][j] = model->FindJoint(FName(kFingerJoints[f][j]));
-				ok = c->joint[f][j] >= 0 && c->joint[f][j] < n;
-			}
-		if (ok)
-		{
-			for (int p : kPosesUsed)
-				for (int f = 0; f < FINGER_COUNT; f++)
-					for (int j = 0; j < FINGER_JOINTS; j++)
-					{
-						const FQuaternion q = model->GetJointPose(c->joint[f][j], p).rotation;
-						float *o = c->poses.Q[p][f][j];
-						o[0] = q.X; o[1] = q.Y; o[2] = q.Z; o[3] = q.W;
-					}
-			c->fingersOk = true;
-		}
-
 		// THE SEAT, both sides: the bind-pose wrist and knuckles, in the file's own space (baseframe).
 		Vec3d P[5];
 		bool havePoints = true;
@@ -341,11 +277,8 @@ namespace
 			}
 		}
 
-		Printf("VR hands: %s -- fingers %s (%d frames), seat %s; grip socket R (%.2f %.2f %.2f) L (%.2f %.2f %.2f) file units\n",
+		Printf("VR hands: %s -- fingers not posed (no finger poses yet: to be built from the DXR hands) (%d frames), seat %s; grip socket R (%.2f %.2f %.2f) L (%.2f %.2f %.2f) file units\n",
 			model->mFileName.GetChars(),
-			c->fingersOk ? "posed from frames 0 1 3 7 8"
-				: c->poseMapMissing ? "NOT posed: pose targets not mapped yet (an FBX take; the hand shows the frame its state draws)"
-				: "NOT posed (joints or frames missing)",
 			model->NumFrames(),
 			(c->seatOk[0] && c->seatOk[1]) ? "measured" : "NOT measured (wrist/knuckle joints missing)",
 			sock[0].x, sock[0].y, sock[0].z, sock[1].x, sock[1].y, sock[1].z);
@@ -372,60 +305,6 @@ namespace
 		return -1;
 	}
 
-	//=======================================================================
-	//
-	// ONE STEP PER SIDE PER DISPLAYED FRAME (checklist 7-9): both eyes, and every repeated draw in a
-	// frame, see the same fingers. The inputs: the test's, or this side's controller (checklist 1-4,
-	// 14 -- valid is the grip pose being there this frame, UZDXREMA's rig.Valid).
-	//
-	//=======================================================================
-
-	SideState gSide[SIDE_COUNT];
-	uint64_t  gSideFrame[SIDE_COUNT] = { ~0ull, ~0ull };
-	double    gSideLast[SIDE_COUNT] = { 0.0, 0.0 };
-
-	void ReadInputs(int side, Inputs &in)
-	{
-		in = Inputs();
-		if (gTest.on)
-		{
-			in.trigger = gTest.in.trigger;
-			in.grip = gTest.in.grip;
-			in.triggerTouch = gTest.in.triggerTouch;
-			in.thumbTouch = gTest.in.thumbTouch;
-			in.valid = true;
-			return;
-		}
-		const VRMode *vm = VRMode::GetVRModeCached(true);
-		if (vm == nullptr || !vm->IsVR()) return;
-		const int role = VRHandPose_RoleForSide(side);
-		VSMatrix g;
-		if (!vm->GetGripTransform(role, &g)) return;
-		in.valid = true;
-		VRFingerInput fi;
-		if (vm->GetFingerInput(role, fi))
-		{
-			in.trigger = fi.trigger;
-			in.grip = fi.grip;
-			in.triggerTouch = fi.triggerTouch;
-			in.thumbTouch = fi.thumbTouch;
-		}
-	}
-
-	void UpdateSide(int side, const PoseTable &poses)
-	{
-		const uint64_t fr = screen != nullptr ? screen->FrameCount : 0;
-		if (gSideFrame[side] == fr) return;
-		gSideFrame[side] = fr;
-
-		const double now = screen != nullptr ? (double)screen->FrameTime * 0.001 : 0.0;
-		const double dt = now - gSideLast[side];
-		gSideLast[side] = now;
-
-		Inputs in;
-		ReadInputs(side, in);
-		Step(gSide[side], in, poses, dt);
-	}
 }
 
 bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out)
@@ -439,43 +318,14 @@ bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out)
 
 //===========================================================================
 //
-// THE FINGERS ON THE PALETTE (checklist 22). The drawn palette is frame 0 (open); each finger joint's
-// local rotation is replaced by this frame's smoothed one, through the same joint-pose machinery the
-// draw-time joint poses use (ModelReach::FJointPoseWork), so the children ride their parents and the
-// translations and scales stay as drawn.
+// THE FINGERS ON THE PALETTE: none yet. The finger poses were RS_Hands' frame map and are removed
+// (owner, 2026-11-13); the palette is drawn as the model's own frame. The FBX hands' fingers will be
+// posed from the DXR hands once the owner says how.
 //
 //===========================================================================
 
 const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones)
 {
-	if (actor == nullptr || model == nullptr || modelIndex != 0) return &bones;
-	const int side = SideOfActor(actor);
-	if (side < 0) return &bones;
-	FHandModelCache *c = CacheFor(model);
-	if (c == nullptr || !c->fingersOk) return &bones;
-
-	const int n = c->numJoints;
-	const TArray<VSMatrix> *base = model->GetBasePose();
-	if (base == nullptr || (int)base->Size() != n || (int)bones.Size() != n) return &bones;
-
-	UpdateSide(side, c->poses);
-
-	static thread_local ModelReach::FJointPoseWork work;
-	static thread_local TArray<VSMatrix> posed;
-	work.Begin(c->parents.Data(), bones.Data(), base->Data(), n);
-	for (int f = 0; f < FINGER_COUNT; f++)
-	{
-		for (int j = 0; j < FINGER_JOINTS; j++)
-		{
-			const int J = c->joint[f][j];
-			TRS t;
-			if (!work.LocalCur(J, t)) continue;
-			const float *q = gSide[side].Q[f][j];
-			t.rotation = FQuaternion(q[0], q[1], q[2], q[3]);
-			work.SetLocal(J, t);
-		}
-	}
-	posed.Resize(n);
-	if (!work.FinishInto(posed.Data())) return &bones;
-	return &posed;
+	(void)actor; (void)model; (void)modelIndex;
+	return &bones;
 }
