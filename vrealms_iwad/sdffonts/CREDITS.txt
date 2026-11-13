@@ -1,0 +1,6 @@
+sdfmono.png / sdfmono.txt in this folder: a distance-field atlas made from the
+Hires/SmallFont glyphs of JFO.pk3, "JDUI (Ultimate Edition)":
+  JDUI by Zedas; edit by Blackmore1014.
+Generated with tools/sdffont/mksdf_bitmap.py. They replace the engine's default
+text atlas for Realms only (vrealms.pk3 loads after doomxr.pk3); the engine's
+own sdfmono is untouched.
