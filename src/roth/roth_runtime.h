@@ -30,11 +30,6 @@
 
 #include <stdint.h>
 #include <vector>      // SidesWithOpcode
-
-// roth_at (a test tool, see roth_runtime.cpp): true while any timed console
-// command is still waiting for its tic. rothdiff checks it so a capture batch
-// that empties early does not quit before the test's later commands have run.
-bool TimedCommandsPending();
 #include <string>      // DefaultStartMap
 
 #include "textureid.h"
@@ -196,6 +191,11 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 // `+exec` runs before the deferred `map`, so a cfg would have to carry sidedef
 // numbers copied by hand out of a previous run's log.
 std::vector<int> SidesWithOpcode(uint8_t opcode);
+
+// roth_at (a test tool, see roth_runtime.cpp): true while any timed console
+// command is still waiting for its tic. rothdiff checks it so a capture batch
+// that empties early does not quit before the test's later commands have run.
+bool TimedCommandsPending();
 
 // Report where each door leaf ended up after PO_Init, and whether it is sitting
 // in a subsector the renderer skips. Call it right after PO_Init; a console
