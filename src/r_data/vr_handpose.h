@@ -85,6 +85,11 @@ void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg);
 bool VRHandTest_Active();
 // The test hands' fingers tipped from up (0) toward straight ahead (90), about the camera's right.
 void VRHandTest_SetTilt(float tiltDeg);
+// The flat test's hands raised (+) or lowered (-) by this many metres from their place below the eye: the
+// VR picker's flat test (roth_vrpicktest seek) brings the palm to a thing's height, as a player reaches
+// down to a table. 0 = the usual place. Test-only.
+void VRHandTest_SetLift(double metres);
+double VRHandTest_Lift();
 // The flat test's held thing for a PHYSICAL hand (VRHandPose::SIDE_*), in place of the game's while `on`
 // (roth_handhold, src/roth/roth_hands.cpp).
 void VRHandTest_SetHeld(int side, bool on, const VRHandPose::HeldState &held);

@@ -289,6 +289,7 @@ namespace
 		FVRHandTestInputs in;
 		float turn = 0.f;
 		float tilt = 0.f;
+		double lift = 0.0;		// metres, VRHandTest_SetLift
 		bool heldOn[SIDE_COUNT] = { false, false };	// roth_handhold: this side's held thing replaces the game's
 		HeldState held[SIDE_COUNT];
 	};
@@ -317,7 +318,7 @@ namespace
 		out.scale(upm, upm, -upm);
 		out.scale(1.f, 1.f / (float)ps, 1.f);
 		out.rotate((float)(-90.0 + yaw), 0.f, 1.f, 0.f);
-		out.translate((float)(side == SIDE_RIGHT ? TEST_SIDE : -TEST_SIDE), (float)TEST_UP, (float)-TEST_FWD);
+		out.translate((float)(side == SIDE_RIGHT ? TEST_SIDE : -TEST_SIDE), (float)(TEST_UP + gTest.lift), (float)-TEST_FWD);
 		out.rotate(side == SIDE_RIGHT ? -gTest.turn : gTest.turn, 0.f, 1.f, 0.f);
 		// `tilt` tips the fingers from straight up toward straight ahead about the camera's right
 		// axis (90 = the fingers point away from the camera, palm down): the VR picker's flat test
@@ -345,6 +346,8 @@ void VRHandTest_SetHeld(int side, bool on, const HeldState &held)
 }
 
 void VRHandTest_SetTilt(float tiltDeg) { gTest.tilt = tiltDeg; }
+void VRHandTest_SetLift(double metres) { gTest.lift = metres; }
+double VRHandTest_Lift() { return gTest.lift; }
 
 bool VRHandTest_Inputs(FVRHandTestInputs &out)
 {
@@ -360,7 +363,7 @@ void VRHandTest_ActorSpot(int side, const DVector3 &eye, double yawDeg, DVector3
 	const DVector3 fwd(yaw.Cos(), yaw.Sin(), 0.0);
 	const DVector3 right(yaw.Sin(), -yaw.Cos(), 0.0);
 	const double s = (side == SIDE_RIGHT) ? TEST_SIDE : -TEST_SIDE;
-	out = eye + fwd * (TEST_FWD * upm) + right * (s * upm) + DVector3(0, 0, TEST_UP * upm);
+	out = eye + fwd * (TEST_FWD * upm) + right * (s * upm) + DVector3(0, 0, (TEST_UP + gTest.lift) * upm);
 }
 
 //===========================================================================

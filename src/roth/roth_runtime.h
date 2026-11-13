@@ -458,8 +458,16 @@ const char *PickKindName(const Pick &p);
 // clearRadius > 0 no other object may be within it of the hand (a grip test).
 // "needs": an object or a wall face whose USE chain tests item `needsItem`
 // with RAW 0x27 (the item-on-the-world test).
-struct PickTestHand { double ahead = 0, right = 0, up = 0, metresOff = 0, clearRadius = 0; int needsItem = 0; };
-bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVector3 &aim, DVector3 &stand);
+// grabRadius > 0: a GRIP test on an object (the picker's palm reach, kGrabRadius): the hand is put in
+// line with the target at metresOff and raised or lowered to it; liftMetres is set to the lift the test
+// grip needs for that (VRHandTest_SetLift). upm: map units per metre.
+struct PickTestHand
+{
+	double ahead = 0, right = 0, up = 0, metresOff = 0, clearRadius = 0, grabRadius = 0, upm = 34.0;
+	int needsItem = 0;
+	double liftMetres = 0;   // out
+};
+bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 &aim, DVector3 &stand);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13
 // triggers. Call once per tic per player; it compares against the sector seen

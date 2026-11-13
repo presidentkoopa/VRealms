@@ -7679,7 +7679,7 @@ bool ExaminePick(const Pick &p, AActor *who)
 //
 //==========================================================================
 
-bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVector3 &aim, DVector3 &stand)
+bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 &aim, DVector3 &stand)
 {
 	if (!g.active || who == nullptr || g.level == nullptr || kind == nullptr) return false;
 	const DVector3 from = who->Pos();
@@ -7809,68 +7809,214 @@ bool PickTestTarget(const char *kind, AActor *who, const PickTestHand &hand, DVe
 	}
 	std::sort(cands.begin(), cands.end(), [](const Cand &x, const Cand &y) { return x.d2 < y.d2; });
 
-	// THE FIRST ONE THE TEST HAND CAN ACTUALLY REACH. From where the player
-	// would stand, the eye and the hand must both see it -- the ray from each
-	// must come back with THIS target -- and for a grip (clearRadius > 0) no
-	// other object may be within that radius of the hand. The nearest
-	// candidate is often behind a lintel or on a shelf under a low ceiling.
+	// THE FIRST ONE THE TEST HAND CAN ACTUALLY REACH, tried from 8 headings
+	// round it (the one toward the player first): a stand spot that is open
+	// and tall enough, an eye that sees it, the original's cursor allowing the
+	// verb from there, and the gesture's own reach --
+	//   a RAY gesture (metres >= 0.3): the test hand's ray must come back with
+	//     it too, and for a grip on a wall or a door (clearRadius) no object
+	//     may be within that radius of the hand;
+	//   a GRIP on an OBJECT (grabRadius): the hand is put in line with it at
+	//     <metres> and raised or lowered to its height (VRHandTest_SetLift, the
+	//     player reaching down to a table), and the object the picker's grip
+	//     would take (GrabNear, roth_vrpick.cpp: the objects within grabRadius
+	//     of the palm, nearest first, the first the original's cursor lets a
+	//     click use) must be it -- or, for "needs", another object whose own
+	//     use chain tests the same item (a candelabrum's two candles).
+	// Every heading tried prints why it was refused.
+	auto objectNeeds = [&](AActor *mo) -> bool
+	{
+		if (!needs || mo == nullptr) return false;
+		int rs, ri;
+		if (!ObjectForActor(mo, rs, ri) || rs < 0 || rs >= (int)g.map.objects.size() || ri < 0 || ri >= (int)g.map.objects[rs].size()) return false;
+		const uint16_t id = g.map.objects[rs][ri].commandID;
+		auto bit = id != 0 ? g.byObject.find((int)id) : g.byObject.end();
+		uint8_t f6 = 0;
+		return bit != g.byObject.end() && chainTests(bit->second, f6);
+	};
+	auto pickName = [&](const Pick &p) -> FString
+	{
+		if (p.kind == Pick::Prop)
+		{
+			int rs = -1, ri = -1;
+			ObjectForActor(p.actor, rs, ri);
+			return FStringf("object %d/%d", rs, ri);
+		}
+		if (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf)
+			return FStringf("%s line %d", PickKindName(p), p.line != nullptr ? p.line->Index() : -1);
+		return FString(PickKindName(p));
+	};
+	const double ps = g.level->pixelstretch > 0.f ? (double)g.level->pixelstretch : 1.2;
+	const bool grip = hand.grabRadius > 0;
+	hand.liftMetres = 0;
 	int tried = 0;
 	for (const Cand &c : cands)
 	{
 		if (++tried > 200) break;
-		DVector2 o = c.out.Length() > 1e-6 ? c.out / c.out.Length() : DVector2(1, 0);
-		const DVector2 fwd = -o;
-		const DVector2 right(fwd.Y, -fwd.X);
-		const double standoff = hand.ahead + hand.metresOff;
-		const DVector2 sxy = c.aim.XY() + o * standoff;
-		sector_t *ss = g.level->PointInSector(sxy);
-		if (ss == nullptr) continue;
-		const double fz = ss->floorplane.ZatPoint(sxy), cz = ss->ceilingplane.ZatPoint(sxy);
-		if (cz - fz < who->Height) continue;
-		const DVector3 eye(sxy.X, sxy.Y, fz + vh);
-		const DVector3 hp = eye + DVector3(fwd.X, fwd.Y, 0) * hand.ahead + DVector3(right.X, right.Y, 0) * hand.right + DVector3(0, 0, hand.up);
-		auto reaches = [&](const DVector3 &st) {
-			DVector3 d = c.aim - st;
-			const double len = d.Length();
-			if (len < 1e-6) return true;
-			Pick got;
-			if (!PickFrom(who, st, d / len, len + 64.0, got)) return false;
-			if (c.want.kind == Pick::Prop) return got.kind == Pick::Prop && got.actor == c.want.actor;
-			return got.kind == c.want.kind && got.line == c.want.line;
-		};
-		if (!reaches(eye) || !reaches(hp)) continue;
-		// AND THE ORIGINAL'S CURSOR MUST ALLOW THE VERB the test is for, from
-		// that spot: a use for an item, a door or a face; an examine for
-		// "examine". (A pickable item need not have anything to examine.)
+		const FString name = pickName(c.want);
+		const bool alignHand = grip && c.want.kind == Pick::Prop;
+		DVector2 o0 = c.out.Length() > 1e-6 ? c.out / c.out.Length() : DVector2(1, 0);
+		for (int hd = 0; hd < 8; hd++)
 		{
+			// 0, +45, -45, +90, -90, +135, -135, 180 degrees off the heading toward the player
+			const double turn = (hd == 0 ? 0.0 : hd == 7 ? 180.0 : ((hd + 1) / 2) * 45.0 * ((hd & 1) ? 1.0 : -1.0)) * (M_PI / 180.0);
+			// A wall's face is only stood in front of, along its normal.
+			if (c.want.kind != Pick::Prop && hd != 0) break;
+			const DVector2 o(o0.X * cos(turn) - o0.Y * sin(turn), o0.X * sin(turn) + o0.Y * cos(turn));
+			const DVector2 fwd = -o;
+			const DVector2 right(fwd.Y, -fwd.X);
+			// The player's spot: the eye <ahead> behind the hand; with the hand in
+			// line, the body shifted so the HAND is in front of the target.
+			const DVector2 sxy = alignHand ? c.aim.XY() + o * (hand.metresOff + hand.ahead) - right * hand.right
+			                               : c.aim.XY() + o * (hand.ahead + hand.metresOff);
+			FString at;
+			at.Format("roth_vrpicktest:   %s heading %+.0f: stand (%.0f %.0f)", name.GetChars(), turn * (180.0 / M_PI), sxy.X, sxy.Y);
+			sector_t *ss = g.level->PointInSector(sxy);
+			if (ss == nullptr) { Printf("%s -- no sector there\n", at.GetChars()); continue; }
+			const double fz = ss->floorplane.ZatPoint(sxy), cz = ss->ceilingplane.ZatPoint(sxy);
+			if (cz - fz < who->Height)
+			{
+				Printf("%s sector %d -- %.0f units floor to ceiling, the player needs %.0f\n", at.GetChars(), ss->sectornum, cz - fz, who->Height);
+				continue;
+			}
+			// The test grip hangs (TEST_UP + lift) metres under the eye, drawn
+			// through the level's pixel stretch (vr_handpose.cpp TestGrip), so in
+			// map units it is (up + lift units) / stretch below the eye.
+			const DVector3 eye(sxy.X, sxy.Y, fz + vh);
+			double liftUnits = 0;
+			if (alignHand)
+			{
+				liftUnits = (c.aim.Z - eye.Z) * ps - hand.up;
+				const double m = liftUnits / std::max(1e-3, hand.upm);
+				if (m < -1.2 || m > 0.4)
+				{
+					Printf("%s sector %d, eye z %.0f, target z %.0f -- the hand would have to move %.2f m (allowed -1.20..+0.40)\n",
+						at.GetChars(), ss->sectornum, eye.Z, c.aim.Z, m);
+					continue;
+				}
+			}
+			const DVector3 hp = eye + DVector3(fwd.X, fwd.Y, 0) * hand.ahead + DVector3(right.X, right.Y, 0) * hand.right
+				+ DVector3(0, 0, (hand.up + liftUnits) / ps);
+			auto rayTo = [&](const DVector3 &st, Pick &got) -> bool
+			{
+				DVector3 d = c.aim - st;
+				const double len = d.Length();
+				if (len < 1e-6) { got = c.want; return true; }
+				return PickFrom(who, st, d / len, len + 64.0, got);
+			};
+			auto isTarget = [&](const Pick &got) -> bool
+			{
+				if (c.want.kind == Pick::Prop)
+					return got.kind == Pick::Prop && (got.actor == c.want.actor || objectNeeds(got.actor));
+				return got.kind == c.want.kind && got.line == c.want.line;
+			};
+			Pick seen;
+			if (!rayTo(eye, seen) || !isTarget(seen))
+			{
+				Printf("%s sector %d, eye z %.0f -- the eye sees %s\n", at.GetChars(), ss->sectornum, eye.Z,
+					seen.kind == Pick::Nothing ? "nothing" : FStringf("%s at %.1f", pickName(seen).GetChars(), seen.dist).GetChars());
+				continue;
+			}
+			if (!alignHand)
+			{
+				Pick byHand;
+				if (!rayTo(hp, byHand) || !isTarget(byHand))
+				{
+					Printf("%s -- the hand at (%.0f %.0f %.0f) sees %s\n", at.GetChars(), hp.X, hp.Y, hp.Z,
+						byHand.kind == Pick::Nothing ? "nothing" : FStringf("%s at %.1f", pickName(byHand).GetChars(), byHand.dist).GetChars());
+					continue;
+				}
+			}
+			// THE ORIGINAL'S CURSOR on it from that spot: a use for an item, a
+			// door, a face or "needs"; an examine for "examine".
+			const double zPlanar = (c.aim.XY() - sxy) | fwd;
 			Pick want = c.want;
 			want.hitPos = c.aim;
-			const double z = (c.aim.XY() - sxy) | fwd;
-			const CursorClass cc = ClassifyPick(want, who, PickDepthOfZ(z));
-			if (examine ? !cc.CanExamine() : !cc.CanUse()) continue;
-		}
-		if (hand.clearRadius > 0)
-		{
-			bool clear = true;
-			for (size_t sct = 0; sct < g.map.objects.size() && clear; sct++)
-				for (size_t i = 0; i < g.map.objects[sct].size(); i++)
+			const CursorClass cc = ClassifyPick(want, who, PickDepthOfZ(zPlanar));
+			if (examine ? !cc.CanExamine() : !cc.CanUse())
+			{
+				Printf("%s -- cursor type %d shape 0x%x at depth %.0f (planar %.0f): %s refused\n", at.GetChars(), (int)cc.type,
+					(unsigned)cc.shape, cc.depth, zPlanar, examine ? "an examine" : "a use");
+				continue;
+			}
+			if (alignHand)
+			{
+				// GrabNear's choice from this hand (roth_vrpick.cpp).
+				std::vector<std::pair<double, AActor *>> near;
+				for (size_t sct = 0; sct < g.map.objects.size(); sct++)
+					for (size_t i = 0; i < g.map.objects[sct].size(); i++)
+					{
+						AActor *mo = FindObjectActor((int)sct, (int)i);
+						if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe)) continue;
+						DVector3 lo, hi;
+						ObjectPickBox(mo, lo, hi);
+						const double dx = std::max(0.0, std::max(lo.X - hp.X, hp.X - hi.X));
+						const double dy = std::max(0.0, std::max(lo.Y - hp.Y, hp.Y - hi.Y));
+						const double dz = std::max(0.0, std::max(lo.Z - hp.Z, hp.Z - hi.Z));
+						const double d = sqrt(dx * dx + dy * dy + dz * dz);
+						if (d <= hand.grabRadius) near.push_back({ d, mo });
+					}
+				std::sort(near.begin(), near.end(), [](const std::pair<double, AActor *> &x, const std::pair<double, AActor *> &y) { return x.first < y.first; });
+				AActor *taken = nullptr;
+				double takenD = 0;
+				CursorClass takenC;
+				for (const auto &n : near)
 				{
-					AActor *mo = FindObjectActor((int)sct, (int)i);
-					if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
-					DVector3 lo, hi;
-					ObjectPickBox(mo, lo, hi);
-					const double dx = std::max(0.0, std::max(lo.X - hp.X, hp.X - hi.X));
-					const double dy = std::max(0.0, std::max(lo.Y - hp.Y, hp.Y - hi.Y));
-					const double dz = std::max(0.0, std::max(lo.Z - hp.Z, hp.Z - hi.Z));
-					if (dx * dx + dy * dy + dz * dz < hand.clearRadius * hand.clearRadius) { clear = false; break; }
+					Pick p;
+					p.kind = Pick::Prop;
+					p.actor = n.second;
+					p.hitPos = n.second->PosPlusZ(n.second->Height * 0.5);
+					DVector2 u = (p.hitPos - hp).XY();
+					u = u.Length() < 0.05 ? fwd : u / u.Length();
+					const CursorClass oc = ClassifyPick(p, who, PickDepthOfZ((p.hitPos.XY() - sxy) | u));
+					if (!oc.CanUse()) continue;
+					taken = n.second; takenD = n.first; takenC = oc;
+					break;
 				}
-			if (!clear) continue;
+				Pick takenPick;
+				takenPick.kind = Pick::Prop;
+				takenPick.actor = taken;
+				if (taken == nullptr || !isTarget(takenPick))
+				{
+					Printf("%s, hand (%.0f %.0f %.0f) -- %d object(s) within %.1f of the hand; the grip would take %s\n", at.GetChars(),
+						hp.X, hp.Y, hp.Z, (int)near.size(), hand.grabRadius,
+						taken == nullptr ? "nothing usable" : FStringf("%s at %.1f (not a target)", pickName(takenPick).GetChars(), takenD).GetChars());
+					continue;
+				}
+				Printf("%s, hand (%.0f %.0f %.0f), lift %.2f m -- the grip would take %s at %.1f (cursor type %d shape 0x%x)\n",
+					at.GetChars(), hp.X, hp.Y, hp.Z, liftUnits / std::max(1e-3, hand.upm), pickName(takenPick).GetChars(), takenD,
+					(int)takenC.type, (unsigned)takenC.shape);
+			}
+			else if (hand.clearRadius > 0)
+			{
+				FString block;
+				for (size_t sct = 0; sct < g.map.objects.size() && block.IsEmpty(); sct++)
+					for (size_t i = 0; i < g.map.objects[sct].size(); i++)
+					{
+						AActor *mo = FindObjectActor((int)sct, (int)i);
+						if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
+						DVector3 lo, hi;
+						ObjectPickBox(mo, lo, hi);
+						const double dx = std::max(0.0, std::max(lo.X - hp.X, hp.X - hi.X));
+						const double dy = std::max(0.0, std::max(lo.Y - hp.Y, hp.Y - hi.Y));
+						const double dz = std::max(0.0, std::max(lo.Z - hp.Z, hp.Z - hi.Z));
+						if (dx * dx + dy * dy + dz * dz < hand.clearRadius * hand.clearRadius) { block.Format("object %d/%d", (int)sct, (int)i); break; }
+					}
+				if (!block.IsEmpty())
+				{
+					Printf("%s -- %s is within %.1f of the hand\n", at.GetChars(), block.GetChars(), hand.clearRadius);
+					continue;
+				}
+			}
+			aim = c.aim;
+			stand = DVector3(sxy.X, sxy.Y, fz);
+			hand.liftMetres = liftUnits / std::max(1e-3, hand.upm);
+			Printf("%s sector %d, eye z %.0f -- taken: cursor type %d shape 0x%x at depth %.0f\n", at.GetChars(), ss->sectornum, eye.Z,
+				(int)cc.type, (unsigned)cc.shape, cc.depth);
+			Printf("roth_vrpicktest: %d %s candidate(s), the %d%s nearest reachable from the test hand\n",
+				(int)cands.size(), kind, tried, tried == 1 ? "st" : tried == 2 ? "nd" : tried == 3 ? "rd" : "th");
+			return true;
 		}
-		aim = c.aim;
-		stand = DVector3(sxy.X, sxy.Y, fz);
-		Printf("roth_vrpicktest: %d %s candidate(s), the %d%s nearest reachable from the test hand\n",
-			(int)cands.size(), kind, tried, tried == 1 ? "st" : tried == 2 ? "nd" : tried == 3 ? "rd" : "th");
-		return true;
 	}
 	Printf("roth_vrpicktest: %d %s candidate(s), none reachable from the test hand (%d tried)\n", (int)cands.size(), kind, tried);
 	return false;

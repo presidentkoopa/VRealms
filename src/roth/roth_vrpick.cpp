@@ -947,6 +947,7 @@ CCMD(roth_vrpicktest)
 		P.test = false;
 		P.testAimAt = false;
 		VRHandTest_SetTilt(0.f);
+		VRHandTest_SetLift(0.0);
 		Printf("roth_vrpicktest: off\n");
 		return;
 	}
@@ -985,6 +986,7 @@ CCMD(roth_vrpicktest)
 		// HAND: the main hand unless only the off hand is on.
 		const int testRole = (P.testHands & 1) ? VR_MAINHAND : VR_OFFHAND;
 		const int side = VRHandPose_SideForRole(testRole);
+		VRHandTest_SetLift(0.0);   // the hand's own place first; a grip on an object sets its lift below
 		DVector3 spot0;
 		VRHandTest_ActorSpot(side, DVector3(0, 0, 0), 0.0, spot0);   // yaw 0: ahead +x, right -y
 		PickTestHand hand;
@@ -995,8 +997,13 @@ CCMD(roth_vrpicktest)
 		// A grip test wants nothing else within the palm's reach.
 		hand.clearRadius = metres < 0.3 ? (kGrabRadius + 0.05) * UPM() : 0.0;
 		hand.needsItem = needs ? atoi(argv[3]) : 0;
+		hand.upm = UPM();
+		// A grip on an OBJECT is checked the way the picker's grip chooses
+		// (GrabNear): the palm's reach, nearest first, the first usable.
+		hand.grabRadius = metres < 0.3 ? kGrabRadius * UPM() : 0.0;
 		DVector3 aim, stand;
 		if (!PickTestTarget(argv[2], pmo, hand, aim, stand)) { Printf("roth_vrpicktest seek: no reachable %s on this map\n", argv[2]); return; }
+		VRHandTest_SetLift(hand.liftMetres);
 		const double yawDeg = atan2(aim.Y - stand.Y, aim.X - stand.X) * (180.0 / M_PI);
 		pmo->SetOrigin(stand, false);
 		pmo->Vel.Zero();
@@ -1006,8 +1013,8 @@ CCMD(roth_vrpicktest)
 		P.testAimAt = true;
 		P.testAim = aim;
 		Printf("roth_vrpicktest seek %s%s%s: aiming at (%.0f %.0f %.0f), standing at (%.0f %.0f %.0f): the %s hand (%s side) %.2f m"
-			" (%.1f units) from it\n", argv[2], needs ? " " : "", needs ? argv[3] : "", aim.X, aim.Y, aim.Z, stand.X, stand.Y, stand.Z,
-			RoleName(testRole), side == VRHandPose::SIDE_RIGHT ? "right" : "left", metres, metres * UPM());
+			" (%.1f units) from it, lifted %.2f m\n", argv[2], needs ? " " : "", needs ? argv[3] : "", aim.X, aim.Y, aim.Z, stand.X, stand.Y, stand.Z,
+			RoleName(testRole), side == VRHandPose::SIDE_RIGHT ? "right" : "left", metres, metres * UPM(), hand.liftMetres);
 		return;
 	}
 	Printf("roth_vrpicktest: unknown '%s'\n", argv[1]);
