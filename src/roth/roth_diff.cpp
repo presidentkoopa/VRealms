@@ -46,6 +46,7 @@
 #include "roth_runtime.h"   // SidesWithOpcode, to aim a shot at a trigger
 
 #include <stdio.h>
+#include <string.h>    // strcmp, rothdiff_shot's "-"
 #include <stdint.h>
 #include <vector>
 
@@ -806,7 +807,7 @@ CCMD(rothdiff_shot)
 {
 	if (argv.argc() < 5 || argv.argc() > 8)
 	{
-		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH] [z] [settle]\n");
+		Printf("usage: rothdiff_shot <x> <y> <angle512> <file> [pitchROTH] [z|-] [settle]\n");
 		Printf("  x y: a REALMS position. Where rooms are stacked, z (any height inside the\n");
 		Printf("  room meant) picks the storey; without it the room that was not set aside.\n");
 		Printf("  pitchROTH: the original's view pitch (+-126, positive looks up); its shear\n");
@@ -820,7 +821,8 @@ CCMD(rothdiff_shot)
 	d.w = d.h = 0;
 	d.path = argv[4];
 	d.pitch = argv.argc() >= 6 ? atoi(argv[5]) : 0;
-	if (argv.argc() >= 7) d.z = atoi(argv[6]);
+	// "-" keeps the default storey, so a test can give a settle without a z.
+	if (argv.argc() >= 7 && strcmp(argv[6], "-") != 0) d.z = atoi(argv[6]);
 	d.screenshot = true;
 	// TWO SECONDS, not two tics. Two was enough for the camera move to take
 	// effect, but the startup console is still down over the view that early
