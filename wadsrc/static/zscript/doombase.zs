@@ -817,6 +817,8 @@ struct LevelLocals native
 		// keeps its place on the gun but turns its face to the viewer.
 		BBFL_HANDMAIN    = 128,
 		BBFL_HANDOFF     = 256,
+		// Not saved: a panel its owner rebuilds from live state.
+		BBFL_NOSAVE      = 512,
 	}
 
 	// [BB] Billboards -- world-anchored oriented quads, the native backing

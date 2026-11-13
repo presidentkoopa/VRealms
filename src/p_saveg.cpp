@@ -1107,8 +1107,16 @@ void FLevelLocals::Serialize(FSerializer &arc, bool hubload)
 	// survive loads as null and the next tic's maintenance drops that
 	// billboard exactly as it would have done live. NextBillboardID travels
 	// so handles stay unique across a load.
-	arc("billboards", Billboards)
-		("nextbillboardid", NextBillboardID)
+	// BBFL_NOSAVE ones (see its comment) are left out of the save.
+	if (arc.isWriting())
+	{
+		TArray<FBillboard> kept;
+		for (auto &bb : Billboards)
+			if (!(bb.flags & BBFL_NOSAVE)) kept.Push(bb);
+		arc("billboards", kept);
+	}
+	else arc("billboards", Billboards);
+	arc("nextbillboardid", NextBillboardID)
 		("billboardgroups", BillboardGroups)
 		("nextbillboardgroupid", NextBillboardGroupID);
 

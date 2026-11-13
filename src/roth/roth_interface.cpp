@@ -354,7 +354,7 @@ int Add(double dx, double dz, double lift, double w, double h, int payload, int 
 	bb.data = data;
 	bb.color = col;
 	bb.alpha = alpha;
-	bb.flags = BBFL_PERSISTENT | (hittable ? 0 : BBFL_NOHIT);
+	bb.flags = BBFL_PERSISTENT | BBFL_NOSAVE | (hittable ? 0 : BBFL_NOHIT);   // NOSAVE: rebuilt from live state
 	if (text != nullptr) bb.text = text;
 	bb.spawntic = U.level->maptime;
 	bb.drawPos = bb.pos;
@@ -382,7 +382,7 @@ int AddViewLocked(double ahead, double rightOff, double up, double w, double h, 
 	bb.payload = payload;
 	bb.color = col;
 	bb.alpha = alpha;
-	bb.flags = BBFL_PERSISTENT | BBFL_VIEWLOCKED | BBFL_NODEPTH | BBFL_NOHIT;
+	bb.flags = BBFL_PERSISTENT | BBFL_NOSAVE | BBFL_VIEWLOCKED | BBFL_NODEPTH | BBFL_NOHIT;
 	if (text != nullptr) bb.text = text;
 	bb.spawntic = U.level->maptime;
 	U.level->Billboards.Push(bb);
@@ -984,7 +984,7 @@ void StartFly(const DVector3 &from, uint16_t renderId)
 	bb.payload = BB_TEXTURE;
 	bb.data = tex.GetIndex();
 	bb.color = PalEntry(255, 255, 255, 255);
-	bb.flags = BBFL_PERSISTENT | BBFL_NOHIT;
+	bb.flags = BBFL_PERSISTENT | BBFL_NOSAVE | BBFL_NOHIT;
 	bb.spawntic = U.level->maptime;
 	U.level->Billboards.Push(bb);
 	U.fly.active = true;

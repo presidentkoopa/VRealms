@@ -238,6 +238,13 @@ enum EBillboardFlags
 	// The two are mutually exclusive, and view-lock wins if both are set.
 	BBFL_HANDMAIN   = 128,
 	BBFL_HANDOFF    = 256,
+
+	// [VRealms] NOT SAVED. The billboard draws state that is not part of a
+	// save -- an interface panel rebuilt from its owner's live state. Saved,
+	// it came back after a load as a dead panel nothing owned or could close
+	// (a quicksave taken with the save menu up restored its "Save a game"
+	// panel, 2026-11-12). Its owner rebuilds it if the state it shows exists.
+	BBFL_NOSAVE     = 512,
 };
 
 // [BB] Every flag that makes pos an offset rather than a world point.
