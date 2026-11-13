@@ -423,9 +423,21 @@ int main(int argc, char **argv)
 		// ---- --dump: rest and posed meshes for render.py
 		if (dumpDir)
 		{
-			const int dumpFrames[] = { -1, 0, 205, 500, 845, 1100 };
+			// FBXLOAD_DUMP_FRAMES=a,b,c picks the take frames to dump (the rest pose is always dumped).
+			std::vector<int> dumpFrames = { -1, 0, 205, 500, 845, 1100 };
+			if (const char *e = getenv("FBXLOAD_DUMP_FRAMES"))
+			{
+				dumpFrames = { -1 };
+				for (const char *q = e; *q; )
+				{
+					dumpFrames.push_back(atoi(q));
+					while (*q && *q != ',') q++;
+					if (*q == ',') q++;
+				}
+			}
 			for (int f : dumpFrames)
 			{
+				if (f >= r.numFrames) continue;
 				char fn[1024];
 				snprintf(fn, sizeof(fn), "%s/%s_%s.txt", dumpDir, meshes[h], f < 0 ? "rest" : std::to_string(f).c_str());
 				FILE *o = fopen(fn, "w");
