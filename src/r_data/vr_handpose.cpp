@@ -139,6 +139,7 @@
 #include "printf.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <vector>
 
@@ -230,6 +231,13 @@ void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg)
 }
 
 bool VRHandTest_Active() { return gTest.on; }
+
+bool VRHandTest_Inputs(FVRHandTestInputs &out)
+{
+	if (!gTest.on) return false;
+	out = gTest.in;
+	return true;
+}
 
 void VRHandTest_ActorSpot(int side, const DVector3 &eye, double yawDeg, DVector3 &out)
 {
@@ -533,6 +541,84 @@ namespace
 
 //===========================================================================
 //
+// THE INDEX FINGER AND THE PALM (vr_handpose.h FVRHandPoints). Not a port: the points the VR picker
+// needs, read off the model's own joints. Rest: the base pose's joint origin, file space -> render
+// space by the loader's swap (x, z, y) (models_fbx.cpp:316, as ModelSeat). Posed: that rest point
+// through the palette VRHandPose_Apply produced (the palette maps rest render-space points to posed
+// ones, checklist 35), kept per side with the frame it was drawn in. Written on the render thread
+// into the slot the reader is not using, then published by one atomic index.
+//
+//===========================================================================
+
+namespace
+{
+	enum { PT_TIP, PT_BASE, PT_PALM, PT_COUNT };
+	const char *const kPointJoints[PT_COUNT] = { "INDEX_UP_TOP_joint", "INDEX_BASE_joint", "HANDPALM_joint" };
+
+	struct FPosedPoints
+	{
+		const FModel *model = nullptr;
+		uint64_t frame = ~0ull;
+		DVector3 p[PT_COUNT];
+	};
+	FPosedPoints gPosedPts[SIDE_COUNT][2];
+	std::atomic<int> gPosedSlot[SIDE_COUNT] = { {0}, {0} };
+
+	bool RestPoint(FModel *model, int joint, DVector3 &out)
+	{
+		const TArray<VSMatrix> *base = model->GetBasePose();
+		if (base == nullptr || joint < 0 || joint >= (int)base->Size()) return false;
+		const FLOATTYPE *m = (*base)[joint].get();
+		out = DVector3(m[12], m[14], m[13]);	// file (x, y, z) -> render (x, z, y)
+		return true;
+	}
+
+	void StorePosedPoints(FModel *model, int side, const float *pal, int n)
+	{
+		int joint[PT_COUNT];
+		DVector3 rest[PT_COUNT];
+		for (int k = 0; k < PT_COUNT; k++)
+		{
+			joint[k] = model->FindJoint(FName(kPointJoints[k]));
+			if (joint[k] < 0 || joint[k] >= n || !RestPoint(model, joint[k], rest[k])) return;
+		}
+		const int slot = 1 - gPosedSlot[side].load(std::memory_order_acquire);
+		FPosedPoints &w = gPosedPts[side][slot];
+		for (int k = 0; k < PT_COUNT; k++)
+		{
+			const float *P = pal + (size_t)joint[k] * 16;	// column-major
+			const DVector3 &r = rest[k];
+			w.p[k] = DVector3(P[0] * r.X + P[4] * r.Y + P[8] * r.Z + P[12],
+				P[1] * r.X + P[5] * r.Y + P[9] * r.Z + P[13],
+				P[2] * r.X + P[6] * r.Y + P[10] * r.Z + P[14]);
+		}
+		w.model = model;
+		w.frame = screen != nullptr ? screen->FrameCount : 0;
+		gPosedSlot[side].store(slot, std::memory_order_release);
+	}
+}
+
+bool VRHandPose_FingerPoints(FModel *model, int side, FVRHandPoints &out)
+{
+	out = FVRHandPoints();
+	if (model == nullptr || side < 0 || side >= SIDE_COUNT) return false;
+	const FPosedPoints &r = gPosedPts[side][gPosedSlot[side].load(std::memory_order_acquire)];
+	const uint64_t now = screen != nullptr ? screen->FrameCount : 0;
+	if (r.model == model && r.frame != ~0ull && now >= r.frame && now - r.frame <= 4)
+	{
+		out.tip = r.p[PT_TIP]; out.indexBase = r.p[PT_BASE]; out.palm = r.p[PT_PALM];
+		out.posed = true;
+		return true;
+	}
+	DVector3 p[PT_COUNT];
+	for (int k = 0; k < PT_COUNT; k++)
+		if (!RestPoint(model, model->FindJoint(FName(kPointJoints[k])), p[k])) return false;
+	out.tip = p[PT_TIP]; out.indexBase = p[PT_BASE]; out.palm = p[PT_PALM];
+	return true;
+}
+
+//===========================================================================
+//
 // THE FINGERS ON THE PALETTE (checklist 31-35): the palette to joint globals, each finger joint turned
 // by its smoothed rotation in its canonical frame with everything below it carried, and back.
 //
@@ -567,5 +653,6 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 		reinterpret_cast<float (*)[16]>(out.data()), scratch, moved, gPalm[side].Q);
 	posed.Resize(n);
 	for (int i = 0; i < n; i++) posed[i].loadMatrix(&out[(size_t)i * 16]);
+	StorePosedPoints(model, side, out.data(), n);
 	return &posed;
 }

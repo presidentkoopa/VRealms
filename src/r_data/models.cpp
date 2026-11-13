@@ -562,6 +562,22 @@ static void ModelWorldTransform(AActor *self, double mx, double my, double mz,
 	if (fy.Length() > 1e-9) upOut  = fy / fy.Length();
 }
 
+bool Model_ActorPointToWorld(AActor *actor, const DVector3 &modelPoint, DVector3 &worldOut)
+{
+	if (actor == nullptr || FindModelFrame(actor, actor->sprite, actor->frame, false) == nullptr) return false;
+	DVector3 f, u;
+	ModelWorldTransform(actor, modelPoint.X, modelPoint.Y, modelPoint.Z, worldOut, f, u);
+	return true;
+}
+
+FModel *Model_ActorModel(AActor *actor)
+{
+	if (actor == nullptr) return nullptr;
+	FSpriteModelFrame *smf = FindModelFrame(actor, actor->sprite, actor->frame, false);
+	if (smf == nullptr || smf->modelIDs.Size() == 0 || smf->modelIDs[0] < 0 || smf->modelIDs[0] >= (int)Models.Size()) return nullptr;
+	return Models[smf->modelIDs[0]];
+}
+
 DEFINE_ACTION_FUNCTION_NATIVE(AActor, ModelPointToWorld, ModelWorldTransform)
 {
 	PARAM_SELF_PROLOGUE(AActor);

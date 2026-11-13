@@ -80,6 +80,12 @@ void InterfaceEndLevel();
 // press belonged to a panel or to the dialogue and must go no further.
 bool InterfaceUse(player_t *player);
 
+// True while a panel owns the pointer -- a menu box, the inspect popup, the
+// inventory screen, or the dialogue waiting on a click or a choice -- so the
+// VR hands' world picker (roth_vrpick.cpp) stands down and leaves the beam to
+// the panel, as the original's cursor belongs to whichever of them is up.
+bool InterfacePointerBusy();
+
 // The Realms menus (roth_menus.h), drawn as a world panel like the others and
 // clicked with the same beam or crosshair. While a box is up it is the only
 // panel that takes clicks; the inventory screen gains an "Options" button that

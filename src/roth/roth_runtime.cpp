@@ -42,6 +42,8 @@
 #include "roth_movie.h"       // the GDV player: movies the flow asks for
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
+#include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
+#include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
 
 #include <map>
 #include <vector>
@@ -5558,7 +5560,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 					: "LIVE -- a use ray that lands on a flat";
 				break;
 			case TrigEvent::Examine:
-				reach = "no dispatch: there is no examine input yet";
+				reach = "LIVE in VR only -- a hand pointing and dwelling (roth_vrpick); no flat input yet";
 				break;
 			case TrigEvent::Impact:
 				reach = "LIVE -- a shot hitting the wall, never yet observed";
@@ -5801,6 +5803,7 @@ void EndLevel()
 	g.unhandledOps.clear();
 	ActorsEndLevel();
 	HandsEndLevel();
+	VRPickEndLevel();
 	SoundEndLevel();
 	// g_progressFlags is NOT cleared -- see the header.
 }
@@ -6663,21 +6666,29 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 		break;   // a wall with nothing bound to it: step over, keep looking
 	}
 
+	// A FLOOR OR A CEILING, as the original's pick reports them (GAME_core.md
+	// 4.4): 2 a sector floor, 8 a mid-platform top, 1 a ceiling, 7 a
+	// mid-platform underside. The ffloor is kept so the platform-top rule of
+	// the use channel (record +0x06 bit 0) and the examine channel's surface
+	// mask can tell them apart.
+	//
+	// CEILINGS USED TO BE STEPPED OVER here, "a hand pointed up at one is more
+	// likely an accident". But the original's pick stops at the first opaque
+	// surface whatever it is, and 0x31 (examine) answers on ceilings. A use on
+	// a ceiling still does nothing (Activate), because dispatch_entry_command_
+	// trigger only knows types 3, 8 and 2 (E/raw_commands.c:3018, 3058).
 	case TRACE_HitFloor:
+	case TRACE_HitCeiling:
 		if (res.Sector == nullptr) break;
 		s.best = Pick{};
-		s.best.kind   = Pick::Flat;
-		s.best.sector = res.Sector;
-		s.best.hitPos = res.HitPos;
-		s.best.dist   = res.Distance;
+		s.best.kind    = Pick::Flat;
+		s.best.sector  = res.Sector;
+		s.best.hitPos  = res.HitPos;
+		s.best.dist    = res.Distance;
+		s.best.ceiling = (res.HitType == TRACE_HitCeiling);
+		s.best.ffloor  = res.ffloor;
 		s.found = true;
 		return TRACE_Stop;
-
-	// CEILINGS ARE GATED OUT, deliberately. 0x31 covers ceilings as well as
-	// floors, but nothing in the goal needs a ceiling press and a hand pointed
-	// up at one is far more likely to be an accident than an instruction.
-	case TRACE_HitCeiling:
-		break;
 
 	// A PROP, if it is a Realms object with something bound to it. A Doom actor,
 	// or a Realms prop that is pure scenery, is stepped over rather than ending
@@ -6718,9 +6729,14 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 	if (from == nullptr) from = who->Sector;
 	if (from == nullptr) return false;
 
+	// EVERY ACTOR IS OFFERED (mask 0xffffffff, p_trace.cpp:946). With the mask
+	// at 0 the tracer never reported an actor at all, so the Prop branch of the
+	// callback could not be reached and no object could be picked by a hand.
+	// The callback steps over anything that is not a Realms object -- the
+	// player, the VR hands, the held weapon -- so this widens nothing else.
 	PickScan scan;
 	FTraceResults res;
-	Trace(start, from, dir, range, ActorFlags::FromInt(0), 0, who, res,
+	Trace(start, from, dir, range, ActorFlags::FromInt(0xffffffff), 0, who, res,
 		TRACE_NoSky, PickScanCallback, &scan);
 
 	if (!scan.found)
@@ -6734,9 +6750,8 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 	out = scan.best;
 	if (roth_useray_debug)
 	{
-		static const char *kindName[] = { "nothing", "wall face", "flat", "door leaf" };
 		Printf("roth_pick: %s at %.1f units, band 0x%02x, z %.1f\n",
-			kindName[(int)out.kind], out.dist, (unsigned)out.band, out.hitPos.Z);
+			PickKindName(out), out.dist, (unsigned)out.band, out.hitPos.Z);
 	}
 	return true;
 }
@@ -6744,6 +6759,12 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 bool Activate(const Pick &p, AActor *who, TrigEvent want)
 {
 	if (!g.active || who == nullptr) return false;
+
+	// THE EXAMINE CHANNEL IS ITS OWN DISPATCH (ExaminePick). It used to come
+	// through here and on to ActivateLine with SPAC_UseBack -- which that
+	// function counts as a USE, so an examine on a wall fired the wall's 0x18
+	// use triggers and never its 0x32.
+	if (want == TrigEvent::Examine) return ExaminePick(p, who);
 
 	switch (p.kind)
 	{
@@ -6766,8 +6787,7 @@ bool Activate(const Pick &p, AActor *who, TrigEvent want)
 		// on for the first time.
 		{
 			DVector3 hit = p.hitPos;
-			return ActivateLine(p.line, who, p.side,
-				want == TrigEvent::Examine ? SPAC_UseBack : SPAC_Use, &hit);
+			return ActivateLine(p.line, who, p.side, SPAC_Use, &hit);
 		}
 
 	case Pick::Prop:
@@ -6775,15 +6795,21 @@ bool Activate(const Pick &p, AActor *who, TrigEvent want)
 
 	case Pick::Flat:
 	{
+		// A ceiling (type 1) or a platform's underside (type 7) has no use
+		// channel: dispatch_entry_command_trigger knows 3, 8 and 2 only
+		// (E/raw_commands.c:3018, 3058).
+		if (p.ceiling) return false;
 		// UseFlatAt wants a trace result. Fill in the fields it reads rather
 		// than tracing again -- the ray has already been walked once and a
 		// second walk down a slightly different line is how two answers to one
-		// question get created.
+		// question get created. THE 3D FLOOR GOES WITH IT: it is what tells a
+		// platform top (type 8) from the sector floor (type 2), and passing
+		// nullptr here made every hand pick read as the sector floor.
 		FTraceResults res{};
 		res.HitType = TRACE_HitFloor;
 		res.Sector  = p.sector;
 		res.HitPos  = p.hitPos;
-		res.ffloor  = nullptr;
+		res.ffloor  = (F3DFloor *)p.ffloor;
 		return UseFlatAt(who, res, want);
 	}
 
@@ -6991,6 +7017,551 @@ bool UseByHand(player_t *player, TrigEvent want)
 	return false;
 }
 
+//==========================================================================
+//
+// THE ORIGINAL'S CURSOR ON A PICK: classify_cursor_target_object and
+// examine_object_under_cursor, with the read-only matchers they call.
+//
+// PORT CHECKLIST -- ROTH.C (oracle_build/rothc/roth_c/src/engine) -> here.
+// "IN" = input.c, "RC" = raw_commands.c, "RE" = renderer.c, "INV" =
+// inventory.c, "GC" = game_core.c. The acceptance test of this port.
+//
+// The pick record (GAME_core.md 4.4) -> ResolvePick
+//  1. +1 type: 1 ceiling, 2 floor, 3 face, 4 object, 6 door, 7/8 platform
+//     under/top                                  -> ResolvePick, from Pick
+//  2. +0x1a the wall band (REMAROTH_MEASURED.md: dir_mask1 = band bits)
+//                                                -> Pick::band
+//  3. +0x20 depth, bands 0x258 / 0x7d0 / 0x1388 -> the caller's `depth` against
+//     PickUseRange / PickFarRange / PickProbeRange (DEPARTS: world distance
+//     from the eye, see roth_runtime.h)
+//  4. a closed door is its room face; type 6 only while the leaf is away from
+//     shut (RC/doors.c: the pool record exists only then)
+//                                                -> ResolvePick (DoorLeaf). A
+//     closed leaf whose room face carries NO use trigger stays type 6: this
+//     port swings such a leaf by itself (ActivateLine), so the cursor says so.
+//
+// classify_cursor_target_object (IN:1111-1245)    -> roth_cursor.h ClassifyCursorFacts, its
+//   callees' answers gathered by ClassifyPick. [V: tools/vrpick_test runs the original's own text of
+//   the function beside it on every combination of type, def+9 bits, callee answers and depth band]
+//  5. flags, count, out-of-range cleared         IN:1115-1117  -> top
+//  6. type 4 keyed (def+9 & 1): depth >= 600 -> L162b3; no unflagged
+//     category-1 record for the id -> L162b3; else type 3, 0x250/0x248
+//                                                IN:1122-1128
+//  7. type 4 def+9 & 0x20: an active 0x1b link -> flags |= 4  IN:1129-1133
+//     (the load marker 0x20 is not kept in this port's Object; ClassifyPick
+//     sets it when a live 0x1b is keyed to the object, ObjectImpactLink)
+//  8. type 3, the face's 0x1a marker: an active 0x1a link -> flags |= 4
+//                                                IN:1134-1143 -> FaceImpactLink
+//  9. depth >= 5000 -> L164a2                    IN:1145
+// 10. dispatch_entry_command_trigger_b -> flags |= 2, count++  IN:1146-1151
+//                                                -> ExamineMatch
+// 11. count 0, type 4, (def+9 & 0x13) == 0: an OnInspect block -> count++
+//                                                IN:1152-1161 -> FindInspectByRenderId
+// 12. type 6: < 600 type 3 -> L16375; else out of range; < 2000: count ?
+//     0x3a0 : (type 1, 0x398); else count ? 0x278 : L164ba
+//                                                IN:1162-1175
+// 13. < 600: dispatch_entry_command_trigger -> type 3, L16375
+//     else if !(flags & 4) and < 2000: it -> type 3, count ? 0x3a0 : 0x398
+//                                                IN:1177-1197 -> UseMatch
+// 14. the pickable probe: type 4, (def+9 & 0x13) == 0: type 3 FIRST (it
+//     sticks); no category-1 record and not is_item_id_pickable -> L16475;
+//     < 600 -> L16375; out of range; flags & 4 -> L16475; < 2000 -> count ?
+//     0x3a0 : 0x398                              IN:1198-1222
+// 15. L16475 count 0 -> L164a2; flags & 4 -> type 5, 0x260; else type 3, 0x278
+// 16. L16375 count ? 0x250 : 0x248
+// 17. L164a2 flags & 4 -> type 5, 0x258; L164ba type 1, 0x240
+// 18. L162b3 type 5, flags |= 4, 0x258          IN:1223-1244
+//
+// The matchers (read-only: the original's are, but for the seeds noted)
+// 19. find_unflagged_object_by_key: the first category-1 record (base 0x08 or
+//     0x02) not carrying +2 bit 3 whose key is the object's id; id 0 none
+//                                                RE:11074-11094 -> ObjectHasClickRecord
+// 20. object_has_active_trigger_link, type 4: a 0x1b record, not +2 bit 3,
+//     key = the object's id                      RC:3440-3465 -> ObjectImpactLink
+// 21. the same, type 3: a 0x1a record on the face, not +2 bit 3
+//                                                RC:3466-3480 -> FaceImpactLink
+//     (the face's texmap marker +9 & 2 is "a 0x1a is bound to this face",
+//     which is what the binding table holds)
+// 22. dispatch_entry_command_trigger (the use match) RC:3010-3093 -> UseMatch
+//     type 3: the face's 0x18 records in order, the first not +2 bit 3 whose
+//     +6 admits the band; type 2/8: the sector's 0x19 records, the first not
+//     +2 bit 3 with (+6 & 1 ? type 8 : type 2); then the flow pre-pass decides
+//     (gated -> no match). NOT PORTED: the authored bounding box (+0x0c..0x12),
+//     which no click channel of this port tests yet (REMAROTH_MEASURED.md).
+// 23. dispatch_entry_command_trigger_b (the examine match) RC:3102-3195 ->
+//     ExamineMatch. ch1 type 3 with a 0x32 on the face: the first 0x32 not +2
+//     bit 3 admitting the band, then the flow -- and it RETURNS whatever that
+//     gives. ch2 type 4: the first 0x30 keyed to the object's id, not +2 bit
+//     3, then the flow. ch3 any type but 7 (and 3 with no 0x32 on the face,
+//     which falls through): the sector's 0x31 records, the first not +2 bit 3
+//     with +6 & {floor 1, ceiling 2, platform top 4, other 8}[type], then the
+//     flow. Bounding box: not ported (22). DEPARTS, unmeasured: the sector a
+//     face's fall-through reads is the pick's +0x0a, taken here as the sector
+//     the hit side faces into; a door (type 6) reaches ch3 with no sector here
+//     and matches nothing.
+//     Seeds: ch1 the face (activeFace), ch2 the object (the command source),
+//     ch3 none                                   -> ExaminePick stages them
+// 24. is_item_id_pickable                        INV:44-65 -> IsItemIdPickable
+// 25. find_oninspect_block_by_id                 dialogue_ui.c:518 -> FindInspectByRenderId
+//
+// examine_object_under_cursor (IN:979-1015)      -> ExaminePick
+// 26. a match -> examine_world_object(rec), -1  IN:990-994
+// 27. else type 4: OnInspect, eval_dialogue_record_condition_with_cleanup
+//     (block, 1), -1                             IN:995-1013 -> InterfaceObjectAction(.., false)
+// 28. else 0                                     IN:1014
+// examine_world_object (IN:953-970)
+// 29. g_pending_command_record = 0, the sound latch's position = none
+//                                                -> g.pendingRecord, StageChainSound(0)
+// 30. eval_dialogue_record_by_id(word[rec+0xa])  -> Interp().EvalDialogueRecordById(aux)
+// fire_trigger_on_interact (RC:1681-1690)
+// 31. the chain's sound = 0                      -> StageChainSound(0)
+// 32. +2 & 0x29 -> the gated tail, no chain      -> ExaminePick
+// 33. the flow pre-pass, then register_command_save_link: the chain runs
+//                                                -> Fire (pre-pass inside)
+// 34. one-shot: a chain fired and +6 & 0x10 -> +2 |= 8  RC:1645-1646 -> ExaminePick
+// 35. the 0x40 / 0x20 state-link latches         RC:1635-1644 -> NOT PORTED: no
+//     click channel of this port keeps them (twe_link_state's leave edge is
+//     itself not ported, NotifyPlayerSector).
+//
+// run_gameplay_frame's click gates (GC:604-699)   -> CursorClass::CanExamine/CanUse
+// 36. primary: count 0 and type 5 -> type 1     GC:L16a8e
+// 37. type 3, count 0 -> type 1 (examine needs something to examine)
+//                                                GC:L16b84
+// 38. type 3 + primary -> examine; type 5 + primary -> the type-3 branch
+// 39. type 3 + secondary -> type 4 -> activate_targeted_object, which gates
+//     depth < 600 itself                         GC:L16ab5, L16c71; IN:1031
+// 40. type 5 + secondary: trigger_weapon_fire at the cursor -> NOT PORTED: the
+//     VR weapon is fired by its own trigger.
+//
+//==========================================================================
+
+double PickUseRange(AActor *who)
+{
+	// THE ONE PLACE. The loader sets it (rothmap.cpp, ROTH_USE_RANGE_PROVISIONAL);
+	// a pawn spawned under it copies it into UseRange. Read the level's value
+	// first so a recalibration reaches this without a respawn.
+	if (who != nullptr && who->Level != nullptr && who->Level->ForcedPlayerUseRange > 0)
+		return who->Level->ForcedPlayerUseRange;
+	return who != nullptr ? who->FloatVar(NAME_UseRange) : 0.0;
+}
+double PickFarRange(AActor *who)   { return PickUseRange(who) * (2000.0 / 600.0); }
+double PickProbeRange(AActor *who) { return PickUseRange(who) * (5000.0 / 600.0); }
+
+const char *PickKindName(const Pick &p)
+{
+	switch (p.kind)
+	{
+	case Pick::WallFace: return "wall face";
+	case Pick::Flat:     return p.ceiling ? (p.ffloor ? "platform underside" : "ceiling")
+	                                      : (p.ffloor ? "platform top" : "floor");
+	case Pick::DoorLeaf: return "door leaf";
+	case Pick::Prop:     return "object";
+	default:             return "nothing";
+	}
+}
+
+bool SamePickTarget(const Pick &a, const Pick &b)
+{
+	if (a.kind != b.kind || a.kind == Pick::Nothing) return false;
+	switch (a.kind)
+	{
+	case Pick::WallFace: return a.line == b.line && a.side == b.side && a.band == b.band;
+	case Pick::DoorLeaf: return a.leafTag == b.leafTag;
+	case Pick::Prop:     return a.actor == b.actor;
+	case Pick::Flat:     return a.sector == b.sector && a.ceiling == b.ceiling && a.ffloor == b.ffloor;
+	default:             return false;
+	}
+}
+
+namespace
+{
+
+// The pick, as the original's record would have it (checklist 1-4).
+struct ResolvedPick
+{
+	uint8_t   type = 0;
+	int       sideIdx = -1;      // type 3: the engine sidedef of the face
+	uint8_t   band = 0;          // type 3
+	sector_t *sector = nullptr;  // types 1, 2, 7, 8 (and 3's fall-through to ch3)
+	int       objSector = -1, objIndex = -1;   // type 4
+	const Object *obj = nullptr;
+	uint16_t  renderId = 0;
+};
+
+int SideIndex(const line_t *line, int side)
+{
+	if (line == nullptr || g.level == nullptr) return -1;
+	const side_t *sd = line->sidedef[(side == 1 && line->sidedef[1] != nullptr) ? 1 : 0];
+	return sd != nullptr ? (int)(sd - &g.level->sides[0]) : -1;
+}
+
+bool LeafAwayFromShut(int polyTag)
+{
+	if (g.level == nullptr) return false;
+	FPolyObj *po = g.level->GetPolyobj(polyTag);
+	return po != nullptr && (po->specialdata != nullptr || po->Angle != nullAngle);
+}
+
+bool HasEvent(int sideIdx, TrigEvent want)
+{
+	auto it = g.bySide.find(sideIdx);
+	if (it == g.bySide.end()) return false;
+	for (const Binding &b : it->second) if (b.event == want) return true;
+	return false;
+}
+
+bool ResolvePick(const Pick &p, ResolvedPick &r)
+{
+	r = ResolvedPick{};
+	switch (p.kind)
+	{
+	case Pick::WallFace:
+		r.type = 3;
+		r.sideIdx = SideIndex(p.line, p.side);
+		r.band = p.band;
+		if (p.line != nullptr && p.line->sidedef[p.side] != nullptr) r.sector = p.line->sidedef[p.side]->sector;
+		return r.sideIdx >= 0;
+
+	case Pick::DoorLeaf:
+	{
+		// Checklist 4. While shut the original has no door object: the click is
+		// on the room face in front of the door sector.
+		if (!LeafAwayFromShut(p.leafTag))
+		{
+			const int hitSide = SideIndex(p.line, 0);   // ActivateLine's lookup, line->sidedef[0]
+			auto rf = g.doorLeafRoomFace.find(hitSide);
+			if (rf != g.doorLeafRoomFace.end())
+			{
+				auto fs = g.faceToSide.find(rf->second);
+				if (fs != g.faceToSide.end() && fs->second >= 0 && fs->second < (int)g.level->sides.Size()
+					&& HasEvent(fs->second, TrigEvent::Use))
+				{
+					r.type = 3;
+					r.sideIdx = fs->second;
+					r.band = p.band;
+					r.sector = g.level->sides[fs->second].sector;
+					return true;
+				}
+			}
+		}
+		r.type = 6;
+		return true;
+	}
+
+	case Pick::Prop:
+	{
+		if (!ObjectForActor(p.actor, r.objSector, r.objIndex)) return false;
+		if (r.objSector < 0 || r.objSector >= (int)g.map.objects.size()) return false;
+		if (r.objIndex < 0 || r.objIndex >= (int)g.map.objects[r.objSector].size()) return false;
+		r.obj = &g.map.objects[r.objSector][r.objIndex];
+		r.renderId = (uint16_t)(r.obj->textureIndex | (r.obj->textureSource << 8));
+		r.type = 4;
+		return true;
+	}
+
+	case Pick::Flat:
+		r.sector = p.sector;
+		r.type = p.ceiling ? (p.ffloor ? 7 : 1) : (p.ffloor ? 8 : 2);
+		return p.sector != nullptr;
+
+	default:
+		return false;
+	}
+}
+
+// +2 bit 3, the spent bit, read live from the record (the bindings were made
+// at load and do not see a record spent since).
+bool Spent(uint16_t record)
+{
+	const Command *c = Rec(record);
+	return c == nullptr || (c->modifier & 0x08) != 0;
+}
+
+// Checklist 19.
+bool ObjectHasClickRecord(uint16_t id)
+{
+	if (id == 0) return false;
+	for (const Command &c : g.map.commands)
+	{
+		const uint8_t base = c.opcode & 0x7f;
+		if ((base == 0x08 || base == 0x02) && !(c.modifier & 0x08) && c.key == id) return true;
+	}
+	return false;
+}
+
+// Checklist 20.
+bool ObjectImpactLink(uint16_t id)
+{
+	if (id == 0) return false;
+	for (const Command &c : g.map.commands)
+		if ((c.opcode & 0x7f) == 0x1B && !(c.modifier & 0x08) && c.key == id) return true;
+	return false;
+}
+
+// Checklist 21.
+bool FaceImpactLink(int sideIdx)
+{
+	auto it = g.bySide.find(sideIdx);
+	if (it == g.bySide.end()) return false;
+	for (const Binding &b : it->second)
+		if (b.event == TrigEvent::Impact && !Spent(b.record)) return true;
+	return false;
+}
+
+// Checklist 22: the record dispatch_entry_command_trigger would return, or 0.
+uint16_t UseMatch(const ResolvedPick &r)
+{
+	if (r.type == 3)
+	{
+		auto it = g.bySide.find(r.sideIdx);
+		if (it == g.bySide.end()) return 0;
+		for (const Binding &b : it->second)
+		{
+			if (b.event != TrigEvent::Use || Spent(b.record)) continue;
+			if (r.band != 0 && !(b.fireFlags & r.band)) continue;
+			return WalkChainFlow(g.map, b.chain) == 0 ? b.record : 0;
+		}
+		return 0;
+	}
+	if ((r.type == 2 || r.type == 8) && r.sector != nullptr)
+	{
+		auto it = g.bySector.find(r.sector->sectornum);
+		if (it == g.bySector.end()) return 0;
+		for (const Binding &b : it->second)
+		{
+			if (b.event != TrigEvent::Use || Spent(b.record)) continue;
+			const bool fire = (b.fireFlags & 1) ? (r.type == 8) : (r.type == 2);
+			if (!fire) continue;
+			return WalkChainFlow(g.map, b.chain) == 0 ? b.record : 0;
+		}
+	}
+	return 0;
+}
+
+// Checklist 23: the record dispatch_entry_command_trigger_b would return, or 0;
+// `channel` says which channel matched (for the seeds ExaminePick stages).
+uint16_t ExamineMatch(const ResolvedPick &r, int *channel = nullptr)
+{
+	if (channel) *channel = 0;
+	if (r.type == 3 && HasEvent(r.sideIdx, TrigEvent::Examine))
+	{
+		// ch1 returns whatever its records give: it does not fall through.
+		for (const Binding &b : g.bySide[r.sideIdx])
+		{
+			if (b.event != TrigEvent::Examine || Spent(b.record)) continue;
+			if (r.band != 0 && !(b.fireFlags & r.band)) continue;
+			if (WalkChainFlow(g.map, b.chain) != 0) return 0;
+			if (channel) *channel = 1;
+			return b.record;
+		}
+		return 0;
+	}
+	if (r.type == 4)
+	{
+		if (r.obj == nullptr || r.obj->commandID == 0) return 0;
+		auto it = g.byObject.find((int)r.obj->commandID);
+		if (it == g.byObject.end()) return 0;
+		for (const Binding &b : it->second)
+		{
+			if (b.event != TrigEvent::Examine || Spent(b.record)) continue;
+			if (WalkChainFlow(g.map, b.chain) != 0) return 0;
+			if (channel) *channel = 2;
+			return b.record;
+		}
+		return 0;
+	}
+	if (r.type != 7 && r.type != 0 && r.sector != nullptr)
+	{
+		static const uint8_t dm2[4] = { 1, 2, 4, 8 };
+		const int idx = (r.type == 2) ? 0 : (r.type == 1) ? 1 : (r.type == 8) ? 2 : 3;
+		auto it = g.bySector.find(r.sector->sectornum);
+		if (it == g.bySector.end()) return 0;
+		for (const Binding &b : it->second)
+		{
+			if (b.event != TrigEvent::Examine || Spent(b.record)) continue;
+			if (!(b.fireFlags & dm2[idx])) continue;
+			if (WalkChainFlow(g.map, b.chain) != 0) return 0;
+			if (channel) *channel = 3;
+			return b.record;
+		}
+	}
+	return 0;
+}
+
+} // namespace (anonymous)
+
+CursorClass ClassifyPick(const Pick &p, AActor *who, double depth)
+{
+	CursorClass c;
+	c.depth = depth;
+	ResolvedPick r;
+	// No pick: render_world_view's record type 0 -> type 1, the default shape
+	// (game_core.c L16a6d).
+	if (!g.active || !ResolvePick(p, r)) { c.type = 1; c.shape = 0x240; return c; }
+	c.recType = r.type;
+
+	// What each callee answers (checklist 19-25). All read-only, so asking all
+	// of them is the same as asking only those the path reaches.
+	CursorFacts f;
+	f.recType = r.type;
+	f.depth = depth;
+	f.useR = PickUseRange(who);
+	f.farR = PickFarRange(who);
+	f.probeR = PickProbeRange(who);
+	if (r.type == 4)
+	{
+		const uint16_t id = r.obj->commandID;                 // def + 0x0e
+		f.defFlags = r.obj->renderType;                       // def + 9
+		f.clickRecord = ObjectHasClickRecord(id);
+		f.impactLink = ObjectImpactLink(id);
+		// def+9 |= 0x20 is the 0x1b load marker (GAME_core.md 5.2 row 8); this
+		// port's Object keeps the file's byte, so a live 0x1b keyed to the
+		// object stands for it.
+		if (f.impactLink) f.defFlags |= 0x20;
+		if (TheDbase100().IsLoaded())
+		{
+			const DbTriggerBlock *blk = nullptr;
+			f.onInspect = FindInspectByRenderId(TheDbase100(), r.renderId, &blk) != 0 && blk != nullptr;
+			f.pickable = IsItemIdPickable(TheDbase100(), r.renderId);
+		}
+	}
+	else if (r.type == 3)
+	{
+		f.faceImpactMarked = HasEvent(r.sideIdx, TrigEvent::Impact);
+		f.impactLink = FaceImpactLink(r.sideIdx);
+	}
+	f.examineMatch = ExamineMatch(r) != 0;
+	f.useMatch = UseMatch(r) != 0;
+
+	const CursorResult res = ClassifyCursorFacts(f);
+	c.type = res.type;
+	c.shape = res.shape;
+	c.flags = res.flags;
+	c.examinable = res.count;
+	c.outOfRange = res.outOfRange != 0;
+	return c;
+}
+
+bool ExaminePick(const Pick &p, AActor *who)
+{
+	ResolvedPick r;
+	if (!g.active || who == nullptr || !ResolvePick(p, r)) return false;
+
+	int channel = 0;
+	const uint16_t recIdx = ExamineMatch(r, &channel);
+	if (recIdx != 0)
+	{
+		Command *rec = Rec(recIdx);
+		if (rec == nullptr) return false;
+		// The seeds the match leaves (checklist 23).
+		if (channel == 1)
+		{
+			auto f = g.sideToFace.find(r.sideIdx);
+			g.activeFace = f != g.sideToFace.end() ? f->second : -1;
+			g.activeObjectSector = g.activeObjectIndex = -1;
+		}
+		else if (channel == 2)
+		{
+			g.activeObjectSector = r.objSector;
+			g.activeObjectIndex = r.objIndex;
+			g.activeFace = -1;
+		}
+
+		// examine_world_object (29-30), then fire_trigger_on_interact (31-34).
+		g.pendingRecord = 0;
+		StageChainSound(0);
+		if (g_core.IsAttached() && rec->aux != 0)
+			g_core.Interp().EvalDialogueRecordById(rec->aux);
+		bool fired = false;
+		if (!(rec->modifier & 0x29))
+		{
+			fired = Fire(rec->chainStart);
+			Command *again = Rec(recIdx);   // the chain may have rewritten it
+			if (fired && again != nullptr && (again->fireFlags & 0x10)) { again->modifier |= 0x08; SyncDisabled(again); }
+		}
+		if (channel == 2) { g.activeObjectSector = -1; g.activeObjectIndex = -1; }
+		if (roth_trigger_debug)
+			Printf("roth_trigger: examine %s record %u (ch%d, dialogue %u) -> %s\n", PickKindName(p),
+				(unsigned)recIdx, channel, (unsigned)rec->aux, fired ? "chain ran" : "no chain");
+		return true;   // examine_object_under_cursor answers -1 on a match (26)
+	}
+	// 27: an object's OnInspect.
+	if (r.type == 4 && p.actor != nullptr)
+		return InterfaceObjectAction(p.actor, r.objSector, r.objIndex, false);
+	return false;
+}
+
+//==========================================================================
+//
+// PickTestTarget -- a test instrument for roth_vrpicktest (roth_vrpick.cpp).
+// Not a rule of the game: it only chooses something to aim a test at.
+//
+//==========================================================================
+
+bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stand)
+{
+	if (!g.active || who == nullptr || g.level == nullptr || kind == nullptr) return false;
+	const DVector3 from = who->Pos();
+	double best = 1e18;
+	bool found = false;
+	auto consider = [&](const DVector3 &target, const DVector2 &outward, double z)
+	{
+		const double d = (target.XY() - from.XY()).LengthSquared();
+		if (d >= best) return;
+		best = d;
+		aim = target;
+		const DVector2 o = outward.Length() > 1e-6 ? outward / outward.Length() : DVector2(1, 0);
+		stand = DVector3(target.X + o.X * 40.0, target.Y + o.Y * 40.0, z);
+		found = true;
+	};
+
+	if (!stricmp(kind, "item"))
+	{
+		if (!TheDbase100().IsLoaded()) return false;
+		for (size_t s = 0; s < g.map.objects.size(); s++)
+			for (size_t i = 0; i < g.map.objects[s].size(); i++)
+			{
+				const Object &o = g.map.objects[s][i];
+				if (o.renderType & 0x13) continue;
+				if (!IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)))) continue;
+				AActor *mo = FindObjectActor((int)s, (int)i);
+				if (mo == nullptr) continue;
+				const DVector3 c = mo->PosPlusZ(mo->Height * 0.5);
+				consider(c, from.XY() - c.XY(), mo->Sector ? mo->Sector->floorplane.ZatPoint(mo->Pos().XY()) : mo->Z());
+			}
+	}
+	else if (!stricmp(kind, "door") || !stricmp(kind, "face"))
+	{
+		const bool door = !stricmp(kind, "door");
+		auto pass = [&](int sideIdx)
+		{
+			if (sideIdx < 0 || sideIdx >= (int)g.level->sides.Size()) return;
+			side_t *sd = &g.level->sides[sideIdx];
+			line_t *ln = sd->linedef;
+			if (ln == nullptr || sd->sector == nullptr) return;
+			const DVector2 mid = (ln->v1->fPos() + ln->v2->fPos()) * 0.5;
+			// Outward: the side's own face, perpendicular to the line. A front
+			// sidedef is on the right of v1 -> v2, which is (dy, -dx).
+			DVector2 n(ln->Delta().Y, -ln->Delta().X);
+			if (ln->sidedef[1] == sd) n = -n;
+			// At about the eye's height (under the ceiling), so the test hand --
+			// which hangs a little below the eye -- meets it level.
+			const double fz = sd->sector->floorplane.ZatPoint(mid);
+			const double cz = sd->sector->ceilingplane.ZatPoint(mid);
+			const double vh = who->player != nullptr ? who->player->viewheight : 41.0;
+			consider(DVector3(mid.X, mid.Y, std::max(fz + 8.0, std::min(fz + vh - 4.0, cz - 8.0))), n, fz);
+		};
+		if (door) { for (const auto &kv : g.doorLeafSide) pass(kv.first); }
+		else
+		{
+			for (const auto &kv : g.bySide)
+				for (const Binding &b : kv.second)
+					if (b.event == TrigEvent::Use) { pass(kv.first); break; }
+		}
+	}
+	return found;
+}
+
 void FireSectorTriggers(sector_t *sec, AActor *who, TrigEvent want)
 {
 	if (!g.active || sec == nullptr) return;
@@ -7113,6 +7684,7 @@ void TickLevelLogic(FLevelLocals *level)
 	if (g_menus.IsOpen() || g_flow.Dying())
 	{
 		InterfaceTick(level);
+		VRPickTick(level, true);     // modal: no beam, no gestures
 		SoundTick(level);
 		MoviePump();
 		DrainTimedCommands(level);   // tests drive menus with roth_at
@@ -7168,6 +7740,11 @@ void TickLevelLogic(FLevelLocals *level)
 	// The dialogue window and the inventory screen: after the chains, as the
 	// original's text pass follows its logic in the frame.
 	InterfaceTick(level);
+
+	// The VR hands' pointer and gestures (roth_vrpick.h): after the panels, so
+	// a panel that just opened owns the pointer this same tic. What a gesture
+	// fires runs its chain now; the effects it registers tick from the next.
+	VRPickTick(level, false);
 
 	// Realms' sound: the node pump (play_nearby_sfx_emitters, from
 	// update_player_tick, player.c:420), update_active_sounds, the doors.

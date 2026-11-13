@@ -1603,6 +1603,14 @@ bool InterfaceUse(player_t *player)
 	return Press(player, 0);
 }
 
+bool InterfacePointerBusy()
+{
+	if (!U.attached) return false;
+	if (U.menus != nullptr && U.menus->IsOpen()) return true;
+	if (U.popup.Active() || U.screen.IsOpen() || U.screen.PopupUp()) return true;
+	return U.dialogue.PointerBelongsToDialogue();
+}
+
 bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 {
 	if (!U.attached || U.db == nullptr || U.core == nullptr || mo == nullptr) return false;

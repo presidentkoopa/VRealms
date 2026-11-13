@@ -53,6 +53,19 @@ bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out);
 // hand's joints; otherwise a posed copy, valid until the next call on this thread.
 const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones);
 
+// THE INDEX FINGER AND THE PALM, for pointing and touching (src/roth/roth_vrpick.cpp): the index
+// fingertip (INDEX_UP_TOP_joint), its knuckle (INDEX_BASE_joint) and the palm (HANDPALM_joint), in
+// the model's own render space -- the space ModelPointToWorld takes, so the caller turns them into
+// map positions through the hand actor's real draw transform (Model_ActorPointToWorld). `posed` is
+// true when they come from the fingers as last drawn (VRHandPose_Apply, within a few frames), false
+// when the model's rest pose -- the open hand -- stood in. False: the model lacks those joints.
+struct FVRHandPoints
+{
+	DVector3 tip, indexBase, palm;
+	bool posed = false;
+};
+bool VRHandPose_FingerPoints(FModel *model, int side, FVRHandPoints &out);
+
 // ---- the flat test (roth_handtest): test-only, inert until the command is typed ----
 struct FVRHandTestInputs
 {
@@ -61,6 +74,8 @@ struct FVRHandTestInputs
 };
 void VRHandTest_Set(bool on, const FVRHandTestInputs &in, float turnDeg);
 bool VRHandTest_Active();
+// The inputs the flat test gives both hands. False while it is off.
+bool VRHandTest_Inputs(FVRHandTestInputs &out);
 // Where roth_hands.cpp stands the test hand actors, in map units (so they are not culled): the
 // camera-relative spot the test grip uses, from the player's eye and yaw.
 void VRHandTest_ActorSpot(int side, const DVector3 &eye, double yawDeg, DVector3 &out);

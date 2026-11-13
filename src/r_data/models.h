@@ -129,6 +129,13 @@ bool KeepVoxelWithoutSprite(int sprite, int frame);
 
 bool IsHUDModelForPlayerAvailable(player_t * player);
 
+// RS FORK -- a point of an actor's model, in the model's own render space, as a map position, through
+// the actor's real object-to-world transform this moment (ModelPointToWorld's C++ face; the VR picker,
+// src/roth/roth_vrpick.cpp, places the index fingertip with it). False when the actor draws no model.
+bool Model_ActorPointToWorld(AActor *actor, const DVector3 &modelPoint, DVector3 &worldOut);
+// The first model an actor draws now (its frame's modelIDs[0]), or null.
+FModel *Model_ActorModel(AActor *actor);
+
 // Check if circle potentially intersects with node AABB
 inline bool CheckBBoxCircle(float *bbox, float x, float y, float radiusSquared)
 {

@@ -984,6 +984,7 @@ set (PCH_SOURCES
 	roth/roth_invdraw.cpp
 	roth/roth_uidraw.cpp
 	roth/roth_hands.cpp
+	roth/roth_vrpick.cpp
 	roth/roth_menudraw.cpp
 	roth/roth_huddraw.cpp
 	roth/roth_dlgdraw.cpp

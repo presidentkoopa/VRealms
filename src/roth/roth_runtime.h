@@ -315,7 +315,7 @@ struct Pick
 	{
 		Nothing,
 		WallFace,   // a Realms face -- line + side, with a band
-		Flat,       // a floor (ceilings are deliberately not picked)
+		Flat,       // a floor, a ceiling, or a mid-platform's top or underside
 		DoorLeaf,   // a hinged door slab; swings rather than dispatching
 		Prop,       // a Realms object -- the 0x08 / 0x30 channel
 	};
@@ -329,6 +329,11 @@ struct Pick
 	DVector3  hitPos = DVector3(0, 0, 0);
 	uint8_t   band   = 0;         // mid 0x01, lower 0x02, upper 0x04; 0 = unknown
 	double    dist   = 0;
+	// Flat only. The original's pick record types (GAME_core.md 4.4): a sector
+	// floor is 2, a ceiling 1, a mid-platform top 8 and its underside 7. The
+	// trace tells them apart by which plane it met and by its 3D floor.
+	bool      ceiling = false;
+	const void *ffloor = nullptr; // the trace's F3DFloor*, non-null on a mid-platform
 };
 
 // Trace one ray and say what Realms thing is at the end of it. Nearest wins,
@@ -357,6 +362,72 @@ bool ActivateObject(AActor *mo, TrigEvent want);
 // its offhand pair, which is where the VR backend writes the controller every
 // frame. Inert unless a Realms level is loaded and roth_pick is set.
 bool UseByHand(player_t *player, TrigEvent want);
+
+//==========================================================================
+//
+// THE ORIGINAL'S CURSOR, ON A PICK (roth_vrpick.cpp is its VR caller)
+//
+// classify_cursor_target_object (E/input.c:1111-1245) decides, every frame
+// with no button down, what the thing under the cursor offers: the cursor
+// TYPE (1 nothing, 3 usable, 5 blocked or keyed) and the cursor SHAPE, banded
+// by the pick's depth against 600 (use), 2000 (too far) and 5000 (the
+// examine probe). run_gameplay_frame (E/game_core.c:515-732) then lets a
+// click act only on what that classification allows:
+//   examine  (primary)   type 3 or 5, and something to examine (count != 0)
+//   use      (secondary) type 3; activate_targeted_object gates depth < 600
+//
+// THE DEPTH is the original's renderer metric (+0x20 of the pick record),
+// which is a perspective step, not a distance. Here it is the straight-line
+// distance from the player's eye to the hit, and the three bands are the
+// level's use range (FLevelLocals::ForcedPlayerUseRange, PROVISIONAL until it
+// is calibrated against ROTH.C) and that range times the original's own ratios
+// 2000/600 and 5000/600. ONE number moves all three.
+//
+//==========================================================================
+
+struct CursorClass
+{
+	uint8_t  recType = 0;     // the pick record's type: 1 ceiling, 2 floor, 3 face, 4 object, 6 door, 7/8 platform under/top; 0 none
+	uint8_t  type = 1;        // 0x7e932: 1 nothing, 3 usable, 5 blocked / keyed; 0 a path that writes none (no click acts)
+	uint16_t shape = 0x240;   // set_cursor_shape's id
+	uint8_t  flags = 0;       // 0x7fdac: bit 1 an examine trigger matched, bit 2 blocked / keyed
+	int      examinable = 0;  // 0x7fdb0: examine triggers + an OnInspect block
+	bool     outOfRange = false; // 0x7fdb4
+	double   depth = 0;       // the stand-in for +0x20 (see above)
+
+	// What a click may do, by run_gameplay_frame's rules (roth_cursor.h).
+	bool CanExamine() const { return (type == 3 || type == 5) && examinable != 0; }
+	bool CanUse(double useRange) const { return type == 3 && depth < useRange; }
+};
+
+// The three reach bands, from the one provisional constant.
+double PickUseRange(AActor *who);
+double PickFarRange(AActor *who);
+double PickProbeRange(AActor *who);
+
+// classify_cursor_target_object on a pick (its decision is roth_cursor.h, engine-free and
+// tested against the original's own text by tools/vrpick_test). `depth` is the stand-in above.
+CursorClass ClassifyPick(const Pick &p, AActor *who, double depth);
+
+// examine_object_under_cursor (E/input.c:979-1015): the right-click. The
+// examine trigger the pick matches (dispatch_entry_command_trigger_b) has its
+// DBASE100 record evaluated and its chain run (examine_world_object,
+// fire_trigger_on_interact); with none, an object's OnInspect block. True when
+// something was examined.
+bool ExaminePick(const Pick &p, AActor *who);
+
+// Whether two picks name the same thing (a press that began on one target and
+// ended on another acts on neither). Compares identities, never dereferences.
+bool SamePickTarget(const Pick &a, const Pick &b);
+
+// A short name for a log line.
+const char *PickKindName(const Pick &p);
+
+// TEST INSTRUMENT (roth_vrpicktest seek): the nearest thing of a kind the
+// player can act on -- "item" a pickable object, "door" a door leaf, "face" a
+// wall face carrying a use trigger -- and a spot to stand in front of it.
+// False when the level has none.
+bool PickTestTarget(const char *kind, AActor *who, DVector3 &aim, DVector3 &stand);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13
 // triggers. Call once per tic per player; it compares against the sector seen

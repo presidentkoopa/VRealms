@@ -64,6 +64,14 @@ AActor *Adopt(FLevelLocals *level, PClassActor *cls)
 
 } // namespace (anonymous)
 
+AActor *HandActor(int side)
+{
+	if (side < 0 || side >= VRHandPose::SIDE_COUNT) return nullptr;
+	AActor *mo = g_hand[side];
+	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) return nullptr;
+	return mo;
+}
+
 void HandsEndLevel()
 {
 	g_hand[0] = g_hand[1] = nullptr;
