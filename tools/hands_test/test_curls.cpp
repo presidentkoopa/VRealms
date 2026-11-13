@@ -1,24 +1,27 @@
-// tools/hands_test/test_curls.cpp -- DIFFERENTIAL TEST of the VR hands' curl rule, its smoothing and the turn on
-// the joints, against UZDXREMA's OWN CODE.
+// tools/hands_test/test_curls.cpp -- DIFFERENTIAL TEST of the VR hands' smoothing and the turn on the joints against
+// UZDXREMA's OWN CODE, and the pose rule's cases.
 //
 // run.sh cuts these lines out of UZDXREMA (read-only, HEAD 39e4dad) and they are #included below, unedited:
 //   vr_avatar_pose.cpp:336-348   FromMat3Pos
 //   vr_avatar_pose.cpp:392-414   QSlerp, QAxisAngle
 //   vr_avatar_pose.cpp:429-431   the rate (dt sanitised, retain = 0.75^(dt*90))
-//   vr_avatar_pose.cpp:440-464   the curl rule, empty hand (index/trigger+touch, grip, thumb touch, no controller)
-//   vr_avatar_pose.cpp:658-696   the scalar smoothing, the rotation targets (QAxisAngle of the table), gRot's slerp
+//   vr_avatar_pose.cpp:691-693   gRot's smoothing of one joint toward its target wq: first frame the target, then
+//                                slerp(cur, wq, 1 - retain)
+//   vr_avatar_pose.cpp:696       gRot[sd].Init = true
 //   vr_avatar_pose.cpp:1785-1836 the turn D = F.R(q).F^T on the joint globals and the carry of the finger
 //   vr_armik.h:35-54             FVRMat3
-// The only things supplied here are the engine names those lines use (a hand state, a rig with Valid(), the table
-// lookup VRAvatar_Curl, a VSMatrix with multMatrix/inverseMatrix, FVector3). Lines 466-656 (a hand holding a weapon
-// or an object) are not cut: with nothing held, the source runs none of them.
+// The only things supplied here are the engine names those lines use (VSMatrix with multMatrix/inverseMatrix,
+// FVector3, the side state).
 //
-// The port (src/r_data/vr_handpose_math.h) and the source are fed the same inputs, frame by frame, at 72, 80, 90,
-// 120 and 144 Hz, with jittered and hitched frame times, both sides, controllers dropping out; every scalar curl and
-// every smoothed quaternion is compared every frame. Then the port's FBX-frame target (QSlerp(open, fist, curl), the
-// owner's directive) against the source's own QSlerp on the same ends. Then the turn on random skeletons.
+// THE RULE IS NOT UZDXREMA'S ANY MORE (owner, 2026-11-13: "the hands have poses, why are we bending fingers"): the
+// touches pick an authored pose and the grip / trigger say how far toward it (vr_handpose_math.h PoseRule). Its cases
+// are checked here by value; the poses themselves on the real FBX in tools/fbxload_test. What is still the source's
+// is the rate and the smoothing: the port's StepPose and the source's own lines are fed the same targets, frame by
+// frame, at 72, 80, 90, 120 and 144 Hz with jittered and hitched frame times, poses switching, controllers dropping
+// out; every smoothed quaternion (the 15 finger joints and the palm) is compared every frame. Then the turn on random
+// skeletons.
 //
-//   ./test_curls <vrhandcurl.txt>
+//   ./test_curls
 
 #include "vr_handpose_math.h"
 
@@ -62,20 +65,10 @@ namespace UZ
 #include "frommat3pos.inc"
 #include "qmath.inc"
 
-	struct FVRHandCurlJoint { float Degrees = 0.f; FVector3 Axis = FVector3(0, 0, 1); };
-	struct FString { bool IsEmpty() const { return true; } const char *GetChars() const { return ""; } };
-	struct FCurlState { float Curl[VRFINGER_COUNT][VRFINGER_JOINTS] = {}; };
 	struct FRotState { float Q[VRFINGER_COUNT][VRFINGER_JOINTS][4] = {}; bool Init = false; };
-	struct FVRRigHandState { float trigger = 0, gripValue = 0; bool triggerTouch = false, thumbTouch = false; };
-	struct FRig { bool valid[2] = { true, true }; bool Valid(int i) const { return valid[i]; } };
 	struct FVRAvatarFingerJoint { int Joint = -1; FVector3 Frame[3] = { FVector3(1, 0, 0), FVector3(0, 1, 0), FVector3(0, 0, 1) }; };
 	struct FVRAvatarSide { FVRAvatarFingerJoint Fingers[VRFINGER_COUNT][VRFINGER_JOINTS]; };
 
-	const FVRHandCurlJoint *gTable = nullptr;	// [5*3] or null (table not loaded)
-	const FVRHandCurlJoint *VRAvatar_Curl(int f, int j) { return gTable ? &gTable[f * 3 + j] : nullptr; }
-	bool VRAvatar_NamedPoseRot(const char *, int, int, int, float *) { return false; }
-
-	FCurlState gCurl[2];
 	FRotState gRot[2];
 
 	float Retain(double dt)
@@ -84,11 +77,14 @@ namespace UZ
 		return retain;
 	}
 
-	// one side of UpdateCurls, nothing held
-	void Step(int sd, bool isMain, const FVRRigHandState &h, const FRig &rig, float retain)
+	// gRot's smoothing of joint (f, j) of side sd toward wq (VAP :691-693)
+	void SmoothJoint(int sd, int f, int j, const float wq[4], float retain)
 	{
-#include "rule.inc"
-#include "smooth.inc"
+#include "gslerp.inc"
+	}
+	void EndSide(int sd)
+	{
+#include "ginit.inc"
 	}
 
 	void Turn(int sd, const FVRAvatarSide &side, std::vector<VSMatrix> &gGlobals)
@@ -96,34 +92,6 @@ namespace UZ
 		const int n = (int)gGlobals.size();
 #include "turn.inc"
 	}
-}
-
-// ======================================================================= the table
-static bool ReadTable(const char *path, VRHandPose::CurlJoint port[5][3], UZ::FVRHandCurlJoint uz[15])
-{
-	FILE *f = fopen(path, "r");
-	if (!f) { printf("cannot open %s\n", path); return false; }
-	static const char *names[5] = { "thumb", "index", "middle", "ring", "pinky" };
-	char line[512];
-	int seen = 0;
-	while (fgets(line, sizeof(line), f))
-	{
-		char fn[32]; int j; double deg, ax, ay, az;
-		if (sscanf(line, " curl %31s %d %lf %lf %lf %lf", fn, &j, &deg, &ax, &ay, &az) != 6) continue;
-		int fi = -1;
-		for (int k = 0; k < 5; k++) if (!strcmp(fn, names[k])) fi = k;
-		if (fi < 0 || j < 1 || j > 3) continue;
-		// as VA LoadCurlTable :252-261: the axis divided by its length, degrees as read
-		const float axf[3] = { (float)ax, (float)ay, (float)az };
-		const float len = sqrtf(axf[0] * axf[0] + axf[1] * axf[1] + axf[2] * axf[2]);
-		for (int k = 0; k < 3; k++) port[fi][j - 1].Axis[k] = axf[k] / len;
-		port[fi][j - 1].Degrees = (float)deg;
-		uz[fi * 3 + j - 1].Axis = UZ::FVector3(axf[0] / len, axf[1] / len, axf[2] / len);
-		uz[fi * 3 + j - 1].Degrees = (float)deg;
-		seen++;
-	}
-	fclose(f);
-	return seen == 15;
 }
 
 // ======================================================================= 1. the rule and the smoothing
@@ -134,151 +102,157 @@ static double QDiff(const float a[4], const float b[4])
 	return d;
 }
 
-static void TestRule(const VRHandPose::CurlJoint table[5][3], const UZ::FVRHandCurlJoint *uzTable)
+static void RandQ(std::mt19937 &rng, float q[4])
+{
+	std::normal_distribution<float> g(0.f, 1.f);
+	float n = 0;
+	for (int k = 0; k < 4; k++) { q[k] = g(rng); n += q[k] * q[k]; }
+	n = sqrtf(n);
+	for (int k = 0; k < 4; k++) q[k] /= n;
+}
+
+// The smoothing against the source's own lines. The port's StepPose makes the targets (PoseRule, PoseTargets: not the
+// source's) and smooths them; the source's lines smooth the SAME targets. Side 0 carries the 15 finger joints, side 1
+// the palm (as joint 0/0: the port smooths the palm with the same formula).
+static void TestSmoothing()
 {
 	using namespace VRHandPose;
 	std::mt19937 rng(20261113);
 	std::uniform_real_distribution<float> u01(0.f, 1.f);
-	const double rates[] = { 72, 80, 90, 120, 144 };
-	for (int withTable = 0; withTable < 2; withTable++)
-	{
-		for (double hz : rates)
+	HandPoses poses;
+	for (int f = 0; f < 5; f++)
+		for (int j = 0; j < 3; j++)
 		{
-			UZ::gTable = withTable ? uzTable : nullptr;
-			for (int s = 0; s < 2; s++) { UZ::gCurl[s] = UZ::FCurlState(); UZ::gRot[s] = UZ::FRotState(); }
-			CurlState pc[2]; SideState pr[2];
-			double worstCurl = 0, worstQ = 0, worstRetain = 0;
-			int frames = 0;
-			for (int fr = 0; fr < 3000; fr++)
-			{
-				// frame time: the rate, jittered 10%; every 400th a hitch (0.3 s), every 777th a repeat (0)
-				double dt = (1.0 / hz) * (0.9 + 0.2 * u01(rng));
-				if (fr % 400 == 399) dt = 0.3;
-				if (fr % 777 == 776) dt = 0.0;
-				const float rp = Retain(dt), ru = UZ::Retain(dt);
-				worstRetain = fmax(worstRetain, fabs((double)rp - ru));
-
-				for (int sd = 0; sd < 2; sd++)
-				{
-					// inputs that hold for a while and then jump (presses, releases, touches), and drift
-					UZ::FVRRigHandState h;
-					UZ::FRig rig;
-					const int phase = (fr / 37 + sd * 3) % 11;
-					h.trigger = (phase % 3 == 0) ? 0.f : (phase % 3 == 1 ? 1.f : u01(rng));
-					h.gripValue = (phase % 4 == 0) ? 0.f : (phase % 4 == 1 ? 1.f : u01(rng));
-					h.triggerTouch = (phase % 2) == 0 || h.trigger > 0.f;
-					h.thumbTouch = (phase % 5) < 2;
-					const bool valid = !((fr / 151) % 7 == 3);	// a dropout now and then
-					const bool isMain = (sd == 0);	// right-handed: the right side holds the main controller
-					rig.valid[isMain ? UZ::VRRIG_MAIN : UZ::VRRIG_OFF] = valid;
-					UZ::Step(sd, isMain, h, rig, ru);
-
-					Inputs in;
-					in.trigger = h.trigger; in.grip = h.gripValue; in.triggerTouch = h.triggerTouch; in.thumbTouch = h.thumbTouch;
-					in.valid = valid;
-					StepSide(pc[sd], pr[sd], in, rp, nullptr, withTable ? table : nullptr);
-
-					for (int f = 0; f < 5; f++)
-						for (int j = 0; j < 3; j++)
-						{
-							worstCurl = fmax(worstCurl, fabs((double)pc[sd].Curl[f][j] - UZ::gCurl[sd].Curl[f][j]));
-							worstQ = fmax(worstQ, QDiff(pr[sd].Q[f][j], UZ::gRot[sd].Q[f][j]));
-						}
-				}
-				frames++;
-			}
-			printf("rule+smoothing, %s, %3.0f Hz: %d frames x 2 sides x 15 joints: max |curl - source| %.3g, max |q - source| %.3g, max |retain - source| %.3g\n",
-				withTable ? "FRIK table loaded" : "no table (identity)", hz, frames, worstCurl, worstQ, worstRetain);
-			CHECK(worstCurl == 0.0 && worstQ == 0.0 && worstRetain == 0.0, "port differs from UZDXREMA's own lines at %.0f Hz (curl %.3g, q %.3g, retain %.3g)", hz, worstCurl, worstQ, worstRetain);
+			RandQ(rng, poses.Open[f][j]);
+			for (int p = 0; p < POSE_COUNT; p++) RandQ(rng, poses.Target[p][f][j]);
 		}
-	}
+	RandQ(rng, poses.PalmOpen);
+	for (int p = 0; p < POSE_COUNT; p++) { RandQ(rng, poses.PalmTarget[p]); poses.PalmDriven[p] = (p == POSE_FIST); }
+	poses.Have = true;
 
-	// The rule's values, said out loud (VAP :444-454), through the port.
-	struct Case { const char *name; float grip, trigger; bool tt, th, valid; float want[5]; };
+	const double rates[] = { 72, 80, 90, 120, 144 };
+	for (double hz : rates)
+	{
+		for (int s = 0; s < 2; s++) UZ::gRot[s] = UZ::FRotState();
+		SideState pr; PalmState pp;
+		double worstQ = 0, worstPalm = 0, worstRetain = 0;
+		int frames = 0, switches = 0, lastPose = -1;
+		for (int fr = 0; fr < 3000; fr++)
+		{
+			// frame time: the rate, jittered 10%; every 400th a hitch (0.3 s), every 777th a repeat (0)
+			double dt = (1.0 / hz) * (0.9 + 0.2 * u01(rng));
+			if (fr % 400 == 399) dt = 0.3;
+			if (fr % 777 == 776) dt = 0.0;
+			const float rp = Retain(dt), ru = UZ::Retain(dt);
+			worstRetain = fmax(worstRetain, fabs((double)rp - ru));
+
+			// inputs that hold for a while and then jump (presses, releases, touches), and drift
+			Inputs in;
+			const int phase = (fr / 37) % 11;
+			in.trigger = (phase % 3 == 0) ? 0.f : (phase % 3 == 1 ? 1.f : u01(rng));
+			in.grip = (phase % 4 == 0) ? 0.f : (phase % 4 == 1 ? 1.f : u01(rng));
+			in.triggerTouch = (phase % 2) == 0 || in.trigger > 0.f;
+			in.thumbTouch = (phase % 5) < 2;
+			in.valid = !((fr / 151) % 7 == 3);	// a dropout now and then
+
+			StepPose(pr, pp, in, rp, &poses);
+
+			PoseInputs pi;
+			PoseRule(in, pi);
+			if (pi.Pose != lastPose) { switches++; lastPose = pi.Pose; }
+			float target[5][3][4], palm[4];
+			PoseTargets(&poses, pi, target, palm);
+			for (int f = 0; f < 5; f++)
+				for (int j = 0; j < 3; j++)
+				{
+					UZ::SmoothJoint(0, f, j, target[f][j], ru);
+					worstQ = fmax(worstQ, QDiff(pr.Q[f][j], UZ::gRot[0].Q[f][j]));
+				}
+			UZ::EndSide(0);
+			UZ::SmoothJoint(1, 0, 0, palm, ru);
+			UZ::EndSide(1);
+			worstPalm = fmax(worstPalm, QDiff(pp.Q, UZ::gRot[1].Q[0][0]));
+			frames++;
+		}
+		printf("smoothing, %3.0f Hz: %d frames, %d pose switches, 15 joints + the palm: max |q - source| %.3g (palm %.3g), max |retain - source| %.3g\n",
+			hz, frames, switches, worstQ, worstPalm, worstRetain);
+		CHECK(worstQ == 0.0 && worstPalm == 0.0 && worstRetain == 0.0, "smoothing differs from UZDXREMA's own lines at %.0f Hz (q %.3g, palm %.3g, retain %.3g)",
+			hz, worstQ, worstPalm, worstRetain);
+	}
+}
+
+// The rule's cases, said out loud.
+static void TestRule()
+{
+	using namespace VRHandPose;
+	struct Case { const char *name; float grip, trigger; bool tt, th, valid; int pose; float want[5]; float palm; };
 	const Case cases[] =
 	{
-		{ "open",          0, 0, false, false, true,  { 0.f, 0.f, 0.f, 0.f, 0.f } },
-		{ "fist",          1, 1, true,  true,  true,  { 0.6f, 1.f, 1.f, 1.f, 1.f } },
-		{ "point",         1, 0, false, true,  true,  { 0.6f, 0.f, 1.f, 1.f, 1.f } },
-		{ "thumb up",      1, 1, true,  false, true,  { 0.f, 1.f, 1.f, 1.f, 1.f } },
-		{ "trigger only",  0, 1, true,  false, true,  { 0.f, 1.f, 0.f, 0.f, 0.f } },
-		{ "trigger touch", 0, 0, true,  false, true,  { 0.f, 0.3f, 0.f, 0.f, 0.f } },
-		{ "no controller", 1, 1, true,  true,  false, { 0.f, 0.f, 0.f, 0.f, 0.f } },
+		{ "open",            0,   0,   false, false, true,  POSE_FINGERGUN, { 0.f, 0.f, 0.f, 0.f, 0.f }, 0.f },
+		{ "fist",            1,   1,   true,  true,  true,  POSE_FIST,      { 1.f, 1.f, 1.f, 1.f, 1.f }, 1.f },
+		{ "point",           1,   0,   false, true,  true,  POSE_POINT,     { 1.f, 1.f, 1.f, 1.f, 1.f }, 1.f },
+		{ "thumb up",        1,   1,   true,  false, true,  POSE_THUMBUP,   { 1.f, 1.f, 1.f, 1.f, 1.f }, 1.f },
+		{ "finger gun",      1,   0,   false, false, true,  POSE_FINGERGUN, { 1.f, 1.f, 1.f, 1.f, 1.f }, 1.f },
+		{ "trigger only",    0,   1,   true,  false, true,  POSE_THUMBUP,   { 0.f, 1.f, 0.f, 0.f, 0.f }, 0.f },
+		{ "trigger + thumb", 0,   1,   true,  true,  true,  POSE_FIST,      { 0.f, 1.f, 0.f, 0.f, 0.f }, 0.f },
+		{ "trigger touch",   0,   0,   true,  false, true,  POSE_THUMBUP,   { 0.f, 0.3f, 0.f, 0.f, 0.f }, 0.f },
+		{ "grab, resting",   1,   0,   true,  true,  true,  POSE_FIST,      { 1.f, 0.3f, 1.f, 1.f, 1.f }, 1.f },
+		{ "half grip point", 0.5f, 0,  false, true,  true,  POSE_POINT,     { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f }, 0.5f },
+		{ "half pull",       1,   0.5f, true, true,  true,  POSE_FIST,      { 1.f, 0.5f, 1.f, 1.f, 1.f }, 1.f },
+		{ "no controller",   1,   1,   true,  true,  false, POSE_FIST,      { 0.f, 0.f, 0.f, 0.f, 0.f }, 0.f },
 	};
 	for (const Case &c : cases)
 	{
 		Inputs in; in.grip = c.grip; in.trigger = c.trigger; in.triggerTouch = c.tt; in.thumbTouch = c.th; in.valid = c.valid;
-		float pf[5];
-		FingerCurls(in, pf);
-		bool ok = true;
-		for (int f = 0; f < 5; f++) ok = ok && pf[f] == c.want[f];
-		printf("  %-14s thumb %.1f index %.1f middle %.1f ring %.1f pinky %.1f\n", c.name, pf[0], pf[1], pf[2], pf[3], pf[4]);
+		PoseInputs pi;
+		PoseRule(in, pi);
+		bool ok = pi.Pose == c.pose && pi.Palm == c.palm;
+		for (int f = 0; f < 5; f++) ok = ok && pi.Amount[f] == c.want[f];
+		static const char *const names[POSE_COUNT] = { "fist", "point", "thumbup", "fingergun" };
+		printf("  %-16s pose %-9s thumb %.1f index %.1f middle %.1f ring %.1f pinky %.1f palm %.1f\n", c.name, names[pi.Pose],
+			pi.Amount[0], pi.Amount[1], pi.Amount[2], pi.Amount[3], pi.Amount[4], pi.Palm);
 		CHECK(ok, "rule: %s", c.name);
 	}
 }
 
-// ======================================================================= 2. the FBX-frame target
-// The port's target with FBX poses is QSlerp(open, fist, curl) (the source's [POSEROT] blend, VAP :680, with the
-// owner's two ends); its smoothing is the source's gRot slerp (:691-693). Replayed here with the source's own QSlerp.
+// The ends of a target: amount 0 is the open pose, amount 1 the authored pose; a pose that does not drive the palm
+// leaves it at its open rotation; no poses -> identity (the drawn frame).
 static void TestPoseTarget()
 {
 	using namespace VRHandPose;
 	std::mt19937 rng(7);
-	std::normal_distribution<float> g(0.f, 1.f);
-	std::uniform_real_distribution<float> u01(0.f, 1.f);
-	JointPose poses[5][3];
-	for (auto &pf : poses)
-		for (auto &p : pf)
+	HandPoses poses;
+	for (int f = 0; f < 5; f++)
+		for (int j = 0; j < 3; j++)
 		{
-			float a[4] = { g(rng), g(rng), g(rng), g(rng) }, b[4] = { g(rng), g(rng), g(rng), g(rng) };
-			float na = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]), nb = sqrtf(b[0] * b[0] + b[1] * b[1] + b[2] * b[2] + b[3] * b[3]);
-			for (int k = 0; k < 4; k++) { p.Open[k] = a[k] / na; p.Fist[k] = b[k] / nb; }
-			p.Have = true;
+			RandQ(rng, poses.Open[f][j]);
+			for (int p = 0; p < POSE_COUNT; p++) RandQ(rng, poses.Target[p][f][j]);
 		}
-	const double rates[] = { 72, 80, 90, 120, 144 };
-	for (double hz : rates)
+	RandQ(rng, poses.PalmOpen);
+	for (int p = 0; p < POSE_COUNT; p++) { RandQ(rng, poses.PalmTarget[p]); poses.PalmDriven[p] = (p == POSE_FIST); }
+	poses.Have = true;
+	auto same = [](const float *a, const float *b) { return fabs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) > 1 - 1e-6; };
+	for (int p = 0; p < POSE_COUNT; p++)
 	{
-		CurlState pc; SideState pr;
-		UZ::FRotState ref;
-		double worst = 0;
-		for (int fr = 0; fr < 2000; fr++)
-		{
-			const double dt = (1.0 / hz) * (0.9 + 0.2 * u01(rng));
-			const float retain = UZ::Retain(dt);
-			Inputs in;
-			const int phase = fr / 41 % 6;
-			in.trigger = phase < 3 ? u01(rng) : 0.f; in.grip = phase % 2 ? 1.f : u01(rng);
-			in.triggerTouch = phase != 4; in.thumbTouch = phase < 2; in.valid = true;
-			StepSide(pc, pr, in, retain, poses, nullptr);
-
-			// the source's formulas: want (rule), then QSlerp(open, fist, want), then gRot's slerp
-			float pf[5];
-			pf[UZ::VRFINGER_INDEX] = (in.trigger > 0.f) ? in.trigger : (in.triggerTouch ? 0.3f : 0.f);
-			pf[UZ::VRFINGER_MIDDLE] = pf[UZ::VRFINGER_RING] = pf[UZ::VRFINGER_PINKY] = in.grip;
-			pf[UZ::VRFINGER_THUMB] = in.thumbTouch ? 0.6f : 0.f;
-			for (int f = 0; f < 5; f++)
-				for (int j = 0; j < 3; j++)
-				{
-					float wq[4];
-					UZ::QSlerp(poses[f][j].Open, poses[f][j].Fist, pf[f], wq);
-					float *cur = ref.Q[f][j];
-					if (!ref.Init) { for (int k = 0; k < 4; ++k) cur[k] = wq[k]; }
-					else { float o[4]; UZ::QSlerp(cur, wq, 1.f - retain, o); for (int k = 0; k < 4; ++k) cur[k] = o[k]; }
-					worst = fmax(worst, QDiff(cur, pr.Q[f][j]));
-				}
-			ref.Init = true;
-		}
-		printf("FBX-frame target + smoothing, %3.0f Hz: 2000 frames x 15 joints, max |q - source formula| %.3g\n", hz, worst);
-		CHECK(worst == 0.0, "FBX-frame target differs at %.0f Hz (%.3g)", hz, worst);
+		PoseInputs pi; pi.Pose = p;
+		float t[5][3][4], palm[4];
+		for (int f = 0; f < 5; f++) pi.Amount[f] = 0.f;
+		pi.Palm = 0.f;
+		PoseTargets(&poses, pi, t, palm);
+		bool ok0 = same(palm, poses.PalmOpen), ok1 = true;
+		for (int f = 0; f < 5; f++) for (int j = 0; j < 3; j++) ok0 = ok0 && same(t[f][j], poses.Open[f][j]);
+		for (int f = 0; f < 5; f++) pi.Amount[f] = 1.f;
+		pi.Palm = 1.f;
+		PoseTargets(&poses, pi, t, palm);
+		for (int f = 0; f < 5; f++) for (int j = 0; j < 3; j++) ok1 = ok1 && same(t[f][j], poses.Target[p][f][j]);
+		ok1 = ok1 && same(palm, poses.PalmDriven[p] ? poses.PalmTarget[p] : poses.PalmOpen);
+		CHECK(ok0, "pose %d at amount 0 is the open pose", p);
+		CHECK(ok1, "pose %d at amount 1 is the authored pose (the palm: its pose's frame only where driven)", p);
 	}
-	// the two ends: curl 0 is the open pose, curl 1 the fist
-	float q[4];
-	JointTarget(&poses[1][0], nullptr, 0.f, q);
-	CHECK(QDiff(q, poses[1][0].Open) < 1e-6, "curl 0 = open");
-	JointTarget(&poses[1][0], nullptr, 1.f, q);
-	const float *fq = poses[1][0].Fist;
-	const double d = fabs(q[0] * fq[0] + q[1] * fq[1] + q[2] * fq[2] + q[3] * fq[3]);
-	CHECK(d > 1 - 1e-6, "curl 1 = fist (|dot| %.7f)", d);
+	PoseInputs pi;
+	float t[5][3][4], palm[4];
+	PoseTargets(nullptr, pi, t, palm);
+	CHECK(t[1][0][3] == 1.f && palm[3] == 1.f, "no poses: identity");
 }
 
 // ======================================================================= 3. the turn on the joints
@@ -412,13 +386,10 @@ static void TestPalette()
 	CHECK(worst < 1e-5, "palette round trip %.3g", worst);
 }
 
-int main(int argc, char **argv)
+int main()
 {
-	if (argc < 2) { printf("usage: test_curls <vrhandcurl.txt>\n"); return 2; }
-	VRHandPose::CurlJoint table[5][3];
-	UZ::FVRHandCurlJoint uz[15];
-	CHECK(ReadTable(argv[1], table, uz), "the table has all 15 curl lines");
-	TestRule(table, uz);
+	TestSmoothing();
+	TestRule();
 	TestPoseTarget();
 	TestTurn();
 	TestPalette();

@@ -9,6 +9,9 @@
 #   The maps (maps_ref.py) are checked against tools/fbx_hands' own FBX reader and libpng (OpenCV).
 #   The fingers (test_fingers.cpp, measure_ref.py) compare against UZDXREMA's own files: set UZDXREMA if its
 #   checkout is not at /home/claude/uzdxrema.
+#   The poses (dump_take.cpp + walk_poses.py): both takes walked, the engine's kPoseSources checked against the walk;
+#   with FBXLOAD_RENDER also the contact sheets walk/poses_Hand_Low.png and walk/poses_Hand_Low1.png (the six states as
+#   composed, the owner's frames and the candidates, wrist at rest).
 set -e
 cd "$(dirname "$0")/../.."
 UZ=${UZDXREMA:-/home/claude/uzdxrema}
@@ -38,7 +41,7 @@ if [ -n "$FBXLOAD_RENDER" ]; then
 fi
 
 echo
-echo "== the fingers on the FBX (test_fingers.cpp: the take walked, frames, poses vs mkfbxposes.py, fold, fist, point, thumb up)"
+echo "== the fingers on the FBX (test_fingers.cpp: the take walked, frames, poses vs mkfbxposes.py, fold, every state at full input)"
 mkdir -p "$OUT/fingers"
 if [ ! -f "$UZ/wadsrc/static/vrhandpose.txt" ] || [ ! -f "$UZ/tools/avatar/measure_avatar.py" ]; then
 	echo "FAIL: UZDXREMA's checkout is not at $UZ (set UZDXREMA): the fingers cannot be compared with its files"
@@ -46,14 +49,23 @@ if [ ! -f "$UZ/wadsrc/static/vrhandpose.txt" ] || [ ! -f "$UZ/tools/avatar/measu
 fi
 g++ -std=c++17 -O2 -Wall -Wextra -Isrc/common/models -Isrc/r_data -Ilibraries/ufbx \
 	tools/fbxload_test/test_fingers.cpp src/common/models/fbx_skinned.cpp "$OUT/ufbx.o" -o "$OUT/test_fingers" -lm
-"$OUT/test_fingers" "$FBX" vrealms_iwad/vrhandcurl.txt "$UZ/wadsrc/static/vrhandpose.txt" "$OUT/fingers" > "$OUT/fingers.txt" || { cat "$OUT/fingers.txt"; exit 1; }
+"$OUT/test_fingers" "$FBX" "$UZ/wadsrc/static/vrhandpose.txt" "$OUT/fingers" > "$OUT/fingers.txt" || { cat "$OUT/fingers.txt"; exit 1; }
 cat "$OUT/fingers.txt"
 echo
 echo "== the canonical frames against measure_avatar.py's own lines"
 python3 -I tools/fbxload_test/measure_ref.py "$OUT/fingers/rest.json" "$UZ"
+echo
+echo "== THE POSES: both takes walked frame by frame (walk_poses.py on dump_take's frames), and the engine's kPoseSources checked"
+mkdir -p "$OUT/walk"
+g++ -std=c++17 -O2 -Wall -Wextra -Isrc/common/models -Ilibraries/ufbx \
+	tools/fbxload_test/dump_take.cpp src/common/models/fbx_skinned.cpp "$OUT/ufbx.o" -o "$OUT/dump_take" -lm
+"$OUT/dump_take" "$FBX" "$OUT/walk/take.json"
+SHEET=""
+[ -n "$FBXLOAD_RENDER" ] && SHEET="--sheet $TEX"
+python3 -I tools/fbxload_test/walk_poses.py $SHEET "$OUT/walk/take.json" "$OUT/walk" src/r_data/vr_handpose_math.h
 if [ -n "$FBXLOAD_RENDER" ]; then
 	for h in Hand_Low Hand_Low1; do
 		python3 -I tools/fbxload_test/render.py $NRM "$OUT/fingers" "$TEX" "$OUT/fingers/sheet_$h.png" \
-			${h}_fbx_0 ${h}_fbx_318 ${h}_ctl_open ${h}_ctl_fist ${h}_ctl_point ${h}_ctl_thumbup ${h}_ctl_trigger
+			${h}_ctl_open ${h}_ctl_fist ${h}_ctl_point ${h}_ctl_thumbup ${h}_ctl_fingergun ${h}_ctl_trigger
 	done
 fi

@@ -1,24 +1,26 @@
 /*
 ** vr_handpose_math.h
 **
-** THE VR HANDS, AS PURE MATH: the controller's finger input, the curl rule, the display-rate
-** smoothing, each finger joint's canonical bone frame, the fold targets, the turn applied to the
-** joints, and where the hand sits on the controller (its frame from the wrist and knuckles, the grip
-** socket).
+** THE VR HANDS, AS PURE MATH: the controller's finger input and the authored pose it picks, the
+** display-rate smoothing, each finger joint's canonical bone frame, the pose rotations made from the
+** FBX's own frames, the turn applied to the joints, and where the hand sits on the controller (its
+** frame from the wrist and knuckles, the grip socket).
 **
 ** Nothing of the engine in it -- floats, doubles and std containers only -- so the exact code the
 ** renderer runs is compiled and run by tools/hands_test/ and tools/fbxload_test/ outside the engine.
 ** vr_handpose.cpp owns the engine half: which actor is a hand, reading the controller, reading the
-** model's joints and frames, the curl table lump, the palette.
+** model's joints and frames, the palette.
 **
 ** PORTED FROM UZDXREMA (read-only, HEAD 39e4dad):
-**   src/r_data/vr_avatar_pose.cpp ("VAP") UpdateCurls (:419-698), empty-hand path, and the finger
-**     turn on the joint globals (:1771-1838);
-**   src/r_data/vr_avatar.cpp ("VA") the curl table reader (:187-281, engine half: vr_handpose.cpp);
+**   src/r_data/vr_avatar_pose.cpp ("VAP") UpdateCurls (:419-698): the rate, the touch rule's 0.3, the
+**     no-controller rule, the [POSEROT] blend between two named poses and gRot's smoothing; and the
+**     finger turn on the joint globals (:1771-1838);
 **   tools/avatar/measure_avatar.py ("MA") the palm normal (:365-377) and the canonical bone frame
 **     of every finger joint (:476-555);
 **   tools/avatar/mkfbxposes.py ("MKP") a joint's pose rotation from two FBX frames, in that frame
 **     (main(), the `D = ...; quat(F^T D F)` lines, and quat()).
+** NOT FROM A SOURCE: which authored frame each pose is (kPoseSources, chosen by walking the takes,
+** tools/fbxload_test/walk_poses.py) and which touches pick which pose (PoseRule), on the owner's word.
 ** The checklist, source line -> here, is at the top of vr_handpose.cpp. Where this departs from a
 ** source it says so at the line, with the reason.
 **
@@ -126,7 +128,8 @@ inline void QSlerp(const float a[4], const float b[4], float t, float out[4])
 //
 //     first frame: take the target;  then  cur = slerp(cur, target, 1 - retain)
 //
-// The scalar curl UZDXREMA smooths beside it (FCurlState) is CurlState / SmoothCurls below.
+// UZDXREMA also smooths a scalar curl beside it (FCurlState, VAP :658-665) that no bone reads; with the poses
+// there is no scalar curl, so it is not kept.
 //
 //===========================================================================
 
@@ -153,192 +156,122 @@ inline void Smooth(SideState &s, const float target[FINGER_COUNT][FINGER_JOINTS]
 
 //===========================================================================
 //
-// THE CURL RULE. VAP UpdateCurls :440-458, the empty hand, unchanged:
+// THE AUTHORED POSES. The owner, 2026-11-13: "walk the hand poses", "the hands have poses, why are we
+// bending fingers". The hands are driven by poses AUTHORED in hand_final.fbx's own takes, never by a
+// per-finger fold about an axis:
 //
-//     index  = trigger > 0 ? trigger : (triggerTouch ? 0.3 : 0)   -- a finger resting ON the trigger
-//                                                                    without pulling it is not straight
-//     middle = ring = pinky = grip
-//     thumb  = thumbTouch ? 0.6 : 0                                -- the thumb lies along the
-//                                                                    controller when it rests on it
-//     no controller this frame -> every finger 0                   -- an open hand, not a frozen claw
+//   the touches pick the TARGET POSE      index on the trigger (trigger touch, or any pull) / off it,
+//                                         thumb on a surface (thumb touch) / off it:
+//                                             index on,  thumb on   POSE_FIST
+//                                             index on,  thumb off  POSE_THUMBUP
+//                                             index off, thumb on   POSE_POINT
+//                                             index off, thumb off  POSE_FINGERGUN
+//   the analog inputs say HOW FAR         the index: the trigger when it is on it (UZDXREMA's rule, VAP :444:
+//   from the open pose toward it          a touch without a pull rests it 0.3 of the way); every other
+//                                         finger, and the index when it is off the trigger: the grip.
+//   no controller this frame              every amount 0: the open hand (VAP :450-454, unchanged)
 //
-// then the one number per finger copied to its three joints (:456-458). 0 is an open hand, 1 a fist.
+// so "open" is any pose at no grip and no trigger, and "trigger only" is POSE_FIST / POSE_THUMBUP at no
+// grip: the index curls to the fist's index, the rest stay open.
 //
-// NOT PORTED (VAP :460-656): the weapon-grip branch (gun_grip / grip_<class> / grip_<prop> named
-// poses, the thumb round the handle, the index ready/fire blend) and the held-object branch
-// (hold_<subject>[_<class>]). Nothing is held in these hands yet; both branches only ever replace
-// want[][] by a named pose, so the empty-hand path here is what runs whenever nothing is held.
+// Each joint's target is QSlerp(open, pose, amount) on rotations made from two AUTHORED frames (PoseRotation,
+// relative to the drawn frame, in the joint's canonical frame), so every in-between is a mix of two authored
+// poses and the ends are the authored frames exactly. This is UZDXREMA's [POSEROT] blend (VAP :674-681,
+// QSlerp(ready, fire, idxT) between two named poses) and its named-pose target (VAP :682-683), with the
+// poses taken from the take by tools/fbxload_test/walk_poses.py (kPoseSources below) instead of from
+// vrhandpose.txt. The smoothing is UZDXREMA's, unchanged (Smooth, VAP :691-696).
 //
-//===========================================================================
-
-inline void FingerCurls(const Inputs &h, float perFinger[FINGER_COUNT])
-{
-	perFinger[FINGER_INDEX] = (h.trigger > 0.f) ? h.trigger : (h.triggerTouch ? 0.3f : 0.f);
-	perFinger[FINGER_MIDDLE] = h.grip;
-	perFinger[FINGER_RING] = h.grip;
-	perFinger[FINGER_PINKY] = h.grip;
-	perFinger[FINGER_THUMB] = h.thumbTouch ? 0.6f : 0.f;
-
-	if (!h.valid)
-		for (int f = 0; f < FINGER_COUNT; ++f) perFinger[f] = 0.f;
-}
-
-inline void JointCurls(const float perFinger[FINGER_COUNT], float want[FINGER_COUNT][FINGER_JOINTS])
-{
-	for (int f = 0; f < FINGER_COUNT; ++f)
-		for (int j = 0; j < FINGER_JOINTS; ++j)
-			want[f][j] = perFinger[f];
-}
-
-//===========================================================================
-//
-// THE SCALAR CURL, smoothed. VAP FCurlState (:371-379) and :658-665, unchanged:
-//
-//     c = want + (cur - want) * retain;  cur = clamp(c, 0, 1)
-//
-// Kept because the source keeps it. As in the source, nothing turns a bone from it: the bones are
-// turned by the rotations (SideState, VAP gRot) alone.
+// THE PALM (HANDPALM_joint, parent of all five fingers) follows its pose's authored frame the same way, by the
+// grip, ONLY in a pose where it carries no straight finger: measured in the take (walk_poses.py), the fist's
+// palm would carry the pointing index 47 mm (right) / 33 mm (left) and the raised thumb 24 / 21 mm -- the swing
+// the owner saw in the headset. kPoseSources says per pose whether the palm is driven; walk_poses.py checks it.
 //
 //===========================================================================
 
-struct CurlState
+enum
 {
-	float Curl[FINGER_COUNT][FINGER_JOINTS] = {};
+	POSE_FIST = 0,		// index on the trigger, thumb on a surface
+	POSE_POINT,			// index off, thumb on
+	POSE_THUMBUP,		// index on, thumb off
+	POSE_FINGERGUN,		// index off, thumb off
+	POSE_COUNT
 };
 
-inline void SmoothCurls(CurlState &s, const float want[FINGER_COUNT][FINGER_JOINTS], float retain)
+inline constexpr float kIndexTouchRest = 0.3f;	// UZDXREMA VAP :444: a finger resting on the trigger, not pulling
+
+// What the controller says, as a pose and how far toward it each finger (and the palm) goes.
+struct PoseInputs
 {
-	for (int f = 0; f < FINGER_COUNT; ++f)
+	int   Pose = POSE_FIST;
+	float Amount[FINGER_COUNT] = {};
+	float Palm = 0.f;
+};
+
+inline void PoseRule(const Inputs &h, PoseInputs &out)
+{
+	const bool indexOn = h.triggerTouch || h.trigger > 0.f;
+	const bool thumbOn = h.thumbTouch;
+	out.Pose = indexOn ? (thumbOn ? POSE_FIST : POSE_THUMBUP) : (thumbOn ? POSE_POINT : POSE_FINGERGUN);
+	const float grip = Clamp01(h.grip);
+	for (int f = 0; f < FINGER_COUNT; ++f) out.Amount[f] = grip;
+	out.Amount[FINGER_INDEX] = indexOn ? (h.trigger > 0.f ? Clamp01(h.trigger) : kIndexTouchRest) : grip;
+	out.Palm = grip;
+	if (!h.valid)
 	{
-		for (int j = 0; j < FINGER_JOINTS; ++j)
-		{
-			const float c = want[f][j] + (s.Curl[f][j] - want[f][j]) * retain;
-			s.Curl[f][j] = (c < 0.f) ? 0.f : (c > 1.f ? 1.f : c);
-		}
+		for (int f = 0; f < FINGER_COUNT; ++f) out.Amount[f] = 0.f;
+		out.Palm = 0.f;
 	}
 }
 
-//===========================================================================
-//
-// VAP QAxisAngle (:410-414), verbatim (the source's own pi and half-angle constant).
-//
-//===========================================================================
-
-inline void QAxisAngle(const float axis[3], float deg, float out[4])
+// One hand's poses, built once per model and side (BuildPoses): every finger joint's rotation in each pose and in
+// the open pose, and the palm's, in the joint's canonical frame (the palm: its own axes), relative to the frame the
+// model draws.
+struct HandPoses
 {
-	const float h = deg * (3.14159265f / 360.f), s = sinf(h);
-	out[0] = axis[0] * s; out[1] = axis[1] * s; out[2] = axis[2] * s; out[3] = cosf(h);
-}
-
-//===========================================================================
-//
-// ONE JOINT'S TARGET ROTATION, in its canonical bone frame. VAP :667-690, the two ways it is made:
-//
-//  1. FROM THE FBX'S OWN FRAMES. The hand's open frame and its fist frame, each as a full joint
-//     rotation in the canonical bone frame (PoseRotation, below: mkfbxposes.py's formula), and the
-//     curl blends them: wq = QSlerp(open, fist, curl). This is the source's [POSEROT] two-pose blend
-//     (VAP :674-681, QSlerp(ready, fire, t) on full rotations from `rot` pose lines) with the open and
-//     fist poses as its two ends and the curl rule's value as t.
-//     DEPARTS FROM THE SOURCE'S EMPTY HAND, on the owner's word (2026-11-13: "walk the frames of
-//     animation if you have to but get me badass HQ VR hands"; the lead: the fold targets come from the
-//     FBX's own authored frames, each hand from its own take). UZDXREMA's empty hand folds about the
-//     FRIK table's axis (2, below); its [POSEROT] blend exists only for the index on a gun. Here the
-//     curl rule (how far) is unchanged and the FBX frames say what the fold looks like.
-//  2. FROM THE FRIK TABLE (vrhandcurl.txt), when a joint has no FBX frames: QAxisAngle(axis,
-//     degrees * curl), VAP :685-689 exactly; identity when the table is not loaded (VAP :689).
-//
-//===========================================================================
-
-// FVRHandCurlJoint (UZDXREMA vr_avatar.h): one joint's row of vrhandcurl.txt, axis normalised at load.
-struct CurlJoint
-{
-	float Axis[3] = { 0.f, 0.f, 1.f };
-	float Degrees = 0.f;
-};
-
-// One joint's two FBX poses, in its canonical bone frame, relative to the frame the model draws.
-struct JointPose
-{
-	float Open[4] = { 0.f, 0.f, 0.f, 1.f };
-	float Fist[4] = { 0.f, 0.f, 0.f, 1.f };
+	float Open[FINGER_COUNT][FINGER_JOINTS][4] = {};
+	float Target[POSE_COUNT][FINGER_COUNT][FINGER_JOINTS][4] = {};
+	float PalmOpen[4] = { 0.f, 0.f, 0.f, 1.f };
+	float PalmTarget[POSE_COUNT][4] = {};
+	bool  PalmDriven[POSE_COUNT] = {};
 	bool  Have = false;
 };
 
-inline void JointTarget(const JointPose *pose, const CurlJoint *cj, float want, float wq[4])
+// The targets for one set of inputs: QSlerp(open, pose, amount) per joint; the palm likewise where its pose drives
+// it, else its open rotation. `poses` null (no authored poses on this model): identity, the drawn frame.
+inline void PoseTargets(const HandPoses *poses, const PoseInputs &pi, float target[FINGER_COUNT][FINGER_JOINTS][4], float palm[4])
 {
-	bool have = false;
-	if (pose != nullptr && pose->Have)
-	{
-		QSlerp(pose->Open, pose->Fist, want, wq);
-		have = true;
-	}
-	if (!have)
-	{
-		if (cj != nullptr) QAxisAngle(cj->Axis, cj->Degrees * want, wq);
-		else { wq[0] = wq[1] = wq[2] = 0.f; wq[3] = 1.f; }
-	}
-}
-
-//===========================================================================
-//
-// ONE SIDE, ONE DISPLAYED FRAME. VAP :440-458 (the rule), :658-665 (the scalar), :667-696 (the
-// rotation targets, then gRot's slerp). `poses` (per finger, per joint) may be null: the table, or
-// identity. `table` may be null: not loaded.
-//
-//===========================================================================
-
-inline void StepSide(CurlState &curl, SideState &rot, const Inputs &in, float retain,
-	const JointPose (*poses)[FINGER_JOINTS], const CurlJoint (*table)[FINGER_JOINTS])
-{
-	float perFinger[FINGER_COUNT];
-	float want[FINGER_COUNT][FINGER_JOINTS];
-	FingerCurls(in, perFinger);
-	JointCurls(perFinger, want);
-	SmoothCurls(curl, want, retain);
-
-	float target[FINGER_COUNT][FINGER_JOINTS][4];
 	for (int f = 0; f < FINGER_COUNT; ++f)
 		for (int j = 0; j < FINGER_JOINTS; ++j)
-			JointTarget(poses != nullptr ? &poses[f][j] : nullptr, table != nullptr ? &table[f][j] : nullptr, want[f][j], target[f][j]);
-	Smooth(rot, target, retain);
+		{
+			if (poses != nullptr && poses->Have) QSlerp(poses->Open[f][j], poses->Target[pi.Pose][f][j], pi.Amount[f], target[f][j]);
+			else { target[f][j][0] = target[f][j][1] = target[f][j][2] = 0.f; target[f][j][3] = 1.f; }
+		}
+	palm[0] = palm[1] = palm[2] = 0.f; palm[3] = 1.f;
+	if (poses != nullptr && poses->Have)
+	{
+		if (poses->PalmDriven[pi.Pose]) QSlerp(poses->PalmOpen, poses->PalmTarget[pi.Pose], pi.Palm, palm);
+		else for (int k = 0; k < 4; ++k) palm[k] = poses->PalmOpen[k];
+	}
 }
 
-//===========================================================================
-//
-// THE PALM CUP. NOT FROM UZDXREMA (no source drives a palm joint; VAP turns the fingers only). The owner,
-// 2026-11-13: "HANDPALM_joint follows grip from the open frame to the fist frame". hand_final.fbx's take turns
-// HANDPALM_joint -- the parent of all five fingers' first joints -- 22.4 degrees (right) / 16.1 (left) between
-// its open frame 0 and its fist frame 318: the palm cups and the knuckles move about 2 cm.
-//
-//   want   = the grip value the curl rule gives middle, ring and pinky (FingerCurls: 0 without a controller)
-//   target = QSlerp(open, fist, want)     the palm joint's two FBX poses (PalmPose, BuildPalm), relative to
-//                                          the frame the model draws, in the joint's own axes
-//   cur    = the fingers' smoothing exactly (Smooth): first frame the target, then slerp(cur, target, 1 - retain)
-//
-// Because the target always lies on the one arc open -> fist, smoothing the rotation toward it is the same
-// as slerping by the smoothed scalar curl (SmoothCurls): cur stays slerp(open, fist, c) with c = want +
-// (c - want) * retain (tools/fbxload_test P2 checks it frame by frame). The turn is applied BEFORE the
-// fingers' (PosePalette), on the joint globals, carrying every joint below the palm, so the fingers ride it
-// and then fold in their own frames as before.
-//
-//===========================================================================
-
+// The palm's drawn rotation, smoothed exactly as each finger joint's (Smooth).
 struct PalmState
 {
 	float Q[4] = { 0.f, 0.f, 0.f, 1.f };
 	bool  Init = false;
 };
 
-inline void StepPalm(PalmState &s, const Inputs &in, float retain, const JointPose *pose)
+// ONE SIDE, ONE DISPLAYED FRAME: the rule, the targets, and UZDXREMA's smoothing toward them.
+inline void StepPose(SideState &rot, PalmState &palm, const Inputs &in, float retain, const HandPoses *poses)
 {
-	float perFinger[FINGER_COUNT];
-	FingerCurls(in, perFinger);
-	const float want = perFinger[FINGER_MIDDLE];	// = grip (FingerCurls: middle = ring = pinky = grip)
-	float target[4] = { 0.f, 0.f, 0.f, 1.f };
-	if (pose != nullptr && pose->Have) QSlerp(pose->Open, pose->Fist, want, target);
-	if (!s.Init) { for (int k = 0; k < 4; ++k) s.Q[k] = target[k]; }
-	else { float o[4]; QSlerp(s.Q, target, 1.f - retain, o); for (int k = 0; k < 4; ++k) s.Q[k] = o[k]; }
-	s.Init = true;
+	PoseInputs pi;
+	PoseRule(in, pi);
+	float target[FINGER_COUNT][FINGER_JOINTS][4], pt[4];
+	PoseTargets(poses, pi, target, pt);
+	Smooth(rot, target, retain);
+	if (!palm.Init) { for (int k = 0; k < 4; ++k) palm.Q[k] = pt[k]; }
+	else { float o[4]; QSlerp(palm.Q, pt, 1.f - retain, o); for (int k = 0; k < 4; ++k) palm.Q[k] = o[k]; }
+	palm.Init = true;
 }
 
 
@@ -705,7 +638,7 @@ struct HandRig
 	int Joint[FINGER_COUNT][FINGER_JOINTS] = {};
 	float Frame[FINGER_COUNT][FINGER_JOINTS][3][3] = {};	// [f][j][column X/Y/Z][component]
 	std::vector<int> Below[FINGER_COUNT][FINGER_JOINTS];	// every descendant, ascending
-	int Palm = -1;											// the palm cup's joint (BuildPalm); -1 = not driven
+	int Palm = -1;											// HANDPALM_joint (BuildHand); -1 = none
 	std::vector<int> PalmBelow;								// every descendant of it, ascending
 };
 
@@ -838,7 +771,7 @@ inline void ApplyFingerTurns(float (*G)[16], int n, const HandRig &rig, const Si
 	Detail::TurnFingers(G, n, rig, rot, moved);
 }
 
-// The palm cup's turn (StepPalm): the same turn as a finger joint's, in the palm joint's own axes (identity frame:
+// The palm's turn (StepPose, PalmState): the same turn as a finger joint's, in the palm joint's own axes (identity frame:
 // D = R(q), q = the palm's local rotation away from the drawn frame), carrying every joint below it. Does not clear
 // `moved`.
 inline void ApplyPalmTurn(float (*G)[16], int n, const HandRig &rig, const float q[4], std::vector<char> &moved)
@@ -872,16 +805,14 @@ inline void PosePalette(const float (*pal)[16], const float (*base)[16], const f
 //===========================================================================
 //
 // THE DXR HANDS (hand_final.fbx), as mkfbxposes.py reads them: the hand joint, the three joints of
-// each finger (FBX BASE/MID/TOP = joints 1/2/3; UP_TOP is a tip with no counterpart), and the two
-// frames of each hand's own take the fold is made from.
+// each finger (FBX BASE/MID/TOP = joints 1/2/3; UP_TOP is a tip with no counterpart: it never turns in
+// the take, tools/fbxload_test), and the palm joint.
 //
-// THE FRAMES. The owner's fbx_poses.json (UZDXREMA tools/avatar, read by mkfbxposes.py) names
-// "open" = 1 and "fist" = 319, "both" (each hand from its own skeleton). Those are BLENDER frame
-// numbers: the poses were dumped by hands_dump_pose_mats.py through Blender's FBX importer, whose
-// animation offset puts the file's time 0 at frame 1. This engine's frame k is the take at k / 60 s
-// (fbx_skinned.cpp), so Blender 1 = frame 0 and Blender 319 = frame 318. Checked, not assumed:
-// tools/fbxload_test walks every frame of both takes and compares the pose rotations made from 0/318
-// with the ones mkfbxposes.py wrote from 1/319 (UZDXREMA wadsrc/static/vrhandpose.txt).
+// FRAME NUMBERS. The owner's fbx_poses.json (UZDXREMA tools/avatar, read by mkfbxposes.py) gives BLENDER
+// frame numbers: Blender's FBX importer puts the file's time 0 at frame 1. This engine's frame k is the
+// take at k / 60 s (fbx_skinned.cpp), so Blender n = take frame n - 1 (checked, not assumed: tools/
+// fbxload_test F2 compares the rotations made from take 0/318 with the ones mkfbxposes.py wrote from
+// Blender 1/319; 317 and 319 are off by 1.3-3.6 degrees).
 //
 //===========================================================================
 
@@ -894,29 +825,97 @@ inline constexpr const char *kFingerJointNames[FINGER_COUNT][FINGER_JOINTS] =
 	{ "RING_BASE_joint",     "RING_MID_joint",     "RING_TOP_joint" },
 	{ "PINK_BASE_joint",     "PINK_MID_joint",     "PINK_TOP_joint" },
 };
-inline constexpr const char *kPalmJoint = "HANDPALM_joint";	// the palm cup's joint (StepPalm): parent of every finger
+inline constexpr const char *kPalmJoint = "HANDPALM_joint";	// parent of every finger's first joint
 inline constexpr int kDrawnFrame = 0;		// the frame the hands draw (MODELDEF FrameIndex ... 0)
-inline constexpr int kOpenFrame = 0;		// fbx_poses.json "open" 1 (Blender)
-inline constexpr int kFistFrame = 318;		// fbx_poses.json "fist" 319 (Blender)
+inline constexpr int kOpenFrame = 0;		// fbx_poses.json "open" 1 (Blender), both hands; = the rest the model draws
 
 //===========================================================================
 //
-// ONE HAND, BUILT ONCE PER MODEL AND SIDE: the palm normal and the canonical frames (MA), the turn's
-// rig (the joints, their frames as floats, everything below each), and the two FBX poses per joint
-// (MKP) when the model has the frames. qDrawn/qOpen/qFist: each joint's LOCAL rotation at those
-// frames, indexed by joint; null = no FBX poses (the table, or nothing, then turns the fingers).
+// WHERE EACH POSE COMES FROM, per hand, from ITS OWN take (Hand_Low = the right hand's skeleton, the owner's
+// "A"; Hand_Low1 = the left's, "B"). Each finger is taken WHOLE (its three joints) from one authored take frame,
+// as the owner's composed poses in fbx_poses.json are; Palm is the palm joint's frame, or -1: not driven.
+// Chosen by walking both takes frame by frame (tools/fbxload_test/walk_poses.py, which prints every number
+// below); take frame = Blender - 1. Neither take has a whole frame that is a one-finger point, a thumbs-up or a
+// finger gun with the middle finger closed, so those are composed.
+//
+//   fist      318 (the owner's "fist" 319), palm included. Its four fingertips' summed distance to the palm is
+//             within 5.2% (right) / 3.2% (left) of the take's tightest fist, 688 -- a 2-frame pass at ~7 degrees a
+//             frame on the way out of the fist hold; no finger is straight in it, so its palm is driven.
+//   point     the index from the take's held, straightest index, the rest the fist's
+//               right: 808 -- the finger-gun hold the owner's "fingergun" 803 (take 802) sits in. 802 itself is
+//                      mid-fire (the index 14.8 degrees at the knuckle, 6.5 more than the hold, the thumb dropping);
+//                      808 is the hold it returns to, identical to the pose before the shot (798) within 0.1 degree
+//               left:  0 -- the left take holds a straight index only in its open frames (0-112, 700-797)
+//   thumbup   the thumb from the take's held thumb furthest from the finger axis (straight >= 0.95, its tip not
+//             across the fingers), the rest the fist's
+//               right: 990 -- the owner's "twohand_gun" 985 (take 984) hold: 53.5 degrees off the finger axis.
+//                      984 itself is a twitch (the thumb 3.5 degrees off the hold, 1.26 degrees a frame)
+//               left:  205 -- the owner's "curl" 206: 50.2 degrees (held 155-283). The owner's "thumb_out" 944
+//                      (take 943) lies along the fingers (16 degrees off, straightness 0.945)
+//   fingergun the index and thumb out, the rest closed
+//               right: 808 for thumb, index, ring and pinky (the owner's finger gun, held); the middle from the
+//                      fist -- the take's finger gun has the middle straight beside the index
+//               left:  the index from 0 and the thumb from 205 (as point and thumbup), the rest the fist's
 //
 //===========================================================================
 
-inline bool BuildHand(const std::vector<RestJoint> &J, int hand, const int joints[FINGER_COUNT][FINGER_JOINTS], bool right,
-	const double (*qDrawn)[4], const double (*qOpen)[4], const double (*qFist)[4],
-	HandRig &rig, JointPose poses[FINGER_COUNT][FINGER_JOINTS], FingerFrame frames[FINGER_COUNT][FINGER_JOINTS],
-	double palm[3], char *why, size_t whyLen)
+struct PoseSource
+{
+	int Finger[FINGER_COUNT];	// thumb, index, middle, ring, pinky: take frame
+	int Palm;					// take frame, or -1: the palm stays in the drawn frame
+};
+
+inline constexpr PoseSource kPoseSources[SIDE_COUNT][POSE_COUNT] =
+{
+	{	// RIGHT: Hand_Low
+		{ { 318, 318, 318, 318, 318 }, 318 },	// POSE_FIST
+		{ { 318, 808, 318, 318, 318 },  -1 },	// POSE_POINT
+		{ { 990, 318, 318, 318, 318 },  -1 },	// POSE_THUMBUP
+		{ { 808, 808, 318, 808, 808 },  -1 },	// POSE_FINGERGUN
+	},
+	{	// LEFT: Hand_Low1
+		{ { 318, 318, 318, 318, 318 }, 318 },	// POSE_FIST
+		{ { 318,   0, 318, 318, 318 },  -1 },	// POSE_POINT
+		{ { 205, 318, 318, 318, 318 },  -1 },	// POSE_THUMBUP
+		{ { 205,   0, 318, 318, 318 },  -1 },	// POSE_FINGERGUN
+	},
+};
+
+// The last take frame any pose reads, per side: a model whose take is shorter is refused (BuildPoses).
+inline int PoseSourceLastFrame(int side)
+{
+	int last = kOpenFrame;
+	for (int p = 0; p < POSE_COUNT; ++p)
+	{
+		for (int f = 0; f < FINGER_COUNT; ++f) last = kPoseSources[side][p].Finger[f] > last ? kPoseSources[side][p].Finger[f] : last;
+		last = kPoseSources[side][p].Palm > last ? kPoseSources[side][p].Palm : last;
+	}
+	return last;
+}
+
+//===========================================================================
+//
+// ONE HAND, BUILT ONCE PER MODEL AND SIDE: the palm normal and the canonical frames (MA), and the turn's rig
+// (the joints, their frames as floats, everything below each, the palm joint and everything below it).
+//
+//===========================================================================
+
+inline bool BuildHand(const std::vector<RestJoint> &J, int hand, int palmJoint, const int joints[FINGER_COUNT][FINGER_JOINTS], bool right,
+	HandRig &rig, FingerFrame frames[FINGER_COUNT][FINGER_JOINTS], double palm[3], char *why, size_t whyLen)
 {
 	const int n = (int)J.size();
 	if (hand < 0 || hand >= n) { snprintf(why, whyLen, "no hand joint"); return false; }
 	if (!MeasurePalm(J, hand, joints[FINGER_INDEX][0], joints[FINGER_MIDDLE][0], joints[FINGER_PINKY][0], right, palm, why, whyLen)) return false;
 	if (!MeasureFingerFrames(J, joints, palm, frames, why, whyLen)) return false;
+	auto below = [&](int jt, std::vector<int> &out) {
+		out.clear();
+		for (int i = 0; i < n; ++i)
+		{
+			int guard = 0;
+			for (int p = J[i].parent; p >= 0 && guard < 4096; p = J[p].parent, ++guard)
+				if (p == jt) { out.push_back(i); break; }
+		}
+	};
 	for (int f = 0; f < FINGER_COUNT; ++f)
 	{
 		for (int j = 0; j < FINGER_JOINTS; ++j)
@@ -930,63 +929,64 @@ inline bool BuildHand(const std::vector<RestJoint> &J, int hand, const int joint
 				rig.Frame[f][j][1][k] = (float)F.Y[k];
 				rig.Frame[f][j][2][k] = (float)F.Z[k];
 			}
-			rig.Below[f][j].clear();
-			for (int i = 0; i < n; ++i)
-			{
-				int guard = 0;
-				for (int p = J[i].parent; p >= 0 && guard < 4096; p = J[p].parent, ++guard)
-					if (p == jt) { rig.Below[f][j].push_back(i); break; }
-			}
-			JointPose &P = poses[f][j];
-			P = JointPose();
-			if (qDrawn != nullptr && qOpen != nullptr && qFist != nullptr)
-			{
-				double a[4], b[4];
-				PoseRotation(F, qDrawn[jt], qOpen[jt], a);
-				PoseRotation(F, qDrawn[jt], qFist[jt], b);
-				for (int k = 0; k < 4; ++k) { P.Open[k] = (float)a[k]; P.Fist[k] = (float)b[k]; }
-				P.Have = true;
-			}
+			below(jt, rig.Below[f][j]);
 		}
 	}
+	rig.Palm = (palmJoint >= 0 && palmJoint < n) ? palmJoint : -1;
+	if (rig.Palm >= 0) below(rig.Palm, rig.PalmBelow);
+	else rig.PalmBelow.clear();
 	return true;
 }
 
 //===========================================================================
 //
-// THE PALM CUP'S JOINT, BUILT ONCE PER MODEL AND SIDE (StepPalm): its two FBX poses relative to the drawn frame,
-// as PoseRotation makes a finger's but in the joint's OWN axes (identity frame: q = quat(local(drawn)^T .
-// local(pose))), and every joint below it for the carry. With a uniform local scale on the palm joint, turning
-// its global by that q gives it exactly the pose frame's local rotation (tools/fbxload_test P1). False (rig.Palm
-// stays -1, nothing driven) when the model has no such joint.
+// THE POSES OF ONE HAND (kPoseSources[side]), built once per model and side: every finger joint's rotation in
+// each pose and in the open frame, by mkfbxposes.py's formula (PoseRotation) relative to the frame the model
+// draws; the palm's likewise in its own axes (identity frame: q = quat(local(drawn)^T . local(pose)); with the
+// palm's uniform local scale, turning its global by q gives it exactly that frame's local rotation).
+// getQ(frame, joint, q[4]) gives a joint's LOCAL rotation in a take frame. False (with why) when the take is too
+// short for the table or the palm joint is missing where a pose drives it.
 //
 //===========================================================================
 
-inline bool BuildPalm(const std::vector<RestJoint> &J, int palm, const double (*qDrawn)[4], const double (*qOpen)[4], const double (*qFist)[4],
-	HandRig &rig, JointPose &pose)
+template<class GetQ>
+inline bool BuildPoses(const HandRig &rig, const FingerFrame frames[FINGER_COUNT][FINGER_JOINTS], int side, int numFrames,
+	GetQ getQ, HandPoses &out, char *why, size_t whyLen)
 {
-	const int n = (int)J.size();
-	rig.Palm = -1;
-	rig.PalmBelow.clear();
-	pose = JointPose();
-	if (palm < 0 || palm >= n) return false;
-	rig.Palm = palm;
-	for (int i = 0; i < n; ++i)
+	out = HandPoses();
+	if (side < 0 || side >= SIDE_COUNT) { snprintf(why, whyLen, "no such side %d", side); return false; }
+	const int last = PoseSourceLastFrame(side);
+	if (numFrames <= last || numFrames <= kDrawnFrame)
 	{
-		int guard = 0;
-		for (int p = J[i].parent; p >= 0 && guard < 4096; p = J[p].parent, ++guard)
-			if (p == palm) { rig.PalmBelow.push_back(i); break; }
+		snprintf(why, whyLen, "the take has %d frames; the poses read frames up to %d", numFrames, last);
+		return false;
 	}
-	if (qDrawn != nullptr && qOpen != nullptr && qFist != nullptr)
+	auto rot = [&](const FingerFrame &F, int joint, int frame, float q[4]) {
+		double qd[4], qp[4], r[4];
+		getQ(kDrawnFrame, joint, qd);
+		getQ(frame, joint, qp);
+		PoseRotation(F, qd, qp, r);
+		for (int k = 0; k < 4; ++k) q[k] = (float)r[k];
+	};
+	for (int f = 0; f < FINGER_COUNT; ++f)
+		for (int j = 0; j < FINGER_JOINTS; ++j)
+		{
+			const int jt = rig.Joint[f][j];
+			rot(frames[f][j], jt, kOpenFrame, out.Open[f][j]);
+			for (int p = 0; p < POSE_COUNT; ++p) rot(frames[f][j], jt, kPoseSources[side][p].Finger[f], out.Target[p][f][j]);
+		}
+	FingerFrame I;
+	I.X[0] = 1; I.Y[1] = 1; I.Z[2] = 1;
+	for (int p = 0; p < POSE_COUNT; ++p)
 	{
-		FingerFrame I;
-		I.X[0] = 1; I.Y[1] = 1; I.Z[2] = 1;
-		double a[4], b[4];
-		PoseRotation(I, qDrawn[palm], qOpen[palm], a);
-		PoseRotation(I, qDrawn[palm], qFist[palm], b);
-		for (int k = 0; k < 4; ++k) { pose.Open[k] = (float)a[k]; pose.Fist[k] = (float)b[k]; }
-		pose.Have = true;
+		const int src = kPoseSources[side][p].Palm;
+		out.PalmDriven[p] = src >= 0;
+		if (src < 0) continue;
+		if (rig.Palm < 0) { snprintf(why, whyLen, "pose %d drives %s, which the model lacks", p, kPalmJoint); return false; }
+		rot(I, rig.Palm, src, out.PalmTarget[p]);
 	}
+	if (rig.Palm >= 0) rot(I, rig.Palm, kOpenFrame, out.PalmOpen);
+	out.Have = true;
 	return true;
 }
 

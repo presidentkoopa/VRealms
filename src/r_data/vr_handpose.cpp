@@ -23,42 +23,40 @@
 **  6. desktop source: fire/altfire as 0/1 on the main hand      RIG:614-624    -> NOT PORTED: no hands in flat
 **     (owner: nothing in flat); the flat TEST supplies its own inputs (roth_handtest, item 33).
 **
-** The curl rule and its smoothing (VAP UpdateCurls :419-698, empty hand)
+** The rule and its smoothing (VAP UpdateCurls :419-698)
 **  7. once per displayed frame (rig.FrameIndex)                 VAP:421-423    -> UpdateCurls, screen->FrameCount
 **  8. dt from screen->FrameTime ms; first frame/hitch -> 1/90   VAP:425-429    -> UpdateCurls, math SanitiseDt
 **  9. retain = 0.75^(dt*90)                                     VAP:431        -> math Retain
 ** 10. which controller each side holds (handedness)             VAP:433-438    -> VRHandPose_RoleForSide
-** 11. index = trigger > 0 ? trigger : (triggerTouch ? 0.3 : 0)  VAP:444        -> math FingerCurls
-** 12. middle = ring = pinky = grip                              VAP:445-447    -> math FingerCurls
-** 13. thumb = thumbTouch ? 0.6 : 0                              VAP:448        -> math FingerCurls
-** 14. no controller -> every finger 0                           VAP:450-454    -> math FingerCurls (!valid);
-**     valid = the grip pose is there this frame (ReadInputs)
-** 15. one value per finger copied to its 3 joints               VAP:456-458    -> math JointCurls
-** 16. weapon in the hand: gun_grip / grip_<class> / grip_<prop>, the thumb round the handle, the index's
-**     ready/fire blend                                          VAP:466-557    -> NOT PORTED: no weapon in these hands yet
-** 17. an object in the hand: hold_<subject>[_<prop>|_<class>]   VAP:558-656    -> NOT PORTED: nothing is held yet
-** 18. scalar curl smoothed, clamped 0..1 (FCurlState)           VAP:658-665    -> math CurlState/SmoothCurls (as in the
-**     source, no bone reads it)
-** 19. rotation target from the FRIK table: QAxisAngle(axis, degrees * curl); identity without a table
-**                                                               VAP:685-690, 410-414 -> math JointTarget, QAxisAngle
-** 20. [POSEROT] full-rotation target from two poses, QSlerp(a, b, t)
-**                                                               VAP:674-681    -> math JointTarget: a = the FBX's open
-**     frame, b = its fist frame, t = the curl (item 11-15). DEPARTS from the source's EMPTY hand (which uses item 19
-**     only) on the owner's word, 2026-11-13: "walk the frames of animation if you have to but get me badass HQ VR
-**     hands". Item 19 stays as the source's fallback for a joint with no frames (none on hand_final.fbx).
+** 11. index on the trigger: trigger > 0 ? trigger : (triggerTouch ? 0.3 : 0)
+**                                                               VAP:444        -> math PoseRule (amount of the index
+**     while it is on the trigger), kIndexTouchRest
+** 12. middle = ring = pinky = grip                              VAP:445-447    -> math PoseRule (their amounts)
+** 13. thumb = thumbTouch ? 0.6 : 0                              VAP:448        -> NOT PORTED (owner, 2026-11-13: "the
+**     hands have poses, why are we bending fingers"): the thumb touch PICKS the pose (thumb closed in fist/point,
+**     raised in thumbup/fingergun) and the grip says how far, as for the other fingers
+** 14. no controller -> every finger 0                           VAP:450-454    -> math PoseRule (!valid): every amount 0
+** 15. one value per finger copied to its 3 joints               VAP:456-458    -> math PoseTargets (one amount per finger)
+** 16. weapon in the hand (gun_grip / grip_<class> ...)          VAP:466-557    -> NOT PORTED: no weapon in these hands yet
+** 17. an object in the hand: hold_<subject>...                  VAP:558-656    -> NOT PORTED: nothing is held yet
+** 18. scalar curl smoothed (FCurlState)                         VAP:658-665    -> NOT PORTED: no bone reads it in the
+**     source; there is no scalar curl with poses
+** 19. rotation target from the FRIK table, QAxisAngle           VAP:685-690    -> NOT PORTED (owner: no per-finger
+**     bending). vrhandcurl.txt and its reader are gone; a model without the poses' frames is not posed and says so.
+** 20. [POSEROT] the target from two poses, QSlerp(a, b, t), and a named pose as the target
+**                                                               VAP:674-683    -> math PoseTargets: QSlerp(open, pose,
+**     amount) on rotations made from two AUTHORED take frames (BuildPoses, PoseRotation); the poses and which touch
+**     picks which: math PoseRule, kPoseSources (NOT FROM A SOURCE: chosen by walking the takes, tools/fbxload_test/
+**     walk_poses.py; the owner's fbx_poses.json names were the starting point)
 ** 21. gRot: first frame takes the target, then slerp(cur, target, 1 - retain)
-**                                                               VAP:691-696, 385-390 -> math SideState/Smooth
+**                                                               VAP:691-696, 385-390 -> math Smooth, StepPose
 ** 22. QSlerp: shortest arc, lerp past 0.9995, renormalised      VAP:392-408    -> math QSlerp
-**     [V items 7-22: tools/hands_test test_curls -- VAP's own lines cut out and compiled beside the port, same inputs,
-**      72/80/90/120/144 Hz with jitter, hitches and dropouts: every curl and quaternion identical (difference 0).]
+**     [V items 7-9, 21-22: tools/hands_test test_curls -- VAP's own lines (the rate :429-431, QSlerp :392-414, gRot's
+**      smoothing :691-696) cut out and compiled beside the port, fed the port's targets, 72/80/90/120/144 Hz with
+**      jitter, hitches and dropouts: every quaternion identical (difference 0). Items 11, 12, 14 and the poses:
+**      test_curls (the rule's cases) and tools/fbxload_test (every state at full input = its authored frames).]
 **
-** The curl table (VA :187-281)
-** 23. vrhandcurl.txt, one lump, the owner's file unchanged       VA:192         -> vrealms_iwad/vrhandcurl.txt
-**     [V: byte-identical, hands_test]; read with FScanner as VA reads it: `curl <finger> <1-3> <deg> <x y z>`, axis
-**     normalised, zero axis refused, unknown key refused, all 15 rows or nothing -> LoadCurlTable here.
-** 24. `pose` lines (FRIK's named poses) in the same file         VA:209-225     -> read and checked as VA reads them
-**     (a bad finger refuses the table), NOT KEPT: only items 16-17 look them up.
-** 25. VRHANDPOSE pack lumps (LoadPackPoses)                     VA:125-179     -> NOT PORTED: items 16-17 only.
+** The curl table (VA :187-281)                                                 -> NOT PORTED any more (item 19)
 **
 ** The canonical bone frame (MA, offline in UZDXREMA; here at load, from the model's own rest pose)
 ** 26. palm normal: f = middle_1 - hand, k = index_1 - pinky_1 squared off f, right k x f, left f x k
@@ -74,11 +72,10 @@
 ** The FBX's frames as poses (MKP main())
 ** 29. D = local(ref)^T local(pose); q = quat(F^T D F), w >= 0   MKP:main, quat -> math PoseRotation
 **     ref = the frame the model draws (0), equal to MKP's open frame (Blender 1 = frame 0 here).
-** 30. open = fbx_poses.json "open" 1, fist = "fist" 319 (Blender) -> frames 0 and 318 of each hand's own take
-**                                                               fbx_poses.json -> math kOpenFrame, kFistFrame
+** 30. take frame = Blender frame - 1                             fbx_poses.json -> math kPoseSources (frame numbers)
 **     [V: fbxload_test F2 -- from frames 0 -> 318 the right hand's 15 rotations equal vrhandpose.txt's fbx_fist R to
 **      0.131 deg, the left's fbx_fist L to 0.113 deg once read in MKP's mirrored frame; frames 317 and 319 are off by
-**      1.3-3.6 deg. W -- the whole take walked, both hands.]
+**      1.3-3.6 deg. W -- the whole take walked, both hands: walk_poses.py.]
 **
 ** The turn on the joints (VAP :1771-1838)
 ** 31. palette -> joint global: G = S.P.S.B                      RIG:1136-1151  -> math PaletteToGlobal
@@ -92,12 +89,13 @@
 **      (difference 0); the tip keeps its rest local to 2.4e-6. fbxload_test F3-F5 on the real FBX, both hands.]
 ** 36. [FINGERLEN] finger bones lengthened per body               VAP:2336-2400  -> NOT PORTED: one rig, its own size.
 ** 37. the grasp (vr_grasp.cpp)                                                 -> NOT PORTED (lead: later task).
-** 38. HANDPALM_joint: the take turns it 22.4 (right) / 16.1 (left) degrees in the fist (the palm cups, the knuckles
-**     move about 2 cm); no source drives it                     --             -> DRIVEN, NOT A PORT (owner, 2026-11-13:
-**     "HANDPALM_joint follows grip from the open frame to the fist frame"): its local rotation slerps from frame 0
-**     to frame 318 of its own hand's take by the grip curl, smoothed as the fingers are, turned before the fingers
-**     so they ride it -> math StepPalm, BuildPalm, ApplyPalmTurn; HandFor, UpdateCurls, VRHandPose_Apply here.
-**     [V: tools/fbxload_test P1-P3 on the real FBX, both hands -- reasoning only in the engine, not seen running.]
+** 38. HANDPALM_joint (parent of every finger): no source drives it -> DRIVEN PER POSE, NOT A PORT (lead, on the
+**     owner's word, 2026-11-13): it follows its pose's authored frame as the fingers do (QSlerp(open, frame, grip),
+**     the same smoothing, turned before the fingers so they ride it) ONLY in a pose where it carries no straight
+**     finger -- the fist (frame 318: 22.4 deg right / 16.1 left). In point, thumbup and fingergun it stays in the
+**     drawn frame: measured in the take, the fist's palm would swing the pointing index / raised thumb by tens of
+**     mm (the ~4 cm the owner saw). -> math kPoseSources (Palm), BuildPoses, StepPose, ApplyPalmTurn.
+**     [V: tools/fbxload_test S1-S4 on the real FBX, both hands -- reasoning only in the engine, not seen running.]
 **
 ** Placement (RIG, OXR)
 ** 39. grip pose located beside the aim pose, HMD-relative, yaw-corrected, raw quaternion
@@ -121,7 +119,7 @@
 **
 ** The flat test (not in UZDXREMA; test-only)
 ** 47. roth_handtest: both hands in front of the camera, fixed grip axes, through the placement above
-**     (fit, seat) and the fingers (items 7-35) with the typed inputs. Inert until typed.
+**     (fit, seat) and the fingers (items 7-38) with the typed inputs. Inert until typed.
 **
 **---------------------------------------------------------------------------
 */
@@ -139,8 +137,6 @@
 #include "c_cvars.h"
 #include "v_video.h"
 #include "printf.h"
-#include "filesystem.h"
-#include "sc_man.h"
 
 #include <algorithm>
 #include <array>
@@ -279,118 +275,10 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out)
 
 //===========================================================================
 //
-// THE CURL TABLE. UZDXREMA vr_avatar.cpp LoadCurlTable (:187-281), read the same way from the same file
-// (vrealms_iwad/vrhandcurl.txt, the owner's, unchanged): `curl <finger> <joint 1-3> <degrees> <axis x y z>`,
-// the axis normalised, a zero axis, an unknown key or a bad finger refusing the whole table, and all 15
-// rows or none ("some fingers curling and others not is harder to diagnose than none"). `pose` lines are
-// read and checked as VA reads them and not kept: only the weapon and held-object branches look them up
-// (not ported). The pack lumps (VRHANDPOSE, LoadPackPoses) are not read, for the same reason.
-//
-// Here the table is the FALLBACK (checklist 19-20): a joint whose FBX frames exist folds as the FBX does.
-//
-//===========================================================================
-
-namespace
-{
-	CurlJoint gTable[FINGER_COUNT][FINGER_JOINTS];
-	bool gTableLoaded = false, gTableTried = false;
-	const char *const kFingerNames[FINGER_COUNT] = { "thumb", "index", "middle", "ring", "pinky" };
-
-	int FingerByName(const char *s)
-	{
-		for (int i = 0; i < FINGER_COUNT; ++i)
-			if (!stricmp(s, kFingerNames[i])) return i;
-		return -1;
-	}
-
-	void LoadCurlTable()
-	{
-		if (gTableTried) return;
-		gTableTried = true;
-
-		const int lump = fileSystem.CheckNumForFullName("vrhandcurl.txt");
-		if (lump < 0)
-		{
-			Printf(TEXTCOLOR_RED "VR hands: vrhandcurl.txt is missing from the game data. Fingers with no FBX frames cannot "
-				"curl without it.\n");
-			return;
-		}
-
-		bool seen[FINGER_COUNT][FINGER_JOINTS] = {};
-		FScanner sc(lump);
-		sc.SetCMode(false);
-		while (sc.GetString())
-		{
-			if (sc.Compare("pose"))
-			{
-				sc.MustGetString();
-				sc.MustGetString();
-				if (FingerByName(sc.String) < 0)
-				{
-					sc.ScriptMessage("vrhandcurl.txt: `%s` is not a finger", sc.String);
-					return;
-				}
-				for (int j = 0; j < FINGER_JOINTS; ++j) sc.MustGetFloat();
-				continue;
-			}
-
-			if (!sc.Compare("curl"))
-			{
-				sc.ScriptMessage("vrhandcurl.txt: expected `curl` or `pose`, got `%s`", sc.String);
-				return;
-			}
-			sc.MustGetString();
-			const int f = FingerByName(sc.String);
-			if (f < 0)
-			{
-				sc.ScriptMessage("vrhandcurl.txt: `%s` is not a finger", sc.String);
-				return;
-			}
-			sc.MustGetNumber();
-			const int j = sc.Number - 1;
-			if (j < 0 || j >= FINGER_JOINTS)
-			{
-				sc.ScriptMessage("vrhandcurl.txt: joint %d is not 1, 2 or 3", sc.Number);
-				return;
-			}
-			sc.MustGetFloat();
-			const double deg = sc.Float;
-			sc.MustGetFloat(); const double ax = sc.Float;
-			sc.MustGetFloat(); const double ay = sc.Float;
-			sc.MustGetFloat(); const double az = sc.Float;
-
-			FVector3 axis((float)ax, (float)ay, (float)az);
-			const float len = (float)axis.Length();
-			if (len < 1e-4f)
-			{
-				sc.ScriptMessage("vrhandcurl.txt: %s joint %d has a zero curl axis", kFingerNames[f], j + 1);
-				return;
-			}
-			axis /= len;
-			gTable[f][j].Axis[0] = axis.X; gTable[f][j].Axis[1] = axis.Y; gTable[f][j].Axis[2] = axis.Z;
-			gTable[f][j].Degrees = (float)deg;
-			seen[f][j] = true;
-		}
-
-		FString missing;
-		for (int f = 0; f < FINGER_COUNT; ++f)
-			for (int j = 0; j < FINGER_JOINTS; ++j)
-				if (!seen[f][j])
-					missing.AppendFormat("%s%s joint %d", missing.IsEmpty() ? "" : ", ", kFingerNames[f], j + 1);
-		if (!missing.IsEmpty())
-		{
-			Printf(TEXTCOLOR_RED "VR hands: vrhandcurl.txt is missing %s -- refusing a partial table.\n", missing.GetChars());
-			return;
-		}
-		gTableLoaded = true;
-	}
-}
-
-//===========================================================================
-//
 // Per model: the seat for each side, and for the side the model is drawn as, the hand built from its own
-// rest pose and its own take (vr_handpose_math.h BuildHand: the canonical frames, the turn's rig, the
-// FBX open and fist poses). Built once; a model that lacks any of it is left alone and says why, once.
+// rest pose and its own take (vr_handpose_math.h BuildHand: the canonical frames and the turn's rig;
+// BuildPoses: the authored poses of kPoseSources). Built once; a model that lacks any of it is left alone
+// and says why, once.
 //
 //===========================================================================
 
@@ -413,10 +301,8 @@ namespace
 		// the fingers, per side the model is drawn as
 		bool        handTried[SIDE_COUNT] = { false, false };
 		bool        handOk[SIDE_COUNT] = { false, false };
-		bool        posesOk[SIDE_COUNT] = { false, false };
 		HandRig     rig[SIDE_COUNT];
-		JointPose   poses[SIDE_COUNT][FINGER_COUNT][FINGER_JOINTS];
-		JointPose   palm[SIDE_COUNT];	// the palm cup's two poses (checklist 38)
+		HandPoses   poses[SIDE_COUNT];	// the authored poses (kPoseSources), checklist 11-20, 38
 		std::vector<float> base, invBase;	// n x 16: the rest (IQM baseframe) and its inverse
 	};
 	TArray<FHandModelCache *> gModels;
@@ -496,6 +382,7 @@ namespace
 		}
 
 		const int hand = model->FindJoint(FName(kHandJoint));
+		const int palmJ = model->FindJoint(FName(kPalmJoint));
 		int joints[FINGER_COUNT][FINGER_JOINTS];
 		for (int f = 0; f < FINGER_COUNT; f++)
 			for (int j = 0; j < FINGER_JOINTS; j++)
@@ -513,71 +400,38 @@ namespace
 			J[i].t[0] = t.translation.X; J[i].t[1] = t.translation.Y; J[i].t[2] = t.translation.Z;
 		}
 
-		// the FBX's own frames (checklist 29-30), when the take has them
-		const bool haveFrames = model->NumFrames() > kFistFrame && model->NumFrames() > kOpenFrame && model->NumFrames() > kDrawnFrame;
-		std::vector<std::array<double, 4>> qD, qO, qF;
-		if (haveFrames)
-		{
-			qD.resize(n); qO.resize(n); qF.resize(n);
-			for (int i = 0; i < n; i++)
-			{
-				const TRS d = model->GetJointPose(i, kDrawnFrame), o = model->GetJointPose(i, kOpenFrame), f = model->GetJointPose(i, kFistFrame);
-				qD[i] = { d.rotation.X, d.rotation.Y, d.rotation.Z, d.rotation.W };
-				qO[i] = { o.rotation.X, o.rotation.Y, o.rotation.Z, o.rotation.W };
-				qF[i] = { f.rotation.X, f.rotation.Y, f.rotation.Z, f.rotation.W };
-			}
-		}
-
 		FingerFrame frames[FINGER_COUNT][FINGER_JOINTS];
 		double palm[3];
 		char why[256] = "";
-		const bool ok = BuildHand(J, hand, joints, side == SIDE_RIGHT,
-			haveFrames ? reinterpret_cast<const double (*)[4]>(qD.data()) : nullptr,
-			haveFrames ? reinterpret_cast<const double (*)[4]>(qO.data()) : nullptr,
-			haveFrames ? reinterpret_cast<const double (*)[4]>(qF.data()) : nullptr,
-			c->rig[side], c->poses[side], frames, palm, why, sizeof(why));
-		if (!ok)
+		if (!BuildHand(J, hand, palmJ, joints, side == SIDE_RIGHT, c->rig[side], frames, palm, why, sizeof(why)))
+		{
+			Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- fingers NOT posed: %s\n", model->mFileName.GetChars(), sideName, why);
+			return false;
+		}
+		// the authored poses (checklist 11-20, 29-30, 38): each joint's local rotation in a take frame, from the model
+		auto getQ = [model](int frame, int joint, double q[4]) {
+			const TRS t = model->GetJointPose(joint, frame);
+			q[0] = t.rotation.X; q[1] = t.rotation.Y; q[2] = t.rotation.Z; q[3] = t.rotation.W;
+		};
+		if (!BuildPoses(c->rig[side], frames, side, model->NumFrames(), getQ, c->poses[side], why, sizeof(why)))
 		{
 			Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- fingers NOT posed: %s\n", model->mFileName.GetChars(), sideName, why);
 			return false;
 		}
 		c->handOk[side] = true;
-		c->posesOk[side] = haveFrames;
-		// THE PALM IS NOT DRIVEN (owner, 2026-11-13, in the headset): cupping it with grip carried every finger
-		// with it, so a pointing index swung ~4 cm. As UZDXREMA: only the 15 finger joints move. BuildPalm and
-		// StepPalm (vr_handpose_math.h) stay, unused.
-		const int palmJ = model->FindJoint(FName(kPalmJoint));
-		double palmTurn = 0;
-		const bool palmOk = false;
-		if (palmOk)
-		{
-			const float *a = c->palm[side].Open, *b = c->palm[side].Fist;
-			const double d = fabs((double)a[0] * b[0] + (double)a[1] * b[1] + (double)a[2] * b[2] + (double)a[3] * b[3]);
-			palmTurn = 2.0 * acos(d > 1.0 ? 1.0 : d) * (180.0 / 3.14159265358979323846);
-		}
-		else
-		{
-			c->rig[side].Palm = -1;
-			c->rig[side].PalmBelow.clear();
-			c->palm[side] = JointPose();
-		}
-		LoadCurlTable();
 		double minFold = 9;
 		for (int f = 0; f < FINGER_COUNT; f++) for (int j = 0; j < FINGER_JOINTS; j++) if (frames[f][j].fold < minFold) minFold = frames[f][j].fold;
-		if (haveFrames)
-			Printf("VR hands: %s as the %s hand -- fingers posed from frames %d (open) and %d (fist) of its own take, 15 joints; "
-				"canonical frames measured (palm %.3f %.3f %.3f, smallest fold %.3f)\n",
-				model->mFileName.GetChars(), sideName, kOpenFrame, kFistFrame, palm[0], palm[1], palm[2], minFold);
-		else
-			Printf(TEXTCOLOR_ORANGE "VR hands: %s as the %s hand -- the take has %d frames, no fist frame %d: fingers posed from %s\n",
-				model->mFileName.GetChars(), sideName, model->NumFrames(), kFistFrame,
-				gTableLoaded ? "the FRIK curl table (vrhandcurl.txt)" : "nothing (no curl table either): they stay at rest");
-		if (palmOk)
-			Printf("VR hands: %s as the %s hand -- palm cup: %s follows grip from frame %d to frame %d (%.1f degrees), %d joints ride it\n",
-				model->mFileName.GetChars(), sideName, kPalmJoint, kOpenFrame, kFistFrame, palmTurn, (int)c->rig[side].PalmBelow.size());
-		else
-			Printf("VR hands: %s as the %s hand -- the palm is not driven (only the fingers move, as UZDXREMA)%s\n", model->mFileName.GetChars(), sideName,
-				palmJ < 0 ? "; no HANDPALM_joint" : "");
+		static const char *const kPoseNames[POSE_COUNT] = { "fist", "point", "thumbup", "fingergun" };
+		FString list;
+		for (int p = 0; p < POSE_COUNT; p++)
+		{
+			const PoseSource &ps = kPoseSources[side][p];
+			list.AppendFormat("%s%s %d/%d/%d/%d/%d palm %s", p ? "; " : "", kPoseNames[p], ps.Finger[0], ps.Finger[1], ps.Finger[2], ps.Finger[3], ps.Finger[4],
+				ps.Palm >= 0 ? FStringf("%d", ps.Palm).GetChars() : "not driven");
+		}
+		Printf("VR hands: %s as the %s hand -- 15 finger joints posed by the authored poses of its own take (open = frame %d; "
+			"thumb/index/middle/ring/pinky frames: %s); canonical frames measured (palm %.3f %.3f %.3f, smallest fold %.3f)\n",
+			model->mFileName.GetChars(), sideName, kOpenFrame, list.GetChars(), palm[0], palm[1], palm[2], minFold);
 		return true;
 	}
 
@@ -614,7 +468,7 @@ bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out)
 
 //===========================================================================
 //
-// THE CURLS, once per displayed frame, both sides (VAP UpdateCurls :419-698; checklist 7-22). The
+// THE POSES, once per displayed frame, both sides (VAP UpdateCurls :419-698; checklist 7-22, 38). The
 // inputs: the controller this side holds (by handedness), or the flat test's. "Valid" is the source's
 // rig.Valid(hidx): a pose for that controller this frame -- here, its grip transform.
 //
@@ -622,14 +476,12 @@ bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out)
 
 namespace
 {
-	CurlState gCurl[SIDE_COUNT];
 	SideState gRot[SIDE_COUNT];
-	PalmState gPalm[SIDE_COUNT];	// the palm cup (checklist 38)
+	PalmState gPalm[SIDE_COUNT];
 	uint64_t gCurlFrame = ~0ull;
 	double gCurlLastTime = 0.0;
-	// the poses of the model last drawn as each side (null: the table's fold, or none)
-	const JointPose (*gSidePoses[SIDE_COUNT])[FINGER_JOINTS] = { nullptr, nullptr };
-	const JointPose *gSidePalm[SIDE_COUNT] = { nullptr, nullptr };	// its palm's poses (null: not driven)
+	// the poses of the model last drawn as each side (null: none built -- the fingers stay in the drawn frame)
+	const HandPoses *gSidePoses[SIDE_COUNT] = { nullptr, nullptr };
 
 	void ReadInputs(int side, Inputs &in)
 	{
@@ -670,13 +522,11 @@ namespace
 		gCurlLastTime = now;
 		const float retain = Retain(dt);	// SanitiseDt inside: first frame or a hitch -> 1/90
 
-		LoadCurlTable();
 		for (int side = 0; side < SIDE_COUNT; ++side)
 		{
 			Inputs in;
 			ReadInputs(side, in);
-			StepSide(gCurl[side], gRot[side], in, retain, gSidePoses[side], gTableLoaded ? gTable : nullptr);
-			StepPalm(gPalm[side], in, retain, gSidePalm[side]);
+			StepPose(gRot[side], gPalm[side], in, retain, gSidePoses[side]);
 		}
 	}
 }
@@ -699,8 +549,7 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 	const int n = c->numJoints;
 	if ((int)bones.Size() != n) return &bones;
 
-	gSidePoses[side] = c->posesOk[side] ? c->poses[side] : nullptr;
-	gSidePalm[side] = c->palm[side].Have ? &c->palm[side] : nullptr;
+	gSidePoses[side] = &c->poses[side];
 	UpdateCurls();
 
 	static thread_local TArray<VSMatrix> posed;
@@ -715,7 +564,7 @@ const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int
 	}
 	PosePalette(reinterpret_cast<const float (*)[16]>(pal.data()), reinterpret_cast<const float (*)[16]>(c->base.data()),
 		reinterpret_cast<const float (*)[16]>(c->invBase.data()), n, c->rig[side], gRot[side],
-		reinterpret_cast<float (*)[16]>(out.data()), scratch, moved, gSidePalm[side] != nullptr ? gPalm[side].Q : nullptr);
+		reinterpret_cast<float (*)[16]>(out.data()), scratch, moved, gPalm[side].Q);
 	posed.Resize(n);
 	for (int i = 0; i < n; i++) posed[i].loadMatrix(&out[(size_t)i * 16]);
 	return &posed;

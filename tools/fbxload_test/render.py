@@ -36,13 +36,19 @@ def load(p):
     return v[:, :3], v[:, 3:6], v[:, 6:8], t
 
 
-def render(P, N, UV, T, tex, view, nmap=None):
+def render(P, N, UV, T, tex, view, nmap=None, bounds=None):
     # view: +1 looks along +Y (from -Y), -1 along -Y (from +Y). Screen x = world x * view, y = world z.
+    # bounds: (xmin, xmax, zmin, zmax) in world units to frame every tile alike (default: this mesh's own extent).
     sx = P[:, 0] * view
     sy = P[:, 2]
     depth = P[:, 1] * view  # smaller is nearer
-    lo = np.array([sx.min(), sy.min()])
-    hi = np.array([sx.max(), sy.max()])
+    if bounds is None:
+        lo = np.array([sx.min(), sy.min()])
+        hi = np.array([sx.max(), sy.max()])
+    else:
+        xs = sorted([bounds[0] * view, bounds[1] * view])
+        lo = np.array([xs[0], bounds[2]])
+        hi = np.array([xs[1], bounds[3]])
     s = (TILE - 20) / max(hi - lo)
     X = (sx - lo[0]) * s + 10 + (TILE - 20 - (hi[0] - lo[0]) * s) / 2
     Y = TILE - ((sy - lo[1]) * s + 10)

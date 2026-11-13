@@ -3,10 +3,11 @@
 #   tools/hands_test/run.sh
 #
 #   test_handpose.cpp  the rate, the hand frame, the fit and the seat
-#   test_curls.cpp     DIFFERENTIAL: the curl rule, its smoothing and the turn on the joints, against
-#                      UZDXREMA's OWN CODE -- the lines below are cut out of its vr_avatar_pose.cpp and
-#                      vr_armik.h at build time and compiled beside the port, then both are fed the same
-#                      inputs. The source is read-only; set UZDXREMA if it is not at the default path.
+#   test_curls.cpp     DIFFERENTIAL: the rate, the smoothing and the turn on the joints, against UZDXREMA's
+#                      OWN CODE -- the lines below are cut out of its vr_avatar_pose.cpp and vr_armik.h at
+#                      build time and compiled beside the port, then both are fed the same targets; and
+#                      the pose rule's cases (the rule itself is not UZDXREMA's: the owner's authored
+#                      poses). The source is read-only; set UZDXREMA if it is not at the default path.
 set -e
 cd "$(dirname "$0")"
 OUT=${HANDS_TEST_OUT:-/tmp/hands_test_out}
@@ -40,9 +41,8 @@ pin "$VAP" 392 "void QSlerp(const float a[4], const float b[4], float t, float o
 pin "$VAP" 414 "}"
 pin "$VAP" 429 "if (!(dt > 0.0) || dt > 0.25) dt = 1.0 / 90.0;"
 pin "$VAP" 431 "const float retain = (float)pow(0.75, dt * 90.0);"
-pin "$VAP" 440 "float want[VRFINGER_COUNT][VRFINGER_JOINTS];"
-pin "$VAP" 464 "float idxT = 0.f;"
-pin "$VAP" 658 "for (int f = 0; f < VRFINGER_COUNT; ++f)"
+pin "$VAP" 691 "float* cur = gRot[sd].Q[f][j];"
+pin "$VAP" 693 "else { float o[4]; QSlerp(cur, wq, 1.f - retain, o);"
 pin "$VAP" 696 "gRot[sd].Init = true;"
 pin "$VAP" 1785 "for (int f = 0; f < VRFINGER_COUNT; ++f)"
 pin "$VAP" 1794 "const float* q = gRot[sd].Q[f][j];"
@@ -53,18 +53,10 @@ sed -n '35,54p'     "$ARM" > "$OUT/uz/fvrmat3.inc"			# FVRMat3
 sed -n '336,348p'   "$VAP" > "$OUT/uz/frommat3pos.inc"		# FromMat3Pos
 sed -n '392,414p'   "$VAP" > "$OUT/uz/qmath.inc"			# QSlerp, QAxisAngle
 sed -n '429,431p'   "$VAP" > "$OUT/uz/retain.inc"			# the rate
-sed -n '440,464p'   "$VAP" > "$OUT/uz/rule.inc"			# the curl rule (empty hand) + pose bookkeeping
-sed -n '658,696p'   "$VAP" > "$OUT/uz/smooth.inc"			# scalar smoothing, rotation targets, gRot slerp
+sed -n '691,693p'   "$VAP" > "$OUT/uz/gslerp.inc"			# gRot's smoothing of one joint toward its target
+sed -n '696p'       "$VAP" > "$OUT/uz/ginit.inc"			# gRot[sd].Init = true
 sed -n '1785,1836p' "$VAP" > "$OUT/uz/turn.inc"			# the turn on the joint globals and the carry
 
 g++ -std=c++17 -O1 -Wall -Wextra -Wno-unused-variable -Wno-unused-but-set-variable -I../../src/r_data -I"$OUT/uz" \
 	test_curls.cpp -o "$OUT/test_curls"
-"$OUT/test_curls" ../../vrealms_iwad/vrhandcurl.txt
-
-# The table is the owner's file, copied unchanged.
-if cmp -s ../../vrealms_iwad/vrhandcurl.txt "$UZ/wadsrc/static/vrhandcurl.txt"; then
-	echo "vrhandcurl.txt: byte-identical to UZDXREMA's wadsrc/static/vrhandcurl.txt"
-else
-	echo "FAIL: vrealms_iwad/vrhandcurl.txt differs from UZDXREMA's wadsrc/static/vrhandcurl.txt"
-	exit 1
-fi
+"$OUT/test_curls"

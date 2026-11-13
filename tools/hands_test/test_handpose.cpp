@@ -3,7 +3,7 @@
 // Compiles the renderer's own src/r_data/vr_handpose_math.h (nothing copied) and checks it:
 //   1. the retention against UZDXREMA's formula at several refresh rates (vr_avatar_pose.cpp:425-431);
 //   2. HandFrameFromJoints / DefaultHandFit / ModelSeat on a hand whose answer is known.
-// The curl rule, its smoothing and the turn on the joints: test_curls.cpp (a differential test against UZDXREMA's code).
+// The pose rule, the smoothing and the turn on the joints: test_curls.cpp (the smoothing and the turn differential against UZDXREMA's code).
 //
 //   g++ -std=c++17 -O1 -Wall -I../../src/r_data test_handpose.cpp -o test_handpose
 //   ./test_handpose
