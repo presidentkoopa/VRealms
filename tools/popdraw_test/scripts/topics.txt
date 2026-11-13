@@ -1,0 +1,88 @@
+# The topic menu (item 1: two topics, a film that holds): the "i" clicked during the film (the film
+# stops reaching the window), the lines' reveal pass by pass, the highlight by the Down key and by the
+# pointer, the menu hidden and shown again, a topic picked; hit tests with the menu up.
+env
+font
+exe 0x7675d 1
+give 1
+give 2
+open
+tab 0
+cell 0
+dump clicked
+qw 2
+qd film2
+qm 215 190
+qb 1
+qw 5
+qp film_topics_a
+qw 1
+qd film_topics_a_back
+qw 6
+qp film_topics_b
+qw 200
+qp modal_topics
+qw 1
+q 80
+qw 1
+qp down1
+qw 1
+q 80
+qw 1
+qp down2
+qw 1
+q 72
+qw 1
+qp up1
+qw 1
+qm 330 224
+qw 1
+qp hover0
+qw 1
+qm 330 236
+qw 1
+qp hover1
+qw 1
+qh 3
+qm 215 190
+qb 1
+qw 2
+qd topics_off
+qp topics_off_p
+qw 1
+qh 4
+qm 215 190
+qb 1
+qw 1
+qp topics_on_again
+qw 3
+qp topics_on_again3
+qw 1
+qm 330 236
+qb 1
+qw 3
+qs
+qp after_topic
+qw 1
+q 1
+q 1
+q 1
+q 1
+q 1
+examine 320 240
+dump closed
+cell 1
+dump clicked2
+qw 7
+qm 215 190
+qb 1
+qw 12
+qp item2_topics
+qw 6
+qh 4
+q 1
+q 1
+q 1
+q 1
+examine 320 240
+dump closed2

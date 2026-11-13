@@ -1,0 +1,63 @@
+# The close-up films: one that loops (item 14, no hold: 20 frames at 12 fps), several frames across
+# its loop point; one that holds (item 1: 21 frames at 9 fps) through its end into the modal loop;
+# the magnifier lit on a first view, not on a second.
+env
+font
+exe 0x7675d 1
+give 14
+give 1
+open
+tab 3
+dump open
+cell 0
+dump clicked14
+qw 1
+qd loop_b1
+qw 5
+qd loop_b6
+qw 6
+qd loop_b12
+qw 40
+qd loop_b52
+qs
+qw 46
+qd loop_b98
+qw 5
+qd loop_b103
+qw 6
+qd loop_b109
+qw 100
+qd loop_b209
+qh 4
+q 1
+q 1
+q 1
+examine 320 240
+dump closed14
+cell 0
+qw 2
+qd second14
+q 1
+q 1
+examine 320 240
+dump closed14b
+tab 0
+cell 0
+dump clicked1
+qw 4
+qd hold_b4
+qw 60
+qd hold_b64
+qw 125
+qd hold_b189
+qw 30
+qd hold_b219
+qs
+qw 3
+qd hold_modal
+qh 4
+q 1
+q 1
+q 1
+examine 320 240
+dump closed1

@@ -129,6 +129,24 @@ public:
 	// One frame of the popup's own loop (update_inspect_popup_choices, and the
 	// loop's exit test, file_config.c:1118-1122).
 	void PopupFrame();
+	// The same frame in the original's parts, for a caller that does what
+	// lies between them (roth_popupdraw: the pointer, dialogue_ui.c:1272):
+	// update_inspect_popup_choices up to its cursor call (:1257-1271), the
+	// pending topic after it (:1273-1276). PopupFrame() is Begin, End, then
+	// the popup's end when an exit was asked for. PopupFinish is the popup's
+	// end (file_config.c:1134-1143) and the rest of update_inventory_screen
+	// after it (inventory.c:1837-1844: the close test, the panel refreshed
+	// when the right hand's item changed).
+	void PopupFrameBegin();
+	void PopupFrameEnd();
+	void PopupFinish();
+	// 0x80b34: bit 0 the magnifier is drawn lit, bit 1 the "i" (dialogue_ui.c:1263-1270).
+	int32_t PopupMarks() const { return mPopupMarks; }
+	// The item record's +7 byte as render_inspect_popup_window read it (before
+	// the first view set its 0x80 bit, file_config.c:962-963).
+	uint8_t PopupRuntimeAtOpen() const { return mPopupRuntime7; }
+	// The record's +4 flags (hold, document, topics, OnInspect).
+	uint8_t PopupFlags() const { return mPopupFlags4; }
 	void PopupMagnifier();          // action 2: run OnInspect again
 	void PopupToggleTopics();       // action 3: the "i" button
 	void PopupTopic(int row);       // actions 7..0x16: pick topic `row`
@@ -200,6 +218,10 @@ private:
 	int32_t mPopupItem = 0;                     // 0x7fec8, as an item id
 	std::vector<uint32_t> mPages;
 	int32_t mPopupMarks = 0;                    // 0x80b34: bit 0 = the magnifier is lit, bit 1 = the "i" is
+	uint8_t mPopupRuntime7 = 0;
+	uint8_t mPopupFlags4 = 0;
+	int32_t mSelBeforePopup = 0x7fffffff;
+	int32_t SelectedId() const;
 };
 
 } // namespace roth

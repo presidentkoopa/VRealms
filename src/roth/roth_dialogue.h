@@ -220,6 +220,14 @@ public:
 	void ActivateSelectedChoiceRecord(uint32_t index);
 	const std::vector<TextLine> &TopicLines() const { return mChoiceLines; }
 	int TopicCount() const { return (int)mChoiceOptionBlocks.size(); }
+	// g_choice_marker_normal_alt (0x83ae9): the topic lines' own colour.
+	uint8_t TopicColor() const { return mTopicColor; }
+	// hit_test_dialogue_ui_action's topic half (dialogue_ui.c:613-638): the
+	// marker writes a pointer over the shown topic menu makes. With no line
+	// selected by key, every line gets its own colour back; the line `row`
+	// under the pointer (-1 none) gets the marker and the key selection is
+	// dropped.
+	void TopicPointerMarker(int row);
 
 	// ---- state, under the original's names ---------------------------------------------
 	const std::vector<TextLine> &Segments() const { return mSegments; }     // g_dialogue_segments 0x827fd

@@ -1,0 +1,93 @@
+# A document (item 84, the Journal: 7 pages, hold): the film skipped by Space, the page's reveal
+# frame by frame, the line OnInspect speaks dismissed by a click, page turns by the arrows (pressed,
+# then the next page's reveal), the scroll keys, a drag, the magnifier, the close box; a second view.
+env
+font
+exe 0x7675d 1
+give 84
+open
+tab 4
+cell 0
+dump clicked
+q 1
+qw 3
+qd film3
+q 57
+qw 1
+qd modal1
+qw 3
+qd modal4
+qw 40
+qd modal_full
+qs
+qm 300 300
+qb 1
+qw 2
+qs
+qh 4
+qm 145 235
+qb 1
+qw 1
+qd pgdn_pressed
+qw 1
+qd pgdn_reveal
+qw 40
+qd page2
+qm 145 235
+qb 1
+qw 40
+qd page3
+qm 145 210
+qb 1
+qw 1
+qd pgup_pressed
+qw 40
+qd page2back
+q 80
+q 80
+q 80
+q 77
+q 77
+qw 1
+qd scrolled
+q 72
+q 75
+qw 1
+qd scrolled_back
+qm 300 220
+qb 1
+qhold 1
+qw 1
+qm 280 170
+qw 1
+qd dragged
+qm 260 120
+qw 1
+qd dragged_far
+qhold 0
+qw 1
+qs
+qm 145 190
+qb 1
+qw 1
+qd magnifier
+qs
+qm 300 300
+qb 1
+qw 2
+qd magnifier_out
+qm 140 160
+qb 1
+qw 2
+examine 320 240
+dump closed
+cell 0
+qw 2
+qd second
+q 57
+qw 50
+qd second_modal
+q 1
+q 1
+examine 320 240
+dump closed2

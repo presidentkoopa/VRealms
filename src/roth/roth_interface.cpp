@@ -17,6 +17,7 @@
 #include "roth_invdraw.h"
 #include "roth_menudraw.h"
 #include "roth_dlgdraw.h"
+#include "roth_popupdraw.h"
 #include "roth_uidraw.h"
 #include "roth_huddraw.h"
 #include "roth_runtime.h"
@@ -133,7 +134,7 @@ enum ElementKind
 	E_NONE,
 	E_DLGPANEL,                                         // the dialogue's choice panel picture; a click is mapped to its rows
 	E_INVPANEL,                                         // the inventory panel's picture; a click is mapped to its hotspots
-	E_POP_MAG, E_POP_INFO, E_POP_TOPIC, E_POP_CLOSE, E_POP_PGUP, E_POP_PGDN, E_POP_BACKING,
+	E_POPUP,                                            // the examine popup's picture; a click goes to its own hit test
 	E_MENUBOX,                                          // a message box's picture; a click is mapped by hit_test_ui_element
 	E_PICTURE,                                          // a picture shown, not clicked (the subtitle, the timed message, a box under another)
 };
@@ -152,7 +153,7 @@ struct Element
 
 // The pictures drawn as the original draws them, each through its own pair of
 // textures (see UploadPicture).
-enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_HUDTOP, PIC_HUDHELD, PIC_COUNT };
+enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_HUDTOP, PIC_HUDHELD, PIC_POPUP, PIC_COUNT };
 
 struct Fly
 {
@@ -212,9 +213,11 @@ struct Ui
 	bool attached = false;
 
 	std::vector<PalEntry> palette;                  // the map's pack palette, 8-bit
-	std::map<uint32_t, FTextureID> iconTex;         // DBASE200 resource -> texture
-	std::map<uint32_t, FTextureID> pageTex;         // DBASE300 resource -> texture
-	int iconTranslation = -1;
+	// The examine popup, drawn and run as the original draws and runs it
+	// (roth_popupdraw: the window, its film, its pages, its topic menu).
+	InspectPopupView popup;
+	std::vector<uint8_t> popupFilm;                 // the close-up's GDV bytes (DBASE300 from its offset)
+	double popupIsr = 0.0;                          // GDV timer ticks (60 Hz) owed to the film
 
 	FLevelLocals *level = nullptr;
 	std::vector<Element> elements;
@@ -289,87 +292,26 @@ void RuntimeInvSink::ItemMessage(int interfaceIndex, int colorIndex, uint32_t na
 		for (const std::string &r : l.Rows()) Printf("[roth_ui] message: %s\n", r.c_str());
 }
 
-//==========================================================================
-//
-// Textures from palette images. The pixels must outlive the image
-// (FImageSource is freed in bulk without its destructor), as in
-// roth_texture.cpp.
-//
-//==========================================================================
-
-std::vector<std::unique_ptr<std::vector<uint8_t>>> g_pixelStore;
-
-int IconTranslation()
+// load_das_cache_resource on DBASE300.DAT (das_assets.c:421-454): resource
+// `res`'s bytes (a size dword at res * 8, then the bytes), read on demand (the
+// file is 22 MB). Empty when it cannot be read.
+std::vector<uint8_t> Dbase300Resource(uint32_t res)
 {
-	if (U.iconTranslation >= 0) return U.iconTranslation;
-	if (U.palette.size() < 256) return -1;
-	FRemapTable t;
-	for (int c = 0; c < 256; c++)
-	{
-		t.Palette[c] = PalEntry(255, U.palette[c].r, U.palette[c].g, U.palette[c].b);
-		t.Remap[c] = ColorMatcher.Pick(U.palette[c].r, U.palette[c].g, U.palette[c].b);
-	}
-	t.Palette[0] = 0;       // index 0 is the hole (inventory.c:2113)
-	t.Remap[0] = 0;
-	U.iconTranslation = GetTranslationIndex(GPalette.StoreTranslation(TRANSLATION_Standard, &t));
-	return U.iconTranslation;
-}
-
-FTextureID MakeImageTexture(const DasImage &im, const char *name)
-{
-	FTextureID existing = TexMan.CheckForTexture(name, ETextureType::Override);
-	if (existing.isValid()) return existing;
-	if (!im.ok) return FNullTextureID();
-	const int tr = IconTranslation();
-	if (tr < 0) return FNullTextureID();
-	FRemapTable *remap = const_cast<FRemapTable *>(GPalette.GetTranslation(TRANSLATION_Standard, tr));
-	g_pixelStore.push_back(std::make_unique<std::vector<uint8_t>>(im.pixels));
-	auto *image = new FPalettedMemoryImage(g_pixelStore.back()->data(), remap, im.width, im.height, false, true);
-	auto *tex = MakeGameTexture(new FImageTexture(image), name, ETextureType::Override);
-	tex->SetNoMipmap(true);
-	return TexMan.AddGameTexture(tex);
-}
-
-FTextureID IconTexture(int32_t itemId)
-{
-	if (U.db == nullptr) return FNullTextureID();
-	const DbItem *rec = U.db->Item(itemId);
-	if (rec == nullptr || !rec->ok || rec->icon == 0) return FNullTextureID();
-	auto it = U.iconTex.find(rec->icon);
-	if (it != U.iconTex.end()) return it->second;
-	FString name;
-	name.Format("RTHICN%05X", (unsigned)rec->icon);
-	const FTextureID t = MakeImageTexture(DecodeDbase200Resource(U.dbase200, rec->icon), name.GetChars());
-	U.iconTex[rec->icon] = t;
-	return t;
-}
-
-// A document page: a DBASE300 resource, read from the file on demand (the
-// file is 22 MB; one page is a few tens of KB). load_dbase300 page path,
-// load_inspect_document_page (dialogue_ui.c:1815-1830).
-FTextureID PageTexture(uint32_t resource)
-{
-	auto it = U.pageTex.find(resource);
-	if (it != U.pageTex.end()) return it->second;
-	FTextureID t = FNullTextureID();
+	std::vector<uint8_t> out;
 	FILE *f = U.dbase300Path.empty() ? nullptr : fopen(U.dbase300Path.c_str(), "rb");
-	if (f != nullptr)
+	if (f == nullptr) return out;
+	uint8_t sz[4] = {};
+	if (fseek(f, (long)res << 3, SEEK_SET) == 0 && fread(sz, 1, 4, f) == 4)
 	{
-		uint32_t size = 0;
-		if (fseek(f, (long)resource << 3, SEEK_SET) == 0 && fread(&size, 4, 1, f) == 1 && size > 8 && size < (8u << 20))
+		const uint32_t n = sz[0] | (sz[1] << 8) | (sz[2] << 16) | ((uint32_t)sz[3] << 24);
+		if (n > 8 && n < (8u << 20))
 		{
-			std::vector<uint8_t> bytes(size);
-			if (fread(bytes.data(), 1, size, f) == size)
-			{
-				FString name;
-				name.Format("RTHDOC%06X", (unsigned)resource);
-				t = MakeImageTexture(DecodeDasImage(bytes.data(), bytes.size()), name.GetChars());
-			}
+			out.resize(n);
+			if (fread(out.data(), 1, n, f) != n) out.clear();
 		}
-		fclose(f);
 	}
-	U.pageTex[resource] = t;
-	return t;
+	fclose(f);
+	return out;
 }
 
 PalEntry Color(uint8_t index)
@@ -538,8 +480,6 @@ const Element *HitElement(const Ray &r)
 		if (t <= 0.0 || t >= bestT) continue;
 		const DVector3 rel = (r.start + r.dir * t) - bb->pos;
 		if (fabs(rel | right) > hw || fabs(rel | up) > hh) continue;
-		// A backing loses to anything drawn on it at the same depth.
-		if (best != nullptr && fabs(t - bestT) < 0.5 && (e.kind == E_POP_BACKING)) continue;
 		bestT = t;
 		best = &e;
 	}
@@ -592,12 +532,13 @@ std::string Signature()
 			s += buf;
 		}
 	}
-	if (U.screen.PopupUp())
+	if (U.popup.painter.IsOpen())
 	{
-		snprintf(buf, sizeof buf, "P%d/%d/%d/%d|", U.screen.PopupItem(), U.screen.PopupPage(), U.screen.PopupTopicsShown() ? 1 : 0,
-			U.dialogue.TopicCount());
+		// The popup's picture changes in place (UpdatePictureBillboards); a
+		// window opened afresh is a new billboard.
+		const InspectPopupPainter &pp = U.popup.painter;
+		snprintf(buf, sizeof buf, "P%d/%d,%d,%d,%d|", U.screen.PopupItem(), pp.WinX(), pp.WinY(), pp.WinW(), pp.WinH());
 		s += buf;
-		for (const TextLine &l : U.dialogue.TopicLines()) { s.append((const char *)l.text.data(), l.text.size()); }
 	}
 	return s;
 }
@@ -679,6 +620,7 @@ const UiCanvas *CanvasOf(int id)
 	case PIC_BOX1: return &U.boxes[1];
 	case PIC_HUDTOP: return &U.hud.TopStrip();
 	case PIC_HUDHELD: return &U.hud.HeldIcon();
+	case PIC_POPUP: return &U.popup.painter.Presented();
 	default: return nullptr;
 	}
 }
@@ -913,50 +855,13 @@ void PanelClick(int px, int py, int button)
 
 void BuildPopup()
 {
-	if (!U.screen.PopupUp() || U.db == nullptr) return;
-	// render_inspect_popup_window (dialogue_ui.c:1294-1470): the close-up (its
-	// FILM is the cutscene decoder's and is not ported: the icon stands in),
-	// the name, the magnifier and "i" buttons, the topics, the document
-	// pages with their arrows, the close box. In front of the panel.
-	const int32_t id = U.screen.PopupItem();
-	const DbItem *rec = U.db->Item(id);
-	const double W = 46, H = 34, L = 2.0;
-	Add(0, 0, L, W, H, BB_PANEL, 0, PalEntry(255, 8, 8, 10), nullptr, 0.92, E_POP_BACKING, 0, true);
-	const std::string name = rec ? U.dialogue.LineText(rec->name, 0x61) : std::string();
-	if (!name.empty()) Add(0, H / 2 - 2, L + 0.1, TextPixels(name) * PX * 1.3, ROWH * 1.3, BB_TEXT, 0, Color(U.dialogue.markerSelected), name.c_str(), 1.0, E_NONE, 0, false);
-	const std::vector<uint32_t> &pages = U.screen.PopupPages();
-	if (!pages.empty())
-	{
-		FTextureID tex = PageTexture(pages[(size_t)U.screen.PopupPage()]);
-		if (tex.isValid()) Add(-4, -1, L + 0.1, 24, 27, BB_TEXTURE, tex.GetIndex(), PalEntry(255, 255, 255, 255), nullptr, 1.0, E_NONE, 0, false);
-		if (pages.size() > 1)
-		{
-			Add(W / 2 - 4, 6, L + 0.1, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "^", 1.0, E_POP_PGUP, 0, true);
-			Add(W / 2 - 4, -6, L + 0.1, 3, 3, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "v", 1.0, E_POP_PGDN, 0, true);
-		}
-	}
-	else
-	{
-		FTextureID tex = IconTexture(id);
-		if (tex.isValid()) Add(-8, 0, L + 0.1, 16, 16, BB_TEXTURE, tex.GetIndex(), PalEntry(255, 255, 255, 255), nullptr, 1.0, E_NONE, 0, false);
-	}
-	Add(-W / 2 + 2.5, -H / 2 + 2.5, L + 0.1, 3.5, 3.5, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "?", 1.0, E_POP_MAG, 0, true);
-	if (U.dialogue.TopicCount() != 0)
-		Add(-W / 2 + 7, -H / 2 + 2.5, L + 0.1, 3.5, 3.5, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "i", 1.0, E_POP_INFO, 0, true);
-	Add(W / 2 - 2.5, H / 2 - 2.5, L + 0.1, 3.0, 3.0, BB_TEXT, 0, PalEntry(255, 230, 220, 200), "x", 1.0, E_POP_CLOSE, 0, true);
-	if (U.screen.PopupTopicsShown())
-	{
-		const std::vector<TextLine> &tl = U.dialogue.TopicLines();
-		double z = 8;
-		for (size_t i = 0; i < tl.size(); i++)
-		{
-			std::string row;
-			for (const std::string &r : tl[i].Rows()) { if (!row.empty()) row += " "; row += r; }
-			const double w = TextPixels(row) * PX;
-			Add(10, z, L + 0.2, std::max(w, 4.0), ROWH * 1.2, BB_TEXT, 0, Color(tl[i].Color()), row.c_str(), 1.0, E_POP_TOPIC, (int)i, true);
-			z -= tl[i].height * PX + 0.6;
-		}
-	}
+	if (!U.popup.painter.IsOpen()) return;
+	// ONE billboard: the original's own window (roth_popupdraw), as the
+	// screen shows it -- the close-up film's frame, the document page, the
+	// topic menu over them -- placed where the original's screen has it, in
+	// front of the inventory panel it opens over. A click on it is the
+	// original's hit test (InspectPopupPainter::HitTest).
+	AddWorldPicture(PIC_POPUP, 0, 0, 2.0, E_POPUP, true);
 }
 
 // A DBASE100 interface text, resolved as resolve_dbase100_text does
@@ -1165,14 +1070,27 @@ void ClickElement(const Element &e, int button)
 	(void)button;           // the inventory's clicks carry their button through PanelClick
 	switch (e.kind)
 	{
-	case E_POP_MAG: U.screen.PopupMagnifier(); break;
-	case E_POP_INFO: U.screen.PopupToggleTopics(); break;
-	case E_POP_TOPIC: U.screen.PopupTopic(e.arg); break;
-	case E_POP_CLOSE: U.screen.PopupClose(); break;
-	case E_POP_PGUP: U.screen.PopupPageUp(); break;
-	case E_POP_PGDN: U.screen.PopupPageDown(); break;
 	default: break;
 	}
+}
+
+// The pointer over the popup's picture, in the original's screen pixels; off
+// it, a point no rectangle of the popup holds.
+void PopupPointerAt(const Ray *rays, int n, int *which)
+{
+	if (which != nullptr) *which = 0;
+	for (int i = 0; i < n; i++)
+	{
+		const Element *e = HitElement(rays[i]);
+		int px = 0, py = 0;
+		if (e != nullptr && e->kind == E_POPUP && PanelPixel(rays[i], *e, px, py))
+		{
+			U.popup.SetPointer(px, py, 0);
+			if (which != nullptr) *which = i;
+			return;
+		}
+	}
+	U.popup.SetPointer(-0x4000, -0x4000, 0);
 }
 
 // A click with nothing of ours under the pointer.
@@ -1235,6 +1153,15 @@ bool Press(player_t *player, int forcedButton)
 		Printf("[roth_menu] click, hit %d: %s\n", hit, U.menus->IsOpen() ? U.menus->Describe().c_str() : "closed");
 		return true;
 	}
+	if (!menuUp && U.popup.Active())
+	{
+		// The popup is modal: every press is its handle_cursor_click's, at the
+		// pointer (input.c:1310-1347), taken by its next frame.
+		int which = 0;
+		PopupPointerAt(rays, n, &which);
+		U.popup.Press(forcedButton ? forcedButton : (which == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY));
+		return true;
+	}
 	for (int i = 0; i < n; i++)
 	{
 		const Element *e = HitElement(rays[i]);
@@ -1243,9 +1170,7 @@ bool Press(player_t *player, int forcedButton)
 		// The main hand (or the view) is the primary button, the off hand the
 		// secondary: the original needs both on the inventory.
 		const int button = forcedButton ? forcedButton : (i == 0 ? InventoryScreen::PRIMARY : InventoryScreen::SECONDARY);
-		if (U.screen.PopupUp() && e->kind < E_POP_MAG) continue;    // only the popup takes clicks while it is up
 		if (e->kind == E_DLGPANEL) return ClickDialogue(&rays[i], e);
-		if (e->kind == E_POP_BACKING) return true;
 		if (e->kind == E_INVPANEL)
 		{
 			int px = 0, py = 0;
@@ -1271,6 +1196,13 @@ void UpdateHover(player_t *player)
 	{
 		if (U.menus->Current() != RealmsMenus::DEATH)   // the death wait has no pointer (game_core.c:986-1000)
 			U.menus->PointerAt(n > 0 ? MenuHit(rays[0], e) : 0);   // every frame, as the loop does (:1591-1607)
+		U.hoverBb = bb;
+		return;
+	}
+	if (U.popup.Active())
+	{
+		// The popup's own pointer: its frames read it (handle_cursor_click's hover).
+		PopupPointerAt(rays, n, nullptr);
 		U.hoverBb = bb;
 		return;
 	}
@@ -1388,6 +1320,12 @@ void InterfaceAttach(GameCore &core, Dbase100 &db, const Install &install)
 	U.db = &db;
 	U.dialogue.Bind(&core.Interp(), &db);
 	U.screen.Bind(&core, &U.dialogue, &db);
+	U.popup.Bind(&U.screen, &U.dialogue, &core);
+	U.popup.painter.dbase300 = [](uint32_t res) { return Dbase300Resource(res); };
+	U.popup.painter.screenPitch = 640;                      // the retail ROTH.INI's VideoMode 8
+	U.popup.painter.screenHeight = 480;
+	U.popup.painter.anchorY = 480 >> 1;                     // the panel anchor (compute_viewport_half_extents)
+	U.popup.textUi = [](int scale) { U.dialogue.TickTextUi(scale); };   // render_text_ui's sequencer, in the popup's frames
 	const std::string text = install.DataFile("DBASE400.DAT");
 	if (!text.empty()) U.dialogue.text = Install::ReadWholeFile(text);
 	const std::string icons = install.DataFile("DBASE200.DAT");
@@ -1483,9 +1421,6 @@ void InterfaceSetPalette(const TextureSet &art)
 	{
 		// The icons are drawn in the map's own palette, as the original's are.
 		U.palette = p;
-		U.iconTranslation = -1;
-		U.iconTex.clear();
-		U.pageTex.clear();
 		for (Ui::Picture &pic : U.pics) pic.shown = 0xffffffffu;   // the pictures go up again in the new colours
 	}
 	// The pack's shade and blend tables (map_load.c:376-377), which the panel's
@@ -1544,6 +1479,75 @@ void InterfaceEndLevel()
 
 static void RunQueued(player_t *player);
 
+// The popup's frame tick: the original's 70 Hz g_frame_tick_counter.
+static uint16_t PopupTick()
+{
+	return (uint16_t)(U.level != nullptr ? U.level->maptime * 2 : 0);
+}
+
+// load_dbase300_resource_at_offset's loops (file_config.c:900-1144), run by
+// roth_popupdraw: the film one GDV timer tick at a time (60 Hz, the native
+// timer's rate: traps.c's measurement), then the modal loop one pass a tic.
+// The keys reach it as they come (KeyVerb).
+static void TickPopup(FLevelLocals *level)
+{
+	(void)level;
+	InspectPopupView &v = U.popup;
+	const uint16_t tick = PopupTick();
+	if (U.screen.PopupUp() && !v.Active())
+	{
+		// The popup the rules just opened: the film's bytes at the item's
+		// close-up offset (inventory.c:1827-1834; +4 past the size dword),
+		// its icon, the inventory label as it stands.
+		const DbItem *rec = U.db != nullptr ? U.db->Item(U.screen.PopupItem()) : nullptr;
+		U.popupFilm = rec != nullptr ? Dbase300Resource(rec->closeup) : std::vector<uint8_t>();
+		const uint8_t *icon = nullptr; size_t iconSize = 0;
+		if (U.db != nullptr) ItemIconPicture(*U.db, U.dbase200, U.screen.PopupItem(), &icon, &iconSize);
+		v.painter.SetAssets(U.painter.Assets());
+		U.popupIsr = 0.0;
+		if (!v.Begin(U.popupFilm.empty() ? nullptr : U.popupFilm.data(), U.popupFilm.size(), icon, iconSize, U.painter.g_label, sizeof U.painter.g_label, tick))
+		{
+			for (const std::string &pr : v.painter.Problems()) Printf(TEXTCOLOR_RED "[roth_ui] popup: %s\n", pr.c_str());
+			if (U.screen.PopupUp()) U.screen.PopupFinish();      // the original's popup returns at once (file_config.c:920, 958)
+			return;
+		}
+		Printf("[roth_ui] popup: item %d, film %dx%d, %s, %d page(s)\n", U.screen.PopupItem(), v.film.Width(), v.film.Height(),
+			v.film.Looping() ? "looping" : "once", v.painter.PageCount());
+	}
+	if (v.InFilm())
+	{
+		U.popupIsr += 60.0 / TICRATE;
+		while (U.popupIsr >= 1.0 && v.InFilm())
+		{
+			U.popupIsr -= 1.0;
+			if (!v.FilmBoundary(tick)) { v.FinishFilm(true, tick); break; }
+			if (v.FilmRanOut()) v.FinishFilm(false, tick);
+		}
+	}
+	else if (v.InModal())
+	{
+		v.ModalPassBegin(tick);
+		v.ModalPassEnd();
+	}
+}
+
+// A key the popup reads (gdv_inspect_frame_callback's, gdv_cutscene.c:1631-1655,
+// or the modal loop's drain, file_config.c:1066-1119), as a scancode.
+static void PopupKey(uint8_t sc)
+{
+	InspectPopupView &v = U.popup;
+	if (v.InFilm())
+	{
+		if (!v.KeyWanted()) return;
+		if (!v.FilmKey(sc)) v.FinishFilm(true, PopupTick());
+	}
+	else if (v.InModal())
+	{
+		v.ModalKey(sc);
+		v.ModalPassEnd();
+	}
+}
+
 void InterfaceTick(FLevelLocals *level)
 {
 	if (!U.attached || level == nullptr) return;
@@ -1552,12 +1556,15 @@ void InterfaceTick(FLevelLocals *level)
 	RunQueued(player);
 	// One tic is two of the original's 70 Hz frame ticks.
 	U.dialogue.PollVoice();
-	U.dialogue.Frame(2);                                 // voice_stream_pump + render_text_ui
+	// While the popup is up the original's game loop does not run (the popup
+	// blocks inside update_inventory_screen): its own frames pump the voice
+	// and run render_text_ui (TickPopup).
+	if (!U.popup.Active()) U.dialogue.Frame(2);          // voice_stream_pump + render_text_ui
 	// redraw_inventory_cursor_cell (game_core.c:886), before the keys' frame
 	// (:894), at the original's 70 Hz frame tick.
-	if (U.screen.IsOpen()) U.painter.RedrawInventoryCursorCell((uint16_t)(level->maptime * 2));
-	U.screen.Post();                                     // update_inventory_screen's tail
-	if (U.screen.PopupUp()) U.screen.PopupFrame();       // the popup's own loop
+	if (U.screen.IsOpen() && !U.popup.Active()) U.painter.RedrawInventoryCursorCell((uint16_t)(level->maptime * 2));
+	if (!U.popup.Active()) U.screen.Post();              // update_inventory_screen's tail
+	TickPopup(level);                                    // the popup's own loops
 	U.core->Items().TickPickupLock(2);                   // tick_item_pickup_lock
 	TickFly(player);
 	UpdateHover(player);
@@ -1641,12 +1648,16 @@ static void KeyVerb(player_t *player, const std::string &verb, int arg)
 		else if (verb == "skip" || verb == "close") U.menus->Back();
 		return;
 	}
-	if (s.PopupUp())                                        // file_config.c:1063-1117
+	if (U.popup.Active())                                   // the popup's keys, as scancodes
 	{
-		if (verb == "up") s.PopupKeyUp();
-		else if (verb == "down") s.PopupKeyDown();
-		else if (verb == "enter") s.PopupKeyEnter();
-		else if (verb == "skip" || verb == "close" || verb == "examine") s.PopupKeyExit();
+		if (verb == "up") PopupKey(0x48);
+		else if (verb == "down") PopupKey(0x50);
+		else if (verb == "left") PopupKey(0x4b);
+		else if (verb == "right") PopupKey(0x4d);
+		else if (verb == "enter") PopupKey(0x1c);
+		else if (verb == "skip") PopupKey(0x01);                // Esc
+		else if (verb == "close") PopupKey(0x17);               // I
+		else if (verb == "examine") PopupKey(0x39);             // Space
 		return;
 	}
 	if (s.IsOpen())                                         // inventory.c:1698-1817
@@ -1687,8 +1698,15 @@ static void Dump()
 		for (size_t i = 0; i < l.slots.size(); i++) Printf("[roth_ui]   %d: %s\n", (int)i, ItemLabel(l.slots[i]).c_str());
 	}
 	else Printf("[roth_ui] inventory: closed\n");
-	if (U.screen.PopupUp()) Printf("[roth_ui] popup: item %d, %d page(s), %d topic(s)\n", U.screen.PopupItem(),
-		(int)U.screen.PopupPages().size(), U.dialogue.TopicCount());
+	if (U.screen.PopupUp())
+	{
+		const InspectPopupPainter &pp = U.popup.painter;
+		Printf("[roth_ui] popup: item %d, %d page(s) (page %d), %d topic(s), %s, state %d, window %d,%d %dx%d, film %d decode(s), picture version %u\n",
+			U.screen.PopupItem(), pp.PageCount(), U.screen.PopupPage(), U.dialogue.TopicCount(),
+			U.popup.InFilm() ? "film" : U.popup.InModal() ? "modal" : "not running", U.popup.State(), pp.WinX(), pp.WinY(), pp.WinW(), pp.WinH(),
+			U.popup.film.Decodes(), pp.Presented().Version());
+		for (const std::string &pr : pp.Problems()) Printf("[roth_ui] popup picture: %s\n", pr.c_str());
+	}
 	Printf("[roth_ui] %d panel billboard(s)\n", (int)U.elements.size());
 	for (const auto &kv : U.invSink.notBuilt) Printf("[roth_ui] asked for, not built: %s x%d\n", kv.first.c_str(), kv.second);
 	for (const std::string &pr : U.painter.Problems()) Printf("[roth_ui] inventory panel: %s\n", pr.c_str());

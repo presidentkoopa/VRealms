@@ -778,6 +778,20 @@ uint32_t DialogueUi::BuildAvailableChoiceMenu(int32_t itemId)
 	return count;
 }
 
+// hit_test_dialogue_ui_action, dialogue_ui.c:613-638 (the marker writes; the
+// rectangles are roth_popupdraw's).
+void DialogueUi::TopicPointerMarker(int row)
+{
+	Dbase100InterpState &s = St();
+	if (s.g_choice_selected_index == -1)                                    // :615-623
+		for (int i = 0; i < g_choice_line_count && i < (int)mChoiceLines.size(); i++)
+			if (mChoiceLines[(size_t)i].text.size() >= 2 && mChoiceLines[(size_t)i].text[0] == 1) mChoiceLines[(size_t)i].text[1] = mTopicColor;
+	if (row < 0 || row >= (int)mChoiceLines.size()) return;
+	TextLine &t = mChoiceLines[(size_t)row];
+	if (t.text.size() >= 2 && t.text[0] == 1) t.text[1] = markerSelected;  // :634-636
+	s.g_choice_selected_index = -1;                                         // :637
+}
+
 // activate_selected_choice_record -- dialogue_ui.c:191-203.
 void DialogueUi::ActivateSelectedChoiceRecord(uint32_t index)
 {

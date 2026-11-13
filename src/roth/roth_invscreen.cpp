@@ -133,9 +133,19 @@ void InventoryScreen::Close()
 }
 
 // update_inventory_screen's tail (inventory.c:1819-1845).
+// [0x81044]'s item (update_inventory_screen reads it around the examine,
+// inventory.c:1821-1822, 1841-1844): the right hand's.
+int32_t InventoryScreen::SelectedId() const
+{
+	if (mCore == nullptr) return 0x7fffffff;
+	const int rh = mCore->Items().RightHand();
+	return rh < 0 ? 0x7fffffff : (int32_t)(int16_t)mCore->Items().Slot(rh).id;
+}
+
 void InventoryScreen::Post()
 {
 	if (mCore == nullptr || mDb == nullptr) return;
+	const int32_t prevSel = SelectedId();                                   // :1821-1822
 	if (g_inventory_inspect_request != -1)                                  // :1824-1836
 	{
 		int slot = -1;
@@ -151,7 +161,24 @@ void InventoryScreen::Post()
 			if (rec != nullptr && rec->ok && rec->closeup != 0) OpenPopup(id);
 		}
 	}
-	if (g_ui_close_request != 0 || g_inventory_panel_open == 0) Close();    // :1837-1840
+	if (g_inspect_popup_active != 0)
+	{
+		// The original runs the popup to its end right here (it blocks); its
+		// presentation (roth_popupdraw) runs it over the frames that follow
+		// and calls PopupFinish, which does the rest of this tail.
+		mSelBeforePopup = prevSel;
+		return;
+	}
+	if (g_ui_close_request != 0 || g_inventory_panel_open == 0) { Close(); return; }   // :1837-1840
+	if (SelectedId() != prevSel) RefreshPanel();                            // :1841-1844
+}
+
+void InventoryScreen::PopupFinish()
+{
+	ClosePopup();
+	// update_inventory_screen's tail after the popup returned (inventory.c:1837-1844).
+	if (g_ui_close_request != 0 || g_inventory_panel_open == 0) { Close(); return; }
+	if (SelectedId() != mSelBeforePopup) RefreshPanel();
 }
 
 //==========================================================================
@@ -421,7 +448,9 @@ void InventoryScreen::KeyUse()
 // runs the item's OnInspect block the first time it is ever looked at, and
 // then (for an item whose close-up holds, or one with a document) stays up
 // as a modal with the magnifier, the "i" topics, the document pages and a
-// close box. The film is the cutscene decoder's; everything else is here.
+// close box. The rules are here; the window, the film's clock, the modal
+// loop's keys and pointer are roth_popupdraw's (InspectPopupView), which
+// calls these at the original's points.
 //
 //==========================================================================
 
@@ -432,8 +461,13 @@ void InventoryScreen::OpenPopup(int32_t itemId)
 	if (rec == nullptr || !rec->ok) return;
 	g_inspect_popup_active = 1;                                             // :914
 	mPopupItem = itemId;                                                    // :949
-	g_popup_exit_request = 0;                                               // render_inspect_popup_window, dialogue_ui.c:1314
+	g_popup_exit_request = 0;                                               // render_inspect_popup_window, dialogue_ui.c:1310
+	// dialogue_ui.c:1502-1511: the magnifier (an item with OnInspect) is drawn
+	// lit -- and marked so -- the first time the item is looked at.
+	mPopupRuntime7 = mDb->ItemRuntime(itemId);
+	mPopupFlags4 = rec->flags;
 	mPopupMarks = 0;
+	if ((rec->flags & DBI_HAS_INSPECT) && !(mPopupRuntime7 & DBI_RUNTIME_EXAMINED)) mPopupMarks = 1;
 
 	// The document pages: copy_record_block_op7 (dialogue_ui.c:488-510;
 	// render_inspect_popup_window, :1334-1345). At most 0x20.
@@ -475,6 +509,14 @@ bool InventoryScreen::PopupTopicsShown() const
 void InventoryScreen::PopupFrame()
 {
 	if (g_inspect_popup_active == 0 || mUi == nullptr || mCore == nullptr) return;
+	PopupFrameBegin();
+	PopupFrameEnd();
+	if (g_popup_exit_request != 0 || g_inventory_panel_open == 0) ClosePopup();
+}
+
+void InventoryScreen::PopupFrameBegin()
+{
+	if (g_inspect_popup_active == 0 || mUi == nullptr || mCore == nullptr) return;
 	Dbase100InterpState &s = mCore->Interp().State();
 	if (mUi->g_choice_interaction_mode == 2 && s.g_dialogue_busy_flag == 0)     // :1257-1260
 	{
@@ -487,12 +529,16 @@ void InventoryScreen::PopupFrame()
 		if (mPopupMarks & 1) mPopupMarks -= 1;
 		if (mUi->g_choice_interaction_mode == 0 && (mPopupMarks & 2)) mPopupMarks -= 2;
 	}
+}
+
+void InventoryScreen::PopupFrameEnd()
+{
+	if (g_inspect_popup_active == 0 || mUi == nullptr) return;
 	if (mUi->g_pending_choice_accept_index != 0)                            // :1273-1276
 	{
 		mUi->ActivateSelectedChoiceRecord((uint32_t)mUi->g_pending_choice_accept_index);
 		mUi->g_pending_choice_accept_index = 0;
 	}
-	if (g_popup_exit_request != 0 || g_inventory_panel_open == 0) ClosePopup();
 }
 
 // Action 2 (dialogue_ui.c:1569-1578): the magnifier.
