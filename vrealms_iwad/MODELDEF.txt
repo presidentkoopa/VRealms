@@ -12,9 +12,10 @@
 // 1277, the controls above them are keyed to 1278). Frame 0 is the scene's rest pose (every finger
 // joint at its bind rotation; tools/fbxload_test checks it equals the take at 0 s).
 //
-// THE FINGERS ARE NOT POSED. The old finger posing was RS_Hands' frame map and was removed (owner,
-// 2026-11-13: "start over, use the hands in DXR"). The hands draw frame 0 of their own take
-// (FrameIndex below) until the owner says how the DXR hands' fingers move.
+// THE FINGERS are posed by the engine on top of frame 0 (src/r_data/vr_handpose.cpp, UZDXREMA's curl rule):
+// trigger, grip and capacitive touch say how far each finger folds, and each hand's own take says what the fold
+// looks like -- frame 0 (open) to frame 318 (fist), per joint. The hands draw frame 0 (FrameIndex below); the
+// engine turns the finger joints from there.
 //
 // SIZE: THE HAND PATH IS IN METRES (vr_handpose.cpp VRHandPose_HandFrame: the grip frame is multiplied
 // by VR_UnitsPerMeter() at every draw and never divided back), so Scale is metres per FILE unit. The

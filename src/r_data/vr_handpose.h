@@ -47,8 +47,10 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out);
 bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out);
 
 // The finger pose, on a finished bone palette (models.cpp RenderModelFrame, beside
-// ModelDrawPose_Apply). Returns &bones untouched unless `actor` is a VR hand and `model` carries
-// the hand's joints and poses; otherwise a posed copy, valid until the next call on this thread.
+// ModelDrawPose_Apply): UZDXREMA's curl rule (trigger, grip, touches -> how far each finger folds,
+// smoothed at display rate) turning each finger joint from the model's drawn frame toward its own
+// take's fist frame. Returns &bones untouched unless `actor` is a VR hand and `model` carries the
+// hand's joints; otherwise a posed copy, valid until the next call on this thread.
 const TArray<VSMatrix> *VRHandPose_Apply(const AActor *actor, FModel *model, int modelIndex, const TArray<VSMatrix> &bones);
 
 // ---- the flat test (roth_handtest): test-only, inert until the command is typed ----

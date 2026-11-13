@@ -82,7 +82,7 @@ ufbx lines are `libraries/ufbx/ufbx.h` (h) and `ufbx.c` (c). Ours: `src/common/m
 | W2 | ufbx as a static library; linked into the engine; include path | `libraries/ufbx/CMakeLists.txt`, `CMakeLists.txt` (add_subdirectory), `src/CMakeLists.txt` (PROJECT_LIBRARIES, sources, include) | done [R: not configured or built; no MSVC here] |
 | W3 | MODELDEF: RealmsHandRight = `hand_final.fbx:Hand_Low`, RealmsHandLeft = `hand_final.fbx:Hand_Low1`, Scale 0.11094212 | `vrealms_iwad/MODELDEF.txt` | done |
 | W4 | The hand actors show the model sprites RHDR / RHDL | `wadsrc/static/zscript/actors/realmshands.zs` | done |
-| W5 | vr_handpose: an FBX take has no pose map, so the fingers are not posed; logged "pose targets not mapped yet" | vh:265, 295-303, 345-348 | done |
+| W5 | vr_handpose: the fingers posed from each hand's own take, frame 0 (open) to 318 (fist), by UZDXREMA's curl rule (2026-11-13; the checklist is at the top of vr_handpose.cpp, the tests `tools/hands_test` and `tools/fbxload_test` test_fingers/measure_ref) | vh | done [V: tests, not yet seen in the engine] |
 | W6 | The owner's FBX in the game package | `vrealms_iwad/models/hands/hand_final.fbx` (24,098,864 bytes, md5 dd7cf882…, from his dxr repo `models/hands/`) | done |
 
 ### Not carried (each one said, none hidden)
@@ -150,11 +150,8 @@ take starts them.
 
 ## Open questions for the owner
 
-1. **The pose targets.** vr_handpose drove the fingers toward five baked frames of the old converter's
-   files (open, point, fist, grip_tu, ready_td = frames 0 1 3 7 8). The take has 1,279 recorded frames and no
-   such map. Which take frames (per hand: its own curves) are open, point, fist, grip with the thumb up, and
-   ready? The take has no one-finger point and no thumbs-up (docs/FBX_HANDS_REPORT.md). Until then the
-   fingers are not posed and the log says "pose targets not mapped yet".
+1. **The pose targets.** Answered 2026-11-13: the owner's fbx_poses.json "open" 1 and "fist" 319 (Blender), frames
+   0 and 318 here, each hand from its own take; the curl rule blends them per finger (vr_handpose.cpp).
 2. **The left hand's look.** The FBX's left hand has no texture and mirrored UVs. Draw it with the skin
    texture as is (wrong islands, now), plain grey like the FBX, or something else?
 3. **The take's frame count**: 1,279 (what moves the hand) rather than 1,278 (the joints' own keys). Fine?
@@ -167,7 +164,8 @@ take starts them.
 2. Run with `-Exec tools/claude_bridge/cfg/hands_flat.cfg` through the bridge's `boottest`.
 3. The log must show, per hand, `FBX model models/hands/hand_final.fbx:Hand_Low -- mesh Hand_Low, 22 joints,
    6690 vertices, 3330 triangles, ...; 'Take 001' frames 0-1278 (1279 at 60 fps ...)` and the rest line
-   (`skin det +1` / `-1 (mirrored)`, `normals from the surface`), then `VR hands: ... fingers NOT posed: pose
-   targets not mapped yet ..., seat measured`.
-4. The captures `hands_fbx_open_t0/t90/t180.png` and `hands_fbx_fist_t0.png` (the fist must equal the open
-   shot: fingers not posed) against `tools/fbxload_test` renders.
+   (`skin det +1` / `-1 (mirrored)`, `normals from the surface`), then `VR hands: ... seat measured` and
+   `VR hands: ...:Hand_Low as the right hand -- fingers posed from frames 0 (open) and 318 (fist) of its own take`
+   (Hand_Low1: the left hand).
+4. The captures `hands_curl_<open|fist|point|thumbup|trigger>_t<0|90>.png` against the software renders
+   `tools/fbxload_test` writes (`FBXLOAD_RENDER=1`: `fingers/sheet_Hand_Low.png`, `fingers/sheet_Hand_Low1.png`).
