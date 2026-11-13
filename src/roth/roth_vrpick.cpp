@@ -135,6 +135,7 @@
 #include "hw_perflog.h"
 #include <math.h>
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 EXTERN_CVAR(Int, vr_mode)   // file scope, never inside a namespace
@@ -208,6 +209,8 @@ struct HandState
 	// on a panel (the inventory screen, the popup): the original's mouse (roth_invhand.h)
 	InvHand panel;
 	InvHandOutput pout;
+	std::vector<int> line;   // the laser on a panel: billboards laid end to end (DrawPanelLaser)
+	int lineShown = 0;
 	bool panelWasOnPicture = false;
 	bool panelWasContact = false, panelWasTap = false, panelWasPointing = false;
 	int loggedPx = 0x7fffffff, loggedPy = 0x7fffffff;
@@ -312,6 +315,8 @@ void HideHand(HandState &h)
 	for (int &d : h.dot) HideBB(d);
 	HideBB(h.marker);
 	HideBB(h.ring);
+	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
+	h.lineShown = 0;
 }
 
 // Where a world point sits in the frame a hand-locked billboard rides
@@ -874,7 +879,74 @@ void ForgetPanel()
 	P.loggedShape = 0;
 }
 
-void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane)
+// THE LASER ON A PANEL: a line from the fingertip to where it meets the panel,
+// and a dot there. Sized by the ANGLE it covers from the eye, so it reads the
+// same in the headset and in flat however far each piece is: the line 0.35
+// degrees wide (about 2 pixels of a 640-wide flat view at its 91.8 degrees,
+// about 7 of a headset's at 20 per degree), the dot 1.2 degrees (6.5 / 24). The line is camera-facing squares of its own width laid edge to
+// edge (each placed hand-locked like every picker billboard, so in the headset
+// it stays on the controller at the display's rate). A hair of the dot's size
+// toward the eye, so the panel does not cut it. The world picker's beam
+// (TickHand) is a different thing and keeps its own subtle look.
+constexpr double kPanelLineDeg = 0.35, kPanelDotDeg = 1.2;
+constexpr int    kPanelLineMax = 320;
+
+void DrawPanelLaser(int role, HandState &h, AActor *pmo, const PanelPlane &plane, const DVector3 &eye)
+{
+	const InvHandOutput &o = h.pout;
+	h.shown = true;
+	for (int &d : h.dot) HideBB(d);
+	HideBB(h.ring);
+	const HandLock L = LockFor(role, pmo);
+	const double lineK = tan(kPanelLineDeg * (M_PI / 180.0)), dotK = tan(kPanelDotDeg * (M_PI / 180.0));
+	const PalEntry col(255, 250, 238, 200);
+	const DVector3 end = DV(o.beamEnd);
+	const DVector3 span = end - h.tip;
+	const double len = span.Length();
+	const double lineAlpha = o.dot ? 0.95 : 0.55;
+	int n = 0;
+	if (len > 1e-6)
+	{
+		const DVector3 dir = span / len;
+		// Where each square goes, then the billboards (made first, so the array
+		// does not move under the pointers), then one pass to set them.
+		std::vector<std::pair<DVector3, double>> at;
+		for (double t = 0; t < len && n < kPanelLineMax; n++)
+		{
+			const DVector3 p = h.tip + dir * t;
+			const double size = std::max(1e-3, (p - eye).Length() * lineK);
+			at.push_back({ p + dir * (size * 0.5 < len - t ? size * 0.5 : 0.0), size });
+			t += size;
+		}
+		n = (int)at.size();
+		if ((int)h.line.size() < n) h.line.resize(n, 0);
+		for (int i = 0; i < n; i++) EnsureBB(h.line[i], BB_PANEL);
+		for (FBillboard &b : P.level->Billboards)
+		{
+			for (int i = 0; i < n; i++)
+			{
+				if (b.id != h.line[i]) continue;
+				b.flags = (b.flags & ~BBFL_HANDANY) | (L.on ? L.flag : 0);
+				b.pos = L.on ? L.Local(at[i].first) : at[i].first;
+				b.width = b.height = at[i].second;
+				b.color = col;
+				b.alpha = lineAlpha;
+				break;
+			}
+		}
+	}
+	for (int i = n; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
+	h.lineShown = n;
+	if (o.dot)
+	{
+		const DVector3 dp = DV(o.dotAt);
+		const double size = std::max(1e-3, (dp - eye).Length() * dotK);
+		PlaceBB(h.marker, BB_PANEL, L, dp + DV(plane.front) * size, size, col, 1.0);
+	}
+	else HideBB(h.marker);
+}
+
+void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane, const DVector3 &eye)
 {
 	HandState &h = P.hand[role];
 	ReadInputs(role, h);
@@ -913,23 +985,8 @@ void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane)
 	h.panelWasContact = h.panel.InContact();
 
 	// ---- the laser and the dot ----
-	const InvHandOutput &o = h.pout;
-	if (!o.beam) { HideHand(h); return; }
-	h.shown = true;
-	const HandLock L = LockFor(role, pmo);
-	const double upm = UPM();
-	const DVector3 end = DV(o.beamEnd);
-	const PalEntry lit(255, 236, 214, 170), grey(255, 200, 200, 200);
-	for (int i = 0; i < kDots; i++)
-		PlaceBB(h.dot[i], BB_PANEL, L, h.tip + (end - h.tip) * ((i + 0.5) / kDots), kDotM * upm, o.dot ? lit : grey, o.dot ? 0.30 : 0.12);
-	if (o.dot)
-	{
-		// A hair toward the hand, so the panel does not cut it.
-		const DVector3 at = DV(o.dotAt) + DV(plane.front) * (0.004 * upm);
-		PlaceBB(h.marker, BB_PANEL, L, at, kMarkerM * 0.6 * upm, lit, 0.85);
-	}
-	else HideBB(h.marker);
-	HideBB(h.ring);
+	if (!h.pout.beam) { HideHand(h); return; }
+	DrawPanelLaser(role, h, pmo, plane, eye);
 }
 
 bool OnPicture(const PanelPlane &p, int x, int y)
@@ -994,6 +1051,8 @@ void ForgetLevel()
 	for (HandState &h : P.hand)
 	{
 		for (int &d : h.dot) d = 0;
+		h.line.clear();
+		h.lineShown = 0;
 		h.marker = h.ring = 0;
 		h.shown = false;
 		h.havePick = false;
@@ -1057,7 +1116,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	}
 	if (panel != HANDPANEL_NONE)
 	{
-		for (int role = 0; role < 2; role++) TickPanelHand(role, pmo, plane);
+		const DVector3 eye = pmo->Pos() + DVector3(0, 0, player->viewheight);
+		for (int role = 0; role < 2; role++) TickPanelHand(role, pmo, plane, eye);
 		PanelPointerAndClicks(panel, plane);
 	}
 	else InterfaceHandsDrivePointer(false);
@@ -1123,10 +1183,11 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        with the inventory (or the examine popup) up: aim the test ray
 //                                        at the centre of pixel (x, y) of its picture (the original's
 //                                        panel pixels: the inventory's are from its top left, 0..287 x
-//                                        0..79). With <metres>, also stand the player (across the floor
-//                                        only) so the TEST HAND's fingertip is <metres> in front of the
-//                                        panel at that column -- 0.10 hovers, -0.01 is through it, a
-//                                        touch. The row a touch lands on is the fingertip's height (logged).
+//                                        0..79). With <metres>, also move the player across the floor
+//                                        so the TEST HAND's fingertip is <metres> in front of the
+//                                        panel at that pixel -- 0.10 hovers, -0.01 is through it, a
+//                                        touch -- raising or lowering the drawn test hand to the pixel's
+//                                        row (VRHandTest_SetLift, in the test grip's own units).
 //   roth_vrpicktest off
 //
 // The gestures are the real ones, driven by the poses: an index tap is
@@ -1195,14 +1256,24 @@ CCMD(roth_vrpicktest)
 			HandState tmp;
 			if (!P.test || !FingerRay(testRole, tmp, pmo)) { Printf("roth_vrpicktest panel: no fingertip yet (roth_vrpicktest on, roth_handtest point first)\n"); return; }
 			const DVector3 target = at + DV(plane.front) * (metres * UPM());
+			// Across the floor: the player. Up or down: the drawn test hand itself,
+			// by its own units (VRHandTest_SetLift, as seek's grip does): the test
+			// grip hangs (TEST_UP + lift) of VR_UnitsPerMeter under the eye drawn
+			// through the level's pixel stretch (vr_handpose.cpp TestGrip), so a
+			// lift of L moves the drawn fingertip L * units per metre / stretch.
 			const DVector3 move(target.X - tmp.tip.X, target.Y - tmp.tip.Y, 0.0);
+			const double ps = pmo->Level != nullptr && pmo->Level->pixelstretch > 0 ? pmo->Level->pixelstretch : 1.0;
+			const double dz = target.Z - tmp.tip.Z;
+			const double lift = VRHandTest_Lift() + dz * ps / UPM();
+			VRHandTest_SetLift(lift);
 			pmo->SetOrigin(pmo->Pos() + move, false);
 			pmo->Vel.Zero();
 			pmo->ClearInterpolation();
 			PanelPoint lands;
-			const double d = PanelProject(plane, PV(tmp.tip + move), lands);
-			Printf("roth_vrpicktest panel: the player moved (%.2f %.2f) so the %s hand's fingertip is %.3f m (%.1f units) in front of the panel"
-				" over pixel %d,%d (its height picks the row)\n", move.X, move.Y, RoleName(testRole), d / UPM(), d, lands.px, lands.py);
+			const double d = PanelProject(plane, PV(tmp.tip + move + DVector3(0, 0, dz)), lands);
+			Printf("roth_vrpicktest panel: the player moved (%.2f %.2f) and the %s hand lifted %+.2f units (the test hand's lift now %.3f m)"
+				" so its fingertip is %.3f m (%.1f units) in front of the panel over pixel %d,%d\n", move.X, move.Y, RoleName(testRole),
+				dz, lift, d / UPM(), d, lands.px, lands.py);
 		}
 		return;
 	}
