@@ -43,6 +43,8 @@
 #include "d_player.h"
 #include "c_dispatch.h"
 #include "c_cvars.h"
+#include "r_utility.h"   // r_viewpoint.FieldOfView, for the flat screen scale
+EXTERN_CVAR(Int, vr_mode) // flat or VR, for the flat screen scale (file scope on purpose)
 #include "printf.h"
 #include "textures.h"
 #include "texturemanager.h"
@@ -748,16 +750,34 @@ void AddWorldPicture(int id, int ox, int oy, double lift, int kind, bool hittabl
 }
 
 // A HEAD-LOCKED picture: where it is on the original's 640 x 480 screen,
-// that screen standing DIST ahead of the eye, PX map units a pixel; the view
-// is the whole screen (ViewSize 0), so its centre (320, 240) is ahead.
+// that screen standing DIST ahead of the eye; the view is the whole screen
+// (ViewSize 0), so its centre (320, 240) is ahead.
+//
+// FLAT: the original's screen IS the view, so its 640 pixels span the view's
+// horizontal field at 4:3 -- the region the engine's FOV is defined on (a
+// wider window adds view at the sides, not above) -- and every pixel lands
+// where the original's screen has it. At a fixed 0.1 unit/pixel the 640 x 480
+// screen covered only ~72 of a 90-degree view: the HUD sat smaller and in from
+// the corners (owner's PC, run h1, 2026-11-12). VR keeps PX: no VR
+// adaptation is decided yet (CLAUDE.md). vr_mode is declared at file scope
+// above: inside this anonymous namespace it would name a different variable.
+static double ScreenUnitsPerPixel()
+{
+	if (vr_mode != 0) return PX;
+	const double fov = r_viewpoint.GetFieldOfView().Degrees();
+	if (!(fov > 1.0 && fov < 179.0)) return PX;
+	return 2.0 * DIST * tan(fov * (M_PI / 360.0)) / 640.0;
+}
+
 void AddHeadPicture(int id)
 {
 	const UiCanvas *c = CanvasOf(id);
 	if (c == nullptr || c->Width() <= 0 || c->Height() <= 0) return;
 	const FTextureID tex = UploadPicture(id);
 	if (!tex.isValid()) return;
+	const double u = ScreenUnitsPerPixel();
 	const double cx = c->Left() + c->Width() * 0.5, cy = c->Top() + c->Height() * 0.5;
-	AddViewLocked(DIST, (cx - 320) * PX, (240 - cy) * PX, c->Width() * PX, c->Height() * PX, BB_TEXTURE, PalEntry(255, 255, 255, 255), nullptr, 1.0, tex.GetIndex());
+	AddViewLocked(DIST, (cx - 320) * u, (240 - cy) * u, c->Width() * u, c->Height() * u, BB_TEXTURE, PalEntry(255, 255, 255, 255), nullptr, 1.0, tex.GetIndex());
 	if (U.elements.empty()) return;
 	Element &e = U.elements.back();
 	e.kind = E_PICTURE; e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
