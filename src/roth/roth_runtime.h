@@ -30,6 +30,11 @@
 
 #include <stdint.h>
 #include <vector>      // SidesWithOpcode
+
+// roth_at (a test tool, see roth_runtime.cpp): true while any timed console
+// command is still waiting for its tic. rothdiff checks it so a capture batch
+// that empties early does not quit before the test's later commands have run.
+bool TimedCommandsPending();
 #include <string>      // DefaultStartMap
 
 #include "textureid.h"

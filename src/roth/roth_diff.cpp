@@ -204,10 +204,44 @@ void PlaceCamera(int px, int py, int pang, int pitch = 0, int z = NO_POSE_Z);
 void DoSprites(int px, int py, int pang, const char *path);
 } // namespace
 
+
+// THE BATCH IS DONE -- BUT THE TEST MAY NOT BE.
+//
+// A config that mixes timed commands with captures (open the inventory at tic
+// 20, shoot it at 40, open a dialogue at 130, shoot that at 150 ...) queues
+// each capture only when its roth_at fires. So the capture queue empties after
+// the FIRST shot, and quitting then killed the run with every later step still
+// waiting -- the ui_ingame test produced one picture and nothing else. The quit
+// is now held while any roth_at entry is pending, and taken on the first tic
+// at which both the capture queue and the timed commands are empty.
+static bool g_quitWhenIdle = false;
+
+static void FinishBatch()
+{
+	if (roth::TimedCommandsPending())
+	{
+		if (!g_quitWhenIdle)
+			Printf("rothdiff: captures done so far; roth_at commands still pending, not quitting yet\n");
+		g_quitWhenIdle = true;
+		return;
+	}
+	Printf("rothdiff: all captures done; quitting\n");
+	AddCommandString("quit");
+}
+
 // Called once per tic from P_Ticker.
 void RothDiff_RunPending()
 {
-	if (g_pending.Size() == 0) return;
+	if (g_pending.Size() == 0)
+	{
+		if (g_quitWhenIdle && !roth::TimedCommandsPending())
+		{
+			g_quitWhenIdle = false;
+			Printf("rothdiff: all captures done and no roth_at pending; quitting\n");
+			AddCommandString("quit");
+		}
+		return;
+	}
 
 	// SAY WHY THE QUEUE IS NOT DRAINING.
 	//
@@ -307,8 +341,7 @@ void RothDiff_RunPending()
 			g_pending.Insert(i, d);
 		}
 		if (g_pending.Size() > 0) return;
-		Printf("rothdiff: all captures done; quitting\n");
-		AddCommandString("quit");
+		FinishBatch();
 		return;
 	}
 
@@ -326,8 +359,7 @@ void RothDiff_RunPending()
 					sideIdx);
 				g_pending.Delete(0);
 				if (g_pending.Size() > 0) return;
-				Printf("rothdiff: all captures done; quitting\n");
-				AddCommandString("quit");
+				FinishBatch();
 				return;
 			}
 
@@ -394,8 +426,7 @@ void RothDiff_RunPending()
 
 		g_pending.Delete(0);
 		if (g_pending.Size() > 0) return;
-		Printf("rothdiff: all captures done; quitting\n");
-		AddCommandString("quit");
+		FinishBatch();
 		return;
 	}
 
@@ -412,8 +443,7 @@ void RothDiff_RunPending()
 					secnum, pm->Level->sectors.Size());
 				g_pending.Delete(0);
 				if (g_pending.Size() > 0) return;
-				Printf("rothdiff: all captures done; quitting\n");
-				AddCommandString("quit");
+				FinishBatch();
 				return;
 			}
 
@@ -458,8 +488,7 @@ void RothDiff_RunPending()
 
 		g_pending.Delete(0);
 		if (g_pending.Size() > 0) return;
-		Printf("rothdiff: all captures done; quitting\n");
-		AddCommandString("quit");
+		FinishBatch();
 		return;
 	}
 
@@ -494,8 +523,7 @@ void RothDiff_RunPending()
 
 		P_UseLines(&players[consoleplayer]);
 		if (g_pending.Size() > 0) return;
-		Printf("rothdiff: all captures done; quitting\n");
-		AddCommandString("quit");
+		FinishBatch();
 		return;
 	}
 
@@ -505,8 +533,7 @@ void RothDiff_RunPending()
 		g_pending.Delete(0);
 		DoSprites(d.x, d.y, d.ang, d.path.GetChars());
 		if (g_pending.Size() > 0) return;
-		Printf("rothdiff: all captures done; quitting\n");
-		AddCommandString("quit");
+		FinishBatch();
 		return;
 	}
 
@@ -526,8 +553,7 @@ void RothDiff_RunPending()
 		Printf("rothdiff_shot: %s at (%d,%d,%d)\n", shot.path.GetChars(),
 			shot.x, shot.y, shot.ang);
 		if (g_pending.Size() > 0) return;
-		Printf("rothdiff: all captures done; quitting\n");
-		AddCommandString("quit");
+		FinishBatch();
 		return;
 	}
 
@@ -542,8 +568,7 @@ void RothDiff_RunPending()
 	// `quit` cannot go in the script itself: like `exec` it is not deferred, so
 	// it would fire at startup and kill the process before `map` ever produced
 	// a level -- which is exactly what it did.
-	Printf("rothdiff: all captures done; quitting\n");
-	AddCommandString("quit");
+	FinishBatch();
 }
 
 // PRESS USE, WITHOUT A HUMAN. Doors could be opened by the console command all

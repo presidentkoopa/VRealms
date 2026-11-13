@@ -7686,6 +7686,8 @@ CCMD(roth_at)
 	gTimedCommands.emplace_back(atoi(argv[1]), cmd);
 }
 
+bool TimedCommandsPending() { return !gTimedCommands.empty(); }   // namespace roth, see roth_runtime.h
+
 namespace {   // declared inside the file's anonymous namespace near the top, so defined in one too
 void DrainTimedCommands(FLevelLocals *level)
 {
