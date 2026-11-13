@@ -12,16 +12,21 @@
 //     M4  the corners and the outside: u = 0 is x 0, u just under 1 is x 0x11f, left of the
 //         panel is negative, a ray parallel to the plane or pointing away meets nothing;
 //     M5  the fingertip's signed distance in front of the plane.
-//  G. THE HAND (src/roth/roth_invhand.h): scripted tics of a hand.
-//     G1  pointing: the mouse is where the laser meets the panel; a dot on the picture only;
-//     G2  an index tap: a PRIMARY click where the laser was when the index came down, even
-//         though the curling finger swings the ray; the point is held while it straightens;
-//     G3  the index held 18 tics: one SECONDARY click there, none when it lifts;
-//     G4  a pull (a shot) or letting go of the grip: no click;
-//     G5  a tap with the laser off the panel or away from its plane: a click off the panel
+//  G. THE HAND (src/roth/roth_invhand.h): scripted tics of a hand. Trigger = the original's
+//     PRIMARY, grip = its SECONDARY (the owner's scheme).
+//     G1  pointing (the index straight, the grip open or closed): the mouse is where the laser
+//         meets the panel; a dot on the picture only; the index on the trigger holds the point;
+//     G2  the trigger: one PRIMARY per press (0.70 on, 0.35 off) where the laser was when the
+//         index came down, though the curling finger swings the ray; letting go does nothing;
+//         the point is held while the index straightens, and for at most 35 tics while it is down;
+//     G3  a controller with no trigger touch: the same;
+//     G4  the grip while pointing: one SECONDARY per squeeze at the laser; not while the index is
+//         on the trigger; a grip already closed when the hand arrives is no press;
+//     G5  a click with the laser off the panel or away from its plane: a click off the panel
 //         (PANEL_NOWHERE when the ray meets no plane);
-//     G6  a fingertip touch from in front: PRIMARY where it touched, when it backs off;
-//     G7  the fingertip held 18 tics: one SECONDARY there;
+//     G6  a fingertip touch from in front: PRIMARY where it touched, when it backs off, however
+//         long it rested (no hold-as-secondary);
+//     G7  the grip while the fingertip touches: one SECONDARY there, and nothing on backing off;
 //     G8  a fast push through the panel between two tics: touches where its path crossed;
 //     G9  touches that are not: from behind, beside the picture, sliding off it, 15 cm
 //         through, a hand that stops pointing;
@@ -195,20 +200,20 @@ struct Run
 		p = Panel(s, eye, normal);
 		in.valid = true; in.haveRay = true; in.fromFinger = true;
 	}
-	// The hand pointing (grip 1, index off the trigger) from `tip` at screen point (x, y).
+	// The hand pointing (the index straight, off the trigger; the grip open) from `tip` at screen point (x, y).
 	void PointAt(double x, double y, double metres = 0.35, double side = 0.1)
 	{
 		const PanelV3 at = PanelWorldOf(p, x, y);
 		in.tip = at + p.front * (metres * upm) + p.right * (side * upm);
 		in.dir = Unit(at - in.tip);
-		in.grip = 1.f; in.trigger = 0.f; in.triggerTouch = false;
+		in.grip = 0.f; in.trigger = 0.f; in.triggerTouch = false;
 	}
 	// A fingertip `metres` in front of screen point (x, y), the finger along the normal.
 	void TipAt(double x, double y, double metres)
 	{
 		in.tip = PanelWorldOf(p, x, y) + p.front * (metres * upm);
 		in.dir = p.front * -1.0;
-		in.grip = 1.f; in.trigger = 0.f; in.triggerTouch = false;
+		in.trigger = 0.f; in.triggerTouch = false;
 	}
 	InvHandOutput Tic() { InvHandOutput o = h.Tick(p, in, upm); outs.push_back(o); return o; }
 	int Clicks(int *button = nullptr, int *x = nullptr, int *y = nullptr, InvHandHow *how = nullptr) const
@@ -218,6 +223,8 @@ struct Run
 			if (o.click) { n++; if (button) *button = o.click; if (x) *x = o.cx; if (y) *y = o.cy; if (how) *how = o.how; }
 		return n;
 	}
+	// The index onto the trigger (curling: its ray swings down), then pulled to `pull`.
+	void IndexDown(float pull) { in.triggerTouch = true; in.trigger = pull; in.dir = Unit(in.dir - p.up * 0.5); }
 };
 
 static void TestHand()
@@ -228,153 +235,168 @@ static void TestHand()
 		InvHandOutput o = r.Tic();
 		check(o.pointer && o.px == 130 && o.py == 22 && o.onPicture && o.dot && o.beam, "G1 pointing: the mouse at (130, 22), a dot, the laser");
 		check(fabs((o.beamEnd - PanelWorldOf(r.p, 130.5, 22.5)).Length()) < 1e-6, "G1 the laser ends on the panel");
-		r.PointAt(-30.5, 22.5);
-		o = r.Tic();
+		r.in.grip = 0.9f; o = r.Tic();             // the other fingers curled by the grip: still pointing
+		check(r.Clicks() == 1 && o.beam && r.h.Pointing(), "G1 the index straight with the grip held is still pointing (and the squeeze clicked: G4)");
+		Run q;
+		q.PointAt(-30.5, 22.5);
+		o = q.Tic();
 		check(o.pointer && o.px == -31 && !o.onPicture && !o.dot && o.beam, "G1 beside the panel: the mouse off the picture, no dot");
-		check(r.Clicks() == 0, "G1 pointing alone clicks nothing");
+		q.Tic(); q.Tic();
+		check(q.Clicks() == 0, "G1 pointing alone clicks nothing");
+		q.in.triggerTouch = true; o = q.Tic();
+		check(!q.h.Pointing() && q.h.IndexDown(), "G1 the index onto the trigger: not pointing, the point held");
 	}
 	{   // G2
 		Run r;
 		r.PointAt(130.5, 22.5);
 		r.Tic(); r.Tic();
-		// the index comes onto the trigger: the finger curls and its ray swings down 25 degrees
-		r.in.triggerTouch = true;
-		r.in.dir = Unit(r.in.dir - r.p.up * 0.5);
+		r.IndexDown(0.f);                          // the index onto the trigger: the ray swings
 		InvHandOutput o = r.Tic();
-		check(o.pointer && o.px == 130 && o.py == 22 && o.active, "G2 index down: the mouse stays at (130, 22)");
-		for (int i = 0; i < 5; i++) o = r.Tic();
-		check(o.px == 130 && o.py == 22 && r.Clicks() == 0, "G2 while it is down: no click yet, the point held");
-		r.in.triggerTouch = false;         // lifts; the finger is still swung
-		o = r.Tic();
+		check(o.pointer && o.px == 130 && o.py == 22 && o.active && o.beam && o.dot, "G2 index down: the mouse and the laser held at (130, 22)");
+		r.in.trigger = 0.5f; r.Tic();
+		check(r.Clicks() == 0, "G2 pulled to 0.5: no click (pressed at 0.70)");
+		r.in.trigger = 0.75f; r.Tic();
 		int b = 0, x = 0, y = 0; InvHandHow how = InvHandHow::None;
-		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 1 && x == 130 && y == 22 && how == InvHandHow::Tap, "G2 the lift: one PRIMARY click at (130, 22)");
+		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 1 && x == 130 && y == 22 && how == InvHandHow::Trigger, "G2 the pull past 0.70: one PRIMARY click at (130, 22)");
+		r.in.trigger = 1.f; r.Tic(); r.in.trigger = 0.5f; r.Tic(); r.in.trigger = 0.8f; r.Tic();
+		check(r.Clicks() == 1, "G2 held, eased to 0.5 and pulled again (no let-go below 0.35): no second click");
+		r.in.trigger = 0.2f; r.Tic(); r.in.trigger = 0.9f; r.Tic();
+		check(r.Clicks(&b, &x, &y) == 2 && b == 1 && x == 130, "G2 let go below 0.35 and pulled again: a second PRIMARY there");
+		r.in.trigger = 0.f; r.Tic();
+		check(r.Clicks() == 2, "G2 letting go does nothing");
+		r.in.triggerTouch = false; r.in.dir = Unit(PanelWorldOf(r.p, 130.5, 22.5) - r.in.tip);
+		r.PointAt(200.5, 40.5);                    // the index straightens, the hand already elsewhere
 		bool held = true;
-		for (int i = 0; i < invhand::kSettleTics - 1; i++) { o = r.Tic(); held = held && o.px == 130 && o.py == 22; }
+		for (int i = 0; i < invhand::kSettleTics; i++) { o = r.Tic(); held = held && o.px == 130 && o.py == 22; }
 		check(held, "G2 the point is held while the index straightens");
-		for (int i = 0; i < 3; i++) o = r.Tic();
-		check(o.py != 22 || o.px != 130, "G2 then the mouse follows the laser again");
-		check(r.Clicks() == 1, "G2 one click in all");
+		o = r.Tic();
+		check(o.px == 200 && o.py == 40, "G2 then the mouse follows the laser again");
 	}
-	{   // G3
+	{   // G2b the held point lasts kAimHoldTics
+		Run r;
+		r.PointAt(130.5, 22.5);
+		r.Tic();
+		r.IndexDown(0.f);
+		InvHandOutput o;
+		for (int i = 0; i < invhand::kAimHoldTics; i++) o = r.Tic();
+		check(o.beam && o.px == 130 && r.h.IndexDown(), "G2 the index down 35 tics: the point still held, the laser to it");
+		o = r.Tic();
+		check(!o.beam && !o.pointer && !r.h.IndexDown(), "G2 a tic later: the point is dropped, no laser (a hand at rest)");
+		r.in.trigger = 1.f; r.Tic();
+		check(r.Clicks() == 0, "G2 a pull after that: no click (no aim)");
+	}
+	{   // G3 no touch sensor: the trigger's own travel takes the index off
 		Run r;
 		r.PointAt(100.5, 30.5);
 		r.Tic();
-		r.in.triggerTouch = true;
+		r.in.trigger = 0.3f; r.in.dir = Unit(r.in.dir - r.p.up * 0.5); r.Tic();
+		r.in.trigger = 0.9f; r.Tic();
+		int b = 0, x = 0, y = 0;
+		check(r.Clicks(&b, &x, &y) == 1 && b == 1 && x == 100 && y == 30, "G3 a controller with no trigger touch: the pull's PRIMARY lands where the laser was");
+	}
+	{   // G4 the grip while pointing
+		Run r;
+		r.PointAt(160.5, 25.5);
 		r.Tic();
-		for (int i = 1; i < invhand::kTapMaxTics; i++) r.Tic();
-		check(r.Clicks() == 0, "G3 17 tics on the trigger: no click yet");
-		r.Tic();
+		r.in.grip = 0.5f; r.Tic();
+		check(r.Clicks() == 0, "G4 the grip at 0.5: no click (closed at 0.70)");
+		r.in.grip = 0.8f; r.Tic();
 		int b = 0, x = 0, y = 0; InvHandHow how;
-		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 2 && x == 100 && y == 30 && how == InvHandHow::Hold, "G3 the 18th tic: one SECONDARY click at (100, 30)");
-		for (int i = 0; i < 20; i++) r.Tic();
-		r.in.triggerTouch = false;
-		r.Tic();
-		check(r.Clicks() == 1, "G3 held on and lifted: nothing more");
-	}
-	{   // G4
-		Run r;
-		r.PointAt(100.5, 30.5);
-		r.Tic();
-		r.in.triggerTouch = true; r.Tic();
-		r.in.trigger = 0.6f; r.Tic();
-		r.in.trigger = 0.f; r.in.triggerTouch = false; r.Tic();
-		check(r.Clicks() == 0, "G4 a pull (a shot) is no click");
-		Run q;
-		q.PointAt(100.5, 30.5);
-		q.Tic();
-		q.in.triggerTouch = true; q.Tic();
-		q.in.grip = 0.2f; q.Tic();
-		q.in.grip = 1.f; q.in.triggerTouch = false; q.Tic();
-		check(q.Clicks() == 0, "G4 letting go of the grip is no click");
+		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 2 && x == 160 && y == 25 && how == InvHandHow::Grip, "G4 the squeeze: one SECONDARY at (160, 25)");
+		for (int i = 0; i < 30; i++) r.Tic();
+		r.in.grip = 0.f; r.Tic();
+		check(r.Clicks() == 1, "G4 held 30 tics, then let go: nothing more");
+		r.in.triggerTouch = true; r.Tic();         // the index down, then the grip: not pointing, nothing
+		r.in.grip = 1.f; r.Tic();
+		check(r.Clicks() == 1, "G4 the grip with the index on the trigger (not pointing): no click");
+		Run q;                                     // a grip already closed when the hand arrives is not a press
+		q.PointAt(160.5, 25.5); q.in.grip = 1.f;
+		q.Tic(); q.Tic();
+		check(q.Clicks() == 0, "G4 a grip already closed on the first tic: no click");
 	}
 	{   // G5
 		Run r;
 		r.PointAt(-60.5, 120.5);
 		r.Tic();
-		r.in.triggerTouch = true; r.Tic();
-		r.in.triggerTouch = false; r.Tic();
+		r.IndexDown(0.f); r.Tic();
+		r.in.trigger = 1.f; r.Tic();
 		int b = 0, x = 0, y = 0;
-		check(r.Clicks(&b, &x, &y) == 1 && b == 1 && x == -61 && y == 120, "G5 a tap beside the panel: a PRIMARY click at (-61, 120), off it");
+		check(r.Clicks(&b, &x, &y) == 1 && b == 1 && x == -61 && y == 120, "G5 the trigger with the laser beside the panel: a PRIMARY at (-61, 120), off it");
 		Run q;
 		q.PointAt(100.5, 30.5);
-		q.in.dir = q.p.front;              // pointing back, away from the plane
+		q.in.dir = q.p.front;                      // pointing back, away from the plane
 		InvHandOutput o = q.Tic();
 		check(!o.pointer && o.beam && !o.dot, "G5 pointing away: no mouse on the panel, a short laser");
-		q.in.triggerTouch = true; q.Tic();
-		q.in.triggerTouch = false; q.Tic();
-		check(q.Clicks(&b, &x, &y) == 1 && b == 1 && x == PANEL_NOWHERE && y == PANEL_NOWHERE, "G5 a tap pointing away: a click nowhere (off the panel)");
+		q.in.grip = 1.f; q.Tic();
+		check(q.Clicks(&b, &x, &y) == 1 && b == 2 && x == PANEL_NOWHERE && y == PANEL_NOWHERE, "G5 the grip pointing away: a SECONDARY nowhere (off the panel)");
 	}
-	{   // G6
+	{   // G6 touch = PRIMARY on backing off
 		Run r;
 		const double xs[] = { 0.10, 0.07, 0.05, 0.03, 0.015 };
 		for (double m : xs) { r.TipAt(160.5, 25.5, m); r.Tic(); }
 		check(r.h.InContact(), "G6 the tip 1.5 cm in front: on the panel");
-		r.TipAt(161.5, 26.5, 0.005); r.Tic();   // pressing on, sliding a pixel
+		r.TipAt(161.5, 26.5, 0.005); r.Tic();
+		for (int i = 0; i < 40; i++) r.Tic();      // resting on it: nothing (no hold-as-secondary any more)
 		r.TipAt(161.5, 26.5, 0.03); r.Tic();
-		check(r.Clicks() == 0, "G6 still within 4 cm: no click yet");
+		check(r.Clicks() == 0, "G6 resting on the panel 40 tics, still within 4 cm: no click");
 		r.TipAt(161.5, 26.5, 0.06);
-		InvHandOutput o = r.Tic();
+		r.Tic();
 		int b = 0, x = 0, y = 0; InvHandHow how;
 		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 1 && x == 160 && y == 25 && how == InvHandHow::Touch, "G6 backing off: one PRIMARY at (160, 25), where it touched");
-		(void)o;
-		// and again: re-armed
 		for (double m : xs) { r.TipAt(40.5, 60.5, m); r.Tic(); }
 		r.TipAt(40.5, 60.5, 0.1); r.Tic();
 		check(r.Clicks(&b, &x, &y) == 2 && x == 40 && y == 60, "G6 a second touch: a second click at (40, 60)");
 	}
-	{   // G7
+	{   // G7 grip while touching = SECONDARY
 		Run r;
 		r.TipAt(200.5, 50.5, 0.10); r.Tic();
 		r.TipAt(200.5, 50.5, 0.0); r.Tic();
-		for (int i = 1; i < invhand::kTapMaxTics; i++) r.Tic();
-		check(r.Clicks() == 0, "G7 17 tics on the panel: no click yet");
-		r.Tic();
+		r.in.grip = 0.9f; r.Tic();
 		int b = 0, x = 0, y = 0; InvHandHow how;
-		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 2 && x == 200 && y == 50 && how == InvHandHow::TouchHold, "G7 the 18th: one SECONDARY at (200, 50)");
-		r.TipAt(200.5, 50.5, 0.10); r.Tic();
-		check(r.Clicks() == 1, "G7 backing off after it: nothing more");
+		check(r.Clicks(&b, &x, &y, &how) == 1 && b == 2 && x == 200 && y == 50 && how == InvHandHow::TouchGrip, "G7 the grip while touching: one SECONDARY at (200, 50)");
+		for (int i = 0; i < 10; i++) r.Tic();
+		r.TipAt(200.5, 50.5, 0.10); r.in.grip = 0.9f; r.Tic();
+		r.in.grip = 0.f; r.Tic();
+		check(r.Clicks() == 1, "G7 backing off after it, then opening the grip: nothing more");
 	}
 	{   // G8
 		Run r;
 		r.TipAt(80.5, 40.5, 0.10); r.Tic();
-		// one tic later the tip is 8 cm through, 20 pixels to the right: it crossed at 10/18 of the way
-		const PanelV3 a = PanelWorldOf(r.p, 80.5, 40.5) + r.p.front * (0.10 * r.upm);
 		const PanelV3 b = PanelWorldOf(r.p, 98.5, 40.5) - r.p.front * (0.08 * r.upm);
 		r.in.tip = b; r.Tic();
 		check(r.h.InContact(), "G8 a fast push through: on the panel");
-		(void)a;
 		r.TipAt(98.5, 40.5, 0.10); r.Tic();
 		int bt = 0, x = 0, y = 0;
 		check(r.Clicks(&bt, &x, &y) == 1 && bt == 1 && x == 90 && y == 40, "G8 touched where the path crossed (90, 40), not where the tip ended (98)");
 	}
 	{   // G9
 		Run r;
-		r.TipAt(80.5, 40.5, -0.05); r.Tic();      // starts behind
+		r.TipAt(80.5, 40.5, -0.05); r.Tic();
 		r.TipAt(80.5, 40.5, 0.0); r.Tic();
 		r.TipAt(80.5, 40.5, 0.10); r.Tic();
 		check(r.Clicks() == 0, "G9 from behind: no touch");
 		Run q;
 		q.TipAt(-20.5, 40.5, 0.10); q.Tic();
 		q.TipAt(-20.5, 40.5, 0.0); q.Tic();
-		q.TipAt(5.5, 40.5, 0.0); q.Tic();            // slides onto the picture along the plane
+		q.TipAt(5.5, 40.5, 0.0); q.Tic();
 		q.TipAt(5.5, 40.5, 0.10); q.Tic();
 		check(q.Clicks() == 0, "G9 beside the picture, then sliding onto it: no touch");
 		Run s;
 		s.TipAt(280.5, 40.5, 0.10); s.Tic();
 		s.TipAt(280.5, 40.5, 0.0); s.Tic();
-		s.TipAt(300.5, 40.5, 0.0); s.Tic();         // slides off the right edge
+		s.TipAt(300.5, 40.5, 0.0); s.Tic();
 		s.TipAt(300.5, 40.5, 0.10); s.Tic();
 		check(s.Clicks() == 0, "G9 sliding off the picture: dropped");
 		Run t;
 		t.TipAt(80.5, 40.5, 0.10); t.Tic();
 		t.TipAt(80.5, 40.5, 0.0); t.Tic();
-		t.TipAt(80.5, 40.5, -0.2); t.Tic();          // 20 cm through
+		t.TipAt(80.5, 40.5, -0.2); t.Tic();
 		t.TipAt(80.5, 40.5, 0.10); t.Tic();
 		check(t.Clicks() == 0, "G9 15 cm through: dropped");
 		Run u;
 		u.TipAt(80.5, 40.5, 0.10); u.Tic();
 		u.TipAt(80.5, 40.5, 0.0); u.Tic();
-		u.in.grip = 0.f; u.Tic();                     // stops pointing
+		u.in.triggerTouch = true; u.Tic();          // the index leaves the panel for the trigger
 		u.TipAt(80.5, 40.5, 0.10); u.Tic();
 		check(u.Clicks() == 0, "G9 the hand stops pointing: dropped");
 		Run v;
@@ -386,12 +408,12 @@ static void TestHand()
 	{   // G10
 		Run r;
 		r.PointAt(100.5, 30.5); r.Tic();
-		r.in.triggerTouch = true; r.Tic();
+		r.IndexDown(0.f); r.Tic();
 		r.in.valid = false;
 		InvHandOutput o = r.Tic();
-		check(!o.beam && !o.pointer && !o.click && !r.h.TapDown(), "G10 the controller gone: nothing shown, the tap dropped");
-		r.in.valid = true; r.in.triggerTouch = false; r.Tic();
-		check(r.Clicks() == 0, "G10 and no click when it comes back");
+		check(!o.beam && !o.pointer && !o.click && !r.h.IndexDown(), "G10 the controller gone: nothing shown, the held point dropped");
+		r.in.valid = true; r.in.trigger = 1.f; r.Tic();
+		check(r.Clicks() == 0, "G10 and a trigger already pulled when it comes back is no click");
 	}
 }
 

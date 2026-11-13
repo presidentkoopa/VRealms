@@ -32,7 +32,7 @@ VR changes only how the player performs it.
 | use on self | `use_item_on_self` (C/inventory.c:691-776): an OnUse block with target 0 | the gesture: bring the item to the body |
 | combine | `combine_held_item_with_target` (C/inventory.c:787-928) | the gesture: bring two items together |
 | examine an item | the close-up popup: GDV film, first-view OnInspect comment, magnifier, "i" topics, document pages (C/file_config.c:900-1144, C/dialogue_ui.c:1299-1541) | how it is opened: bring the item to the face. The popup and film stay the original's |
-| examine the world | `examine_object_under_cursor` (C/input.c:979-1015) | phase 1: point and dwell 0.8 s |
+| examine the world | `examine_object_under_cursor` (C/input.c:979-1015) | the trigger (the original's primary click), the palm on it or pointing at it |
 
 Use and examine ranges are the original's (docs/REMAROTH_MEASURED.md 13). They are planar distances along the view yaw:
 - use: z < 268 world units;
@@ -45,7 +45,7 @@ headset), use reaches 2.5 m and examine reaches 23 m.
 **A touch is always inside the use range** [R]: a hand-held item reaches about 0.8 m. So "touch the item to the
 target" never fires anything the original would refuse. It is stricter than the original, which uses from 2.5 m.
 
-**[P]** Keep the phase-1 pointer path (15c9da27: point and tap = use) for every item as well. The original's reach
+**[P]** Keep the pointer path (point and squeeze the grip = use at range; 15c9da27 had point and tap) for every item as well. The original's reach
 then stays available, and touch is the VR way, not the only way.
 
 Consequences of the original's logic that VR must keep:
@@ -621,7 +621,7 @@ Size [R]: 150 cm, 1.2 kg.
 - **Grip**: the handle, wrap_tight. One hand. Carry: a coat pocket.
 - **Verbs**:
   - **(logic)** Examine a wall through it. Hold the lens between the eye and the wall: the wall's examine target lies on
-    the ray from the HMD through the lens. Dwell 0.8 s (phase-1 examine). With the glass in hand, the original's chain
+    the ray from the HMD through the lens. The trigger examines (the dwell is removed). With the glass in hand, the original's chain
     reveals the writing.
   - **(logic)** Combine: hold the glass over the scroll held in the other hand.
 - **Renderer** [P]: a magnified view inside the lens (render to texture, or a second camera at narrow field of view).
@@ -1056,3 +1056,16 @@ VR way is the designed, featured way.
    green lemniscatic wards visible (Belial's wand, item 150, dispels them). In VR a pale magic beam comes from the lens and a
    ward shows only where the beam falls, like UV light. Vanilla stays available: holding it shows the wards as the original
    does (a setting).
+
+## OWNER'S DECISION: THE HANDS' BUTTONS (2026-11-13, later)
+
+The **trigger is the original's PRIMARY click and the grip its SECONDARY** (with the original's default button swap,
+docs/GAME_core.md 4.2: primary = examine, secondary = use). In the world: the trigger examines what the palm is on,
+else what the pointing finger points at; the grip uses what the palm is on (the grip's near use), else what the
+pointing finger points at, at the original's range. The fingertip press stays a near use. A hand holding a weapon
+fires on its trigger as before; its grip still uses. On the inventory screen and the examine popup: trigger =
+PRIMARY click, grip = SECONDARY, at the laser or the fingertip; a fingertip touch = PRIMARY, the grip while it
+touches = SECONDARY. The 0.8 s dwell examine and its ring, the index tap and the index held 18 tics are removed.
+Where this file says "point and tap" or "dwell" above, read "point and squeeze the grip" (use) and "the trigger"
+(examine). Code: src/roth/roth_vrpick.cpp (header), src/roth/roth_invhand.h.
+

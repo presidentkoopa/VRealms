@@ -2,8 +2,9 @@
 # roth_panelmap.h). "ptr x y code via": the ORIGINAL moves its mouse to panel pixel (x, y) and runs
 # handle_cursor_click there -- the hover (code 0), then a primary (1) or secondary (2) click; the
 # PORT stands a VR hand in front of the panel in the world, aims it at that pixel and makes the
-# click with a gesture (via 0: the laser and an index tap / an index held 18 tics; via 1: the
-# fingertip touching / held on the panel; via 2: the hand pointing away from the panel, a tap),
+# click with the owner's buttons -- the trigger is the original's PRIMARY, the grip its SECONDARY
+# (via 0: the laser, with the trigger / the grip; via 1: the fingertip touching the panel / the
+# grip while it touches; via 2: the hand pointing away from the panel),
 # the hand's mouse going through the same InvMouse every pointer on the panel uses. Both print a
 # P line (cursor shape, hover latch, list, cursor, scroll, held, hands, examine request, close and
 # options requests); run.sh diffs them, and the dumps compare the panel's picture.
@@ -42,36 +43,36 @@ dump p_open
 ptrsweep 5
 frame 1
 dump p_swept
-# a laser tap on cell 2 with nothing held: examine it
+# the trigger on cell 2 with nothing held: examine it
 ptr 199 29 0 0
 ptr 199 29 1 0
-# the index held on cell 1: it goes onto the cursor
+# the grip on cell 1: it goes onto the cursor
 ptr 168 29 2 0
 noinspect
 frame 2
 dump p_held1
-# the fingertip held on cell 3: swap the two
+# the grip while the fingertip touches cell 3: swap the two
 ptr 230 29 2 1
 noinspect
 frame 3
 dump p_swapped
-# fingertip: cell 0 onto the cursor (held), then a touch on it: use it on Adam
+# fingertip: cell 0 onto the cursor (touch + grip), then a touch on it: use it on Adam
 ptr 137 29 2 1
 ptr 137 29 1 1
 noinspect
 frame 4
 dump p_used
-# a laser tap on cell 5 with cell 0 held: combine
+# the trigger on cell 5 with cell 0 held: combine
 ptr 137 60 1 0
 noinspect
 frame 5
 dump p_combined
-# the fingertip held on cell 0 (put back, or taken)
+# the grip while the fingertip touches cell 0 (put back, or taken)
 ptr 137 29 2 1
 noinspect
 frame 6
 dump p_cell0
-# the arrows: down by a laser tap, up by a touch
+# the arrows: down by the trigger, up by a touch
 ptr 281 60 1 0
 noinspect
 frame 7
@@ -91,22 +92,22 @@ ptr 70 28 2 0
 noinspect
 frame 10
 dump p_left
-# the items tab by the laser; cell 6 onto the cursor, the fingertip held on the right hand box
+# the items tab by the trigger; cell 6 onto the cursor, the grip while touching the right hand box
 ptr 14 64 1 0
 ptr 168 60 2 0
 ptr 100 28 2 1
 noinspect
 frame 11
 dump p_right
-# a tap on the right hand box: its item's label (an examine request)
+# the trigger on the right hand box: its item's label (an examine request)
 ptr 100 28 1 0
 noinspect
-# the left hand box held with nothing on the cursor: to its item's tab
+# the grip while touching the left hand box, nothing on the cursor: to its item's tab
 ptr 70 28 2 1
 noinspect
 frame 12
 dump p_jump
-# a tap on nothing of the panel's; back to the items
+# the trigger on nothing of the panel's; back to the items
 ptr 45 8 1 0
 ptr 14 64 1 0
 ptrsweep 9
@@ -126,7 +127,7 @@ ptr 12 44 1 0
 # an item onto the cursor, a touch on the held item's box (0x26): commit and close
 ptr 230 29 2 0
 ptr 10 10 1 1
-# an item onto the cursor, a tap with the hand pointing away: off the panel (0x26)
+# an item onto the cursor, the trigger with the hand pointing away: off the panel (0x26)
 ptr 261 29 2 0
 ptr -50 -50 1 2
 noinspect

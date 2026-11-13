@@ -95,3 +95,24 @@ The patch is `git diff --binary` against 375bcc07 and applies cleanly there. It 
   pickup sprites, books, furniture).
 - MARKED FOR LATER (owner, 05:08): larger textures for things painted on walls/furniture that VR players will want to open or
   touch, e.g. desk drawers ("we may eventually have to look at larger textures as well for desk drawers, etc").
+
+## THE HANDS' BUTTONS, owner's scheme (2026-11-13, later; supersedes the picker gestures above)
+- **Trigger = the original's PRIMARY click (examine), grip = its SECONDARY (use)** -- docs/GAME_core.md 4.2: with the
+  default swap the primary examines (`examine_object_under_cursor`), the secondary uses (`activate_targeted_object`).
+- World: the trigger examines what the palm is on (NearAct: GrabNear's search, gated by CanExamine), else what the
+  pointing finger pointed at when the index left it (held 1 s). The grip uses what the palm is on (GrabNear's
+  choice, unchanged), else the pointing finger's target at the original's range (depth < 600). Pointing = the index
+  straight (PoseRule); the grip may be curled. The fingertip press is unchanged (point pose with the grip held).
+- A hand holding a weapon (HandHoldsWeapon: drawn in the main hand, not Adam's fists) fires on its trigger as before
+  (the binding's +attack, untouched); its trigger examines nothing; its grip uses.
+- One action per press edge: pressed at 0.70, let go at 0.35 (the grip's hysteresis, for both buttons); a button
+  already down when the hand comes back (a controller found, back from a menu or a panel) is not a press.
+- Inventory and examine popup: trigger = PRIMARY, grip = SECONDARY at the laser; a fingertip touch = PRIMARY (on
+  backing off), the grip while touching = SECONDARY.
+- REMOVED: the 0.8 s dwell examine and its ring, the index tap, the index held 18 tics, the fingertip held 18 tics.
+- Not decided (owner): a trigger pull on a hand WITHOUT a weapon still sends the binding's key (the main trigger is
+  +attack: Adam's fists) as well as the examine; the port's world and weapon keep ticking under the open inventory
+  (the original's do not), so the main trigger there also fires.
+- Flat captures: tools/claude_bridge/cfg/vrpick_flat.cfg, useitem_flat.cfg, invhand_flat.cfg (the inputs as
+  `roth_handtest <grip> <trigger> <triggertouch> <thumbtouch>`).
+

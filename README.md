@@ -69,6 +69,11 @@ method), and every in-between is a mix of two authored frames. Smoothing is UZDX
 
 Trigger alone curls the index; nothing held is the open hand.
 
+The buttons (the owner's scheme): the **trigger** is the original's primary click, **examine**, and the
+**grip** its secondary, **use** -- on what the palm is on, or what the straight index points at, at the
+original's range. On the inventory screen they are the original's two mouse buttons at the laser or the
+fingertip. A hand holding a weapon fires on its trigger.
+
 In the engine (flat test, `tools/claude_bridge/cfg/hands_flat.cfg`) — open, fist, point,
 thumb up, finger gun, trigger only:
 

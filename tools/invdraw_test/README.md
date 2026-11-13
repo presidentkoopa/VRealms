@@ -29,14 +29,16 @@ rectangle (not drawn by roth_invdraw), the examine popup, the picture after the 
 `handle_cursor_click` (input.c:1260-1358) there: the hover (code 0), then a primary (1) or a
 secondary (2) click; `set_cursor_shape` is overridden to record the shape and draw no cursor. The
 PORT stands a VR hand in front of the panel in the world (the panel as `roth_interface.cpp` places
-it), aims it at that pixel and makes the click with a gesture -- `via` 0 the laser with an index tap
-or an index held 18 tics, 1 the fingertip touching or held on the panel, 2 the hand pointing away
-from the panel -- through `src/roth/roth_panelmap.h` (panel point -> pixel), `roth_invhand.h` (the
+it), aims it at that pixel and makes the click with the owner's buttons (the trigger is the
+original's PRIMARY, the grip its SECONDARY) -- `via` 0 the laser with the trigger or the grip, 1 the
+fingertip touching the panel or the grip while it touches, 2 the hand pointing away from the panel -- through `src/roth/roth_panelmap.h` (panel point -> pixel), `roth_invhand.h` (the
 gestures) and `roth_invmouse.h` (the mouse on the panel, which every pointer in the engine uses).
 Both print a `P` line (the cursor shape, the hover latch 0x81300, list, cursor, scroll, held, hands,
 the examine request, the close and options requests); `run.sh` diffs them. `ptrsweep n` hovers
 over the panel and a margin every n pixels; `noinspect` drops an examine request unopened. A
 `MAP` line on the port side means a gesture's click landed off the pixel it was aimed at.
-Result (2026-11-13): 1422 mouse points identical, 16 pictures identical, 28 gesture clicks, 0 off
-their point. Mutations: a held index made primary instead of secondary -> 12 pictures and the state
-lines differ; a hand box hovered with shape 0x248 instead of 0x250 -> 90 lines differ.
+Result (2026-11-13, the trigger / grip scheme): 1422 mouse points identical, 16 pictures identical,
+28 gesture clicks (trigger, grip, fingertip touch, grip while touching, pointing away), 0 off their
+point. Mutations (on the first, index-tap version): a click made primary instead of secondary -> 12
+pictures and the state lines differ; a hand box hovered with shape 0x248 instead of 0x250 -> 90
+lines differ.

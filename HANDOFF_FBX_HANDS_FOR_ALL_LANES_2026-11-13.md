@@ -201,7 +201,8 @@ UZDXREMA VAP:1785-1836), on the finished bone palette.
 
 ## 7. Not hands, but built on them (VRealms only)
 
-The VR hand picker (`src/roth/roth_vrpick.cpp`, `src/roth/roth_cursor.h`): point = examine (dwell), index tap = far use,
+The VR hand picker (`src/roth/roth_vrpick.cpp`, `src/roth/roth_cursor.h`), the owner's buttons since 2026-11-13: trigger = examine
+(the original's primary), grip = use (its secondary), in reach or pointing; dwell and index tap removed. Before that: point = examine (dwell), index tap = far use,
 fingertip press / grip = near use, through a port of the original's `classify_cursor_target_object` (786,432 cases,
 0 differ) and the original's measured reach (`docs/REMAROTH_MEASURED.md` section 13). It reads fingertip positions from
 the posed bones (`VRHandPose_FingerPoints`). Realms-specific.

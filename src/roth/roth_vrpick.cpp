@@ -5,62 +5,61 @@
 // points, touches and grabs -- may be new; GAME LOGIC may not. Every gesture
 // here ends in a call the flat game already makes:
 //
-//   what the hand does                   what runs                         the original
-//   ------------------------------------ --------------------------------- ------------------------------
-//   points (the ray, every tic)          ClassifyPick                      classify_cursor_target_object
-//   points at it and holds (dwell)       ExaminePick                       examine_object_under_cursor
-//   points, taps the index on the        Activate(Use)                     activate_targeted_object (the
-//     trigger and lifts it (a click)                                         port's use path, as roth_pick)
-//   presses it with the fingertip        Activate(Use)                     the same
-//   squeezes the grip with the palm      Activate(Use)                     the same; an item goes through
-//     on it                                                                  give_item_by_dbase_id and flies
+// THE OWNER'S BUTTONS (2026-11-13): the TRIGGER is the original's PRIMARY click,
+// the GRIP its SECONDARY. With the original's default button swap the primary
+// is the right mouse button and EXAMINES, the secondary the left and USES
+// (docs/GAME_core.md 4.2-4.3: E/game_core.c:747, :651-699; E/input.c:848-873).
+//
+//   what the hand does                         what runs                 the original
+//   ------------------------------------------ ------------------------- ------------------------------
+//   points (the index straight, PoseRule's;    ClassifyPick, the beam    classify_cursor_target_object
+//     the other fingers may be curled)
+//   TRIGGER pulled, the palm on the thing      ExaminePick               examine_object_under_cursor
+//     (in reach: NearAct, GrabNear's search)                               (the primary click)
+//   TRIGGER pulled, pointing at it             ExaminePick               the same, at range
+//     (what the finger pointed at when the
+//     index left it)
+//   GRIP squeezed, the palm on it (in reach)   Activate(Use)             activate_targeted_object (the
+//                                                                          secondary click); an item goes
+//                                                                          through give_item_by_dbase_id
+//   GRIP squeezed while pointing at it         Activate(Use)             the same, at range (depth < 600,
+//     (nothing in reach)                                                   planar 268)
+//   presses it with the fingertip (the point   Activate(Use)             the same
+//     pose with the grip held, as before)
+//
+// IN REACH OR POINTING: as the picker always chose -- what the palm is on first
+// (NearAct: the objects within 15 cm of the palm, nearest first; a surface 20 cm
+// along the hand; the wall or door the palm is on), else along the pointing
+// finger. A button acts once, on its press edge (pressed at 0.70, let go at 0.35:
+// the grip's hysteresis, for both); holding it does nothing more and letting go
+// does nothing. The hand that holds a WEAPON (HandHoldsWeapon: the weapon drawn
+// in the main hand) fires on its trigger, as before -- the binding's +attack,
+// which nothing here touches -- so its trigger examines nothing; its grip uses.
 //
 // A USE CARRIES THE ITEM OF THE HAND THAT MAKES IT (roth_handuse.h, DoUse).
 // The original has no item-on-object verb: its click runs the object's chain,
 // and the chain's RAW 0x27 tests the right-hand item. So the hand on the RIGHT
 // side, which holds the original's right-hand item, uses with it selected;
 // the other hand uses with nothing selected, as the original does when no item
-// is. Touching the candle with the hand holding the Matchbox lights it; the
+// is. The grip of the hand holding the Matchbox on the candle lights it; the
 // empty hand gets the original's auto-select (the Matchbox goes to the right
 // hand and nothing else happens).
 //
-// and every one is gated by the original's own click rules on that
+// Every action is gated by the original's own click rules on that
 // classification (run_gameplay_frame, roth_runtime.h CursorClass): an examine
 // needs a cursor of type 3 or 5 with something to examine, a use a cursor of
 // type 3 within the use range. Where the original shows no cursor, the hand
 // shows no marker.
 //
-// WHY THESE GESTURES. The controllers' buttons are already the game's -- the
-// triggers fire the held weapon, A is +use, B/X/Y and the sticks are bound
-// through the shared doomxr.ini, the main grip is the shift layer
-// (vr_secondary_button_mappings) -- and nothing here may take one away. So the
-// gestures are made of what no binding reads: the capacitive touches and the
-// analogue grip, as the hands already read them to pose the fingers
-// (vr_handpose.cpp). None of this suppresses or emits a key.
+// NOTHING HERE SUPPRESSES OR EMITS A KEY. The trigger and the grip keep their
+// bindings (the shared doomxr.ini: the main trigger is +attack, the main grip
+// the shift layer); the picker reads the same analogue values the hands' poses
+// read (vr_handpose.cpp). So on a hand that holds no weapon a pull still sends
+// its key as well (the main trigger: +attack, with Adam's fists) -- the owner's
+// to decide; this file only adds the examine.
 //
-//   POINT     grip held (>= 0.5) and the index OFF the trigger (no trigger
-//             touch). The thumb may be down or up (point or finger gun): both
-//             have the index out. This is the hands' own "point" pose.
-//   EXAMINE   DWELL: the ray held on something examinable for 0.8 s fires the
-//             examine once; a ring closes on the marker while it counts. Leave
-//             the target or stop pointing and it re-arms. Chosen over a button
-//             because every button is taken, and over a thumb gesture because
-//             the thumb rests on the stick that walks: lifting it to stop
-//             walking would read as a click. An examine only speaks or shows a
-//             close-up, so a dwell that fires when not meant costs a line of
-//             dialogue, never an item or a lever.
-//   USE far   INDEX TAP: while pointing, touch the trigger with the index and
-//             lift it again within 0.5 s without pulling it (< 0.3). It is the
-//             mouse click of a pointing hand, and a touch emits no key: the
-//             trigger's key is its PULL. The use acts on what was under the ray
-//             when the index came down, and only if the ray is still on it when
-//             the index lifts -- so a tap that slid off acts on nothing.
-//   USE near  FINGERTIP PRESS: pointing, the fingertip within 2.5 cm of a usable
-//             thing (a switch face, a door, a floor plate, an object): fires
-//             once, re-arms when the tip backs off past 6 cm.
-//             GRIP SQUEEZE: the grip closing (0.35 -> 0.7) with the palm on a
-//             Realms object (15 cm) or a usable surface 20 cm along the hand.
-// Both hands work the same way.
+// EXAMINE BY DWELL (0.8 s on a target, a closing ring) is gone: the trigger
+// replaced it (owner, 2026-11-13). So is the index tap: the grip uses.
 //
 // THE RAY. From the index fingertip (the FBX's INDEX_UP_TOP_joint) along the
 // finger (INDEX_BASE_joint -> tip), both as last drawn by the posed hand
@@ -70,7 +69,7 @@
 // controller's aim pose, which is what roth_pick and the panels use.
 //
 // THE DRAWING is billboards, as every Realms panel is: twelve small dots along
-// the ray and a ring at the hit, tinted by the original's cursor family --
+// the ray and a ring marker at the hit, tinted by the original's cursor family --
 //   usable in reach (shapes 0x248, 0x250, 0x278)   candle white
 //   too far        (0x398, 0x3a0)                  dim grey
 //   blocked / keyed / an attack target (0x258, 0x260)  dull red
@@ -94,9 +93,11 @@
 // click through the same code as every pointer's, roth_invmouse.h):
 //   points at the panel        the mouse is there: the laser, a dot where it
 //                              meets the picture; the cursor cell follows it
-//   index tap                  a PRIMARY (left) click there
-//   index held 18 tics         a SECONDARY (right) click there
-//   fingertip touch / held     the same two, where the fingertip touched
+//   trigger pulled             a PRIMARY click where the laser was when the
+//                              index left it
+//   grip squeezed (pointing)   a SECONDARY click at the laser
+//   fingertip touch            a PRIMARY click where it touched (on backing off)
+//   grip while touching        a SECONDARY click where it touched
 // Either hand; which hand changes nothing (the original has one mouse). What
 // a click does -- examine, take onto the cursor, use on Adam, combine, swap,
 // into a hand box, a tab, an arrow, outside = commit and close -- is the
@@ -156,13 +157,11 @@ constexpr double kGrabBack    = 0.08;    // the grip's ray starts this far behin
 constexpr double kTouchRadius = 0.10;    // a palm this close to a wall or a door is on it
 constexpr double kGrabRadius  = 0.15;    // palm to an object's box
 constexpr double kNoHitBeam   = 0.60;    // the beam's length with nothing at its end
-constexpr int    kDwellTics   = 28;      // 0.8 s
-constexpr int    kTapMaxTics  = 18;      // 0.51 s
-constexpr float  kTapMaxPull  = 0.30f;
-constexpr float  kPointGrip   = 0.50f;
-constexpr float  kGripClose   = 0.70f, kGripOpen = 0.35f;
+constexpr float  kPointGrip   = 0.50f;   // the fingertip press's point pose holds the grip this far
+constexpr float  kGripClose   = 0.70f, kGripOpen = 0.35f;   // a button pressed / let go: the grip AND the trigger
+static_assert(kGripClose == invhand::kPressOn && kGripOpen == invhand::kPressOff, "the panel's buttons are the world's");
 constexpr int    kDots        = 12;
-constexpr double kDotM = 0.004, kMarkerM = 0.014, kRingM = 0.020;
+constexpr double kDotM = 0.004, kMarkerM = 0.014;
 
 struct HandState
 {
@@ -170,8 +169,10 @@ struct HandState
 	bool  valid = false;
 	float trigger = 0.f, grip = 0.f;
 	bool  triggerTouch = false, thumbTouch = false;
-	bool  pointing = false, wasPointing = false;
-	bool  gripClosed = false;
+	bool  pointing = false, wasPointing = false;      // the index straight (PoseRule)
+	bool  pressReady = false, wasPressReady = false;  // the fingertip press's point pose (grip held, index off)
+	bool  gripClosed = false, trigDown = false;       // the two buttons, with their hysteresis
+	bool  primed = false;        // the buttons were read last tic: a button already down is not a press
 
 	// the ray and what is at its end
 	bool        haveRay = false;
@@ -186,24 +187,22 @@ struct HandState
 	CursorClass cls;
 
 	// gestures
-	Pick  dwellTarget;
-	Pick  noDwell;          // the last target reported as not examinable (a log line)
-	int   dwellTics = 0;
-	bool  dwellDone = false;
-	bool  tapDown = false;
-	int   tapTics = 0;
-	float tapPull = 0.f;
-	Pick  tapTarget;
+	bool  aimHeld = false;       // the index left its straight position: the aim it had then
+	int   aimTics = 0;           // ... this many tics ago (invhand::kAimHoldTics at most)
+	bool  aimHave = false;       // ... met something
+	DVector3 aimTip, aimDir, aimHit;
+	uint16_t aimShape = 0;
 	bool  pokeArmed = true;
 	double lastPokeDist = 1e9;   // last tic's distance from the tip, and its ray
-	DVector3 lastDir;
+	DVector3 lastTip, lastDir;
+	uint16_t lastShape = 0;
 	Pick  hover;            // the last target the hand could act on (haptic tick)
 	Pick  logged;           // the last target reported (debug line)
 	uint16_t loggedShape = 0;
 
 	// billboards
 	int dot[kDots] = {};
-	int marker = 0, ring = 0;
+	int marker = 0;
 	bool shown = false;      // any of them visible (so an idle hand touches none)
 
 	// on a panel (the inventory screen, the popup): the original's mouse (roth_invhand.h)
@@ -314,7 +313,6 @@ void HideHand(HandState &h)
 	h.shown = false;
 	for (int &d : h.dot) HideBB(d);
 	HideBB(h.marker);
-	HideBB(h.ring);
 	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
 	h.lineShown = 0;
 }
@@ -487,8 +485,8 @@ int RightHandItem(const Inventory *inv)
 	return (int16_t)inv->Slot(inv->RightHand()).id;
 }
 
-// EVERY USE A HAND MAKES -- the index tap, the fingertip press, the grip --
-// is the original's left click, through the port's use path (Activate), WITH
+// EVERY USE A HAND MAKES -- the grip (in reach or pointing), the fingertip
+// press -- is the original's secondary (use) click, through the port's use path (Activate), WITH
 // THE ITEM THAT HAND HOLDS (roth_handuse.h): the hand on the RIGHT side holds
 // the original's right-hand item and uses the object with it selected; the
 // other hand holds none and uses it as the original does with nothing
@@ -528,13 +526,21 @@ bool DoExamine(int role, const Pick &p, const CursorClass &c, AActor *pmo, const
 	return acted;
 }
 
-// The grip closing: what the palm is on. The Realms objects within reach of
-// the palm first -- an item on a table is small and a ray misses it easily --
-// nearest first, the first the original's cursor would let a click use (so a
-// table the palm rests on does not hide the key lying on it); then a short ray
-// along the hand, for a lever or a switch face.
-bool GrabNear(int role, HandState &h, AActor *pmo)
+// IN REACH: what the palm is on -- for the grip's use, or the trigger's examine
+// (`use` false). The Realms objects within reach of the palm first -- an item on
+// a table is small and a ray misses it easily -- nearest first, the first the
+// original's cursor would let that click act on (so a table the palm rests on
+// does not hide the key lying on it); then a short ray along the hand, for a
+// lever or a switch face; then the wall face or door leaf the palm is on. The
+// grip's choice is the one GrabNear always made (the same search, gated by
+// CursorClass::CanUse); the trigger's is the same search gated by CanExamine.
+// Returns 0 when nothing in reach could take the click (the caller then looks
+// along the pointing finger), 1 when it went to something in reach.
+int NearAct(int role, HandState &h, AActor *pmo, bool use)
 {
+	auto can = [use](const CursorClass &c) { return use ? c.CanUse() : c.CanExamine(); };
+	auto why = [use](const CursorClass &c) { return use ? WhyNotUse(c) : WhyNotExamine(c); };
+	const char *what = use ? "grip closes" : "trigger pulled";
 	const double upm = UPM();
 	const double r = kGrabRadius * upm;
 	std::vector<std::pair<double, AActor *>> near;
@@ -556,8 +562,8 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 	}
 	std::sort(near.begin(), near.end(), [](const std::pair<double, AActor *> &a, const std::pair<double, AActor *> &b) { return a.first < b.first; });
 	if (Logging())
-		Printf("[roth_vrpick] %s hand grip closes: palm at (%.1f %.1f %.1f), %d object(s) within %.1f units (%.2f m)\n",
-			RoleName(role), h.palm.X, h.palm.Y, h.palm.Z, (int)near.size(), r, kGrabRadius);
+		Printf("[roth_vrpick] %s hand %s: palm at (%.1f %.1f %.1f), %d object(s) within %.1f units (%.2f m)\n",
+			RoleName(role), what, h.palm.X, h.palm.Y, h.palm.Z, (int)near.size(), r, kGrabRadius);
 	Pick objPick;
 	CursorClass objCls;
 	bool haveObj = false;
@@ -571,8 +577,8 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, p.hitPos - h.palm));
 		if (Logging())
 			Printf("[roth_vrpick]   object %.1f units from the palm: cursor type %d shape 0x%x -> %s\n",
-				n.first, (int)c.type, (unsigned)c.shape, WhyNotUse(c).GetChars());
-		if (!c.CanUse()) continue;
+				n.first, (int)c.type, (unsigned)c.shape, why(c).GetChars());
+		if (!can(c)) continue;
 		objPick = p; objCls = c; haveObj = true;
 		break;
 	}
@@ -594,11 +600,11 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 	{
 		rayPick.dist -= back;   // from the palm; negative: just behind it
 		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.handFwd));
-		haveRay = rayCls.CanUse();
+		haveRay = can(rayCls);
 		if (Logging())
 			Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): %s %.1f units from the palm:"
 				" cursor type %d shape 0x%x -> %s\n", rayFrom.X, rayFrom.Y, rayFrom.Z, h.handFwd.X, h.handFwd.Y, h.handFwd.Z,
-				PickKindName(rayPick), rayPick.dist, (int)rayCls.type, (unsigned)rayCls.shape, WhyNotUse(rayCls).GetChars());
+				PickKindName(rayPick), rayPick.dist, (int)rayCls.type, (unsigned)rayCls.shape, why(rayCls).GetChars());
 	}
 	else if (Logging())
 		Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): nothing from %.1f behind the palm"
@@ -613,11 +619,11 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 	if (PickTouchSurface(pmo, h.palm, kTouchRadius * upm, touchPick))
 	{
 		touchCls = ClassifyPick(touchPick, pmo, DepthOf(pmo, touchPick, touchPick.hitPos - h.palm));
-		haveTouch = touchCls.CanUse();
+		haveTouch = can(touchCls);
 		if (Logging())
 			Printf("[roth_vrpick]   surface under the palm: %s %.1f units from it (at %.1f %.1f): cursor type %d shape 0x%x -> %s\n",
 				PickKindName(touchPick), touchPick.dist, touchPick.hitPos.X, touchPick.hitPos.Y, (int)touchCls.type,
-				(unsigned)touchCls.shape, WhyNotUse(touchCls).GetChars());
+				(unsigned)touchCls.shape, why(touchCls).GetChars());
 	}
 	else if (Logging())
 		Printf("[roth_vrpick]   surface under the palm: no Realms wall or door within %.1f units\n", kTouchRadius * upm);
@@ -626,11 +632,21 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
 	// the cursor: a door handle on the door is taken before the door, the door
 	// before a key lying a hand's width beyond it.
-	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist)) return DoUse(role, objPick, objCls, pmo, "grip on an object");
-	if (haveRay) return DoUse(role, rayPick, rayCls, pmo, "grip on a surface");
+	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist))
+	{
+		if (use) DoUse(role, objPick, objCls, pmo, "grip on an object");
+		else DoExamine(role, objPick, objCls, pmo, "trigger, the palm on an object");
+		return 1;
+	}
+	if (haveRay)
+	{
+		if (use) DoUse(role, rayPick, rayCls, pmo, "grip on a surface");
+		else DoExamine(role, rayPick, rayCls, pmo, "trigger, the palm on a surface");
+		return 1;
+	}
 	if (Logging())
-		Printf("[roth_vrpick] %s hand grip: nothing usable within reach\n", RoleName(role));
-	return false;
+		Printf("[roth_vrpick] %s hand %s: nothing within reach to %s\n", RoleName(role), what, use ? "use" : "examine");
+	return 0;
 }
 
 //--------------------------------------------------------------------------
@@ -639,43 +655,82 @@ bool GrabNear(int role, HandState &h, AActor *pmo)
 
 void ResetGestures(HandState &h)
 {
-	h.dwellTarget = Pick{};
-	h.dwellTics = 0;
-	h.dwellDone = false;
-	h.tapDown = false;
+	h.aimHeld = false;
+	h.aimHave = false;
 	h.pokeArmed = true;
 	h.hover = Pick{};
 }
 
+// The beam: twelve dots from the fingertip to `end`, and the marker there when
+// the original's cursor family has one (FamilyColour).
+void DrawBeam(int role, HandState &h, AActor *pmo, const DVector3 &end, bool hit, uint16_t shape)
+{
+	const double upm = UPM();
+	h.shown = true;
+	const HandLock L = LockFor(role, pmo);
+	double markAlpha = 0.0;
+	const PalEntry col = hit ? FamilyColour(shape, markAlpha) : PalEntry(255, 200, 200, 200);
+	const bool marked = hit && markAlpha > 0.0;
+	const double beamAlpha = marked ? 0.30 : 0.12;
+	const DVector3 span = end - h.tip;
+	const double len = span.Length();
+	const DVector3 dir = len > 1e-6 ? span / len : h.dir;
+	for (int i = 0; i < kDots; i++)
+		PlaceBB(h.dot[i], BB_PANEL, L, h.tip + dir * (len * (i + 0.5) / kDots), kDotM * upm, marked ? col : PalEntry(255, 200, 200, 200), beamAlpha);
+	if (marked)
+		// Pulled back a little toward the hand so the surface does not cut it.
+		PlaceBB(h.marker, BB_RING, L, h.tip + dir * std::max(0.0, len - 0.006 * upm), kMarkerM * upm, col, markAlpha);
+	else HideBB(h.marker);
+	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
+	h.lineShown = 0;
+}
+
+// THE OWNER'S BUTTONS (2026-11-13): the TRIGGER is the original's PRIMARY click
+// (examine), the GRIP its SECONDARY (use). See the header.
 void TickHand(int role, AActor *pmo)
 {
 	HandState &h = P.hand[role];
 	ReadInputs(role, h);
 	h.wasPointing = h.pointing;
-	h.pointing = h.valid && h.grip >= kPointGrip && !h.triggerTouch;
+	h.wasPressReady = h.pressReady;
+	// POINTING: the index straight, as the hand's pose shows it (PoseRule: off the
+	// trigger, not touching it); the other fingers may be curled by the grip.
+	h.pointing = h.valid && InvHandIndexStraight(h.triggerTouch, h.trigger);
+	// The fingertip press keeps its own readiness, unchanged: the point pose with
+	// the grip held (>= 0.5) and the index off the trigger.
+	h.pressReady = h.valid && h.grip >= kPointGrip && !h.triggerTouch;
 	const bool gripWasClosed = h.gripClosed;
 	if (!h.valid) h.gripClosed = false;
 	else if (h.grip >= kGripClose) h.gripClosed = true;
 	else if (h.grip <= kGripOpen) h.gripClosed = false;
+	const bool trigWasDown = h.trigDown;
+	if (!h.valid) h.trigDown = false;
+	else if (h.trigger >= kGripClose) h.trigDown = true;
+	else if (h.trigger <= kGripOpen) h.trigDown = false;
+	// A button already down when the hand comes back (a controller found, the
+	// hands back from a menu or a panel) is not a press.
+	const bool gripEdge = h.primed && h.gripClosed && !gripWasClosed;
+	const bool trigEdge = h.primed && h.trigDown && !trigWasDown;
+	h.primed = h.valid;
 
-	// A HAND THAT IS DOING NOTHING COSTS NOTHING: no fingertip, no trace, no
-	// classification, no billboards -- only the inputs above. In the headset
-	// that is most tics for most hands. Work is done while pointing, while an
-	// index tap is under way (or starting), and on the tic the grip closes.
-	const bool gripEdge = h.gripClosed && !gripWasClosed;
-	const bool tapStarting = !h.tapDown && h.wasPointing && h.triggerTouch;
 	if (Logging())
 	{
-		const int state = (h.valid ? 1 : 0) | (h.pointing ? 2 : 0) | (h.gripClosed ? 4 : 0) | (h.triggerTouch ? 8 : 0) | (h.thumbTouch ? 16 : 0);
+		const int state = (h.valid ? 1 : 0) | (h.pointing ? 2 : 0) | (h.gripClosed ? 4 : 0) | (h.triggerTouch ? 8 : 0) | (h.thumbTouch ? 16 : 0)
+			| (h.trigDown ? 32 : 0);
 		if (state != h.loggedInputs)
 		{
 			h.loggedInputs = state;
-			Printf("[roth_vrpick] %s hand inputs: %s grip %.2f trigger %.2f, trigger touch %d, thumb touch %d -> %s%s\n", RoleName(role),
+			Printf("[roth_vrpick] %s hand inputs: %s grip %.2f trigger %.2f, trigger touch %d, thumb touch %d -> %s%s%s\n", RoleName(role),
 				h.valid ? "" : "NO CONTROLLER,", h.grip, h.trigger, (int)h.triggerTouch, (int)h.thumbTouch,
-				h.pointing ? "pointing" : "not pointing", h.gripClosed ? ", grip closed" : "");
+				h.pointing ? "pointing" : "not pointing", h.gripClosed ? ", grip closed" : "", h.trigDown ? ", trigger pressed" : "");
 		}
 	}
-	const bool busy = h.valid && (h.pointing || h.tapDown || tapStarting || gripEdge);
+
+	// A HAND THAT IS DOING NOTHING COSTS NOTHING: no fingertip, no trace, no
+	// classification, no billboards -- only the inputs above. Work is done while
+	// pointing, while the aim is held (the index down after pointing), for the
+	// fingertip press, and on the tic a button is pressed.
+	const bool busy = h.valid && (h.pointing || h.wasPointing || h.pressReady || h.aimHeld || gripEdge || trigEdge);
 	if (busy && !FingerRay(role, h, pmo) && Logging() && h.rayWhy != h.loggedRayWhy)
 		Printf("[roth_vrpick] %s hand: no ray -- %s\n", RoleName(role), h.rayWhy ? h.rayWhy : "unknown");
 	if (busy) h.loggedRayWhy = h.haveRay ? nullptr : h.rayWhy;
@@ -689,12 +744,10 @@ void TickHand(int role, AActor *pmo)
 
 	const double upm = UPM();
 
-	// THE PICK while pointing (the beam, the dwell, the press) and while a tap
-	// is under way (the tic the index lifts). The tic a tap starts reads last
-	// tic's pick: what the ray was on when the index came down.
+	// THE PICK while the finger is out (the beam, the grip's far use, the press).
 	const Pick before = h.havePick ? h.pick : Pick{};
 	const bool hadPick = h.havePick;
-	if (h.pointing || h.tapDown)
+	if (h.pointing || h.pressReady)
 	{
 		h.havePick = PickFrom(pmo, h.tip, h.dir, PickTraceRange(h.dir), h.pick);
 		h.cls = h.havePick ? ClassifyPick(h.pick, pmo, DepthOf(pmo, h.pick, h.dir)) : CursorClass{};
@@ -704,6 +757,25 @@ void TickHand(int role, AActor *pmo)
 		h.havePick = false;
 		h.cls = CursorClass{};
 	}
+
+	// THE AIM HELD: the index leaving its straight position (onto the trigger, or
+	// the trigger moving) swings the finger's own ray, so a pull acts on what the
+	// finger pointed at when it left -- the ray it had then, traced again at the
+	// pull -- and the beam stays drawn to it while the index is down, for a
+	// second at most (invhand::kAimHoldTics, as on the panels): a hand at rest
+	// has its index on the trigger, and an old aim is no aim.
+	if (h.aimHeld && ++h.aimTics > invhand::kAimHoldTics) { h.aimHeld = false; h.aimHave = false; }
+	if (h.wasPointing && !h.pointing)
+	{
+		h.aimHeld = true;
+		h.aimTics = 0;
+		h.aimHave = hadPick;
+		h.aimTip = h.lastTip;
+		h.aimDir = h.lastDir;
+		h.aimHit = before.hitPos;
+		h.aimShape = h.lastShape;
+	}
+	if (h.pointing) h.aimHeld = false;
 
 	if (roth_vrpick_debug || P.test)
 	{
@@ -724,137 +796,100 @@ void TickHand(int role, AActor *pmo)
 		}
 	}
 
-	// ---- GRIP SQUEEZE (near use) ----
-	if (gripEdge) GrabNear(role, h, pmo);
-
-	// ---- INDEX TAP (far use) ----
-	if (h.tapDown)
+	// ---- THE GRIP (the original's secondary: use) ----
+	// In reach first (the palm on it: NearAct, GrabNear's search), else along the
+	// pointing finger at range, through the same use path and the same gate.
+	// One action per press: a grip that went somewhere is not also the
+	// fingertip press below (re-armed when the tip backs off).
+	bool gripActed = false;
+	if (gripEdge)
 	{
-		h.tapTics++;
-		if (h.trigger > h.tapPull) h.tapPull = h.trigger;
-		if (h.tapPull >= kTapMaxPull || h.tapTics > kTapMaxTics || h.grip < kPointGrip) h.tapDown = false;   // a shot, a hold, or a let-go
-		else if (!h.triggerTouch)
+		gripActed = NearAct(role, h, pmo, true) != 0;
+		if (!gripActed && h.pointing && h.havePick && h.cls.CanUse())
 		{
-			h.tapDown = false;
-			if (h.havePick && SamePickTarget(h.pick, h.tapTarget)) DoUse(role, h.pick, h.cls, pmo, "index tap");
-			else if (P.test || roth_vrpick_debug) Printf("[roth_vrpick] %s hand index tap: off the target it began on, nothing done\n", RoleName(role));
+			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
+			gripActed = true;
+		}
+		else if (!gripActed && Logging())
+			Printf("[roth_vrpick] %s hand grip: %s\n", RoleName(role), !h.pointing ? "not pointing, nothing in reach"
+				: h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
+		if (gripActed) h.pokeArmed = false;
+	}
+
+	// ---- THE TRIGGER (the original's primary: examine) ----
+	// Not on the hand holding a weapon: its trigger fires it (the binding's
+	// +attack, WeaponTick), as before. In reach first, else what the finger
+	// pointed at when the index left it.
+	if (trigEdge)
+	{
+		if (HandHoldsWeapon(role))
+		{
+			if (Logging()) Printf("[roth_vrpick] %s hand trigger: the hand holds a weapon -- it fires, nothing to examine\n", RoleName(role));
+		}
+		else if (NearAct(role, h, pmo, false) == 0)
+		{
+			Pick p;
+			bool have = false;
+			DVector3 along = h.dir;
+			if (h.aimHeld && h.aimHave) { have = PickFrom(pmo, h.aimTip, h.aimDir, PickTraceRange(h.aimDir), p); along = h.aimDir; }
+			else if (h.pointing && h.havePick) { p = h.pick; have = true; }
+			if (have)
+			{
+				const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, along));
+				if (c.CanExamine()) DoExamine(role, p, c, pmo, "trigger");
+				else if (Logging()) Printf("[roth_vrpick] %s hand trigger on %s: %s\n", RoleName(role), PickKindName(p), WhyNotExamine(c).GetChars());
+			}
+			else if (Logging())
+				Printf("[roth_vrpick] %s hand trigger: nothing in reach and nothing the finger pointed at\n", RoleName(role));
 		}
 	}
-	else if (tapStarting && h.grip >= kPointGrip && h.trigger < kTapMaxPull && hadPick)
-	{
-		h.tapDown = true;
-		h.tapTics = 0;
-		h.tapPull = h.trigger;
-		h.tapTarget = before;   // what the ray was on when the index came down
-	}
 
-	if (!h.pointing)
-	{
-		if (Logging() && h.dwellTics > 0 && !h.dwellDone)
-			Printf("[roth_vrpick] %s hand dwell: broken off at %d/%d tics (the hand stopped pointing)\n", RoleName(role), h.dwellTics, kDwellTics);
-		h.dwellTarget = Pick{};
-		h.dwellTics = 0;
-		h.dwellDone = false;
-		h.pokeArmed = true;
-		h.lastPokeDist = 1e9;
-		h.hover = Pick{};
-		HideHand(h);
-		return;
-	}
-
-	// ---- FINGERTIP PRESS (near use) ----
+	// ---- FINGERTIP PRESS (near use), as before ----
 	// A quick press can cross the 2.5 cm window between two tics and leave the
 	// tip already through the surface, where the trace no longer meets it. So
 	// a surface the tip was close to last tic and has now reached or passed
 	// (along last tic's ray) counts as pressed too. Not for an object: its
 	// actor may be gone by now, and a pointer to it is not followed.
-	if (h.havePick && h.pick.dist <= kPokeIn * upm)
+	if (h.pressReady)
 	{
-		if (h.pokeArmed)
+		if (h.havePick && h.pick.dist <= kPokeIn * upm)
 		{
-			h.pokeArmed = false;
-			DoUse(role, h.pick, h.cls, pmo, "fingertip press");
-		}
-	}
-	else if (h.pokeArmed && h.wasPointing && hadPick && before.kind != Pick::Prop && h.lastPokeDist <= kPokeOut * upm
-		&& ((before.hitPos - h.tip) | h.lastDir) <= kPokeIn * upm)
-	{
-		h.pokeArmed = false;
-		const CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before, h.lastDir));
-		DoUse(role, before, c, pmo, "fingertip press (through)");
-	}
-	else if (!h.havePick || h.pick.dist > kPokeOut * upm) h.pokeArmed = true;
-	h.lastPokeDist = h.havePick ? h.pick.dist : 1e9;
-	h.lastDir = h.dir;
-
-	// ---- DWELL (examine) ----
-	if (h.havePick && h.cls.CanExamine())
-	{
-		if (!SamePickTarget(h.pick, h.dwellTarget))
-		{
-			h.dwellTarget = h.pick; h.dwellTics = 0; h.dwellDone = false;
-			if (Logging()) Printf("[roth_vrpick] %s hand dwell: starts on %s (cursor type %d shape 0x%x, %d to examine)\n",
-				RoleName(role), PickKindName(h.pick), (int)h.cls.type, (unsigned)h.cls.shape, h.cls.examinable);
-		}
-		if (!h.dwellDone)
-		{
-			++h.dwellTics;
-			if (Logging() && h.dwellTics % 7 == 0 && h.dwellTics < kDwellTics)
-				Printf("[roth_vrpick] %s hand dwell: %d/%d tics on %s\n", RoleName(role), h.dwellTics, kDwellTics, PickKindName(h.pick));
-			if (h.dwellTics >= kDwellTics)
+			if (h.pokeArmed)
 			{
-				h.dwellDone = true;
-				DoExamine(role, h.pick, h.cls, pmo, "dwell");
+				h.pokeArmed = false;
+				DoUse(role, h.pick, h.cls, pmo, "fingertip press");
 			}
 		}
+		else if (h.pokeArmed && h.wasPressReady && hadPick && before.kind != Pick::Prop && h.lastPokeDist <= kPokeOut * upm
+			&& ((before.hitPos - h.tip) | h.lastDir) <= kPokeIn * upm)
+		{
+			h.pokeArmed = false;
+			const CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before, h.lastDir));
+			DoUse(role, before, c, pmo, "fingertip press (through)");
+		}
+		else if (!h.havePick || h.pick.dist > kPokeOut * upm) h.pokeArmed = true;
+		h.lastPokeDist = h.havePick ? h.pick.dist : 1e9;
 	}
 	else
 	{
-		if (Logging() && h.havePick && !SamePickTarget(h.pick, h.noDwell))
-			Printf("[roth_vrpick] %s hand dwell: none on %s -- %s\n", RoleName(role), PickKindName(h.pick), WhyNotExamine(h.cls).GetChars());
-		h.noDwell = h.havePick ? h.pick : Pick{};
-		if (Logging() && h.dwellTics > 0 && !h.dwellDone)
-			Printf("[roth_vrpick] %s hand dwell: broken off at %d/%d tics\n", RoleName(role), h.dwellTics, kDwellTics);
-		h.dwellTarget = Pick{};
-		h.dwellTics = 0;
-		h.dwellDone = false;
+		h.pokeArmed = true;
+		h.lastPokeDist = 1e9;
 	}
+	h.lastTip = h.tip;
+	h.lastDir = h.dir;
+	h.lastShape = h.havePick ? h.cls.shape : 0;
 
 	// ---- HAPTIC TICK on coming onto something actionable ----
-	const bool actionable = h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
+	const bool actionable = h.pointing && h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
 	if (actionable && !SamePickTarget(h.pick, h.hover)) { h.hover = h.pick; Haptic(role, 0.12, 12); }
 	else if (!actionable) h.hover = Pick{};
 
 	// ---- THE BEAM ----
-	h.shown = true;
-	const HandLock L = LockFor(role, pmo);
-	double markAlpha = 0.0;
-	const PalEntry col = h.havePick ? FamilyColour(h.cls.shape, markAlpha) : PalEntry(255, 200, 200, 200);
-	const double len = h.havePick ? h.pick.dist : kNoHitBeam * upm;
-	const bool marked = h.havePick && markAlpha > 0.0;
-	const double beamAlpha = marked ? 0.30 : 0.12;
-	for (int i = 0; i < kDots; i++)
-	{
-		const double t = len * (i + 0.5) / kDots;
-		PlaceBB(h.dot[i], BB_PANEL, L, h.tip + h.dir * t, kDotM * upm, marked ? col : PalEntry(255, 200, 200, 200), beamAlpha);
-	}
-	if (marked)
-	{
-		// Pulled back a little toward the hand so the surface does not cut it.
-		const DVector3 at = h.tip + h.dir * std::max(0.0, len - 0.006 * upm);
-		PlaceBB(h.marker, BB_RING, L, at, kMarkerM * upm, col, markAlpha);
-		if (h.cls.CanExamine() && !h.dwellDone && h.dwellTics > 0)
-		{
-			const double k = 1.0 - (double)h.dwellTics / kDwellTics;   // the ring closes on the marker
-			PlaceBB(h.ring, BB_RING, L, at, (kMarkerM + kRingM * 2.0 * k) * upm, col, markAlpha * 0.6);
-		}
-		else HideBB(h.ring);
-	}
-	else
-	{
-		HideBB(h.marker);
-		HideBB(h.ring);
-	}
+	if (h.pointing || h.pressReady)
+		DrawBeam(role, h, pmo, h.havePick ? h.pick.hitPos : h.tip + h.dir * (kNoHitBeam * upm), h.havePick, h.havePick ? h.cls.shape : 0);
+	else if (h.aimHeld && h.aimHave)
+		DrawBeam(role, h, pmo, h.aimHit, true, h.aimShape);
+	else HideHand(h);
 }
 
 //--------------------------------------------------------------------------
@@ -896,7 +931,6 @@ void DrawPanelLaser(int role, HandState &h, AActor *pmo, const PanelPlane &plane
 	const InvHandOutput &o = h.pout;
 	h.shown = true;
 	for (int &d : h.dot) HideBB(d);
-	HideBB(h.ring);
 	const HandLock L = LockFor(role, pmo);
 	const double lineK = tan(kPanelLineDeg * (M_PI / 180.0)), dotK = tan(kPanelDotDeg * (M_PI / 180.0));
 	const PalEntry col(255, 250, 238, 200);
@@ -955,9 +989,9 @@ void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane, const DVector
 	in.trigger = h.trigger;
 	in.grip = h.grip;
 	in.triggerTouch = h.triggerTouch;
-	// The finger is only looked at while it can be the mouse: pointing (the grip
-	// held), or with a tap or a touch under way.
-	const bool wants = h.valid && (h.grip >= invhand::kPointGrip || h.panel.TapDown() || h.panel.InContact());
+	// The finger is only looked at while it can be the mouse: pointing (the index
+	// straight), the index down with the point held, or the fingertip on the panel.
+	const bool wants = h.valid && (InvHandIndexStraight(h.triggerTouch, h.trigger) || h.panel.IndexDown() || h.panel.InContact());
 	if (wants && FingerRay(role, h, pmo))
 	{
 		in.haveRay = true;
@@ -967,21 +1001,22 @@ void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane, const DVector
 	}
 	h.pout = h.panel.Tick(plane, in, UPM());
 	h.pointing = h.panel.Pointing();
+	h.primed = false;            // back in the world, the buttons are read afresh
 
 	if (Logging())
 	{
 		if (h.pointing != h.panelWasPointing)
 			Printf("[roth_vrpick] %s hand %s the panel%s\n", RoleName(role), h.pointing ? "points at" : "stops pointing at",
 				h.pointing && !h.fromFinger ? " (from the aim pose: no fingertip, no touch)" : "");
-		if (h.panel.TapDown() && !h.panelWasTap)
-			Printf("[roth_vrpick] %s hand: index onto the trigger, the mouse held at %d,%d\n", RoleName(role), h.pout.px, h.pout.py);
+		if (h.panel.IndexDown() && !h.panelWasTap)
+			Printf("[roth_vrpick] %s hand: the index leaves the laser, the mouse held at %d,%d for the trigger\n", RoleName(role), h.pout.px, h.pout.py);
 		if (h.panel.InContact() && !h.panelWasContact)
 			Printf("[roth_vrpick] %s hand: fingertip on the panel at %d,%d (%.1f units in front)\n", RoleName(role), h.pout.px, h.pout.py, h.pout.tipDist);
 		if (!h.panel.InContact() && h.panelWasContact && !h.pout.click)
 			Printf("[roth_vrpick] %s hand: fingertip off the panel with no click (%.1f units in front)\n", RoleName(role), h.pout.tipDist);
 	}
 	h.panelWasPointing = h.pointing;
-	h.panelWasTap = h.panel.TapDown();
+	h.panelWasTap = h.panel.IndexDown();
 	h.panelWasContact = h.panel.InContact();
 
 	// ---- the laser and the dot ----
@@ -998,7 +1033,7 @@ bool OnPicture(const PanelPlane &p, int x, int y)
 // and their clicks.
 void PanelPointerAndClicks(int which, const PanelPlane &plane)
 {
-	// THE MOUSE: the hand with a tap or a touch under way; else the hand that
+	// THE MOUSE: the hand with its index down or its fingertip on the panel; else the hand that
 	// has just come onto the picture; else the one that was; else any hand
 	// whose laser meets the panel.
 	int owner = -1;
@@ -1053,9 +1088,10 @@ void ForgetLevel()
 		for (int &d : h.dot) d = 0;
 		h.line.clear();
 		h.lineShown = 0;
-		h.marker = h.ring = 0;
+		h.marker = 0;
 		h.shown = false;
 		h.havePick = false;
+		h.primed = false;
 		ResetGestures(h);
 	}
 	ForgetPanel();
@@ -1129,6 +1165,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 			HandState &h = P.hand[role];
 			h.havePick = false;
 			h.pointing = false;
+			h.primed = false;
 			ResetGestures(h);
 			HideHand(h);
 			continue;
@@ -1190,10 +1227,12 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        row (VRHandTest_SetLift, in the test grip's own units).
 //   roth_vrpicktest off
 //
-// The gestures are the real ones, driven by the poses: an index tap is
-// "roth_handtest ready" then "roth_handtest point" within 18 tics; a grip
-// squeeze is "roth_handtest open" then "roth_handtest fist"; a dwell is
-// pointing for 28 tics at something examinable.
+// The buttons are the real ones, driven by the hand test's inputs
+// (roth_handtest <grip> <trigger> <triggertouch> <thumbtouch>): pointing with the
+// grip open is "roth_handtest 0 0 0 1"; the trigger pulled from there is
+// "roth_handtest 0 1 1 1"; the grip squeezed while pointing is
+// "roth_handtest 1 0 0 1" (= "point"); a grip in reach with the index resting on
+// the trigger, not pulling it, is "open" then "ready" (grip 1, trigger touched).
 //
 //===========================================================================
 

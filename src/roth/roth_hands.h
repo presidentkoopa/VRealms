@@ -27,4 +27,9 @@ void HandsEndLevel();
 // there is none (flat, no controller this tic). The VR picker (roth_vrpick.cpp) reads its fingertip.
 AActor *HandActor(int side);
 
+// Whether the hand of `role` (VR_MAINHAND / VR_OFFHAND) holds a weapon: the weapon slot's thing drawn in the
+// main hand, Adam's own fists not counted (what PublishHeld poses the hand for). Its trigger fires the weapon
+// (the binding's +attack), so the VR picker gives that trigger nothing else to do.
+bool HandHoldsWeapon(int role);
+
 } // namespace roth

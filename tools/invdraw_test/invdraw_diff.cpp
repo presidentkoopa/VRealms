@@ -244,12 +244,14 @@ struct VRPath
 	}
 	static PanelV3 Unit(const PanelV3 &v) { return v * (1.0 / v.Length()); }
 	// via 0: the laser from 35 cm in front and 10 cm to the right; 1: the fingertip pressed
-	// onto the point; 2: the hand pointing away from the panel.
+	// onto the point; 2: the hand pointing away from the panel. The hand points with the
+	// index straight and the grip open (the owner's scheme: the trigger is the original's
+	// PRIMARY button, the grip its SECONDARY).
 	void Aim(InvHandInput &in, int x, int y, int via, double metres)
 	{
 		const PanelV3 at = PanelWorldOf(plane, x + 0.5, y + 0.5);
 		in.valid = true; in.haveRay = true; in.fromFinger = true;
-		in.grip = 1.f; in.trigger = 0.f; in.triggerTouch = false;
+		in.grip = 0.f; in.trigger = 0.f; in.triggerTouch = false;
 		if (via == 1) { in.tip = at + plane.front * (metres * upm); in.dir = plane.front * -1.0; }
 		else
 		{
@@ -278,6 +280,8 @@ struct VRPath
 		return shape;
 	}
 	// The original's "ptr x y code": code 0 the hover, 1 / 2 a primary / secondary click.
+	// The hand's: 1 the trigger (the index comes down, then pulls), 2 the grip squeezed;
+	// with the fingertip (via 1): 1 a touch that backs off, 2 the grip while it touches.
 	void Ptr(World &w, int x, int y, int code, int via)
 	{
 		hand.Reset();
@@ -288,15 +292,19 @@ struct VRPath
 		{
 			Aim(in, x, y, via, 0);
 			shape = Tic(w, in, x, y, via, clicks, shape);           // pointing: the mouse comes onto the point
-			if (code != 0)
+			shape = Tic(w, in, x, y, via, clicks, shape);
+			if (code == 1)
 			{
 				in.triggerTouch = true;                             // the index onto the trigger
 				in.dir = Unit(in.dir - plane.up * 0.4);             // the curling finger swings the ray
-				for (int t = 0; t < 40 && clicks == 0; t++)
-				{
-					if (code == 1 && t == 3) in.triggerTouch = false;   // a tap: lifted on the 4th tic
-					shape = Tic(w, in, x, y, via, clicks, shape);
-				}
+				shape = Tic(w, in, x, y, via, clicks, shape);
+				in.trigger = 0.5f; shape = Tic(w, in, x, y, via, clicks, shape);
+				in.trigger = 1.0f; shape = Tic(w, in, x, y, via, clicks, shape);   // pressed
+			}
+			else if (code == 2)
+			{
+				in.grip = 0.5f; shape = Tic(w, in, x, y, via, clicks, shape);
+				in.grip = 1.0f; shape = Tic(w, in, x, y, via, clicks, shape);      // closed
 			}
 		}
 		else
@@ -305,11 +313,10 @@ struct VRPath
 			shape = Tic(w, in, x, y, via, clicks, shape);           // the fingertip 10 cm in front
 			Aim(in, x, y, 1, 0.01);
 			shape = Tic(w, in, x, y, via, clicks, shape);           // on the panel
-			for (int t = 0; t < 40 && clicks == 0; t++)
-			{
-				if (code == 1 && t == 2) Aim(in, x, y, 1, 0.10);     // a touch: backed off on the 3rd tic
-				shape = Tic(w, in, x, y, via, clicks, shape);
-			}
+			shape = Tic(w, in, x, y, via, clicks, shape);
+			if (code == 1) Aim(in, x, y, 1, 0.10);                  // a touch: backed off
+			else in.grip = 1.0f;                                    // the grip while it touches
+			shape = Tic(w, in, x, y, via, clicks, shape);
 		}
 		if (code != 0 && clicks != 1) { mapWrong++; printf("MAP %d click(s) for one gesture\n", clicks); }
 		Inventory &inv = w.core.Items();

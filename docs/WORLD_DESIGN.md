@@ -51,9 +51,9 @@ Phase 1 already maps the hands onto the original's cursor and verbs [V: read the
 
 | hand | verb | gate |
 |---|---|---|
-| point (grip held, index off the trigger), ray from the index tip | classify (the cursor) | the original's `classify_cursor_target_object` |
-| point and hold 0.8 s (dwell) | examine | cursor type 3 or 5 with something to examine |
-| point, tap the index on the trigger and lift within 0.5 s | use, far | cursor type 3 within the use range |
+| point (the index straight, off the trigger; the grip may be curled), ray from the index tip | classify (the cursor) | the original's `classify_cursor_target_object` |
+| the trigger, pointing at it (the owner's scheme, 2026-11-13; the 0.8 s dwell is removed) | examine | cursor type 3 or 5 with something to examine |
+| the grip squeezed while pointing at it (the index tap is removed) | use, far | cursor type 3 within the use range |
 | fingertip within 2.5 cm of a usable thing (re-arms at 6 cm) | use, near | the same |
 | grip closing 0.35 → 0.7 with the palm within 15 cm of an object, or a usable surface 20 cm along the hand | use, near | the same |
 
@@ -104,7 +104,7 @@ player, scale by E/1.65.
 | a single floor candlestick (STUDY4) | 53 | 0.61 m |
 
 Reaching: the use reach is 2.7 m, so most "near" interactions are in arm's reach only if the player walks up to
-the thing. The picker's far use (index tap) covers the rest of the original's reach. Nothing in VR may reach beyond
+the thing. The picker's far use (the grip while pointing) covers the rest of the original's reach. Nothing in VR may reach beyond
 the original's 268.
 
 ### 0.4 The hands and the poses
@@ -443,7 +443,7 @@ nothing here turns it on.
 ### 2.4 VR: torches, lamps, fires, and the lantern [P / ADD]
 
 - **Nothing to light.** The original never lets the player light, douse or take a torch, lamp or fire. They stay
-  examinable (point and dwell) and otherwise untouched.
+  examinable (point and pull the trigger) and otherwise untouched.
 - **Hand near a flame [ADD]**: warmth as a faint haptic hum within 10 cm of a torch or fire flame. No damage: the
   original has none for that, except where a record says so (the CHURCH1 burning book DEMO1[4196], 0x33 HURT, is the
   original's own).
@@ -657,7 +657,7 @@ standing up on the spot where they lie. Some are fixed-angle quads laid on a sur
 - **Bookshelf door (DEMO[254])**: the shelf has no handle. The contact zone is the latch half of the face. Gesture:
   palm flat on the books and a push of 4 cm or more, or a grip on the shelf's edge and a pull. One use; the original
   swings it.
-- **Notices, inscriptions, stained glass, shelves**: point and dwell = examine (phase 1). The original's line plays.
+- **Notices, inscriptions, stained glass, shelves**: point and pull the trigger = examine. The original's line plays.
 - **Books and papers lying about**: taken as pickups (section 4). Reading them is the inventory's (ITEM_DESIGN.md).
 
 ### 5.3 Open question
@@ -691,7 +691,7 @@ elsewhere:
 
 ### 6.2 VR [P]
 
-- **Chairs, tables, desks, sofa**: examine by dwell; no use in the original. The hand rests on them, and they
+- **Chairs, tables, desks, sofa**: examine by the trigger; no use in the original. The hand rests on them, and they
   **stop the hand**: the hand model stops at the mesh's surface instead of passing through [ADD: presentation;
   nothing moves]. Proposal: off until the owner sees it, since a stopped hand that drifts from the controller can be
   uncomfortable.
@@ -716,20 +716,20 @@ elsewhere:
 ## 7. Everything else scripted, by count
 
 Object kinds with any script, other than sections 1–6, most placements first [V: census; names are my reading of
-the pictures]. "exam" means point-and-dwell is the whole interaction in VR, unless said otherwise.
+the pictures]. "exam" means point-and-trigger is the whole interaction in VR, unless said otherwise.
 
 | kind | what (looked at) | placed | scripts | VR [P] |
 |---|---|---|---|---|
-| DEMO4[4272], DEMO[4130] | wall torches | 229 | examine 102 | dwell (section 2) |
+| DEMO4[4272], DEMO[4130] | wall torches | 229 | examine 102 | the trigger (section 2) |
 | DEMO1[4143] | glowing crystal (AQUA1, RAQUIA5) | 69 | **walk-into 52** | walking into it is the original's 0x39; the hand passing through it is nothing [R: 0x39 is player-body contact] |
-| DEMO[4105] | suit of armour | 47 | examine 48, click 3 (TALK) | dwell; the 3 that speak: a palm touch = use |
+| DEMO[4105] | suit of armour | 47 | examine 48, click 3 (TALK) | the trigger; the 3 that speak: the grip in reach = use |
 | DEMO1[4233], DEMO1[4232] | breastplate / armour on a stand (CHURCH1, VICAR) | 31 | click, examine, **attack-hit** 23 (SPAWN) | use by palm; hits by weapon (the original's 0x1b) |
-| DEMO4[4198], DEMO4[4257], DEMO4[4126], DEMO4[4277], DEMO4[4278], DEMO4[4226] | tall braziers, statues, shields, crossed swords, chains, bones (AELF, MAS*, MAUSO*) | ~150 | examine | dwell |
+| DEMO4[4198], DEMO4[4257], DEMO4[4126], DEMO4[4277], DEMO4[4278], DEMO4[4226] | tall braziers, statues, shields, crossed swords, chains, bones (AELF, MAS*, MAUSO*) | ~150 | examine | the trigger |
 | DEMO[4175], DEMO[4176] | window bars, STUDY1 | 35 | click 35: 34, "Stuck fast. Can't see how though." | grip a bar, pull → use; the line plays |
 | ADEMO[114], ADEMO[115] | long blades on the wall, as drawn (STUDY1, MAS4) | 23 | click 18, TALK | grip the hilt → use; the original speaks, nothing is taken |
 | DEMO[4207], DEMO[4208] | pentagram plaques (STUDY1) | 9 | click: 530, "This one's stuck fast." | fingertip or palm → use |
 | DEMO[4173], DEMO[4174] | round wall dials (STUDY1) | 7 | click: 35, "Purely decorative." | grip and turn (wrist roll) → use |
-| DEMO[4201], DEMO[4202] | picture frames (STUDY1) | 20 | examine | dwell |
+| DEMO[4201], DEMO[4202] | picture frames (STUDY1) | 20 | examine | the trigger |
 | creatures (ADEMO[269], [225], [213], [223], [207], [266], ...) | monsters, NPCs | ~200 | attack-hit and examine | combat and dialogue lanes, not this file |
 | ADEMO[43] | an invisible marker (no picture) | 64 | hit 2, examine 1 | nothing to touch [R] |
 

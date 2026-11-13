@@ -88,6 +88,25 @@ void HandsEndLevel()
 }
 
 // What each role holds this tic (roth_handhold.h), published to the hands' fingers.
+// The weapon slot's thing while its actor is drawn, Adam's own item (his fists) not counted: what the main hand
+// holds as a weapon (PublishHeld; the VR picker's trigger, HandHoldsWeapon).
+static bool DrawnWeapon(int32_t &wpn, const char *&cls, int adam)
+{
+	wpn = 0;
+	cls = nullptr;
+	return ActorsHeldWeaponDrawn(wpn, cls) && wpn != adam;
+}
+
+bool HandHoldsWeapon(int role)
+{
+	if (role != VR_MAINHAND) return false;
+	Inventory *inv = InterfaceInventory();
+	const int adam = inv != nullptr ? (int)inv->AdamItemId() : 0;
+	int32_t wpn = 0;
+	const char *cls = nullptr;
+	return DrawnWeapon(wpn, cls, adam);
+}
+
 static void PublishHeld()
 {
 	// the RIGHT side's hand: the original's right-hand item (g_selected_item_primary); 0 = nothing. The id is read
@@ -107,7 +126,7 @@ static void PublishHeld()
 	// thing in the hand.
 	int32_t wpn = 0;
 	const char *cls = nullptr;
-	const bool drawn = ActorsHeldWeaponDrawn(wpn, cls) && wpn != adam;
+	const bool drawn = DrawnWeapon(wpn, cls, adam);
 	if (drawn)
 	{
 		// a right-handed player's item and weapon share the main hand: the weapon's grip wins while it is drawn
