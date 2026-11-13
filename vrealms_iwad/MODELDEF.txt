@@ -1,44 +1,4 @@
-// THE VR HANDS -- the owner's FBX hands (hand_final.fbx), converted to IQM by
-// tools/fbx_hands/fbx2iqm.py, one mesh per hand with its own skeleton and poses.
-// The actors are RealmsHandRight / RealmsHandLeft (wadsrc zscript realmshands.zs),
-// spawned by the engine while a headset is on (src/roth/roth_hands.cpp) and drawn
-// on the controller's GRIP pose (FollowHandMode 3/4, src/r_data/vr_handpose.h).
-//
-// Frame 0 is the open hand: the engine draws it and turns the finger joints
-// toward the other baked poses (1 point, 3 fist, 7 grip_tu, 8 ready_td) from the
-// controller every displayed frame. Nothing here selects a pose.
-//
-// THE HAND PATH IS IN METRES, NOT MAP UNITS (vr_handpose.cpp VRHandPose_HandFrame):
-// the grip frame is multiplied by VR_UnitsPerMeter() at every draw and never divided
-// back, so Scale is metres per model unit. The converter writes its files at 93.5
-// units a metre (its header; 17.765 units wrist to middle fingertip), so
-// 1 / 93.5 = 0.0106952 makes the hand 0.19 m at whatever units per metre the level
-// has now -- the door anchor's 107.4, a map of its own, or a live
-// roth_vr_units_per_metre.
-//
-// No Offset or angle offsets: the engine seats the mesh from its own wrist and
-// knuckles (UZDXREMA's hand frame and grip socket, vr_handpose_math.h ModelSeat).
-// NoPixelStretch: the grip frame already carries the world's pixel stretch.
-// NoAutoReverse: each hand is its own mesh (the grip path never mirrors anyway).
+// THE VR HANDS: no model yet. The IQM hands were removed (owner, 2026-11-13); the hands
+// will be the owner's hand_final.fbx loaded by the engine itself.
 
-Model RealmsHandRight
-{
-	Path "models/hands"
-	Model 0 "hand_r.iqm"
-	Skin 0 "lambert1_Base_Color.png"
-	Scale 0.0106952 0.0106952 0.0106952
-	NoAutoReverse
-	NoPixelStretch
-	FrameIndex RHDR A 0 0
-}
 
-Model RealmsHandLeft
-{
-	Path "models/hands"
-	Model 0 "hand_l.iqm"
-	Skin 0 "lambert1_Base_Color.png"
-	Scale 0.0106952 0.0106952 0.0106952
-	NoAutoReverse
-	NoPixelStretch
-	FrameIndex RHDL A 0 0
-}

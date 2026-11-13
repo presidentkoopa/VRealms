@@ -5,7 +5,7 @@
 // posed by the engine every displayed frame from that controller's trigger, squeeze
 // and capacitive touches (src/r_data/vr_handpose.cpp).
 //
-// The meshes are the owner's FBX hands converted to IQM (vrealms_iwad/models/hands);
+// No mesh yet: the IQM hands were removed (owner, 2026-11-13); the engine will load hand_final.fbx itself;
 // the MODELDEF is vrealms_iwad/MODELDEF.txt. Presentation only: no collision, no
 // interaction, nothing in the game reads them. The weapon (RealmsHeld) is separate.
 //
@@ -30,5 +30,5 @@ class RealmsHand : Actor
 	}
 }
 
-class RealmsHandRight : RealmsHand { States { Spawn: RHDR A -1; Stop; } }
-class RealmsHandLeft : RealmsHand { States { Spawn: RHDL A -1; Stop; } }
+class RealmsHandRight : RealmsHand { States { Spawn: TNT1 A -1; Stop; } }
+class RealmsHandLeft : RealmsHand { States { Spawn: TNT1 A -1; Stop; } }
