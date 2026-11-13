@@ -100,7 +100,9 @@ any units-per-metre. 0.19 m was the owner's choice.
   2048² 16-bit, OpenGL/green-up** (measured), roughness 2048² 8-bit. Attached as the engine's PBR material
   (`SetShaderLayers`; metallic 0 and AO 1 as constant textures). In this engine the normal map only shows under
   dynamic lights. [R]
-- **No pinch pose exists** in the take (confirmed, and the owner's `fbx_poses.json` says so too).
+- **WRONG, corrected 2026-11-13: the take HAS pinches.** An earlier version of this line said "no pinch pose exists"; that came from `fbx_poses.json`, not from looking. Walked frame by frame (`tools/fbxload_test/walk_sheet.py`, `docs/images/hands/take_walk_*.png`, `pinch_frames_*.png`): a thumb-to-index pinch in BOTH hands at Blender 694 and a tighter one at 312; the left hand's 985-1265 "cup" is all fingertips on the thumb. In the engine as `fbx_pinch` / `fbx_pinch_tight` (13de3c47).
+- **Missing frames are copied from the other hand** (owner, 2026-11-13): both skeletons share their rest locals (measured), so a frame only one take has is used on the other hand by copying its joint local rotations. Each hand still uses its own frames where it has them. Both hands have all 52 poses (13de3c47).
+- **Held items and weapon grips are ported** from UZDXREMA (VAP:476-656) with the owner's fbx_poses.json frames (a933c698, 13de3c47); the item is in the RIGHT hand, as the original's right-hand slot.
 - Load cost ≈ 0.3 s per hand [R]; maps add ~0.25 s; each 2048² map ~16 MB VRAM.
 
 ---
@@ -212,11 +214,13 @@ the posed bones (`VRHandPose_FingerPoints`). Realms-specific.
 ## 8. Open (owner's call or not yet seen)
 
 - **Not yet judged in the headset** after the authored poses (0bd9acc0).
-- New authored hand frames: a lateral pinch and a fingertip pinch (keys, matches, pages; `docs/ITEM_DESIGN.md`).
+- (Done 2026-11-13: the pinches were in the take all along; see section 2.)
 - Weapon in the posed hand, Quake VR's grasp (8 parts), DistanceGrab: later steps (see the gamelayer handoffs).
 - Skin-tone choices (natural and unusual: blue, red, pink): planned by the owner, not built.
 
 ## 9. Mistakes made on the way (so nobody repeats them)
+
+0. Believing a pose TABLE over the animation. "No pinch" was repeated from fbx_poses.json for days while the owner said the pinch was there. Walk the frames and LOOK (walk_sheet.py).
 
 1. Converting the FBX to IQM offline (twice) instead of loading FBX — the owner's first instruction.
 2. Building the left hand from the right's poses ("mirror") — threw away the left hand's own animation.

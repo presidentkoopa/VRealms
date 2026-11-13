@@ -135,10 +135,14 @@ numbering; the json's "A"/"B" tag says which hand carries each). They were **not
 | fbx_thumb_out | 944 (B) | thumb out |
 | fbx_cup | 985 (B) | "index and middle folded at the middle joint, thumb in": the nearest thing to a pinch |
 
-**There is no pinch in the FBX.** Every small thing that a real hand would pinch (a match, a key, a coin, a candle
-wick) falls back to `cup` in this file and is listed under "needs" as a missing authored pose. A pinch would have to
-come from the owner (a new frame in the FBX), since the hands have no per-finger bending any more (the FRIK curl
-table was deleted: hands handoff, 04:05).
+**CORRECTED 2026-11-13 (owner): the FBX HAS pinches.** The earlier claim here ("no pinch") came from the pose table,
+not from looking at the animation, and was wrong. Walking both takes frame by frame (`tools/fbxload_test/walk_sheet.py`,
+`docs/images/hands/take_walk_*.png`, `pinch_frames_*.png`) shows a thumb-to-index "O" pinch in BOTH hands at Blender 694
+(take 693), a tighter one at Blender 312 (take 311), and the left hand's Blender 985-1265 "cup" is all fingertips
+bunched onto the thumb. `fbx_pinch` (694) and `fbx_pinch_tight` (312) are in the engine (13de3c47) and used by every
+small item (keys, gems, ring, feather, crystals, earplugs, spectacles). Where one hand's take lacks a frame the other
+has, the frame's joint rotations are COPIED from the other hand (owner, 2026-11-13; both skeletons share their rest
+locals, measured), so both hands have all 52 poses.
 
 The wrist always belongs to the controller (handoff, open question "May the wrist ever be animated?"). So a "turn"
 gesture below is the player's own wrist roll, read from the controller, never an animation.
@@ -395,12 +399,13 @@ STUDY1 #18 (0x08, key 2: the two candelabras in sector 217, and two in 252)
 
 ### 2.3 VR: lighting a candle [P]
 
-**Where Adam's hands go.** The off hand holds the light, the main hand reaches the wick. Or one hand does it all,
-holding a lit match.
+**Where Adam's hands go (CORRECTED 2026-11-13).** The original's hands decide it: the item is in the RIGHT hand
+(`g_selected_item_primary`), the weapon in the LEFT (`g_selected_item_secondary`, docs/GAME_inventory.md). So the
+matchbox is in the right hand (pose `fbx_wrap_half`, copied onto the right hand), and the use comes from that hand:
+touching the candle with it, or a grip while pointing at it (the owner's trigger/grip scheme). Verified on the owner's
+PC (`docs/images/hands/engine_useitem_flat_ad6d1ec5.png`): the left hand's grip auto-selects the matchbox into the
+right hand and does nothing else, as the original; the right hand's grip lights the candelabrum.
 
-- **The matchbox (item 16) in the off hand.** It is the left-hand slot item, which the 0x27 select test accepts
-  (0.1). Pose: `fbx_cup` (Blender 985), the box held across the fingers with the thumb on top. A true grip on a
-  matchbox needs a thumb–index pinch that the FBX does not have.
 - **Striking.** The main hand brushes across the box's side, the striker: a stroke of 4 cm or more along the box's
   long axis, at a speed of 0.3 m/s or more. A match is then lit **in the main hand** for 20 s [ADD for the match
   object itself: the original has no match in hand]. Pose of the main hand while it holds the match: `fbx_cup`
@@ -418,17 +423,37 @@ holding a lit match.
   zone fires the use (phase 1's near use), and the original's chain lights them. [R] Whether the original meant
   these to need a light was not asked of the data. The original does not test one, so neither does VR.
 
-**"Light each candle one at a time" (the owner's idea).** The original lights the five flames of one candelabra with
-**one** use and **one** art swap. Per-flame lighting can therefore only be presentation. The design:
+**"Light each candle one at a time, in any order" (the owner's idea, 2026-11-13).** The original lights the five
+flames of one candelabra with **one** use and **one** art swap. Per-flame lighting is presentation; the game state is
+the original's one click:
 
-- The **first** wick touched fires the use at once. The game state is then exactly the original's one click.
-- During the original's own 30-tick delay before the art swap, the VR layer lights the flames one by one [ADD]:
-  the touched wick first, then each wick the match touches, and any left unlit when the delay ends are lit by the
-  art swap itself, which shows all five. Visually, the player lights the flames he touches; logically, the
-  original's single click and its timing are untouched.
-- The alternative, holding back the use until all five wicks are touched, would move the original's click to a
-  later moment and leave a half-lit candelabra if the player walks away. Rejected: it makes the game state wait on a
-  presentation choice.
+- The **first** wick touched fires the original's use at once (the chain's re-key, its delay, its art swap, its +6 on
+  the room's light group, any 0x15 count such as STUDY4's five-candle ritual).
+- Each wick then shows lit only when the player lights it, in any order: per-flame compositing from the original's own
+  lit picture. The flame positions are measured, not hand-marked: `tools/wickspots` diffs each unlit picture against
+  its lit partner (`docs/OPENABLES.md` section 6; five-candle DEMO[4098]->DEMO[4148] wicks at
+  (-23,141) (-13,154) (0,159) (+13,154) (+23,141) units).
+- **Catch (measured):** the lit picture also recolours each candle's top under the flame and the cup and drip-pan
+  rims, plus a few stem texels. Per-flame compositing must carry those texels with their flame (assign by column) or
+  the candelabrum shows orange rims over dark wicks.
+- Presentation may be better but must end up showing the same thing as the original, so wicks left unlit catch by
+  themselves after a few seconds [owner to confirm the delay].
+- **One light per candelabrum** (owner's decision): one soft, flickering dynamic light that grows with each lit wick,
+  and stays (the original never puts a candle out).
+
+**Darkness (owner, 2026-11-13: "each one adding a little more light to the sector"; see RS_Radiance's Darkness).**
+This engine already carries RS_Radiance's darkness pass (`Level.SetDarkness` / `SetDarknessSpace`, `DarknessAt` in
+main.fp). Measured in the shader: the darkness multiplies the sector's own light BEFORE dynamic lights are added
+(main.fp ~3986 vs ProcessMaterialLight), so a candle's light is never darkened. Plan [P]:
+- the curve takes the original's sector light as its input, so the original's lighting design stays the shape; plus a
+  distance falloff like Radiance's Lantern preset (full dark at ~576 units);
+- the first wick's original +6 on the light group lifts the room through the curve; each lit wick adds to the
+  candelabrum's light, so the room brightens candle by candle;
+- the held Lamp's light follows the hand (owner's decision);
+- monsters' "actor spare" (Radiance default 0.4) is a tuning number for the headset;
+- CONSTRAINT: Radiance keeps its settings in saved cvars; the owner's doomxr.ini is shared with the hands build, so
+  VRealms sets the darkness from game code per map / room, never through cvars;
+- FIRST CHECK: the darkness pass over `roth_palette_shading 1`, captured lit and dark, before any tuning.
 
 **Feedback.** The match strike: a haptic scratch (three quick pulses) and the original's chain sound, which the
 trigger record already plays (+0x0a − 1 = 258). The catch: a soft pulse when the use fires. The light: the room's

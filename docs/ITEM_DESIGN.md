@@ -112,7 +112,7 @@ gives them (take index = Blender − 1).
 - `melee_grip` (fist);
 - `pointing` (fingergun index, rest fist);
 - `hold_magazine` (wrap_half);
-- `hold_round` and `hold_shell`: the cup. The table itself says "NO PINCH IN THE FBX".
+- `hold_round` and `hold_shell`: the cup. The table itself says "NO PINCH IN THE FBX" -- WRONG (owner, 2026-11-13): both takes pinch at Blender 694 and 312; `fbx_pinch` / `fbx_pinch_tight` are in the engine and used for the small items (see WORLD_DESIGN.md, the corrected pinch note).
 - `hold_slide` and `hold_forend` (wrap_tight);
 - `hold_foregrip` (fist);
 - `hold_support` (twohand_support);
