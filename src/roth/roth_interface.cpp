@@ -521,16 +521,47 @@ void BuildDialogue()
 		// (render_text_ui, dialogue_ui.c:1021-1028). Head-locked here so it
 		// is read wherever the player looks; not hittable -- a click anywhere
 		// is what dismisses it (game_core.c:612-632).
-		const int n = (int)v.rows.size();
+		//
+		// SAME TEXT, READABLE SIZE. The original lays a segment out to its
+		// whole 320-pixel screen (layout_timed_message_text, width = the
+		// screen pitch), so a sentence is usually ONE row ~300 font pixels
+		// wide, filling a flat screen at about 8 pixels tall. Drawn at the
+		// panels' 0.1 unit/pixel that row spanned 40 degrees and was 1.4
+		// degrees tall: a long thin strip, unreadable in a capture and a
+		// head-turn to read in the headset. The rows are re-wrapped at word
+		// breaks to SUB_WRAP font pixels and drawn at SUB_PX, so the words,
+		// colour, order and timing are the original's and only the shape
+		// changes.
+		static const int SUB_WRAP = 170;              // font pixels per row
+		static const double SUB_PX = 0.16;            // map units per font pixel
+		static const double SUB_ROWH = 11 * SUB_PX;
+		std::vector<std::string> rows;
+		for (const std::string &src : v.rows)
+		{
+			std::string cur;
+			size_t i = 0;
+			while (i <= src.size())
+			{
+				size_t j = src.find(' ', i);
+				if (j == std::string::npos) j = src.size();
+				const std::string word = src.substr(i, j - i);
+				const std::string trial = cur.empty() ? word : cur + " " + word;
+				if (!cur.empty() && TextPixels(trial) > SUB_WRAP) { rows.push_back(cur); cur = word; }
+				else cur = trial;
+				i = j + 1;
+			}
+			if (!cur.empty()) rows.push_back(cur);
+		}
+		const int n = (int)rows.size();
 		double widest = 0;
-		for (const std::string &r : v.rows) widest = std::max(widest, (double)TextPixels(r));
+		for (const std::string &r : rows) widest = std::max(widest, (double)TextPixels(r));
 		const double up0 = -9.0;
-		AddViewLocked(DIST, 0, up0 - (n - 1) * ROWH * 0.65, widest * PX + 2.0, n * ROWH * 1.3 + 1.0, BB_PANEL, PalEntry(255, 0, 0, 0), nullptr, 0.55);
+		AddViewLocked(DIST, 0, up0 - (n - 1) * SUB_ROWH * 0.65, widest * SUB_PX + 2.0, n * SUB_ROWH * 1.3 + 1.0, BB_PANEL, PalEntry(255, 0, 0, 0), nullptr, 0.55);
 		for (int i = 0; i < n; i++)
 		{
-			const double w = TextPixels(v.rows[(size_t)i]) * PX;
+			const double w = TextPixels(rows[(size_t)i]) * SUB_PX;
 			if (w <= 0) continue;
-			AddViewLocked(DIST - 0.2, 0, up0 - i * ROWH * 1.3, w, ROWH, BB_TEXT, Color(v.color), v.rows[(size_t)i].c_str(), 1.0);
+			AddViewLocked(DIST - 0.2, 0, up0 - i * SUB_ROWH * 1.3, w, SUB_ROWH, BB_TEXT, Color(v.color), rows[(size_t)i].c_str(), 1.0);
 		}
 		return;
 	}
