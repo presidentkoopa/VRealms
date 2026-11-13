@@ -989,9 +989,11 @@ void TickPanelHand(int role, AActor *pmo, const PanelPlane &plane, const DVector
 	in.trigger = h.trigger;
 	in.grip = h.grip;
 	in.triggerTouch = h.triggerTouch;
-	// The finger is only looked at while it can be the mouse: pointing (the index
-	// straight), the index down with the point held, or the fingertip on the panel.
-	const bool wants = h.valid && (InvHandIndexStraight(h.triggerTouch, h.trigger) || h.panel.IndexDown() || h.panel.InContact());
+	// The finger is only looked at while it can be the mouse (InvHand::WantsRay):
+	// pointing, the tic the index leaves (when the point is taken to be held: on
+	// the owner's PC run of 983ef7b8 this tic was missed, the hand forgot its
+	// point and the trigger clicked nothing), the point held, the fingertip on it.
+	const bool wants = h.panel.WantsRay(h.valid, h.triggerTouch, h.trigger);
 	if (wants && FingerRay(role, h, pmo))
 	{
 		in.haveRay = true;

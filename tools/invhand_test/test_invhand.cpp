@@ -19,6 +19,10 @@
 //     G2  the trigger: one PRIMARY per press (0.70 on, 0.35 off) where the laser was when the
 //         index came down, though the curling finger swings the ray; letting go does nothing;
 //         the point is held while the index straightens, and for at most 35 tics while it is down;
+//         an instant pull (touch and pull in one tic) and a touch-then-pull both click. The
+//         harness reads the finger only when InvHand::WantsRay says so, as the engine does (the
+//         owner's PC run of 983ef7b8: the engine skipped the ray on the tic the index left, and the
+//         trigger clicked nothing; these cases failed under that gate);
 //     G3  a controller with no trigger touch: the same;
 //     G4  the grip while pointing: one SECONDARY per squeeze at the laser; not while the index is
 //         on the trigger; a grip already closed when the hand arrives is no press;
@@ -215,7 +219,16 @@ struct Run
 		in.dir = p.front * -1.0;
 		in.trigger = 0.f; in.triggerTouch = false;
 	}
-	InvHandOutput Tic() { InvHandOutput o = h.Tick(p, in, upm); outs.push_back(o); return o; }
+	// As the engine does (roth_vrpick.cpp TickPanelHand): the finger is read only
+	// when InvHand::WantsRay says so; otherwise the tic has no ray.
+	InvHandOutput Tic()
+	{
+		InvHandInput t = in;
+		t.haveRay = in.haveRay && h.WantsRay(in.valid, in.triggerTouch, in.trigger);
+		InvHandOutput o = h.Tick(p, t, upm);
+		outs.push_back(o);
+		return o;
+	}
 	int Clicks(int *button = nullptr, int *x = nullptr, int *y = nullptr, InvHandHow *how = nullptr) const
 	{
 		int n = 0;
@@ -271,6 +284,22 @@ static void TestHand()
 		check(held, "G2 the point is held while the index straightens");
 		o = r.Tic();
 		check(o.px == 200 && o.py == 40, "G2 then the mouse follows the laser again");
+	}
+	{   // G2a the instant pull: the index straight one tic, touching and pulled the next
+		Run r;
+		r.PointAt(199.5, 29.5);
+		r.Tic(); r.Tic();
+		r.IndexDown(1.f);                          // 0 -> 1 in one tic (the flat test's "0 1 1 1")
+		r.Tic();
+		int b = 0, x = 0, y = 0;
+		check(r.Clicks(&b, &x, &y) == 1 && b == 1 && x == 199 && y == 29, "G2 an instant pull (touch and pull in one tic): one PRIMARY at (199, 29)");
+		Run q;                                     // the real index: touch first, then the pull some tics later
+		q.PointAt(199.5, 29.5);
+		q.Tic(); q.Tic();
+		q.IndexDown(0.f); q.Tic();
+		for (int i = 0; i < 10; i++) q.Tic();
+		q.in.trigger = 1.f; q.Tic();
+		check(q.Clicks(&b, &x, &y) == 1 && b == 1 && x == 199 && y == 29, "G2 touch first, pull 11 tics later: one PRIMARY at (199, 29)");
 	}
 	{   // G2b the held point lasts kAimHoldTics
 		Run r;

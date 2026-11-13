@@ -262,7 +262,9 @@ struct VRPath
 	// One tic of the hand: its mouse onto the panel (the hover), and its click.
 	uint16_t Tic(World &w, const InvHandInput &in, int x, int y, int via, int &clicks, uint16_t shape)
 	{
-		const InvHandOutput o = hand.Tick(plane, in, upm);
+		InvHandInput t = in;
+		t.haveRay = in.haveRay && hand.WantsRay(in.valid, in.triggerTouch, in.trigger);   // as the engine reads the finger
+		const InvHandOutput o = hand.Tick(plane, t, upm);
 		if (o.pointer)
 		{
 			if (o.px != x || o.py != y) { mapWrong++; printf("MAP hand's mouse at %d,%d for panel point %d,%d\n", o.px, o.py, x, y); }

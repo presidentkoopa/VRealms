@@ -135,6 +135,16 @@ public:
 	}
 
 	bool Pointing() const { return pointing; }
+	// Whether the fingertip and the finger's direction are needed for this tic's
+	// Tick (the caller reads them only then; without them Tick forgets everything):
+	// the index straight now, OR straight last tic -- the tic the index leaves is
+	// the tic the point is taken to be held (with the trigger touched first, as a
+	// real index does, or pulled outright) -- or the point held, or the fingertip
+	// on the panel. Asked BEFORE Tick, with this tic's inputs.
+	bool WantsRay(bool valid, bool triggerTouch, float trigger) const
+	{
+		return valid && (InvHandIndexStraight(triggerTouch, trigger) || pointing || held || inContact);
+	}
 	bool InContact() const { return inContact; }
 	bool IndexDown() const { return held; }
 
