@@ -112,7 +112,7 @@ section 3); **ported, not diffed** = transcribed, no scenario reaches it; **not 
 | 69 | VR jump on a button: BT_JUMP (commonbinds: pad_b +jump) | PE | reasoning only |
 | 70 | Roomscale walking moves the playsim: each step through the original's collision as one more queue entry (`AddExtraDelta`, NOT the original's) | PE, p_vrdemo.cpp | reasoning only |
 | 71 | Wrap shift (RAQUIA2) and room shift (stacked rooms) taken off and put back; interpolation cleared on a room-shift change or teleport | PE `ToOriginal`, `WritePawn` | reasoning only |
-| 72 | Anything else moving the pawn (arrival, warp, savegame, a platform actor pushing): the port takes the pawn as it stands | PE `Resync` | reasoning only |
+| 72 | Anything else moving the pawn (arrival, warp, savegame, a test command's placement, a platform actor pushing): the port takes the pawn as it stands, angle in 0..511, and moves nothing that tic, so a placement made every tic holds | PE `Resync`, `PlayerMoveTick` | reasoning only. A wrapped angle (65260) and its masked value (236) move identically: 8 key combinations x 120 tics from the STUDY1 start, same positions (only the low 9 bits are read) |
 | 73 | Eye: viewheight = 0x8c112 (height + bob), viewz = z + it | PE `WritePawn` | reasoning only |
 
 ### 1.8 New settings (none archived)

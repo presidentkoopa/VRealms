@@ -235,7 +235,10 @@ void Resync(AActor *mo)
 	pm.z = (uint32_t)(int32_t)lround(mo->Z() * 65536.);
 	const double a = (mo->Angles.Yaw.Degrees() - 90.) * 512. / 360.;
 	const double whole = floor(a);
-	pm.angle = (uint16_t)(int)whole;
+	// The original's angle is a 16-bit word that only ever turns by adding (renderer.c:1223-1230); every
+	// reader masks it (the sine lookups & 0x3fe of twice it, fire_sector_trigger & 0x1ff), so only the
+	// low 9 bits mean anything. A re-take starts it in 0..511, as a map's start angle is.
+	pm.angle = (uint16_t)((int)whole & 0x1ff);
 	g_move.yawFrac = a - whole;
 	pm.ResetQueues();
 	g_move.lastYaw = mo->Angles.Yaw;
@@ -404,8 +407,22 @@ void PlayerMoveTick(FLevelLocals *level)
 
 	SyncWorld();
 
-	// Anything but this file moved the pawn (an arrival, a warp, a load): take it from there.
-	if (!g_move.synced || (mo->Pos() - g_move.lastPos).Length() > 0.5) Resync(mo);
+	// Anything but this file moved the pawn (an arrival, a warp, a load, a test command's placement):
+	// take it from there. A placement is kept for its tic: the port adopts it and moves nothing, so a
+	// test that places the pawn every tic holds it exactly instead of the collision pushing it off a
+	// wall and the test putting it back (seen as 340,2340 / 346,2314 alternating). The next tic
+	// without a placement moves on from it under the original's rules.
+	if (!g_move.synced) Resync(mo);
+	else if ((mo->Pos() - g_move.lastPos).Length() > 0.5)
+	{
+		Resync(mo);
+		g_move.lastPos = mo->Pos();
+		g_move.lastYaw = mo->Angles.Yaw;
+		g_move.tics++;
+		if (roth_move_log)
+			Printf("[roth_move] tic %d placed: taken as it stands, no movement this tic\n", level->maptime);
+		return;
+	}
 
 	// The engine's yaw since the last tic (the mouse, the headset, the snap turn) into the angle.
 	{
