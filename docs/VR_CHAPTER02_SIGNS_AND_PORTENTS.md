@@ -858,6 +858,21 @@ the statuette's coils; P11 the open palm (frame 0) for hand prints; P12 a two-ha
 
 ## 6. Open questions for the owner (chapter 2)
 
+**Owner's answers (2026-11-13/14; questions 1-12 asked, 13-32 NOT YET ASKED — ask them next):**
+- **Q1 statuettes: lower onto the dais and release** = the original's use where the base lands (the plate's box decides); pointer kept.
+- **Q2 plate help:** owner: "in flat-screen they auto assign. It never occurred to me they would be specific." No hint chosen. **Check first** (measurement M2): does the original place a statuette on whichever plate is clicked/next free (auto-assign), or does each plate want its own statuette? If the original auto-assigns, the VR release anywhere on the dais must do the same; if plates are specific, bring it back to the owner.
+- **Q3 lifting a placed statuette back = the original's click on it: YES.**
+- **Q4 the lid (opens in chapter 7): add nothing.**
+- **Q5 masks: lift off the wall; held to the face = examine** (built: item to the eyes).
+- **Q6 Sword: a physical swing** fires the original's sword attack at the blade, its own rate and damage.
+- **Q7 Shield: ALWAYS on the off forearm** (not the recommendation).
+- **Q8 weapon switching: both** the inventory and body slots that run the original's select click.
+- **Q9 Shotgun: TWO-HANDED NOW** (off hand on the fore-end aims it); the reload/pump waits for adequate meshes (owner will find them).
+- **Q10 Staff: read the original's WeaponAction, but in VR it is "a combination projectile and melee"** (owner): a swing is melee and the trigger fires its projectile, each with the original's numbers where the original has them; design after reading.
+- **Q11 the choice menu: world-locked where the movie screen stood**, picked by laser or fingertip.
+- **Q12 the words of passing: VOICE.** Owner: "Speaking the dialog would be awesome. Later we might entertain voice recognition to more organically unlock dialogs." Now: the player SPEAKS the words (speech recognition of the original's choice texts), the original's choice is what fires. Later: voice for dialogs generally. (New content, approved.)
+
+
 Each is a concrete choice; **R** marks the recommendation and why.
 
 - **Q1 Setting a statuette on the dais.** (a) Lower it onto the dais and open the hand: one floor use at the texel

@@ -1,7 +1,7 @@
 # VRealms / REMAROTH: read before anything
 
 Realms of the Haunting (1996), ported into a GZDoom-derived VR engine from the owner's retail install.
-Start a session by reading the newest `HANDOFF_*.md` at the repo root (today `HANDOFF_LANE_GAMELAYER_2026-11-13_EVENING.md`).
+Start a session by reading the newest `HANDOFF_*.md` at the repo root (today `HANDOFF_LANE_GAMELAYER_2026-11-14.md`).
 
 ## Owner's rules
 - Never comment on the owner's hours, schedule, job or life. Never tell him to rest.
