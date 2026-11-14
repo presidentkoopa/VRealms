@@ -78,6 +78,10 @@ struct PostProcessShader
 
 extern TArray<PostProcessShader> PostProcessShaders;
 
+// [VRealms] How many times a game-owned pass (PostProcessShader::GameOwned) has been drawn, all eyes:
+// read by src/roth/roth_interface.cpp to say in its log whether the low-health edge's pass runs.
+extern int PP_GameOwnedRuns;
+
 // [PPPROJECT] Per-eye world-to-screen for custom post-process shaders.
 // - A projection native notes what it returned (this frame, per world point). A SetUniform1f/3f call with exactly
 //   that value marks the uniform for per-eye projection.

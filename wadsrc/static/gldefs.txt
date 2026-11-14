@@ -21,3 +21,10 @@ HardwareShader PostProcess scene
 	Shader "shaders/glsl/rothlowhealth.fp" 330
 	Uniform float uStrength
 }
+
+// VRealms TEST ONLY: the same edge with no uniform (roth_lowedge_test 3).
+HardwareShader PostProcess scene
+{
+	Name "RothLowHealthFixed"
+	Shader "shaders/glsl/rothlowhealthfixed.fp" 330
+}

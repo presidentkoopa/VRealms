@@ -40,6 +40,7 @@ Postprocess hw_postprocess;
 
 PPResource *PPResource::First = nullptr;
 TArray<PostProcessShader> PostProcessShaders;
+int PP_GameOwnedRuns = 0;
 
 bool gpuStatActive = false;
 bool keepGpuStatActive = false;
@@ -2955,6 +2956,7 @@ void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 				ResolveSceneMask(renderstate);
 				maskResolved = true;
 			}
+			if (shader->Desc->GameOwned) PP_GameOwnedRuns++;
 			shader->Run(renderstate);
 		}
 	}

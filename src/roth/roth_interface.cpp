@@ -270,6 +270,7 @@ struct Ui
 	// placed and scaled here. `mounted` is decided at each rebuild (Signature).
 	bool mounted = false;
 	bool mountTest = false;                         // roth_mounttest: the flat test's stand-in (roth_handtest's off hand)
+	double mountLook = 0.0;                         // roth_mounttest look: metres from the eye to the mount's middle (0 off)
 	HudCanvas hudTopMounted, mountHealth;           // cut from hud.TopStrip()
 	uint32_t mountFrom = 0xffffffffu;               // the TopStrip() version they were cut from
 	struct MountPiece { int bb = 0; double w = 0, h = 0; };
@@ -976,6 +977,25 @@ void TickMount()
 	};
 	place(U.mountLineBb);
 	place(U.mountHealthBb);
+
+	// roth_mounttest look (the flat test only): move the test off hand until the mount's middle
+	// stands straight ahead of the eye at the asked distance, the eye's own height -- measured on
+	// the mount as placed above, so the wrist joint's place in the hand does not matter.
+	if (U.mountTest && U.mountLook > 0.0 && VRHandTest_Active() && !L.on)
+	{
+		double total = 0.0;
+		if (U.mountLineBb.bb != 0) total += U.mountLineBb.h;
+		if (U.mountHealthBb.bb != 0) total += U.mountHealthBb.h + (U.mountLineBb.bb != 0 ? gap : 0.0);
+		const DVector3 mid = wrist + up * (roth_mount_liftcm * 0.01 * upm + total * 0.5);
+		const DAngle yaw = pl->mo->Angles.Yaw;
+		const DVector3 fwd(yaw.Cos(), yaw.Sin(), 0.0), right(yaw.Sin(), -yaw.Cos(), 0.0);
+		const DVector3 want = eye + fwd * (U.mountLook * upm);
+		const DVector3 err = (want - mid) / upm;                  // metres
+		const int side = VRHandPose_SideForRole(VR_OFFHAND);
+		double f = 0, r = 0, u = 0;
+		VRHandTest_Offset(side, f, r, u);
+		VRHandTest_SetOffset(side, f + (err | fwd) * 0.8, r + (err | right) * 0.8, u + err.Z * 0.8);
+	}
 }
 
 // The two pictures the mount needs from the top strip, cut again whenever the
@@ -1026,11 +1046,19 @@ void ReportLowHealthEdge()
 			PostProcessShaders.Size());
 }
 
+// TEST ONLY, not archived: 0 off (the cue decides); 0 < v < 1.5 the edge at strength v whatever the health;
+// 2 the pass paints the picture solid red through its uniform; 3 the uniform-free twin pass
+// (RothLowHealthFixed) at full strength instead. Each says, in a capture, which link is broken.
+CVAR(Float, roth_lowedge_test, 0.0f, 0)
+
 void SetLowHealthEdge(bool on, double strength)
 {
+	const double t = roth_lowedge_test;
+	if (t > 0.0) { on = t < 2.5; strength = t; }
 	for (unsigned i = 0; i < PostProcessShaders.Size(); i++)
 	{
 		PostProcessShader &sh = PostProcessShaders[i];
+		if (sh.Name.CompareNoCase("RothLowHealthFixed") == 0) { sh.Enabled = t >= 2.5; sh.GameOwned = true; continue; }
 		if (sh.Name.CompareNoCase("RothLowHealth") != 0) continue;
 		sh.Enabled = on;
 		sh.GameOwned = true;
@@ -1041,6 +1069,19 @@ void SetLowHealthEdge(bool on, double strength)
 
 void TickLowHealthCue()
 {
+	// Whether the edge's pass is drawn at all: the count of game-owned passes drawn, said every
+	// second while the edge is wanted (PP_GameOwnedRuns, hw_postprocess.cpp).
+	static int lastRuns = 0, sayTic = 0;
+	const bool wanted = U.lowCue || roth_lowedge_test > 0.0f;
+	if (wanted && U.level != nullptr && U.level->maptime >= sayTic)
+	{
+		sayTic = U.level->maptime + TICRATE;
+		Printf("[roth_mount] red edge: game-owned post-process passes drawn %d time(s) in the last second (test %.1f)\n",
+			PP_GameOwnedRuns - lastRuns, (double)roth_lowedge_test);
+		lastRuns = PP_GameOwnedRuns;
+	}
+	if (roth_lowedge_test > 0.0f) SetLowHealthEdge(true, roth_lowedge_test);
+	else if (!U.lowCue) SetLowHealthEdge(false, 0.0);
 	const int32_t hp = PlayerHealth(), maxhp = PlayerMaxHealth();
 	const bool low = U.hudBound && U.mounted && hp > 0 && HudPainter::HealthBarLow(hp, maxhp);
 	if (low != U.lowCue)
@@ -2396,20 +2437,15 @@ CCMD(roth_mounttest)
 		const int side = VRHandPose_SideForRole(VR_OFFHAND);
 		if (argv.argc() < 3 || !stricmp(argv[2], "off"))
 		{
+			roth::U.mountLook = 0.0;
 			VRHandTest_SetOffset(side, 0, 0, 0);
 			Printf("roth_mounttest look: off\n");
 			return;
 		}
-		// roth_handtest's grip stands 0.40 m ahead, 0.11 m to its side and 0.04 m below the eye
-		// (vr_handpose.cpp TEST_FWD / TEST_SIDE / TEST_UP); the offset is added to that. The wrist
-		// goes to the given distance, across to the middle, and down by the mount's lift plus half
-		// its height (about 2 cm), so the mount's middle is at the eye's height.
-		const double d = atof(argv[2]) * 0.01;
-		const double across = side == VRHandPose::SIDE_RIGHT ? -0.11 : 0.11;
-		const double up = 0.04 - (roth::roth_mount_liftcm * 0.01 + 0.02);
-		VRHandTest_SetOffset(side, d - 0.40, across, up);
-		Printf("roth_mounttest look: the test off hand's grip %.0f cm ahead of the eye, in the middle, %.0f cm below it\n",
-			d * 100.0, -(up - 0.04) * 100.0);
+		// TickMount moves the test off hand, a little each tic, until the mount's middle (not the
+		// grip, not the wrist) is straight ahead of the eye at that distance.
+		roth::U.mountLook = atof(argv[2]) * 0.01;
+		Printf("roth_mounttest look: the mount's middle %.0f cm straight ahead of the eye (the test off hand follows)\n", roth::U.mountLook * 100.0);
 		return;
 	}
 	roth::U.mountTest = !stricmp(argv[1], "on");
