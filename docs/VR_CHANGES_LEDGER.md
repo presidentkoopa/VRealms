@@ -40,6 +40,15 @@ entries use it.
 
 ## In progress (agents running)
 
+**Gestures (rows 19-23), first PC run of 03548253 (2026-11-13, flat, gestures_flat.cfg):**
+- seen working (log on the owner's PC): ward tingle 0.04 at 0.15 m to 0.16 at 0.03 m (`docs/images/gestures_ward_near_03548253.png`);
+  a punch into the lounge switch fires the original's use ("acted"); the grip on nothing no longer attacks; tall-wick
+  point + grip lit wick 3 through the original's use and the light grew.
+- seen FAILING: the knock (no rap detected; a slow move was taken as a rap); the attempts (zones found, but "nothing to
+  examine": the original's line never played); the flies wave and the door sweep (nothing detected); the punch on a
+  creature fired the attack but the creature's health did not change (`gestures_punch_creature_03548253.png`); the
+  tall wick lit from 4 m (reach not enforced). Sent back to the agent.
+
 | # | change | kind | owner decision | chapters (entries) |
 |---|---|---|---|---|
 | 18 | Record surface boxes (+0x0c..+0x12) tested against the hit texel | 1:1 fix (flat first) | — (a 1:1 gap) | all; ch1 (10, 11, 23, 26, 36) |
