@@ -625,6 +625,7 @@ void SyncPlayer()
 } // namespace
 
 bool ActorsActive() { return g_actors.active; }
+uint32_t ActorsLastMintedId() { return g_actors.world.lastMintedId; }
 
 int ActorsEquipWeapon(int slot, int itemIndex)
 {

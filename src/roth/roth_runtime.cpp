@@ -308,8 +308,21 @@ struct PendingDelay
 {
 	int32_t  remaining = 0;   // chunk[6], in Realms frame ticks
 	uint16_t record = 0;      // chunk[8], the delay record's own 1-based index
-	uint32_t context = 0;     // chunk[0xc], "what the player just used", +1 biased
+	uint32_t context = 0;     // chunk[0xc], "what the player just used" (DelayContext*)
 };
+
+// THE DELAY'S CONTEXT WORD, chunk[0xc] (cmd_delay_timer, raw_commands.c:4427-4430),
+// and the deferred entry's dword1 it becomes (tick_delay_timer :5345). The original
+// stores ONE of two things there and process_deferred_command_queue tells them apart
+// by the high half (:1598-1611):
+//   - g_active_object_secondary 0x8a0fc, a host RECORD POINTER (a wall's mapping
+//     record): high bits set. This port holds it as the face, activeFace + 1.
+//   - else the u16 mirror 0x8a0c4: the id cmd_change_object_id last MINTED (0xc1nn,
+//     :484-489), so a key-0 command after the wait finds its object again by that id
+//     (find_secondary_state_record_by_key, :1155). 0 = nothing.
+// Here the two are told apart by bit 31 (DELAY_CONTEXT_KEY): a face never sets it,
+// so a context saved before this existed still reads as the face it was.
+constexpr uint32_t DELAY_CONTEXT_KEY = 0x80000000u;
 
 // An entry of the double-buffered deferred-command queue
 // (process_deferred_command_queue, raw_commands.c:1587).
@@ -627,6 +640,12 @@ struct Runtime
 	// 0 resolves to it. -1 / -1 when the last action was not on an object.
 	int activeObjectSector = -1;
 	int activeObjectIndex = -1;
+
+	// The u16 mirror at 0x8a0c4 (g_item_drop_position + 0x118): the id
+	// cmd_change_object_id minted (raw_commands.c:481-489), read and cleared by
+	// cmd_delay_timer (:4428-4430), set to the deferred entry's key when one runs
+	// (:1607) and cleared by fire_tracked_object_trigger (:2979).
+	uint32_t idMirror = 0;
 
 	// The 0x36 latch: g_pending_command_record (0x8a0dc), held as a 1-based
 	// index here rather than the original's record pointer.
@@ -1495,9 +1514,21 @@ int DelayTimer(Command *rec, int index)
 	pd.remaining = (int32_t)d;
 	pd.record = (uint16_t)index;
 	// chunk[0xc] carries "what the player just used" across the wait, so a key
-	// of 0 downstream of the delay still names the right thing.
-	pd.context = (uint32_t)(g.activeFace + 1);
+	// of 0 downstream of the delay still names the right thing (:4426-4430):
+	// the wall (0x8a0fc), else the id the chain's 0x3a minted (0x8a0c4, low 16
+	// bits), and the mirror is cleared either way. An object's candle chain is
+	// the second: 0x3a -> 0xffff mints 0xc1nn, the delay carries it, and the
+	// 0x3a / 0x0d after the wait act on the object wearing it.
+	const uint16_t minted = (uint16_t)(g.idMirror & 0xffffu);
+	pd.context = g.activeFace >= 0 ? (uint32_t)(g.activeFace + 1)
+	           : minted != 0 ? (DELAY_CONTEXT_KEY | minted) : 0u;
+	g.idMirror = 0;
 	g.delays.push_back(pd);
+	if (roth_trigger_debug)
+		Printf("roth_trigger: 0x12 delay #%d, %u frame ticks, carries %s\n", index, (unsigned)d,
+			g.activeFace >= 0 ? FStringf("face %d (0x8a0fc)", g.activeFace).GetChars()
+			: minted != 0 ? FStringf("object id 0x%04x (the 0x3a mint, 0x8a0c4)", (unsigned)minted).GetChars()
+			: "nothing (no wall, no minted id)");
 
 	if (!(rec->modifier & 0x04)) { rec->modifier |= 0x20; SyncDisabled(rec); }
 	return CMD_ACTED;
@@ -2109,9 +2140,10 @@ static bool TickChangeLighting(Effect &e)
 // the map stores them, so the pair (sector, index) is the address.
 //
 // A key of 0 means the single g_command_source_object -- the object the player
-// just used. That is not tracked yet: this port latches the active FACE and
-// SECTOR for key-0 resolution but has no equivalent for objects, so a key of 0
-// is counted as unresolved rather than silently acting on the wrong prop.
+// just used (g.activeObjectSector / Index). This resolver still answers nothing
+// for it: 0x0d's key-0 IMMEDIATE path reads the active object itself
+// (ChangeObjectTexture), and 0x24 with a key of 0 (raw_commands.c:246, the
+// same resolver) is NOT yet given the source object here [open].
 //
 //==========================================================================
 
@@ -2840,29 +2872,60 @@ static void ApplyObjectTexture(const ObjectRef &r, uint16_t word)
 	else g.unhandledOps[0x0D]++;      // no sprite was built for this word
 }
 
-int ChangeObjectTexture(Command *rec, int index)
+// cmd_change_object_texture's EXECUTE entry (raw_commands.c:4520-4549), whole:
+//   1. guard: rec[2] & 0x20 (already registered) -> 0 (:4522). There is NO toggle
+//      path: that is 0x23's (cmd_change_object_height, :4563), which this used
+//      to borrow, testing 0x21 and flipping a live effect.
+//   2. key != 0: the REGISTER path (:4524-4531): the keyed objects become an
+//      effect, the record is marked registered, the tick does the swap.
+//   3. key == 0: the IMMEDIATE path (:4533-4548) on g_command_source_object --
+//      the runtime's active object: none -> 0; the record's word +0x0c already
+//      on the object -> interrupt 2 and 0; else the object takes the word, its
+//      +7 bit 0x10 from rec[7] & 0x10, and -1. No swap, no write-back.
+// Until 2026-11-13 key 0 resolved to nothing (ResolveCommandObjects has no
+// source object), so every key-0 0x0d -- every candle's art swap -- did
+// nothing while its 0x1d still brightened the room (owner's PC, darktest_flat).
+int ChangeObjectTexture(Command *rec, int index, Handlers &h)
 {
 	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
+	if (rec->modifier & 0x20) return CMD_NOTHING;                   // 1
 
-	if (rec->modifier & 0x21)                        // TOGGLE, as 0x23
+	if (rec->key == 0)                                               // 3
 	{
-		if (rec->Word(0x0E) != 0) return CMD_NOTHING;
-		if (!(rec->fireFlags & 0x20)) return CMD_NOTHING;
-		Effect *eff = FindEffect(base, (uint16_t)index);
-		if (eff == nullptr) return CMD_NOTHING;
-		eff->flags5 ^= 0x80;
-		rec->modifier ^= 0x02;
-		SyncDisabled(rec);
+		const int s = g.activeObjectSector, i = g.activeObjectIndex;
+		if (s < 0 || (size_t)s >= g.map.objects.size() || i < 0 || (size_t)i >= g.map.objects[s].size())
+		{
+			if (roth_trigger_debug) Printf("roth_trigger: 0x0d #%d (key 0): no source object -> nothing\n", index);
+			return CMD_NOTHING;
+		}
+		Object &o = g.map.objects[s][i];
+		const uint16_t word = rec->Word(0x0C);
+		const uint16_t was = (uint16_t)(o.textureIndex | (o.textureSource << 8));
+		if (word == was)
+		{
+			h.interrupt = Interrupt::Rerun;                           // g_command_chain_interrupt = 2
+			if (roth_trigger_debug) Printf("roth_trigger: 0x0d #%d (key 0): object %d/%d already wears 0x%04x -> interrupt 2\n", index, s, i, (unsigned)word);
+			return CMD_NOTHING;
+		}
+		o.flags = (uint8_t)((o.flags & 0xEF) | (rec->Byte(0x07) & 0x10));
+		ObjectRef r; r.sector = s; r.index = i;
+		ApplyObjectTexture(r, word);
+		if (roth_trigger_debug)
+		{
+			AActor *mo = FindObjectActor(s, i);
+			Printf("roth_trigger: 0x0d #%d (key 0): object %d/%d art 0x%04x -> 0x%04x (%s)\n", index, s, i, (unsigned)was, (unsigned)word,
+				mo == nullptr ? "no actor" : FindLogicSprite(word) >= 0 ? FStringf("sprite %d", FindLogicSprite(word)).GetChars()
+				: "NO SPRITE BUILT for the word");
+		}
 		return CMD_ACTED;
 	}
 
-	Effect e;
+	Effect e;                                                        // 2
 	e.tick = base;
 	e.record = (uint16_t)index;
 	e.objects = ResolveCommandObjects(rec->key);
 	if (e.objects.empty()) return CMD_NOTHING;
 	e.payload = 0;
-	e.flags5 |= (rec->modifier & 0x02) ? 0 : 0x80;
 	g.effects.push_back(e);
 	rec->modifier |= 0x20;
 	SyncDisabled(rec);
@@ -4674,7 +4737,6 @@ int RunCommand(const Map &, const Command &cc, int index)
 	case 0x11: return FlashLights(rec, index);
 	case 0x24: return RotateObject(rec);
 	case 0x23: return ChangeObjectHeight(rec, index);
-	case 0x0D: return ChangeObjectTexture(rec, index);
 	case 0x07: return ChangeHeight(rec, index);
 	case 0x0A: case 0x0B: return ChangeFlatTexture(rec, index);
 	case 0x0E: return ScrollSectorTexture(rec, index);
@@ -4726,9 +4788,13 @@ int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h)
 			bool interrupt = false;
 			const int r = ActorsCommand(op, *rec, g.activeObjectSector, g.activeObjectIndex, g.activeFace, interrupt);
 			if (interrupt) h.interrupt = Interrupt::Rerun;   // g_command_chain_interrupt = 2
+			// cmd_change_object_id writes the mirror 0x8a0c4: 0 at entry, the
+			// minted id for 0xffff (raw_commands.c:481-489). The delay reads it.
+			if (op == 0x3A) g.idMirror = ActorsLastMintedId();
 			return r;
 		}
 		return RunCommand(m, cc, index);
+	case 0x0D: return ChangeObjectTexture(rec, index, h);
 	case 0x34:
 	{
 		// cmd_change_face_texture (raw_commands.c:396-437): with a key of 0, a
@@ -4930,10 +4996,39 @@ void DrainDeferred()
 	batch.swap(g.deferred);                   // the buffer swap, in our terms
 	for (const Deferred &d : batch)
 	{
-		g.activeFace = (int)d.context - 1;    // 0 means "none"
-		g.activeObjectSector = g.activeObjectIndex = -1;   // :1599-1601, the source is cleared
+		g.activeObjectSector = g.activeObjectIndex = -1;
+		if (d.context & DELAY_CONTEXT_KEY)
+		{
+			// The low path (:1606-1611): a small key. The mirror takes it, and
+			// the source object is the FIRST object wearing that id, in the
+			// object table's order (find_secondary_state_record_by_key, :1155).
+			const uint16_t key = (uint16_t)(d.context & 0xffffu);
+			g.activeFace = -1;
+			g.idMirror = key;
+			for (size_t si = 0; si < g.map.objects.size() && g.activeObjectSector < 0 && key != 0; si++)
+				for (size_t oi = 0; oi < g.map.objects[si].size(); oi++)
+					if (g.map.objects[si][oi].commandID == key)
+					{
+						g.activeObjectSector = (int)si;
+						g.activeObjectIndex = (int)oi;
+						break;
+					}
+			if (roth_trigger_debug)
+				Printf("roth_trigger: deferred chain #%u resumes for object id 0x%04x -> %s\n", (unsigned)d.chain, (unsigned)key,
+					g.activeObjectSector >= 0 ? FStringf("object %d/%d", g.activeObjectSector, g.activeObjectIndex).GetChars()
+					: "no object wears it (no source)");
+		}
+		else
+		{
+			g.activeFace = (int)d.context - 1;    // the high path, a wall; 0 means "none"
+			// :1606-1611: the small key 0 is staged into the mirror too.
+			if (d.context == 0) g.idMirror = 0;
+		}
 		StageChainSound(0);                   // raw_commands.c:1597
 		Fire(d.chain);
+		// As ActivateObject leaves it after an object's chain: no clicked object
+		// for whatever runs next (that runner stages its own).
+		g.activeObjectSector = g.activeObjectIndex = -1;
 	}
 }
 

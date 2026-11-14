@@ -41,6 +41,11 @@ int ActorsCommand(uint8_t op, Command &rec, int &activeObjectSector, int &active
 // Whether 0x16 / 0x3a / 0x3c are served (true while a level is active).
 bool ActorsActive();
 
+// The u16 mirror 0x8a0c4 as the last 0x3a left it: the id it minted for a new
+// id of 0xffff, else 0 (cmd_change_object_id clears it at entry, RC:481-489).
+// The runtime's delay carries it across its wait (roth_runtime.cpp DelayTimer).
+uint32_t ActorsLastMintedId();
+
 // The inventory's weapon hooks (InventorySink::EquipWeapon / UnequipWeapon):
 // activate_weapon_item on the actor rules' player weapon. Equip returns the
 // ammo item the caller must count in the inventory (0 for none), and the
