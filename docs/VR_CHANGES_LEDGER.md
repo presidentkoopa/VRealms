@@ -55,6 +55,27 @@ entries use it.
 | 28 | The niche flash as a real dynamic light (three pulses) | VR | Q10 | ch1 (34) |
 | 29 | The forced turn (0x3f) snaps during the black frames | VR | Q7 | ch1 (37); every 0x3f |
 
+## Decided, to build next (chapter 1 second pass, owner 2026-11-13)
+
+| # | change | kind | owner decision | chapters |
+|---|---|---|---|---|
+| 30 | The original's movement ported 1:1 (step-up 65 / 16 crouched, crouch to 0x30, the 19-phase jump, speeds, turn ramp), diffed against the original | 1:1 | L4, "now" | all |
+| 31 | Locomotion: smooth stick (default) or teleport, a setting; snap turn 45° | VR | L1, L2 | all |
+| 32 | A real crouch drives the original's crouch; a button for seated players | VR | L3 | all; ch1 (27) |
+| 33 | The Colt (and every gun) aims along the gun | VR | W1 | all with a gun |
+| 34 | The off-hand mount: the original's subtitle panel and health bar, plus a low-health cue (red edge, heartbeat haptic) | VR | S1, H1 | all |
+| 35 | Movies on a world-locked screen | VR | M1 | all |
+| 36 | A quicksave / quickload button (the original's slot 0) | VR | H2 | all |
+| 37 | A held item brought to the eyes plays its examine | VR | X1 | all |
+
+## Decided, LATER
+
+| change | owner decision |
+|---|---|
+| Real-parts reload with high-quality meshes (drop mag, insert, rack the slide, world collision, nothing on a sprite layer); still one magazine item per reload | W2 |
+| On-gun ammo display, from REMASelacoVR's ideas | G1 |
+| Dedicated left-hand support | Q11 |
+
 ## Decided, nothing to build
 
 | decision | chapters |

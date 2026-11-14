@@ -822,6 +822,26 @@ moves, the gun, the lines, the HUD, saving and dying, and a few objects that are
 - **The lounge's lit room vs the dark rest:** the Lamp's light from the hip (Q2) is what makes 88 of 112 sectors
   readable; with no darkness pass in chapter 1 (owner) the original's sector light stands [V: owner's answer].
 
+### 8.7 The owner's answers to the second pass (2026-11-13)
+- **L1 locomotion: both, a setting** (smooth stick by default, teleport as an option).
+- **L2 turning: snap 45°.**
+- **L3 crouch: a real crouch drives the original's crouch** (the eye at 0x30, the 16-unit step limit, low gaps); a
+  button too, for seated players.
+- **L4 the original's movement ported 1:1 NOW, before chapter 2** (owner: "we move too slow, so it takes forever to get
+  anywhere"): step-up 65, crouch, the 19-phase jump, the walk/run speeds and turn ramp, diffed against the original.
+- **W1 the Colt aims along the gun** (the muzzle where the hand points); rate, damage and ammo stay the original's.
+- **W2 reload: both.** The original's automatic reload now; LATER a real-parts reload with high-quality meshes the owner
+  will find: drop the magazine, insert one, rack the slide, world-object collision, nothing on a sprite layer. It must
+  still consume exactly one magazine item where the original does. Marked for later.
+- **S1 subtitles: on an off-hand mount.** Owner: "eventually we won't need a HUD at all, but an off-hand mount would be
+  good". The original's panel and font, placed on the off hand.
+- **M1 movies: a world-locked screen** (N12).
+- **H1 health: the off-hand mount plus a low-health cue** (a red edge and a heartbeat haptic below half, standing in for
+  the original's "low" picture).
+- **H2 saving: the original's menu from the inventory, plus a quicksave / quickload button.**
+- **X1 a held item brought to the eyes plays its examine** (the same line as the trigger on it in the inventory).
+- **G1 on-gun ammo display: look at REMASelacoVR's later**, with the real-parts reload.
+
 ---
 
 ## 9. Changes made for this chapter
@@ -842,4 +862,6 @@ reaches). Summary for chapter 1:
 | record surface boxes (N1) | agent running | — |
 | physical melee, grip-on-air attack removed, knock, attempts, ward tingle, tall wicks | agent running | — |
 | real match, lamp on a hip hook, item shown in hand, the Book, niche flash, forced turn snap | agent running | — |
-| movement, Colt aim/reload, subtitles, HUD placement | open (8.1-8.4) | — |
+| the original's movement 1:1; smooth + teleport, snap 45°, real crouch | decided (8.7), to build | — |
+| Colt aims along the gun; off-hand mount (subtitles, health + low cue); world-locked movies; quicksave button; item to the eyes = examine | decided (8.7), to build | — |
+| real-parts reload, on-gun ammo display | decided, LATER | — |
