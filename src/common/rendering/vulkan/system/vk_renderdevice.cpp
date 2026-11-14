@@ -680,6 +680,15 @@ void VulkanRenderDevice::Update()
 		}
 		else
 		{
+			// [VRealms] THE FLAT FRAME'S FINAL IMAGE, as the VR branch above takes it. The scene loop
+			// calls NextEye after each eye's post-process, which puts the current pipeline image back
+			// to the pair's first (0) in flat too; when the chain advanced an odd number of times --
+			// one game-owned custom pass, RothLowHealth -- the final picture was in image 1 and the 2D,
+			// the present and every screenshot used image 0, the picture from before that pass
+			// (PC run b607ce1f: the pass drawn 242-363 times a second, nothing of it on screen).
+			// PostProcessScene records where each eye's chain ended (mEyeFinalPipelineImage, 0 when no
+			// scene was post-processed this frame, as BeginFrame sets it), so an even chain is unchanged.
+			postprocess->SetCurrentPipelineImage(mEyeFinalPipelineImage[0]);
 			postprocess->SetActiveRenderTarget();
 			Draw2D();
 			twod->Clear();
