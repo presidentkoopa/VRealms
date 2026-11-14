@@ -750,3 +750,96 @@ roth_handhold.h); P7 `fbx_pinch` for the match.
 - Metres assume E = 1.65 m and the eye-anchor scale, not judged in the headset.
 - Every VR proposal, haptic pattern, ranking and effort estimate.
 - Nothing in this file was checked against the running original or seen in our engine.
+
+---
+
+## 8. Second pass (2026-11-13, owner: "take another pass at ch1 if we missed anything")
+
+The first pass walked every record in the area (all 72 trigger records of `openables -area` appear in section 3) [V:
+the record list diffed against the entries]. What it did not cover is everything that is not a record: how the player
+moves, the gun, the lines, the HUD, saving and dying, and a few objects that are present but never shown.
+
+### 8.1 Moving through the chapter (no record; every chapter inherits it)
+- **The original:** walk, strafe, turn, look up/down, jump (A), crouch (Z) [V: GAME_core.md 1, E/input.c:124-135].
+  Step-up is `g_max_climb` (65 units; 16 crouched); crouch lowers the eye to 0x30 by 6 a tick, forced under 0x70 of
+  headroom; the jump is a 19-phase table [V: GAME_core.md 2.4-2.5, E/player.c].
+- **Ours:** `src/roth` has no step, jump or crouch code [V: grep]; the player moves by the base engine's rules
+  [R: not compared tick by tick]. GAME_core.md's verdict is to port movement 1:1; that is still open, and it is a
+  flat-port item, not a VR one.
+- **What chapter 1 needs:** the main stair (s8..s1, s19..s17, 0 → 400), the upper stair (440 → 640), the painting
+  niche at 500 above the corridor's 400 (the key is reached from below), the rat on the floor (entry 27, "crouch and
+  touch"). Nothing in chapter 1 needs a jump [R: no ledge or gap on the critical path in the area walk].
+- **VR questions:** smooth or teleport, how turning works (snap / smooth, and what angle), and whether real crouching
+  drives the original's crouch (the eye at 0x30, the 16-unit step limit) or only the head. → questions L1-L3.
+
+### 8.2 The Colt-45 (entry 22 gives it; nothing in chapter 1 to shoot)
+- **The original:** the weapon logic is ported and diffed tick by tick: trigger, shot cycle, ammo, reload, recharge,
+  damage [V: REALMS_WEAPONS.md, `tools/actors_test` replay mode `weapon`]. A magazine reload is automatic: an empty
+  clip with a magazine item in the inventory removes one and refills (`remove_item`, WC:849); the reload picture plays
+  instead of a shot [V: GAME_combat.md 2.3]. Out of magazines: message 6 and an automatic switch [V: same].
+- **In chapter 1 there is no monster awake** [V: the only monster in the area, ADEMO[271], is hidden until the end
+  (`#564`/`#571`)]. The Colt's only targets are the two mirrors, the five windows and the casement leaves (entry 13,
+  16, 38; their 0x1a attack records) [V].
+- **VR, not yet decided:** the shot leaves from the gun's muzzle along the gun (the hand aims), not from the eye; the
+  original's screen cursor is not used for aiming [P]. The reload: the original's automatic swap (1:1) or a
+  physical magazine (eject, take one from the belt, insert)? A physical reload is a VR addition; it must still consume
+  exactly one magazine item where the original does. → questions W1-W3.
+- The fists until the Colt: physical melee (owner's Q6 answer; the gestures agent is building it).
+
+### 8.3 Adam's lines and the subtitles
+- **The original:** a line plays DPCM speech with a subtitle panel under the 3D view; movies have timed subtitles;
+  a Subtitles toggle is in the options [V: GAME_dialogue.md 1, 3.6; GAME_audio_save_menu.md 4]. A click skips a
+  playing line (owner, built in d34fb269).
+- **Most entries in section 3 end in one of Adam's lines**, and the chapter has two movie cards (the opening and
+  `#299`) [V: section 3].
+- **VR, not decided:** where the subtitle panel sits. Head-locked low in view, floating under where Adam looks, or
+  on the item hand's wrist? The original's own font and panel art are drawn either way (1:1 rule: its panel, our
+  placement). → question S1.
+
+### 8.4 HUD, health, death, saving
+- **The original's HUD:** a health bar (a "low" picture under half), a weapon/ammo panel, the held item on the cursor,
+  a portrait corner [V: GAME_audio_save_menu.md 4]. The in-game menu (Resume / Load / Save / Settings / gallery) opens
+  from the inventory screen; nine save slots and a quicksave [V: same].
+- **Chapter 1 can hurt:** a smashed mirror applies damage to the player (0x33), a broken window becomes a hazard face
+  (0x35) (section 2.8, entries 13, 38) [V: chains]; nothing else in the area deals damage [R].
+- **Death:** a death script, a short wait (Esc skips, a key quick-loads), then the start map and the main menu [V:
+  GAME_audio_save_menu.md 4]. 1:1; nothing to design except where the wait's text shows (same answer as S1).
+- **VR, not decided:** where the health bar and the ammo panel live (a wrist watch on the off hand, a glance-down
+  belt panel, or the original's strip head-locked); a quicksave button. → questions H1-H2.
+
+### 8.5 Present in the area and never shown in chapter 1 (adds to the "asleep" table)
+| what | where | why |
+|---|---|---|
+| ADEMO[43], invisible spawn markers | several sectors | shown only by `#15`, `#207`, `#406`, `#598`, `#599`, `#600` (0x3c); none of these fires in chapter 1 [V: chains] |
+| ADEMO[0], developer object id 78 | `#576` | never reachable [V: CHAPTERS finding 8] |
+| ADEMO[271], the end creature id 77 | s267 | `#564` / `#571`, the end of the game [V] |
+
+### 8.6 Smaller things the first pass left implicit
+- **Looking at a held item.** The trigger on an inventory item examines it (built). Bringing a held item up to the
+  eyes could play the same examine [P] → question X1.
+- **Sounds:** every sound named in section 3 is the original's, positional as the original pans and fades it
+  [V: GAME_audio_save_menu.md 2]; nothing new to design.
+- **The lounge's lit room vs the dark rest:** the Lamp's light from the hip (Q2) is what makes 88 of 112 sectors
+  readable; with no darkness pass in chapter 1 (owner) the original's sector light stands [V: owner's answer].
+
+---
+
+## 9. Changes made for this chapter
+
+Every change that touches chapter 1, with its decision, commits and evidence, is in
+[`docs/VR_CHANGES_LEDGER.md`](VR_CHANGES_LEDGER.md) (the ledger is per change; each row lists the chapters it
+reaches). Summary for chapter 1:
+
+| change | state | evidence |
+|---|---|---|
+| FBX hands, authored poses, holds (copied frames, pinches), item in the right hand | built | engine captures 967e825f |
+| trigger = examine, grip = use; pointing at range, touch/grab in reach; no dwell | built | log + captures dd507632 |
+| use with the held item (the right-hand item on the world) | built | captures dd507632 |
+| inventory by hand (laser, fingertip), pausing the world; a click skips a line | built | captures 75aef0fa, b987b551; log (0 actor ticks paused) |
+| 0x0d key-0 fix (a candelabrum's art swap) | built, 1:1 fix | log + captures e20464e7 |
+| candles wick by wick, the 15 s catch, one growing light | built | captures acb11adb |
+| darkness pass (`roth_darktest`), NOT used in chapter 1 | built, off | captures aa3c465f |
+| record surface boxes (N1) | agent running | — |
+| physical melee, grip-on-air attack removed, knock, attempts, ward tingle, tall wicks | agent running | — |
+| real match, lamp on a hip hook, item shown in hand, the Book, niche flash, forced turn snap | agent running | — |
+| movement, Colt aim/reload, subtitles, HUD placement | open (8.1-8.4) | — |

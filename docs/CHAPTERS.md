@@ -4,6 +4,10 @@ The backbone for the chapter-by-chapter VR design discussion. Everything with a 
 retail install by `tools/chapter_census/` (engine-free, through the `src/roth` readers), so every table can be
 regenerated:
 
+**Per-chapter VR design and the changes made for each:** chapter 1 is `docs/VR_CHAPTER01_SHADOWS.md` (section 9
+lists its changes); every change, with its commits, evidence and the chapters it reaches, is in
+`docs/VR_CHANGES_LEDGER.md`. Each new chapter dossier gets the same "Changes made for this chapter" section.
+
 ```
 sh tools/chapter_census/build.sh /tmp/cc
 /tmp/cc/chapter_census "$ROTH_DATA" -all > tools/chapter_census/chapters_retail.txt   # the checked-in output
@@ -172,13 +176,18 @@ in the MAP sections. A gate the path does not name may be optional or may be the
 census cannot tell, because it does not model space (which rooms a door closes off).
 
 ### Chapter 1, Shadows (STUDY1, the front of the house)
-- **Path:** take the Colt (#416), magazines (#410), letters/scrapbook (#38, #51, #53, #57, #34, use-floor once each);
-  light candles with the Matchbox **in hand**: landing candelabra STUDY1 #18 (obj id 2, four objects), passage
-  candles #212 (id 16) and #4 (id 3, two objects: a count to 2, then a height change and a spawn after 310 + 70 tics:
-  the picture slides away and the fireball trap fires) [V: chains; R: which candles are which]; take the Key i21
-  (#89); the Study door STUDY1 #11 (i21 in hand, refusal act316 latched first, flag 374, door). Entering the Study:
-  card 2 (#299).
-- **Optional:** Book i17 (#205), Note i36 (#29, off at load), Ace of Spades pickup, House Map i43 (#195).
+**CORRECTED 2026-11-13 by the chapter 1 area walk** (`openables -area STUDY1 -stop 29 -have 1,15,16,68`, details in
+`docs/VR_CHAPTER01_SHADOWS.md` section 1). The first version of this section placed several Study things in chapter 1.
+- **Path [V: area walk]:** take the Colt (#416) and magazines (#410); the Book i17 (#205; first look gives the silver
+  key i20); light the tall candles #4 (obj id 3, two objects: a count to 2, then the corridor painting rolls up and the
+  niche fires a shot) and the landing candelabra **#212** (obj id 16, s210/s211) with the Matchbox **in hand**; take
+  the brass Key i21 (#89, the niche); the Study door STUDY1 #11 (i21 in hand, refusal act316 latched first, flag 374,
+  door). Entering the Study: card 2 (#299).
+- **Optional:** the Note i36 (#29, the lounge typewriter), the Scrapbook i27 (#51).
+- **Moved to chapter 2 (they are in the Study):** the letters #34/#38/#53/#57, the candelabra #18 (obj id 2, s217/s252),
+  the serpent statuettes i4, the three masks, the Shield, the Sword, the sarcophagus count.
+- **Not chapter 1:** the Ace of Spades (hidden at load, shown only by #427 in #357, far from this area); the House Map
+  i43 (#195, s22, not reached).
 
 ### Chapter 2, Signs and Portents (STUDY1 study and cellars, MAS3, MAUSO1EA, MAS4, MAS6, MAS7, MAUSO1EB, AELF)
 - **Path [R: walkthrough]:** Study: four gold serpents i4 (STUDY1 #23, #58, #74, #540), Shield i28 (#320), Sword
