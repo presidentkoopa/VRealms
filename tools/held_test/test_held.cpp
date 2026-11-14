@@ -19,6 +19,7 @@
 #include "roth_wicks.h"
 #include "roth_lightramp.h"
 #include "roth_raw.h"
+#include "vr_cinemascreen.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -351,6 +352,64 @@ static void TestBook()
 }
 
 //==========================================================================
+// The item to the eyes (row 37) and the movies' screen (row 35)
+//==========================================================================
+
+static void TestEyes()
+{
+	EyeExamine e;
+	int fired = 0, at = -1;
+	for (int t = 1; t <= 100; t++) if (e.Tick(true, 0.10)) { fired++; if (at < 0) at = t; }
+	CHECK(fired == 1 && at == kEyeHoldTics, "held at 10 cm: one examine, on tic %d (fired %d)", at, fired);
+	fired = 0;
+	for (int t = 0; t < 30; t++) fired += e.Tick(true, 0.20);
+	for (int t = 0; t < 40; t++) fired += e.Tick(true, 0.10);
+	CHECK(fired == 0 && !e.Armed(), "back from 20 cm (inside 25): not again");
+	e.Tick(true, 0.30);
+	CHECK(e.Armed(), "past 25 cm: armed again");
+	fired = 0; at = -1;
+	for (int t = 1; t <= 40; t++) if (e.Tick(true, 0.12)) { fired++; if (at < 0) at = t; }
+	CHECK(fired == 1 && at == kEyeHoldTics, "the next approach: one examine on tic %d", at);
+	EyeExamine b;
+	fired = 0;
+	for (int t = 0; t < 10; t++) fired += b.Tick(true, 0.10);
+	for (int t = 0; t < 3; t++) fired += b.Tick(true, 0.30);
+	for (int t = 0; t < 10; t++) fired += b.Tick(true, 0.10);
+	CHECK(fired == 0, "two brief approaches (10 tics each): nothing");
+	EyeExamine c;
+	fired = 0;
+	for (int t = 0; t < 50; t++) fired += c.Tick(false, 0.08);
+	CHECK(fired == 0 && c.Armed(), "an empty hand at the eyes: nothing, still armed");
+	at = -1;
+	for (int t = 1; t <= 30; t++) if (c.Tick(true, 0.08) && at < 0) at = t;
+	CHECK(at == kEyeHoldTics, "the item arriving in that hand at the eyes: its examine after 0.5 s (tic %d)", at);
+	EyeExamine d;
+	fired = 0;
+	for (int t = 0; t < 200; t++) fired += d.Tick(true, t % 2 ? 0.14 : 0.16);
+	CHECK(fired == 0, "wavering across 15 cm every tic never holds 0.5 s");
+	printf("eyes: within %.2f m for %d tics (0.5 s), once per approach, armed again past %.2f m\n", kEyeNear, kEyeHoldTics, kEyeFar);
+}
+
+static void TestCinema()
+{
+	using namespace VRCinema;
+	Anchor a;
+	const Vec head{ 1.0f, 1.6f, 2.0f }, fwd{ 0.0f, -0.5f, -1.0f };   // looking ahead and down: the screen ignores the pitch
+	CHECK(a.Update(true, head, fwd, 3.0f, 0.2f) && a.Have(), "placed on the first frame");
+	const Place p = a.Get();
+	CHECK(std::fabs(p.centre.x - 1.0f) < 1e-5f && std::fabs(p.centre.y - 1.8f) < 1e-5f && std::fabs(p.centre.z - (2.0f - 3.0f)) < 1e-5f,
+		"3 m ahead along the yaw, 0.2 m up (%.2f %.2f %.2f)", p.centre.x, p.centre.y, p.centre.z);
+	const float toHead = p.normal.x * (head.x - p.centre.x) + p.normal.y * (head.y - p.centre.y) + p.normal.z * (head.z - p.centre.z);
+	CHECK(toHead > 2.99f && p.up.y == 1.0f && std::fabs(p.right.x * p.normal.x + p.right.z * p.normal.z) < 1e-6f, "upright, facing the head");
+	const Vec head2{ 5.0f, 1.0f, -4.0f }, fwd2{ 1.0f, 0.0f, 0.0f };
+	CHECK(!a.Update(true, head2, fwd2, 3.0f, 0.2f) && a.Get().centre.x == p.centre.x && a.Get().centre.z == p.centre.z,
+		"the head moving and turning moves nothing: fixed in the world");
+	CHECK(!a.Update(false, head2, fwd2, 3.0f, 0.2f) && !a.Have(), "off: forgotten");
+	CHECK(a.Update(true, head2, fwd2, 3.0f, 0.0f) && std::fabs(a.Get().centre.x - 8.0f) < 1e-5f, "the next movie: placed where the head looks then");
+	printf("cinema: placed once where the head looks, fixed while on, forgotten when off\n");
+}
+
+//==========================================================================
 // The scripts for the original (run_diff.sh)
 //==========================================================================
 
@@ -622,6 +681,8 @@ int main(int argc, char **argv)
 		TestLamp();
 		TestFollow();
 		TestBook();
+		TestEyes();
+		TestCinema();
 		printf("held_test unit: %d checks passed, %d failed\n", g_pass, g_fail);
 		return g_fail ? 1 : 0;
 	}

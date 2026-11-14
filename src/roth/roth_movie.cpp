@@ -8,6 +8,7 @@
 
 #include "roth_movie.h"
 #include "roth_held.h"
+#include "vr_cinemascreen.h"
 #include "roth_install.h"
 #include "roth_interface.h"
 #include "roth_dbase100.h"
@@ -64,6 +65,29 @@ bool AddMovieJob(DObject *runner, const std::string &name)
 // game state a movie causes is set by the flow either way.
 CVAR(Bool, roth_movies, true, 0)
 
+// THE MOVIES IN VR (ledger row 35, the owner's M1: "a world-locked screen"): while a movie runs, the headset's virtual
+// screen stands fixed in the world where the head looked when the movies began, this far ahead and this wide, on
+// black (vr_cinemascreen.h; the OpenXR device places it). Metres. Not archived: never written into the owner's ini.
+// Flat: nothing reads them; the movie fills the screen as always.
+CVAR(Float, roth_movie_screen_dist, 3.0f, 0)
+CVAR(Float, roth_movie_screen_width, 3.2f, 0)
+CVAR(Float, roth_movie_screen_up, 0.0f, 0)
+
+static void CinemaScreen(bool on)
+{
+	FVRCinemaScreen c;
+	c.on = on;
+	c.distance = roth_movie_screen_dist;
+	c.width = roth_movie_screen_width;
+	c.vpos = roth_movie_screen_up;
+	const bool was = VR_CinemaScreen().on;
+	VR_SetCinemaScreen(c);
+	if (on && !was)
+		Printf("Realms: the movies on a world-locked screen in VR (%.2f m ahead, %.2f m wide, %+.2f m up; roth_movie_screen_*);"
+			" flat: full screen as always\n", c.distance, c.width, c.vpos);
+	else if (!on && was) Printf("Realms: the world-locked movie screen ends\n");
+}
+
 static bool gSuppressed = false;
 void MovieSetSuppressed(bool on) { gSuppressed = on; }
 
@@ -105,7 +129,7 @@ bool MovieBusy()
 void MoviePump()
 {
 	// A runner ended without its completion (a level change deletes it): free the queue.
-	if (gRunning && cutscene.runner == nullptr) gRunning = false;
+	if (gRunning && cutscene.runner == nullptr) { gRunning = false; CinemaScreen(false); }
 	if (gQueue.empty() || gRunning) return;
 	if (cutscene.runner != nullptr || gamestate != GS_LEVEL || gameaction != ga_nothing) return;
 
@@ -117,6 +141,7 @@ void MoviePump()
 		gamestate = GS_LEVEL;
 		wipegamestate = GS_LEVEL;
 		gRunning = false;
+		CinemaScreen(false);
 		Printf("Realms: movies over, back to the level\n");
 		HeldMovieOver();   // a forced turn waiting for the black: the VR view takes it now (roth_held.h, owner Q7)
 	};
@@ -133,6 +158,7 @@ void MoviePump()
 		return;
 	}
 	gRunning = true;
+	CinemaScreen(true);
 	// SJ_BLOCKUI: GS_INTRO, where Escape reaches the job instead of opening
 	// the menu (d_event.cpp D_ProcessEvents) -- the original's skip key.
 	if (sysCallbacks.StartCutscene) sysCallbacks.StartCutscene(true);

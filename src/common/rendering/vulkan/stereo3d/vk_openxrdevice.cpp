@@ -1,6 +1,7 @@
 #include "hw_vrmodes.h"
 #include "hw_vrwheel.h"
 #include "vk_openxrdevice.h"
+#include "vr_cinemascreen.h"
 
 #include "common/rendering/stereo3d/openxr/oxr_loader.h"
 #include "hw_clock.h"
@@ -926,7 +927,9 @@ static void GetStableOpenXRVirtualScreenSize(uint32_t& width, uint32_t& height)
 
 static void GetOpenXRVirtualScreenMeters(uint32_t renderW, uint32_t renderH, float& widthMeters, float& heightMeters)
 {
-	const float baseWidthMeters = std::max(0.1f, (1.0f + vr_overlayscreen_size) * 1.2f);
+	// RS FORK -- a game's cinema screen (vr_cinemascreen.h) has its own width.
+	const FVRCinemaScreen &cinema = VR_CinemaScreen();
+	const float baseWidthMeters = cinema.on ? std::max(0.1f, cinema.width) : std::max(0.1f, (1.0f + vr_overlayscreen_size) * 1.2f);
 	if (renderW == 0 || renderH == 0)
 	{
 		GetStableOpenXRVirtualScreenSize(renderW, renderH);
@@ -1244,6 +1247,7 @@ static const float overlayBG[6][3] = {
 
 static XrVector3f GetVirtualScreenBackgroundColor()
 {
+	if (VR_CinemaScreen().on) return { 0.0f, 0.0f, 0.0f };   // RS FORK: a game's cinema screen stands in the dark
 	const int idx = clamp<int>(vr_overlayscreen_bg, 0, 5);
 	return { overlayBG[idx][0], overlayBG[idx][1], overlayBG[idx][2] };
 }
@@ -6154,7 +6158,11 @@ void VKOpenXRDeviceMode::updateVirtualScreenLayer() const
 	xrPrevHeadYawDegForRecenter = headYawDeg;
 	xrHasPrevHeadSampleForRecenter = true;
 
-	const float distance = std::max(0.25f, 2.5f + vr_overlayscreen_dist);
+	// RS FORK -- a game's cinema screen (vr_cinemascreen.h): its own distance and height, fixed where the head looked
+	// when it began (below, before the archived modes).
+	const FVRCinemaScreen &cinema = VR_CinemaScreen();
+	const float distance = cinema.on ? std::max(0.25f, cinema.distance) : std::max(0.25f, 2.5f + vr_overlayscreen_dist);
+	const float screenVpos = cinema.on ? cinema.vpos : (float)vr_overlayscreen_vpos;
 	float screenWidth = 0.0f;
 	float screenHeight = 0.0f;
 	GetOpenXRVirtualScreenMeters(xrVirtualScreenWidth, xrVirtualScreenHeight, screenWidth, screenHeight);
@@ -6173,7 +6181,7 @@ void VKOpenXRDeviceMode::updateVirtualScreenLayer() const
 		if (DotVector(right, right) < 0.0001f)
 			right = { 1.0f, 0.0f, 0.0f };
 		const XrVector3f up = NormalizeVector(CrossVector(normal, right));
-		const XrVector3f pos = AddVector(AddVector(anchorCenter, ScaleVector(forward, distance)), ScaleVector(worldUp, vr_overlayscreen_vpos));
+		const XrVector3f pos = AddVector(AddVector(anchorCenter, ScaleVector(forward, distance)), ScaleVector(worldUp, screenVpos));
 		XrPosef pose{};
 		pose.orientation = QuaternionFromBasis(right, up, normal);
 		pose.orientation = MultiplyQuaternion(pose.orientation, flipRotation);
@@ -6181,7 +6189,22 @@ void VKOpenXRDeviceMode::updateVirtualScreenLayer() const
 		return pose;
 	};
 
-	switch (effectiveOverlayMode)
+	static VRCinema::Anchor cinemaAnchor;
+	const bool cinemaPlaced = cinemaAnchor.Update(cinema.on, { center.x, center.y, center.z }, { headForward.x, headForward.y, headForward.z },
+		distance, screenVpos);
+	if (cinema.on)
+	{
+		const VRCinema::Place &cp = cinemaAnchor.Get();
+		XrPosef pose{};
+		pose.orientation = MultiplyQuaternion(QuaternionFromBasis({ cp.right.x, cp.right.y, cp.right.z }, { cp.up.x, cp.up.y, cp.up.z },
+			{ cp.normal.x, cp.normal.y, cp.normal.z }), flipRotation);
+		pose.position = { cp.centre.x, cp.centre.y, cp.centre.z };
+		xrVirtualScreenPose = pose;
+		if (cinemaPlaced)
+			Printf("OpenXR: the game's cinema screen placed in the world: %.2f m ahead of the head's yaw, %.2f m wide, %+.2f m up; fixed until it ends\n",
+				distance, screenWidth, screenVpos);
+	}
+	else switch (effectiveOverlayMode)
 	{
 	case 1: // Stationary
 		if (!xrStationaryAnchorValid || xrStationaryAnchorMode != effectiveOverlayMode)

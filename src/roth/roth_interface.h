@@ -56,6 +56,11 @@ int32_t InterfaceInventoryPanelOpen();
 int32_t InterfaceInspectPopupActive();
 // THE HELD OBJECTS (roth_held.cpp). The item whose examine popup is up and running, 0 none. Read only.
 int InterfacePopupItem();
+// A HELD ITEM BROUGHT TO THE EYES (ledger row 37): open the inventory as the 'I' key does and, the next tic, the
+// original's primary click on its right-hand box -- the examine of the right-hand item (`item`, for the log): its
+// popup and, on the first look, its OnInspect; when that popup ends, the original's close key. False (nothing done)
+// while a panel, a menu or a line owns the pointer, or one is already under way.
+bool InterfaceExamineRightHand(int item);
 // The popup's billboard placed in the hands (the Book, owner Q8): at `at`, squared to the eye, its size times
 // `scale`; `on` false puts it back where the original's screen has it. Presentation: the same picture, content,
 // timing and hit test (the hands' laser reads the billboard where it stands).

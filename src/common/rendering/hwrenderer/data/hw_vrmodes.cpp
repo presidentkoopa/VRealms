@@ -25,6 +25,7 @@
 #include "vectors.h"
 #include "hw_cvars.h"
 #include "hw_vrmodes.h"
+#include "vr_cinemascreen.h"
 #include "v_video.h"
 #include "i_time.h"
 #include "g_input.h"
@@ -632,6 +633,11 @@ CVAR(Float, vr_overlayscreen_size, 1., CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Float, vr_overlayscreen_dist, 0., CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Float, vr_overlayscreen_vpos, 0., CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Int, vr_overlayscreen_bg, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// RS FORK -- a game's cinema screen (vr_cinemascreen.h). Not a cvar: the game sets it while its movies play.
+static FVRCinemaScreen gCinemaScreen;
+void VR_SetCinemaScreen(const FVRCinemaScreen &screen) { gCinemaScreen = screen; }
+const FVRCinemaScreen &VR_CinemaScreen() { return gCinemaScreen; }
 // default conversion between (vertical) DOOM units and meters
 CVAR(Float, vr_vunits_per_meter, 34.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // METERS
 

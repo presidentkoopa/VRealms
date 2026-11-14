@@ -245,6 +245,12 @@ struct Ui
 	DVector3 popupAt;
 	double popupScale = 1.0;
 	double popupBaseW = 0.0, popupBaseH = 0.0;      // the billboard's size as BuildPopup made it
+	// A HELD ITEM BROUGHT TO THE EYES (roth_held.cpp, ledger row 37): the inventory opened as the 'I' key opens it,
+	// the original's primary click on its right-hand box (ClickHandBox: the examine of the right-hand item, its popup
+	// and first-look OnInspect), and the panel closed again as the original's close key does once that popup ends.
+	int eyeStep = 0;                                // 0 none, 1 opened, 2 clicked, 3 the popup is up
+	int eyeTics = 0;
+	int eyeItem = 0;
 
 	FLevelLocals *level = nullptr;
 	std::vector<Element> elements;
@@ -1855,6 +1861,43 @@ void InterfaceDialogueVoiceForceEnd(uint32_t eax, uint32_t edx) { U.dialogue.Dia
 int32_t InterfaceInventoryPanelOpen() { return U.screen.g_inventory_panel_open; }
 int32_t InterfaceInspectPopupActive() { return U.screen.g_inspect_popup_active; }
 
+bool InterfaceExamineRightHand(int item)
+{
+	if (!U.attached || U.eyeStep != 0) return false;
+	if (U.screen.IsOpen() || U.screen.PopupUp() || InterfacePointerBusy()) return false;   // a panel or a line already owns the pointer
+	U.screen.Open();
+	U.eyeStep = 1;
+	U.eyeTics = 0;
+	U.eyeItem = item;
+	Printf("[roth_ui] the item held to the eyes (%d): the inventory opened, its right-hand box clicked next\n", item);
+	return true;
+}
+
+static void TickEyeExamine()
+{
+	if (U.eyeStep == 0) return;
+	U.eyeTics++;
+	if (U.eyeStep == 1)
+	{
+		if (!U.screen.IsOpen()) { U.eyeStep = 0; return; }
+		U.screen.ClickHandBox(1, InventoryScreen::PRIMARY);   // the original's examine of the right-hand item
+		Printf("[roth_ui] the item held to the eyes: the primary click on the right-hand box (the original's examine of item %d)\n", U.eyeItem);
+		U.eyeStep = 2;
+		U.eyeTics = 0;
+		return;
+	}
+	if (U.eyeStep == 2)
+	{
+		if (U.screen.PopupUp()) { U.eyeStep = 3; return; }
+		if (U.eyeTics < 10) return;
+		Printf("[roth_ui] the item held to the eyes: no popup came up (item %d has no close-up): the panel closes\n", U.eyeItem);
+	}
+	else if (U.screen.PopupUp() || U.popup.Active()) return;
+	if (U.screen.IsOpen()) U.screen.KeySelect();             // the original's close key
+	Printf("[roth_ui] the item held to the eyes: its examine is over, the inventory closed\n");
+	U.eyeStep = 0;
+}
+
 int InterfacePopupItem()
 {
 	if (!U.attached || !U.screen.PopupUp() || !U.popup.Active()) return 0;
@@ -2034,6 +2077,7 @@ void InterfaceTick(FLevelLocals *level)
 	// redraw_inventory_cursor_cell (game_core.c:886), before the keys' frame
 	// (:894), at the original's 70 Hz frame tick.
 	if (U.screen.IsOpen() && !U.popup.Active()) U.painter.RedrawInventoryCursorCell((uint16_t)(level->maptime * 2));
+	TickEyeExamine();                                    // an item held to the eyes (row 37): before the screen's tail takes the request
 	if (!U.popup.Active()) U.screen.Post();              // update_inventory_screen's tail
 	TickPopup(level);                                    // the popup's own loops
 	// tick_item_pickup_lock and the fly-in it times: gameplay_frame_step's

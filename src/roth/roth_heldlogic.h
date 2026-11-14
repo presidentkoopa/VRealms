@@ -310,6 +310,38 @@ template <class Count> int BookView::Tick(int popupItem, int maxId, Count count)
 }
 
 //==========================================================================
+// A HELD ITEM BROUGHT TO THE EYES PLAYS ITS EXAMINE (ledger row 37, the owner's X1)
+//==========================================================================
+
+// The item hand's card (the original's right-hand item, roth_held.cpp) within 15 cm of the eyes for half a second:
+// the original's examine of that item, once per approach; the hand must leave past 25 cm to arm it again.
+constexpr double kEyeNear = 0.15, kEyeFar = 0.25;
+constexpr int kEyeHoldTics = 18;   // 0.5 s at 35 tics (17.5, rounded up)
+
+class EyeExamine
+{
+public:
+	void Reset() { mArmed = true; mHeld = 0; }
+	// One world tic: whether the hand shows an item to examine, and its distance from the eyes (metres). True on the
+	// tic the examine is due.
+	bool Tick(bool haveItem, double distance)
+	{
+		if (distance > kEyeFar) { mArmed = true; mHeld = 0; return false; }
+		if (!haveItem || !mArmed || distance > kEyeNear) { mHeld = 0; return false; }
+		if (++mHeld < kEyeHoldTics) return false;
+		mArmed = false;
+		mHeld = 0;
+		return true;
+	}
+	bool Armed() const { return mArmed; }
+	int Held() const { return mHeld; }
+
+private:
+	bool mArmed = true;
+	int mHeld = 0;
+};
+
+//==========================================================================
 // WHAT EACH HAND SHOWS (owner Q12, Q2, Q8, Q1)
 //==========================================================================
 

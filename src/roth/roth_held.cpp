@@ -119,6 +119,7 @@ struct HeldWorld
 	held::Match match;
 	held::LampHook lamp;
 	held::BookView book;
+	held::EyeExamine eye;
 	std::vector<Group> groups;
 	std::map<int, int> iconTex;              // item -> texture index (-1: none)
 	std::map<int, std::pair<int, int>> iconSize;
@@ -632,6 +633,27 @@ void HeldTick(FLevelLocals *level, bool worldTicks)
 	held::HandShows shows[2];
 	const int lampHand = lampSelected ? itemRole : H.lamp.Hand();
 	held::WhatHandsShow(lampSelected ? 0 : rightItem, lampHand, H.match.Lit(), H.book.Item(), H.book.Palm(), itemRole, offRole, shows);
+
+	// ---- a held item brought to the eyes plays its examine (ledger row 37, the owner's X1) ----
+	if (worldTicks)
+	{
+		const bool haveItem = H.live && hand[itemRole].ok && shows[itemRole].item > 0;
+		double dist = 1e9;
+		if (H.live && hand[itemRole].ok)
+		{
+			const DVector3 eye = r_viewpoint.ViewLevel == level ? r_viewpoint.Pos : pmo->Pos() + DVector3(0, 0, player->viewheight);
+			dist = (M(hand[itemRole].palm) - M(eye)).Length();
+		}
+		const bool wasArmed = H.eye.Armed();
+		if (H.eye.Tick(haveItem, dist))
+		{
+			const bool started = InterfaceExamineRightHand(shows[itemRole].item);
+			Printf("[roth_held] EYES: item %d held %.2f m from the eyes for %.1f s: the original's examine of it %s\n", shows[itemRole].item, dist,
+				held::kEyeHoldTics / 35.0, started ? "(the inventory's right-hand box)" : "NOT started: a panel or a line owns the pointer");
+			if (started) Haptic(itemRole, 0.25, 20);
+		}
+		else if (!wasArmed && H.eye.Armed()) Printf("[roth_held] EYES: the item hand left the eyes (%.2f m): armed again\n", dist);
+	}
 	if (H.live)
 	{
 		for (int r = 0; r < 2; r++)
@@ -770,6 +792,7 @@ void HeldMovieOver()
 //   roth_heldtest flame <sector> <index> <wick>
 //                                       the off hand moved so the lit match's FLAME is at that wick (1-based)
 //   roth_heldtest lamp                  the off hand's palm to the Lamp's bail (on its hook)
+//   roth_heldtest eyes [metres]         the item hand's palm (its card) <metres> (default 0.08) in front of the eyes
 //   roth_heldtest reach <sector> <index> [metres]
 //                                       the item hand's palm <metres> (default 0.03) from that object's middle,
 //                                       toward the eye (a grip then takes it as the picker's grip does)
@@ -801,7 +824,7 @@ CCMD(roth_heldtest)
 	using held::V3;
 	if (argv.argc() < 2)
 	{
-		Printf("roth_heldtest strike [m/s] | flame <sector> <index> <wick> | lamp | reach <sector> <index> [metres]"
+		Printf("roth_heldtest strike [m/s] | flame <sector> <index> <wick> | lamp | eyes [metres] | reach <sector> <index> [metres]"
 			" | stand <sector> <index> <units> <bearing> [pitch] | offset <left|right> <ahead> <right> <up> | home | state\n");
 		return;
 	}
@@ -829,6 +852,7 @@ CCMD(roth_heldtest)
 			H.live ? "live" : "not live", RightItem(InterfaceInventory()), H.match.Lit() ? "lit" : "out", H.match.TicsLeft(), H.match.Struck(),
 			H.lamp.Hand() >= 0 ? FStringf("in the %s hand", RoleWord(H.lamp.Hand())).GetChars() : "on its hook", H.lampLit ? ", lit (a lantern sector)" : "",
 			H.book.Item(), H.book.Palm(), (int)H.groups.size());
+		Printf("roth_heldtest:   the eyes: %s, held %d of %d tics\n", H.eye.Armed() ? "armed" : "not armed (leave 0.25 m)", H.eye.Held(), held::kEyeHoldTics);
 		if (H.haveFlame)
 		{
 			Hand oh;
@@ -869,6 +893,19 @@ CCMD(roth_heldtest)
 		MoveTestHand(offRole, M(wick) - flame);
 		Printf("roth_heldtest flame: the %s hand moved %.2f m so the match's flame is at wick %s of object %s/%s (%s)\n", RoleWord(offRole),
 			(M(wick) - flame).Length(), argv[4], argv[2], argv[3], H.match.Lit() ? "the match is lit" : "NO MATCH LIT");
+		return;
+	}
+	if (!stricmp(cmd, "eyes"))
+	{
+		// The item hand's palm (its card) <metres> (default 0.08) in front of the eyes.
+		Hand ih;
+		if (!TestHand(itemRole, ih)) return;
+		const double metres = argv.argc() >= 3 ? atof(argv[2]) : 0.08;
+		const DVector3 eye = r_viewpoint.ViewLevel == H.level ? r_viewpoint.Pos : pmo->Pos() + DVector3(0, 0, players[consoleplayer].viewheight);
+		const DAngle yaw = pmo->Angles.Yaw;
+		const V3 target = M(eye) + V3(yaw.Cos(), yaw.Sin(), 0.0) * metres;
+		MoveTestHand(itemRole, target - M(ih.palm));
+		Printf("roth_heldtest eyes: the %s hand's palm moved %.2f m to %.2f m in front of the eyes\n", RoleWord(itemRole), (target - M(ih.palm)).Length(), metres);
 		return;
 	}
 	if (!stricmp(cmd, "lamp"))
