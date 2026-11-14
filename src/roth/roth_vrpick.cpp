@@ -246,6 +246,7 @@ struct VRPick
 	DVector3 testAim;
 	double testPitch = 0, testYaw = 0;
 	int testCandleSector = -1, testCandleIndex = -1;   // roth_vrpicktest candle / wick / look
+	double testLookBearing = -1000.0;                  // degrees, candle -> camera; below -360: not chosen yet
 
 	const char *loggedStand = "";   // why the hands last stood down ("" = never reported)
 
@@ -1383,8 +1384,11 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        index fingertip is at wick <n> of that candle (1 = the leftmost as
 //                                        drawn), or <metres> in front of it toward the player; the view's yaw
 //                                        is kept (a billboard's wicks lie across the view)
-//   roth_vrpicktest look <units>         stand <units> from that candle on the line it was seen along,
-//                                        facing its middle, the test hand lowered (for a capture)
+//   roth_vrpicktest look <units> [bearing]
+//                                        stand on the floor <units> from that candle at <bearing> degrees
+//                                        (candle -> camera; 0 east, 90 north; default the last one given for
+//                                        this candle, else where the player stands), facing its middle, the
+//                                        test hand lowered (for a capture)
 //   roth_vrpicktest off
 //
 // The buttons are the real ones, driven by the hand test's inputs
@@ -1402,7 +1406,7 @@ CCMD(roth_vrpicktest)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face|examine [metres]"
-			" | seek needs <item> [metres] | panel <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | look <units> | off\n");
+			" | seek needs <item> [metres] | panel <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | look <units> [bearing] | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
@@ -1480,6 +1484,7 @@ CCMD(roth_vrpicktest)
 	{
 		P.testCandleSector = atoi(argv[2]);
 		P.testCandleIndex = atoi(argv[3]);
+		P.testLookBearing = -1000.0;   // a new candle: `look` takes its bearing again
 		DVector3 c; double h = 0; int n = 0;
 		if (!CandleExtent(P.testCandleSector, P.testCandleIndex, c, h, n)) { Printf("roth_vrpicktest candle: object %s/%s is not a candle with an actor\n", argv[2], argv[3]); return; }
 		Printf("roth_vrpicktest candle: object %d/%d, %d wick(s), %.0f units tall, middle at (%.0f %.0f %.0f)\n", P.testCandleSector, P.testCandleIndex, n, h, c.X, c.Y, c.Z);
@@ -1487,23 +1492,28 @@ CCMD(roth_vrpicktest)
 	}
 	if (!stricmp(argv[1], "look") && argv.argc() >= 3)
 	{
+		// THE BEARING IS FIXED, not taken from where the player happens to be: after a `wick` the player stands
+		// wherever the hand needed him, and a bearing read from there turned the view into the walls (owner's
+		// PC, candles_flat at c77146f7). Given, or the last one used on this candle.
 		AActor *pmo = players[consoleplayer].mo;
 		DVector3 c; double h = 0; int n = 0;
 		if (pmo == nullptr || !CandleExtent(P.testCandleSector, P.testCandleIndex, c, h, n)) { Printf("roth_vrpicktest look: no candle (roth_vrpicktest candle first)\n"); return; }
 		const double d = atof(argv[2]);
-		DVector2 along(pmo->X() - c.X, pmo->Y() - c.Y);
-		if (along.Length() < 1e-3) along = DVector2(1, 0);
-		along = along / along.Length();
-		const DVector3 stand(c.X + along.X * d, c.Y + along.Y * d, pmo->Z());
+		if (argv.argc() >= 4) P.testLookBearing = atof(argv[3]);
+		else if (P.testLookBearing < -360.0) P.testLookBearing = atan2(pmo->Y() - c.Y, pmo->X() - c.X) * (180.0 / M_PI);
+		const DAngle b = DAngle::fromDeg(P.testLookBearing);
+		const DVector3 stand(c.X + b.Cos() * d, c.Y + b.Sin() * d, pmo->Z());
 		pmo->SetOrigin(stand, false);
+		pmo->SetZ(pmo->floorz);          // stand on the floor there (SetOrigin found it), not at the old height
 		pmo->Vel.Zero();
-		pmo->Angles.Yaw = DAngle::fromDeg(atan2(-along.Y, -along.X) * (180.0 / M_PI));
+		pmo->Angles.Yaw = b + DAngle::fromDeg(180.0);
 		const double eye = pmo->Z() + players[consoleplayer].viewheight;
-		pmo->Angles.Pitch = DAngle::fromDeg(atan2(eye - c.Z, d) * (180.0 / M_PI));
+		pmo->Angles.Pitch = DAngle::fromDeg(atan2(eye - c.Z, d) * (180.0 / M_PI));   // + looks down
 		pmo->ClearInterpolation();
 		VRHandTest_SetLift(0.0);
-		Printf("roth_vrpicktest look: %.0f units from object %d/%d, at (%.0f %.0f %.0f) facing it, pitch %.1f\n", d, P.testCandleSector, P.testCandleIndex,
-			stand.X, stand.Y, stand.Z, pmo->Angles.Pitch.Degrees());
+		Printf("roth_vrpicktest look: %.0f units from object %d/%d at bearing %.0f, standing at (%.0f %.0f %.0f) in sector %d facing it,"
+			" pitch %.1f\n", d, P.testCandleSector, P.testCandleIndex, P.testLookBearing, pmo->X(), pmo->Y(), pmo->Z(),
+			pmo->Sector != nullptr ? pmo->Sector->Index() : -1, pmo->Angles.Pitch.Degrees());
 		return;
 	}
 	if (!stricmp(argv[1], "wick") && argv.argc() >= 3)
@@ -1522,15 +1532,19 @@ CCMD(roth_vrpicktest)
 		const DVector3 target = at + toward * (metres * UPM());
 		const DVector3 move(target.X - tmp.tip.X, target.Y - tmp.tip.Y, 0.0);
 		const double ps = pmo->Level != nullptr && pmo->Level->pixelstretch > 0 ? pmo->Level->pixelstretch : 1.0;
-		const double dz = target.Z - tmp.tip.Z;
-		const double lift = VRHandTest_Lift() + dz * ps / UPM();
-		VRHandTest_SetLift(lift);
+		// The player stands on the floor where he lands (a step there would drop or lift him, and the hand with
+		// him, on the next tic); the lift makes up the rest.
+		const double oldZ = pmo->Z();
 		pmo->SetOrigin(pmo->Pos() + move, false);
+		pmo->SetZ(pmo->floorz);
 		pmo->Vel.Zero();
 		pmo->ClearInterpolation();
-		Printf("roth_vrpicktest wick %d: object %d/%d's wick at (%.1f %.1f %.1f); the player moved (%.1f %.1f), the %s hand lifted %+.1f units"
-			" (lift %.3f m), so its fingertip is %.3f m from it\n", wick + 1, P.testCandleSector, P.testCandleIndex, at.X, at.Y, at.Z, move.X, move.Y,
-			RoleName(testRole), dz, lift, metres);
+		const double dz = target.Z - (tmp.tip.Z + (pmo->Z() - oldZ));
+		const double lift = VRHandTest_Lift() + dz * ps / UPM();
+		VRHandTest_SetLift(lift);
+		Printf("roth_vrpicktest wick %d: object %d/%d's wick at (%.1f %.1f %.1f); the player moved (%.1f %.1f) to sector %d, floor %.0f, the %s hand"
+			" lifted %+.1f units (lift %.3f m), so its fingertip is %.3f m from it\n", wick + 1, P.testCandleSector, P.testCandleIndex, at.X, at.Y, at.Z,
+			move.X, move.Y, pmo->Sector != nullptr ? pmo->Sector->Index() : -1, pmo->Z(), RoleName(testRole), dz, lift, metres);
 		return;
 	}
 	if (!stricmp(argv[1], "seek") && argv.argc() >= 3)
