@@ -13,6 +13,12 @@
 //                                        what it hides)
 //   openables <DATA> -dump DIR           also write every target picture and every picture a chain swaps in
 //                                        (DIR/<PACK>_<index>.ppm), for contact sheets in /tmp
+//   openables <DATA> -area MAP [-stop ID,ID] [-have I,I] [-dump DIR] [-poly FILE]
+//                                        what the player reaches ON FOOT from the map's start, room by room, with
+//                                        every scripted record on it, the hidden objects and who shows them, and the
+//                                        light groups its records ramp (the rules: the comment above AreaMode).
+//                                        docs/VR_CHAPTER01_SHADOWS.md: -area STUDY1 -stop 29 -have 1,15,16,68
+//                                        -poly writes a plan-view dump (sectors, objects, faces with records)
 //
 // Build: sh tools/openables/build.sh   (writes /tmp/openables)
 //
@@ -340,6 +346,594 @@ static bool WritePPM(const std::string &path, const Image &img, const std::vecto
 	return true;
 }
 
+//---------------------------------------------------------------------------
+// -area MAP [-stop ID,ID] [-have I,I] [-dump DIR]
+//
+// What the player can reach ON FOOT from the map's start, room by room, and every scripted record on what he can
+// reach. Written for the chapter-by-chapter VR design (docs/VR_CHAPTER01_SHADOWS.md): a chapter is a reachable
+// region of its maps, and the census tools do not model space.
+//
+// THE RULES (each an approximation, stated so the output can be judged):
+//  - start: the sector holding metadata (startX, startY) whose floor..ceiling holds startZ (rothplan::SectorAt's
+//    rule, roth_portalplan.h); heights after ApplyLoadTimeHeights (the load-time 0x07 pass).
+//  - a step from sector A to B crosses a two-sided face the player's sweep passes (face flags & 0x81 != 0x01:
+//    collide_point_walls_recursive, collision_physics.c:705-735, with the mask 0x81 set at :1706), climbing at
+//    most metadata MaxClimb, with an opening of at least MinFit (the player's height) between max(floor) and
+//    min(ceiling).
+//  - a DOOR sector (commandID 0xfffd/0xffff, closed at load) is entered only from a room whose face onto it carries
+//    a LIVE (not disabled at load) use-wall record (0x18) whose chain reaches 0x2f, with every item its chain tests
+//    (0x27) already in hand-able reach (-have, plus everything given on the reached area so far), or when a live
+//    chain on the reached area opens it remotely (0x2f with a face id). Flags (0x28) are NOT evaluated: a chain is
+//    walked along NEXT and into every 0x38 else-branch and 0x40 sub-chain, so a door behind a flag test counts as
+//    openable. Every such door is printed with its chain so the call can be checked by hand.
+//  - 0x17 enables are NOT followed (a record disabled at load stays disabled), and 0x07/0x09 movers are NOT
+//    applied: they are listed under the record that runs them.
+//  - -stop: sectors with one of these command ids are reached but not walked through (a chapter's end).
+//  - a ROOM is a set of sectors connected without passing through a door sector. Rooms are numbered in the order
+//    the walk first reaches them (breadth first from the start).
+//  - TOUCHABLE: the reached sectors plus every sector one or two two-sided faces away from them, whatever its heights
+//    (table tops, shelves, niches): the original clicks things up to 268 units away, so their records are listed
+//    too, marked "adjacent".
+//  Items given (0x29) by any live record on the touchable area, and plain pickups lying there, are added to the
+//  items in hand-able reach, and the walk repeats until nothing changes.
+//---------------------------------------------------------------------------
+static std::set<int> ParseList(const char *s)
+{
+	std::set<int> o; std::string t = s; size_t p;
+	while ((p = t.find(',')) != std::string::npos) { if (p) o.insert(atoi(t.substr(0, p).c_str())); t = t.substr(p + 1); }
+	if (!t.empty()) o.insert(atoi(t.c_str()));
+	return o;
+}
+static int AreaStartSector(const Map &m)
+{
+	const double x = m.metadata.startX, y = m.metadata.startY, z = m.metadata.startZ;
+	int best = -1; double bestScore = 1e18;
+	for (int s = 0; s < (int)m.sectors.size(); s++)
+	{
+		const Sector &rs = m.sectors[s];
+		if (rs.faceCount < 3 || rs.firstFaceIndex < 0) continue;
+		bool in = false;
+		for (int k = 0; k < rs.faceCount; k++)
+		{
+			const Face &f = m.faces[rs.firstFaceIndex + k];
+			const double ax = m.vertices[f.vertex1].x, ay = m.vertices[f.vertex1].y;
+			const double bx = m.vertices[f.vertex2].x, by = m.vertices[f.vertex2].y;
+			if ((ay > y) != (by > y)) { const double xi = ax + (y - ay) * (bx - ax) / (by - ay); if (xi > x) in = !in; }
+		}
+		if (!in) continue;
+		double score;
+		if (z >= rs.floorHeight && z <= rs.ceilingHeight) score = z - rs.floorHeight;
+		else if (z > rs.ceilingHeight) score = 1e6 + (z - rs.ceilingHeight);
+		else score = 2e6 + (rs.floorHeight - z);
+		if (score < bestScore) { bestScore = score; best = s; }
+	}
+	return best;
+}
+struct AreaChain { bool door0 = false; std::set<int> itemsTested, given, remoteFaces, toggles, flagsTested, heights; };
+static void AreaWalk(const Map &m, int start, AreaChain &ac, std::set<int> &seen, int depth = 0)
+{
+	int i = start;
+	for (int steps = 0; i > 0 && i <= (int)m.commands.size() && steps < 128; steps++)
+	{
+		if (!seen.insert(i).second) break;
+		const Command &c = m.commands[i - 1];
+		switch (c.opcode)
+		{
+		case 0x27: ac.itemsTested.insert(c.key); break;
+		case 0x29: if (c.key) ac.given.insert(c.key); break;
+		case 0x28: ac.flagsTested.insert(c.key); break;
+		case 0x17: ac.toggles.insert(c.key); break;
+		case 0x07: case 0x09: ac.heights.insert(c.key); break;
+		case 0x2f: if (c.key == 0) ac.door0 = true; else for (int fi : c.faces) ac.remoteFaces.insert(fi); break;
+		case 0x38: if (depth < 6) AreaWalk(m, c.key, ac, seen, depth + 1); break;
+		case 0x40: if (depth < 6) AreaWalk(m, c.Word(6), ac, seen, depth + 1); break;
+		default: break;
+		}
+		if (c.isTrigger) break;
+		i = c.nextIndex;
+	}
+}
+static AreaChain AreaChainOf(const Map &m, int ci)
+{
+	AreaChain ac; std::set<int> seen;
+	AreaWalk(m, m.commands[ci].chainStart, ac, seen);
+	return ac;
+}
+static std::string AreaShort(const MapData &md, int ci)
+{
+	std::vector<Step> st; std::set<int> seen; std::set<std::string> pics;
+	Walk(md, md.m.commands[ci].chainStart, st, seen, pics);
+	std::string s;
+	for (const Step &x : st) { s += "\n        #" + std::to_string(x.idx) + " " + x.text; }
+	return s;
+}
+static int AreaFirstPickable(int rid)
+{
+	if (rid < 0x200) return 0;
+	for (int id = 1; id <= gDb.ItemCount(); id++)
+	{
+		const DbItem *it = gDb.Item(id);
+		if (!it || !it->ok || it->renderId != rid) continue;
+		if (it->flags & 0x80) continue;
+		if (it->Category() == 2) continue;
+		return id;
+	}
+	return 0;
+}
+// Picture size in world units (columns x rows x units per texel; wickspots' rule), or the kind when not a picture.
+static std::string AreaArtSize(const MapData &md, uint16_t word, const std::string &dumpDir)
+{
+	int idx = 0;
+	const bool sh = Pack::ResolveObjectArt((uint8_t)(word & 0xff), (uint8_t)(word >> 8), idx);
+	const std::string pack = sh ? TheInstall().SharedPack() : md.pack;
+	LoadedPack *lp = GetPack(pack);
+	if (!lp->ok) return "?";
+	const FatEntry *e = lp->pack.Entry(idx);
+	if (!e) return "?";
+	if (e->kind == EntryKind::Object3D) return "mesh";
+	if (e->kind == EntryKind::Indirection) return "directional/creature";
+	Image im = lp->pack.ReadImage(idx);
+	if (!im.ok()) return "?";
+	double upp = 1.0;
+	if (im.modifier & IM_HALF_SIZE) { const int s = (im.imageType >> 5) & 3; upp = s == 0 ? 1.0 : 2.0 * (1 << s); }
+	if (!dumpDir.empty())
+	{
+		const std::string p = dumpDir + "/" + KeyOf(pack, idx) + ".ppm";
+		FILE *t = fopen(p.c_str(), "rb");
+		if (t) fclose(t); else WritePPM(p, im, lp->pack.Palette());
+	}
+	char b[64]; snprintf(b, sizeof b, "%gx%g u", im.height * upp, im.width * upp);
+	return b;
+}
+static void AreaDumpTex(const MapData &md, uint16_t tex, const std::string &dumpDir)
+{
+	if (dumpDir.empty() || tex == 0 || tex >= 0x8000) return;
+	int idx = 0;
+	const bool sh = Pack::ResolveDasId(tex, idx);
+	const std::string pack = sh ? TheInstall().SharedPack() : md.pack;
+	LoadedPack *lp = GetPack(pack);
+	if (!lp->ok) return;
+	const std::string p = dumpDir + "/" + KeyOf(pack, idx) + ".ppm";
+	FILE *t = fopen(p.c_str(), "rb");
+	if (t) { fclose(t); return; }
+	Image im = lp->pack.ReadImage(idx);
+	if (im.ok()) WritePPM(p, im, lp->pack.Palette());
+}
+
+static int AreaMode(int argc, char **argv)
+{
+	MapData md;
+	if (!LoadMap(argv[3], md)) { printf("map %s: not read\n", argv[3]); return 2; }
+	std::set<int> stopIds, have; std::string dumpDir, polyFile;
+	for (int a = 4; a + 1 < argc; a++)
+	{
+		if (!strcmp(argv[a], "-stop")) stopIds = ParseList(argv[a + 1]);
+		else if (!strcmp(argv[a], "-have")) have = ParseList(argv[a + 1]);
+		else if (!strcmp(argv[a], "-dump")) dumpDir = argv[a + 1];
+		else if (!strcmp(argv[a], "-poly")) polyFile = argv[a + 1];
+	}
+	ApplyLoadTimeHeights(md.m);
+	const Map &m = md.m;
+	const int NS = (int)m.sectors.size();
+	const int climb = m.metadata.MaxClimb(), fit = m.metadata.MinFit();
+	const int s0 = AreaStartSector(m);
+	printf("AREA %s: start sector s%d (start %d,%d z %d), max climb %d, min fit %d, stop ids", argv[3], s0,
+		m.metadata.startX, m.metadata.startY, m.metadata.startZ, climb, fit);
+	for (int v : stopIds) printf(" %d", v);
+	printf(", items at start");
+	for (int v : have) printf(" i%d", v);
+	printf("\n");
+	if (s0 < 0) return 2;
+
+	auto across = [&](int fi) -> int { const Face &f = m.faces[fi]; return f.sister >= 0 ? m.faces[f.sister].sector : -1; };
+	// Door openers per (room face): live 0x18 records with a 0x2f.
+	struct Opener { int rec; int room; int door; AreaChain ac; };
+	std::vector<Opener> openers;
+	for (int ci : md.cat[CAT_USE_WALL])
+	{
+		const Command &c = m.commands[ci];
+		if (c.disabled) continue;
+		AreaChain ac = AreaChainOf(m, ci);
+		if (!ac.door0) continue;
+		for (int fi : c.faces)
+		{
+			const int a = m.faces[fi].sector, b = across(fi);
+			if (b >= 0 && m.sectors[b].IsDoor() && !m.sectors[a].IsDoor()) openers.push_back({ ci + 1, a, b, ac });
+			else if (b >= 0 && m.sectors[a].IsDoor() && !m.sectors[b].IsDoor()) openers.push_back({ ci + 1, b, a, ac });
+		}
+	}
+
+	std::vector<int> order, depthOf(NS, -1), viaDoor(NS, -1);
+	std::vector<char> reached(NS, 0), touch(NS, 0);
+	std::set<int> openAll;                       // doors opened remotely
+	std::map<int, std::set<int>> openFrom;       // door -> rooms it opens from
+	std::map<int, std::string> openWhy;          // door -> how
+	std::set<int> gotItems = have;
+	std::map<int, std::string> itemWhere;
+	for (int pass = 0; pass < 32; pass++)
+	{
+		// Doors openable with what is in reach now.
+		for (const Opener &o : openers)
+		{
+			bool ok = true;
+			for (int it : o.ac.itemsTested) if (!gotItems.count(it)) ok = false;
+			if (ok && openFrom[o.door].insert(o.room).second)
+				openWhy[o.door] += " #" + std::to_string(o.rec) + "(from s" + std::to_string(o.room) + ")";
+		}
+		// Walk.
+		std::fill(reached.begin(), reached.end(), 0); order.clear();
+		std::fill(depthOf.begin(), depthOf.end(), -1);
+		std::vector<int> q{ s0 }; reached[s0] = 1; depthOf[s0] = 0;
+		for (size_t qi = 0; qi < q.size(); qi++)
+		{
+			const int a = q[qi]; order.push_back(a);
+			const Sector &A = m.sectors[a];
+			if (stopIds.count(A.commandID) && a != s0) continue;
+			for (int k = 0; k < A.faceCount; k++)
+			{
+				const int fi = A.firstFaceIndex + k;
+				const Face &f = m.faces[fi];
+				const int b = across(fi);
+				if (b < 0 || reached[b]) continue;
+				const Sector &B = m.sectors[b];
+				// The player's sweep (collide_point_walls_recursive, collision_physics.c:705-735, mask 0x81 set at
+				// :1706): face flags & 0x81 == 0 passes, bit 0 without 0x80 is solid, 0x80 passes (a step).
+				if ((f.collisionFlags & 0x81) == 0x01) continue;
+				if (B.IsDoor() && !A.IsDoor() && !openAll.count(b) && !openFrom[b].count(a)) continue;
+				if (!B.IsDoor() && !A.IsDoor())
+				{
+					if (B.floorHeight - A.floorHeight > climb) continue;
+					if (std::min(A.ceilingHeight, B.ceilingHeight) - std::max(A.floorHeight, B.floorHeight) < fit) continue;
+				}
+				reached[b] = 1; depthOf[b] = depthOf[a] + 1;
+				if (B.IsDoor()) viaDoor[b] = a;
+				q.push_back(b);
+			}
+		}
+		// Two rings of portal neighbours (desk tops behind a typewriter, a window bay's shutters), never through a
+		// closed door sector.
+		std::fill(touch.begin(), touch.end(), 0);
+		for (int s : order) touch[s] = 1;
+		for (int ring = 0; ring < 2; ring++)
+		{
+			std::vector<char> next = touch;
+			for (int s = 0; s < NS; s++)
+			{
+				if (!touch[s]) continue;
+				const Sector &A = m.sectors[s];
+				for (int k = 0; k < A.faceCount; k++) { const int b = across(A.firstFaceIndex + k); if (b >= 0 && !m.sectors[b].IsDoor()) next[b] = 1; }
+			}
+			touch.swap(next);
+		}
+		// Items and remote doors from live records on the touchable area.
+		const size_t before = gotItems.size() + openAll.size();
+		auto take = [&](int ci, const char *what) {
+			const Command &c = m.commands[ci];
+			if (c.disabled) return;
+			AreaChain ac = AreaChainOf(m, ci);
+			for (int it : ac.given) if (gotItems.insert(it).second) itemWhere[it] = std::string(what) + " #" + std::to_string(ci + 1);
+			for (int fi : ac.remoteFaces)
+			{
+				int d = m.sectors[m.faces[fi].sector].IsDoor() ? m.faces[fi].sector : across(fi);
+				if (d >= 0 && m.sectors[d].IsDoor() && openAll.insert(d).second) openWhy[d] += " remote #" + std::to_string(ci + 1);
+			}
+		};
+		for (int ci : md.cat[CAT_CLICK_OBJ])
+		{
+			const Command &c = m.commands[ci];
+			bool on = false;
+			for (int s = 0; s < NS && !on; s++) if (touch[s]) for (const Object &o : m.objects[s]) if (c.key && o.commandID == c.key && !(o.flags & 0x80)) on = true;
+			if (on) take(ci, "click");
+		}
+		for (int ci : md.cat[CAT_USE_WALL])
+		{
+			bool on = false;
+			for (int fi : m.commands[ci].faces) if (reached[m.faces[fi].sector]) on = true;
+			if (on) take(ci, "use-wall");
+		}
+		for (int ci : md.cat[CAT_USE_FLOOR])
+		{
+			const Command &c = m.commands[ci];
+			bool on = false;
+			for (int s = 0; s < NS; s++) if (touch[s] && c.key && m.sectors[s].commandID == c.key) on = true;
+			if (on) take(ci, "use-floor");
+		}
+		for (int s = 0; s < NS; s++)
+			if (touch[s])
+				for (const Object &o : m.objects[s])
+				{
+					if (o.flags & 0x80) continue;
+					bool live = false;
+					for (int ci : md.cat[CAT_CLICK_OBJ]) if (o.commandID && m.commands[ci].key == o.commandID && !m.commands[ci].disabled) live = true;
+					if (live || (o.renderType & 0x13)) continue;
+					const int it = AreaFirstPickable(o.textureIndex | (o.textureSource << 8));
+					if (it && gotItems.insert(it).second) itemWhere[it] = "pickup s" + std::to_string(s);
+				}
+		if (gotItems.size() + openAll.size() == before && pass > 0) break;
+	}
+
+	// Rooms: components of reached non-door sectors joined without crossing a door sector.
+	std::vector<int> roomOf(NS, -1); int nRooms = 0;
+	std::vector<int> roomFirst;
+	for (int s : order)
+	{
+		if (m.sectors[s].IsDoor() || roomOf[s] >= 0) continue;
+		std::vector<int> st{ s }; roomOf[s] = nRooms; roomFirst.push_back(s);
+		while (!st.empty())
+		{
+			const int a = st.back(); st.pop_back();
+			const Sector &A = m.sectors[a];
+			for (int k = 0; k < A.faceCount; k++)
+			{
+				const int b = across(A.firstFaceIndex + k);
+				if (b < 0 || !reached[b] || roomOf[b] >= 0 || m.sectors[b].IsDoor()) continue;
+				roomOf[b] = nRooms; st.push_back(b);
+			}
+		}
+		nRooms++;
+	}
+	// Adjacent-only sectors join the room they touch first (two passes: the second ring).
+	for (int pass = 0; pass < 2; pass++)
+		for (int s = 0; s < NS; s++)
+		{
+			if (roomOf[s] < 0) continue;
+			const Sector &A = m.sectors[s];
+			for (int k = 0; k < A.faceCount; k++)
+			{
+				const int b = across(A.firstFaceIndex + k);
+				if (b >= 0 && touch[b] && !reached[b] && roomOf[b] < 0) roomOf[b] = roomOf[s];
+			}
+		}
+	if (!polyFile.empty())
+	{
+		// Plan-view dump for a drawing: S idx state id floor ceil light x y x y ... ; O sector x y id word records
+		FILE *pf = fopen(polyFile.c_str(), "w");
+		if (pf)
+		{
+			for (int s = 0; s < NS; s++)
+			{
+				const Sector &S = m.sectors[s];
+				fprintf(pf, "S %d %d %d %d %d %d %d", s, reached[s] ? 2 : touch[s] ? 1 : 0, S.commandID, S.floorHeight, S.ceilingHeight, S.light, S.IsDoor() ? 1 : 0);
+				for (int k = 0; k < S.faceCount; k++) { const Face &f = m.faces[S.firstFaceIndex + k]; fprintf(pf, " %d %d", m.vertices[f.vertex1].x, m.vertices[f.vertex1].y); }
+				fprintf(pf, "\n");
+				for (int k = 0; k < S.faceCount; k++)
+				{
+					const int fi = S.firstFaceIndex + k;
+					std::string recs;
+					for (int c : { 4, 6, 10 }) for (int ci : md.cat[c]) for (int f2 : m.commands[ci].faces) if (f2 == fi) recs += (recs.empty() ? "" : ",") + std::to_string(ci + 1);
+					if (recs.empty()) continue;
+					const Face &f = m.faces[fi];
+					fprintf(pf, "F %d %d %d %d %d %d %s\n", s, m.vertices[f.vertex1].x, m.vertices[f.vertex1].y, m.vertices[f.vertex2].x, m.vertices[f.vertex2].y, fi, recs.c_str());
+				}
+				for (const Object &o : m.objects[s])
+				{
+					std::string recs;
+					if (o.commandID) for (int c : { 0, 7, 12, 14 }) for (int ci : md.cat[c]) if (m.commands[ci].key == o.commandID) recs += (recs.empty() ? "" : ",") + std::to_string(ci + 1);
+					fprintf(pf, "O %d %d %d %d %d %d %s\n", s, o.x, o.y, o.commandID, (o.textureIndex | (o.textureSource << 8)), (o.flags & 0x80) ? 1 : 0, recs.empty() ? "-" : recs.c_str());
+				}
+			}
+			fprintf(pf, "P %d %d\n", m.metadata.startX, m.metadata.startY);
+			fclose(pf);
+		}
+	}
+	printf("reached %zu sectors in %d rooms; touchable (adjacent, not walked) %d more\n", order.size(), nRooms,
+		(int)std::count(touch.begin(), touch.end(), 1) - (int)order.size());
+	printf("items in hand-able reach:");
+	for (int it : gotItems) printf(" i%d %s%s%s;", it, ItemName(it).c_str(), itemWhere.count(it) ? " <- " : "", itemWhere.count(it) ? itemWhere[it].c_str() : "");
+	printf("\n");
+
+	static const struct { int cat; const char *tag; } allCats[] = {
+		{ 0, "CLICK" }, { 3, "ENTER" }, { 4, "USEW" }, { 5, "USEF" }, { 6, "HITW" }, { 7, "HITO" }, { 10, "EXW" },
+		{ 11, "EXF" }, { 12, "EXO" }, { 14, "WALKO" } };
+	// Which entry records' chains reach each record (NEXT, 0x38 else, 0x40 sub-chains), for "shown by".
+	std::map<int, std::set<int>> entryOf;
+	for (size_t ci = 0; ci < m.commands.size(); ci++)
+	{
+		const Command &c = m.commands[ci];
+		if (!c.isTrigger) continue;
+		std::vector<int> stack{ c.chainStart }; std::set<int> seen;
+		while (!stack.empty())
+		{
+			int i = stack.back(); stack.pop_back();
+			for (int steps = 0; i > 0 && i <= (int)m.commands.size() && steps < 256; steps++)
+			{
+				if (!seen.insert(i).second) break;
+				const Command &x = m.commands[i - 1];
+				entryOf[i].insert((int)ci + 1);
+				if (x.opcode == 0x38) stack.push_back(x.key);
+				if (x.opcode == 0x40) stack.push_back(x.Word(6));
+				if (x.isTrigger) break;
+				i = x.nextIndex;
+			}
+		}
+	}
+	std::set<int> printed;
+	auto recLine = [&](int ci, const char *tag) {
+		const Command &c = m.commands[ci];
+		if (!printed.insert(ci).second) return std::string(tag) + " #" + std::to_string(ci + 1) + " (chain printed above)";
+		std::string s = std::string(tag) + " #" + std::to_string(ci + 1);
+		if (c.disabled) s += " [off]";
+		if (c.fireFlags & 0x10) s += " [once]";
+		if (!strcmp(tag, "EXW") || !strcmp(tag, "EXF") || !strcmp(tag, "EXO"))
+			s += " says " + std::to_string(c.aux) + " \"" + ActionText(c.aux) + "\"";
+		else if (!strcmp(tag, "CLICK") && c.opcode == 0x02) s += " LIGHT SWITCH group " + std::to_string(c.aux);
+		else s += " sound " + std::to_string((int)c.aux - 1);
+		s += AreaShort(md, ci);
+		return s;
+	};
+
+	for (int r = 0; r < nRooms; r++)
+	{
+		std::vector<int> secs;
+		for (int s : order) if (roomOf[s] == r) secs.push_back(s);
+		for (int s = 0; s < NS; s++) if (roomOf[s] == r && !reached[s]) secs.push_back(s);
+		int x0 = 1 << 30, y0 = 1 << 30, x1 = -(1 << 30), y1 = -(1 << 30);
+		for (int s : secs) if (reached[s])
+			for (int k = 0; k < m.sectors[s].faceCount; k++)
+			{
+				const Face &f = m.faces[m.sectors[s].firstFaceIndex + k];
+				for (int v : { f.vertex1, f.vertex2 })
+				{
+					x0 = std::min(x0, (int)m.vertices[v].x); x1 = std::max(x1, (int)m.vertices[v].x);
+					y0 = std::min(y0, (int)m.vertices[v].y); y1 = std::max(y1, (int)m.vertices[v].y);
+				}
+			}
+		printf("\n=== ROOM R%d (first sector s%d, walk depth %d): box x %d..%d y %d..%d (%d x %d units)\n    sectors:", r,
+			roomFirst[r], depthOf[roomFirst[r]], x0, x1, y0, y1, x1 - x0, y1 - y0);
+		for (int s : secs)
+			printf(" s%d%s(id %d fl %d ce %d L%d%s)", s, reached[s] ? "" : "[adj]", m.sectors[s].commandID, m.sectors[s].floorHeight,
+				m.sectors[s].ceilingHeight, m.sectors[s].light, (m.sectors[s].flags & 2) ? " LANTERN" : "");
+		printf("\n");
+		{
+			int nl = 0, nw = 0;
+			for (int s : secs) if (reached[s]) { nw++; if (m.sectors[s].flags & 2) nl++; }
+			// Sector byte +0x0a bit 1 as the FILE stores it: the lights-out ("candle"/lantern-cone) mode,
+			// REMAROTH_MEASURED "Candle (lantern) sectors"; the load-time switches add theirs (=== LIGHT below).
+			printf("    lantern-cone sectors in the file: %d of %d walked\n", nl, nw);
+		}
+		for (int s : secs)
+		{
+			const Sector &S = m.sectors[s];
+			// Objects.
+			for (size_t oi = 0; oi < m.objects[s].size(); oi++)
+			{
+				const Object &o = m.objects[s][oi];
+				const uint16_t word = (uint16_t)(o.textureIndex | (o.textureSource << 8));
+				std::vector<std::string> recs;
+				if (o.commandID)
+					for (const auto &cc : allCats)
+						if (cc.cat == 0 || cc.cat == 7 || cc.cat == 12 || cc.cat == 14)
+							for (int ci : md.cat[cc.cat]) if (m.commands[ci].key == o.commandID) recs.push_back(recLine(ci, cc.tag));
+				const int it = AreaFirstPickable(word);
+				bool liveClick = false;
+				for (int ci : md.cat[CAT_CLICK_OBJ]) if (o.commandID && m.commands[ci].key == o.commandID && !m.commands[ci].disabled) liveClick = true;
+				const bool pickup = it && !liveClick && !(o.renderType & 0x13);
+				const DbItem *di = it ? gDb.Item(it) : nullptr;
+				const bool inspect = di && di->FindBlock(4) != nullptr;
+				if (recs.empty() && !pickup) continue;
+				printf("  OBJ s%d.%zu %s %s at (%d,%d) z %d (floor %+d) id %d fl %02x rt %02x%s%s%s\n", s, oi, ObjArt(md, word).c_str(),
+					AreaArtSize(md, word, dumpDir).c_str(), o.x, o.y, o.z, (int)o.z - (int)S.floorHeight, o.commandID, o.flags, o.renderType,
+					(o.flags & 0x80) ? " HIDDEN" : "", reached[s] ? "" : " [adjacent sector]",
+					pickup ? (" PLAIN PICKUP i" + std::to_string(it) + " " + ItemName(it) + (inspect ? " (OnInspect)" : "")).c_str() : "");
+				if (o.flags & 0x80)
+				{
+					// Who can show it: every 0x16/0x3c naming its id (cmd_spawn_object :622 toggles the hidden bit;
+					// cmd_spawn_object_adv :4108), wherever the record sits.
+					std::string by;
+					for (size_t ci = 0; ci < m.commands.size(); ci++)
+						if ((m.commands[ci].opcode == 0x16 || m.commands[ci].opcode == 0x3c) && o.commandID && m.commands[ci].key == o.commandID)
+						{
+							by += " #" + std::to_string(ci + 1);
+							auto it = entryOf.find((int)ci + 1);
+							if (it != entryOf.end()) { by += " (in the chain of"; for (int e : it->second) by += " #" + std::to_string(e); by += ")"; }
+							else by += " (in no entry's chain: a DBASE100 0x23/0x36 or a timer may run it)";
+						}
+					printf("    hidden at load; shown by:%s\n", by.empty() ? " nothing in this map" : by.c_str());
+				}
+				for (const std::string &l : recs) printf("    %s\n", l.c_str());
+			}
+			// Faces.
+			for (int k = 0; k < S.faceCount; k++)
+			{
+				const int fi = S.firstFaceIndex + k;
+				std::vector<std::string> recs;
+				for (const auto &cc : allCats)
+					if (cc.cat == 4 || cc.cat == 6 || cc.cat == 10)
+						for (int ci : md.cat[cc.cat])
+							for (int f2 : m.commands[ci].faces) if (f2 == fi) recs.push_back(recLine(ci, cc.tag));
+				const int b = across(fi);
+				const bool doorEdge = b >= 0 && m.sectors[b].IsDoor() && !S.IsDoor();
+				if (recs.empty() && !doorEdge) continue;
+				if (const TextureMap *tm = TmOf(m, fi)) { AreaDumpTex(md, tm->midTexture, dumpDir); AreaDumpTex(md, tm->upperTexture, dumpDir); AreaDumpTex(md, tm->lowerTexture, dumpDir); }
+				printf("  FACE %s%s\n", FaceStr(md, fi, nullptr).c_str(), reached[s] ? "" : " [adjacent sector]");
+				if (doorEdge)
+				{
+					const bool open = openAll.count(b) || openFrom[b].count(s);
+					printf("    DOOR s%d %s here;%s; leads to:", b, open ? "OPENS from" : "CLOSED from", openWhy.count(b) ? openWhy[b].c_str() : " no live opener");
+					const Sector &D = m.sectors[b];
+					for (int j = 0; j < D.faceCount; j++) { const int o2 = across(D.firstFaceIndex + j); if (o2 >= 0 && o2 != s) printf(" s%d%s", o2, reached[o2] ? "" : "(not reached)"); }
+					printf("\n");
+				}
+				for (const std::string &l : recs) printf("    %s\n", l.c_str());
+			}
+			// Floor / sector entries.
+			std::vector<std::string> recs;
+			for (const auto &cc : allCats)
+				if (cc.cat == 3 || cc.cat == 5 || cc.cat == 11)
+					for (int ci : md.cat[cc.cat]) if (m.commands[ci].key && m.commands[ci].key == S.commandID) recs.push_back(recLine(ci, cc.tag));
+			if (!recs.empty())
+			{
+				printf("  SECTOR s%d id %d floor %d ceil %d floor pic %s%s\n", s, S.commandID, S.floorHeight, S.ceilingHeight,
+					TexKey(md, S.floorTexture).c_str(), reached[s] ? "" : " [adjacent sector]");
+				AreaDumpTex(md, S.floorTexture, dumpDir);
+				for (const std::string &l : recs) printf("    %s\n", l.c_str());
+			}
+		}
+	}
+	// LIGHT. The sector-light groups the area's records ramp (0x1d; record bit 0x04 = flood from the sector the key
+	// names through faces without collisionFlags bit 0x08, else every sector with that command id: the two
+	// collectors roth_runtime.cpp CollectGeometryGroup restates), and the lights-out groups the armed light switches
+	// (base 0x02, modifier & 0x01) set at load (REMAROTH_MEASURED: "Lights out at load").
+	auto group = [&](uint16_t key, bool flood) {
+		std::vector<int> out;
+		if (!flood) { for (int s = 0; s < NS; s++) if (m.sectors[s].commandID == key) out.push_back(s); return out; }
+		int start = -1;
+		for (int s = 0; s < NS && start < 0; s++) if (m.sectors[s].commandID == key) start = s;
+		if (start < 0) return out;
+		std::vector<char> seen(NS, 0); std::vector<int> st{ start };
+		while (!st.empty() && out.size() < 0xc8)
+		{
+			const int a = st.back(); st.pop_back();
+			if (seen[a]) continue;
+			seen[a] = 1; out.push_back(a);
+			for (int k = 0; k < m.sectors[a].faceCount; k++)
+			{
+				const Face &f = m.faces[m.sectors[a].firstFaceIndex + k];
+				if ((f.collisionFlags & 0x08) || f.sister < 0) continue;
+				st.push_back(m.faces[f.sister].sector);
+			}
+		}
+		return out;
+	};
+	auto groupLine = [&](const std::vector<int> &g) {
+		int inArea = 0; std::string l;
+		for (int s : g) if (reached[s] || touch[s]) { inArea++; if (l.size() < 400) l += " s" + std::to_string(s); }
+		char b[96]; snprintf(b, sizeof b, "%zu sectors, %d of them on this area:", g.size(), inArea);
+		return std::string(b) + l;
+	};
+	printf("\n=== LIGHT\n");
+	for (int ci : md.cat[CAT_CLICK_OBJ])
+	{
+		const Command &c = m.commands[ci];
+		if (c.opcode != 0x02 || !(c.modifier & 0x01) || c.disabled) continue;
+		printf("  lights-out at load: switch #%d group %d (flood): %s\n", ci + 1, c.aux, groupLine(group(c.aux, true)).c_str());
+	}
+	std::set<std::pair<int, int>> shown;
+	for (size_t ci = 0; ci < m.commands.size(); ci++)
+	{
+		const Command &c = m.commands[ci];
+		if (c.opcode != 0x1d && c.opcode != 0x02) continue;
+		if (c.opcode == 0x02 && md.catOf[ci] == CAT_CLICK_OBJ && c.key != 0) continue;   // the switches themselves: above
+		if (c.opcode == 0x02)
+		{
+			// A light switch run as an instruction (0x40 from a click chain): group word +0x0a, flood (cmd_light_switch).
+			auto it2 = entryOf.find((int)ci + 1);
+			bool here2 = false;
+			if (it2 != entryOf.end()) for (int e : it2->second) if (printed.count(e - 1)) here2 = true;
+			if (here2) printf("  switch #%zu group %d (flood) step %d: %s\n", ci + 1, c.aux, (int)(int8_t)c.subFlags, groupLine(group(c.aux, true)).c_str());
+			continue;
+		}
+		auto it = entryOf.find((int)ci + 1);
+		if (it == entryOf.end()) continue;
+		bool here = false;
+		for (int e : it->second) if (printed.count(e - 1)) here = true;
+		if (!here || !shown.insert({ c.key, (c.modifier & 4) ? 1 : 0 }).second) continue;
+		printf("  ramp #%zu group %d %s step %d: %s\n", ci + 1, c.key, (c.modifier & 4) ? "(flood)" : "(by id)", (int)(int8_t)c.subFlags,
+			groupLine(group(c.key, (c.modifier & 4) != 0)).c_str());
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 2) { printf("usage: openables <ROTH DATA> [-grep w1,w2] [-map MAP] [-dump DIR]\n"); return 2; }
@@ -395,6 +989,8 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
+	if (argc > 3 && !strcmp(argv[2], "-area"))
+		return AreaMode(argc, argv);
 	std::set<std::string> allPics;
 	static const struct { int cat; const char *tag; } cats[] = {
 		{ CAT_CLICK_OBJ, "CLICK" }, { CAT_USE_WALL, "USEW" }, { CAT_USE_FLOOR, "USEF" },
