@@ -5,7 +5,8 @@
 //   sh tools/chapter_census/build.sh [out-dir]               builds <out>/chapter_census (default /tmp/chapter_census)
 //   chapter_census <DATA> -chapters     the 20 chapter cards: cutscene index, DBASE100 action, where it is run
 //   chapter_census <DATA> -warps        every RAW 0x3b map transition with the chain that reaches it and its gates
-//   chapter_census <DATA> -map NAME     one map's units (every entry record and the chain it walks), one per line
+//   chapter_census <DATA> -map NAME     one map's units with a gate or a progress effect, one per line (the rest counted)
+//   chapter_census <DATA> -mapall NAME  the same, then every other unit of the map (examines, ambient, transitions...)
 //   chapter_census <DATA> -maps         every map's units
 //   chapter_census <DATA> -digest       per map: items found, movies played, maps it leads to
 //   chapter_census <DATA> -gates        every unit with a requirement, and where each requirement is produced
@@ -1201,7 +1202,7 @@ static void PrintWarps()
 	printf("\n\n");
 }
 
-static void PrintMap(int mi)
+static void PrintMap(int mi, bool everyUnit = false)
 {
 	const MapData &md = gMaps[mi];
 	int puzzles = 0;
@@ -1210,6 +1211,11 @@ static void PrintMap(int mi)
 	for (const Unit &u : gUnits)
 		if (u.map == mi && u.puzzle) PrintUnit(u);
 	for (const Unit &u : gUnits) if (u.map == mi && u.unreachable) { printf("  unreachable:"); PrintUnit(u); }
+	if (everyUnit)
+	{
+		printf("  every other unit:\n");
+		for (const Unit &u : gUnits) if (u.map == mi && !u.puzzle && !u.unreachable) PrintUnit(u);
+	}
 	printf("  other units by kind:");
 	std::map<std::string, int> other;
 	for (const Unit &u : gUnits) if (u.map == mi && !u.puzzle) other[u.puzzleKind]++;
@@ -1703,11 +1709,11 @@ int main(int argc, char **argv)
 	if (all || mode == "-timing") PrintTiming();
 	if (mode == "-path") PrintSlice(argc > 3 ? atoi(argv[3]) : 0);
 	if (all || mode == "-maps") for (int mi = 0; mi < (int)gMaps.size(); mi++) PrintMap(mi);
-	if (mode == "-map" && argc > 3)
+	if ((mode == "-map" || mode == "-mapall") && argc > 3)
 	{
 		auto it = gMapIdx.find(argv[3]);
 		if (it == gMapIdx.end()) { printf("no map %s\n", argv[3]); return 2; }
-		PrintMap(it->second);
+		PrintMap(it->second, mode == "-mapall");
 	}
 	return 0;
 }

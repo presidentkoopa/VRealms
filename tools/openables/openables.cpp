@@ -13,12 +13,22 @@
 //                                        what it hides)
 //   openables <DATA> -dump DIR           also write every target picture and every picture a chain swaps in
 //                                        (DIR/<PACK>_<index>.ppm), for contact sheets in /tmp
-//   openables <DATA> -area MAP [-stop ID,ID] [-have I,I] [-dump DIR] [-poly FILE]
+//   openables <DATA> -area MAP [-at ID | -xy X,Y,Z] [-setfloor ID:H] [-setceil ID:H] [-stop ID,ID] [-have I,I] [-dump DIR] [-poly FILE]
 //                                        what the player reaches ON FOOT from the map's start, room by room, with
 //                                        every scripted record on it, the hidden objects and who shows them, and the
 //                                        light groups its records ramp (the rules: the comment above AreaMode).
 //                                        docs/VR_CHAPTER01_SHADOWS.md: -area STUDY1 -stop 29 -have 1,15,16,68
 //                                        -poly writes a plan-view dump (sectors, objects, faces with records)
+//                                        -at ID starts the walk at the first sector whose command id is ID, the
+//                                        arrival rule of a 0x3b warp with that key (FindArrivalSector,
+//                                        roth_gameflow.cpp; map_load.c:548-556), instead of the map's start.
+//                                        docs/VR_CHAPTER02_SIGNS_AND_PORTENTS.md: -area STUDY1 -at 34 (card 2's warp)
+//                                        -setfloor ID:H / -setceil ID:H set every sector with command id ID to that
+//                                        floor / ceiling first (by hand: a 0x07 mover the walk does not apply, e.g.
+//                                        MAS3's Orb door: -setceil 1:-1000, the limit of MAS3 #68)
+//                                        -xy X,Y,Z starts at the sector holding that point: a key-0 warp into another
+//                                        map keeps the player's position (map_load.c:625-663), e.g. -area MAS3
+//                                        -xy <the STUDY1 stair foot> for STUDY1 #404
 //
 // Build: sh tools/openables/build.sh   (writes /tmp/openables)
 //
@@ -384,9 +394,8 @@ static std::set<int> ParseList(const char *s)
 	if (!t.empty()) o.insert(atoi(t.c_str()));
 	return o;
 }
-static int AreaStartSector(const Map &m)
+static int AreaStartSectorAt(const Map &m, double x, double y, double z)
 {
-	const double x = m.metadata.startX, y = m.metadata.startY, z = m.metadata.startZ;
 	int best = -1; double bestScore = 1e18;
 	for (int s = 0; s < (int)m.sectors.size(); s++)
 	{
@@ -409,6 +418,7 @@ static int AreaStartSector(const Map &m)
 	}
 	return best;
 }
+static int AreaStartSector(const Map &m) { return AreaStartSectorAt(m, m.metadata.startX, m.metadata.startY, m.metadata.startZ); }
 struct AreaChain { bool door0 = false; std::set<int> itemsTested, given, remoteFaces, toggles, flagsTested, heights; };
 static void AreaWalk(const Map &m, int start, AreaChain &ac, std::set<int> &seen, int depth = 0)
 {
@@ -505,18 +515,53 @@ static int AreaMode(int argc, char **argv)
 	MapData md;
 	if (!LoadMap(argv[3], md)) { printf("map %s: not read\n", argv[3]); return 2; }
 	std::set<int> stopIds, have; std::string dumpDir, polyFile;
+	int atId = -1;
+	struct SetHeight { int id, h; bool ceil; };
+	std::vector<SetHeight> setHeights;
+	bool atXY = false; double ax = 0, ay = 0, az = 0;
 	for (int a = 4; a + 1 < argc; a++)
 	{
-		if (!strcmp(argv[a], "-stop")) stopIds = ParseList(argv[a + 1]);
+		if (!strcmp(argv[a], "-at")) atId = atoi(argv[a + 1]);
+		else if (!strcmp(argv[a], "-xy")) atXY = sscanf(argv[a + 1], "%lf,%lf,%lf", &ax, &ay, &az) == 3;
+		else if (!strcmp(argv[a], "-setfloor") || !strcmp(argv[a], "-setceil"))
+		{
+			int id = 0, h = 0;
+			if (sscanf(argv[a + 1], "%d:%d", &id, &h) == 2) setHeights.push_back({ id, h, argv[a][4] == 'c' });
+		}
+		else if (!strcmp(argv[a], "-stop")) stopIds = ParseList(argv[a + 1]);
 		else if (!strcmp(argv[a], "-have")) have = ParseList(argv[a + 1]);
 		else if (!strcmp(argv[a], "-dump")) dumpDir = argv[a + 1];
 		else if (!strcmp(argv[a], "-poly")) polyFile = argv[a + 1];
 	}
 	ApplyLoadTimeHeights(md.m);
+	// -setfloor / -setceil ID:H: every sector with command id ID gets that floor / ceiling, by hand, standing in for
+	// a 0x07/0x09 mover the walk does not apply (an opened Orb door, a raised bridge). Printed so the call is visible.
+	for (const SetHeight &sh : setHeights)
+		for (Sector &sec : md.m.sectors)
+			if (sec.commandID == sh.id)
+			{
+				if (sh.ceil) sec.ceilingHeight = sh.h; else sec.floorHeight = sh.h;
+			}
+	for (const SetHeight &sh : setHeights)
+		printf("AREA %s: by hand, sector id %d %s set to %d\n", argv[3], sh.id, sh.ceil ? "ceiling" : "floor", sh.h);
 	const Map &m = md.m;
 	const int NS = (int)m.sectors.size();
 	const int climb = m.metadata.MaxClimb(), fit = m.metadata.MinFit();
-	const int s0 = AreaStartSector(m);
+	int s0 = AreaStartSector(m);
+	if (atId >= 0)
+	{
+		// A warp's arrival: the first sector, in file order, whose command id is the key (map_load.c:548-556).
+		s0 = -1;
+		for (int s = 0; s < NS && s0 < 0; s++) if (m.sectors[s].commandID == atId) s0 = s;
+		printf("AREA %s: arrival at the first sector with id %d: s%d\n", argv[3], atId, s0);
+	}
+	else if (atXY)
+	{
+		// A key-0 warp into another map keeps the player's x, y and z: ChangeMap relocates only when the key is not 0
+		// (map_load.c:625-663, roth_gameflow.h WarpKind). The walk starts in the sector holding that point.
+		s0 = AreaStartSectorAt(m, ax, ay, az);
+		printf("AREA %s: arrival kept at (%.0f,%.0f) z %.0f: s%d\n", argv[3], ax, ay, az, s0);
+	}
 	printf("AREA %s: start sector s%d (start %d,%d z %d), max climb %d, min fit %d, stop ids", argv[3], s0,
 		m.metadata.startX, m.metadata.startY, m.metadata.startZ, climb, fit);
 	for (int v : stopIds) printf(" %d", v);

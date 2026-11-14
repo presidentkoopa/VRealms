@@ -5,7 +5,7 @@ retail install by `tools/chapter_census/` (engine-free, through the `src/roth` r
 regenerated:
 
 **Per-chapter VR design and the changes made for each:** chapter 1 is `docs/VR_CHAPTER01_SHADOWS.md` (section 9
-lists its changes); every change, with its commits, evidence and the chapters it reaches, is in
+lists its changes), chapter 2 `docs/VR_CHAPTER02_SIGNS_AND_PORTENTS.md` (section 9); every change, with its commits, evidence and the chapters it reaches, is in
 `docs/VR_CHANGES_LEDGER.md`. Each new chapter dossier gets the same "Changes made for this chapter" section.
 
 ```
@@ -203,6 +203,35 @@ census cannot tell, because it does not model space (which rooms a door closes o
 - **Gates [V]:** MAS3 #4 (place i18), MAS3 #113 (i14), MAUSO1EA #76 (i22), AELF #3 (carry i14), AELF #80 (i14),
   MAS6 #48 (kill counter), AELF #9/#29/#41/#42 (kill counters 3 and 14), 4 timers in AELF/MAS6.
 - **Optional:** Parchment i13 (MAS3 #10), Map of the Mausoleum i273 (MAS3 #111), vials.
+- **CORRECTED 2026-11-13 by the chapter 2 area walks** (`openables -area` from every arrival: `-at` for keyed warps,
+  `-xy` for key-0 warps, which keep the player's position; details and commands in
+  `docs/VR_CHAPTER02_SIGNS_AND_PORTENTS.md` sections 0-1):
+  - **The first creatures are in STUDY1**: `#362` (entering s454 behind the bookcase: obj 52, template i91) and `#265`
+    (the landing s25, switched on by card 2's chain `#497`: obj 58, template i91).
+  - **MAS3 also holds a Shotgun i38** (`#107`), cartridges (`#47`; `#60` also spawns a creature) and a spare Colt
+    (`#83` moves the niche s236/s237 when Adam already carries the Colt, then a cave-in, `#86`). The Orb door is a
+    **sector** (s30's ceiling −1200 → −1000, `#68`); the Parchment and the Map lie beyond it.
+  - **MAS6: the hand panels are `#42`, `#8`, `#41`** (three DEMO4[4288] plates, a count to 3, which shows the lever
+    `#20`). `#5`/`#9`/`#10` are the inscription ("Chullum ashdar in derias?"), switched on by `#20` (flag 116); they
+    switch on the portal `#54` (MAUSO1EA @29, a forced turn). The words are spoken at MAUSO1EA `#5` (act235, a choice,
+    only with flag 116).
+  - **Key i22 opens the walkway**: MAUSO1EA `#76` (i22 in hand) raises s193's ceiling; beyond it the walkway's three
+    Creator movies `#40`/`#44`/`#46` (WALKWAY1/1A/2/3); the third hurts (`#95`) unless flag 62 (MAS7's throne) is set.
+  - **MAS7 is entered by MAUSO1EA `#57` (@0) or by the pit** `#20`/`#27`/`#136` (the floor falls 820 units, damage,
+    warp @13). MAS6 `#27`'s @11 is never used: no MAS6 sector carries id 11.
+  - **MAUSO1EB**: act174 at the altar (`#4`, `#16`, `#21`) offers "Take the artefact." / "Ignore the voice." /
+    "Leave."; Take gives **i14 and i12** (SHRIVEC) and two winged statues come alive (`#11`, template i30).
+  - **AELF `#3` tests the Shrive carried** (flags 01); flag 62 gates only Florentine's movies and choices. The ward
+    trap (wards, three creatures, `#9` count 3) runs either way.
+  - **MAS3 `#113` is not the way back**: the walk returns by the stair `#13`; `#113` moves sectors id 20 (where they
+    lead is not established).
+  - **The sarcophagus cannot open in chapter 2**: the count starts at 1 (obj 24 on `#128`'s spot) and only six
+    statuettes exist by card 3 (STUDY1 `#23`, `#58`, `#74`, `#540`, the one on its plate, AELF `#102`); the seventh is
+    CAVERNS3 `#7` or STUDY3 `#11`.
+  - **Dead records** (keyed to ids no sector carries): MAS3 `#17`, MAS4 `#16`, MAS6 `#25`, `#27`, `#59`, MAUSO1EA `#24`,
+    `#25`, `#59`.
+  - **End condition:** STUDY1 `#75`/`#354` from the passage with flag 82 set and flag 55 clear (else the bookcase
+    opens, `#421`).
 
 ### Chapter 3, Keeper of Time (STUDY1 upper rooms, GNARL1)
 - **Path:** Helm i45 (#355, GAUL01 on inspection [R]); the fire room gives the green Crystal i35 (#378: shown, taken,
