@@ -41,6 +41,21 @@ entries use it.
 |---|---|---|---|
 | R1 | Grip on empty air fires the original's secondary-on-nothing attack (a punch) | owner: physical melee only | built in d34fb269; removal in the gestures agent's work |
 
+
+## Flat PC evidence, 2026-11-13 late (owner's PC, flat, through the bridge; nothing in the headset)
+
+| row | change | lane commit(s) | seen on the PC (log / capture) | still open |
+|---|---|---|---|---|
+| 18 | record surface boxes, 1:1 | 5fc3b774, a2e585d3 | surfbox_flat: texel the click paths compute = the test texel; 21,131 OUTSIDE, 22,131 INSIDE → #385 "Damn. Power's off in here."; 25,135 examine → #372 "Good job I've got the lantern."; flat +use through the eye probe → #385. Match test 757,120 cases 0 differ vs the original | palm-on-plate case re-run (cfg fixed in a2e585d3) |
+| 19-23 | gestures | 03548253 … 66243f00 | knock "Old suit of armour…"; sofa #314, desk #288, typewriter #286, flies #337, door sweep #455 "Where's the lock on this damn thing?"; ward tingle 0.04 → 0.16; switch punch = use; tall wick in reach (planar 100 of 268); grip on nothing no longer attacks | creature punch damage; re-check after the movement port (66243f00 run pending) |
+| 24-29 | held objects | 462f0709 | STRUCK 0.50 m/s, match lights wick 3 then 1 and both tall candles; Lamp off the hook and back; item 17 in the item hand; Book in both hands with the popup beside it; forced turn logged | the niche's third light change rises to 255 instead of −30; the match not visible in the capture |
+| 30 | the original's movement 1:1 | 1d6b0e7a, 77c34c5e, 367c710c (link fix), 7a0c3e69 | move_flat (run): 161 of 161 tic lines equal the engine-free port's schedule (regenerated independently by the lead: 0 diff); the port vs the running original: 14 scenarios, 9,686 ticks, 0 differ | VR parts (snap 45, real crouch, teleport, roomscale) not seen |
+| 33 | guns along the gun | 0e75a804, 057c8524 | gunaim_flat: hand shot at yaw 0 travels engine yaw 180 = the view's and the original's flat shot; +20° / −30° ends 150.6° / +20.1°; −15° / +25° ends 205.4° / −14.8° | headset |
+| 34 | off-hand mount + low-health cue | 0cc88be9, 057c8524 | "low-health cue on" logged; the mount drawn on the off wrist | the red edge not visible in captures; the line's readability on the wrist |
+| 36 | quicksave / quickload | f1411ce1, 057c8524 | saved, refused twice with the inventory open, loaded; after the load 4 items and no Colt (given after the save) | the double-tap binding in the headset |
+
+**Found on the way:** examine records with no chain were never bound, so no object/face/floor examine line played by mouse or hand (fixed e145db53, gameproof and dialogue_test identical after); a use on a face fired every use binding there instead of the one record the original stops at (fixed 5fc3b774); an MSVC link trap (`struct player_t` forward declaration, fixed 367c710c). The Book's first look never gives the silver key in the original (its OnInspect's `if-flag 4` / `!if-flag 4` can't both pass): Q8's "key into the palm" has nothing to show (VR_CHAPTER01_SHADOWS entry 7).
+
 ## In progress (agents running)
 
 **Gestures (rows 19-23), first PC run of 03548253 (2026-11-13, flat, gestures_flat.cfg):**
