@@ -1,0 +1,5 @@
+# acceptance 4: MOVE_SPEED (the half-life period, 0x12570) at 9, then Forward 35 ticks.
+2 w16 12570 9
+5 keys 48
+40 keys -
+140 quit

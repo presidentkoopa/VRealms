@@ -1,0 +1,6 @@
+# acceptance 5: sector 484 (the strip ahead of the start, x 400..432) raised to 65; walk into it.
+# g_max_climb is 65 (2*meta+0xc + 1): 65 is climbed, 66 blocks. Then the drop off its far side.
+2 sech 484 384 65
+5 keys 48
+150 keys -
+260 quit

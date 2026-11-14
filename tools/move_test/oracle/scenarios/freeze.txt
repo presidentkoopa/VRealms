@@ -1,0 +1,12 @@
+# acceptance 15: a dialogue line with the freeze on (busy 0x83aea != 0, gate 0x83125 == 0x6ffff):
+# Forward and Back do nothing, Left still turns, the strafes still move.
+3 pin 83aea 1
+4 pin 83125 6ffff
+5 keys 48,4b
+45 keys 50,33
+80 keys -
+100 unpin 83aea
+100 w32 83aea 0
+101 keys 48
+130 keys -
+200 quit

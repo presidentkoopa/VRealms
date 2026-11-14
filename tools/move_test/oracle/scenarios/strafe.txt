@@ -1,0 +1,9 @@
+# strafes and diagonals, and the run key (Shift, scancode 36) with and without crouch
+5 keys 33
+40 keys 34
+75 keys 48,33
+110 keys 50,34
+145 keys 48,36
+180 keys 48,36,2c
+215 keys -
+300 quit

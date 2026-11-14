@@ -1,0 +1,13 @@
+# a door: the original's own door opener (dev_open_nearest_door, SPACE = scancode 39 into its
+# keyboard ISR, with the dev flag 0x7f560 set) beside door 66 (the 0xffff leaf at x -84..-76,
+# y 3760..3846, on the line west of the start), then walk into its swinging leaf and on through.
+2 w8 7f560 1
+3 pose -40 3803 128 12562 0
+20 isr 39
+21 isr b9
+40 keys 48
+140 keys 48,4b
+170 keys 48
+260 keys 50
+330 keys -
+420 quit

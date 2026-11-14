@@ -1,0 +1,17 @@
+# acceptance 7: A on a flat floor (19 phases), a running jump forward, then the ceiling bonk under
+# a ceiling lowered to 200 (ceil - 0x1c = 172 > floor + 0x70, so no forced crouch), then 130 (forced).
+5 keys 1e
+6 keys -
+60 w32 7e8dc 1
+61 keys 48,1e
+70 keys -
+140 keys 50
+200 keys -
+230 sech 267 200 0
+240 keys 1e
+241 keys -
+320 sech 267 384 0
+330 sech 267 130 0
+340 keys 48
+380 keys -
+420 quit

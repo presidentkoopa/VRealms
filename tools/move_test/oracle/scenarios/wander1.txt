@@ -1,0 +1,165 @@
+# generated: gen_wander.py 1 3000
+5 w32 7e8dc 1
+6 keys 50,4b
+40 keys 50,34,4d
+56 w32 7e8dc 0
+57 keys 48,4b
+60 keys 48,33,4d,36
+77 keys 50,4b
+81 w32 7e8dc 1
+82 keys -
+98 keys 48,4d
+129 keys -
+146 keys 50,34,4b
+175 keys 4d
+189 keys 48,33,2c
+213 keys 4b,1e
+228 keys 50,34,4d
+268 keys 50,34,2c
+296 keys 33,4b,1e
+322 w32 7e8dc 0
+323 keys 36
+336 keys 50,33,4b
+340 keys 48,33,4d,36
+380 keys 33,1e
+397 keys 34,4d,36
+435 keys 4b,36
+474 keys 48,33,4d,1e
+477 keys 1e
+515 keys 48,4b,36
+541 keys 34,4d
+575 keys 50,33,4b
+612 keys 48,34,4b,1e
+616 keys 33,4d,1e
+630 keys 4b
+637 w32 7e8dc 1
+638 keys 48,4b
+658 keys 50,4d
+683 keys 33
+719 keys 48,33,4d,2c
+740 keys 48,34,4b
+750 w32 7e8dc 0
+751 keys 50,33,4b
+766 keys 48,33,4d,1e
+782 keys 50,33
+786 keys 48,4d
+817 keys 50,33,4d,36
+834 keys 4b
+870 keys 50,33,4d,1e
+893 keys 50,33,2c
+915 w32 7e8dc 1
+916 keys 34
+923 keys 48,33,4b,2c
+936 keys 48,33
+974 keys 48,4d,36
+990 keys 50,34,36
+1025 w32 7e8dc 0
+1026 keys 34,4b
+1042 keys 50,33,4d
+1076 w32 7e8dc 1
+1077 keys 50,33,4b,1e
+1111 w32 7e8dc 0
+1112 keys 50,33,4b
+1125 keys 48,34,4d,36
+1136 keys 34,4b,2c
+1145 keys 4b,36
+1182 keys -
+1187 w32 7e8dc 1
+1188 keys 33,1e
+1204 keys 48,34,4d,1e
+1223 keys 48,34
+1241 keys 50,34,1e
+1279 keys 48,34
+1286 keys 33
+1296 keys 50,33,1e
+1334 keys 50,4b
+1355 keys 50,4b
+1364 keys 48,33,1e
+1367 w32 7e8dc 0
+1368 keys 50
+1386 keys 50,33
+1417 keys 34,2c
+1426 keys 50,33,4d,36
+1447 keys 50,34,4b
+1463 keys 48
+1484 keys 48,34,4b
+1507 keys 50,4b,1e
+1539 w32 7e8dc 1
+1540 keys 34,4d,36
+1577 keys 50,34,4d
+1596 keys 34,4b
+1614 keys 48,33,36
+1645 w32 7e8dc 0
+1646 keys 48,34
+1668 w32 7e8dc 1
+1669 keys 33,4b,36
+1709 keys 48,33
+1718 keys 50
+1722 keys 50,33
+1760 keys 50,2c
+1763 keys 48,34,4b
+1775 w32 7e8dc 0
+1776 keys 48,34,1e
+1790 keys 33,36
+1813 keys 4d
+1824 keys 33,4d,2c
+1829 keys 4d,2c
+1845 keys 50,33,4d
+1851 keys 34,4b,36
+1858 keys 50,34,4b,1e
+1877 keys 4b
+1905 keys 33,4b
+1909 keys 50,33,4d
+1915 keys 33,4d
+1926 keys 48,33,4b,1e
+1954 keys 50
+1957 keys 48,34,4d,2c
+1988 keys 34
+2022 keys 34,4d
+2046 keys 48,33,4d
+2052 keys 4d
+2065 keys 34,4b
+2087 keys 48,34,2c
+2119 keys 50,4d,1e
+2158 keys 33,4b
+2174 keys 48,4b,2c
+2202 keys 48,34,4b,1e
+2215 keys 48,4d
+2234 keys 48,33,4d
+2245 keys 50,4b,36
+2263 keys 50,33,4b
+2276 keys 50,34,1e
+2310 keys 50,4b,1e
+2347 keys 50,4d
+2367 keys -
+2403 keys 48,2c
+2421 keys 34
+2433 keys 48,33,4b,1e
+2452 keys 50,34,1e
+2477 keys 50,1e
+2504 keys 50
+2543 keys 4b,2c
+2554 w32 7e8dc 1
+2555 keys 48,34,4d,36
+2577 keys 48,34,4d
+2580 w32 7e8dc 0
+2581 keys 50,34,4b
+2618 keys 50,34,2c
+2645 keys -
+2680 keys 50,34,4d,36
+2716 keys 48,33,4d
+2747 keys -
+2783 w32 7e8dc 1
+2784 keys 50,33,4d
+2812 keys 50,4b,2c
+2830 keys 48,33,4d
+2859 keys 33,4d,36
+2887 keys 33,36
+2890 keys 48,33,4d
+2927 keys 50,34,4b
+2940 keys 48,4b,1e
+2949 keys 50,33
+2956 keys 48,1e
+2969 keys 50,33,4d,2c
+2989 keys 34,4d
+3000 quit

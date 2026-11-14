@@ -1,0 +1,6 @@
+# acceptance 6: falls. The start room's ceiling raised to 2000, the player put 435 above the floor
+# (the accumulator reaches about 30: (30-22)^2 = 64 damage), then 1200 above it.
+2 sech 267 2000 0
+3 pose 864 3840 128 6972 435
+150 pose 864 3840 128 6972 1200
+320 quit

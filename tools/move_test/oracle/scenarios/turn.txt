@@ -1,0 +1,9 @@
+# acceptance 2: the turn ramp. Left 70 ticks, Right 70, then Left 70 running.
+5 keys 4b
+75 keys -
+100 keys 4d
+170 keys -
+200 w32 7e8dc 1
+201 keys 4b
+271 keys -
+300 quit

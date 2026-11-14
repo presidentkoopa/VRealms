@@ -1,0 +1,15 @@
+# acceptance 3: Forward 35 ticks from the start (facing -x along an open line), the glide out,
+# then the 0x41 slow shift at 1 and 2 (the request 0x89f54, latched into 0x89f58 by tick_world_effects), then Back 35 running.
+5 keys 48
+40 keys -
+120 w32 89f54 1
+121 keys 48
+156 keys -
+240 w32 89f54 2
+241 keys 48
+276 keys -
+360 w32 89f54 0
+361 w32 7e8dc 1
+362 keys 50
+397 keys -
+480 quit
