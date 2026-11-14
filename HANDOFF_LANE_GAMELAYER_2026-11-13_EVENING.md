@@ -74,3 +74,16 @@ original's examine line, as a pattern; the Book opens in both hands, the key dro
 - The darkness pass over `roth_palette_shading 1`: captures lit and dark before any tuning.
 - Candles: per-wick compositing (with the rim texels), the growing light, the darkness hookup.
 - Chapter 1 (the house, STUDY1: 85 gated steps, 24 items) design discussion.
+
+## Late evening: chapter 1 second pass (owner asked before chapter 2)
+- `docs/VR_CHAPTER01_SHADOWS.md` sections 8 (what the first pass missed: movement, the Colt, lines, HUD, death,
+  saving, hidden markers) and 9 (changes made for this chapter); 8.7 holds the owner's answers.
+- `docs/VR_CHANGES_LEDGER.md`: every change with its decision, commits, evidence and the chapters it reaches. Every
+  new chapter dossier gets a "Changes made for this chapter" section pointing here.
+- Owner: the original's movement ported 1:1 NOW ("we move too slow"); smooth + teleport setting; snap 45; a real crouch
+  drives the original's crouch; guns aim along the gun; real-parts reload LATER (owner will find meshes); an off-hand
+  mount for subtitles and health (+ a low-health cue); world-locked movies; a quicksave button; an item brought to the
+  eyes = examine; REMASelacoVR's on-gun ammo display LATER.
+- Agents running: movement 1:1 (`/home/claude/wt_move`), off-hand mount + aim along the gun + quicksave
+  (`/home/claude/wt_mount`), plus surface boxes, gestures and held objects. Still to start after held objects:
+  world-locked movies, item to the eyes. Chapter 2 dossier (`/home/claude/wt_ch02`) resumes after these land.
