@@ -806,10 +806,10 @@ void ActorWorld::DestroyObject(ObjectUid uid)
 }
 
 // spawn_entity_at_position (EA:808-850).
-int ActorWorld::SpawnFlying(uint16_t x, uint16_t y, uint16_t z, uint16_t id, uint32_t angleSource, int32_t zVelocity)
+int ActorWorld::SpawnFlying(uint16_t x, uint16_t y, uint16_t z, uint16_t id, uint32_t angleSource, int32_t zVelocity, int sectorHint)
 {
 	if (flyingCount >= 0x10) return -1;
-	const int sector = LocateSector((int16_t)x, (int16_t)y, (int16_t)z, -1);
+	const int sector = LocateSector((int16_t)x, (int16_t)y, (int16_t)z, sectorHint);
 	if (sector < 0) return -1;
 	int slot = 0;
 	while (flying[slot].object != 0) { if (++slot >= 0x10) { slot = 0; break; } }   // R:421-431
@@ -890,7 +890,23 @@ int ActorWorld::FirePlayer(uint16_t item, int32_t yawOffset)
 	if (over >= 0) z = (uint16_t)(z + over);
 	const uint32_t angleSource = (uint32_t)player.angle - (uint32_t)yawOffset;
 	const int32_t zvel = player.pitch != 0 ? player.pitch : player.pitchApplied;   // WC:672-673
-	const int slot = SpawnFlying((uint16_t)player.x, (uint16_t)player.y, z, (uint16_t)d.templateId, angleSource, zvel);
+	// THE VR HAND'S START (handShot, roth_actors.h; not the original's). Off,
+	// this is the original's spawn exactly.
+	uint16_t sx = (uint16_t)player.x, sy = (uint16_t)player.y, sz = z;
+	int hint = -1;
+	lastShot = ShotStart();
+	if (handShot.on)
+	{
+		const int reach = HandOriginSector(player.sector, player.x, player.y, (int16_t)z, handShot.x, handShot.y, handShot.z);
+		if (reach >= 0) { sx = (uint16_t)handShot.x; sy = (uint16_t)handShot.y; sz = (uint16_t)handShot.z; hint = reach; lastShot.fromHand = true; }
+		else lastShot.handBlocked = true;
+	}
+	const int slot = SpawnFlying(sx, sy, sz, (uint16_t)d.templateId, angleSource, zvel, hint);
+	lastShot.x = (int16_t)sx; lastShot.y = (int16_t)sy; lastShot.z = (int16_t)sz;
+	lastShot.angleSource = angleSource; lastShot.zvel = zvel;
+	lastShot.sector = slot >= 0 ? flying[slot].sector : -1;
+	lastShot.object = slot >= 0 ? flying[slot].object : 0;
+	shotSerial++;
 	if (slot < 0) return -1;
 	FlyingSlot &f = flying[slot];
 	if (Object *obj = Find(f.object)) obj->light = 0;
@@ -902,6 +918,61 @@ int ActorWorld::FirePlayer(uint16_t item, int32_t yawOffset)
 	f.speed = d.speed;
 	f.ttl = d.ttl;
 	return slot;
+}
+
+// HandOriginSector (roth_actors.h). A walk from sector to sector along the
+// segment (x0, y0) -> (x1, y1): in each sector, the face the segment leaves
+// through (the crossing furthest along it so far); a face with no far side
+// stops it, and so does a crossing whose height (z0 -> z1 at that point) is
+// not inside both sides' floor-to-ceiling opening -- a closed door's sector
+// has none. The walk ends in the sector that holds (x1, y1) by the original's
+// own test (InsideSector), with z1 between its floor and ceiling.
+int ActorWorld::HandOriginSector(int fromSector, int16_t x0, int16_t y0, int16_t z0, int16_t x1, int16_t y1, int16_t z1) const
+{
+	if (mMap == nullptr) return -1;
+	const Map &m = *mMap;
+	const int count = (int)m.sectors.size();
+	if (fromSector < 0 || fromSector >= count) return -1;
+	auto openAt = [&](int s, double zz) {
+		const Sector &q = m.sectors[(size_t)s];
+		return zz >= (double)q.floorHeight && zz <= (double)q.ceilingHeight && q.ceilingHeight > q.floorHeight;
+	};
+	const double ax = x0, ay = y0, dx = (double)x1 - x0, dy = (double)y1 - y0, dz = (double)z1 - z0;
+	int s = fromSector;
+	double tDone = 0.0;
+	for (int step = 0; step < 32; step++)
+	{
+		if (InsideSector(s, x1, y1)) return openAt(s, (double)z1) ? s : -1;
+		const Sector &sec = m.sectors[(size_t)s];
+		int exitFace = -1;
+		double exitT = 2.0;
+		for (int k = 0; k < (int)sec.faceCount; k++)
+		{
+			const int fi = sec.firstFaceIndex + k;
+			if (fi < 0 || (size_t)fi >= m.faces.size()) break;
+			const Face &f = m.faces[(size_t)fi];
+			if (f.vertex1 < 0 || f.vertex2 < 0 || (size_t)f.vertex1 >= m.vertices.size() || (size_t)f.vertex2 >= m.vertices.size()) continue;
+			const Vertex &v1 = m.vertices[(size_t)f.vertex1], &v2 = m.vertices[(size_t)f.vertex2];
+			const double ex = (double)v2.x - v1.x, ey = (double)v2.y - v1.y;
+			const double den = dx * ey - dy * ex;
+			if (den == 0.0) continue;                        // parallel: no crossing
+			const double wx = (double)v1.x - ax, wy = (double)v1.y - ay;
+			const double t = (wx * ey - wy * ex) / den;      // along the shot's segment
+			const double u = (wx * dy - wy * dx) / den;      // along the face
+			if (u < 0.0 || u > 1.0 || t <= tDone || t > 1.0) continue;
+			if (t < exitT) { exitT = t; exitFace = fi; }
+		}
+		if (exitFace < 0) return -1;                         // no way out toward the point
+		const Face &f = m.faces[(size_t)exitFace];
+		if (f.sister < 0 || (size_t)f.sister >= m.faces.size()) return -1;   // a wall
+		const int ns = m.faces[(size_t)f.sister].sector;
+		if (ns < 0 || ns >= count) return -1;
+		const double zc = (double)z0 + dz * exitT;
+		if (!openAt(s, zc) || !openAt(ns, zc)) return -1;    // under a floor, over a ceiling, a closed door
+		s = ns;
+		tDone = exitT;
+	}
+	return -1;
 }
 
 //==========================================================================

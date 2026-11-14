@@ -23,6 +23,7 @@
 #include "roth_das.h"
 #include "roth_interface.h"
 #include "roth_inventory.h"
+#include "roth_hands.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -34,6 +35,8 @@
 #include "d_event.h"
 #include "r_data/models.h"
 #include "model_memorymesh.h"
+#include "r_data/vr_handpose.h"
+#include "hw_vrmodes.h"
 
 #include <map>
 #include <memory>
@@ -439,24 +442,105 @@ static bool g_fireButtonAllowed = true;
 struct FireAt { bool pending = false, holding = false; double x = 0, y = 0, z = 0; };
 static FireAt g_fireAt;
 
+// THE GUN AIMS ALONG THE GUN (owner's W1, docs/VR_CHANGES_LEDGER.md row 33).
+// In VR the shot's direction is the main hand's aim and its start is the main
+// hand (ActorWorld::HandShot). The aim is the engine's stored attack pose,
+// which the usercmd carries to every peer (weaponyaw / weaponpitch ->
+// AttackAngle / AttackPitch, p_user.cpp UpdateCanonicalMainHandPose); the
+// start is AttackPos, the controller pose the engine itself shoots from in VR
+// (P_LineAttack, P_SpawnPlayerMissile). THE STORED CONVENTION (g_game.cpp
+// :1452-1455, and every reader of it in p_map.cpp / p_mobj.cpp: aim yaw =
+// AttackAngle + 90, the view-style pitch = -AttackPitch): AttackAngle is the
+// world yaw less 90 degrees and AttackPitch is positive UP. This tick used to
+// read them as the view's own (yaw less 90 again, pitch positive down), which
+// put a VR shot 90 degrees to the side and mirrored up for down.
+//
+// The original's climb (zvel = the rise a 128-unit run, WC:672-673) is held to
+// its view's +-126 (0x90a74) for the key's shot; a hand is not, so the hand's
+// climb is the tangent of its pitch, held only to +-0x1000 (88 degrees), which
+// keeps zvel * speed << 10 (roth_actor_tick.cpp FlyBullet) inside 32 bits for
+// any bullet speed byte. A creature's aimed shot is not limited either
+// (WC:700-712).
+//
+// THE FLAT AIM TEST (roth_gunaimtest, below): with roth_handtest's hands up in
+// flat, the main test hand stands in for the controller -- its actor's place is
+// the start, the test's pitch and yaw off the view the direction -- through
+// this same path, so a flat run on the owner's PC exercises it.
+struct GunAimTest { bool on = false; double pitch = 0.0, yaw = 0.0; };
+GunAimTest g_gunAimTest;
+// The last hand shot, followed to where it ends (the log's "the shot ended").
+struct ShotTrack { bool on = false; ObjectUid object = 0; int16_t x = 0, y = 0, z = 0; int sector = -1; int ticks = 0; };
+ShotTrack g_shotTrack;
+uint32_t g_shotSerialSeen = 0;
+
+void TrackHandShot()
+{
+	ActorWorld &w = g_actors.world;
+	if (!g_shotTrack.on) return;
+	int s = -1, i = -1;
+	const Object *o = w.Find(g_shotTrack.object, &s, &i);
+	if (o != nullptr && !(o->flags & 0x40))
+	{
+		g_shotTrack.x = o->x; g_shotTrack.y = o->y; g_shotTrack.z = o->z; g_shotTrack.sector = s;
+		g_shotTrack.ticks++;
+		return;
+	}
+	Printf("[roth_gunaim] the shot ended at Realms %d,%d z %d (sector %d) after %d tic(s)%s\n", g_shotTrack.x, g_shotTrack.y, g_shotTrack.z,
+		g_shotTrack.sector, g_shotTrack.ticks, o != nullptr ? " (its hit picture)" : "");
+	g_shotTrack.on = false;
+}
+
 void WeaponTick(int ticks)
 {
 	ActorWorld &w = g_actors.world;
 	AActor *pmo = ThePlayer(g_actors.level);
 	if (pmo == nullptr || pmo->player == nullptr) return;
 	const bool vr = pmo->OverrideAttackPosDir;
-	const DAngle aimYaw = vr ? pmo->AttackAngle : pmo->Angles.Yaw;
-	const DAngle aimPitch = vr ? pmo->AttackPitch : pmo->Angles.Pitch;
+	// The test hand (flat only): the main hand's actor, when roth_handtest shows it.
+	AActor *testHand = nullptr;
+	if (!vr && g_gunAimTest.on && VRHandTest_Active()) testHand = HandActor(VRHandPose_SideForRole(VR_MAINHAND));
+	const bool hand = vr || testHand != nullptr;
+	// The aim, in the view's own terms: world yaw, pitch positive DOWN.
+	DAngle aimYaw = pmo->Angles.Yaw, aimPitch = pmo->Angles.Pitch;
+	DVector3 handAt;
+	if (vr)
+	{
+		aimYaw = pmo->AttackAngle + DAngle::fromDeg(90.);
+		aimPitch = -pmo->AttackPitch;
+		handAt = pmo->AttackPos;
+	}
+	else if (testHand != nullptr)
+	{
+		aimYaw = pmo->Angles.Yaw + DAngle::fromDeg(g_gunAimTest.yaw);
+		aimPitch = DAngle::fromDeg(-g_gunAimTest.pitch);
+		handAt = testHand->Pos();
+	}
 	// The original's view pitch: p looks up at atan(p / 128), +-126 (0x90a74).
 	double t = -aimPitch.Tan() * 128.0;
-	if (t > 126.0) t = 126.0;
-	if (t < -126.0) t = -126.0;
+	const double lim = hand ? 4096.0 : 126.0;
+	if (!(t <= lim)) t = lim;                                // (a NaN from a vertical aim goes up)
+	if (t < -lim) t = -lim;
 	w.player.pitch = (int32_t)lround(t);
 	// spawn_projectile_from_aim takes its screen aim as an offset subtracted
-	// from the player's angle (WC:620-634); the hand's own yaw, as that offset.
+	// from the player's angle (WC:620-634): the aim's own angle, as that offset.
+	// The original's angle is the engine's yaw less 90, 512 a turn (SyncPlayer).
 	const int handAngle = (int)lround((aimYaw.Degrees() - 90.0) * (512.0 / 360.0)) & 511;
 	int32_t yawOffset = ((int)w.player.angle - handAngle) & 511;
 	if (yawOffset >= 256) yawOffset -= 512;
+	// The start: the hand, in the original's coordinates (its sector's shift
+	// taken off, as SyncPlayer does for the player).
+	w.handShot = ActorWorld::HandShot();
+	if (hand)
+	{
+		double dx = 0., dy = 0.;
+		sector_t *hs = g_actors.level->PointInSector(handAt.XY());
+		const Map *map = w.MapPtr();
+		if (hs != nullptr && map != nullptr && hs->Index() < (int)map->sectors.size()) SectorShift(hs->Index(), dx, dy);
+		w.handShot.on = true;
+		w.handShot.x = (int16_t)lround(handAt.X - dx);
+		w.handShot.y = (int16_t)lround(handAt.Y - dy);
+		w.handShot.z = (int16_t)floor(handAt.Z);
+	}
 	const bool button = (pmo->player->cmd.buttons & BT_ATTACK) && g_fireButtonAllowed;
 	// A FIST THAT LANDED (ActorsRequestFireAt): the original's aimed attack, its aim the contact.
 	if (g_fireAt.pending)
@@ -490,6 +574,25 @@ void WeaponTick(int ticks)
 	}
 	w.RechargeFrame(ticks);
 	w.player.pitch = 0;
+	if (w.shotSerial != g_shotSerialSeen)
+	{
+		g_shotSerialSeen = w.shotSerial;
+		const ActorWorld::ShotStart &st = w.lastShot;
+		if (hand)
+		{
+			Printf("[roth_gunaim] %s shot from Realms %d,%d z %d (sector %d)%s, angle %d of 512 (the view's %d), climb %d a 128 run"
+				" (aim yaw %.1f pitch %.1f up)%s\n",
+				vr ? "VR" : "test", st.x, st.y, st.z, st.sector, st.fromHand ? " -- the hand" : " -- the player's own start",
+				(int)((0u - st.angleSource) & 511), (int)w.player.angle, (int)st.zvel, aimYaw.Normalized360().Degrees(), -aimPitch.Degrees(),
+				st.handBlocked ? " (the hand is beyond a wall, floor, ceiling or closed door from the player: the original's start)" : "");
+			g_shotTrack = ShotTrack();
+			g_shotTrack.on = st.object != 0;
+			g_shotTrack.object = st.object;
+			g_shotTrack.x = st.x; g_shotTrack.y = st.y; g_shotTrack.z = st.z; g_shotTrack.sector = st.sector;
+		}
+	}
+	w.handShot = ActorWorld::HandShot();
+	TrackHandShot();
 }
 
 // A card for a weapon with no model: the original's picture, frame `frame`,
@@ -1000,4 +1103,22 @@ CCMD(roth_shoot)
 	roth::PendingConsole c; c.shoot = atoi(argv[1]);
 	if (argv.argc() >= 3) c.atTic = atoi(argv[2]);
 	roth::g_consoleQueue.push_back(c);
+}
+
+// roth_gunaimtest -- THE FLAT TEST of the VR hand's shot (WeaponTick above).
+// Test-only: inert until typed. While on, and while roth_handtest shows the
+// hands, the weapon's shot starts at the main test hand and leaves along
+// <pitch> (degrees, + up) and <yaw> (degrees, + left) off the view -- the path
+// a VR controller takes -- and the log says where it started and where it
+// ended ("[roth_gunaim] ..."). Fire it with roth_trigger.
+//   roth_gunaimtest on [pitch] [yaw]
+//   roth_gunaimtest off
+CCMD(roth_gunaimtest)
+{
+	if (argv.argc() < 2) { Printf("roth_gunaimtest on [pitch] [yaw] | off\n"); return; }
+	if (!stricmp(argv[1], "off")) { roth::g_gunAimTest = roth::GunAimTest(); Printf("roth_gunaimtest: off\n"); return; }
+	roth::g_gunAimTest.on = true;
+	roth::g_gunAimTest.pitch = argv.argc() >= 3 ? atof(argv[2]) : 0.0;
+	roth::g_gunAimTest.yaw = argv.argc() >= 4 ? atof(argv[3]) : 0.0;
+	Printf("roth_gunaimtest: on, pitch %.1f up, yaw %.1f left of the view (needs roth_handtest)\n", roth::g_gunAimTest.pitch, roth::g_gunAimTest.yaw);
 }

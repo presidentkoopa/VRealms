@@ -694,7 +694,10 @@ public:
 	void DestroyObject(ObjectUid uid);
 
 	// spawn_entity_at_position (EA:808). Returns the flying slot or -1.
-	int SpawnFlying(uint16_t x, uint16_t y, uint16_t z, uint16_t id, uint32_t angleSource, int32_t zVelocity);
+	// `sectorHint` (not the original's): a sector already known to hold the
+	// point, looked at first (LocateSector's hint); -1, the original's global
+	// search (EA:812). Only the VR hand's shot passes one (handShot below).
+	int SpawnFlying(uint16_t x, uint16_t y, uint16_t z, uint16_t id, uint32_t angleSource, int32_t zVelocity, int sectorHint = -1);
 	// spawn_object_projectile_at_player (WC:682) / the flagged variant (WC:726).
 	// `src` is a 16-byte object record (a real object or a command's copy).
 	int FireFrom(uint16_t item, const Object &src, int zOffset, bool playerFire);
@@ -704,6 +707,41 @@ public:
 	// screen or hand aim adds (WC:620-634); 0 for the key. Owner 0 = the
 	// player's own shot, which can never hit him.
 	int FirePlayer(uint16_t item, int32_t yawOffset = 0);
+
+	// THE VR HAND'S SHOT (owner's W1, docs/VR_CHANGES_LEDGER.md row 33: a gun
+	// aims along the gun). NOT the original's: in VR the shot leaves where the
+	// weapon hand is, along where it points, instead of from under the eye
+	// along the view. Only WHERE and WHICH WAY change: the bullet item, its
+	// damage, speed, width and life, the shot's timing, the ammunition and the
+	// reload are the original's, untouched (FirePlayer's tail, WeaponFrame,
+	// TriggerFire). The direction reaches FirePlayer the original's way, as
+	// player.pitch (the climb a 128-unit run, zvel) and the yaw offset; this
+	// only moves the start. Set by the engine before WeaponFrame, cleared
+	// after; `on` false (flat, and every test of the original) leaves
+	// FirePlayer byte for byte what it was.
+	//   x, y, z  the hand, in the original's map coordinates
+	// The hand is only taken when the original's map lets a shot from the
+	// player's own start reach it (HandOriginSector): a hand pushed through a
+	// wall, a closed door or a floor fires from the original's start instead,
+	// still along the hand.
+	struct HandShot { bool on = false; int16_t x = 0, y = 0, z = 0; };
+	HandShot handShot;
+	// Where the last FirePlayer started its bullet and with what (for the
+	// engine's log and the flat aim test): the point, the sector, the flying
+	// angle source, the climb, and whether it was the hand's point.
+	struct ShotStart { int16_t x = 0, y = 0, z = 0; int sector = -1; uint32_t angleSource = 0; int32_t zvel = 0; bool fromHand = false; bool handBlocked = false; ObjectUid object = 0; };
+	ShotStart lastShot;
+	uint32_t shotSerial = 0;   // counts FirePlayer's calls
+	// The sector holding (x1, y1, z1) when a straight line from (x0, y0, z0)
+	// in `fromSector` reaches it through the map's open faces (a face with a
+	// far side, crossed between both sides' floors and ceilings); -1 when the
+	// line meets a wall, a floor, a ceiling or a closed opening first, or the
+	// walk does not end. Not the original's (it never shoots from anywhere but
+	// the player's own spot); built from its own map and its point-in-sector
+	// test (InsideSector, CP:906-1028).
+	int HandOriginSector(int fromSector, int16_t x0, int16_t y0, int16_t z0, int16_t x1, int16_t y1, int16_t z1) const;
+	// InsideSector (CP:906-1028, the original's point-in-sector test), for tools/gunaim_test.
+	bool InsideSectorPublic(int sector, int16_t qx, int16_t qy) const { return InsideSector(sector, qx, qy); }
 
 	// ---- the tick ----
 	// One pass of the loop in tick_dynamic_entities (EA:1358-1377): every
