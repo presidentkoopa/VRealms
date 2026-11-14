@@ -928,7 +928,9 @@ Notes on the three built 2026-11-13 (ledger rows 33, 34, 36):
   leaves the main hand, and a hand pushed through a wall fires from the original's start instead. Movie subtitles
   stay with the movie; the timed message (the item lines) stays where the original's screen has it.
 - **The mount.** Chapter 1's lines (most entries in section 3 end in one) and the death wait's text are on the off
-  hand's wrist; its size and lift are `roth_mount_scale` / `roth_mount_lift` (not archived) until the owner has
-  judged them in the headset. The weapon panel (ammo) stays head-locked until G1.
+  hand's wrist; its size is in metres like the hands: `roth_mount_mm` (0.55 mm an original pixel),
+  `roth_mount_maxcm` (28 cm, the widest a picture stands) and `roth_mount_liftcm` (6 cm above the wrist), not archived,
+  until the owner has judged them in the headset. The line is the original's own picture: laid out to the 640-pixel
+  screen, most of Adam's lines are one row of 300-616 pixels (up to 3 rows); it is scaled, never re-wrapped. The weapon panel (ammo) stays head-locked until G1.
 - **Saving.** The bindings are defaults: an ini that already has VRealms bindings keeps its own
   (`doublebind pad_x roth_quicksave`, `doublebind pad_y roth_quickload`).

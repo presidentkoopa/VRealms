@@ -467,9 +467,11 @@ static FireAt g_fireAt;
 // the start, the test's pitch and yaw off the view the direction -- through
 // this same path, so a flat run on the owner's PC exercises it.
 struct GunAimTest { bool on = false; double pitch = 0.0, yaw = 0.0; };
+// Once roth_gunaimtest has been typed, the flat (original's) shots are logged too.
+bool g_gunAimLogFlat = false;
 GunAimTest g_gunAimTest;
 // The last hand shot, followed to where it ends (the log's "the shot ended").
-struct ShotTrack { bool on = false; ObjectUid object = 0; int16_t x = 0, y = 0, z = 0; int sector = -1; int ticks = 0; };
+struct ShotTrack { bool on = false; ObjectUid object = 0; int16_t x0 = 0, y0 = 0, z0 = 0, x = 0, y = 0, z = 0; int sector = -1; int ticks = 0; };
 ShotTrack g_shotTrack;
 uint32_t g_shotSerialSeen = 0;
 
@@ -485,8 +487,17 @@ void TrackHandShot()
 		g_shotTrack.ticks++;
 		return;
 	}
-	Printf("[roth_gunaim] the shot ended at Realms %d,%d z %d (sector %d) after %d tic(s)%s\n", g_shotTrack.x, g_shotTrack.y, g_shotTrack.z,
-		g_shotTrack.sector, g_shotTrack.ticks, o != nullptr ? " (its hit picture)" : "");
+	// The way it really went, measured from where it started to where it
+	// stopped, in the same two units as the start line.
+	const double dx = (double)g_shotTrack.x - g_shotTrack.x0, dy = (double)g_shotTrack.y - g_shotTrack.y0;
+	const double run = sqrt(dx * dx + dy * dy);
+	double yaw = atan2(dy, dx) * (180.0 / M_PI);
+	if (yaw < 0) yaw += 360.0;
+	const int ang = (int)lround((yaw - 90.0) * (512.0 / 360.0)) & 511;
+	Printf("[roth_gunaim] the shot ended at Realms %d,%d z %d (sector %d) after %d tic(s)%s: it travelled %.0f units along engine yaw %.1f"
+		" (angle %d of 512), rising %d (%.1f degrees)\n", g_shotTrack.x, g_shotTrack.y, g_shotTrack.z,
+		g_shotTrack.sector, g_shotTrack.ticks, o != nullptr ? " (its hit picture)" : "", run, yaw, ang,
+		(int)g_shotTrack.z - g_shotTrack.z0, run > 0.5 ? atan2((double)g_shotTrack.z - g_shotTrack.z0, run) * (180.0 / M_PI) : 0.0);
 	g_shotTrack.on = false;
 }
 
@@ -574,22 +585,29 @@ void WeaponTick(int ticks)
 	}
 	w.RechargeFrame(ticks);
 	w.player.pitch = 0;
+	if (w.shotSerial != g_shotSerialSeen && !(hand || g_gunAimLogFlat)) g_shotSerialSeen = w.shotSerial;
 	if (w.shotSerial != g_shotSerialSeen)
 	{
+		// EVERY player shot is logged (the original's own flat shot too), in one
+		// convention: the Realms angle as the player's (0x90a8a, 512 a turn; the
+		// engine's yaw = angle * 360 / 512 + 90 degrees, SyncPlayer), so a hand
+		// shot and the flat shot from the same view compare number for number.
+		// spawn_projectile_from_aim's angle source IS that angle (player.angle -
+		// the yaw offset, WC:620-634); SpawnFlying negates it for the object's
+		// facing (EA:838), which is not printed.
 		g_shotSerialSeen = w.shotSerial;
 		const ActorWorld::ShotStart &st = w.lastShot;
-		if (hand)
-		{
-			Printf("[roth_gunaim] %s shot from Realms %d,%d z %d (sector %d)%s, angle %d of 512 (the view's %d), climb %d a 128 run"
-				" (aim yaw %.1f pitch %.1f up)%s\n",
-				vr ? "VR" : "test", st.x, st.y, st.z, st.sector, st.fromHand ? " -- the hand" : " -- the player's own start",
-				(int)((0u - st.angleSource) & 511), (int)w.player.angle, (int)st.zvel, aimYaw.Normalized360().Degrees(), -aimPitch.Degrees(),
-				st.handBlocked ? " (the hand is beyond a wall, floor, ceiling or closed door from the player: the original's start)" : "");
-			g_shotTrack = ShotTrack();
-			g_shotTrack.on = st.object != 0;
-			g_shotTrack.object = st.object;
-			g_shotTrack.x = st.x; g_shotTrack.y = st.y; g_shotTrack.z = st.z; g_shotTrack.sector = st.sector;
-		}
+		const int ang = (int)(st.angleSource & 511);
+		Printf("[roth_gunaim] %s shot from Realms %d,%d z %d (sector %d)%s: angle %d of 512 = engine yaw %.1f (the view: %d = %.1f), climb %d a 128 run (aim pitch %.1f up)%s\n",
+			vr ? "VR" : (hand ? "test-hand" : "flat (the original's)"), st.x, st.y, st.z, st.sector,
+			hand ? (st.fromHand ? " -- the hand" : " -- the player's own start") : "",
+			ang, fmod(ang * 360.0 / 512.0 + 90.0, 360.0), (int)w.player.angle, fmod(w.player.angle * 360.0 / 512.0 + 90.0, 360.0),
+			(int)st.zvel, -aimPitch.Degrees(),
+			st.handBlocked ? " (the hand is beyond a wall, floor, ceiling or closed door from the player: the original's start)" : "");
+		g_shotTrack = ShotTrack();
+		g_shotTrack.on = st.object != 0;
+		g_shotTrack.object = st.object;
+		g_shotTrack.x0 = g_shotTrack.x = st.x; g_shotTrack.y0 = g_shotTrack.y = st.y; g_shotTrack.z0 = g_shotTrack.z = st.z; g_shotTrack.sector = st.sector;
 	}
 	w.handShot = ActorWorld::HandShot();
 	TrackHandShot();
@@ -1131,12 +1149,14 @@ CCMD(roth_shoot)
 // hands, the weapon's shot starts at the main test hand and leaves along
 // <pitch> (degrees, + up) and <yaw> (degrees, + left) off the view -- the path
 // a VR controller takes -- and the log says where it started and where it
-// ended ("[roth_gunaim] ..."). Fire it with roth_trigger.
+// ended ("[roth_gunaim] ..."); once typed, the flat (original's) shots are
+// logged the same way, in the same units. Fire it with roth_trigger.
 //   roth_gunaimtest on [pitch] [yaw]
 //   roth_gunaimtest off
 CCMD(roth_gunaimtest)
 {
 	if (argv.argc() < 2) { Printf("roth_gunaimtest on [pitch] [yaw] | off\n"); return; }
+	roth::g_gunAimLogFlat = true;   // from now on the flat shots are logged too, for comparison
 	if (!stricmp(argv[1], "off")) { roth::g_gunAimTest = roth::GunAimTest(); Printf("roth_gunaimtest: off\n"); return; }
 	roth::g_gunAimTest.on = true;
 	roth::g_gunAimTest.pitch = argv.argc() >= 3 ? atof(argv[2]) : 0.0;

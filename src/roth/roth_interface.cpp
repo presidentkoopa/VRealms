@@ -815,7 +815,7 @@ void AddHeadPicture(int id)
 // picture and all (roth_huddraw), cut from the top strip where
 // blit_panel_image puts it -- scaled onto a panel over the off hand's wrist.
 // Its own: where it stands (above the wrist, the health panel over the line,
-// both centred), its size (roth_mount_scale map units an original pixel) and
+// both centred), its size (roth_mount_mm a pixel, roth_mount_maxcm at most) and
 // that it turns to face the eye. Flat keeps the original's screen.
 //
 // THE OFF HAND, named so (owner: left-hand support comes later): the
@@ -823,13 +823,32 @@ void AddHeadPicture(int id)
 //
 //==========================================================================
 
+// THE SIZE, IN METRES, the hands' own unit (VR_UnitsPerMeter; 34 a metre in
+// flat, as roth_vrpick's UPM), so the flat test shows the mount at the size the
+// headset does. The subtitle picture is the original's own: render_text_ui
+// draws the segment laid out to the whole 640-pixel screen (layout_timed_
+// message_text, dialogue_ui.c:344-480, width budget 640 - 12, at most 3 rows of
+// 11), so most of Adam's lines are ONE row 300 to 616 pixels long. It is not
+// re-wrapped (1:1); it is scaled: roth_mount_mm millimetres an original pixel,
+// and a picture wider than roth_mount_maxcm is scaled down to that width.
 // Live tuning for the headset; NOT archived (the owner's ini is shared).
-CUSTOM_CVAR(Float, roth_mount_scale, 0.05f, CVAR_NOINITCALL)
+CUSTOM_CVAR(Float, roth_mount_mm, 0.55f, CVAR_NOINITCALL)      // mm an original pixel: an 11-pixel row is 6 mm
 {
-	if (self < 0.005f) self = 0.005f;
-	if (self > 0.5f) self = 0.5f;
+	if (self < 0.1f) self = 0.1f;
+	if (self > 3.0f) self = 3.0f;
 }
-CVAR(Float, roth_mount_lift, 3.0f, 0)   // map units from the wrist to the panel's foot
+CUSTOM_CVAR(Float, roth_mount_maxcm, 28.0f, CVAR_NOINITCALL)   // the widest a picture stands, cm
+{
+	if (self < 5.0f) self = 5.0f;
+	if (self > 100.0f) self = 100.0f;
+}
+CVAR(Float, roth_mount_liftcm, 6.0f, 0)                         // from the wrist to the mount's foot, cm
+
+double MountUpm()
+{
+	const double u = VR_UnitsPerMeter();
+	return u > 1e-3 ? u : 34.0;
+}
 
 // The mount is up: in VR with the off hand's actor drawn, or in the flat test
 // (roth_mounttest with roth_handtest's hands).
@@ -894,7 +913,10 @@ void AddMountPicture(int id, Ui::MountPiece &piece)
 	if (!tex.isValid()) return;
 	// Square pixels in the headset's vertically stretched world (as ScreenUnitsPerPixel).
 	const double ps = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.0;
-	const double u = roth_mount_scale;
+	const double upm = MountUpm();
+	double u = roth_mount_mm * 0.001 * upm;                    // map units an original pixel
+	const double maxw = roth_mount_maxcm * 0.01 * upm;
+	if (c->Width() * u > maxw) u = maxw / c->Width();
 	FBillboard bb;
 	bb.id = U.level->NextBillboardID++;
 	bb.width = c->Width() * u;
@@ -934,8 +956,9 @@ void TickMount()
 	const double ul = up.Length();
 	up = ul > 1e-6 ? up / ul : DVector3(0, 0, 1);
 	const MountLock L = MountLockNow();
-	const double gap = 4.0 * roth_mount_scale;           // four of the original's pixels between them
-	double at = roth_mount_lift;
+	const double upm = MountUpm();
+	const double gap = 0.008 * upm;                        // 8 mm between the line and the health panel
+	double at = roth_mount_liftcm * 0.01 * upm;
 	auto place = [&](Ui::MountPiece &p) {
 		if (p.bb == 0) return;
 		const DVector3 centre = wrist + up * (at + p.h * 0.5);

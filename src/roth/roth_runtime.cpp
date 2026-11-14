@@ -9352,10 +9352,21 @@ CCMD(roth_sethealth)
 	if (argv.argc() < 2) { Printf("roth_sethealth <value, 1..max (0x800 = 2048 by default)>\n"); return; }
 	const int v = atoi(argv[1]);
 	if (v <= 0 || !g_flow.IsAttached()) { Printf("roth_sethealth: refused\n"); return; }
+	// SET, not dealt: no P_DamageMobj, so no pain flash (the engine's red
+	// screen, which hid the low-health edge in the first PC run).
 	CmdPullHealth();
 	g_cmd.health = v > g_flow.MaxHealth() ? g_flow.MaxHealth() : v;
-	CmdPushHealth();
-	Printf("roth_sethealth: %d of %d\n", (int)g_flow.Health(), (int)g_flow.MaxHealth());
+	g_flow.SetHealth(g_cmd.health);
+	if (AActor *mo = CmdPlayer())
+	{
+		if (mo->player != nullptr && mo->health > 0)
+		{
+			mo->health = mo->player->health = CmdEngineHealth(g_cmd.health);
+			mo->player->damagecount = 0;
+		}
+		g_cmdHealthSeen = mo->health;
+	}
+	Printf("roth_sethealth: %d of %d (set, no damage)\n", (int)g_flow.Health(), (int)g_flow.MaxHealth());
 }
 CCMD(roth_menu)
 {
