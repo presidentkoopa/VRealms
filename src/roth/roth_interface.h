@@ -21,7 +21,7 @@
 
 class FLevelLocals;
 class AActor;
-struct player_t;
+class player_t;
 
 namespace roth
 {

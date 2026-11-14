@@ -17,7 +17,7 @@
 #include <vector>
 
 struct FLevelLocals;
-struct player_t;
+class player_t;
 
 namespace roth
 {
