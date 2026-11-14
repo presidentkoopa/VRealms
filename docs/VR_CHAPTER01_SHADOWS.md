@@ -698,6 +698,9 @@ roth_handhold.h); P7 `fbx_pinch` for the match.
 - **Q12 / a picked-up item shows in the item hand: YES**, when the original selects it into the right hand.
 - **Q13 / tall wicks: point the lit match at a wick in reach + grip lights it** (seated and shorter players).
 - **Q14 / far things (the casements): the pointer is fine.**
+- **Darkness for chapter 1: NONE for now** (owner, after the darkness captures): the original's lighting. The pass stays
+  available (`roth_darktest`).
+- **Candle light strength: judge in the headset** (current: 0.30 x (1, 0.56, 0.22) per wick, radius 56 x sqrt(wicks)).
 
 
 - **Q1** The match: keep the matchbox in the item hand (as built) and strike and hold the match with the off hand?
