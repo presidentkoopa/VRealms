@@ -109,6 +109,18 @@ struct State
 	bool sessionTuned = false;
 } g_move;
 
+// A 16.16 value as a decimal with 4 places, rounded half up by integer arithmetic: printf's own
+// rounding of an exact tie differs between C runtimes (glibc 647.1562, MSVC 647.1563).
+static const char *Fix4(uint32_t v, char *buf)
+{
+	const int32_t s = (int32_t)v;
+	const uint64_t a = s < 0 ? (uint64_t)(-(int64_t)s) : (uint64_t)s;
+	uint64_t ip = a >> 16, fp = ((a & 0xffff) * 10000 + 0x8000) >> 16;
+	if (fp >= 10000) { ip++; fp -= 10000; }
+	snprintf(buf, 32, "%s%llu.%04llu", s < 0 ? "-" : "", (unsigned long long)ip, (unsigned long long)fp);
+	return buf;
+}
+
 AActor *Pawn(FLevelLocals *level)
 {
 	if (level == nullptr || consoleplayer < 0) return nullptr;
@@ -444,10 +456,13 @@ void PlayerMoveTick(FLevelLocals *level)
 	g_move.tics++;
 
 	if (roth_move_log)
-		Printf("[roth_move] tic %d x=%.4f y=%.4f z=%.4f angle=%u sector=%d height=%u eye=%u fall=%d,%d jump=%d crouch=%d keys=%03x health=%d\n",
-			level->maptime, (int32_t)pm.x / 65536., (int32_t)pm.y / 65536., (int32_t)pm.z / 65536., pm.angle & 0x1ff,
+	{
+		char bx[32], by[32], bz[32];
+		Printf("[roth_move] tic %d x=%s y=%s z=%s angle=%u sector=%d height=%u eye=%u fall=%d,%d jump=%d crouch=%d keys=%03x health=%d\n",
+			level->maptime, Fix4(pm.x, bx), Fix4(pm.y, by), Fix4(pm.z, bz), pm.angle & 0x1ff,
 			pm.SectorIndex(pm.sector), pm.height, pm.camHeight, pm.fallState, pm.fallAccum, pm.jumpPhase, pm.crouchMode, g_move.held,
 			(int)PlayerHealth());
+	}
 }
 
 } // namespace roth

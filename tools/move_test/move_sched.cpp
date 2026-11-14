@@ -4,6 +4,10 @@
 // move_flat.cfg should log on the owner's PC, tic for tic.
 //
 //   move_sched MAP.RAW "<from>-<to>:<keys> ..." [tics]
+//   from / to: the cfg's roth_at tics of the +key and the -key. roth_at runs its commands at the END
+//   of a tic (TickLevelLogic's DrainTimedCommands), after that tic's command was read in
+//   P_PlayerThink, so the engine first sees a key at tic from+1 and last at tic to (measured on the
+//   owner's PC, 367c710c: +forward at roth_at 20 -> keys=002 from tic 21).
 //   keys: f(orward) b(ack) l(eft turn) r(ight turn) s(trafe left) d (strafe right) j(ump) c(rouch)
 //   MOVE_SCHED_RUN=1 in the environment: the run toggle on (the engine's cl_run)
 //
@@ -16,6 +20,17 @@
 #include <vector>
 #include <sstream>
 using namespace roth;
+// A 16.16 value as a decimal with 4 places, rounded half up by integer arithmetic: printf's own
+// rounding of an exact tie differs between C runtimes (glibc 647.1562, MSVC 647.1563).
+static const char *Fix4(uint32_t v, char *buf)
+{
+	const int32_t s = (int32_t)v;
+	const uint64_t a = s < 0 ? (uint64_t)(-(int64_t)s) : (uint64_t)s;
+	uint64_t ip = a >> 16, fp = ((a & 0xffff) * 10000 + 0x8000) >> 16;
+	if (fp >= 10000) { ip++; fp -= 10000; }
+	snprintf(buf, 32, "%s%llu.%04llu", s < 0 ? "-" : "", (unsigned long long)ip, (unsigned long long)fp);
+	return buf;
+}
 struct NoHost : PlayerMoveHost { void DamageDirect(uint32_t) override {} };
 int main(int argc, char **argv)
 {
@@ -53,10 +68,11 @@ int main(int argc, char **argv)
 	for (int t = 0; t < tics; t++)
 	{
 		MoveInput in;
-		for (const Span &sp : spans) if (t >= sp.a && t < sp.b) in.held |= sp.keys;
+		for (const Span &sp : spans) if (t > sp.a && t <= sp.b) in.held |= sp.keys;
 		pm.Tick(in); pm.Tick(in); pm.Frame(2); pm.ClampViewPitch();
-		printf("tic %d x=%.4f y=%.4f z=%.4f angle=%u sector=%d height=%u eye=%u fall=%d,%d jump=%d crouch=%d keys=%03x\n", t,
-			(int32_t)pm.x / 65536., (int32_t)pm.y / 65536., (int32_t)pm.z / 65536., pm.angle & 0x1ff, pm.SectorIndex(pm.sector),
+		char bx[32], by[32], bz[32];
+		printf("tic %d x=%s y=%s z=%s angle=%u sector=%d height=%u eye=%u fall=%d,%d jump=%d crouch=%d keys=%03x\n", t,
+			Fix4(pm.x, bx), Fix4(pm.y, by), Fix4(pm.z, bz), pm.angle & 0x1ff, pm.SectorIndex(pm.sector),
 			pm.height, pm.camHeight, pm.fallState, pm.fallAccum, pm.jumpPhase, pm.crouchMode, in.held);
 	}
 	return 0;

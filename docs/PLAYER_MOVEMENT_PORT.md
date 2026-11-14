@@ -103,8 +103,8 @@ section 3); **ported, not diffed** = transcribed, no scenario reaches it; **not 
 | # | Part | Where | Status |
 |---|---|---|---|
 | 62 | The engine's own thrust, friction, gravity, jump, crouch and step-up do nothing for the Realms player: the command's moves are taken off before the pawn thinks, MF_NOGRAVITY, velocity 0 | p_user.cpp P_PlayerThink -> `PlayerMoveTakeCmd` | reasoning only, not seen |
-| 63 | Two 70 Hz ticks and one frame of fts 2 a tic, after the actors (GAME_core.md 2.3 option (a)) | roth_runtime.cpp TickLevelLogic -> `PlayerMoveTick` | reasoning only; the same schedule offline: `tools/move_test/out/move_sched` gives Left 70 ticks = +264 (acceptance 2) |
-| 64 | Flat keys: BT_FORWARD/BACK and sticks via forwardmove/sidemove (past 1/8 of full) -> Up/Down/strafes; BT_LEFT/RIGHT -> the turn ramp (the engine's own keyboard turn suppressed, g_game.cpp); BT_JUMP -> A; BT_CROUCH or the engine's crouch toggle -> Z; BT_SPEED -> Shift; cl_run -> the run toggle (read, never written) | PE `PlayerMoveTakeCmd` | reasoning only |
+| 63 | Two 70 Hz ticks and one frame of fts 2 a tic, after the actors (GAME_core.md 2.3 option (a)) | roth_runtime.cpp TickLevelLogic -> `PlayerMoveTick` | seen flat on the owner's PC (367c710c): 161 of 161 tic lines equal move_sched's (section 4) |
+| 64 | Flat keys (Up, Left, A and cl_run seen on the PC, section 4; the rest reasoning only): BT_FORWARD/BACK and sticks via forwardmove/sidemove (past 1/8 of full) -> Up/Down/strafes; BT_LEFT/RIGHT -> the turn ramp (the engine's own keyboard turn suppressed, g_game.cpp); BT_JUMP -> A; BT_CROUCH or the engine's crouch toggle -> Z; BT_SPEED -> Shift; cl_run -> the run toggle (read, never written) | PE `PlayerMoveTakeCmd` | reasoning only |
 | 65 | Mouse / headset / snap yaw: the engine's yaw change folded into the 512-unit angle with the fraction kept | PE `PlayerMoveTick` | reasoning only |
 | 66 | VR locomotion: smooth stick by default (the stick's forward/side -> the original's keys, digital as the original's); teleport as an option (the device's vr_teleport): the target sector's floor, not through the collision | PE `PlayerMoveRenderMove`, p_vrdemo.cpp | reasoning only, not seen in a headset |
 | 67 | VR snap turn 45 degrees: `roth_vr_snapturn` (non-archived, default 45) -> VR_SetSnapTurnOverride; the device turns by it (vk_openxrdevice.cpp); reset at every level load (p_setup.cpp) | hw_vrmodes, vk_openxrdevice | reasoning only; hw_vrmodes.cpp and vk_openxrdevice.cpp do not parse standalone in this container, not syntax-checked |
@@ -180,8 +180,13 @@ What the original does that the acceptance tests in GAME_core.md 10 guessed diff
   are logged, not run.
 - The mouse-steer path (29) and the pitch keys (25) are ported but neither diffed nor wired.
 - Door leaf corner order in the engine (46) is unverified.
-- Nothing of the engine binding (62-73) has been seen running: no build here, no PC run, no
-  headset. `tools/claude_bridge/cfg/move_flat.cfg` is the first PC check; its expected lines are
-  `tools/move_test/expected/move_flat_walk.txt` (cl_run 0) and `move_flat_run.txt` (cl_run 1),
-  computed by `move_sched` with the engine's schedule. The engine's tic numbers may lead or lag
-  them by one or two (the command is built ahead of the tic and roth_at runs at the end of one).
+- The engine binding (62-73) has run flat on the owner's PC once (367c710c, move_flat.cfg, cl_run 1):
+  all 161 `[roth_move]` tic lines equal `tools/move_test/expected/move_flat_run.txt` (compare with
+  `tools/move_test/cmp_pc.sh LOG run`; health is left out, it is the engine's). The expected lines
+  come from `move_sched`, which runs the engine's schedule (2 ticks + 1 frame a tic) and takes the
+  cfg's roth_at tics: a key pressed by `roth_at N` is first seen at tic N+1 (roth_at runs at the end
+  of a tic, after P_PlayerThink read the command) and last at the tic of its release. A one-tic press
+  (`+jump` at 120, `-jump` at 121) is seen for exactly one tic, 121, and jumps.
+  The positions print through integer rounding (`Fix4`): printf's rounding of an exact tie differs
+  between C runtimes (647.15625: glibc 647.1562, MSVC 647.1563).
+  Not seen: VR (62-73's headset parts), doors, objects, falls in the engine.
