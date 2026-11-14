@@ -722,6 +722,11 @@ Found by the first PC run (03548253) and fixed in the runtime, flat included: ev
 could ever play (only an item's OnInspect); and a floor examine was bound to the first sector carrying its id only (the
 typewriter's id 23 is on s306 and s315). Both now as the original's dispatcher (E/raw_commands.c:3102-3170).
 
+Found by the second PC run (e145db53): a creature's picture is far wider than its body (the ghoul ADEMO[43]: the fist
+"landed" on the picture's box 100 units from its axis, and the attack aimed there met nothing). The fist now meets a
+creature's body as the original's shots do (the dimension table: half-side 64, height 170 for the ghoul; CP:1123-1127),
+and a step faster than 12 m/s (a tracking jump, a test hand placed) is dropped, not read as a swing.
+
 [R] Not seen in the headset; the zones' places on the sofa and the desk are slices of their pick boxes, not measured on
 the meshes. The flat cfg shows each one in STUDY1 with log lines.
 

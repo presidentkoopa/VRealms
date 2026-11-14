@@ -127,6 +127,7 @@ struct Thing
 	bool shared = false;
 	int art = -1;
 	DVector3 lo, hi;
+	bool creature = false;   // lo / hi are the original's body (ActorsCreatureBody), not the picture's pick box
 };
 
 enum ZoneShape { ZONE_BAND, ZONE_FLOOR, ZONE_CLOUD };
@@ -160,6 +161,7 @@ struct HandG
 	int prevTic = 0;
 	int wardTic = -1000;
 	int loggedWardCm = -1;
+	int placedUntil = -1;   // the flat test placed this hand (reach, look, home, a move in 0 tics): a jump until then
 	Motion motion;
 };
 
@@ -233,7 +235,17 @@ std::vector<Thing> Things(AActor *pmo)
 		if (FindObjectActor(t.sector, t.index) != mo) continue;
 		t.mo = mo;
 		if (const Object *o = RuntimeObject(t.sector, t.index)) t.shared = Pack::ResolveObjectArt(o->textureIndex, o->textureSource, t.art);
-		ObjectPickBox(mo, t.lo, t.hi);
+		// A CREATURE's body is the original's (the box its shots meet), not its picture: the PC run of e145db53 had the
+		// fist "land" on the picture's box 100 units from the creature's axis (ADEMO[43]'s frame is that wide), and the
+		// attack aimed there met nothing.
+		int r = 0, h = 0;
+		if (ActorsCreatureBody(t.sector, t.index, r, h))
+		{
+			t.creature = true;
+			t.lo = DVector3(mo->X() - r, mo->Y() - r, mo->Z());
+			t.hi = DVector3(mo->X() + r, mo->Y() + r, mo->Z() + h);
+		}
+		else ObjectPickBox(mo, t.lo, t.hi);
 		out.push_back(t);
 	}
 	return out;
@@ -428,7 +440,10 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 			return;
 		}
 		Strike(role, g, bestPick, bestP, b, SecondaryClick(bestType), bestType, now,
-			FStringf("object %d/%d", best->sector, best->index).GetChars());                // 21
+			FStringf("object %d/%d (%s at (%.0f %.0f %.0f), %s (%.0f %.0f %.0f)..(%.0f %.0f %.0f), the fist %.1f units from its axis)", best->sector,
+				best->index, best->creature ? "a creature" : "an object", best->mo->X(), best->mo->Y(), best->mo->Z(),
+				best->creature ? "the original's body" : "its picture's box", best->lo.X, best->lo.Y, best->lo.Z, best->hi.X, best->hi.Y, best->hi.Z,
+				bestD).GetChars());                                                          // 21
 		return;
 	}
 	// 22: no body -- what the fist meets along its travel this tic (a switch, a door, the glass).
@@ -625,18 +640,29 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 	const DVector3 body(pmo->X(), pmo->Y(), pmo->player->viewz);
 	const gesture::V3 relPalm = Metres(h.palm - body, upm), relTip = Metres(h.tip - body, upm);
 	gesture::V3 velPalm, velTip;
-	const bool velOk = g.havePrev && now - g.prevTic >= 1 && now - g.prevTic <= kMaxGap;
+	bool velOk = g.havePrev && now - g.prevTic >= 1 && now - g.prevTic <= kMaxGap;
 	if (velOk)
 	{
 		const double k = (double)kTicRate / (now - g.prevTic);
 		velPalm = (relPalm - g.prevRelPalm) * k;
 		velTip = (relTip - g.prevRelTip) * k;
 	}
+	// A STEP NO HAND MAKES (roth_gesture.h HandStepIsJump), or a test hand placed: nothing of it counts.
+	const bool jump = (velOk && (HandStepIsJump(velPalm.Length()) || HandStepIsJump(velTip.Length()))) || now <= g.placedUntil;
+	if (jump)
+	{
+		if (Logging() && g.punch.armed)
+			Printf("[roth_gestures] %s hand: a step of %.1f m/s %s -- a jump, not a motion: dropped\n", RoleName(role), velPalm.Length(),
+				now <= g.placedUntil ? "(the test hand was placed)" : "(over 12 m/s)");
+		g.punch.Jumped();
+		velOk = false;
+	}
 	const bool fist = h.gripClosed && !HandHoldsWeapon(role);
 	const bool open = !h.gripClosed && h.grip <= 0.35f && h.trigger <= 0.35f && HandIsEmpty(role);
 
 	// ---- THE PUNCH ----
-	const bool swing = g.punch.Feed(fist, relPalm, now, pmo->Angles.Yaw.Degrees(), Stretch());
+	const bool swing = !jump && g.punch.Feed(fist, relPalm, now, pmo->Angles.Yaw.Degrees(), Stretch());
+	if (jump && fist) { g.punch.prevValid = true; g.punch.prevTic = now; g.punch.loc = relPalm; g.punch.prevYaw = pmo->Angles.Yaw.Degrees(); }
 	if (swing && g.havePrev) PunchContact(role, g, pmo, things, g.prevPalm, h.palm, upm, now);
 
 	// ---- THE KNOCK ----
@@ -669,11 +695,34 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 			const AttemptSample s = SampleZone(z, h.palm, h.tip, velPalm, velTip, h.gripClosed, things, upm, p);
 			if (z.det[role].Feed(s) && p.kind != Pick::Nothing) Attempted(role, p, z.shape == ZONE_FLOOR && z.floor->tip ? h.tip : h.palm, z.what, z.kind, z.record);
 		}
-		// the door search: an open palm on a door leaf, sweeping
+		// the door search: an open palm on a door leaf, sweeping. The leaf under the palm or the fingertip (PickTouchSurface),
+		// or along the hand from just behind the palm (NearAct's ray: the PC runs of 03548253 / e145db53 found the leaf
+		// that way, 4.5 units along the hand, and never under the palm); keyed by the leaf's polyobject, so the palm
+		// sliding from one of its lines to the next is one sweep.
 		Pick door;
-		const bool onDoor = open && ((PickTouchSurface(pmo, h.palm, kSweepTouchM * upm, door) && door.kind == Pick::DoorLeaf)
-			|| (PickTouchSurface(pmo, h.tip, kSweepTouchM * upm, door) && door.kind == Pick::DoorLeaf));
-		const long key = onDoor && door.line != nullptr ? door.line->Index() : -1;
+		const char *how = "no door leaf within 4 cm";
+		bool onDoor = false;
+		if (open)
+		{
+			const double r = kSweepTouchM * upm;
+			if (PickTouchSurface(pmo, h.palm, r, door) && door.kind == Pick::DoorLeaf) { onDoor = true; how = "the palm on it"; }
+			else if (PickTouchSurface(pmo, h.tip, r, door) && door.kind == Pick::DoorLeaf) { onDoor = true; how = "the fingertips on it"; }
+			else
+			{
+				const double back = 0.08 * upm;
+				Pick along;
+				if (PickFrom(pmo, h.palm - h.handFwd * back, h.handFwd, back + r, along) && along.kind == Pick::DoorLeaf)
+				{
+					door = along;
+					onDoor = true;
+					how = "along the hand";
+				}
+			}
+		}
+		const long key = onDoor ? (door.leafTag != 0 ? (long)door.leafTag + (1L << 20) : (door.line != nullptr ? door.line->Index() : 0)) : -1;
+		if (Logging() && key != g.sweepKey && (open || g.sweepKey >= 0))
+			Printf("[roth_gestures] %s hand, the door search: %s%s\n", RoleName(role), how,
+				onDoor ? FStringf(" (door leaf, polyobject %d, %.1f units)", door.leafTag, door.dist).GetChars() : "");
 		if (key != g.sweepKey) { g.sweep.Reset(); g.sweep.kind = ATTEMPT_WAVE; g.sweep.waveMps = kSweepMps; g.sweepKey = key; }
 		AttemptSample s;
 		s.outside = onDoor ? 0.0 : 1e9;
@@ -851,6 +900,7 @@ void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVec
 		pmo->Angles.Pitch = DAngle::fromRad(atan2(eyeZ - want.Z, run));   // + looks down
 	}
 	pmo->ClearInterpolation();
+	if (S.level != nullptr) S.hand[role].placedUntil = S.level->maptime + 2;
 	const double upm = VRPickUnitsPerMetre();
 	const double dz = want.Z - (now.Z + (pmo->Z() - oldZ));
 	const double ps = S.level != nullptr && S.level->pixelstretch > 0 ? S.level->pixelstretch : 1.0;
@@ -902,6 +952,7 @@ CCMD(roth_gesturetest)
 		pmo->ClearInterpolation();
 		for (int side = 0; side < 2; side++) VRHandTest_SetOffset(side, 0, 0, 0);
 		VRHandTest_SetLift(0.0);
+		for (HandG &g : S.hand) { g.motion.on = false; g.placedUntil = S.level->maptime + 2; }
 		Printf("roth_gesturetest look: %.0f units from object %d/%d (%s[%d]) at bearing %.0f, facing its middle (%.0f %.0f %.0f), pitch %.1f\n",
 			units, t->sector, t->index, shared ? "ADEMO" : "DEMO", art, lookBearing, c.X, c.Y, c.Z, pmo->Angles.Pitch.Degrees());
 		return;
@@ -909,7 +960,7 @@ CCMD(roth_gesturetest)
 	if (!stricmp(argv[1], "home"))
 	{
 		for (int side = 0; side < 2; side++) VRHandTest_SetOffset(side, 0, 0, 0);
-		for (HandG &g : S.hand) g.motion.on = false;
+		for (HandG &g : S.hand) { g.motion.on = false; if (S.level != nullptr) g.placedUntil = S.level->maptime + 2; }
 		Printf("roth_gesturetest: both test hands at their usual place\n");
 		return;
 	}
@@ -929,7 +980,7 @@ CCMD(roth_gesturetest)
 		Printf("roth_gesturetest move: the %s hand from (%.2f %.2f %.2f) to (%.2f %.2f %.2f) m in %d tic(s): %.2f m%s\n", RoleName(role),
 			m.from[0], m.from[1], m.from[2], m.to[0], m.to[1], m.to[2], m.tics, dist,
 			m.tics > 0 ? FStringf(", %.2f m/s", dist * kTicRate / m.tics).GetChars() : "");
-		if (m.tics <= 0) { VRHandTest_SetOffset(side, m.to[0], m.to[1], m.to[2]); m.on = false; }
+		if (m.tics <= 0) { VRHandTest_SetOffset(side, m.to[0], m.to[1], m.to[2]); m.on = false; if (S.level != nullptr) S.hand[role].placedUntil = S.level->maptime + 2; }
 		return;
 	}
 	if (!stricmp(argv[1], "reach") && argv.argc() >= 5 && pmo != nullptr && S.level != nullptr)

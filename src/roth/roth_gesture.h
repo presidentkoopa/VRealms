@@ -207,6 +207,16 @@ struct PunchReader
 		return true;
 	}
 
+	// A jump (HandStepIsJump): no velocity from it, and the swing so far is not a swing (not RSQ's; see above).
+	void Jumped()
+	{
+		prevValid = false;
+		swinging = false;
+		approach = 0;
+		approachTics = 0;
+		path = V3();
+	}
+
 	// A blow landed, or the fist worked a switch or a door (items 21, 23).
 	void Landed(int now)
 	{
@@ -218,6 +228,14 @@ struct PunchReader
 		lastHit = now;
 	}
 };
+
+// NOT RSQ's: A STEP NO HAND MAKES. RSQ drops a one-tic step over JUMP_UNITS (item 8: 1.41 m a tic, 49 m/s); a hand
+// read here can also be moved by a tracking jump or, in the flat test, a test hand placed (the PC run of e145db53:
+// "punch (41.11 m/s)", "(33.89 m/s) meets object 55/0 ... use: acted", "(14.00 m/s) lands" at `home`). The fastest
+// punches measured are about 10 m/s at the fist [R: from the sports literature, not measured here]; a step faster than
+// kHandMaxMps is a jump: the caller drops it and ends the swing (PunchReader::Jumped) before it can count.
+constexpr double kHandMaxMps = 12.0;
+inline bool HandStepIsJump(double mps) { return mps > kHandMaxMps; }
 
 // Item 17, one body: the fist's path a -> b (map units) against a body standing on `base` (its axis, map
 // units) with `radius` and `height`, the glove `gr`. `dxy`: how near the path came to the axis in the plane;

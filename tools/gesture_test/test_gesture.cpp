@@ -239,6 +239,16 @@ static void PunchCases()
 		run(p, 0, 8, now, at, V3(1, 0, 0));
 		CHECK(!p.Feed(false, at, now + 1, 0) && !p.prevValid, "a hand that is not a fist reads nothing");
 	}
+	// not RSQ's: a step no hand makes (the PC run of e145db53: test hands placed at 14-41 m/s counted as punches)
+	{
+		CHECK(!HandStepIsJump(10.0) && HandStepIsJump(14.0) && HandStepIsJump(41.1), "12 m/s is the cap: 10 a hand, 14 and 41 jumps");
+		PunchReader p; int now = 0; V3 at;
+		run(p, 0, 8, now, at, V3(1, 0, 0));
+		run(p, 3.0, 1, now, at, V3(1, 0, 0));
+		p.Jumped();
+		CHECK(p.approach == 0 && p.approachTics == 0 && !p.prevValid, "a jump ends the swing so far and gives no velocity");
+		CHECK(p.armed, "a jump does not disarm (the next real swing still counts)");
+	}
 	// contact (gloves.zs:710-731) and the pulled-back rule (:622-627)
 	{
 		double dxy; V3 pt;

@@ -802,6 +802,21 @@ void ActorsSetFireButtonAllowed(bool allowed) { g_fireButtonAllowed = allowed; }
 void ActorsRequestFireAt(double x, double y, double z) { g_fireAt.pending = true; g_fireAt.x = x; g_fireAt.y = y; g_fireAt.z = z; }
 int ActorsTickCount() { return g_actors.ticks; }
 
+bool ActorsCreatureBody(int rothSector, int rothIndex, int &radius, int &height)
+{
+	if (!g_actors.active) return false;
+	const ObjectUid uid = g_actors.world.UidAt(rothSector, rothIndex);
+	if (uid == 0) return false;
+	bool creature = false;
+	for (const ActorSlot &a : g_actors.world.actors) if (a.object == uid && a.creature >= 0) creature = true;
+	const Object *o = creature ? g_actors.world.Find(uid) : nullptr;
+	if (o == nullptr) return false;
+	const uint16_t id = (uint16_t)(o->textureIndex | (o->textureSource << 8));   // ObjId, roth_actor_collide.cpp:36
+	radius = g_actors.tables.DimRadius(id);
+	height = g_actors.tables.DimHeight(id);
+	return radius > 0 && height > 0;
+}
+
 bool ActorsObjectHealth(int rothSector, int rothIndex, int32_t &health, uint8_t &state)
 {
 	if (!g_actors.active) return false;

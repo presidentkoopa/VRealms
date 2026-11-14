@@ -80,6 +80,11 @@ void ActorsRequestFireAt(double x, double y, double z);
 // A creature's slot for the object (sector, index): its health (+0x0c) and state (+0x08, 0x20 a corpse). False:
 // the object has no creature slot. For a log line (the gestures' punch: the health before and after).
 bool ActorsObjectHealth(int rothSector, int rothIndex, int32_t &health, uint8_t &state);
+// A CREATURE's body as the original's shots meet it (sweep_move_with_collision's object test, CP:1123-1127; the
+// port's roth_actor_collide.cpp): a square of half-side `radius` round its x, y (Chebyshev distance under it), from
+// its z up `height` -- the dimension table's words for its picture id. False: not a creature with a slot, or no
+// dimensions. The VR fist meets this body, not the picture's pick box (roth_gestures.cpp).
+bool ActorsCreatureBody(int rothSector, int rothIndex, int &radius, int &height);
 // How many 70 Hz ticks the actors have run (a log line: none while the inventory pauses the world).
 int ActorsTickCount();
 
