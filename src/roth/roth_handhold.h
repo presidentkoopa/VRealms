@@ -49,6 +49,7 @@ inline constexpr ItemGrip kItemGrips[] =
 	// --- items (the original's right hand) ---
 	{  15, "Lamp",                   false, VRHandPose::GRIPSUBJ_None,      "fbx_curl", nullptr, false, "the bail, fingers hooked: curl (206); no subject's pose is curl" },
 	{  16, "Matchbox",               false, VRHandPose::GRIPSUBJ_Magazine,  nullptr, nullptr, false, "wrap_half (820) round the sleeve" },
+	{  17, "Book",                   false, VRHandPose::GRIPSUBJ_Magazine,  nullptr, nullptr, false, "wrap_half (820) across the spine (VR_CHAPTER01_SHADOWS entry 7); both hands while open (roth_held.cpp)" },
 	{   1, "Shards and Seals",       false, VRHandPose::GRIPSUBJ_Foregrip,  nullptr, nullptr, false, "the pouch by its neck in a fist (319)" },
 	{ 175, "Magical Torch",          false, VRHandPose::GRIPSUBJ_Forend,    nullptr, nullptr, false, "the barrel, wrap_tight (837)" },
 	{   4, "Statuette (serpent)",    false, VRHandPose::GRIPSUBJ_Magazine,  nullptr, nullptr, false, "round the coils, wrap_half (820)" },

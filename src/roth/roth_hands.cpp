@@ -30,6 +30,7 @@
 
 #include "roth_hands.h"
 #include "roth_handhold.h"
+#include "roth_held.h"
 #include "roth_interface.h"
 #include "roth_inventory.h"
 #include "roth_actors_engine.h"
@@ -137,6 +138,9 @@ static void PublishHeld()
 		held[VR_MAINHAND].propClass = w.propClass;
 		if (held[VR_MAINHAND].item == 0) held[VR_MAINHAND].item = w.item;
 	}
+	// The held objects' poses (roth_held.h): the match pinched, the lamp by its bail, both hands round the Book --
+	// never over a drawn weapon.
+	for (int r = 0; r < 2; r++) if (!held[r].weapon) HeldPose(r, held[r]);
 	VRHandPose_SetHeld(VR_MAINHAND, held[VR_MAINHAND]);
 	VRHandPose_SetHeld(VR_OFFHAND, held[VR_OFFHAND]);
 }

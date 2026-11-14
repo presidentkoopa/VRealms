@@ -795,6 +795,12 @@ void ActorsHudWeapon(int32_t &item, int32_t &ammo, int32_t &ammoCap, int32_t &pa
 
 void ActorsSetHudPanel(int32_t panel) { g_actors.world.weapon.actions[0].SetD(0x48, panel); }
 int32_t ActorsActiveAmmoId() { return g_actors.world.weapon.actions[0].D(0x30); }
+int ActorsLoosePicture(const char *name, const std::vector<uint8_t> &rowMajor, int w, int h)
+{
+	if (!g_art.level || !g_art.level->IsOpen()) return -1;
+	const FTextureID tex = g_art.level->LoosePicture(name, rowMajor, w, h);
+	return tex.isValid() ? tex.GetIndex() : -1;
+}
 void ActorsAddWeaponAmmo(int delta) { g_actors.world.weapon.ammo += delta; }
 
 // Outside the anonymous namespace: declared in roth_actors_engine.h (the MSVC link trap).

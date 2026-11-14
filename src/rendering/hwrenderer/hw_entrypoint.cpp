@@ -50,6 +50,7 @@
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
 #include "roth/roth_candles.h"	// [ROTH] the candles' lights (roth::CandlesFrameLights)
+#include "roth/roth_held.h"		// [ROTH] the held objects' lights (roth::HeldFrameLights)
 #include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::BeginFrame, PrepareFrame
 #include "hw_exposureimpulse.h"	// [EXPOSUREIMPULSE] ExposureImpulses::BeginFrame, PublishNone
 #include <algorithm>			// [LIGHTSHADOWS] std::nth_element in CollectLights
@@ -307,6 +308,9 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	// effect lights before their BeginFrame below takes this frame's (roth_candles.h). Inert on any other level.
 	if (mainview && toscreen)
 		roth::CandlesFrameLights(camera->Level, mainvp.TicFrac, mainvp.Angles.Yaw.Degrees());
+	// [ROTH] The held objects' lights: the struck match, the Lamp, the niche's flash (roth_held.h).
+	if (mainview && toscreen)
+		roth::HeldFrameLights(camera->Level, mainvp.TicFrac);
 
 	// [EFFECTLIGHTS] This frame's effect lights, once, before the shadow map: the queue drained, every light at this frame's
 	// level time, the pool capped, and the point lights walls block put in row order (hw_effectlights.h). True when they want

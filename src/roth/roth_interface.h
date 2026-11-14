@@ -54,6 +54,14 @@ uint32_t InterfaceOpenDialogueWindowAlt(const uint8_t *text, uint32_t bytes);
 void InterfaceDialogueVoiceForceEnd(uint32_t eax, uint32_t edx);
 int32_t InterfaceInventoryPanelOpen();
 int32_t InterfaceInspectPopupActive();
+// THE HELD OBJECTS (roth_held.cpp). The item whose examine popup is up and running, 0 none. Read only.
+int InterfacePopupItem();
+// The popup's billboard placed in the hands (the Book, owner Q8): at `at`, squared to the eye, its size times
+// `scale`; `on` false puts it back where the original's screen has it. Presentation: the same picture, content,
+// timing and hit test (the hands' laser reads the billboard where it stands).
+void InterfacePopupPlace(bool on, const PanelV3 &at, double scale);
+// An item's inventory icon, DBASE200 (load_item_icon_resource, roth_uidraw.h ItemIconPicture). False: none.
+bool InterfaceItemIcon(int item, const uint8_t **img, size_t *size);
 void InterfaceArmPanelExit();
 void InterfaceRequestPanelClose();
 

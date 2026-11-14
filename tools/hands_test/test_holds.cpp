@@ -430,8 +430,9 @@ static void TestItemMap()
 			made[0].c_str(), made[1].c_str(), g.needsFrame ? "  [needs a new authored frame]" : "");
 	}
 	CHECK(bad == 0, "%d of %d item rows name a pose the table lacks", bad, rows);
-	const HeldState none = roth::HeldFor(17, false);
-	CHECK(none.subject == GRIPSUBJ_None && none.pose.empty() && !none.weapon, "an item with no design (17, the Book) holds nothing: the controller's pose");
+	// (17, the Book, was this test's item until it got its row: wrap_half across the spine, owner Q8, 2026-11-13.)
+	const HeldState none = roth::HeldFor(36, false);
+	CHECK(none.subject == GRIPSUBJ_None && none.pose.empty() && !none.weapon, "an item with no design (36, the Note) holds nothing: the controller's pose");
 }
 
 int main()

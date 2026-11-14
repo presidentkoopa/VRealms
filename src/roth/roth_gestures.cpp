@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "roth_gestures.h"
+#include "roth_held.h"
 #include "roth_gesture.h"
 #include "roth_handclick.h"
 #include "roth_vrpick.h"
@@ -622,6 +623,7 @@ void Forget(HandG &g)
 bool HandIsEmpty(int role)
 {
 	if (HandHoldsWeapon(role)) return false;
+	if (HeldHandCarries(role)) return false;   // the Lamp, the lit match, the open Book (roth_held.h)
 	if (VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT)
 	{
 		const Inventory *inv = InterfaceInventory();
@@ -657,7 +659,7 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 		g.punch.Jumped();
 		velOk = false;
 	}
-	const bool fist = h.gripClosed && !HandHoldsWeapon(role);
+	const bool fist = h.gripClosed && !HandHoldsWeapon(role) && !HeldHandCarries(role);   // a hand round the Lamp's bail is no fist
 	const bool open = !h.gripClosed && h.grip <= 0.35f && h.trigger <= 0.35f && HandIsEmpty(role);
 
 	// ---- THE PUNCH ----

@@ -352,6 +352,8 @@ void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi);
 // for presentation that must read the original's state (roth_candles.cpp). Null outside a level or range.
 struct Object;
 const Object *RuntimeObject(int rothSector, int rothIndex);
+// A Realms sector's live light byte (Sector::light, what the 0x1d ramps change), -1 for none. Read only.
+int RuntimeSectorLight(int rothSector);
 
 // A HAND LAID ON A WALL: the nearest Realms wall face or door leaf within
 // `radius` of the point `p` (a palm), measured in the map's plane, with `p`

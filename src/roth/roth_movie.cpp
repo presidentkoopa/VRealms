@@ -7,6 +7,7 @@
 //
 
 #include "roth_movie.h"
+#include "roth_held.h"
 #include "roth_install.h"
 #include "roth_interface.h"
 #include "roth_dbase100.h"
@@ -117,6 +118,7 @@ void MoviePump()
 		wipegamestate = GS_LEVEL;
 		gRunning = false;
 		Printf("Realms: movies over, back to the level\n");
+		HeldMovieOver();   // a forced turn waiting for the black: the VR view takes it now (roth_held.h, owner Q7)
 	};
 	cutscene.runner = CreateRunner(true);
 	GC::WriteBarrier(cutscene.runner);

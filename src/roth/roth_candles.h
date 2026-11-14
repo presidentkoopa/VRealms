@@ -14,7 +14,9 @@
 //                      which every retail candle chain does right after its item test (tools/wicks_test) -- the
 //                      wick the hand was at (or the one nearest where it pointed) is the first wick lit.
 //   CandlesTick        TickLevelLogic, after every chain of the tic: the flames at the wicks (the item hand
-//                      holding the item the chain tests, or any fingertip when it tests none). On an unlit
+//                      holding the item the chain tests, or any fingertip when it tests none; and the struck
+//                      match's flame in the off hand, roth_held.h, on a candle testing the Matchbox or none -- its
+//                      use is the item hand's, so the chain sees the right-hand item as from that hand). On an unlit
 //                      candle a flame coming to a wick fires the original's use from that hand (the VR use
 //                      path, VRPickUseObject); on a candle being lit it lights the wick. The picture: while
 //                      wicks are still dark, the composite of the lit ones in place of whatever the original

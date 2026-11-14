@@ -139,6 +139,7 @@
 #include "roth_actors_engine.h"
 #include "roth_candles.h"
 #include "roth_gestures.h"
+#include "roth_held.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -753,6 +754,8 @@ void TickHand(int role, AActor *pmo)
 	h.pressReady = h.valid && h.grip >= kPointGrip && !h.triggerTouch;
 	bool gripEdge = false, trigEdge = false;
 	ReadButtons(h, gripEdge, trigEdge);
+	// A grip closing at the Lamp's bail takes the lamp (roth_held.h, owner Q2): it is not a use.
+	if (gripEdge && HeldGripTaken(role)) gripEdge = false;
 
 	if (Logging())
 	{

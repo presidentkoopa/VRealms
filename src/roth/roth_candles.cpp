@@ -13,6 +13,7 @@
 #include "roth_vrpick.h"
 #include "roth_interface.h"
 #include "roth_inventory.h"
+#include "roth_held.h"
 
 #include "actor.h"
 #include "d_player.h"
@@ -38,6 +39,8 @@ namespace roth
 namespace
 {
 
+// The item a struck match comes from (roth_held.h): a candle whose chain tests it takes the match's flame.
+constexpr int kMatchboxItem = 16;
 // A flame this close to a wick lights it (docs/WORLD_DESIGN.md 2.3: "within 3 cm"), in metres.
 constexpr double kWickReach = 0.03;
 // The first wick of a use made with the palm on the candle: the wick nearest the hand if within this.
@@ -299,6 +302,11 @@ void CandlesTick(FLevelLocals *level)
 	for (int role = 0; role < 2; role++) have[role] = VRPickFlamePoints(role, tip[role], palm[role]);
 	const int itemRole = VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
 	const int rightItem = RightItem();
+	// THE STRUCK MATCH (roth_held.h; owner Q1): a flame in the off hand. Its use is the item hand's -- the chain tests the
+	// right-hand item, the Matchbox, and the match is presentation -- so a candle it lights sees exactly the use the
+	// matchbox hand would make. It lights a candle whose chain tests the Matchbox, or none.
+	DVector3 matchFlame;
+	const bool haveMatch = HeldMatchFlame(matchFlame);
 
 	for (Candle &c : g_candles)
 	{
@@ -313,6 +321,7 @@ void CandlesTick(FLevelLocals *level)
 		// original's right-hand item, only while it is the item the chain tests (the Matchbox); a candle whose
 		// chain tests none, from any fingertip.
 		uint32_t near = 0;
+		bool nearByMatch = false;
 		int nearRole = -1;
 		double nearDist = 0;
 		int closest = -1, closestRole = -1;
@@ -333,6 +342,19 @@ void CandlesTick(FLevelLocals *level)
 					if (d < closestDist) { closestDist = d; closest = k; closestRole = role; }
 				}
 			}
+			if (haveMatch && (c.spec.item == 0 || c.spec.item == kMatchboxItem))
+			{
+				for (int k = 0; k < c.w.Wicks(); k++)
+				{
+					const double d = (matchFlame - WickAt(c, mo, k, yaw)).Length();
+					if (d <= reach)
+					{
+						near |= 1u << k;
+						if (nearRole < 0 || d < nearDist) { nearRole = itemRole; nearDist = d; nearByMatch = true; }
+					}
+					if (d < closestDist) { closestDist = d; closest = k; closestRole = itemRole; }
+				}
+			}
 		}
 		// roth_vrpick_debug: a flame within 10 cm of a wick, each time the nearest wick changes.
 		{
@@ -350,8 +372,9 @@ void CandlesTick(FLevelLocals *level)
 		const int ask = c.w.Flames(near);
 		if (ask >= 0 && nearRole >= 0 && mo != nullptr)
 		{
-			Printf("[roth_candles] object %d/%d: the %s hand's flame at wick %d (%.2f m): the original's use\n", c.spec.sector, c.spec.index,
-				RoleWord(nearRole), ask + 1, nearDist / VRPickUnitsPerMetre());
+			Printf("[roth_candles] object %d/%d: the %s at wick %d (%.2f m): the original's use from the %s hand%s\n", c.spec.sector, c.spec.index,
+				nearByMatch ? "struck match's flame (off hand)" : FStringf("%s hand's flame", RoleWord(nearRole)).GetChars(), ask + 1,
+				nearDist / VRPickUnitsPerMetre(), RoleWord(nearRole), nearByMatch ? " (the item hand: the right-hand item is what the chain tests)" : "");
 			g_forceWick = ask;
 			VRPickUseObject(nearRole, mo, WickAt(c, mo, ask, yaw));
 			g_forceWick = -1;
@@ -361,8 +384,8 @@ void CandlesTick(FLevelLocals *level)
 			const uint32_t added = c.w.Mask() & ~before;
 			for (int k = 0; k < c.w.Wicks(); k++)
 				if (added & (1u << k))
-					Printf("[roth_candles] object %d/%d: wick %d lit by the %s hand (%.2f m), %d of %d lit, tic %d of the lighting\n", c.spec.sector,
-						c.spec.index, k + 1, RoleWord(nearRole), nearDist / VRPickUnitsPerMetre(), Bits(c.w.Mask()), c.w.Wicks(),
+					Printf("[roth_candles] object %d/%d: wick %d lit by the %s (%.2f m), %d of %d lit, tic %d of the lighting\n", c.spec.sector,
+						c.spec.index, k + 1, nearByMatch ? "struck match" : FStringf("%s hand", RoleWord(nearRole)).GetChars(), nearDist / VRPickUnitsPerMetre(), Bits(c.w.Mask()), c.w.Wicks(),
 						c.w.TicsSinceStart());
 		}
 		if (c.w.Caught() && c.w.TicsSinceStart() == WickLighting::CATCH_TICS)
@@ -403,6 +426,13 @@ bool FlameHand(const Candle &c, int role, int itemRole, int rightItem)
 {
 	return c.spec.item == 0 || (role == itemRole && rightItem == c.spec.item);
 }
+// The off hand pinching the struck match (roth_held.h; owner Q13: "point the lit match at a wick in reach + grip"): a
+// flame for a candle testing the Matchbox or none. Its use is the item hand's, as the match's touch (CandlesTick).
+bool MatchHand(const Candle &c, int role, int itemRole)
+{
+	DVector3 f;
+	return role != itemRole && HeldMatchFlame(f) && (c.spec.item == 0 || c.spec.item == kMatchboxItem);
+}
 }
 
 bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
@@ -429,7 +459,7 @@ bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
 		if (o == nullptr || mo == nullptr || c.handedBack) continue;
 		const bool litNow = WordOf(*o) == g_kinds[c.kind].litWord;
 		if (!(c.w.IsStarted() || (!litNow && o->commandID == c.spec.clickId))) continue;
-		if (!FlameHand(c, role, itemRole, rightItem)) continue;
+		if (!FlameHand(c, role, itemRole, rightItem) && !MatchHand(c, role, itemRole)) continue;
 		for (int k = 0; k < c.w.Wicks(); k++)
 		{
 			if (c.w.IsStarted() && (c.w.Mask() & (1u << k))) continue;
@@ -459,7 +489,9 @@ bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
 	if (!c.w.IsStarted())
 	{
 		g_forceWick = bestK;
-		VRPickUseObject(role, bestMo, bestW);
+		const bool byMatch = !FlameHand(c, role, itemRole, rightItem) && MatchHand(c, role, itemRole);
+		if (byMatch) Printf("[roth_candles] object %d/%d: the struck match points it: the original's use from the item hand\n", c.spec.sector, c.spec.index);
+		VRPickUseObject(byMatch ? itemRole : role, bestMo, bestW);
 		g_forceWick = -1;
 		return true;
 	}

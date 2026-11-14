@@ -236,6 +236,13 @@ struct Ui
 	InspectPopupView popup;
 	std::vector<uint8_t> popupFilm;                 // the close-up's GDV bytes (DBASE300 from its offset)
 	double popupIsr = 0.0;                          // GDV timer ticks (60 Hz) owed to the film
+	// THE POPUP PLACED IN THE HANDS (roth_held.cpp, the Book: owner Q8). Presentation only: the same billboard, the
+	// same picture and hit test (PlaneOf reads the billboard), standing at `popupAt` squared to the eye, its size
+	// times `popupScale`. Off: where the original's screen puts it (BuildPopup).
+	bool popupPlaced = false;
+	DVector3 popupAt;
+	double popupScale = 1.0;
+	double popupBaseW = 0.0, popupBaseH = 0.0;      // the billboard's size as BuildPopup made it
 
 	FLevelLocals *level = nullptr;
 	std::vector<Element> elements;
@@ -1125,6 +1132,27 @@ void PanelClick(int px, int py, int button)
 	Printf("[roth_ui] panel click at %d,%d (button %d): action 0x%x\n", px, py, button, U.mouse.lastAction);
 }
 
+// The popup's billboard where the hands hold it (InterfacePopupPlace), or back where BuildPopup put it.
+void ApplyPopupPlacement()
+{
+	if (U.level == nullptr) return;
+	for (const Element &e : U.elements)
+	{
+		if (e.kind != E_POPUP) continue;
+		for (FBillboard &b : U.level->Billboards)
+		{
+			if (b.id != e.bb) continue;
+			if (U.popupPlaced && U.popupBaseW > 0.0)
+			{
+				b.pos = b.drawPos = U.popupAt;
+				b.facing = BBF_CAMERA;
+				b.width = U.popupBaseW * U.popupScale;
+				b.height = U.popupBaseH * U.popupScale;
+			}
+		}
+	}
+}
+
 void BuildPopup()
 {
 	if (!U.popup.painter.IsOpen()) return;
@@ -1134,6 +1162,11 @@ void BuildPopup()
 	// front of the inventory panel it opens over. A click on it is the
 	// original's hit test (InspectPopupPainter::HitTest).
 	AddWorldPicture(PIC_POPUP, 0, 0, 2.0, E_POPUP, true);
+	U.popupBaseW = U.popupBaseH = 0.0;
+	if (!U.elements.empty() && U.elements.back().kind == E_POPUP && U.level != nullptr)
+		for (FBillboard &b : U.level->Billboards)
+			if (b.id == U.elements.back().bb) { U.popupBaseW = b.width; U.popupBaseH = b.height; break; }
+	ApplyPopupPlacement();
 }
 
 // A DBASE100 interface text, resolved as resolve_dbase100_text does
@@ -1731,6 +1764,28 @@ uint32_t InterfaceOpenDialogueWindowAlt(const uint8_t *text, uint32_t bytes)
 void InterfaceDialogueVoiceForceEnd(uint32_t eax, uint32_t edx) { U.dialogue.DialogueVoiceForceEnd(eax, edx); }
 int32_t InterfaceInventoryPanelOpen() { return U.screen.g_inventory_panel_open; }
 int32_t InterfaceInspectPopupActive() { return U.screen.g_inspect_popup_active; }
+
+int InterfacePopupItem()
+{
+	if (!U.attached || !U.screen.PopupUp() || !U.popup.Active()) return 0;
+	return U.screen.PopupItem();
+}
+
+void InterfacePopupPlace(bool on, const PanelV3 &at, double scale)
+{
+	const bool was = U.popupPlaced;
+	U.popupPlaced = on;
+	U.popupAt = DVector3(at.x, at.y, at.z);
+	U.popupScale = scale > 0.0 ? scale : 1.0;
+	if (on) ApplyPopupPlacement();
+	else if (was) U.signature.clear();       // rebuilt where the original's screen puts it
+}
+
+bool InterfaceItemIcon(int item, const uint8_t **img, size_t *size)
+{
+	if (!U.attached || U.db == nullptr) return false;
+	return ItemIconPicture(*U.db, U.dbase200, item, img, size);
+}
 void InterfaceArmPanelExit() { U.screen.ArmExit(); }
 void InterfaceRequestPanelClose() { U.screen.RequestClose(); }
 
@@ -2050,6 +2105,7 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 //   roth_ui_open inventory | dialogue <action id>
 //   roth_ui_choice <row>                click choice row <row> of the open menu
 //   roth_ui_select <item id>            put an item in the right hand from the panel
+//   roth_ui_examine <item id>           the examine key on that item's entry (its popup)
 //   roth_ui_dump                        print what the panels show
 //   roth_ui_invclick <x> <y> [button]   click the inventory panel at its pixel (x, y)
 //
@@ -2195,6 +2251,21 @@ static void RunQueued(player_t *player)
 			const int rh = U.core->Items().RightHand(), lh = U.core->Items().LeftHand();
 			Printf("[roth_ui] select: item %d -> right hand slot %d, left hand slot %d\n", id, rh, lh);
 		}
+		else if (verb == "examineitem")
+		{
+			// The original's examine key on the entry holding the item (inventory.c:1799-1804): its popup, and on
+			// the first look its OnInspect (file_config.c:962-967).
+			const int32_t id = arg;
+			if (!U.screen.IsOpen()) U.screen.Open();
+			U.screen.KeyTab(ItemTabIndex(*U.db, id));
+			int entry = -1;
+			for (size_t i = 0; i < U.screen.Entries().slots.size(); i++)
+				if ((int16_t)U.core->Items().Slot(U.screen.Entries().slots[i]).id == id) { entry = (int)i; break; }
+			if (entry < 0) { Printf("[roth_ui] examine: item %d is not carried (or not on its tab)\n", id); continue; }
+			U.screen.CursorTo(entry);
+			U.screen.KeyExamine();
+			Printf("[roth_ui] examine: item %d (entry %d): the examine key\n", id, entry);
+		}
 		else if (verb == "invclick")
 		{
 			// A click at panel pixel (x, y), as a pointer on the picture makes it.
@@ -2238,6 +2309,11 @@ CCMD(roth_ui_select)
 	Queue(argv, "select", 1);
 }
 CCMD(roth_ui_dump) { Queue(argv, "dump", 1); }
+CCMD(roth_ui_examine)
+{
+	if (argv.argc() < 2) { Printf("roth_ui_examine <item id> -- the inventory's examine key on that item\n"); return; }
+	Queue(argv, "examineitem", 1);
+}
 CCMD(roth_ui_invclick)
 {
 	if (argv.argc() < 3) { Printf("roth_ui_invclick <x> <y> [1 primary | 2 secondary] -- a click on the inventory panel's pixel\n"); return; }

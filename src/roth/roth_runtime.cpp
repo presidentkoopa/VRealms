@@ -41,6 +41,7 @@
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 #include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
 #include "roth_movie.h"       // the GDV player: movies the flow asks for
+#include "roth_held.h"        // the held objects (chapter 1): presentation, and the forced turn's view snap
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
@@ -4574,7 +4575,11 @@ public:
 		// 0x1ff, 512 to the turn, 0 facing +Y (RothAngleToDoom, roth_diff.cpp).
 		AActor *mo = CmdPlayer();
 		if (mo == nullptr) return;
+		const double from = mo->Angles.Yaw.Degrees();
 		mo->Angles.Yaw = DAngle::fromDeg(90.0 + (double)(a & 0x1ff) * (360.0 / 512.0));
+		// The game has the angle now; when the HEADSET's view takes it is presentation (roth_held.h: owner Q7, the
+		// snap during the black frames).
+		HeldForcedTurn(from, mo->Angles.Yaw.Degrees());
 	}
 	void TexmapChanged(int tmi) override { ApplyTexmapFull(tmi); }
 	void SectorFlatChanged(int si) override { ApplySectorFlat(si, true); ApplySectorFlat(si, false); }
@@ -5436,6 +5441,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	g.level = level;
 	g.active = true;
 	g.activeFace = g.activeSector = -1;
+	HeldBeginLevel(map, level);   // the light groups the held objects follow, from the pack's own bytes
 	// The command core works on this level's copy of the map. Its particle
 	// actors died with the last level; the player's health carries over.
 	g_cmd.Attach(&g.map, &g_cmdHost, &g.rng, &g.pendingRecord);
@@ -5923,6 +5929,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 
 void EndLevel()
 {
+	HeldEndLevel();
 	InterfaceEndLevel();
 	CmdClearParticleActors(false);      // the level's thinkers go with it
 	g.active = false;
@@ -6948,6 +6955,13 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 	}
 
 	return TRACE_Continue;
+}
+
+// A Realms sector's live light byte (+0x0b, what the 0x1d ramps change), -1 for none. Read only (roth_held.cpp).
+int RuntimeSectorLight(int rothSector)
+{
+	if (!g.active || rothSector < 0 || (size_t)rothSector >= g.map.sectors.size()) return -1;
+	return g.map.sectors[rothSector].light;
 }
 
 // The box a Realms object's actor is picked by (see PickFrom).
@@ -8717,6 +8731,7 @@ void TickLevelLogic(FLevelLocals *level)
 	{
 		InterfaceTick(level);
 		VRPickTick(level, true);     // modal: no beam, no gestures
+		HeldTick(level, false);      // the held objects stand still (the match does not burn)
 		SoundTick(level);
 		MoviePump();
 		DrainTimedCommands(level);   // tests drive menus with roth_at
@@ -8728,6 +8743,7 @@ void TickLevelLogic(FLevelLocals *level)
 		DrainTimedCommands(level);   // tests drive the inventory with roth_at
 		InterfaceTick(level);
 		VRPickTick(level, false);
+		HeldTick(level, false);      // the Book in both hands, the popup beside it; the match does not burn while paused
 		SoundPauseTick(level);
 		MoviePump();
 		return;
@@ -8791,6 +8807,10 @@ void TickLevelLogic(FLevelLocals *level)
 	// The candles' wicks (roth_candles.h): after every chain of the tic and the hands' uses, so the picture a
 	// chain's 0x0d or the actors' dressing put on a candle this tic is the one the per-wick picture stands in for.
 	CandlesTick(level);
+
+	// The held objects (roth_held.h): after the hands' uses and the candles, so the match struck this tic burns
+	// from the next and what each hand shows is what the original holds after every chain of the tic.
+	HeldTick(level, true);
 
 	// Realms' sound: the node pump (play_nearby_sfx_emitters, from
 	// update_player_tick, player.c:420), update_active_sounds, the doors.

@@ -260,6 +260,12 @@ fallback), **Tag**, **Q**. Record numbers are STUDY1's. Sizes are the art's as d
 - Tag: A. Effort S.
 
 **7. The Book (and the silver key inside)**
+- CORRECTION (2026-11-13, held objects lane) [V: the running original]: the Book's first look does NOT give i20 on this
+  install. Its OnInspect is `say 3660; if-flag 1; if-flag 4; !if-flag 4; say; say; set-flag 4; give 20`, and the
+  original's `if-flag` (op 0x01) ends the block when it fails (dbase100.c:803-808): `if-flag 4` then `!if-flag 4` can
+  never both pass. Seen: tools/gameproof's B trace for item 17 (from S0 and from every flag set + full inventory: the
+  line "Novel. Look Homeward Angel." and nothing more), and tools/held_test (heldprobe `inspect 17` in the headless
+  original: no give of 20 on either look). The text below reads the block as if its gates passed.
 - What: ADEMO[230] on the hall table (s412, 0.85 m), drawn 0.39 × 0.13 m [V].
 - Original: click `#205` → give i17 "Book" (sound 275). i17 is a document (category 4), close-up 20 frames. Its
   OnInspect says "Novel. Look Homeward Angel." / "Is there anything hidden in the pages?" / "Silver key." and gives
@@ -729,6 +735,26 @@ and a step faster than 12 m/s (a tracking jump, a test hand placed) is dropped, 
 
 [R] Not seen in the headset; the zones' places on the sofa and the desk are slices of their pick boxes, not measured on
 the meshes. The flat cfg shows each one in STUDY1 with log lines.
+
+### 6c. Built from the answers: the held objects (Q1, Q2, Q7, Q8, Q10, Q12)
+
+**BUILT for Q1, Q2, Q7, Q8, Q10, Q12 (2026-11-13, `src/roth/roth_held.*`, rules in `src/roth/roth_heldlogic.*`).**
+[V] engine-free: `tools/held_test/run.sh` (the stroke rule over a 1410-case grid, the match's 20 s, the hook, the
+light follower, the turn, the Book's view). [V] against the running original: `tools/held_test/run_diff.sh` (match
+sessions' uses leave the original's state as the flat clicks; the niche light follows the original's s58 byte; the
+palm shows what the original gives during the Book's popup). [R] everything in the engine until
+`tools/claude_bridge/cfg/held_flat.cfg` runs on the owner's PC; nothing seen in the headset.
+- Q1: a stroke of the off hand's index fingertip along either striker of the Matchbox in the item hand (ITEM_DESIGN
+  16: within 1 cm of the strip, >= 0.4 m/s, >= 3 cm) lights a match pinched in the off hand (fbx_pinch) for 20 s;
+  its flame lights wicks; the use is the item hand's (the Matchbox is what the chain tests).
+- Q2: the Lamp hangs at the off-hand hip; a grip closing within 12 cm of its bail takes it (the picker leaves that
+  grip alone); letting go puts it back. Its light is on only in a lantern sector (the original's lantern areas).
+- Q7: a forced turn while a movie is queued or playing is taken by the headset's view when the movies end (black);
+  with no movie, at once (a snap). The game's angle is set as before.
+- Q8: the Book's popup stands beside the Book held in both hands, squared to the eye; an item the original gives
+  while it is up shows in the off hand's palm (on this install the Book's look gives none: see entry 7).
+- Q10: a light at the niche (light group 46) whose intensity is the group's live light byte over the pack's value.
+- Q12: the original's right-hand item's DBASE200 picture on a card at the item hand.
 
 
 - **Q1** The match: keep the matchbox in the item hand (as built) and strike and hold the match with the off hand?
