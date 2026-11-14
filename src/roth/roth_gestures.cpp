@@ -1036,6 +1036,14 @@ void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVec
 }
 
 } // namespace
+
+void GesturesHoldReach(int role, bool tip, double wx, double wy, double wz, double lx, double ly, double lz)
+{
+	AActor *pmo = players[consoleplayer].mo;
+	if (pmo == nullptr || S.level == nullptr) { Printf("roth_gesturetest reach: no level or player yet\n"); return; }
+	PlaceHand(pmo, role, tip, DVector3(wx, wy, wz), DVector3(lx, ly, lz));
+}
+
 } // namespace roth
 
 CCMD(roth_gesturetest)

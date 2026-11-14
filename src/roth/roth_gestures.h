@@ -41,4 +41,10 @@ void GesturesTick(FLevelLocals *level, bool live);
 // The level is going.
 void GesturesEndLevel();
 
+// A test instrument (roth_vrpicktest palm uses it): the flat test's HELD REACH, as roth_gesturetest reach places it
+// -- the player stood so the test hand's palm (or fingertip, `tip`) lands at (wx, wy, wz) facing (lx, ly, lz), and
+// every tic until a move or "roth_gesturetest home" the hand corrected so it stays there wherever the original's
+// movement leaves the player. Not a rule of the game.
+void GesturesHoldReach(int role, bool tip, double wx, double wy, double wz, double lx, double ly, double lz);
+
 } // namespace roth

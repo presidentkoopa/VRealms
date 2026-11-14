@@ -1644,32 +1644,24 @@ CCMD(roth_vrpicktest)
 	// <metres> plus the test hand's reach in front of the point whose hit texel is (x, y), facing it and
 	// pitched at it -- so the flat use key's ray (the view's) and the test finger's ray (turned to the same
 	// aim) both meet the face there. Prints the point and the texel the click paths compute back.
-	// roth_vrpicktest palm <metres>: after "texel", bring the test hand's PALM to <metres> in front of the aimed
-	// point at its height -- the player moved across the floor, the drawn hand lifted (as "wick" does) -- so a
-	// grip in reach is made with the palm on that texel, not on whatever the hand's own height meets. (The
-	// owner's PC, 057c8524: placed by "texel ... 0.08" alone the palm met face 2350 28 units above the switch,
-	// texel row ~121, outside #385's box, and the grip was rightly refused.)
+	// roth_vrpicktest palm <metres>: after "texel", the test hand's PALM <metres> in front of the aimed point, at its
+	// height, HELD there (roth_gestures.h GesturesHoldReach, the gestures' own held reach): the original's movement
+	// keeps the player's box 0x1c off the wall and re-takes the pawn after a placement (the owner's PC, 66243f00:
+	// the player went back to y 4129 and the palm was 16 units off face 2350), so the hand reaches the rest, every
+	// tic until "roth_gesturetest home" or a move. (057c8524: placed by "texel ... 0.08" alone, the palm met the face
+	// 28 units above the switch, texel row ~121, outside #385's box, and the grip was rightly refused.)
 	if (!stricmp(argv[1], "palm") && argv.argc() >= 3)
 	{
 		AActor *pmo = players[consoleplayer].mo;
 		if (pmo == nullptr || !P.testAimAt) { Printf("roth_vrpicktest palm: aim first (roth_vrpicktest texel)\n"); return; }
+		if (!P.test) { Printf("roth_vrpicktest palm: no test hand (roth_vrpicktest on first)\n"); return; }
 		const int testRole = (P.testHands & 1) ? VR_MAINHAND : VR_OFFHAND;
-		HandState tmp;
-		if (!P.test || !FingerRay(testRole, tmp, pmo)) { Printf("roth_vrpicktest palm: no hand yet (roth_vrpicktest on first)\n"); return; }
 		const double metres = atof(argv[2]);
 		const DVector3 toward(-pmo->Angles.Yaw.Cos(), -pmo->Angles.Yaw.Sin(), 0.0);   // from the aim back to the player
-		const DVector3 target = P.testAim + toward * (metres * UPM());
-		const DVector3 move(target.X - tmp.palm.X, target.Y - tmp.palm.Y, 0.0);
-		const double ps = pmo->Level != nullptr && pmo->Level->pixelstretch > 0 ? pmo->Level->pixelstretch : 1.0;
-		const double dz = target.Z - tmp.palm.Z;
-		const double lift = VRHandTest_Lift() + dz * ps / UPM();
-		VRHandTest_SetLift(lift);
-		pmo->SetOrigin(pmo->Pos() + move, false);
-		pmo->Vel.Zero();
-		pmo->ClearInterpolation();
-		Printf("roth_vrpicktest palm: the aim at (%.1f %.1f %.1f); the palm was at (%.1f %.1f %.1f); the player moved (%.1f %.1f), the %s hand"
-			" lifted %+.1f units (lift %.3f m), so the palm is %.3f m in front of it\n", P.testAim.X, P.testAim.Y, P.testAim.Z,
-			tmp.palm.X, tmp.palm.Y, tmp.palm.Z, move.X, move.Y, RoleName(testRole), dz, lift, metres);
+		const DVector3 want = P.testAim + toward * (metres * UPM());
+		GesturesHoldReach(testRole, false, want.X, want.Y, want.Z, P.testAim.X, P.testAim.Y, P.testAim.Z);
+		Printf("roth_vrpicktest palm: the %s hand's palm held at (%.1f %.1f %.1f), %.3f m in front of the aim (%.1f %.1f %.1f)\n",
+			RoleName(testRole), want.X, want.Y, want.Z, metres, P.testAim.X, P.testAim.Y, P.testAim.Z);
 		return;
 	}
 	if (!stricmp(argv[1], "texel") && argv.argc() >= 5)
