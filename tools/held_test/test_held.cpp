@@ -5,6 +5,10 @@
 //                                  release, the light follower, the forced turn's view, the Book's view, the hands
 //   held_test scripts DIR          the oracle scripts: every use the rules ask for, played into the original, beside
 //                                  the flat clicks' reference (run_diff.sh compares the original's game state)
+//   held_test ramp DATA OUT        THE PORT'S 0x1d RAMP AGAINST THE ORIGINAL: STUDY1's niche records #430, #431, #433
+//                                  through roth_lightramp.h (the runtime's lines), from s58's pack value, at the
+//                                  original's frame step, must give the byte sequence the original showed (OUT's
+//                                  "L" lines for s58); and at the engine's step, the same value at each ramp's end
 //   held_test follow OUT           the ORIGINAL's light byte of the niche (s58) and its inventory counts, frame by
 //                                  frame (heldprobe.c "L" / "I" lines): the light follower and the Book's palm run
 //                                  over them, and must follow them exactly
@@ -13,10 +17,13 @@
 
 #include "roth_heldlogic.h"
 #include "roth_wicks.h"
+#include "roth_lightramp.h"
+#include "roth_raw.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -529,8 +536,78 @@ static int Follow(const char *path)
 	return g_fail ? 1 : 0;
 }
 
+static int Ramp(const char *data, const char *out)
+{
+	const std::string path = std::string(data) + "/M/STUDY1.RAW";
+	FILE *f = fopen(path.c_str(), "rb");
+	if (!f) { printf("RAMP: cannot read %s\n", path.c_str()); return 2; }
+	std::vector<uint8_t> b;
+	for (int c; (c = fgetc(f)) != EOF;) b.push_back((uint8_t)c);
+	fclose(f);
+	const Map m = ParseRaw(b.data(), b.size());
+	const int recs[3] = { 430, 431, 433 };
+	if (!m.error.empty() || m.sectors.size() <= 58 || m.commands.size() < 433) { printf("RAMP: STUDY1 did not parse\n"); return 2; }
+	const uint8_t base = m.sectors[58].light;
+	// The port's lines at a frame step: the bytes after every step, the three ramps one after another.
+	auto run = [&](uint32_t scale, std::vector<int> &ends) {
+		std::vector<int> v(1, base);
+		uint8_t l = base;
+		for (int r : recs)
+		{
+			const Command &c = m.commands[(size_t)r - 1];
+			uint16_t p = LightRampPayload(c.subFlags, c.modifier);
+			uint8_t d;
+			while (LightRampTick(p, scale, d)) { l = LightByteAdd(l, d); v.push_back(l); }
+			ends.push_back(l);
+		}
+		return v;
+	};
+	std::vector<int> ends1, ends2;
+	const std::vector<int> port = run(1, ends1);
+	run(2, ends2);
+	// What the port did before (the step read unsigned, the add clamped).
+	std::vector<int> oldEnds;
+	{
+		int l = base;
+		for (int r : recs)
+		{
+			const Command &c = m.commands[(size_t)r - 1];
+			int step = (int)c.subFlags;
+			if (c.modifier & 2) step = -step;
+			l = std::min(255, std::max(0, l + step));
+			oldEnds.push_back(l);
+		}
+	}
+	// The original's bytes, from the probe.
+	FILE *o = fopen(out, "r");
+	if (!o) { printf("RAMP: cannot read %s\n", out); return 2; }
+	std::vector<int> orig;
+	char line[256];
+	while (fgets(line, sizeof line, o))
+	{
+		int fr, s, v;
+		if (sscanf(line, "L %d %d %d", &fr, &s, &v) == 3 && s == 58 && (orig.empty() || orig.back() != v)) orig.push_back(v);
+	}
+	fclose(o);
+	printf("RAMP: STUDY1 #430 step 0x%02x, #431 0x%02x, #433 0x%02x; s58 from %d\n", m.commands[429].subFlags, m.commands[430].subFlags,
+		m.commands[432].subFlags, base);
+	printf("RAMP: the original: %zu distinct byte(s), %d .. %d .. %d; the port at the original's step: %zu, ends %d %d %d; at the engine's"
+		" step (2): ends %d %d %d; the port before this fix: ends %d %d %d\n", orig.size(), orig.empty() ? -1 : orig.front(),
+		orig.empty() ? -1 : *std::max_element(orig.begin(), orig.end()), orig.empty() ? -1 : orig.back(), port.size(), ends1[0], ends1[1], ends1[2],
+		ends2[0], ends2[1], ends2[2], oldEnds[0], oldEnds[1], oldEnds[2]);
+	CHECK(port == orig, "the port's byte sequence equals the original's, step by step (%zu vs %zu)", port.size(), orig.size());
+	CHECK(ends1 == ends2, "the engine's step ends each ramp where the original's step does");
+	return g_fail ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
+	if (argc >= 4 && !strcmp(argv[1], "ramp"))
+	{
+		const int r = Ramp(argv[2], argv[3]);
+		printf("held_test ramp: %d checks passed, %d failed\n", g_pass, g_fail);
+		return r;
+	}
 	if (argc >= 3 && !strcmp(argv[1], "scripts")) return Scripts(argv[2]);
 	if (argc >= 3 && !strcmp(argv[1], "follow"))
 	{

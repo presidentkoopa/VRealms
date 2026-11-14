@@ -829,6 +829,14 @@ CCMD(roth_heldtest)
 			H.live ? "live" : "not live", RightItem(InterfaceInventory()), H.match.Lit() ? "lit" : "out", H.match.TicsLeft(), H.match.Struck(),
 			H.lamp.Hand() >= 0 ? FStringf("in the %s hand", RoleWord(H.lamp.Hand())).GetChars() : "on its hook", H.lampLit ? ", lit (a lantern sector)" : "",
 			H.book.Item(), H.book.Palm(), (int)H.groups.size());
+		if (H.haveFlame)
+		{
+			Hand oh;
+			if (ReadHand(offRole, oh))
+				Printf("roth_heldtest:   the match: flame at (%.1f %.1f %.1f), %.3f m beyond the %s hand's index fingertip (%.1f %.1f %.1f); stick %.3f m\n",
+					H.flame.X, H.flame.Y, H.flame.Z, (M(H.flame) - M(oh.tip)).Length(), RoleWord(offRole), oh.tip.X, oh.tip.Y, oh.tip.Z,
+					held::kStickAhead + held::kStickBehind);
+		}
 		for (const Group &g : H.groups) Printf("roth_heldtest:   light group %d: intensity %.2f, %d change(s), peak %+d\n", g.group, g.intensity, g.follow.Changes(), g.follow.Peak() - g.follow.Base());
 		return;
 	}

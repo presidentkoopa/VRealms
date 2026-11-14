@@ -754,6 +754,12 @@ palm shows what the original gives during the Book's popup). [R] everything in t
 - Q8: the Book's popup stands beside the Book held in both hands, squared to the eye; an item the original gives
   while it is up shows in the off hand's palm (on this install the Book's look gives none: see entry 7).
 - Q10: a light at the niche (light group 46) whose intensity is the group's live light byte over the pack's value.
+  FOUND on the owner's PC (held_pc_run_367c710c, 2026-11-14): the niche's third change rose to 255. The follower
+  was right; the PORT'S RAMP was wrong, flat included: `roth_runtime.cpp` ChangeLighting read the 0x1d step byte
+  (+7) unsigned, so #433's 0xe2 (-30) rose by 226, and the byte add clamped where the original's wraps. Fixed with
+  the original's lines (`src/roth/roth_lightramp.h`, cmd_change_lighting / tick_change_lighting /
+  apply_light_delta_to_record_list); [V] `held_test ramp`: the port's bytes equal the original's s58 trace, 101 of
+  101 (78 -> 148 -> 118). 23 records in the 44 maps carry a down step (lightscan, the commit message).
 - Q12: the original's right-hand item's DBASE200 picture on a card at the item hand.
 
 

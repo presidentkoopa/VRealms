@@ -41,6 +41,7 @@
 #include "roth_sound.h"       // Realms' own sound: effects, nodes, doors, music, speech
 #include "roth_interface.h"   // the dialogue window, the inventory screen, pickups
 #include "roth_movie.h"       // the GDV player: movies the flow asks for
+#include "roth_lightramp.h"   // the 0x1d ramp and the light byte add, shared with tools/held_test
 #include "roth_held.h"        // the held objects (chapter 1): presentation, and the forced turn's view snap
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
@@ -2039,7 +2040,7 @@ static void ApplyLightDelta(const std::vector<int> &sectors, int delta)
 		Sector &rs = g.map.sectors[si];
 		if (rs.light == 0) continue;                      // authored dark: immune
 
-		rs.light = (uint8_t)clamp<int>((int)rs.light + delta, 0, 255);
+		rs.light = LightByteAdd(rs.light, (uint8_t)delta);   // the original's 8-bit add (raw_commands.c:5680), no clamp
 
 		SyncSectorLight(si);
 	}
@@ -2089,10 +2090,10 @@ int ChangeLighting(Command *rec, int index)
 		SyncDisabled(rec);
 	}
 
-	int step = (int)rec->subFlags;                        // byte[rec+7]
-	if (rec->modifier & 0x02) step = -step;
-	eff->payload = step < 0 ? (uint16_t)(0xFF00u | (uint8_t)(-step))
-	                        : (uint16_t)(uint8_t)step;
+	// The ramp word, as cmd_change_lighting forms it (raw_commands.c:4404-4407; roth_lightramp.h): the step byte at
+	// +7 is SIGNED -- bit 7 set is a down ramp (STUDY1 #433's 0xe2 = -30). Read unsigned it rose by 226 (found
+	// 2026-11-14, the niche on the owner's PC; tools/held_test `ramp` against the original).
+	eff->payload = LightRampPayload(rec->subFlags, rec->modifier);
 	if (rec->fireFlags & 0x01) { rec->modifier ^= 0x02; SyncDisabled(rec); }
 	eff->tick = 0x1D;
 	return CMD_ACTED;
@@ -2113,10 +2114,8 @@ int ChangeLighting(Command *rec, int index)
 static bool TickChangeLighting(Effect &e)
 {
 	Command *rec = Rec(e.record);
-	uint8_t remaining = (uint8_t)(e.payload & 0xFF);
-	const bool down = (e.payload >> 8) != 0;
-
-	if (remaining == 0)
+	uint8_t delta = 0;
+	if (!LightRampTick(e.payload, ROTH_FRAME_TICKS_PER_TIC, delta))   // roth_lightramp.h: :1788-1806
 	{
 		if (rec != nullptr)
 		{
@@ -2127,14 +2126,7 @@ static bool TickChangeLighting(Effect &e)
 		return true;                                      // finished
 	}
 
-	int stepThisTic = ROTH_FRAME_TICKS_PER_TIC;
-	if (stepThisTic > 0x40) stepThisTic = 0x40;           // the original's clamp
-	if (remaining <= stepThisTic) stepThisTic = remaining;
-
-	remaining = (uint8_t)(remaining - stepThisTic);
-	e.payload = (uint16_t)((e.payload & 0xFF00u) | remaining);
-
-	ApplyLightDelta(e.sectors, down ? -stepThisTic : stepThisTic);
+	ApplyLightDelta(e.sectors, (int8_t)delta);
 	return false;
 }
 

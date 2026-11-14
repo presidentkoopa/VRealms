@@ -32,6 +32,8 @@ echo "reference (flat clicks): $(grep -c '^R click' "$W/res/ref.out") click(s), 
   "$(grep -c '^[CGOF] ' "$W/res/ref.f") changed bytes, two runs identical"
 bad=0
 "$W/held_test" follow "$W/res/ref.out" || bad=1
+# The port's 0x1d ramp (roth_lightramp.h, the runtime's lines) against the original's own s58 bytes.
+"$W/held_test" ramp "${ROTH_DATA:-/mnt/user-data/uploads/Realms of the Haunting/DATA}" "$W/res/ref.out" || bad=1
 for s in "$W"/res/*.script; do
   n=$(basename "$s" .script); [ "$n" = ref ] && continue
   case "$n" in follow_*)
