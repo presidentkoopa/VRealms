@@ -682,6 +682,23 @@ roth_handhold.h); P7 `fbx_pinch` for the match.
 - **Q8 / the Book: YES.** Opens in both hands with its close-up film beside it; the silver key drops into the palm at
   the original's first-look give, then goes to the inventory as in the original.
 
+- **Q3 / knock to examine: YES.** Two light raps of an open, empty hand play the original's examine line (plus a light haptic).
+- **Q5 / mirrors: the lead's call (owner: "a live reflection would look cool but only show hands; the original would
+  show the player sprite").** Decision: keep the original's painted, breakable glass for now (1:1). Revisit a
+  reflection only if a full body (RS_Avatar) is ever in the game.
+- **Q6 / punching: physical melee, from RSQ Melee's idea** (github.com/presidentkoopa/RSQ_UBQSeries, Melee/) without
+  its combos, uppercut, slap or headlock. A fist swung into a monster at speed fires the original's attack where the
+  fist lands, with the ORIGINAL's damage (speed only decides whether it counts); a punch into a switch or door is the
+  original's use. **Physical only: the grip on empty air no longer punches** (it was built as the original's
+  secondary-on-nothing in 8917f41d; to be replaced).
+- **Q7 / the forced turn: snap during the black frames.**
+- **Q9 / ward tingle: YES**, haptic only.
+- **Q10 / the niche flash: YES**, a real dynamic light pulsing with the original's three light pulses.
+- **Q11 / left-handed: dedicated left-hand support LATER** (owner). Until then the item is the right-side hand.
+- **Q12 / a picked-up item shows in the item hand: YES**, when the original selects it into the right hand.
+- **Q13 / tall wicks: point the lit match at a wick in reach + grip lights it** (seated and shorter players).
+- **Q14 / far things (the casements): the pointer is fine.**
+
 
 - **Q1** The match: keep the matchbox in the item hand (as built) and strike and hold the match with the off hand?
 - **Q2** The Lamp: start it on a hip hook or in the off hand, and does the off hand holding it give up its grip-use?
