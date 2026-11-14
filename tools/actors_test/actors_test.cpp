@@ -1066,6 +1066,42 @@ int main(int argc, char **argv)
 			for (int off = 0; off < 0x68; off += 2) printf("%s%02x:%04x", off % 16 ? " " : "\n  ", off, tables.CreatureWord(c, off));
 			printf("\n");
 		}
+		else if (!strcmp(op, "fistshot"))
+		{
+			// fistshot S I DX DY HEIGHT AIMZ [TICKS]: the VR fist's attack (roth_actors_engine.cpp WeaponTick) on creature
+			// S.I from a player standing (DX, DY) off its x, y on the floor there: Adam's fist shot (item 107, the
+			// shot Adam's hands fire: tools/actors_test/oracle punch run's SHOT lines) aimed by PunchAimAt at (its x, y,
+			// AIMZ), flown with SimpleCollision (the engine's) for TICKS ticks; each tick the shot and the creature's health.
+			int s0 = 0, i0 = 0, dx = 0, dy = 0, hgt = 144, az = 85, nt = 12;
+			sscanf(args, "%d %d %d %d %d %d %d", &s0, &i0, &dx, &dy, &hgt, &az, &nt);
+			SimpleCollision simple(&w);
+			w.SetCollision(&simple);
+			const ObjectUid cu = w.UidAt(s0, i0);
+			Object *co = w.Find(cu);
+			if (co == nullptr) { printf("FISTSHOT no object %d.%d\n", s0, i0); continue; }
+			w.WakeOnFirstDraw(cu);
+			w.player.x = (int16_t)(co->x + dx); w.player.y = (int16_t)(co->y + dy); w.player.height = (uint16_t)hgt;
+			w.player.sector = w.LocateSector(w.player.x, w.player.y, co->z, -1);
+			w.player.z = co->z;
+			w.player.angle = 100;
+			const PunchAim a = PunchAimAt(w.player, co->x, co->y, az);
+			w.player.pitch = a.pitch;
+			const int slot = w.FirePlayer(107, a.yawOffset);
+			w.player.pitch = 0;
+			auto hpOf = [&]() { for (const ActorSlot &x : w.actors) if (x.object == cu) return (int)x.health; return -1; };
+			printf("FISTSHOT player (%d %d %d) sector %d height %d -> creature %d.%d at (%d %d %d) hp %d: bearing %u yaw offset %d pitch %d, slot %d\n",
+				w.player.x, w.player.y, w.player.z, w.player.sector, hgt, s0, i0, co->x, co->y, co->z, hpOf(), a.bearing, a.yawOffset, a.pitch, slot);
+			const ObjectUid su = slot >= 0 ? w.flying[slot].object : 0;
+			for (int k = 0; k < nt && su != 0; k++)
+			{
+				w.Tick();
+				const Object *so = w.Find(su);
+				printf("FISTSHOT tick %d: shot %s, creature hp %d\n", k + 1,
+					so ? (std::to_string(so->x) + " " + std::to_string(so->y) + " " + std::to_string(so->z)).c_str() : "gone", hpOf());
+				if (!so) break;
+			}
+			w.SetCollision(nullptr);
+		}
 		else if (!strcmp(op, "bullets"))
 		{
 			for (int i = 1; i <= db.ItemCount(); i++)

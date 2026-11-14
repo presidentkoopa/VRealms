@@ -410,11 +410,10 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 	int bestType = 1;
 	for (const Thing &t : things)
 	{
-		const gesture::V3 base((t.lo.X + t.hi.X) * 0.5, (t.lo.Y + t.hi.Y) * 0.5, t.lo.Z);
-		const double radius = std::max(t.hi.X - t.lo.X, t.hi.Y - t.lo.Y) * 0.5;
 		double dxy;
 		gesture::V3 p;
-		if (!SweptContact(gesture::V3(a.X, a.Y, a.Z), gesture::V3(b.X, b.Y, b.Z), gr, base, radius, t.hi.Z - t.lo.Z, dxy, p)) continue;
+		if (!SweptBoxContact(gesture::V3(a.X, a.Y, a.Z), gesture::V3(b.X, b.Y, b.Z), gr, gesture::V3(t.lo.X, t.lo.Y, t.lo.Z),
+			gesture::V3(t.hi.X, t.hi.Y, t.hi.Z), dxy, p)) continue;
 		if (dxy >= bestD) continue;
 		const DVector3 at(p.x, p.y, p.z);
 		Pick pk;
@@ -456,6 +455,16 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 		if (Logging()) Printf("[roth_gestures] %s hand punch (%.2f m/s average): meets nothing\n", RoleName(role), g.punch.avgMps);
 		return;
 	}
+	// A CREATURE is met by its body only (above), never by its picture's box along the way (the PC run of d3eb1564:
+	// the attack came from here, on the ghoul's picture 85 units from it).
+	if (p.kind == Pick::Prop)
+		for (const Thing &t : things)
+			if (t.mo == p.actor && t.creature)
+			{
+				if (Logging()) Printf("[roth_gestures] %s hand punch (%.2f m/s average) passes creature %d/%d's picture, not its body\n", RoleName(role),
+					g.punch.avgMps, t.sector, t.index);
+				return;
+			}
 	const int type = VRPickCursorType(role, p, b);
 	const SecondaryVerb v = SecondaryClick(type);
 	if (v == SECONDARY_NOTHING)
@@ -1048,8 +1057,9 @@ CCMD(roth_gesturetest)
 		const double half = std::min(tx, ty);
 		const DVector3 face(c.X + toward.X * half, c.Y + toward.Y * half, z);
 		const DVector3 want = face + toward * (metres * upm);
-		Printf("roth_gesturetest reach: object %d/%d (%s[%d]), its face at (%.1f %.1f %.1f)\n", t->sector, t->index, t->shared ? "ADEMO" : "DEMO",
-			t->art, face.X, face.Y, face.Z);
+		Printf("roth_gesturetest reach: object %d/%d (%s[%d]), %s (%.0f %.0f %.0f)..(%.0f %.0f %.0f), its face at (%.1f %.1f %.1f)\n", t->sector,
+			t->index, t->shared ? "ADEMO" : "DEMO", t->art, t->creature ? "a creature: the original's body" : "its picture's box", t->lo.X, t->lo.Y,
+			t->lo.Z, t->hi.X, t->hi.Y, t->hi.Z, face.X, face.Y, face.Z);
 		PlaceHand(pmo, role, tip, want, DVector3(c.X, c.Y, z));
 		return;
 	}

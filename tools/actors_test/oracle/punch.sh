@@ -20,7 +20,7 @@ D="/mnt/user-data/uploads/Realms of the Haunting/DATA"
 $OB/bin/i386-musl-gcc -shared -fPIC -std=gnu11 -O1 -I$OB/rothc/sdk/include -o "$W/plugin.so" "$HERE/actprobe.c" || exit 1
 sh "$HERE/../build.sh" "$W/port" > "$W/build.log" 2>&1 || { tail -5 "$W/build.log"; exit 1; }
 if [ ! -s "$W/orig.log" ] || [ "${PUNCH_RERUN:-0}" = 1 ]; then
-	ACTP_DIR="$W" bash "$HERE/run.sh" STUDY1 -790 3528 46 "$HERE/scenario_study1_punch.txt" "$W/orig.log" 640 > "$W/run.out" 2>&1
+	ACTP_DIR="$W" bash "$HERE/run.sh" STUDY1 ${PUNCH_POSE:--760 3640 0} "$HERE/scenario_study1_punch.txt" "$W/orig.log" 640 > "$W/run.out" 2>&1
 fi
 [ -s "$W/orig.log" ] || { echo "the original wrote nothing (see $W/run.out, $W/orig.log.enginelog)"; exit 1; }
 shots=$(grep -c '^SHOT' "$W/orig.log")

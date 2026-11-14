@@ -927,14 +927,16 @@ int32_t ActorIsqrt(uint32_t v);                        // isqrt_fixed, R:169
 // - 0x14 with angle = player angle - the aim's yaw offset (:670-671) and z speed = the view pitch less the aim's
 // pitch offset (:672-673, :592). Here the aim is a POINT instead of a screen position: its bearing by the
 // original's own atan2_bearing (ActorBearing) from the player's x, y, as the yaw offset FirePlayer subtracts
-// (player angle - bearing, unwrapped, -511..511: the shot's angle source is then the bearing itself); its pitch as
+// (player angle - facing, unwrapped, -511..511, the facing being 512 - bearing: the player's angle turns the other
+// way; the shot's angle source is then the facing itself); its pitch as
 // the view pitch value 128 * rise / run (the scale the weapon tick gives a hand's pitch, roth_actors_engine.cpp
 // WeaponTick: p looks up at atan(p / 128)), clamped to +-126, the run by the original's isqrt_fixed.
 // tools/actors_test op "replay <label> punch <delta>" proves a shot aimed this way from a player turned
 // <delta> away is the original's attack on that target (tools/actors_test/oracle/punch.sh).
 struct PunchAim
 {
-	uint32_t bearing = 0;     // 512 per turn
+	uint32_t bearing = 0;     // 512 per turn, atan2_bearing's (clockwise from +y)
+	uint32_t facing = 0;      // the player angle that faces the point (512 - bearing, counter-clockwise)
 	int32_t  yawOffset = 0;   // for FirePlayer / WeaponFrame: angle - bearing, unwrapped
 	int32_t  pitch = 0;       // the view pitch value, +-126
 };

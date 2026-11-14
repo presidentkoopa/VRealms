@@ -391,7 +391,13 @@ PunchAim PunchAimAt(const PlayerView &p, int16_t x, int16_t y, int32_t z)
 	// zero-extended angle), and spawn_entity_and_fill negates it and decrements its second byte (EA:838), so
 	// 512 and 0 are different shots. angle - (angle - bearing) = the bearing exactly, as the original's own
 	// attack from Adam facing the target (tools/actors_test punch replay: a wrapped offset differed there).
-	a.yawOffset = (int32_t)p.angle - (int32_t)a.bearing;
+	// THE PLAYER'S ANGLE TURNS THE OTHER WAY FROM atan2_bearing'S: the bearing is clockwise from +y (an object's
+	// facing, PlayerBearing), the player's angle and its shots' angle source counter-clockwise (SyncPlayer: the
+	// engine's yaw less 90). Facing the point is angle (512 - bearing) & 511. (Found 2026-11-13 by actors_test
+	// "fistshot": with the bearing itself the shot flew mirrored about the y axis; the first oracle check stood the
+	// target due north, bearing 0, where the two agree.)
+	a.facing = (uint32_t)((512 - a.bearing) & 511);
+	a.yawOffset = (int32_t)p.angle - (int32_t)a.facing;
 	int32_t shotZ = p.z;                                     // WC:664-667, as FirePlayer
 	const int16_t over = (int16_t)(p.height - 0x14);
 	if (over >= 0) shotZ += over;

@@ -258,6 +258,17 @@ static void PunchCases()
 		CHECK(!SweptContact(V3(60, 40, 40), V3(90, 40, 40), 7, body, 20, 56, dxy, pt), "a fist passing 40 to the side misses a radius 20 body");
 		CHECK(!SweptContact(V3(60, 0, 70), V3(90, 0, 70), 7, body, 20, 56, dxy, pt), "a fist over its top (70 > 56 + 7) misses");
 		CHECK(SweptContact(V3(60, 0, 60), V3(90, 0, 60), 7, body, 20, 56, dxy, pt), "a fist within gr over its top meets it");
+		// the box (a creature's square): the PC run of d3eb1564, a fist driven along the diagonal into a 64-unit square
+		{
+			const V3 lo(-64, -64, 0), hi(64, 64, 170);
+			const double c = 1.0 / sqrt(2.0);
+			CHECK(SweptBoxContact(V3(100 * c, 100 * c, 85), V3(78 * c, 78 * c, 85), 7, lo, hi, dxy, pt), "a fist into the square's corner meets it");
+			CHECK(!SweptContact(V3(100 * c, 100 * c, 85), V3(78 * c, 78 * c, 85), 7, V3(0, 0, 0), 64, 170, dxy, pt),
+				"(the cylinder of the same half width misses it there: why the box)");
+			CHECK(!SweptBoxContact(V3(120, 120, 85), V3(100, 100, 85), 7, lo, hi, dxy, pt), "a fist 36 units off the corner misses");
+			CHECK(!SweptBoxContact(V3(80, 0, 190), V3(60, 0, 190), 7, lo, hi, dxy, pt), "a fist over its top misses");
+			CHECK(SweptBoxContact(V3(80, 0, 40), V3(60, 0, 40), 7, lo, hi, dxy, pt) && dxy == 0, "a fist into its side meets it, inside (dxy 0)");
+		}
 		CHECK(DrivesInto(V3(3, 0, 0), V3(80, 0, 0), body), "driving toward the body is a blow");
 		CHECK(!DrivesInto(V3(-3, 0, 0), V3(80, 0, 0), body), "pulled back out of the body is not");
 		CHECK(DrivesInto(V3(0, 3, 0), V3(80, 0, 0), body), "a hook across it is a blow (dot 0 >= -0.2)");

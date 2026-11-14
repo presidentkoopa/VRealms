@@ -137,7 +137,7 @@ static void run(struct line *l)
         int s2 = 0, i2 = 0; sscanf(l->args, "%d %d", &s2, &i2); uint32_t o = objptr(s2, i2);
         typedef uint32_t (*fb)(int16_t, int16_t, int16_t, int16_t); fb f = (fb)(uintptr_t)sym("atan2_bearing");
         if (o && f) { int16_t px = (int16_t)g->u16(0x90a8e), py = (int16_t)g->u16(0x90a96), ox = (int16_t)U16(o), oy = (int16_t)U16(o + 2);
-            uint32_t a = f(px, oy, py, ox) & 0x1ff; g->set_u16(0x90a8a, (uint16_t)a);
+            uint32_t a = (0x200 - (f(px, oy, py, ox) & 0x1ff)) & 0x1ff; g->set_u16(0x90a8a, (uint16_t)a);   /* the player's angle turns the other way */
             fprintf(out, "FACETO %d.%d ang=%u px=%d py=%d ox=%d oy=%d\n", s2, i2, a, px, py, ox, oy); } }
     else if (!strcmp(l->op, "pull")) g_trig = 1;   /* pull the trigger at the next update_player_tick (a deterministic point; frame ops run from the timer) */
     else if (!strcmp(l->op, "quit")) { fflush(out); _Exit(0); }

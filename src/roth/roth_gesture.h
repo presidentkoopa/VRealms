@@ -45,7 +45,9 @@
 //    17. CONTACT: the nearest approach in the plane of this tic's path to a body's axis within radius + gr,
 //        the height within the body's z - gr .. z + height + gr, the nearest body wins
 //                                                     gloves.zs:710-731 -> SweptContact (per body); the nearest is
-//        the caller's loop (roth_gestures.cpp PunchContact)
+//        the caller's loop (roth_gestures.cpp PunchContact). NOT AS RSQ in one way: the bodies here are boxes (a
+//        creature's the original's own square, CP:1123-1127; an object's its picture's pick box), so the test is
+//        against the box grown by gr in the plane (SweptBoxContact), not a cylinder
 //    18. a wall between the fist and the body stops it (ClearPath, a trace from the contact point to the
 //        body's axis at that height)                 gloves.zs:770-787 -> roth_gestures.cpp ClearPath (PickFrom)
 //    19. which bodies: RSQ's living foes (IsFoe, core.zs:194-199) -> NOT as RSQ: every Realms object with a
@@ -250,6 +252,29 @@ inline bool SweptContact(const V3 &a, const V3 &b, double gr, const V3 &base, do
 	dxy = sqrt((p.x - base.x) * (p.x - base.x) + (p.y - base.y) * (p.y - base.y));
 	if (dxy > radius + gr) return false;
 	if (p.z < base.z - gr || p.z > base.z + height + gr) return false;
+	return true;
+}
+
+// Item 17 for a BOX (not RSQ's cylinder): this engine's bodies are boxes -- a creature's is the original's own square
+// (the dimension table's half-side round its x, y: the box its shots meet, CP:1123-1127), any other object's the
+// picture's pick box (PickFrom's). RSQ's cylinder of the box's half width misses a box's corners: on the PC run of
+// e145db53 the fist came 85 units from a ghoul's axis along a diagonal, inside its 64-unit square but outside a
+// 64 + gr cylinder. The fist's path a -> b against the box (lo, hi) grown by gr in the plane: `dxy` the nearest the
+// path came to the box in the plane (0 inside), `p` the fist there; the height as item 17.
+inline bool SweptBoxContact(const V3 &a, const V3 &b, double gr, const V3 &lo, const V3 &hi, double &dxy, V3 &p)
+{
+	dxy = 1e30;
+	const int n = 16;
+	for (int k = 0; k <= n; k++)
+	{
+		const V3 q = a + (b - a) * ((double)k / n);
+		const double dx = q.x < lo.x ? lo.x - q.x : q.x > hi.x ? q.x - hi.x : 0.0;
+		const double dy = q.y < lo.y ? lo.y - q.y : q.y > hi.y ? q.y - hi.y : 0.0;
+		const double d = sqrt(dx * dx + dy * dy);
+		if (d < dxy) { dxy = d; p = q; }
+	}
+	if (dxy > gr) return false;
+	if (p.z < lo.z - gr || p.z > hi.z + gr) return false;
 	return true;
 }
 

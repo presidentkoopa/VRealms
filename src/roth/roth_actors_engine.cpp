@@ -441,6 +441,38 @@ void DrawAndPresent(int ticks)
 static bool g_fireButtonAllowed = true;
 struct FireAt { bool pending = false, holding = false; double x = 0, y = 0, z = 0; };
 static FireAt g_fireAt;
+// THE FIST'S SHOT, FOLLOWED (a log only): the flying object the punch's attack spawned, every sweep it makes
+// (SweepLog below) until it is gone -- where it went, what stopped it (a wall, a floor, an object, the player), and
+// the object it hit. The PC run of d3eb1564: "the shot left" and the creature's health stayed 500.
+static ObjectUid g_fistShot = 0;
+static int g_fistShotTicks = 0;
+
+// A pass-through collision that logs the fist's shot's sweeps.
+class SweepLog : public ActorCollision
+{
+public:
+	ActorCollision *inner = nullptr;
+	ActorWorld *world = nullptr;
+	CollideAnswer Collide(const CollideQuery &q) override { return inner->Collide(q); }
+	SweepAnswer Sweep(const SweepQuery &q) override
+	{
+		const SweepAnswer a = inner->Sweep(q);
+		if (g_fistShot != 0 && q.self == g_fistShot)
+		{
+			g_fistShotTicks++;
+			int hs = -1, hi = -1;
+			if (a.hitObject != 0 && world != nullptr) world->Find(a.hitObject, &hs, &hi);
+			Printf("[roth_gestures] the fist's shot, tick %d: (%d %d %d) sector %d -> (%d %d %d) sector %d, %s%s\n", g_fistShotTicks,
+				(int)(int16_t)(q.x >> 16), (int)(int16_t)(q.y >> 16), (int)(int16_t)(q.z >> 16), q.sector, (int)(int16_t)(a.x >> 16),
+				(int)(int16_t)(a.y >> 16), (int)(int16_t)(a.z >> 16), a.sector,
+				a.hit == 0 ? "flying" : (a.hit & 2) ? (a.hitObject != 0 ? "HIT AN OBJECT" : "hit the player") : "stopped by a wall, floor or ceiling",
+				(a.hit & 2) && a.hitObject != 0 ? FStringf(" %d/%d", hs, hi).GetChars() : "");
+			if (a.hit != 0) g_fistShot = 0;
+		}
+		return a;
+	}
+};
+static SweepLog g_sweepLog;
 
 // THE GUN AIMS ALONG THE GUN (owner's W1, docs/VR_CHANGES_LEDGER.md row 33).
 // In VR the shot's direction is the main hand's aim and its start is the main
@@ -571,13 +603,28 @@ void WeaponTick(int ticks)
 		const PunchAim a = PunchAimAt(w.player, (int16_t)lround(g_fireAt.x - dx), (int16_t)lround(g_fireAt.y - dy), (int32_t)lround(g_fireAt.z));
 		yawOffset = a.yawOffset;
 		w.player.pitch = a.pitch;
+		// The fist's attack is the ORIGINAL's, from Adam's own spot (tools/actors_test/oracle/punch.sh): not a gun's
+		// start at the main hand (handShot, the gun-aim work), which would be off the bearing PunchAimAt measured.
+		w.handShot = ActorWorld::HandShot();
 	}
 	// This frame's own events (the tic's may already hold some): set aside, read, given back.
 	const uint32_t evBefore = w.weaponEvents;
 	w.weaponEvents = 0;
+	const uint32_t serialBefore = w.shotSerial;
+	const bool fistAim = g_fireAt.holding;
+	const PlayerView pv = w.player;
 	w.WeaponFrame(ticks, yawOffset);
 	const uint32_t evFrame = w.weaponEvents;
 	w.weaponEvents |= evBefore;
+	if (fistAim && w.shotSerial != serialBefore)
+	{
+		const ActorWorld::ShotStart &st = w.lastShot;
+		g_fistShot = st.object;
+		g_fistShotTicks = 0;
+		Printf("[roth_gestures] the fist's shot: from (%d %d %d) sector %d, the player at (%d %d %d) angle %u height %u; angle source %u (yaw offset %d),"
+			" z speed %d; aimed at (%.0f %.0f %.0f)%s\n", st.x, st.y, st.z, st.sector, pv.x, pv.y, pv.z, (unsigned)pv.angle, (unsigned)pv.height,
+			(unsigned)st.angleSource, (int)yawOffset, (int)st.zvel, g_fireAt.x, g_fireAt.y, g_fireAt.z, st.object == 0 ? " -- NO FLYING OBJECT (spawn failed)" : "");
+	}
 	if (g_fireAt.holding && ((evFrame & (ActorWorld::WE_SHOT | ActorWorld::WE_CYCLE_END)) || w.weapon.lock == 0))
 	{
 		g_fireAt.holding = false;
@@ -918,7 +965,10 @@ void ActorsBeginLevel(Map &map, FLevelLocals *level, Log *log)
 	g_actors.world.Begin(&map, &TheDbase100(), &g_actors.tables, &g_actors.host);
 	delete g_actors.collision;
 	g_actors.collision = new SimpleCollision(&g_actors.world);
-	g_actors.world.SetCollision(g_actors.collision);
+	g_sweepLog.inner = g_actors.collision;
+	g_sweepLog.world = &g_actors.world;
+	g_fistShot = 0;
+	g_actors.world.SetCollision(&g_sweepLog);
 
 	// The pictures the actors wear, from both packs (ArtPacks).
 	g_actors.world.pictureClocks.clear();

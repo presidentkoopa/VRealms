@@ -97,8 +97,10 @@ orig.log > port.log; python3 cmpticks.py orig.log port.log. The port runs its
 own weapon from the PT/TRIG/RC/RWL lines, compares every WPN/INVS line, and
 its shots are its own (SHOT lines are not injected).
 
-The VR fist's attack (2026-11-13, punch.sh): probe op "face S I" turns the original's player to object S.I by
-its own atan2_bearing and logs FACETO; scenario_study1_punch.txt stands Adam 50 units from the ghoul 171.16 and
-faces + pulls every 12 frames (his fists, 14 shots, the ghoul killed). actors_test "replay start punch <delta>"
+The VR fist's attack (2026-11-13, punch.sh): probe op "face S I" turns the original's player to object S.I
+(angle = 512 - its own atan2_bearing: the player's angle turns the other way from the bearing) and logs FACETO;
+punch.sh stands Adam at (-760, 3640), off the ghoul 171.16's axes (facing angle 79), and faces + pulls every 12
+frames (his fists, 14 shots, the ghoul killed). The first version stood him due south of the ghoul (bearing 0),
+where the two conventions agree, and so missed a mirrored aim; actors_test "fistshot" found it. actors_test "replay start punch <delta>"
 replays it with the port's player turned <delta> away and every pull aimed at the faced point through
 PunchAimAt (roth_actors.h), the engine's fist attack. punch.sh runs six turns and compares everything.
