@@ -48,7 +48,8 @@ Not seen: anything in the headset.
 ## 4. Questions for the owner (1-4 answered the same evening; 5-6 open)
 
 1. ANSWERED. The trigger examines on either hand and never sends attack unless that hand holds a drawn weapon; a
-   weapon hand's trigger keeps firing; a grip on nothing is the original's secondary click (the attack, from
+   weapon hand's trigger keeps firing; [SUPERSEDED: the owner's Q6, physical only -- the grip on nothing no longer
+   attacks; a fist that lands does, docs/VR_CHAPTER01_SHADOWS.md 6b] a grip on nothing is the original's secondary click (the attack, from
    E/game_core.c:651-731). The owner: "we will probably use offhand for a lot of environmental interaction, but we
    need to design with left and right hand support in mind." Done in `roth_handclick.h` (oracle test
    `tools/handclick_test`, 140 cases, 0 differ) and `roth_vrpick.cpp` VRPickTick (the fire button held back with

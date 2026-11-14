@@ -883,4 +883,23 @@ int32_t ActorSin(uint32_t byteOffset);                 // sincos_lookup, R:113
 uint32_t ActorBearing(int16_t x1, int16_t y2, int16_t y1, int16_t x2);   // atan2_bearing, R:614
 int32_t ActorIsqrt(uint32_t v);                        // isqrt_fixed, R:169
 
+// THE ATTACK AIMED AT A POINT (the VR fist's contact, roth_gestures.cpp; owner 2026-11-13: "a fist swung into a
+// monster at speed fires the ORIGINAL's attack where the fist lands"). The original aims an attack at the cursor
+// through spawn_projectile_from_aim (weapon_combat.c:614-675): the shot leaves the player's x, y at z + height
+// - 0x14 with angle = player angle - the aim's yaw offset (:670-671) and z speed = the view pitch less the aim's
+// pitch offset (:672-673, :592). Here the aim is a POINT instead of a screen position: its bearing by the
+// original's own atan2_bearing (ActorBearing) from the player's x, y, as the yaw offset FirePlayer subtracts
+// (player angle - bearing, unwrapped, -511..511: the shot's angle source is then the bearing itself); its pitch as
+// the view pitch value 128 * rise / run (the scale the weapon tick gives a hand's pitch, roth_actors_engine.cpp
+// WeaponTick: p looks up at atan(p / 128)), clamped to +-126, the run by the original's isqrt_fixed.
+// tools/actors_test op "replay <label> punch <delta>" proves a shot aimed this way from a player turned
+// <delta> away is the original's attack on that target (tools/actors_test/oracle/punch.sh).
+struct PunchAim
+{
+	uint32_t bearing = 0;     // 512 per turn
+	int32_t  yawOffset = 0;   // for FirePlayer / WeaponFrame: angle - bearing, unwrapped
+	int32_t  pitch = 0;       // the view pitch value, +-126
+};
+PunchAim PunchAimAt(const PlayerView &p, int16_t x, int16_t y, int32_t z);
+
 } // namespace roth

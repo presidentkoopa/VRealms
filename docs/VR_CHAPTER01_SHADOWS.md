@@ -12,7 +12,7 @@ built grab and touch); **B** = a VR presentation or a new gesture layered on top
 
 Built and verified on the owner's PC before this file (HANDOFF_LANE_GAMELAYER_2026-11-13_EVENING.md 1, not re-checked
 here): FBX hands with authored poses; trigger = examine, grip = use (pointing at range < 268 planar units, in reach =
-grab); grip on nothing = the original's attack; the held item is the original's right-hand item, shown in the right
+grab); grip on nothing = the original's attack (REMOVED since: physical only, Q6 and section 6b); the held item is the original's right-hand item, shown in the right
 hand, used by touching or grabbing the target with that hand; the inventory is the original's panel and pauses the
 world; a click during a line skips it; the darkness pass (RS_Radiance) is in the engine; per-wick candles with one
 growing light per candelabrum are being built.
@@ -701,6 +701,24 @@ roth_handhold.h); P7 `fbx_pinch` for the match.
 - **Darkness for chapter 1: NONE for now** (owner, after the darkness captures): the original's lighting. The pass stays
   available (`roth_darktest`).
 - **Candle light strength: judge in the headset** (current: 0.30 x (1, 0.56, 0.22) per wick, radius 56 x sqrt(wicks)).
+
+### 6b. Built from the answers: the gestures (Q3, Q4, Q6, Q9, Q13)
+
+`src/roth/roth_gesture.h` (the detectors, engine-free; RSQ Melee's punch reader with its port checklist),
+`src/roth/roth_gestures.cpp` (what each does), `roth_handclick.h` (the click a landed fist makes), `roth_candles.cpp`
+CandlesPointGrip (the tall wicks). Every gesture ends in one of the original's clicks through the picker's paths, or in a
+haptic only.
+
+| answer | built | the original's click | proof |
+|---|---|---|---|
+| Q6 physical melee | a closed fist holding no weapon, swung at speed (RSQ Melee's reader: armed slow, 0.15 m at 2.0 m/s or more) into a thing: the original's secondary click by its cursor there; an attack target (a creature, glass) gets the original's attack aimed at the contact (ActorsRequestFireAt -> TriggerFire, Adam's fists, the original's damage); a usable thing its use. The grip on empty air no longer attacks (removed). | attack / use | tools/gesture_test (reader vs RSQ's own, random paths), tools/handclick_test (133 cases vs the original, 7 steering cases excluded), tools/actors_test/oracle/punch.sh (the aimed attack vs the original's) |
+| Q3 knock | two light raps (0.25 to 2.0 m/s, back off 3.5 cm between, within 0.6 s) of an open, empty hand on one wall, door, object or floor | examine | tools/gesture_test |
+| Q4 attempts | push (the sofa's crease), tug (the roll-top desk's drawers), press (the typewriter's keys, the boot prints), wave (the flies), the palm sweeping a door leaf; once per entry, re-armed 10 cm out | examine | tools/gesture_test |
+| Q9 ward tingle | a palm within 15 cm of DEMO[4207] / DEMO[4208] / ADEMO[232]: 0.04 growing to 0.22, a pulse every other tic | none (haptic only) | tools/gesture_test |
+| Q13 tall wicks | the flame hand pointing at a wick (within 6 cm of the ray, in the use band) + grip: the same route as a flame brought to it | use (the first wick) | flat cfg `tools/claude_bridge/cfg/gestures_flat.cfg` |
+
+[R] Not seen in the headset; the zones' places on the sofa and the desk are slices of their pick boxes, not measured on
+the meshes. The flat cfg shows each one in STUDY1 with log lines.
 
 
 - **Q1** The match: keep the matchbox in the item hand (as built) and strike and hold the match with the off hand?

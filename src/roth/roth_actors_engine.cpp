@@ -423,17 +423,21 @@ void DrawAndPresent(int ticks)
 // Everything it reads comes through the usercmd: the button and, in VR,
 // AttackAngle/AttackPitch, which the engine rebuilds from it on every peer.
 // THE VR HANDS AND THE ATTACK (owner, 2026-11-13: the trigger examines on either
-// hand and never sends attack unless that hand holds a drawn weapon). The fire
-// button (BT_ATTACK, in VR the main hand's trigger through the binding) reaches
-// the weapon only while it is allowed (roth_vrpick.cpp VRPickTick: always in
-// flat; in VR only while the main hand holds a weapon), and the hands' own
-// attack -- the original's secondary click on an attack target, or on nothing
-// while steering (roth_handclick.h) -- is a trigger_weapon_fire of its own,
-// once, at the next weapon tick: key_fire_weapon's trigger_weapon_fire(0, 0)
-// (WC:911-916) or the cursor's aimed one (game_core.c:673-685), the aim in VR
-// being the hand's ray either way (below).
+// hand and never sends attack unless that hand holds a drawn weapon; "physical
+// melee ... physical only"). The fire button (BT_ATTACK, in VR the main hand's
+// trigger through the binding) reaches the weapon only while it is allowed
+// (roth_vrpick.cpp VRPickTick: always in flat; in VR only while the main hand
+// holds a weapon). The hands' own attack is A FIST THAT LANDS (roth_gestures.cpp,
+// RSQ Melee's punch reader): where the original's cursor on what it met is an
+// attack target, the original's secondary click there -- trigger_weapon_fire
+// aimed at the cursor (game_core.c:673-685; roth_handclick.h) -- with the fist's
+// CONTACT as the aim: one TriggerFire at the next weapon tick, and the shot's
+// aim (PunchAimAt, roth_actors.h) held on that point until the shot leaves or
+// the fire cycle ends, as the original latches its aim at the trigger
+// (WC:893-896, the aim words read at the shot).
 static bool g_fireButtonAllowed = true;
-static bool g_fireRequested = false;
+struct FireAt { bool pending = false, holding = false; double x = 0, y = 0, z = 0; };
+static FireAt g_fireAt;
 
 void WeaponTick(int ticks)
 {
@@ -454,9 +458,36 @@ void WeaponTick(int ticks)
 	int32_t yawOffset = ((int)w.player.angle - handAngle) & 511;
 	if (yawOffset >= 256) yawOffset -= 512;
 	const bool button = (pmo->player->cmd.buttons & BT_ATTACK) && g_fireButtonAllowed;
-	if (button || g_fireRequested) w.TriggerFire(0, 0);   // key_fire_weapon (WC:912)
-	g_fireRequested = false;
+	// A FIST THAT LANDED (ActorsRequestFireAt): the original's aimed attack, its aim the contact.
+	if (g_fireAt.pending)
+	{
+		g_fireAt.pending = false;
+		const bool ready = w.weapon.lock == 0 && w.weapon.slots != 0;   // TriggerFire's own first gates (WC:781-783)
+		w.TriggerFire(0, 0);
+		g_fireAt.holding = ready && w.weapon.lock != 0;
+		Printf("[roth_gestures] the fist's attack: trigger_weapon_fire %s\n", g_fireAt.holding ? "pulled, aimed at the contact"
+			: "refused by the original's weapon (still in its last swing, or no hands)");
+	}
+	else if (button) w.TriggerFire(0, 0);                  // key_fire_weapon (WC:912)
+	if (g_fireAt.holding)
+	{
+		double dx = 0, dy = 0;
+		if (w.player.sector >= 0) SectorShift(w.player.sector, dx, dy);
+		const PunchAim a = PunchAimAt(w.player, (int16_t)lround(g_fireAt.x - dx), (int16_t)lround(g_fireAt.y - dy), (int32_t)lround(g_fireAt.z));
+		yawOffset = a.yawOffset;
+		w.player.pitch = a.pitch;
+	}
+	// This frame's own events (the tic's may already hold some): set aside, read, given back.
+	const uint32_t evBefore = w.weaponEvents;
+	w.weaponEvents = 0;
 	w.WeaponFrame(ticks, yawOffset);
+	const uint32_t evFrame = w.weaponEvents;
+	w.weaponEvents |= evBefore;
+	if (g_fireAt.holding && ((evFrame & (ActorWorld::WE_SHOT | ActorWorld::WE_CYCLE_END)) || w.weapon.lock == 0))
+	{
+		g_fireAt.holding = false;
+		Printf("[roth_gestures] the fist's attack: %s\n", (evFrame & ActorWorld::WE_SHOT) ? "the shot left, aimed at the contact" : "the swing ended");
+	}
 	w.RechargeFrame(ticks);
 	w.player.pitch = 0;
 }
@@ -665,7 +696,7 @@ void ActorsAddWeaponAmmo(int delta) { g_actors.world.weapon.ammo += delta; }
 
 // Outside the anonymous namespace: declared in roth_actors_engine.h (the MSVC link trap).
 void ActorsSetFireButtonAllowed(bool allowed) { g_fireButtonAllowed = allowed; }
-void ActorsRequestFire() { g_fireRequested = true; }
+void ActorsRequestFireAt(double x, double y, double z) { g_fireAt.pending = true; g_fireAt.x = x; g_fireAt.y = y; g_fireAt.z = z; }
 int ActorsTickCount() { return g_actors.ticks; }
 
 bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls)

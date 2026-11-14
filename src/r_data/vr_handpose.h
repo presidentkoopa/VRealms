@@ -90,6 +90,11 @@ void VRHandTest_SetTilt(float tiltDeg);
 // down to a table. 0 = the usual place. Test-only.
 void VRHandTest_SetLift(double metres);
 double VRHandTest_Lift();
+// The flat test's hand of a PHYSICAL side moved from its place by (fwd, right, up) metres in the camera's own
+// frame (yaw only): the gesture test's scripted motion (roth_gesturetest move, src/roth/roth_gestures.cpp), so
+// a test hand can swing, rap, push and wave. 0, 0, 0 = its usual place. Test-only.
+void VRHandTest_SetOffset(int side, double fwd, double right, double up);
+void VRHandTest_Offset(int side, double &fwd, double &right, double &up);
 // The flat test's held thing for a PHYSICAL hand (VRHandPose::SIDE_*), in place of the game's while `on`
 // (roth_handhold, src/roth/roth_hands.cpp).
 void VRHandTest_SetHeld(int side, bool on, const VRHandPose::HeldState &held);

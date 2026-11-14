@@ -38,4 +38,25 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at);
 // The hands' metres to map units (VR_UnitsPerMeter; 34 in flat).
 double VRPickUnitsPerMetre();
 
+// FOR THE GESTURES (roth_gestures.h). A hand this tic: its inputs as the picker read them, and its points
+// (fingertip, finger direction, palm, the hand's own axis) as drawn (FingerRay). False when the hands are not
+// live or that hand has no controller; `havePoints` false when it has no drawn hand.
+struct VRPickHand
+{
+	bool valid = false, gripClosed = false, trigDown = false, pointing = false, triggerTouch = false;
+	float grip = 0.f, trigger = 0.f;
+	bool havePoints = false;
+	DVector3 tip, dir, palm, handFwd;
+};
+bool VRPickHandNow(int role, VRPickHand &out);
+// The original's click on `p` from that hand, gated by the original's cursor on it as seen from `from` (the
+// hand's point): use (DoUse: the item the hand holds) or examine (DoExamine). True when it acted.
+struct Pick;
+bool VRPickUseAt(int role, const Pick &p, const DVector3 &from, const char *how);
+bool VRPickExamineAt(int role, const Pick &p, const DVector3 &from, const char *how);
+// The original's cursor type on `p` (1 nothing, 3 usable, 5 blocked / attack target), seen from `from`.
+int VRPickCursorType(int role, const Pick &p, const DVector3 &from);
+// Under roth_vrpicktest (the flat test).
+bool VRPickTesting();
+
 } // namespace roth

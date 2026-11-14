@@ -383,6 +383,28 @@ void ActorWorld::MarkTriggerLinks(Object &o, uint16_t id) const
 
 // compute_player_object_bearing (RC:300-308): the bearing from the player to
 // the point, halved to a rotation byte.
+PunchAim PunchAimAt(const PlayerView &p, int16_t x, int16_t y, int32_t z)
+{
+	PunchAim a;
+	a.bearing = ActorBearing(p.x, y, p.y, x);
+	// NOT wrapped: FirePlayer's angle source is the raw difference (WC:670-671, `sub ebp,[esp+0x38]` on the
+	// zero-extended angle), and spawn_entity_and_fill negates it and decrements its second byte (EA:838), so
+	// 512 and 0 are different shots. angle - (angle - bearing) = the bearing exactly, as the original's own
+	// attack from Adam facing the target (tools/actors_test punch replay: a wrapped offset differed there).
+	a.yawOffset = (int32_t)p.angle - (int32_t)a.bearing;
+	int32_t shotZ = p.z;                                     // WC:664-667, as FirePlayer
+	const int16_t over = (int16_t)(p.height - 0x14);
+	if (over >= 0) shotZ += over;
+	const int32_t dx = (int32_t)x - p.x, dy = (int32_t)y - p.y;
+	int32_t run = ActorIsqrt((uint32_t)(dx * dx + dy * dy));
+	if (run < 1) run = 1;
+	int32_t pitch = (int32_t)(((int64_t)(z - shotZ) * 128) / run);
+	if (pitch > 126) pitch = 126;
+	if (pitch < -126) pitch = -126;
+	a.pitch = pitch;
+	return a;
+}
+
 uint8_t ActorWorld::PlayerBearing(int16_t x, int16_t y) const
 {
 	return (uint8_t)((int32_t)ActorBearing(player.x, y, player.y, x) >> 1);

@@ -133,6 +133,12 @@ static void run(struct line *l)
     else if (!strcmp(l->op, "dbrec")) {          /* an item record's bytes as the running game holds them */
         int idx = atoi(l->args); uint32_t off = U32(g->u32(0x81e20) + idx * 4); uint32_t rec = g->u32(0x81e1c) + off;
         fprintf(out, "DBREC %d off=%x", idx, off); for (int k = 0; k < 0x60 && off; k++) fprintf(out, "%s%02x", k % 4 ? "" : " ", U8(rec + k)); fprintf(out, "\n"); }
+    else if (!strcmp(l->op, "face")) {        /* face object S I (logs FACETO) by the original's own atan2_bearing (the punch test, punch.sh) */
+        int s2 = 0, i2 = 0; sscanf(l->args, "%d %d", &s2, &i2); uint32_t o = objptr(s2, i2);
+        typedef uint32_t (*fb)(int16_t, int16_t, int16_t, int16_t); fb f = (fb)(uintptr_t)sym("atan2_bearing");
+        if (o && f) { int16_t px = (int16_t)g->u16(0x90a8e), py = (int16_t)g->u16(0x90a96), ox = (int16_t)U16(o), oy = (int16_t)U16(o + 2);
+            uint32_t a = f(px, oy, py, ox) & 0x1ff; g->set_u16(0x90a8a, (uint16_t)a);
+            fprintf(out, "FACETO %d.%d ang=%u px=%d py=%d ox=%d oy=%d\n", s2, i2, a, px, py, ox, oy); } }
     else if (!strcmp(l->op, "pull")) g_trig = 1;   /* pull the trigger at the next update_player_tick (a deterministic point; frame ops run from the timer) */
     else if (!strcmp(l->op, "quit")) { fflush(out); _Exit(0); }
     else fprintf(stderr, "[actprobe] unknown op %s\n", l->op);

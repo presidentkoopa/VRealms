@@ -1,0 +1,75 @@
+1 ticktrace 1
+3 dump start
+150 face 171 16
+150 pull
+162 face 171 16
+162 pull
+174 face 171 16
+174 pull
+186 face 171 16
+186 pull
+198 face 171 16
+198 pull
+210 face 171 16
+210 pull
+222 face 171 16
+222 pull
+234 face 171 16
+234 pull
+246 face 171 16
+246 pull
+258 face 171 16
+258 pull
+270 face 171 16
+270 pull
+282 face 171 16
+282 pull
+294 face 171 16
+294 pull
+306 face 171 16
+306 pull
+318 face 171 16
+318 pull
+330 face 171 16
+330 pull
+342 face 171 16
+342 pull
+354 face 171 16
+354 pull
+366 face 171 16
+366 pull
+378 face 171 16
+378 pull
+390 face 171 16
+390 pull
+402 face 171 16
+402 pull
+414 face 171 16
+414 pull
+426 face 171 16
+426 pull
+438 face 171 16
+438 pull
+450 face 171 16
+450 pull
+462 face 171 16
+462 pull
+474 face 171 16
+474 pull
+486 face 171 16
+486 pull
+498 face 171 16
+498 pull
+510 face 171 16
+510 pull
+522 face 171 16
+522 pull
+534 face 171 16
+534 pull
+546 face 171 16
+546 pull
+558 face 171 16
+558 pull
+570 face 171 16
+570 pull
+600 quit

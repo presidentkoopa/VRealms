@@ -451,8 +451,22 @@ int main(int argc, char **argv)
 		// RechargeFrame / RebuildWeaponList at the PT / TRIG / RC / RWL lines)
 		// and its shots are its own; the oracle's WPN and INVS lines after each
 		// are compared with the port's, and its SHOT lines are not injected.
-		const bool weaponMode = lab.size() > 7 && lab.compare(lab.size() - 7, 7, " weapon") == 0;
+		bool weaponMode = lab.size() > 7 && lab.compare(lab.size() - 7, 7, " weapon") == 0;
 		if (weaponMode) lab.resize(lab.size() - 7);
+		// " punch <delta>": the VR FIST's attack (roth_actors.h PunchAimAt; the engine's WeaponTick). The original
+		// faced an object by its own atan2_bearing ("face", the FACETO line) and pulled the trigger; the port's
+		// player stands turned <delta> (512 per turn) away from that and its trigger is the punch's: the shot's
+		// aim held on the point the original faced, through PunchAimAt, until the shot leaves or the cycle ends.
+		// Weapon mode otherwise: the port's own shots, every WPN / INVS line and the tick states compared.
+		bool punchMode = false;
+		int punchDelta = 0;
+		{
+			const size_t at = lab.find(" punch ");
+			if (at != std::string::npos) { punchMode = weaponMode = true; punchDelta = atoi(lab.c_str() + at + 7); lab.resize(at); }
+		}
+		bool punchHolding = false, punchHave = false;
+		int16_t punchX = 0, punchY = 0;
+		int punchShots = 0, punchAims = 0;
 		int wpnLines = 0, wpnBad = 0, wpnGarbled = 0, invGarbled = 0, invLines = 0, invBad = 0, trigs = 0;
 		if (lab.size() > 7 && lab.compare(lab.size() - 7, 7, " simple") == 0) lab.resize(lab.size() - 7);
 		sync(lab.c_str());
@@ -469,6 +483,50 @@ int main(int argc, char **argv)
 		auto applyWeapon = [&](const std::string &e) -> bool
 		{
 			const char *c = e.c_str();
+			if (punchMode && !strncmp(c, "FACETO ", 7))
+			{
+				int fs, fi, fx, fy; unsigned fa; int px, py;
+				if (sscanf(c, "FACETO %d.%d ang=%u px=%d py=%d ox=%d oy=%d", &fs, &fi, &fa, &px, &py, &fx, &fy) == 7)
+				{ punchX = (int16_t)fx; punchY = (int16_t)fy; punchHave = true; }
+				return true;
+			}
+			if (punchMode && !strncmp(c, "PT fts=", 7))
+			{
+				int32_t off = 0;
+				if (punchHolding)
+				{
+					// the port's player turned <delta>; the aim on the latched point (as WeaponTick does)
+					const uint16_t was = w.player.angle;
+					w.player.angle = (uint16_t)((w.player.angle + punchDelta) & 511);
+					int16_t shotZ = w.player.z;
+					if ((int16_t)(w.player.height - 0x14) >= 0) shotZ = (int16_t)(shotZ + (int16_t)(w.player.height - 0x14));
+					const PunchAim a = PunchAimAt(w.player, punchX, punchY, shotZ);
+					off = a.yawOffset;
+					const int32_t pitchWas = w.player.pitch;
+					w.player.pitch = a.pitch;
+					const uint32_t ev = w.weaponEvents;
+					w.weaponEvents = 0;
+					w.WeaponFrame(atoi(c + 7), off);
+					const uint32_t evFrame = w.weaponEvents;
+					w.weaponEvents |= ev;
+					punchAims++;
+					if (evFrame & ActorWorld::WE_SHOT) punchShots++;
+					if ((evFrame & (ActorWorld::WE_SHOT | ActorWorld::WE_CYCLE_END)) || w.weapon.lock == 0) punchHolding = false;
+					w.player.angle = was;
+					w.player.pitch = pitchWas;
+					return true;
+				}
+				w.WeaponFrame(atoi(c + 7));
+				return true;
+			}
+			if (punchMode && !strncmp(c, "TRIG ", 5))
+			{
+				const bool ready = w.weapon.lock == 0 && w.weapon.slots != 0;
+				w.TriggerFire(0, 0);
+				punchHolding = punchHave && ready && w.weapon.lock != 0;
+				trigs++;
+				return true;
+			}
 			if (!strncmp(c, "PT fts=", 7)) { w.WeaponFrame(atoi(c + 7)); return true; }
 			if (!strncmp(c, "RC fts=", 7)) { w.RechargeFrame(atoi(c + 7)); return true; }
 			if (!strncmp(c, "TRIG ", 5)) { int a = 0, b = 0; sscanf(c, "TRIG %d %d", &a, &b); w.TriggerFire(a, b); trigs++; return true; }
@@ -601,12 +659,14 @@ int main(int argc, char **argv)
 			if (!strncmp(l, "SWP ", 4)) { rp.swp.push_back(l); continue; }
 			if (!strncmp(l, "WAKE ", 5) || !strncmp(l, "FIRE ", 5) || !strncmp(l, "FRAME", 5) || !strncmp(l, "ANIM ", 5)) { pending.push_back(l); continue; }
 			if (weaponMode && (!strncmp(l, "PT ", 3) || !strncmp(l, "RC ", 3) || !strncmp(l, "TRIG ", 5) || !strcmp(l, "RWL") ||
-				!strncmp(l, "WPN ", 4) || !strncmp(l, "INVS ", 5) || !strncmp(l, "SHOT ", 5))) { pending.push_back(l); continue; }
+				!strncmp(l, "WPN ", 4) || !strncmp(l, "INVS ", 5) || !strncmp(l, "SHOT ", 5) || !strncmp(l, "FACETO ", 7))) { pending.push_back(l); continue; }
 		}
 		if (f) fclose(f);
 		printf("REPLAY ticks=%d question-mismatches=%d\n", tick, rp.qmis);
 		if (weaponMode) printf("WEAPON triggers=%d, weapon states compared %d (differ %d, garbled in the log %d), inventory states compared %d (differ %d, garbled %d), inventory hooks %d\n",
 			trigs, wpnLines - wpnGarbled, wpnBad, wpnGarbled, invLines - invGarbled, invBad, invGarbled, host.hooks);
+		if (punchMode) printf("PUNCH turned %d (of 512) from the original's facing: %d shot(s) aimed at the faced point over %d weapon frame(s)\n",
+			punchDelta, punchShots, punchAims);
 		if (rp.judge) printf("JUDGE simple collision agreed with the original on %d of %d answers\n", rp.agreed, rp.judged);
 		w.SetCollision(nullptr);
 	};

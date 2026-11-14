@@ -96,3 +96,9 @@ weapons/swpn_<index>.txt: STUDY1 at -864,3412 facing 466, give the weapon
 orig.log > port.log; python3 cmpticks.py orig.log port.log. The port runs its
 own weapon from the PT/TRIG/RC/RWL lines, compares every WPN/INVS line, and
 its shots are its own (SHOT lines are not injected).
+
+The VR fist's attack (2026-11-13, punch.sh): probe op "face S I" turns the original's player to object S.I by
+its own atan2_bearing and logs FACETO; scenario_study1_punch.txt stands Adam 50 units from the ghoul 171.16 and
+faces + pulls every 12 frames (his fists, 14 shots, the ghoul killed). actors_test "replay start punch <delta>"
+replays it with the port's player turned <delta> away and every pull aimed at the faced point through
+PunchAimAt (roth_actors.h), the engine's fist attack. punch.sh runs six turns and compares everything.

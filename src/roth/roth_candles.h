@@ -47,6 +47,10 @@ class Log;
 
 void CandlesPrepare(const Map &rm, TextureSet &levelArt, TextureSet *sharedArt, Log *log);
 void CandlesTick(FLevelLocals *level);
+// THE TALL WICKS (the VR grip, roth_vrpick.cpp): the flame hand `role` pointing from `tip` along `dir` grips. The
+// wick nearest the ray, in the original's use band, lights by the same route as a flame brought to it. True when
+// a wick was pointed at (the grip is taken).
+bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir);
 void CandlesBeforeUse(AActor *target);
 // `tip`, `palm`: the hand's points; `hit`: where the use pointed; `inReach`: the palm was on the candle.
 void CandlesAfterUse(AActor *target, int role, const DVector3 &tip, const DVector3 &palm, const DVector3 &hit, bool inReach, bool acted);

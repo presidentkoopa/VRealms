@@ -73,9 +73,10 @@ void ActorsAddWeaponAmmo(int delta);
 // weapon grip reads it (roth_hands.cpp; UZDXREMA VRRig_HandHoldsWeapon: "a weapon DRAWN in that hand").
 bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls);
 // The VR hands and the attack (roth_vrpick.cpp): whether the fire button (BT_ATTACK) reaches
-// the weapon, and the hands' own attack -- one trigger_weapon_fire at the next weapon tick.
+// the weapon, and the hands' own attack -- A FIST THAT LANDED (roth_gestures.cpp): one
+// trigger_weapon_fire at the next weapon tick, its shot aimed at the contact (x, y, z map units).
 void ActorsSetFireButtonAllowed(bool allowed);
-void ActorsRequestFire();
+void ActorsRequestFireAt(double x, double y, double z);
 // How many 70 Hz ticks the actors have run (a log line: none while the inventory pauses the world).
 int ActorsTickCount();
 

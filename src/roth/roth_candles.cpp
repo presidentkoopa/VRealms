@@ -386,6 +386,80 @@ void CandlesTick(FLevelLocals *level)
 }
 
 //==========================================================================
+// THE TALL WICKS (owner, VR_CHAPTER01_SHADOWS.md 6 Q13: "point the lit match at a wick in reach + grip lights
+// it", for seated and shorter players). The FLAME is whatever CandlesTick takes for one now (FlameHand: the hand
+// holding the original's right-hand item when the candle's chain tests that item -- the Matchbox -- or any hand
+// when it tests none); the real match is another lane's, and slots in there. The wick is the one nearest the
+// pointing ray within kPointWick of it, in reach by the original's own use band (z < 268 along the ray's yaw,
+// PickPlanarZ). Then the same route as a flame brought to it: an unlit candle -> the original's use with that wick
+// as the first (VRPickUseObject, g_forceWick); a candle being lit -> that wick lights (WickLighting::Flames).
+//==========================================================================
+
+namespace
+{
+constexpr double kPointWick = 0.06;   // metres from the pointing ray to a wick
+
+bool FlameHand(const Candle &c, int role, int itemRole, int rightItem)
+{
+	return c.spec.item == 0 || (role == itemRole && rightItem == c.spec.item);
+}
+}
+
+bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
+{
+	if (g_level == nullptr || g_candles.empty()) return false;
+	AActor *pmo = players[consoleplayer].mo;
+	if (pmo == nullptr) return false;
+	const double yaw = ViewYawDeg(g_level, pmo);
+	const double upm = VRPickUnitsPerMetre();
+	const int itemRole = VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
+	const int rightItem = RightItem();
+	Candle *best = nullptr;
+	AActor *bestMo = nullptr;
+	int bestK = -1;
+	double bestT = 1e30, bestPerp = 0;
+	DVector3 bestW;
+	for (Candle &c : g_candles)
+	{
+		const Object *o = RuntimeObject(c.spec.sector, c.spec.index);
+		AActor *mo = FindObjectActor(c.spec.sector, c.spec.index);
+		if (o == nullptr || mo == nullptr || c.handedBack) continue;
+		const bool litNow = WordOf(*o) == g_kinds[c.kind].litWord;
+		if (!(c.w.IsStarted() || (!litNow && o->commandID == c.spec.clickId))) continue;
+		if (!FlameHand(c, role, itemRole, rightItem)) continue;
+		for (int k = 0; k < c.w.Wicks(); k++)
+		{
+			if (c.w.IsStarted() && (c.w.Mask() & (1u << k))) continue;
+			const DVector3 W = WickAt(c, mo, k, yaw);
+			const DVector3 v = W - tip;
+			const double t = v | dir;
+			if (t <= 0) continue;
+			const double perp = (v - dir * t).Length();
+			if (perp > kPointWick * upm || t >= bestT) continue;
+			if (PickDepthOfZ(PickPlanarZ(pmo, W, dir)) >= 0x258) continue;   // the original's use band
+			best = &c; bestMo = mo; bestK = k; bestT = t; bestPerp = perp; bestW = W;
+		}
+	}
+	if (best == nullptr) return false;
+	Candle &c = *best;
+	Printf("[roth_candles] object %d/%d: the %s hand points its flame at wick %d (%.2f m along the ray, %.3f m off it) and grips\n",
+		c.spec.sector, c.spec.index, RoleWord(role), bestK + 1, bestT / upm, bestPerp / upm);
+	if (!c.w.IsStarted())
+	{
+		g_forceWick = bestK;
+		VRPickUseObject(role, bestMo, bestW);
+		g_forceWick = -1;
+		return true;
+	}
+	const uint32_t before = c.w.Mask();
+	c.w.Flames(1u << bestK);
+	if (c.w.Mask() != before)
+		Printf("[roth_candles] object %d/%d: wick %d lit by the %s hand's pointed flame, %d of %d lit, tic %d of the lighting\n", c.spec.sector,
+			c.spec.index, bestK + 1, RoleWord(role), Bits(c.w.Mask()), c.w.Wicks(), c.w.TicsSinceStart());
+	return true;
+}
+
+//==========================================================================
 // Saves
 //==========================================================================
 

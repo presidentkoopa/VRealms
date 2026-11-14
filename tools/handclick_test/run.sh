@@ -1,6 +1,6 @@
 #!/bin/bash
 # tools/handclick_test/run.sh -- the original's secondary click on each cursor type
-# (run_gameplay_frame, E/game_core.c:515-732) through the ORIGINAL (clickprobe.c in the headless
+# (run_gameplay_frame, E/game_core.c:515-732; the click a landed fist makes) through the ORIGINAL (clickprobe.c in the headless
 # ROTH.C build, /home/claude/oracle_build) against src/roth/roth_handclick.h. Exit 0 = no difference.
 # Outputs under $HANDCLICK_WORK (default /tmp/handclick_test); nothing into the repo.
 set -u

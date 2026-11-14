@@ -290,6 +290,7 @@ namespace
 		float turn = 0.f;
 		float tilt = 0.f;
 		double lift = 0.0;		// metres, VRHandTest_SetLift
+		double off[SIDE_COUNT][3] = { { 0, 0, 0 }, { 0, 0, 0 } };	// metres fwd / right / up, VRHandTest_SetOffset
 		bool heldOn[SIDE_COUNT] = { false, false };	// roth_handhold: this side's held thing replaces the game's
 		HeldState held[SIDE_COUNT];
 	};
@@ -318,7 +319,8 @@ namespace
 		out.scale(upm, upm, -upm);
 		out.scale(1.f, 1.f / (float)ps, 1.f);
 		out.rotate((float)(-90.0 + yaw), 0.f, 1.f, 0.f);
-		out.translate((float)(side == SIDE_RIGHT ? TEST_SIDE : -TEST_SIDE), (float)(TEST_UP + gTest.lift), (float)-TEST_FWD);
+		const double *o = gTest.off[side];
+		out.translate((float)((side == SIDE_RIGHT ? TEST_SIDE : -TEST_SIDE) + o[1]), (float)(TEST_UP + gTest.lift + o[2]), (float)-(TEST_FWD + o[0]));
 		out.rotate(side == SIDE_RIGHT ? -gTest.turn : gTest.turn, 0.f, 1.f, 0.f);
 		// `tilt` tips the fingers from straight up toward straight ahead about the camera's right
 		// axis (90 = the fingers point away from the camera, palm down): the VR picker's flat test
@@ -346,6 +348,17 @@ void VRHandTest_SetHeld(int side, bool on, const HeldState &held)
 }
 
 void VRHandTest_SetTilt(float tiltDeg) { gTest.tilt = tiltDeg; }
+void VRHandTest_SetOffset(int side, double fwd, double right, double up)
+{
+	if (side < 0 || side >= SIDE_COUNT) return;
+	gTest.off[side][0] = fwd; gTest.off[side][1] = right; gTest.off[side][2] = up;
+}
+void VRHandTest_Offset(int side, double &fwd, double &right, double &up)
+{
+	fwd = right = up = 0.0;
+	if (side < 0 || side >= SIDE_COUNT) return;
+	fwd = gTest.off[side][0]; right = gTest.off[side][1]; up = gTest.off[side][2];
+}
 void VRHandTest_SetLift(double metres) { gTest.lift = metres; }
 double VRHandTest_Lift() { return gTest.lift; }
 
@@ -363,7 +376,8 @@ void VRHandTest_ActorSpot(int side, const DVector3 &eye, double yawDeg, DVector3
 	const DVector3 fwd(yaw.Cos(), yaw.Sin(), 0.0);
 	const DVector3 right(yaw.Sin(), -yaw.Cos(), 0.0);
 	const double s = (side == SIDE_RIGHT) ? TEST_SIDE : -TEST_SIDE;
-	out = eye + fwd * (TEST_FWD * upm) + right * (s * upm) + DVector3(0, 0, (TEST_UP + gTest.lift) * upm);
+	const double *o = (side >= 0 && side < SIDE_COUNT) ? gTest.off[side] : gTest.off[0];
+	out = eye + fwd * ((TEST_FWD + o[0]) * upm) + right * ((s + o[1]) * upm) + DVector3(0, 0, (TEST_UP + gTest.lift + o[2]) * upm);
 }
 
 //===========================================================================

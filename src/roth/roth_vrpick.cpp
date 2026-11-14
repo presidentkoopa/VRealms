@@ -59,13 +59,16 @@
 // roth_vrpicktest), VRPickTick holds the fire button back -- player->ButtonMask
 // for BT_ATTACK and ActorsSetFireButtonAllowed(false) for the ROTH weapon tick --
 // while the main hand holds no weapon, so examining never swings Adam's fists. A
-// weapon hand's trigger keeps firing. A grip on NOTHING (no usable target in
-// reach or along the finger) is the original's secondary click on that cursor
-// type (roth_handclick.h, ported from run_gameplay_frame, E/game_core.c:651-731,
-// differential-tested in tools/handclick_test): an attack target attacks; open
-// space attacks only while the primary (the trigger) has been held 0x0c frame
-// ticks, otherwise nothing. The attack goes through ActorsRequestFire, the same
-// TriggerFire the fire button reaches. Flat mouse and keyboard are untouched.
+// weapon hand's trigger keeps firing. PHYSICAL ONLY (owner, 2026-11-13, Q6): a
+// grip on nothing does nothing; Adam's fists attack where a FIST SWUNG AT SPEED
+// LANDS (roth_gestures.cpp, RSQ Melee's punch reader): the original's secondary
+// click on what it met (roth_handclick.h), its attack aimed at the contact
+// (ActorsRequestFireAt). Flat mouse and keyboard are untouched.
+// THE GESTURES (roth_gestures.h): the punch, the knock, the physical attempts,
+// the ward tingle run once a tic after the hands (GesturesTick), on the inputs
+// and points read here (VRPickHandNow), and act through the same use and
+// examine paths (VRPickUseAt, VRPickExamineAt). The tall wicks' point + grip
+// is the grip's, below (CandlesPointGrip).
 // While a dialogue owns the pointer, a hand's press is the dialogue's click
 // (InterfaceHandDialogueClick): a click during a playing line skips it, as the
 // original's (dialogue_ui.c:552-553).
@@ -133,9 +136,9 @@
 #include "roth_handuse.h"
 #include "roth_invhand.h"
 #include "roth_panelmap.h"
-#include "roth_handclick.h"
 #include "roth_actors_engine.h"
 #include "roth_candles.h"
+#include "roth_gestures.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -189,7 +192,6 @@ struct HandState
 	bool  pressReady = false, wasPressReady = false;  // the fingertip press's point pose (grip held, index off)
 	bool  gripClosed = false, trigDown = false;       // the two buttons, with their hysteresis
 	bool  primed = false;        // the buttons were read last tic: a button already down is not a press
-	int   trigTicks = 0;         // the trigger held this long (the original's 70 Hz steer clock, roth_handclick.h)
 
 	// the ray and what is at its end
 	bool        haveRay = false;
@@ -718,9 +720,7 @@ void DrawBeam(int role, HandState &h, AActor *pmo, const DVector3 &end, bool hit
 
 // The two buttons' press edges (pressed at 0.70, let go at 0.35, for both). A
 // button already down when the hand comes back (a controller found, the hands
-// back from a menu or a panel) is not a press. The trigger's held time is the
-// original's steer clock: 0 on the tic it is pressed, then the 70 Hz ticks
-// (game_core.c:702-708; roth_handclick.h).
+// back from a menu or a panel) is not a press.
 void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
 {
 	const bool gripWasClosed = h.gripClosed;
@@ -733,7 +733,6 @@ void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
 	else if (h.trigger <= kGripOpen) h.trigDown = false;
 	gripEdge = h.primed && h.gripClosed && !gripWasClosed;
 	trigEdge = h.primed && h.trigDown && !trigWasDown;
-	h.trigTicks = !h.trigDown ? 0 : trigWasDown ? h.trigTicks + 2 : 0;   // a tic is two 70 Hz ticks (ROTH_FRAME_TICKS_PER_TIC)
 	h.primed = h.valid;
 }
 
@@ -842,40 +841,24 @@ void TickHand(int role, AActor *pmo)
 	// In reach first (the palm on it: NearAct, GrabNear's search), else along the
 	// pointing finger at range, through the same use path and the same gate.
 	// One action per press: a grip that went somewhere is not also the
-	// fingertip press below (re-armed when the tip backs off).
+	// fingertip press below (re-armed when the tip backs off). A grip on nothing
+	// does nothing (physical only: the fists attack where they land,
+	// roth_gestures.cpp).
 	bool gripActed = false;
 	if (gripEdge)
 	{
 		gripActed = NearAct(role, h, pmo, true) != 0;
+		// THE TALL WICKS (owner, Q13): the flame hand pointing at a wick in reach -- the wick nearest its ray --
+		// and the grip: that wick's flame (CandlesPointGrip, the same route as a flame brought to it).
+		if (!gripActed && h.pointing && CandlesPointGrip(role, h.tip, h.dir)) gripActed = true;
 		if (!gripActed && h.pointing && h.havePick && h.cls.CanUse())
 		{
 			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
 			gripActed = true;
 		}
-		else if (!gripActed)
-		{
-			// NOTHING IN REACH TO USE AND NOTHING USABLE POINTED AT: the original's
-			// secondary click on the cursor's type (roth_handclick.h, differential-tested
-			// against run_gameplay_frame, tools/handclick_test): an attack target (type 5)
-			// is attacked; nothing (type 1) is attacked only while the primary -- the
-			// trigger -- has been held 12 ticks (the original's steering); else nothing.
-			// The cursor: what the finger points at, or the aim it held when the index
-			// went onto the trigger.
-			const int type = h.pointing ? (h.havePick ? (int)h.cls.type : 1) : (h.aimHeld && h.aimHave) ? (int)h.aimType : 1;
-			const SecondaryVerb v = SecondaryClick(type, h.trigDown, h.trigTicks);
-			if (v == SECONDARY_ATTACK || v == SECONDARY_ATTACK_AIMED)
-			{
-				ActorsRequestFire();
-				gripActed = true;
-				Haptic(role, 0.45, 35);
-				Printf("[roth_vrpick] %s hand grip: ATTACK -- the original's secondary click on cursor type %d%s: %s\n", RoleName(role), type,
-					h.trigDown ? FStringf(" with the trigger held %d ticks", h.trigTicks).GetChars() : "", SecondaryVerbName(v));
-			}
-			else if (Logging())
-				Printf("[roth_vrpick] %s hand grip: %s (cursor type %d%s: %s)\n", RoleName(role), !h.pointing ? "not pointing, nothing in reach"
-					: h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray", type,
-					h.trigDown ? FStringf(", the trigger held %d ticks", h.trigTicks).GetChars() : "", SecondaryVerbName(v));
-		}
+		else if (!gripActed && Logging())
+			Printf("[roth_vrpick] %s hand grip: %s -- nothing (a grip on nothing does not attack: physical only)\n", RoleName(role),
+				!h.pointing ? "not pointing, nothing in reach" : h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
 		if (gripActed) h.pokeArmed = false;
 	}
 
@@ -1189,6 +1172,7 @@ void ForgetLevel()
 void VRPickEndLevel()
 {
 	ForgetLevel();
+	GesturesEndLevel();
 }
 
 bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm)
@@ -1230,6 +1214,83 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
 
 double VRPickUnitsPerMetre() { return UPM(); }
 
+bool VRPickHandNow(int role, VRPickHand &out)
+{
+	out = VRPickHand();
+	if (role < 0 || role > 1 || P.level == nullptr || !roth_vrpick) return false;
+	if (P.test && !(P.testHands & (1 << role))) return false;
+	if (!P.test && !HeadsetOn()) return false;
+	player_t *player = P.level->GetConsolePlayer();
+	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	const HandState &h = P.hand[role];
+	if (pmo == nullptr || !h.valid) return false;
+	out.valid = true;
+	out.grip = h.grip;
+	out.trigger = h.trigger;
+	out.triggerTouch = h.triggerTouch;
+	out.gripClosed = h.gripClosed;
+	out.trigDown = h.trigDown;
+	out.pointing = h.pointing;
+	HandState tmp;
+	if (!FingerRay(role, tmp, pmo) || !tmp.fromFinger) return true;   // the drawn hand's own points only
+	out.havePoints = true;
+	out.tip = tmp.tip;
+	out.dir = tmp.dir;
+	out.palm = tmp.palm;
+	out.handFwd = tmp.handFwd;
+	return true;
+}
+
+// The cursor the original would show for `p` from where the hand is (its depth from the player along the
+// hand's line to it), as every hand click classifies (DepthOf).
+static CursorClass ClassifyFrom(AActor *pmo, const Pick &p, const DVector3 &from)
+{
+	DVector3 d = p.hitPos - from;
+	if (d.Length() < 1e-6) d = p.hitPos - pmo->Pos();
+	return ClassifyPick(p, pmo, DepthOf(pmo, p, d));
+}
+
+int VRPickCursorType(int role, const Pick &p, const DVector3 &from)
+{
+	if (P.level == nullptr || role < 0 || role > 1) return 1;
+	player_t *player = P.level->GetConsolePlayer();
+	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	if (pmo == nullptr) return 1;
+	return ClassifyFrom(pmo, p, from).type;
+}
+
+bool VRPickUseAt(int role, const Pick &p, const DVector3 &from, const char *how)
+{
+	if (P.level == nullptr || role < 0 || role > 1) return false;
+	player_t *player = P.level->GetConsolePlayer();
+	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	if (pmo == nullptr) return false;
+	const CursorClass c = ClassifyFrom(pmo, p, from);
+	if (!c.CanUse())
+	{
+		Printf("[roth_vrpick] %s hand %s on %s: %s\n", RoleName(role), how, PickKindName(p), WhyNotUse(c).GetChars());
+		return false;
+	}
+	return DoUse(role, p, c, pmo, how, true);
+}
+
+bool VRPickExamineAt(int role, const Pick &p, const DVector3 &from, const char *how)
+{
+	if (P.level == nullptr || role < 0 || role > 1) return false;
+	player_t *player = P.level->GetConsolePlayer();
+	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	if (pmo == nullptr) return false;
+	const CursorClass c = ClassifyFrom(pmo, p, from);
+	if (!c.CanExamine())
+	{
+		Printf("[roth_vrpick] %s hand %s on %s: %s\n", RoleName(role), how, PickKindName(p), WhyNotExamine(c).GetChars());
+		return false;
+	}
+	return DoExamine(role, p, c, pmo, how);
+}
+
+bool VRPickTesting() { return P.test; }
+
 void VRPickTick(FLevelLocals *level, bool modal)
 {
 	if (level == nullptr) return;
@@ -1259,7 +1320,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		if (Logging() && allowed != P.loggedFireAllowed)
 		{
 			Printf("[roth_vrpick] the fire button (attack) %s\n", allowed ? (handsOwnAttack ? "reaches the weapon: the main hand holds one" : "reaches the weapon")
-				: "is held back: the main hand holds no weapon (its trigger examines; the grip attacks, as the original's secondary click)");
+				: "is held back: the main hand holds no weapon (its trigger examines; a fist that lands attacks)");
 			P.loggedFireAllowed = allowed;
 		}
 	}
@@ -1325,6 +1386,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		}
 		TickHand(role, pmo);
 	}
+	// THE GESTURES (roth_gestures.h), after both hands, while the hands work the world.
+	GesturesTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
 
 	// WHAT IT COSTS, measured every tic it runs: into the perf log's CPU
 	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),
@@ -1384,6 +1447,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        index fingertip is at wick <n> of that candle (1 = the leftmost as
 //                                        drawn), or <metres> in front of it toward the player; the view's yaw
 //                                        is kept (a billboard's wicks lie across the view)
+//   roth_vrpicktest aimwick <n>          aim the test ray from the fingertip at wick <n> of that candle (the
+//                                        tall wicks' point + grip, CandlesPointGrip)
 //   roth_vrpicktest look <units> [bearing]
 //                                        stand on the floor <units> from that candle at <bearing> degrees
 //                                        (candle -> camera; 0 east, 90 north; default the last one given for
@@ -1406,7 +1471,7 @@ CCMD(roth_vrpicktest)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face|examine [metres]"
-			" | seek needs <item> [metres] | panel <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | look <units> [bearing] | off\n");
+			" | seek needs <item> [metres] | panel <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | aimwick <n> | look <units> [bearing] | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
@@ -1514,6 +1579,18 @@ CCMD(roth_vrpicktest)
 		Printf("roth_vrpicktest look: %.0f units from object %d/%d at bearing %.0f, standing at (%.0f %.0f %.0f) in sector %d facing it,"
 			" pitch %.1f\n", d, P.testCandleSector, P.testCandleIndex, P.testLookBearing, pmo->X(), pmo->Y(), pmo->Z(),
 			pmo->Sector != nullptr ? pmo->Sector->Index() : -1, pmo->Angles.Pitch.Degrees());
+		return;
+	}
+	if (!stricmp(argv[1], "aimwick") && argv.argc() >= 3)
+	{
+		// The tall wicks' test (roth_gestures.h, CandlesPointGrip): the test ray from the fingertip at wick <n>.
+		AActor *pmo = players[consoleplayer].mo;
+		DVector3 at;
+		if (pmo == nullptr || !CandleWickWorld(P.testCandleSector, P.testCandleIndex, atoi(argv[2]) - 1, pmo->Angles.Yaw.Degrees(), at))
+		{ Printf("roth_vrpicktest aimwick: no wick %s on the candle (roth_vrpicktest candle first)\n", argv[2]); return; }
+		P.testAimAt = true;
+		P.testAim = at;
+		Printf("roth_vrpicktest aimwick %s: aiming at (%.1f %.1f %.1f)\n", argv[2], at.X, at.Y, at.Z);
 		return;
 	}
 	if (!stricmp(argv[1], "wick") && argv.argc() >= 3)
