@@ -3824,9 +3824,12 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				}
 				lastAnalogTurnTime = currentTime;
 
-				if (*vr_snapTurn <= 10.0f)
+				// A game may state its own snap angle (VR_SetSnapTurnOverride, hw_vrmodes.h): Realms of the
+				// Haunting turns 45 degrees a snap (owner, 2026-11-13). The cvar is read, never written.
+				const float snapDegrees = VR_SnapTurnDegrees(*vr_snapTurn);
+				if (snapDegrees <= 10.0f)
 				{
-					snapTurn += VR_ApplyAnalogSmoothTurn(turnX, 210.0f, deltaSeconds, VR_GetAnalogTurnResponseScale(*vr_snapTurn), analogTurnRateDegPerSec);
+					snapTurn += VR_ApplyAnalogSmoothTurn(turnX, 210.0f, deltaSeconds, VR_GetAnalogTurnResponseScale(snapDegrees), analogTurnRateDegPerSec);
 					if (fabsf(turnX) > 0.05f)
 					{
 						turnRightLatched[mainHand] = false;
@@ -3844,7 +3847,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 					{
 						if (!turnRightLatched[mainHand])
 						{
-							snapTurn -= *vr_snapTurn;
+							snapTurn -= snapDegrees;
 							resetDoomYaw = true;
 							turnRightLatched[mainHand] = true;
 						}
@@ -3858,7 +3861,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 					{
 						if (!turnLeftLatched[mainHand])
 						{
-							snapTurn += *vr_snapTurn;
+							snapTurn += snapDegrees;
 							resetDoomYaw = true;
 							turnLeftLatched[mainHand] = true;
 						}

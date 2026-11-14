@@ -455,3 +455,9 @@ void  VR_SetEyeHeightAnchor(float eyeUnits, float pixelStretch);   // eyeUnits 0
 void  VR_ReportHeadHeight(float metresAboveFloor);                  // the device, every tracked frame
 void  VR_RemeasureHeadHeight();
 float VR_MeasuredHeadHeight();                                      // 0 = not measured yet
+float VR_CurrentHeadHeight();                                       // the last tracked report, 0 = none
+
+// A game's own snap-turn angle, in degrees (0 = the vr_snapTurn cvar). Cleared at every level
+// load with the units-per-metre override. VR_SnapTurnDegrees(cvar) is what the device turns by.
+void  VR_SetSnapTurnOverride(float degrees);
+float VR_SnapTurnDegrees(float cvarDegrees);

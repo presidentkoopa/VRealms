@@ -684,9 +684,13 @@ void VR_SetEyeHeightAnchor(float eyeUnits, float pixelStretch)
 	ApplyEyeAnchor();
 }
 
+static float gVRHeadNowMetres = 0.f;
+static float gVRSnapTurnOverride = 0.f;
+
 void VR_ReportHeadHeight(float metresAboveFloor)
 {
 	if (!(metresAboveFloor > 0.f)) return;		// the stage floor is y = 0; nothing at or below it is a head
+	gVRHeadNowMetres = metresAboveFloor;
 	if (gVRHeadMetres > 0.f && !gVRRemeasure) return;
 	gVRHeadMetres = metresAboveFloor;
 	gVRRemeasure = false;
@@ -695,6 +699,9 @@ void VR_ReportHeadHeight(float metresAboveFloor)
 
 void VR_RemeasureHeadHeight() { gVRRemeasure = true; }
 float VR_MeasuredHeadHeight() { return gVRHeadMetres; }
+float VR_CurrentHeadHeight() { return gVRHeadNowMetres; }
+void VR_SetSnapTurnOverride(float degrees) { gVRSnapTurnOverride = degrees > 0.f ? degrees : 0.f; }
+float VR_SnapTurnDegrees(float cvarDegrees) { return gVRSnapTurnOverride > 0.f ? gVRSnapTurnOverride : cvarDegrees; }
 CVAR(Float, vr_height_adjust, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // METERS
 CVAR(Float, vr_openxr_fov_adjust_deg, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // DEGREES PER SIDE
 CVAR(Float, vr_openxr_eye_shift_scale, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)

@@ -637,6 +637,7 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 	// loader sets it again from the map's own player height.
 	VR_SetUnitsPerMeterOverride(0.f);
 	VR_SetEyeHeightAnchor(0.f, 1.f);
+	VR_SetSnapTurnOverride(0.f);
 
 	// This is motivated as follows:
 

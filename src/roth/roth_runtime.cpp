@@ -5472,6 +5472,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	// first song, so this has to be up before it.
 	SoundBeginLevel(map, level, log);
 	ActorsBeginLevel(g.map, level, log);
+	PlayerMoveBeginLevel(g.map, level, log);
 
 	// The game core is attached once: its flags and items are the game's, not
 	// the map's. There is no menu or save yet, so the first level this session
@@ -5931,6 +5932,7 @@ void EndLevel()
 {
 	HeldEndLevel();
 	InterfaceEndLevel();
+	PlayerMoveEndLevel();
 	CmdClearParticleActors(false);      // the level's thinkers go with it
 	g.active = false;
 	g.level = nullptr;
@@ -6180,6 +6182,29 @@ bool RealmsDoorOpen(int rothSector)
 	if (po == nullptr) return false;
 	return po->specialdata != nullptr || po->Angle != nullAngle;
 }
+
+// The player movement's view of the live world (roth_playermove_engine.h).
+bool RealmsDoorLeaf(int rothSector, double xs[4], double ys[4])
+{
+	if (!g.active || g.level == nullptr) return false;
+	auto it = g.doorTag.find(rothSector);
+	if (it == g.doorTag.end()) return false;
+	FPolyObj *po = g.level->GetPolyobj(it->second);
+	if (po == nullptr || po->Vertices.Size() != 4) return false;
+	for (int k = 0; k < 4; k++) { xs[k] = po->Vertices[k]->fX(); ys[k] = po->Vertices[k]->fY(); }
+	return true;
+}
+uint32_t RealmsSpeedShift() { return g_cmd.speedShift; }
+void RealmsDialogueFreeze(uint32_t &busy, uint32_t &gate)
+{
+	busy = gate = 0;
+	if (!g_core.IsAttached()) return;
+	const auto &st = g_core.Interp().State();
+	busy = (uint32_t)st.g_dialogue_busy_flag;
+	gate = (uint32_t)st.g_move_freeze_gate;
+}
+const Map *RealmsLiveMap() { return g.active ? &g.map : nullptr; }
+std::string RealmsFirstMapName() { return g_flowDefaultMap; }
 
 void StageObjectChainSound(uint16_t soundPlusOne, int x, int y)
 {
@@ -8789,6 +8814,11 @@ void TickLevelLogic(FLevelLocals *level)
 	// The actors and their bullets: tick_dynamic_entities, from the frame
 	// step after the world effects (game_core.c, gameplay_frame_step).
 	ActorsTick(level, ROTH_FRAME_TICKS_PER_TIC);
+
+	// The player's movement: update_player_tick after tick_dynamic_entities (gameplay_frame_step,
+	// game_core.c:488-493). The original's own movement, collision and vertical physics
+	// (roth_playermove.h), two 70 Hz ticks and one frame a tic.
+	PlayerMoveTick(level);
 
 	DrainDeferred();
 	ApplyPendingWarp();

@@ -1029,6 +1029,10 @@ set (PCH_SOURCES
 	roth/roth_actor_view.cpp
 	roth/roth_actor_weapon.cpp
 	roth/roth_actors_engine.cpp
+	# The original's player movement and collision (engine-free, tools/move_test diffs it against
+	# the running original) and its binding to the engine's Realms player.
+	roth/roth_playermove.cpp
+	roth/roth_playermove_engine.cpp
 	# Realms' own sound. roth_sfx reads the retail containers and holds the
 	# rules (engine-free; tools/roth_sound compiles it too); roth_sound plays
 	# them through the engine's sound system and music player.

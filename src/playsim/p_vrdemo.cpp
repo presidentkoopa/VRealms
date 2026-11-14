@@ -14,6 +14,7 @@
 **
 */
 
+#include "roth/roth_playermove_engine.h"
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -419,6 +420,11 @@ void VR_ApplyRenderMove(player_t* player, EVRRenderMoveKind kind, const DVector2
 	// Noted before it runs, in the order it runs. A replay must not note its own moves.
 	if (!demoplayback && IsRecordingPlayer(int(player - players)))
 		LiveMoves.Push({ (uint8_t)kind, delta });
+
+	// Realms of the Haunting: a roomscale step goes through the original's collision and a teleport
+	// is the port's (roth_playermove_engine.h). Noted above all the same, so a demo still has it.
+	if (roth::PlayerMoveRenderMove(player, kind == VRMOVE_TELEPORT, delta.X, delta.Y))
+		return;
 
 	AActor* const mo = player->mo;
 	const DVector3 vel = mo->Vel;

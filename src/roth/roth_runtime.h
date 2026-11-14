@@ -35,6 +35,7 @@
 #include "textureid.h"
 #include "vectors.h"   // DVector3, for ActivateLine's hit point
 #include "roth_surface.h"   // WallFace, for RegisterWallFace
+#include "roth_playermove_engine.h"   // the original's player movement, wired to the engine
 
 struct line_t;
 struct sector_t;
@@ -166,6 +167,16 @@ bool FireObjectChain(int rothSector, int rothIndex);
 // or open) -- what the original's door pool holds (find_record_by_id,
 // renderer.c:1394), which decides whether its renderer looks through it.
 bool RealmsDoorOpen(int rothSector);
+// For the player movement (roth_playermove_engine.h): a door leaf's four corners as they stand
+// (engine space; false when the sector has no leaf of four), the 0x41 shift latched this frame,
+// the dialogue freeze (0x83aea busy, 0x83125 gate) and the live map.
+bool RealmsDoorLeaf(int rothSector, double xs[4], double ys[4]);
+uint32_t RealmsSpeedShift();
+void RealmsDialogueFreeze(uint32_t &busy, uint32_t &gate);
+const Map *RealmsLiveMap();
+// The game's first map (the first entry of ROTH.RES's list): the original takes the movement tuning
+// from its metadata only (init_movement_tuning_from_first_map, game_core.c:467, :1071).
+std::string RealmsFirstMapName();
 // A 0x3c record's +0x0e sound, played at the object by the chain's tail.
 void StageObjectChainSound(uint16_t soundPlusOne, int x, int y);
 

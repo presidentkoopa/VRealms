@@ -1240,7 +1240,9 @@ void G_BuildTiccmd (usercmd_t *cmd)
 		if (turnheld < SLOWTURNTICS) tspeed += 2; // slow turn
 
 		// [UZDXREMA] The HMD owns yaw in VR; keyboard turning must not fight it.
-		if (!vrmode->IsVR())
+		// Realms of the Haunting: the keys turn through the original's turn ramp instead
+		// (roth_playermove_engine.h reads BT_LEFT / BT_RIGHT from the command).
+		if (!vrmode->IsVR() && !roth::PlayerMoveOwnsTurnKeys())
 		{
 			if (HELD(BT_RIGHT)) G_AddViewAngle(*angleturn[tspeed]);
 			if (HELD(BT_LEFT))  G_AddViewAngle(-*angleturn[tspeed]);

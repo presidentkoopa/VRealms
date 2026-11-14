@@ -9,6 +9,7 @@
 //
 
 #include <stdint.h>
+#include <utility>
 #include <vector>
 
 struct FLevelLocals;
@@ -90,6 +91,13 @@ bool ActorsObjectHealth(int rothSector, int rothIndex, int32_t &health, uint8_t 
 // its z up `height` -- the dimension table's words for its picture id. False: not a creature with a slot, or no
 // dimensions. The VR fist meets this body, not the picture's pick box (roth_gestures.cpp).
 bool ActorsCreatureBody(int rothSector, int rothIndex, int &radius, int &height);
+// The original's player movement (roth_playermove.h) pushes the player off the creatures in the
+// pool (gather_nearby_doors, doors.c:427-447): their objects as (sector, index) of the live map, in
+// slot order, (-1, -1) for a free slot. And the art's collision dimensions (0x85c50), 4 bytes an id.
+void ActorsPoolObjects(std::vector<std::pair<int, int>> &out);
+const std::vector<uint8_t> *ActorsCollisionDims();
+// apply_direct_damage_to_player (weapon_combat.c:29-43): the fall damage.
+void ActorsDamagePlayerDirect(uint32_t damage);
 // How many 70 Hz ticks the actors have run (a log line: none while the inventory pauses the world).
 int ActorsTickCount();
 

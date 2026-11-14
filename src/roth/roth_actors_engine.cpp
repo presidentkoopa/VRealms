@@ -824,6 +824,29 @@ void SyncPlayer()
 } // namespace
 
 bool ActorsActive() { return g_actors.active; }
+
+void ActorsPoolObjects(std::vector<std::pair<int, int>> &out)
+{
+	out.clear();
+	if (!g_actors.active) return;
+	ActorWorld &w = g_actors.world;
+	for (int i = 0; i < 16; i++)
+	{
+		int s = -1, k = -1;
+		if (w.actors[i].object != 0 && w.Find(w.actors[i].object, &s, &k) == nullptr) s = k = -1;
+		out.push_back(std::make_pair(s, k));
+	}
+}
+
+const std::vector<uint8_t> *ActorsCollisionDims()
+{
+	return g_actors.active ? &g_actors.tables.dims : nullptr;
+}
+
+void ActorsDamagePlayerDirect(uint32_t damage)
+{
+	if (g_actors.active) g_actors.world.DamageDirect(damage);
+}
 uint32_t ActorsLastMintedId() { return g_actors.world.lastMintedId; }
 
 int ActorsEquipWeapon(int slot, int itemIndex)

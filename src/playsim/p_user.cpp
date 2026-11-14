@@ -1784,6 +1784,11 @@ void P_PlayerThink (player_t *player)
 	}
 	cmd->buttons &= ~player->ButtonMask;
 
+	// Realms of the Haunting: the original's movement owns the player (roth_playermove_engine.h).
+	// It reads the held keys, sticks, jump and crouch from this command and takes the moves off it,
+	// so the pawn's own thinking below moves nothing; the port writes the pawn at the world step.
+	roth::PlayerMoveTakeCmd(player);
+
     static int previous_health = 0;
 
     if (previous_health != player->health)

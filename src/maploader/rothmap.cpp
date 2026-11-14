@@ -375,6 +375,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 	}
 
 	log.StageBegin("parse");
+	// The original's player movement keeps the map's own bytes as the original holds them
+	// (roth_playermove.h): its collision walks them, not the parsed structures.
+	roth::PlayerMoveSetRaw(bytes);
 	roth::Map rm = roth::ParseRaw(bytes.data(), bytes.size());
 	if (!rm.ok())
 	{
