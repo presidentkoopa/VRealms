@@ -8807,6 +8807,29 @@ std::string DefaultSaveName()
 	return n;
 }
 
+// THE QUICK KEYS' MOMENT (input.c:545-559, game_core.c:861-956). key_quicksave
+// and key_quickload only arm g_pending_game_action; they are reached through
+// keymap_dispatch, which the frame loop calls in gameplay mode alone
+// (g_player_movement_enabled 1, game_core.c:869-879): not with the inventory
+// or its examine popup up (mode 3), not in a cutscene overlay or a choice
+// image (4 / 5), not dying (0x20), not between levels (8), and not under a
+// message box (show_message_box runs its own loop). The pending action is
+// then served at the frame's tail (:923-941): load_savegame_file(0), or
+// write_savegame_file(0). F9 / F10, roth_quicksave / roth_quickload and the
+// VR binding (engine/vr/commonbinds.txt) all ask here.
+bool QuickKeysLive()
+{
+	// Mode 1 told by what the engine itself shows: GameFlow's own copy of the
+	// mode is not read, because the engine plays a movie from the end of the
+	// tic and the copy's restore can then land after the new-game block's
+	// mode 1 (gdv_cutscene.c:2474-2475 against game_core.c:845).
+	if (!g_flow.IsAttached() || !g_flow.BootDone() || g_flow.Dying()) return false;
+	if (gamestate != GS_LEVEL || MovieBusy()) return false;                 // between levels, a movie (8, 4/5)
+	if (g_menus.IsOpen()) return false;                                     // a message box's own loop
+	if (InterfaceInventoryPanelOpen() != 0 || InterfaceInspectPopupActive() != 0) return false;   // mode 3
+	return true;
+}
+
 bool SaveSlot(int slot, const std::string &name)
 {
 	if (gamestate != GS_LEVEL || g_flow.Dying()) return false;
@@ -8942,8 +8965,28 @@ CCMD(roth_inventory)
 // button clicks the row under the beam or the crosshair.
 CCMD(roth_options) { if (g_flow.IsAttached() && !g_flow.Dying()) g_menus.OpenOptions(); }
 CCMD(roth_mainmenu) { if (g_flow.IsAttached() && !g_flow.Dying()) g_menus.OpenMain(); }
-CCMD(roth_quicksave) { if (g_flow.IsAttached()) SaveSlot(0, DefaultSaveName()); }
-CCMD(roth_quickload) { if (g_flow.IsAttached()) LoadSlot(0); }
+CCMD(roth_quicksave)
+{
+	if (!QuickKeysLive())
+	{
+		Printf("roth_quicksave: not now -- the original reads its quick keys in play only (dying %d, movie %d, menu %d, inventory %d, popup %d, booted %d)\n", g_flow.Dying() ? 1 : 0, MovieBusy() ? 1 : 0,
+			g_menus.IsOpen() ? 1 : 0, (int)InterfaceInventoryPanelOpen(), (int)InterfaceInspectPopupActive(), g_flow.BootDone() ? 1 : 0);
+		return;
+	}
+	Printf("Realms: quicksave (slot 0)\n");
+	SaveSlot(0, DefaultSaveName());
+}
+CCMD(roth_quickload)
+{
+	if (!QuickKeysLive())
+	{
+		Printf("roth_quickload: not now -- the original reads its quick keys in play only (dying %d, movie %d, menu %d, inventory %d, popup %d, booted %d)\n", g_flow.Dying() ? 1 : 0, MovieBusy() ? 1 : 0,
+			g_menus.IsOpen() ? 1 : 0, (int)InterfaceInventoryPanelOpen(), (int)InterfaceInspectPopupActive(), g_flow.BootDone() ? 1 : 0);
+		return;
+	}
+	Printf("Realms: quickload (slot 0)\n");
+	LoadSlot(0);
+}
 CCMD(roth_menu)
 {
 	if (argv.argc() < 2) { Printf("roth_menu up|down|enter|back|scrollup|scrolldown|choose <row>|dump\n"); return; }
@@ -9063,9 +9106,14 @@ bool FlowResponder(const event_t *ev)
 	}
 	if (!g_flow.BootDone() || g_flow.Dying()) return false;
 	// The keymap at 0x7093d: F9 (0x43) key_quicksave, F10 (0x44) key_quickload,
-	// both on slot 0 (input.c:545-559).
-	if (k == KEY_F9) { SaveSlot(0, DefaultSaveName()); return true; }
-	if (k == KEY_F10) { LoadSlot(0); return true; }
+	// both on slot 0 (input.c:545-559), in gameplay mode only (QuickKeysLive).
+	if (k == KEY_F9 || k == KEY_F10)
+	{
+		if (!QuickKeysLive()) return true;                   // the original's keymap is not read now: the key does nothing
+		if (k == KEY_F9) { Printf("Realms: quicksave (slot 0)\n"); SaveSlot(0, DefaultSaveName()); }
+		else { Printf("Realms: quickload (slot 0)\n"); LoadSlot(0); }
+		return true;
+	}
 	return false;
 }
 

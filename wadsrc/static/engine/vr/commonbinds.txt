@@ -19,6 +19,15 @@ pad_a +use
 pad_b +jump
 pad_y togglemap
 pad_x invuse
+// VRealms (ledger row 36, owner's H2): the original's quick keys, F9 / F10
+// (input.c:545-559, slot 0), on a DOUBLE tap of the left controller's X / Y.
+// A double tap, so a single press keeps whatever X / Y are bound to and a
+// stray press never loads over the game. Clear of the trigger (examine),
+// the grip (use), the sticks (move, snap turn), B (jump) and grip + A
+// (crouch). roth_quicksave / roth_quickload do nothing outside play, as the
+// original's keymap is read in play only.
+doublebind pad_x roth_quicksave
+doublebind pad_y roth_quickload
 rtrigger +attack
 ltrigger +altattack
 lshoulder weapprev
