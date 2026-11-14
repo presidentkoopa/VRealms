@@ -59,8 +59,10 @@ EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoin
 #include "r_data/sprites.h"
 #include "r_data/models.h"          // the off hand's wrist, for the mount
 #include "r_data/vr_handpose.h"
+#include "r_data/vr_handpose_math.h"   // VRHandPose::SIDE_RIGHT
 #include "hw_vrmodes.h"             // VR_OFFHAND, VR_ScriptHaptic
 #include "hwrenderer/postprocessing/hw_postprocessshader.h"   // the low-health edge (GLDEFS RothLowHealth)
+EXTERN_CVAR(Bool, gl_custompost)   // file scope: inside the namespace it would name another variable
 #include "roth_hands.h"
 
 
@@ -1002,6 +1004,28 @@ void DeriveMountCanvases()
 // 26 tics apart, about 80 a minute) is ours: the original has none.
 static const int HEART_PERIOD = 26, HEART_SECOND = 6;
 
+// What the edge's pass is, said once each time it is turned on (the first PC
+// run's captures showed no edge and the log said nothing about it).
+void ReportLowHealthEdge()
+{
+	int found = 0;
+	for (unsigned i = 0; i < PostProcessShaders.Size(); i++)
+	{
+		const PostProcessShader &sh = PostProcessShaders[i];
+		if (sh.Name.CompareNoCase("RothLowHealth") != 0) continue;
+		found++;
+		const PostProcessUniformValue *u = sh.Uniforms.CheckKey("uStrength");
+		Printf("[roth_mount] red edge: post-process pass %u of %u \"%s\", target %s, lump %s (version %d), enabled %d, game-owned %d,"
+			" uStrength %s %.2f; gl_custompost %d (the game's own pass runs either way)\n", i, PostProcessShaders.Size(), sh.Name.GetChars(),
+			sh.Target.GetChars(), sh.ShaderLumpName.GetChars(), sh.ShaderVersion, sh.Enabled ? 1 : 0, sh.GameOwned ? 1 : 0,
+			u == nullptr ? "MISSING" : (u->Type == PostProcessUniformType::Float ? "float" : "of another type"), u != nullptr ? u->Values[0] : 0.0,
+			gl_custompost ? 1 : 0);
+	}
+	if (found == 0)
+		Printf(TEXTCOLOR_RED "[roth_mount] red edge: NO post-process pass named RothLowHealth (%u passes; is wadsrc/static/gldefs.txt in the engine's pk3?)\n",
+			PostProcessShaders.Size());
+}
+
 void SetLowHealthEdge(bool on, double strength)
 {
 	for (unsigned i = 0; i < PostProcessShaders.Size(); i++)
@@ -1009,6 +1033,7 @@ void SetLowHealthEdge(bool on, double strength)
 		PostProcessShader &sh = PostProcessShaders[i];
 		if (sh.Name.CompareNoCase("RothLowHealth") != 0) continue;
 		sh.Enabled = on;
+		sh.GameOwned = true;
 		double *v = sh.Uniforms["uStrength"].Values;
 		v[0] = strength; v[1] = 0.0; v[2] = 0.0; v[3] = 1.0;
 	}
@@ -1024,6 +1049,7 @@ void TickLowHealthCue()
 		U.heartPhase = 0;
 		Printf("[roth_mount] low-health cue %s (health %d of %d)\n", low ? "on" : "off", (int)hp, (int)maxhp);
 		if (!low) SetLowHealthEdge(false, 0.0);
+		else { SetLowHealthEdge(true, 0.55); ReportLowHealthEdge(); }
 	}
 	if (!low) return;
 	const int ph = U.heartPhase;
@@ -2356,9 +2382,36 @@ CCMD(roth_ui_invclick)
 //
 //===========================================================================
 
+//   roth_mounttest look <cm>   bring the test OFF hand up as one raises a wrist to read it: the
+//                              mount's middle straight ahead of the eye, <cm> from it (35 is a
+//                              wrist held to be read; a smaller distance magnifies it for a
+//                              320 x 200 capture, which has about 3.5 pixels a degree to the
+//                              headset's 20 or so)
+//   roth_mounttest look off    the test hand back where roth_handtest puts it
 CCMD(roth_mounttest)
 {
-	if (argv.argc() < 2) { Printf("roth_mounttest on | off\n"); return; }
+	if (argv.argc() < 2) { Printf("roth_mounttest on | off | look <cm> | look off\n"); return; }
+	if (!stricmp(argv[1], "look"))
+	{
+		const int side = VRHandPose_SideForRole(VR_OFFHAND);
+		if (argv.argc() < 3 || !stricmp(argv[2], "off"))
+		{
+			VRHandTest_SetOffset(side, 0, 0, 0);
+			Printf("roth_mounttest look: off\n");
+			return;
+		}
+		// roth_handtest's grip stands 0.40 m ahead, 0.11 m to its side and 0.04 m below the eye
+		// (vr_handpose.cpp TEST_FWD / TEST_SIDE / TEST_UP); the offset is added to that. The wrist
+		// goes to the given distance, across to the middle, and down by the mount's lift plus half
+		// its height (about 2 cm), so the mount's middle is at the eye's height.
+		const double d = atof(argv[2]) * 0.01;
+		const double across = side == VRHandPose::SIDE_RIGHT ? -0.11 : 0.11;
+		const double up = 0.04 - (roth::roth_mount_liftcm * 0.01 + 0.02);
+		VRHandTest_SetOffset(side, d - 0.40, across, up);
+		Printf("roth_mounttest look: the test off hand's grip %.0f cm ahead of the eye, in the middle, %.0f cm below it\n",
+			d * 100.0, -(up - 0.04) * 100.0);
+		return;
+	}
 	roth::U.mountTest = !stricmp(argv[1], "on");
 	Printf("roth_mounttest: %s%s\n", roth::U.mountTest ? "on" : "off", roth::U.mountTest ? " (needs roth_handtest)" : "");
 }

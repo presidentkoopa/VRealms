@@ -67,6 +67,10 @@ struct PostProcessShader
 
 	FString Name;
 	bool Enabled = false;
+	// [VRealms] A pass the GAME turns on (src/roth/roth_interface.cpp, the low-health
+	// edge), not a mod's: it runs whether or not gl_custompost (the player's switch
+	// for mods' post-process shaders, archived) is on.
+	bool GameOwned = false;
 
 	TMap<FString, PostProcessUniformValue> Uniforms;
 	TMap<FString, FString> Textures;

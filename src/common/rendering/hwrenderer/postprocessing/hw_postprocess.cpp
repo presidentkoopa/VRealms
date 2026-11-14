@@ -2918,8 +2918,15 @@ void PPSceneMask::BeginFrame(bool active)
 
 void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 {
+	// [VRealms] With gl_custompost off only the game's own passes run (PostProcessShader::GameOwned).
 	if (!gl_custompost)
-		return;
+	{
+		bool any = false;
+		for (unsigned int i = 0; i < PostProcessShaders.Size() && !any; i++)
+			any = PostProcessShaders[i].GameOwned && PostProcessShaders[i].Enabled && PostProcessShaders[i].Target == target;
+		if (!any)
+			return;
+	}
 
 	CreateShaders();
 
@@ -2936,7 +2943,7 @@ void PPCustomShaders::Run(PPRenderState *renderstate, FString target)
 	bool maskResolved = false;	// [SCENEMASK] the same, and for the same reason
 	for (auto &shader : mShaders)
 	{
-		if (shader->Desc->Target == target && shader->Desc->Enabled)
+		if (shader->Desc->Target == target && shader->Desc->Enabled && (gl_custompost || shader->Desc->GameOwned))
 		{
 			if (shader->UsesSceneDepth() && !depthResolved)
 			{
