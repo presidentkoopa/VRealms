@@ -31,6 +31,9 @@ entries use it.
 | 15 | 0x0d's key-0 path: the art swap happens (the 0x3a mint carried across the 0x12 delay) | 1:1 fix | — (a bug) | 09469d04 | captures e20464e7 | all; ch1 (31, 33, 34) |
 | 16 | Candles wick by wick, in any order; the first wick fires the original's one use; unlit wicks catch after 15 s; one growing light per holder | VR over 1:1 | owner: any order, 15 s, growing light | fbb84e20, c2275576 | captures acb11adb; `wicks_test` (2162 scenarios) | ch1 (31, 33, 34); ch2+ every candelabrum |
 | 17 | `roth_darktest`: RS_Radiance's darkness pass, set from the game (no cvars) | tool | darkness available, **chapter 1 uses none** | 24edb2bd, c28161c3 | captures aa3c465f | none yet |
+| 33 | Guns aim along the gun: in VR the shot starts at the main hand (when the original's map reaches it from the player's start, else the original's start) and leaves along the hand; the stored attack pose's convention fixed in WeaponTick (a VR shot went 90 degrees aside, pitch mirrored); rate, damage, ammo, reload the original's. Test-only `roth_gunaimtest` | VR | W1 | 2f54599b | — (here: weapon replay item 9 vs the original 8053 states / 0 differ, identical to HEAD; `tools/gunaim_test` 206,401 walk cases on 44 maps, 0 wrong; cfg `gunaim_flat.cfg` not yet run) | all with a gun |
+| 34 | The off-hand mount: in VR the original's subtitle line (and the death wait's) and its health panel ("low" picture included), drawn by the original's routines, stand over the off hand's wrist facing the eye; the rest of the HUD where it was; below half health a red screen edge (GLDEFS `RothLowHealth`) and a heartbeat on both controllers. The death wait now shows its line and the HUD as the original's mode 0x20 does (1:1). Non-archived `roth_mount_scale` / `roth_mount_lift`; test-only `roth_mounttest`, `roth_sethealth` | VR (+ 1:1 death text) | S1, H1 | 913583f9 | — (here: huddraw_test vs the original unchanged; cfg `mount_flat.cfg` not yet run) | all |
+| 36 | Quicksave / quickload: a double tap of the left controller's X / Y (engine/vr/commonbinds.txt defaults) runs the original's F9 / F10 (slot 0); F9 / F10 and the commands act in play only, as the original's keymap is read (game_core.c:869-879) | VR (+ 1:1 gate) | H2 | 55f11bb4 | — (cfg `quicksave_flat.cfg` not yet run) | all |
 
 **Removed / to remove**
 
@@ -71,10 +74,7 @@ entries use it.
 | 30 | The original's movement ported 1:1 (step-up 65 / 16 crouched, crouch to 0x30, the 19-phase jump, speeds, turn ramp), diffed against the original | 1:1 | L4, "now" | all |
 | 31 | Locomotion: smooth stick (default) or teleport, a setting; snap turn 45° | VR | L1, L2 | all |
 | 32 | A real crouch drives the original's crouch; a button for seated players | VR | L3 | all; ch1 (27) |
-| 33 | The Colt (and every gun) aims along the gun | VR | W1 | all with a gun |
-| 34 | The off-hand mount: the original's subtitle panel and health bar, plus a low-health cue (red edge, heartbeat haptic) | VR | S1, H1 | all |
 | 35 | Movies on a world-locked screen | VR | M1 | all |
-| 36 | A quicksave / quickload button (the original's slot 0) | VR | H2 | all |
 | 37 | A held item brought to the eyes plays its examine | VR | X1 | all |
 
 ## Decided, LATER

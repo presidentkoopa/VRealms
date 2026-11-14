@@ -886,5 +886,18 @@ reaches). Summary for chapter 1:
 | physical melee, grip-on-air attack removed, knock, attempts, ward tingle, tall wicks | agent running | — |
 | real match, lamp on a hip hook, item shown in hand, the Book, niche flash, forced turn snap | agent running | — |
 | the original's movement 1:1; smooth + teleport, snap 45°, real crouch | decided (8.7), to build | — |
-| Colt aims along the gun; off-hand mount (subtitles, health + low cue); world-locked movies; quicksave button; item to the eyes = examine | decided (8.7), to build | — |
+| the Colt aims along the gun (ledger 33): the shot from the main hand along it; ammo, rate, damage, reload the original's | built, not seen | — (cfg `gunaim_flat.cfg`) |
+| off-hand mount (ledger 34): the original's subtitle line (Adam's lines, the death wait's) and health panel over the off wrist; red edge + heartbeat below half | built, not seen | — (cfg `mount_flat.cfg`) |
+| quicksave / quickload (ledger 36): double tap X / Y on the left controller = the original's F9 / F10, in play only | built, not seen | — (cfg `quicksave_flat.cfg`) |
+| world-locked movies; item to the eyes = examine | decided (8.7), to build | — |
 | real-parts reload, on-gun ammo display | decided, LATER | — |
+
+Notes on the three built 2026-11-13 (ledger rows 33, 34, 36):
+- **The gun.** In chapter 1 the Colt's only targets are the mirrors, windows and casement leaves (8.2); a shot now
+  leaves the main hand, and a hand pushed through a wall fires from the original's start instead. Movie subtitles
+  stay with the movie; the timed message (the item lines) stays where the original's screen has it.
+- **The mount.** Chapter 1's lines (most entries in section 3 end in one) and the death wait's text are on the off
+  hand's wrist; its size and lift are `roth_mount_scale` / `roth_mount_lift` (not archived) until the owner has
+  judged them in the headset. The weapon panel (ammo) stays head-locked until G1.
+- **Saving.** The bindings are defaults: an ini that already has VRealms bindings keeps its own
+  (`doublebind pad_x roth_quicksave`, `doublebind pad_y roth_quickload`).
