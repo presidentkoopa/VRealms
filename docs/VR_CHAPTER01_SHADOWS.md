@@ -712,10 +712,15 @@ haptic only.
 | answer | built | the original's click | proof |
 |---|---|---|---|
 | Q6 physical melee | a closed fist holding no weapon, swung at speed (RSQ Melee's reader: armed slow, 0.15 m at 2.0 m/s or more) into a thing: the original's secondary click by its cursor there; an attack target (a creature, glass) gets the original's attack aimed at the contact (ActorsRequestFireAt -> TriggerFire, Adam's fists, the original's damage); a usable thing its use. The grip on empty air no longer attacks (removed). | attack / use | tools/gesture_test (reader vs RSQ's own, random paths), tools/handclick_test (133 cases vs the original, 7 steering cases excluded), tools/actors_test/oracle/punch.sh (the aimed attack vs the original's) |
-| Q3 knock | two light raps (0.25 to 2.0 m/s, back off 3.5 cm between, within 0.6 s) of an open, empty hand on one wall, door, object or floor | examine | tools/gesture_test |
-| Q4 attempts | push (the sofa's crease), tug (the roll-top desk's drawers), press (the typewriter's keys, the boot prints), wave (the flies), the palm sweeping a door leaf; once per entry, re-armed 10 cm out | examine | tools/gesture_test |
+| Q3 knock | two light raps of an open, empty hand on one wall, door, object or floor: each a contact at 0.4 to 2.0 m/s that leaves again (3.5 cm) within 0.29 s, the two contacts within 0.6 s | examine | tools/gesture_test |
+| Q4 attempts | push (the sofa's crease, #314), tug (the roll-top desk's drawers, #288), press (the typewriter's keys #286, the boot prints #241), wave (the flies, #337), the palm sweeping a door leaf; once per entry, re-armed 10 cm out. Each zone names its examine record and is built from that record's key (the object or the sectors with that id); it fires only when the original's dispatcher matches that record there | examine | tools/gesture_test |
 | Q9 ward tingle | a palm within 15 cm of DEMO[4207] / DEMO[4208] / ADEMO[232]: 0.04 growing to 0.22, a pulse every other tic | none (haptic only) | tools/gesture_test |
 | Q13 tall wicks | the flame hand pointing at a wick (within 6 cm of the ray, in the use band) + grip: the same route as a flame brought to it | use (the first wick) | flat cfg `tools/claude_bridge/cfg/gestures_flat.cfg` |
+
+Found by the first PC run (03548253) and fixed in the runtime, flat included: every STUDY1 examine record has no chain
+(only its line, +0x0a), and the binding loop skipped records with no chain, so no object, face or floor examine record
+could ever play (only an item's OnInspect); and a floor examine was bound to the first sector carrying its id only (the
+typewriter's id 23 is on s306 and s315). Both now as the original's dispatcher (E/raw_commands.c:3102-3170).
 
 [R] Not seen in the headset; the zones' places on the sofa and the desk are slices of their pick boxes, not measured on
 the meshes. The flat cfg shows each one in STUDY1 with log lines.

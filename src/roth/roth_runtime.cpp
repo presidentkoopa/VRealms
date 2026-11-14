@@ -5568,9 +5568,18 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	for (const Command &c : g.map.commands)
 	{
 		if (!c.isTrigger || c.disabled) continue;
-		if (c.chainStart == 0) continue;
 
 		const TrigEvent ev = EventForOpcode(c.opcode);
+		// AN EXAMINE RECORD WITH NO CHAIN IS BOUND (2026-11-13, the gestures' PC run: "nothing to examine" on the
+		// sofa, the desk, the typewriter). The original's examine dispatcher (dispatch_entry_command_trigger_b,
+		// E/raw_commands.c:3102-3170) walks the category list and matches on the key, the spent bit and the
+		// approach mask only; it never looks at the link, and its flow walk of link 0 is clear. The examine's
+		// effect is then the record's own DBASE100 line (+0x0a, examine_world_object; ExaminePick), and every
+		// STUDY1 0x30 / 0x31 / 0x32 record checked (#314, #288, #313, #337, #90, #286, #241, #173, #73, #395,
+		// #454, #455) has link 0 and a line. Dropping them left every such examine unreachable, by mouse and by
+		// hand. The other events keep the old rule [R: whether a USE record with link 0 exists and what the
+		// original's use does with one was not checked].
+		if (c.chainStart == 0 && ev != TrigEvent::Examine) continue;
 		if (ev == TrigEvent::None)
 		{
 			// A trigger opcode this port has no event for. 0x1b, 0x25, 0x39,
@@ -5599,7 +5608,17 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		else if (IsSectorTrigger(c.opcode))
 		{
 			if (c.sector < 0) { unbound++; continue; }
-			g.bySector[c.sector].push_back(b);
+			// AN EXAMINE OF A FLOOR OR CEILING: EVERY SECTOR WITH THE ID (2026-11-13, the typewriter's #286 is keyed to id
+			// 23, which s306 AND s315 carry; the boot prints' #241 to id 26: s31 and s257). The original's channel 3
+			// (dispatch_entry_command_trigger_b, E/raw_commands.c:3155-3170) compares the record's key with the picked
+			// CELL's own id (geom + 0x14 + cell), so every sector carrying the id answers; c.sector is only the first.
+			// The other sector events keep their one sector [R: the enter and use channels not re-read here].
+			if (ev == TrigEvent::Examine && c.key != 0)
+			{
+				for (int s = 0; s < (int)g.map.sectors.size(); s++)
+					if (g.map.sectors[s].commandID == c.key) g.bySector[s].push_back(b);
+			}
+			else g.bySector[c.sector].push_back(b);
 			sectorBound++;
 			boundByOp[c.opcode]++;
 			flagHist[c.opcode][(c.fireFlags << 8) | c.subFlags]++;
@@ -7783,6 +7802,28 @@ bool ExaminePick(const Pick &p, AActor *who)
 	if (r.type == 4 && p.actor != nullptr)
 		return InterfaceObjectAction(p.actor, r.objSector, r.objIndex, false);
 	return false;
+}
+
+uint16_t ExamineRecordOf(const Pick &p)
+{
+	ResolvedPick r;
+	if (!g.active || !ResolvePick(p, r)) return 0;
+	return ExamineMatch(r);
+}
+
+bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key)
+{
+	const Command *c = g.active ? Rec(record) : nullptr;
+	if (c == nullptr) return false;
+	opcode = c->opcode & 0x7f;
+	key = c->key;
+	return true;
+}
+
+uint16_t RuntimeSectorId(int rothSector)
+{
+	if (!g.active || rothSector < 0 || rothSector >= (int)g.map.sectors.size()) return 0;
+	return g.map.sectors[rothSector].commandID;
 }
 
 //==========================================================================

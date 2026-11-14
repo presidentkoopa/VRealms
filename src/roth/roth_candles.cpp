@@ -417,8 +417,11 @@ bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
 	Candle *best = nullptr;
 	AActor *bestMo = nullptr;
 	int bestK = -1;
-	double bestT = 1e30, bestPerp = 0;
+	double bestT = 1e30, bestPerp = 0, bestZ = 0;
 	DVector3 bestW;
+	int farK = -1;
+	const Candle *farC = nullptr;
+	double farZ = 0;
 	for (Candle &c : g_candles)
 	{
 		const Object *o = RuntimeObject(c.spec.sector, c.spec.index);
@@ -436,14 +439,23 @@ bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
 			if (t <= 0) continue;
 			const double perp = (v - dir * t).Length();
 			if (perp > kPointWick * upm || t >= bestT) continue;
-			if (PickDepthOfZ(PickPlanarZ(pmo, W, dir)) >= 0x258) continue;   // the original's use band
-			best = &c; bestMo = mo; bestK = k; bestT = t; bestPerp = perp; bestW = W;
+			// IN REACH: the original's use range, the reach every hand use has (CursorClass::CanUse: depth 2z + 64 < 0x258,
+			// z the planar distance from the player along the ray's yaw, under 268 units)
+			const double z = PickPlanarZ(pmo, W, dir);
+			if (PickDepthOfZ(z) >= 0x258) { if (farC == nullptr) { farC = &c; farK = k; farZ = z; } continue; }
+			best = &c; bestMo = mo; bestK = k; bestT = t; bestPerp = perp; bestW = W; bestZ = z;
 		}
 	}
-	if (best == nullptr) return false;
+	if (best == nullptr)
+	{
+		if (farC != nullptr)
+			Printf("[roth_candles] object %d/%d: the %s hand points its flame at wick %d, out of reach (planar %.0f units, the use range is 268): nothing\n",
+				farC->spec.sector, farC->spec.index, RoleWord(role), farK + 1, farZ);
+		return false;
+	}
 	Candle &c = *best;
-	Printf("[roth_candles] object %d/%d: the %s hand points its flame at wick %d (%.2f m along the ray, %.3f m off it) and grips\n",
-		c.spec.sector, c.spec.index, RoleWord(role), bestK + 1, bestT / upm, bestPerp / upm);
+	Printf("[roth_candles] object %d/%d: the %s hand points its flame at wick %d (%.1f units along the ray, %.1f off it; in reach: planar %.0f"
+		" of the use range's 268) and grips\n", c.spec.sector, c.spec.index, RoleWord(role), bestK + 1, bestT, bestPerp, bestZ);
 	if (!c.w.IsStarted())
 	{
 		g_forceWick = bestK;

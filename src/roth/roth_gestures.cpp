@@ -42,35 +42,38 @@ namespace
 using namespace gesture;
 
 //===========================================================================
-// THE CHAPTER-1 TABLE (docs/VR_CHAPTER01_SHADOWS.md: the entries named; the owner's list, Q4). Each zone is
-// built from the original's own object (by its art, as the map wears it: Pack::ResolveObjectArt's pack and
-// index -- DEMO = STUDY1's own pack, ADEMO the shared one) or its own sectors, and plays the examine of that
-// object or floor: the original's line, through the trigger's path (VRPickExamineAt). Nothing else.
+// THE CHAPTER-1 TABLE (docs/VR_CHAPTER01_SHADOWS.md: the entries named; the owner's list, Q4). EACH ZONE NAMES THE
+// ORIGINAL'S EXAMINE RECORD (owner's rule: "a physical attempt plays the examine line" -- that thing's own line), and
+// is built from what the record is keyed to: an 0x30 record's key is an OBJECT's id (its commandID), an 0x31's a
+// SECTOR's id (every sector carrying it: the original's channel 3 compares the cell's id). The try fires the
+// original's examine of that object or floor (VRPickExamineAt, the trigger's path) only when the original's own
+// dispatcher matches THAT record there (ExamineRecordOf); otherwise it says so and fires nothing.
+// (2026-11-13, the PC run of 03548253: "nothing to examine" -- every STUDY1 examine record has no chain, only its
+// line, and the binding skipped them; fixed in roth_runtime.cpp's binding loop.)
 //===========================================================================
 
 struct ObjectAttempt
 {
-	const char *map;       // the level the art index belongs to (the level pack); nullptr: any (shared pack)
-	bool shared;           // ADEMO
-	int art;
+	const char *map;
+	uint16_t record;       // the 0x30 examine record (its key: the object's id)
 	int kind;              // ATTEMPT_PUSH / ATTEMPT_TUG
 	double bandLo, bandHi; // the zone: this slice of the object's pick box, by height
 	const char *what;
 };
 const ObjectAttempt kObjectAttempts[] =
 {
-	// The seat-back crease of the sofa (mesh 1.76 x 0.80 x 1.05 m): a hand pushed DOWN into the middle slice of
-	// its box [R: the crease's place on the mesh is not measured; the slice covers seat to back cushions].
-	{ "STUDY1", false, 4106, ATTEMPT_PUSH, 0.30, 0.60, "the sofa's crease (entry 14, examine #314 \"Nothing shoved down the upholstery.\")" },
-	// The roll-top desk (mesh 114 x 68 x 80, OPENABLES E1): the drawers are its lower part; a grip there pulled
+	// The seat-back crease of the sofa (obj id 47, mesh 1.76 x 0.80 x 1.05 m): a hand pushed DOWN into the middle slice
+	// of its box [R: the crease's place on the mesh is not measured; the slice covers seat to back cushions].
+	{ "STUDY1", 314, ATTEMPT_PUSH, 0.30, 0.60, "the sofa's crease (entry 14, examine #314 \"Nothing shoved down the upholstery.\")" },
+	// The roll-top desk (obj id 1, mesh 114 x 68 x 80, OPENABLES E1): the drawers are its lower part; a grip there pulled
 	// out (OPENABLES: no drawer opens anywhere, and this desk never opens).
-	{ "STUDY1", false, 4113, ATTEMPT_TUG, 0.00, 0.60, "the roll-top desk's stuck drawers (OPENABLES E1, examine #288 \"The drawers are stuck.\")" },
+	{ "STUDY1", 288, ATTEMPT_TUG, 0.00, 0.60, "the roll-top desk's stuck drawers (OPENABLES E1, examine #288 \"The drawers are stuck.\")" },
 };
 
 struct FloorAttempt
 {
 	const char *map;
-	int sectors[6];        // Realms sector indexes, -1 ends
+	uint16_t record;       // the 0x31 examine record (its key: the sectors' id)
 	int kind;              // ATTEMPT_PRESS
 	bool tip;              // the fingertip presses (else the palm is laid)
 	double aboveM;         // the zone starts this far above the floor
@@ -78,25 +81,26 @@ struct FloorAttempt
 };
 const FloorAttempt kFloorAttempts[] =
 {
-	{ "STUDY1", { 306, 313, 314, 315, 316, -1 }, ATTEMPT_PRESS, true, 0.02,
-	  "the typewriter's keys (entry 21, examine #286 / #90 \"Ink ribbon's missing. / Some of the keys as well.\")" },
-	{ "STUDY1", { 31, 257, -1 }, ATTEMPT_PRESS, false, 0.04,
+	{ "STUDY1", 286, ATTEMPT_PRESS, true, 0.02,
+	  "the typewriter's keys (entry 21, examine #286 \"Ink ribbon's missing. / Some of the keys as well.\")" },
+	{ "STUDY1", 241, ATTEMPT_PRESS, false, 0.04,
 	  "the boot prints, the open hand laid in one (entry 28, examine #241 \"Boots. Bet he shops at oversize.\")" },
 };
 
 struct CloudAttempt
 {
 	const char *map;
-	bool shared; int art;            // the object examined (the armour)
+	uint16_t record;                 // the 0x30 examine record of the object (the armour)
 	bool cloudShared; int cloudArt;  // the sprites the cloud is (the flies)
-	double radiusM;                  // within this of a sprite is in the cloud (doc entry 5: 30 cm; the hand's metres)
+	double nearM;                    // within this of a fly sprite's own picture box is in the cloud (the hand's metres)
 	double gatherUnits;              // sprites this near the object's box in the plane (MAP units: the map's own
 	                                 // relation, the same in flat and in the headset) are its cloud
 	const char *what;
 };
 const CloudAttempt kCloudAttempts[] =
 {
-	{ "STUDY1", false, 4141, true, 198, 0.30, 96.0, "the flies on the armour (entry 5, examine #337 \"God what a stench!\")" },
+	// the four ADEMO[198] fly pictures around the armour with flies (doc entry 5); the cloud is their pictures' own extent
+	{ "STUDY1", 337, true, 198, 0.10, 96.0, "the flies on the armour (entry 5, examine #337 \"God what a stench!\")" },
 };
 
 struct WardKind { const char *map; bool shared; int art; const char *what; };
@@ -135,8 +139,10 @@ struct Zone
 	AActor *target = nullptr;               // BAND, CLOUD: the object examined
 	double bandLo = 0, bandHi = 1;
 	std::vector<AActor *> cloud;            // CLOUD: the sprites
-	double radiusM = 0;
+	double nearM = 0;
 	const FloorAttempt *floor = nullptr;    // FLOOR
+	std::vector<int> sectors;               // FLOOR: every sector carrying the record's key
+	uint16_t record = 0;                    // the examine record the zone names
 	AttemptDetector det[2];
 };
 
@@ -157,9 +163,13 @@ struct HandG
 	Motion motion;
 };
 
+// A punched creature, followed for a while so the log says what the original's attack did to it.
+struct Watch { int sector = -1, index = -1, until = 0; int32_t hp = 0; uint8_t st = 0; };
+
 struct State
 {
 	FLevelLocals *level = nullptr;
+	std::vector<Watch> watches;
 	bool built = false;
 	std::vector<Zone> zones;
 	std::vector<std::pair<AActor *, const char *>> wards;
@@ -219,6 +229,8 @@ std::vector<Thing> Things(AActor *pmo)
 		if (mo == pmo || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE)) continue;
 		Thing t;
 		if (!ObjectForActor(mo, t.sector, t.index)) continue;
+		// one actor per object: the one the object is found by (the PC run of 03548253 listed each fly twice)
+		if (FindObjectActor(t.sector, t.index) != mo) continue;
 		t.mo = mo;
 		if (const Object *o = RuntimeObject(t.sector, t.index)) t.shared = Pack::ResolveObjectArt(o->textureIndex, o->textureSource, t.art);
 		ObjectPickBox(mo, t.lo, t.hi);
@@ -239,39 +251,57 @@ void Build(const std::vector<Thing> &things)
 	S.built = true;
 	S.zones.clear();
 	S.wards.clear();
-	for (const ObjectAttempt &a : kObjectAttempts)
-	{
-		if (!MapIs(a.map)) continue;
+	auto keyOf = [](uint16_t record, uint8_t want, uint16_t &key) {
+		uint8_t op = 0;
+		return RecordKey(record, op, key) && op == want && key != 0;
+	};
+	auto objectsWithId = [&](uint16_t id) {
+		std::vector<const Thing *> out;
 		for (const Thing &t : things)
 		{
-			if (t.shared != a.shared || t.art != a.art) continue;
+			const Object *o = RuntimeObject(t.sector, t.index);
+			if (o != nullptr && o->commandID == id) out.push_back(&t);
+		}
+		return out;
+	};
+	for (const ObjectAttempt &a : kObjectAttempts)
+	{
+		uint16_t key = 0;
+		if (!MapIs(a.map)) continue;
+		if (!keyOf(a.record, 0x30, key)) { Printf("[roth_gestures] record #%u is not an object examine (0x30) here: %s not built\n", a.record, a.what); continue; }
+		for (const Thing *t : objectsWithId(key))
+		{
 			Zone z;
-			z.shape = ZONE_BAND; z.kind = a.kind; z.what = a.what; z.target = t.mo; z.bandLo = a.bandLo; z.bandHi = a.bandHi;
+			z.shape = ZONE_BAND; z.kind = a.kind; z.what = a.what; z.target = t->mo; z.bandLo = a.bandLo; z.bandHi = a.bandHi; z.record = a.record;
 			for (AttemptDetector &d : z.det) d.kind = a.kind;
 			S.zones.push_back(z);
 		}
 	}
 	for (const FloorAttempt &a : kFloorAttempts)
 	{
+		uint16_t key = 0;
 		if (!MapIs(a.map)) continue;
+		if (!keyOf(a.record, 0x31, key)) { Printf("[roth_gestures] record #%u is not a floor examine (0x31) here: %s not built\n", a.record, a.what); continue; }
 		Zone z;
-		z.shape = ZONE_FLOOR; z.kind = a.kind; z.what = a.what; z.floor = &a;
+		z.shape = ZONE_FLOOR; z.kind = a.kind; z.what = a.what; z.floor = &a; z.record = a.record;
+		for (int sn = 0; sn < (int)S.level->sectors.Size(); sn++) if (RuntimeSectorId(sn) == key) z.sectors.push_back(sn);
 		for (AttemptDetector &d : z.det) d.kind = a.kind;
-		S.zones.push_back(z);
+		if (!z.sectors.empty()) S.zones.push_back(z);
 	}
 	for (const CloudAttempt &a : kCloudAttempts)
 	{
+		uint16_t key = 0;
 		if (!MapIs(a.map)) continue;
-		for (const Thing &t : things)
+		if (!keyOf(a.record, 0x30, key)) { Printf("[roth_gestures] record #%u is not an object examine (0x30) here: %s not built\n", a.record, a.what); continue; }
+		for (const Thing *t : objectsWithId(key))
 		{
-			if (t.shared != a.shared || t.art != a.art) continue;
 			Zone z;
-			z.shape = ZONE_CLOUD; z.kind = ATTEMPT_WAVE; z.what = a.what; z.target = t.mo; z.radiusM = a.radiusM;
+			z.shape = ZONE_CLOUD; z.kind = ATTEMPT_WAVE; z.what = a.what; z.target = t->mo; z.nearM = a.nearM; z.record = a.record;
 			for (const Thing &f : things)
 			{
 				if (f.shared != a.cloudShared || f.art != a.cloudArt) continue;
 				const DVector3 fc = (f.lo + f.hi) * 0.5;
-				const double dx = std::max(0.0, std::max(t.lo.X - fc.X, fc.X - t.hi.X)), dy = std::max(0.0, std::max(t.lo.Y - fc.Y, fc.Y - t.hi.Y));
+				const double dx = std::max(0.0, std::max(t->lo.X - fc.X, fc.X - t->hi.X)), dy = std::max(0.0, std::max(t->lo.Y - fc.Y, fc.Y - t->hi.Y));
 				if (sqrt(dx * dx + dy * dy) <= a.gatherUnits) z.cloud.push_back(f.mo);
 			}
 			for (AttemptDetector &d : z.det) d.kind = ATTEMPT_WAVE;
@@ -290,8 +320,10 @@ void Build(const std::vector<Thing> &things)
 		{
 			int s = -1, i = -1;
 			if (z.target != nullptr) ObjectForActor(z.target, s, i);
-			Printf("[roth_gestures]   %s %s%s\n", AttemptName(z.kind), z.what,
-				z.target != nullptr ? FStringf(" -- object %d/%d%s", s, i, z.shape == ZONE_CLOUD ? FStringf(", %d fly sprite(s)", (int)z.cloud.size()).GetChars() : "").GetChars() : "");
+			FString where;
+			if (z.target != nullptr) where.Format(" -- object %d/%d%s", s, i, z.shape == ZONE_CLOUD ? FStringf(", %d fly sprite(s)", (int)z.cloud.size()).GetChars() : "");
+			else { where = " -- sector(s)"; for (int sn : z.sectors) where.AppendFormat(" %d", sn); }
+			Printf("[roth_gestures]   %s %s%s\n", AttemptName(z.kind), z.what, where.GetChars());
 		}
 	}
 }
@@ -313,14 +345,30 @@ bool ClearPath(AActor *pmo, const DVector3 &from, const Thing &t)
 	return p.kind == Pick::Prop || p.dist >= dist - 1.0;
 }
 
-// The click a landed fist makes (roth_handclick.h), and the swing's end when it made one.
+// The click a landed fist makes (roth_handclick.h), and the swing's end when it made one. THE AIM of the attack: on a
+// BODY (an object) its axis at the height the fist met it -- RSQ's ClearPath target (gloves.zs:774), where Deliver
+// lands the blow on the body -- not the face of its pick box (the PC run of 03548253: aimed at the box's face, close
+// and low, the shot dived under the creature); on a surface (glass) the point the fist met.
 bool Strike(int role, HandG &g, const Pick &p, const DVector3 &contact, const DVector3 &palm, SecondaryVerb v, int type, int now, const char *what)
 {
 	if (v == SECONDARY_ATTACK_AIMED)
 	{
-		ActorsRequestFireAt(contact.X, contact.Y, contact.Z);
+		DVector3 aim = contact;
+		if (p.kind == Pick::Prop && p.actor != nullptr) aim = DVector3(p.actor->X(), p.actor->Y(), contact.Z);
+		ActorsRequestFireAt(aim.X, aim.Y, aim.Z);
+		FString health;
+		int s = -1, i = -1;
+		int32_t hp = 0;
+		uint8_t st = 0;
+		if (p.kind == Pick::Prop && ObjectForActor(p.actor, s, i) && ActorsObjectHealth(s, i, hp, st))
+		{
+			health.Format("; its health %d (state 0x%02x) before", (int)hp, st);
+			Watch w; w.sector = s; w.index = i; w.hp = hp; w.st = st; w.until = now + 70;
+			S.watches.push_back(w);
+		}
 		Printf("[roth_gestures] %s hand punch (%.2f m/s average) lands on %s at (%.1f %.1f %.1f): cursor type %d -> the original's attack,"
-			" aimed at the contact\n", RoleName(role), g.punch.avgMps, what, contact.X, contact.Y, contact.Z, type);
+			" aimed at (%.1f %.1f %.1f)%s\n", RoleName(role), g.punch.avgMps, what, contact.X, contact.Y, contact.Z, type, aim.X, aim.Y, aim.Z,
+			health.GetChars());
 		Buzz(role, 0.5, 4 * 1000.0 / kTicRate, "a landed punch");
 		g.punch.Landed(now);
 		return true;
@@ -500,7 +548,7 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 		{
 			const Thing *ft = FindThing(things, f);
 			if (ft == nullptr) continue;
-			best = std::min(best, Metres(palm - (ft->lo + ft->hi) * 0.5, upm).Length() - z.radiusM);
+			best = std::min(best, BoxDistanceM(palm, ft->lo, ft->hi, upm) - z.nearM);   // the fly picture's own box
 		}
 		s.outside = std::max(0.0, best);
 		s.mps = velPalm.Length();
@@ -515,7 +563,7 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 	const gesture::V3 &v = z.floor->tip ? velTip : velPalm;
 	sector_t *sec = S.level->PointInSector(P.XY());
 	bool listed = false;
-	for (int k = 0; k < 6 && z.floor->sectors[k] >= 0; k++) if (sec != nullptr && sec->Index() == z.floor->sectors[k]) listed = true;
+	for (int sn : z.sectors) if (sec != nullptr && sec->Index() == sn) listed = true;
 	if (!listed) return s;
 	const double fz = sec->floorplane.ZatPoint(P.XY());
 	const double above = (P.Z - fz) * Stretch() / upm;
@@ -530,10 +578,15 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 	return s;
 }
 
-void Attempted(int role, const Pick &p, const DVector3 &from, const char *what, int kind)
+void Attempted(int role, const Pick &p, const DVector3 &from, const char *what, int kind, uint16_t record)
 {
 	FString how;
 	how.Format("attempt (%s: %s)", AttemptName(kind), what);
+	// The record the original's own dispatcher matches there must be the one the zone names (0: any, the door search).
+	const uint16_t matched = ExamineRecordOf(p);
+	Printf("[roth_gestures] %s hand %s: the original's examine there is %s%s\n", RoleName(role), how.GetChars(),
+		matched ? FStringf("record #%u", matched).GetChars() : "no record", record && matched != record ? FStringf(", NOT the zone's #%u: nothing fired", record).GetChars() : "");
+	if (record != 0 && matched != record) { Buzz(role, 0.10, 10, "an attempt, not fired"); return; }
 	const bool acted = VRPickExamineAt(role, p, from, how.GetChars());
 	Buzz(role, acted ? 0.25 : 0.10, acted ? 25 : 10, "an attempt");
 }
@@ -614,7 +667,7 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 		{
 			Pick p;
 			const AttemptSample s = SampleZone(z, h.palm, h.tip, velPalm, velTip, h.gripClosed, things, upm, p);
-			if (z.det[role].Feed(s) && p.kind != Pick::Nothing) Attempted(role, p, z.shape == ZONE_FLOOR && z.floor->tip ? h.tip : h.palm, z.what, z.kind);
+			if (z.det[role].Feed(s) && p.kind != Pick::Nothing) Attempted(role, p, z.shape == ZONE_FLOOR && z.floor->tip ? h.tip : h.palm, z.what, z.kind, z.record);
 		}
 		// the door search: an open palm on a door leaf, sweeping
 		Pick door;
@@ -625,7 +678,7 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 		AttemptSample s;
 		s.outside = onDoor ? 0.0 : 1e9;
 		s.mps = velPalm.Length();
-		if (g.sweep.Feed(s) && onDoor) Attempted(role, door, h.palm, "the palm searching the door for its lock (entries 10, 26)", ATTEMPT_WAVE);
+		if (g.sweep.Feed(s) && onDoor) Attempted(role, door, h.palm, "the palm searching the door for its lock (entries 10, 26)", ATTEMPT_WAVE, 0);
 	}
 
 	// ---- THE WARD TINGLE ----
@@ -698,6 +751,26 @@ void GesturesTick(FLevelLocals *level, bool live)
 		for (HandG &g : S.hand) Forget(g);
 		return;
 	}
+	// the punched creatures: what the original's attack did
+	for (size_t k = 0; k < S.watches.size();)
+	{
+		Watch &w = S.watches[k];
+		int32_t hp = 0;
+		uint8_t st = 0;
+		const bool have = ActorsObjectHealth(w.sector, w.index, hp, st);
+		if (have && (hp != w.hp || st != w.st))
+		{
+			Printf("[roth_gestures] the punched object %d/%d: health %d -> %d, state 0x%02x -> 0x%02x (tic %d)\n", w.sector, w.index, (int)w.hp, (int)hp,
+				w.st, st, level->maptime);
+			w.hp = hp; w.st = st;
+		}
+		if (!have || level->maptime >= w.until)
+		{
+			Printf("[roth_gestures] the punched object %d/%d: health %d at tic %d (followed 2 s)\n", w.sector, w.index, (int)w.hp, level->maptime);
+			S.watches.erase(S.watches.begin() + k);
+		}
+		else k++;
+	}
 	const std::vector<Thing> things = Things(pmo);
 	if (!S.built) Build(things);
 	for (int role = 0; role < 2; role++) TickHand(role, pmo, things);
@@ -709,6 +782,7 @@ void GesturesEndLevel()
 	S.built = false;
 	S.zones.clear();
 	S.wards.clear();
+	S.watches.clear();
 	for (HandG &g : S.hand) { Forget(g); g.motion = Motion(); g.wardTic = -1000; g.loggedWardCm = -1; }
 }
 
@@ -731,6 +805,10 @@ void GesturesEndLevel()
 //        ... <metres> (default 0.10) above that sector's floor, over its middle.
 //   roth_gesturetest reach <main|off> <palm|tip> creature [metres]
 //        ... short of the nearest object the original's cursor makes an attack target (type 5): a creature.
+//   roth_gesturetest look thing <shared 0|1> <art> <units> [bearing]
+//        a capture's pose: stand <units> from the nearest object wearing that art at <bearing> degrees (object ->
+//        camera; default the last one given for that object, else where the player stands), facing its middle,
+//        both test hands at their usual place and lift (as roth_vrpicktest look does for a candle)
 //   roth_gesturetest home     every test hand back to its usual place
 //
 //===========================================================================
@@ -762,10 +840,16 @@ void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVec
 	const DVector3 stand(want.X - (fwd * cos(yaw) - left * sin(yaw)), want.Y - (fwd * sin(yaw) + left * cos(yaw)), pmo->Z());
 	const double oldZ = pmo->Z();
 	pmo->Angles.Yaw = DAngle::fromRad(yaw);
-	pmo->Angles.Pitch = nullAngle;
 	pmo->SetOrigin(stand, false);
 	pmo->SetZ(pmo->floorz);
 	pmo->Vel.Zero();
+	// THE VIEW LOOKS AT THE HAND (the captures must show the hand at the thing; the test hands follow the yaw only, so
+	// pitching the view does not move them): down or up to the point, from the eye.
+	{
+		const double eyeZ = pmo->Z() + (pmo->player != nullptr ? pmo->player->viewheight : 41.0);
+		const double run = std::max(1.0, (want.XY() - stand.XY()).Length());
+		pmo->Angles.Pitch = DAngle::fromRad(atan2(eyeZ - want.Z, run));   // + looks down
+	}
 	pmo->ClearInterpolation();
 	const double upm = VRPickUnitsPerMetre();
 	const double dz = want.Z - (now.Z + (pmo->Z() - oldZ));
@@ -785,10 +869,43 @@ CCMD(roth_gesturetest)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_gesturetest move <main|off> <fwd> <right> <up> [tics] | reach <main|off> <palm|tip> thing <shared> <art> [band] [metres]"
-			" | reach <main|off> <palm|tip> sector <n> [metres] | reach <main|off> <palm|tip> creature [metres] | home\n");
+			" | reach <main|off> <palm|tip> sector <n> [metres] | reach <main|off> <palm|tip> creature [metres]"
+			" | look thing <shared> <art> <units> [bearing] | home\n");
 		return;
 	}
 	AActor *pmo = players[consoleplayer].mo;
+	if (!stricmp(argv[1], "look") && argv.argc() >= 6 && !stricmp(argv[2], "thing") && pmo != nullptr && S.level != nullptr)
+	{
+		static int lookArt = -1;
+		static double lookBearing = -1000.0;
+		const bool shared = atoi(argv[3]) != 0;
+		const int art = atoi(argv[4]);
+		const double units = atof(argv[5]);
+		const std::vector<Thing> things = Things(pmo);
+		const Thing *t = nullptr;
+		double best = 1e30;
+		for (const Thing &c : things)
+			if (c.shared == shared && c.art == art && (c.mo->Pos() - pmo->Pos()).Length() < best) { best = (c.mo->Pos() - pmo->Pos()).Length(); t = &c; }
+		if (t == nullptr) { Printf("roth_gesturetest look: no such object on this map\n"); return; }
+		const DVector3 c = (t->lo + t->hi) * 0.5;
+		const int key = (shared ? 0x10000 : 0) | art;
+		if (argv.argc() >= 7) lookBearing = atof(argv[6]);
+		else if (lookArt != key || lookBearing < -360.0) lookBearing = atan2(pmo->Y() - c.Y, pmo->X() - c.X) * (180.0 / M_PI);
+		lookArt = key;
+		const DAngle b = DAngle::fromDeg(lookBearing);
+		pmo->SetOrigin(DVector3(c.X + b.Cos() * units, c.Y + b.Sin() * units, pmo->Z()), false);
+		pmo->SetZ(pmo->floorz);
+		pmo->Vel.Zero();
+		pmo->Angles.Yaw = b + DAngle::fromDeg(180.0);
+		const double eye = pmo->Z() + (pmo->player != nullptr ? pmo->player->viewheight : 41.0);
+		pmo->Angles.Pitch = DAngle::fromDeg(atan2(eye - c.Z, units) * (180.0 / M_PI));
+		pmo->ClearInterpolation();
+		for (int side = 0; side < 2; side++) VRHandTest_SetOffset(side, 0, 0, 0);
+		VRHandTest_SetLift(0.0);
+		Printf("roth_gesturetest look: %.0f units from object %d/%d (%s[%d]) at bearing %.0f, facing its middle (%.0f %.0f %.0f), pitch %.1f\n",
+			units, t->sector, t->index, shared ? "ADEMO" : "DEMO", art, lookBearing, c.X, c.Y, c.Z, pmo->Angles.Pitch.Degrees());
+		return;
+	}
 	if (!stricmp(argv[1], "home"))
 	{
 		for (int side = 0; side < 2; side++) VRHandTest_SetOffset(side, 0, 0, 0);
@@ -871,7 +988,11 @@ CCMD(roth_gesturetest)
 		DVector3 toward(pmo->X() - c.X, pmo->Y() - c.Y, 0.0);
 		if (toward.Length() < 1e-3) toward = DVector3(1, 0, 0);
 		toward /= toward.Length();
-		const double half = std::max(t->hi.X - t->lo.X, t->hi.Y - t->lo.Y) * 0.5;
+		// where the line from the middle toward the player LEAVES the box (an axis-aligned box: along a diagonal its
+		// corner reaches further than its half width -- the PC run of 03548253 put the fingertip inside the armour's box)
+		const double hx = (t->hi.X - t->lo.X) * 0.5, hy = (t->hi.Y - t->lo.Y) * 0.5;
+		const double tx = fabs(toward.X) > 1e-9 ? hx / fabs(toward.X) : 1e30, ty = fabs(toward.Y) > 1e-9 ? hy / fabs(toward.Y) : 1e30;
+		const double half = std::min(tx, ty);
 		const DVector3 face(c.X + toward.X * half, c.Y + toward.Y * half, z);
 		const DVector3 want = face + toward * (metres * upm);
 		Printf("roth_gesturetest reach: object %d/%d (%s[%d]), its face at (%.1f %.1f %.1f)\n", t->sector, t->index, t->shared ? "ADEMO" : "DEMO",

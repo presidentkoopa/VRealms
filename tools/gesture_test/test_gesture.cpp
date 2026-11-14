@@ -275,46 +275,55 @@ static void RapCases()
 	{
 		RapDetector r; int now = 0; double d = 0.08;
 		r.Feed(true, 7, d, now);
-		CHECK(approach(r, now, d, 0.0, 0.6) == 1, "a light rap (0.6 m/s) is the first");
-		CHECK(approach(r, now, d, 0.05, 0.6) == 0, "backing off is nothing");
+		CHECK(approach(r, now, d, 0.0, 0.6) == 0, "a contact at 0.6 m/s is not yet a rap");
+		CHECK(approach(r, now, d, 0.05, 0.6) == 1, "the hand leaving at once makes it the first rap");
 		CHECK(approach(r, now, d, 0.0, 0.6) == 2, "a second light rap within 0.6 s is the knock");
 	}
 	{
 		RapDetector r; int now = 0; double d = 0.08;
 		r.Feed(true, 7, d, now);
-		CHECK(approach(r, now, d, 0.0, 2.5) == 0, "a blow at 2.5 m/s is no rap (a punch's speed)");
-		approach(r, now, d, 0.06, 0.6);
-		CHECK(approach(r, now, d, 0.0, 0.1) == 0, "a touch at 0.1 m/s is no rap");
+		approach(r, now, d, 0.0, 2.5);
+		CHECK(approach(r, now, d, 0.06, 0.6) == 0, "a blow at 2.5 m/s is no rap (a punch's speed)");
+		approach(r, now, d, 0.0, 0.25);
+		CHECK(approach(r, now, d, 0.06, 0.6) == 0, "a hand closing at 0.25 m/s is no rap (the PC run's ward approach)");
 	}
 	{
 		RapDetector r; int now = 0; double d = 0.08;
 		r.Feed(true, 7, d, now);
-		CHECK(approach(r, now, d, 0.0, 0.6) == 1, "first rap");
-		approach(r, now, d, 0.05, 0.6);
+		approach(r, now, d, 0.0, 0.6);
+		for (int k = 0; k < 15; k++) { now++; r.Feed(true, 7, d, now); }
+		CHECK(approach(r, now, d, 0.06, 0.6) == 0, "a hand that rests on it 0.4 s before leaving made no rap");
+	}
+	{
+		RapDetector r; int now = 0; double d = 0.08;
+		r.Feed(true, 7, d, now);
+		approach(r, now, d, 0.0, 0.6);
+		CHECK(approach(r, now, d, 0.05, 0.6) == 1, "first rap");
 		for (int k = 0; k < 30; k++) { now++; r.Feed(true, 7, d, now); }
-		CHECK(approach(r, now, d, 0.0, 0.6) == 1, "a second rap a second later starts a new knock");
-		approach(r, now, d, 0.05, 0.6);
-		CHECK(approach(r, now, d, 0.0, 0.6) == 2, "and the next within the window completes it");
+		CHECK(approach(r, now, d, 0.0, 0.6) == 0, "a contact a second later is no knock ...");
+		CHECK(approach(r, now, d, 0.05, 0.6) == 1, "... it is a new first rap");
+		CHECK(approach(r, now, d, 0.0, 0.6) == 2, "and the next within the window completes the knock");
 	}
 	{
 		RapDetector r; int now = 0; double d = 0.08;
 		r.Feed(true, 7, d, now);
-		CHECK(approach(r, now, d, 0.0, 0.6) == 1, "first rap on one thing");
-		approach(r, now, d, 0.05, 0.6);
+		approach(r, now, d, 0.0, 0.6);
+		CHECK(approach(r, now, d, 0.05, 0.6) == 1, "first rap on one thing");
 		d = 0.05; r.Feed(true, 9, d, ++now);
-		CHECK(approach(r, now, d, 0.0, 0.6, 9) == 1, "a rap on ANOTHER thing is a first again");
+		CHECK(approach(r, now, d, 0.0, 0.6, 9) == 0 && approach(r, now, d, 0.05, 0.6, 9) == 1, "a rap on ANOTHER thing is a first again");
 	}
 	{
 		RapDetector r; int now = 0; double d = 0.08;
 		r.Feed(true, 7, d, now);
-		CHECK(approach(r, now, d, 0.0, 0.6) == 1, "first rap");
-		approach(r, now, d, 0.03, 0.6);   // backs off 3 cm only: not re-armed (3.5 cm)
-		CHECK(approach(r, now, d, 0.0, 0.6) == 0, "a hand that did not back off 3.5 cm does not rap again");
+		approach(r, now, d, 0.0, 0.6);
+		CHECK(approach(r, now, d, 0.03, 0.6) == 0, "backing off 3 cm (less than 3.5) confirms nothing");
+		CHECK(approach(r, now, d, 0.0, 0.6) == 0, "and the hand is not re-armed for another contact");
 	}
 	{
 		RapDetector r; int now = 0; double d = 0.08;
 		r.Feed(false, 7, d, now);
-		CHECK(approach(r, now, d, 0.0, 0.6, 7, false) == 0, "a fist (not an open hand) does not rap");
+		approach(r, now, d, 0.0, 0.6, 7, false);
+		CHECK(approach(r, now, d, 0.05, 0.6, 7, false) == 0, "a fist (not an open hand) does not rap");
 	}
 }
 

@@ -77,10 +77,13 @@
 //    roth_vrpick.cpp FingerRay) [R: not measured on a slow frame here].
 //
 // 2. KNOCK TO EXAMINE (owner, Q3): "Two light raps of an open, empty hand play the original's examine line
-//    (plus a light haptic)." Our design, no source: a RAP is the hand closing on one surface at a light
-//    speed (kRapMinMps .. kRapMaxMps, below the punch's 2.0 so a rap is never a punch) and reaching it
-//    (within kRapContactM); the hand must then back off kRapRearmM before the next one counts. Two raps on
-//    the SAME target, at least kRapMinGapTics and at most kRapWindowTics (0.6 s) apart, are the knock.
+//    (plus a light haptic)." Our design, no source: a RAP is the hand closing on one surface at a rap's speed
+//    (kRapMinMps .. kRapMaxMps: quicker than a hand laid on it, below the punch's 2.0 so a rap is never a punch),
+//    reaching it (within kRapContactM) and LEAVING it again (back off kRapRearmM) within kRapLeaveTics: a tap, not
+//    a hand that comes to rest. Two raps on the SAME target, the second's contact at least kRapMinGapTics and at
+//    most kRapWindowTics (0.6 s) after the first's, are the knock (fired at the second contact).
+//    (2026-11-13, the PC run of 03548253: a hand coming to rest at 0.25 m/s by a ward counted as a rap; the first
+//    design took the contact alone, at 0.25 m/s.)
 //
 // 3. "A PHYSICAL ATTEMPT PLAYS THE EXAMINE LINE" (owner, Q4), the try gestures, each once per entry into
 //    its zone and re-armed once the hand is kAttemptRearmM (10 cm, doc 2.6) outside it:
@@ -249,57 +252,68 @@ inline bool DrivesInto(const V3 &vel, const V3 &from, const V3 &body)
 // 2. Knock to examine
 //===========================================================================
 
-constexpr double kRapMinMps    = 0.25;   // a rap closes on the surface at least this fast ...
+constexpr double kRapMinMps    = 0.40;   // a rap closes on the surface at least this fast ...
 constexpr double kRapMaxMps    = 2.0;    // ... and below the punch's minimum (RSQ's 2.0): a rap is light
 constexpr double kRapContactM  = 0.02;   // the hand within this of the surface has reached it
-constexpr double kRapRearmM    = 0.035;  // and must back off this far before the next rap counts
+constexpr double kRapRearmM    = 0.035;  // and must back off this far ...
+constexpr int    kRapLeaveTics = 10;     // ... within this (0.29 s) for the contact to have been a rap
 constexpr double kRapNearM     = 0.10;   // a surface is followed while the hand is within this of it
-constexpr int    kRapMinGapTics = 3;     // two raps at least this far apart (one bounce is not two raps) ...
+constexpr int    kRapMinGapTics = 3;     // two raps' contacts at least this far apart ...
 constexpr int    kRapWindowTics = 21;    // ... and at most 0.6 s
 
 struct RapDetector
 {
-	long target = -1;        // what the hand is near (the caller's key; -1 nothing)
-	double lastDist = 1e9;   // last tic's distance to it
-	bool armed = true;       // backed off since the last rap
-	int firstTic = -1000000; // the first rap of a knock on `target`
-	int raps = 0;
-	int lastRapTic = -1000000;
-	double closing = 0;      // this tic's closing speed (a log line)
+	long target = -1;          // what the hand is near (the caller's key; -1 nothing)
+	double lastDist = 1e9;     // last tic's distance to it
+	bool armed = true;         // backed off since the last contact
+	int contactTic = -1000000; // the last contact at a rap's speed, not yet confirmed by leaving
+	bool contactPending = false;
+	int firstTic = -1000000;   // a confirmed first rap's contact
+	bool haveFirst = false;
+	double closing = 0;        // this tic's closing speed (a log line)
 
-	void Reset() { target = -1; lastDist = 1e9; armed = true; raps = 0; }
+	void Reset() { target = -1; lastDist = 1e9; armed = true; contactPending = false; haveFirst = false; }
 
 	// One tic. `open`: an open, empty hand (the caller's test). `key`: the nearest surface or object within
-	// kRapNearM (-1 none), `distM` the hand's distance to it. Returns 1 on a rap that is the first of a knock,
-	// 2 on the second (THE KNOCK), 0 otherwise.
+	// kRapNearM (-1 none), `distM` the hand's distance to it. Returns 1 when a first rap is confirmed (the hand
+	// left it in time), 2 on the second rap's contact (THE KNOCK), 0 otherwise.
 	int Feed(bool open, long key, double distM, int now)
 	{
 		closing = 0;
 		if (!open || key < 0) { Reset(); return 0; }
 		if (key != target)
 		{
+			Reset();
 			target = key;
 			lastDist = distM;
 			armed = distM > kRapContactM;
-			raps = 0;
 			return 0;
 		}
 		closing = (lastDist - distM) * kTicRate;
 		const bool reached = distM <= kRapContactM && lastDist > kRapContactM;
 		lastDist = distM;
-		if (distM >= kRapRearmM) armed = true;
-		if (!reached || !armed) return 0;
-		if (closing < kRapMinMps || closing >= kRapMaxMps) return 0;
-		armed = false;
-		if (raps == 1 && now - lastRapTic >= kRapMinGapTics && now - firstTic <= kRapWindowTics)
+		int out = 0;
+		if (distM >= kRapRearmM)
 		{
-			raps = 0;
-			lastRapTic = now;
+			armed = true;
+			if (contactPending)
+			{
+				contactPending = false;
+				if (now - contactTic <= kRapLeaveTics) { haveFirst = true; firstTic = contactTic; out = 1; }
+			}
+		}
+		if (haveFirst && now - firstTic > kRapWindowTics) haveFirst = false;
+		if (!reached || !armed) return out;
+		armed = false;
+		if (closing < kRapMinMps || closing >= kRapMaxMps) { contactPending = false; return out; }
+		if (haveFirst && now - firstTic >= kRapMinGapTics)
+		{
+			haveFirst = false;
 			return 2;
 		}
-		raps = 1;
-		firstTic = lastRapTic = now;
-		return 1;
+		contactPending = true;
+		contactTic = now;
+		return out;
 	}
 };
 

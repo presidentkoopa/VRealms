@@ -699,6 +699,16 @@ void ActorsSetFireButtonAllowed(bool allowed) { g_fireButtonAllowed = allowed; }
 void ActorsRequestFireAt(double x, double y, double z) { g_fireAt.pending = true; g_fireAt.x = x; g_fireAt.y = y; g_fireAt.z = z; }
 int ActorsTickCount() { return g_actors.ticks; }
 
+bool ActorsObjectHealth(int rothSector, int rothIndex, int32_t &health, uint8_t &state)
+{
+	if (!g_actors.active) return false;
+	const ObjectUid uid = g_actors.world.UidAt(rothSector, rothIndex);
+	if (uid == 0) return false;
+	for (const ActorSlot &a : g_actors.world.actors)
+		if (a.object == uid && a.creature >= 0) { health = a.health; state = a.state; return true; }
+	return false;
+}
+
 bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls)
 {
 	item = 0;

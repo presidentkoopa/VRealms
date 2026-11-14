@@ -447,6 +447,14 @@ CursorClass ClassifyPick(const Pick &p, AActor *who, double depth);
 // something was examined.
 bool ExaminePick(const Pick &p, AActor *who);
 
+// THE EXAMINE RECORD the original's examine dispatcher (dispatch_entry_command_trigger_b, ExamineMatch) matches
+// for this pick now, 1-based; 0 none. The gestures' attempts check it is the record their zone names.
+uint16_t ExamineRecordOf(const Pick &p);
+// A command record's base opcode (& 0x7f) and key (+0x08). False outside a level or range.
+bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key);
+// A Realms sector's command id (its commandID), 0 for none.
+uint16_t RuntimeSectorId(int rothSector);
+
 // Whether two picks name the same thing (a press that began on one target and
 // ended on another acts on neither). Compares identities, never dereferences.
 bool SamePickTarget(const Pick &a, const Pick &b);

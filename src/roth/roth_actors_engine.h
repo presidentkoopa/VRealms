@@ -77,6 +77,9 @@ bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls);
 // trigger_weapon_fire at the next weapon tick, its shot aimed at the contact (x, y, z map units).
 void ActorsSetFireButtonAllowed(bool allowed);
 void ActorsRequestFireAt(double x, double y, double z);
+// A creature's slot for the object (sector, index): its health (+0x0c) and state (+0x08, 0x20 a corpse). False:
+// the object has no creature slot. For a log line (the gestures' punch: the health before and after).
+bool ActorsObjectHealth(int rothSector, int rothIndex, int32_t &health, uint8_t &state);
 // How many 70 Hz ticks the actors have run (a log line: none while the inventory pauses the world).
 int ActorsTickCount();
 
