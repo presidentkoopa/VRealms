@@ -10,3 +10,14 @@ HardwareShader PostProcess Screen
 	Uniform int uYmin
 	Uniform int uYmax
 }
+
+// VRealms (docs/VR_CHANGES_LEDGER.md row 34, owner's H1): the low-health cue's
+// red screen edge, standing in for the original's "low" health bar picture in
+// VR. Off until roth_interface.cpp turns it on (below half health, with the
+// off-hand mount up); uStrength is set there every tic.
+HardwareShader PostProcess scene
+{
+	Name "RothLowHealth"
+	Shader "shaders/glsl/rothlowhealth.fp" 330
+	Uniform float uStrength
+}

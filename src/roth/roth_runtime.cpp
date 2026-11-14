@@ -8987,6 +8987,20 @@ CCMD(roth_quickload)
 	Printf("Realms: quickload (slot 0)\n");
 	LoadSlot(0);
 }
+// roth_sethealth <value> -- TEST TOOL (the off-hand mount's flat test): the
+// player's health in the original's units (0x800 = the default maximum), set
+// the way a RAW damage or heal reaches the engine (CmdPushHealth). Inert until
+// typed; 0 or less is refused (a death is the game's to cause).
+CCMD(roth_sethealth)
+{
+	if (argv.argc() < 2) { Printf("roth_sethealth <value, 1..max (0x800 = 2048 by default)>\n"); return; }
+	const int v = atoi(argv[1]);
+	if (v <= 0 || !g_flow.IsAttached()) { Printf("roth_sethealth: refused\n"); return; }
+	CmdPullHealth();
+	g_cmd.health = v > g_flow.MaxHealth() ? g_flow.MaxHealth() : v;
+	CmdPushHealth();
+	Printf("roth_sethealth: %d of %d\n", (int)g_flow.Health(), (int)g_flow.MaxHealth());
+}
 CCMD(roth_menu)
 {
 	if (argv.argc() < 2) { Printf("roth_menu up|down|enter|back|scrollup|scrolldown|choose <row>|dump\n"); return; }

@@ -177,6 +177,32 @@ public:
 		const std::function<void()> &tick = nullptr);
 
 	// ---- the pictures ---------------------------------------------------------------
+	// Where blit_panel_image puts the health panel on the screen (full view,
+	// B2:1405-1428, MH:772-773): column mHealthX (8), row 1, d[0] x d[1]
+	// (0x50 x 0xc). False before refresh_hud_layout has built it. For the VR
+	// off-hand mount (roth_interface.cpp), which shows that part of TopStrip().
+	bool HealthPanelRect(int &x, int &y, int &w, int &h) const
+	{
+		if (!mHealthLive) return false;
+		x = mHealthX; y = 1; w = (int)HudTables::health[0]; h = (int)HudTables::health[1];
+		return true;
+	}
+	// Whether render_health_status_panel / render_player_health_bar draw the
+	// bar with ICONS.ALL 0x298, the "low" picture (MH:320-331, 363-389): the
+	// fill d[11] * health / max (1 when that is 0 with any health) under half
+	// of d[11]. For the VR low-health cue, which stands in for that picture.
+	static bool HealthBarLow(int32_t health, int32_t maxHealth)
+	{
+		const uint32_t *d = HudTables::health;
+		uint32_t h = (uint32_t)health;
+		if ((int32_t)h < 0) h = 0;
+		const uint32_t maxh = (uint32_t)maxHealth;
+		if (h > maxh) h = maxh;
+		if (maxh == 0) return false;
+		uint32_t fill = (d[11] * h) / maxh;
+		if (fill == 0 && h != 0) fill = 1;
+		return fill < (d[11] >> 1);
+	}
 	const HudCanvas &TopStrip() const { return mTopOut; }
 	const HudCanvas &HeldIcon() const { return mHeldOut; }
 	// The original's screen: `screen` (SCREEN_W x SCREEN_H) holds the view the

@@ -57,6 +57,11 @@ EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoin
 #include "r_data/r_translate.h"
 #include "v_video.h"
 #include "r_data/sprites.h"
+#include "r_data/models.h"          // the off hand's wrist, for the mount
+#include "r_data/vr_handpose.h"
+#include "hw_vrmodes.h"             // VR_OFFHAND, VR_ScriptHaptic
+#include "hwrenderer/postprocessing/hw_postprocessshader.h"   // the low-health edge (GLDEFS RothLowHealth)
+#include "roth_hands.h"
 
 
 EXTERN_CVAR(Float, bb_scale)
@@ -155,7 +160,10 @@ struct Element
 
 // The pictures drawn as the original draws them, each through its own pair of
 // textures (see UploadPicture).
-enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_HUDTOP, PIC_HUDHELD, PIC_POPUP, PIC_COUNT };
+enum PictureId { PIC_INVENTORY, PIC_CHOICES, PIC_LINE, PIC_TMSG, PIC_BOX0, PIC_BOX1, PIC_HUDTOP, PIC_HUDHELD, PIC_POPUP,
+	PIC_HUDTOP_MOUNTED,     // the top strip without the health panel, while the panel is on the off-hand mount
+	PIC_MOUNT_HEALTH,       // the health panel, cut from the top strip, on the mount
+	PIC_COUNT };
 
 struct Fly
 {
@@ -244,6 +252,24 @@ struct Ui
 
 	std::vector<std::vector<std::string>> queue;    // test commands, drained per tic
 	RealmsMenus *menus = nullptr;                   // roth_menus, owned by the runtime
+
+	// THE OFF-HAND MOUNT (owner's S1 / H1, docs/VR_CHANGES_LEDGER.md row 34).
+	// In VR the subtitle line and the health panel stand on a small panel over
+	// the off hand's wrist, facing the eye, instead of on the original's screen
+	// in front of it; flat keeps the original's screen. The pictures are the
+	// original's own, drawn by its routines (roth_dlgdraw, roth_huddraw), only
+	// placed and scaled here. `mounted` is decided at each rebuild (Signature).
+	bool mounted = false;
+	bool mountTest = false;                         // roth_mounttest: the flat test's stand-in (roth_handtest's off hand)
+	HudCanvas hudTopMounted, mountHealth;           // cut from hud.TopStrip()
+	uint32_t mountFrom = 0xffffffffu;               // the TopStrip() version they were cut from
+	struct MountPiece { int bb = 0; double w = 0, h = 0; };
+	MountPiece mountHealthBb, mountLineBb;
+	// The low-health cue (H1): a red screen edge (the RothLowHealth post-process
+	// shader) and a heartbeat on both controllers, below half -- standing in for
+	// the original's "low" bar picture, which is on the mount too.
+	bool lowCue = false;
+	int heartPhase = 0;
 };
 
 Ui U;
@@ -505,7 +531,7 @@ const Element *HitElement(const Ray &r)
 
 std::string Signature()
 {
-	std::string s;
+	std::string s = U.mounted ? "V|" : "";
 	const DialogueView v = U.dialogue.View();
 	char buf[96];
 	snprintf(buf, sizeof buf, "D%d/%d/%d/%d/%d|", (int)v.kind, v.page, v.highlighted, (int)v.color, (int)v.rows.size());
@@ -631,6 +657,8 @@ const UiCanvas *CanvasOf(int id)
 	case PIC_HUDTOP: return &U.hud.TopStrip();
 	case PIC_HUDHELD: return &U.hud.HeldIcon();
 	case PIC_POPUP: return &U.popup.painter.Presented();
+	case PIC_HUDTOP_MOUNTED: return &U.hudTopMounted;
+	case PIC_MOUNT_HEALTH: return &U.mountHealth;
 	default: return nullptr;
 	}
 }
@@ -666,7 +694,7 @@ FTextureID UploadPicture(int id)
 		}
 		p.active ^= 1;
 		FGameTexture *g = p.tex[p.active];
-		const bool hud = id == PIC_HUDTOP || id == PIC_HUDHELD;
+		const bool hud = id == PIC_HUDTOP || id == PIC_HUDHELD || id == PIC_HUDTOP_MOUNTED || id == PIC_MOUNT_HEALTH;
 		static_cast<PictureTexture *>(g->GetTexture())->SetPicture(*c, U.panelPal, hud ? U.hudBehind : nullptr);
 		g->SetSize(c->Width() > 0 ? c->Width() : 1, c->Height() > 0 ? c->Height() : 1);
 		g->CleanHardwareData();
@@ -770,6 +798,212 @@ void AddHeadPicture(int id)
 	}
 }
 
+//==========================================================================
+//
+// THE OFF-HAND MOUNT (owner's S1 and H1, docs/VR_CHAPTER01_SHADOWS.md 8.7,
+// docs/VR_CHANGES_LEDGER.md row 34). Not the original's: a VR placement.
+// What stands on it is the original's own -- the subtitle line as
+// render_text_ui draws it (roth_dlgdraw) and the health panel as
+// render_health_status_panel / render_player_health_bar draw it, "low"
+// picture and all (roth_huddraw), cut from the top strip where
+// blit_panel_image puts it -- scaled onto a panel over the off hand's wrist.
+// Its own: where it stands (above the wrist, the health panel over the line,
+// both centred), its size (roth_mount_scale map units an original pixel) and
+// that it turns to face the eye. Flat keeps the original's screen.
+//
+// THE OFF HAND, named so (owner: left-hand support comes later): the
+// controller VR_OFFHAND names, the left while the main hand is the right.
+//
+//==========================================================================
+
+// Live tuning for the headset; NOT archived (the owner's ini is shared).
+CUSTOM_CVAR(Float, roth_mount_scale, 0.05f, CVAR_NOINITCALL)
+{
+	if (self < 0.005f) self = 0.005f;
+	if (self > 0.5f) self = 0.5f;
+}
+CVAR(Float, roth_mount_lift, 3.0f, 0)   // map units from the wrist to the panel's foot
+
+// The mount is up: in VR with the off hand's actor drawn, or in the flat test
+// (roth_mounttest with roth_handtest's hands).
+bool MountWanted()
+{
+	if (U.level == nullptr) return false;
+	player_t *pl = U.level->GetConsolePlayer();
+	if (pl == nullptr || pl->mo == nullptr) return false;
+	const bool vr = pl->mo->OverrideAttackPosDir;
+	if (!vr && !(U.mountTest && VRHandTest_Active())) return false;
+	AActor *ha = HandActor(VRHandPose_SideForRole(VR_OFFHAND));
+	return ha != nullptr && !(ha->renderflags & RF_INVISIBLE);
+}
+
+// The wrist of the off hand's drawn model (Root_joint), else its actor.
+bool MountWrist(DVector3 &out)
+{
+	const int side = VRHandPose_SideForRole(VR_OFFHAND);
+	AActor *ha = HandActor(side);
+	if (ha == nullptr) return false;
+	out = ha->Pos();
+	FModel *model = Model_ActorModel(ha);
+	FVRHandPoints pts;
+	DVector3 w;
+	if (model != nullptr && VRHandPose_FingerPoints(model, side, pts) && Model_ActorPointToWorld(ha, pts.wrist, w)) out = w;
+	return true;
+}
+
+// The frame a hand-locked billboard rides (g_levellocals.h BillboardHandFrame,
+// resolved by the renderer each frame): a point found this tic is stored in it,
+// so the panel stays on the wrist between tics (roth_vrpick.cpp does the same
+// for its beam). With no VR pose published (the flat test), world points.
+struct MountLock
+{
+	bool on = false;
+	DVector3 origin, fwd, right, up;
+	DVector3 Local(const DVector3 &w) const { const DVector3 d = w - origin; return DVector3(d | fwd, d | right, d | up); }
+};
+
+MountLock MountLockNow()
+{
+	MountLock L;
+	player_t *pl = U.level != nullptr ? U.level->GetConsolePlayer() : nullptr;
+	if (pl == nullptr || pl->mo == nullptr || !pl->mo->OverrideAttackPosDir) return L;
+	FBillboard probe;
+	probe.flags = BBFL_HANDOFF;
+	double yaw, pitch, roll;
+	if (!BillboardHandFrame(probe, L.origin, yaw, pitch, roll)) return L;
+	BillboardHandAxes(yaw, pitch, roll, L.fwd, L.right, L.up);
+	L.on = true;
+	return L;
+}
+
+// One of the original's pictures on the mount: a billboard that turns to the
+// eye, drawn over the world (the hand must not hide it), placed by TickMount.
+void AddMountPicture(int id, Ui::MountPiece &piece)
+{
+	piece = Ui::MountPiece();
+	const UiCanvas *c = CanvasOf(id);
+	if (c == nullptr || c->Width() <= 0 || c->Height() <= 0 || U.level == nullptr) return;
+	const FTextureID tex = UploadPicture(id);
+	if (!tex.isValid()) return;
+	// Square pixels in the headset's vertically stretched world (as ScreenUnitsPerPixel).
+	const double ps = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.0;
+	const double u = roth_mount_scale;
+	FBillboard bb;
+	bb.id = U.level->NextBillboardID++;
+	bb.width = c->Width() * u;
+	bb.height = c->Height() * u / (ps > 0.0 ? ps : 1.0);
+	bb.facing = BBF_CAMERA;
+	bb.payload = BB_TEXTURE;
+	bb.data = tex.GetIndex();
+	bb.color = PalEntry(255, 255, 255, 255);
+	bb.alpha = 1.0;
+	bb.flags = BBFL_PERSISTENT | BBFL_NOSAVE | BBFL_NODEPTH | BBFL_NOHIT;
+	bb.spawntic = U.level->maptime;
+	U.level->Billboards.Push(bb);
+	Element e;
+	e.bb = bb.id;
+	e.kind = E_PICTURE;
+	e.left = c->Left(); e.top = c->Top(); e.picW = c->Width(); e.picH = c->Height(); e.picture = id;
+	U.elements.push_back(e);
+	piece.bb = bb.id;
+	piece.w = bb.width;
+	piece.h = bb.height;
+}
+
+// Every tic: the mount's pieces over the wrist, stacked upward on the eye's
+// own up (the health panel over the line, as on the original's screen).
+void TickMount()
+{
+	if (!U.mounted || U.level == nullptr) return;
+	DVector3 wrist;
+	if (!MountWrist(wrist)) return;
+	player_t *pl = U.level->GetConsolePlayer();
+	if (pl == nullptr || pl->mo == nullptr) return;
+	const DVector3 eye = pl->mo->Pos() + DVector3(0, 0, pl->viewz - pl->mo->Z());
+	DVector3 view = wrist - eye;
+	const double vl = view.Length();
+	view = vl > 1e-6 ? view / vl : DVector3(1, 0, 0);
+	DVector3 up = DVector3(0, 0, 1) - view * view.Z;
+	const double ul = up.Length();
+	up = ul > 1e-6 ? up / ul : DVector3(0, 0, 1);
+	const MountLock L = MountLockNow();
+	const double gap = 4.0 * roth_mount_scale;           // four of the original's pixels between them
+	double at = roth_mount_lift;
+	auto place = [&](Ui::MountPiece &p) {
+		if (p.bb == 0) return;
+		const DVector3 centre = wrist + up * (at + p.h * 0.5);
+		at += p.h + gap;
+		for (FBillboard &b : U.level->Billboards)
+		{
+			if (b.id != p.bb) continue;
+			b.flags = (b.flags & ~BBFL_HANDANY) | (L.on ? BBFL_HANDOFF : 0);
+			b.pos = L.on ? L.Local(centre) : centre;
+			b.drawPos = centre;
+			break;
+		}
+	};
+	place(U.mountLineBb);
+	place(U.mountHealthBb);
+}
+
+// The two pictures the mount needs from the top strip, cut again whenever the
+// HUD draws a new one: the health panel alone, and the strip without it.
+void DeriveMountCanvases()
+{
+	const HudCanvas &top = U.hud.TopStrip();
+	if (top.Version() == U.mountFrom) return;
+	U.mountFrom = top.Version();
+	int x = 0, y = 0, w = 0, h = 0;
+	U.hudTopMounted = top;
+	if (!U.hud.HealthPanelRect(x, y, w, h)) { U.mountHealth.SetRect(0, 0, 0, 0, false); return; }
+	const UiCanvas::Saved cut = top.SaveRegion(x, y, w, h);
+	U.mountHealth.SetRect(x, y, w, h, false);
+	U.mountHealth.RestoreRegion(cut);
+	UiCanvas::Saved none = cut;
+	std::fill(none.pix.begin(), none.pix.end(), (uint8_t)0);
+	std::fill(none.mask.begin(), none.mask.end(), (uint8_t)0);
+	U.hudTopMounted.RestoreRegion(none);
+}
+
+// THE LOW-HEALTH CUE (owner's H1). Below half -- the original's own test for
+// its "low" bar picture (HudPainter::HealthBarLow) -- while the mount is up:
+// the red edge (GLDEFS "RothLowHealth", a post-process pass over each eye) and
+// a heartbeat on both controllers. Its beat (a stronger then a weaker pulse,
+// 26 tics apart, about 80 a minute) is ours: the original has none.
+static const int HEART_PERIOD = 26, HEART_SECOND = 6;
+
+void SetLowHealthEdge(bool on, double strength)
+{
+	for (unsigned i = 0; i < PostProcessShaders.Size(); i++)
+	{
+		PostProcessShader &sh = PostProcessShaders[i];
+		if (sh.Name.CompareNoCase("RothLowHealth") != 0) continue;
+		sh.Enabled = on;
+		double *v = sh.Uniforms["uStrength"].Values;
+		v[0] = strength; v[1] = 0.0; v[2] = 0.0; v[3] = 1.0;
+	}
+}
+
+void TickLowHealthCue()
+{
+	const int32_t hp = PlayerHealth(), maxhp = PlayerMaxHealth();
+	const bool low = U.hudBound && U.mounted && hp > 0 && HudPainter::HealthBarLow(hp, maxhp);
+	if (low != U.lowCue)
+	{
+		U.lowCue = low;
+		U.heartPhase = 0;
+		Printf("[roth_mount] low-health cue %s (health %d of %d)\n", low ? "on" : "off", (int)hp, (int)maxhp);
+		if (!low) SetLowHealthEdge(false, 0.0);
+	}
+	if (!low) return;
+	const int ph = U.heartPhase;
+	U.heartPhase = (U.heartPhase + 1) % HEART_PERIOD;
+	if (ph == 0) { VR_ScriptHaptic(VR_MAINHAND, 0.7, 60.0); VR_ScriptHaptic(VR_OFFHAND, 0.7, 60.0); }
+	if (ph == HEART_SECOND) { VR_ScriptHaptic(VR_MAINHAND, 0.45, 45.0); VR_ScriptHaptic(VR_OFFHAND, 0.45, 45.0); }
+	const bool beat = ph < 3 || (ph >= HEART_SECOND && ph < HEART_SECOND + 3);
+	SetLowHealthEdge(true, beat ? 0.8 : 0.55);
+}
+
 // The dialogue text: the original's renderers (roth_dlgdraw) over the
 // records roth_dialogue keeps (byte for byte the original's), each a picture.
 void BuildDialogue()
@@ -801,7 +1035,9 @@ void BuildDialogue()
 	const int seg = U.dialogue.SegmentIndex();
 	if (seg < 0 || seg >= (int)U.dialogue.Segments().size()) return;
 	U.linePainter.RenderTextUiSegment(U.dialogue.Segments()[(size_t)seg], U.screen.IsOpen(), 480 >> 1, 0, 480);
-	AddHeadPicture(PIC_LINE);
+	// VR: on the off-hand mount (owner's S1), the same picture.
+	if (U.mounted) AddMountPicture(PIC_LINE, U.mountLineBb);
+	else AddHeadPicture(PIC_LINE);
 }
 
 void BuildTimedMessage()
@@ -1007,7 +1243,14 @@ void BuildMenu()
 void BuildHud()
 {
 	if (!U.hudBound || U.hudLevel == nullptr) return;
-	AddHeadPicture(PIC_HUDTOP);
+	if (U.mounted)
+	{
+		// VR: the health panel on the off-hand mount (owner's H1); the rest of
+		// the strip (the weapon panel) where it was.
+		AddHeadPicture(PIC_HUDTOP_MOUNTED);
+		AddMountPicture(PIC_MOUNT_HEALTH, U.mountHealthBb);
+	}
+	else AddHeadPicture(PIC_HUDTOP);
 	AddHeadPicture(PIC_HUDHELD);
 }
 
@@ -1061,7 +1304,9 @@ void TickHud(FLevelLocals *level)
 	// gameplay_frame_step runs in the game's own mode only (game_core.c:486-490,
 	// 870-878): not under the inventory, a dialogue or a menu, whose screens
 	// keep the HUD the last frame drew.
-	const bool gameplay = !invOpen && !(U.menus != nullptr && U.menus->IsOpen()) && U.dialogue.View().kind == DialogueView::NONE;
+	// The death wait (mode 0x20) draws them too (game_core.c:490).
+	const bool dying = U.menus != nullptr && U.menus->IsOpen() && U.menus->Current() == RealmsMenus::DEATH;
+	const bool gameplay = !invOpen && (!(U.menus != nullptr && U.menus->IsOpen()) || dying) && U.dialogue.View().kind == DialogueView::NONE;
 	if (!gameplay) return;
 	if (equips != U.hudLastEquips) { U.hudLastEquips = equips; HudRenderWeaponHud(); }   // game_core.c:873-876
 	// run_gameplay_frame's corner timer: the original's pointer in the top
@@ -1087,6 +1332,12 @@ void Rebuild(player_t *player)
 	else if (!U.anchored) Anchor(player);
 	ClearBillboards();
 	U.signature = sig;
+	U.mountHealthBb = Ui::MountPiece();
+	U.mountLineBb = Ui::MountPiece();
+	// The death wait is the original's mode 0x20, in which gameplay_frame_step
+	// still draws the HUD and render_text_ui(0) -- the death record's line and
+	// any timed message (game_core.c:477-497, 960-1003): those, and no box.
+	if (menuUp && U.menus->Current() == RealmsMenus::DEATH) { BuildDialogue(); BuildTimedMessage(); BuildHud(); return; }
 	if (menuUp) { BuildMenu(); BuildHud(); return; }   // modal: nothing else is clicked under it; the HUD the last frame drew stays (the box draws over the original's frozen frame)
 	BuildDialogue();
 	BuildTimedMessage();
@@ -1540,6 +1791,9 @@ bool InterfaceGamePalette6(uint8_t out[0x300])
 
 void InterfaceEndLevel()
 {
+	if (U.lowCue) { U.lowCue = false; SetLowHealthEdge(false, 0.0); }
+	U.mountHealthBb = Ui::MountPiece();
+	U.mountLineBb = Ui::MountPiece();
 	// The level's billboard array dies with it.
 	U.elements.clear();
 	U.signature.clear();
@@ -1647,8 +1901,12 @@ void InterfaceTick(FLevelLocals *level)
 	UpdateHover(player);
 	TickMenuPictures();
 	TickHud(level);
+	DeriveMountCanvases();
+	U.mounted = MountWanted();
 	Rebuild(player);
 	UpdatePictureBillboards();
+	TickMount();
+	TickLowHealthCue();
 }
 
 bool InterfaceUse(player_t *player)
@@ -1987,3 +2245,21 @@ CCMD(roth_ui_invclick)
 }
 
 } // namespace roth
+
+//===========================================================================
+//
+// roth_mounttest -- THE FLAT TEST of the off-hand mount. Test-only: inert
+// until typed. With roth_handtest's hands up, roth_handtest's off hand stands
+// in for the controller: the subtitle line and the health panel go onto the
+// mount over its wrist and the low-health edge shows below half, as in VR,
+// so rothdiff_shot can photograph them in flat.
+//   roth_mounttest on | off
+//
+//===========================================================================
+
+CCMD(roth_mounttest)
+{
+	if (argv.argc() < 2) { Printf("roth_mounttest on | off\n"); return; }
+	roth::U.mountTest = !stricmp(argv[1], "on");
+	Printf("roth_mounttest: %s%s\n", roth::U.mountTest ? "on" : "off", roth::U.mountTest ? " (needs roth_handtest)" : "");
+}
