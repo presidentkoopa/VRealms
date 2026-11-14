@@ -640,7 +640,7 @@ candelabra (31), the casements banging open (18).
 
 | # | need | for entries | state |
 |---|---|---|---|
-| N1 | the record surface box (+0x0c..+0x12) tested against the hit texel | 11, 23, 10, 26, 36 | not ported in the flat port either (roth_runtime.cpp checklist items 22-23): a 1:1 gap to fix in flat first |
+| N1 | the record surface box (+0x0c..+0x12) tested against the hit texel | 11, 23, 10, 26, 36 | ported (src/roth/roth_surfbox.h; every click path: flat use key, finger far use/examine, palm and fingertip). Match and texel rules differential-tested against the original (tools/surfbox_test); the engine side not yet seen on the owner's PC (tools/claude_bridge/cfg/surfbox_flat.cfg) |
 | N2 | use and examine fired at a contact point (hand → face texel, floor texel, object) | 11, 20, 23, all doors | new |
 | N3 | the chain's result read back (acted / refused / ignored under an armed delay) for haptics | doors, candles, 20 | new (WORLD_DESIGN 1.4) |
 | N4 | door handles: handle zones per picture, press/turn/push/pull detector, swing haptics | 2, 10, 19, 26, 30, 36 | new (WORLD_DESIGN 1.4) |

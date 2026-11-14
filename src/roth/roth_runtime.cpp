@@ -30,6 +30,7 @@
 #include "roth_cmdcore.h"     // counters, texture oddments, player effects, particles
 #include "roth_raw.h"
 #include "roth_surface.h"
+#include "roth_surfbox.h"      // the RAW records' surface box and the hit texel (tools/surfbox_test)
 #include "roth_log.h"
 #include "roth_dbase100.h"
 #include "roth_gamecore.h"
@@ -590,6 +591,11 @@ struct Runtime
 	// examine trigger on it.
 	std::map<int, std::vector<Binding>> byFace;     // Realms face  -> bindings
 	std::map<int, std::vector<Binding>> bySector;   // Realms sector-> bindings
+	// The floor channels (0x19 use, 0x31 examine) by the record's KEY, in record order: the original matches a
+	// picked sector's command id against every record of the directory (dispatch_entry_command_trigger
+	// RC:3062-3065, _b :3172-3174), so a record answers on EVERY sector carrying that id -- bySector has it on
+	// the first such sector only (find_geometry_record). roth_surfbox.h; tools/surfbox_test.
+	std::map<uint16_t, std::vector<Binding>> flatById;
 	// Realms OBJECT id (Object::commandID, the field at +0x0e) -> bindings.
 	// Keyed by the record's key because the original searches for a matching
 	// id at every activation rather than resolving an index at load.
@@ -5567,7 +5573,14 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	std::map<uint8_t, std::map<int, int>> flagHist;
 	for (const Command &c : g.map.commands)
 	{
-		if (!c.isTrigger || c.disabled) continue;
+		// A record DISABLED at load is still bound on the four click channels (0x18 use wall, 0x19 use floor,
+		// 0x32 examine wall, 0x31 examine floor): the original's dispatch walks every record of the directory
+		// and skips one only while its +2 bit 3 is set (RC:3027, 3061, 3123, 3173), so a record a chain
+		// enables later (0x17) answers from then on. Every walk over these channels reads that bit live
+		// (Spent, SurfFirstMatch). The other channels keep the load-time filter.
+		const uint8_t base = c.opcode & 0x7f;
+		const bool clickChannel = base == 0x18 || base == 0x19 || base == 0x31 || base == 0x32;
+		if (!c.isTrigger || (c.disabled && !clickChannel)) continue;
 
 		const TrigEvent ev = EventForOpcode(c.opcode);
 		// AN EXAMINE RECORD WITH NO CHAIN IS BOUND (2026-11-13, the gestures' PC run: "nothing to examine" on the
@@ -5607,6 +5620,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		}
 		else if (IsSectorTrigger(c.opcode))
 		{
+			if (clickChannel && c.key != 0) g.flatById[c.key].push_back(b);
 			if (c.sector < 0) { unbound++; continue; }
 			// AN EXAMINE OF A FLOOR OR CEILING: EVERY SECTOR WITH THE ID (2026-11-13, the typewriter's #286 is keyed to id
 			// 23, which s306 AND s315 carry; the boot prints' #241 to id 26: s31 and s257). The original's channel 3
@@ -5930,6 +5944,7 @@ void EndLevel()
 	g.faceToSide.clear();
 	g.sideToFace.clear();
 	g.bySector.clear();
+	g.flatById.clear();
 	g.byObject.clear();
 	g.doorTag.clear();
 	g.doorLeafSide.clear();
@@ -6203,6 +6218,19 @@ void RegisterPlatformControl(int rothSector, int ctrlSector)
 CVAR(Bool, roth_trigger_debug, false, 0)
 
 
+// THE CLICK ON A FACE OR A FLOOR, as the original makes it: ONE record, the one
+// dispatch_entry_command_trigger returns (the first of the face's / the sector id's
+// records that is not spent, that the band or surface admits and whose SURFACE BOX holds
+// the hit texel -- roth_surfbox.h), fired by fire_command_contact_trigger. Defined with
+// the matchers below (the anonymous namespace there); declared here, in one too, so the
+// use paths above them can call them.
+namespace
+{
+uint16_t UseMatchFace(int sideIdx, uint8_t band, const DVector3 *hit, sector_t *sideSector, SurfTexel *texelOut, bool log);
+uint16_t UseMatchFlat(sector_t *sec, bool platformTop, const DVector3 &hit, SurfTexel *texelOut, bool log);
+bool FireUseRecord(uint16_t recIdx);
+}
+
 bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 	DVector3 *hitpos)
 {
@@ -6383,6 +6411,30 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 	// has none. Without it the part cannot be known, so the gate is skipped
 	// rather than guessed -- an over-fire, reported, not a silent pass.
 	const uint8_t part = (hitpos != nullptr) ? WallPartBit(line, hitpos->Z) : 0;
+
+	// A USE IS ONE RECORD (fire_object_use_trigger, raw_commands.c:2787-2800): the one the
+	// original's match walk stops at -- its band (+6), the spent bit read live and the SURFACE
+	// BOX against the hit texel (roth_surfbox.h) -- fired once. This loop used to fire EVERY use
+	// binding of the face, so two records with different boxes on one face (STUDY1 key 1: #318 and
+	// #322, x 115..146 and 47..79) both ran wherever the face was clicked. With no hit point (a
+	// path that has none: P_UseTraverse hands nullptr through P_ActivateLine) no texel is known
+	// and no BOXED record fires; unboxed ones do, as before.
+	if (want == TrigEvent::Use)
+	{
+		const uint16_t rec = UseMatchFace(idx, part, hitpos, hit->sector, nullptr, roth_trigger_debug);
+		if (rec != 0)
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: line side %d (face %d) use -> record #%u fires\n", idx,
+					f != g.sideToFace.end() ? f->second : -1, (unsigned)rec);
+			FireUseRecord(rec);
+		}
+		else if (roth_trigger_debug)
+			Printf("roth_trigger: line side %d (face %d) use -> no record matches\n", idx,
+				f != g.sideToFace.end() ? f->second : -1);
+		(void)who; (void)any;
+		return owned;
+	}
 
 	for (const Binding &b : it->second)
 	{
@@ -6598,9 +6650,15 @@ bool UseFlat(AActor *who, TrigEvent want)
 {
 	if (!g.active || who == nullptr || who->Sector == nullptr) return false;
 
-	// From the eye, along the view direction, as far as the use key reaches.
+	// THE FLAT GAME'S CLICK IS THE VIEW'S RAY: the crosshair is where the original's cursor would be,
+	// so the use key picks along the ray through it -- from the VIEW point (it started at half the
+	// pawn's height, which is not where the player looks from), with the pitch. The same picker the
+	// hands use (PickFrom), so a wall face gets the use at the point the crosshair is on: its band and
+	// its texel, which the surface box is tested against (roth_surfbox.h). A floor goes on to
+	// UseFlatAt as before; a door leaf or an object to the paths after this one, as before.
 	const double range = who->FloatVar(NAME_UseRange);
-	const DVector3 start = who->PosPlusZ(who->Height * 0.5);
+	const DVector3 start = who->player != nullptr ? DVector3(who->Pos().XY(), who->player->viewz)
+	                                                : who->PosPlusZ(who->Height * 0.5);
 	const DAngle pitch = who->Angles.Pitch;
 	const DVector3 dir(
 		who->Angles.Yaw.Cos() * pitch.Cos(),
@@ -6613,48 +6671,33 @@ bool UseFlat(AActor *who, TrigEvent want)
 	// pitched ray reaches the same z only 1/cos(pitch) further along itself,
 	// so it is traced that far and the hit is then held to z < UseRange.
 	const double planarSpan = std::max(0.05, pitch.Cos());
-	FTraceResults res;
-	if (!Trace(start, who->Sector, dir, range / planarSpan, ActorFlags::FromInt(0), 0,
-		who, res, TRACE_NoSky))
+	Pick p;
+	if (!PickFrom(who, start, dir, range / planarSpan, p))
 	{
-		// SAY SO. A silent false here is indistinguishable from "the sector had
-		// no 0x19 bound", and that cost a wrong reading already: sector 409
-		// carries both an 0x13 and an 0x19, the 0x13 fired, the 0x19 did not,
-		// and with nothing printed there was no way to tell whether the trace
-		// failed or the binding was missing.
 		if (roth_trigger_debug)
-			Printf("roth_trigger: flat probe -- Trace() found nothing within"
-				" %.0f units\n", range);
+			Printf("roth_trigger: eye probe -- nothing within %.0f units\n", range);
 		return false;
 	}
-	// REPORT THE WHOLE RESULT, not just the rejection. Three of this function's
-	// four exits used to be silent or nearly so, and they are not
-	// distinguishable from outside: sector 409 carries both an 0x13 and an
-	// 0x19, the 0x13 fired and the 0x19 did not, and the log said nothing about
-	// which exit was taken.
 	if (roth_trigger_debug)
+		Printf("roth_trigger: eye probe -- %s at (%.1f %.1f %.1f), from z %.1f pitch %.1f\n", PickKindName(p),
+			p.hitPos.X, p.hitPos.Y, p.hitPos.Z, start.Z, pitch.Degrees());
 	{
-		Printf("roth_trigger: flat probe -- hit type %d, sector %d, z %.1f,"
-			" from z %.1f pitch %.1f\n", (int)res.HitType,
-			res.Sector != nullptr ? res.Sector->sectornum : -1,
-			res.HitPos.Z, start.Z, pitch.Degrees());
-	}
-
-	{
-		const double z = (res.HitPos.XY() - who->Pos().XY()) | who->Angles.Yaw.ToVector(1.0);
+		const double z = (p.hitPos.XY() - who->Pos().XY()) | who->Angles.Yaw.ToVector(1.0);
 		if (z >= range)
 		{
 			if (roth_trigger_debug)
-				Printf("roth_trigger: flat probe -- hit at planar %.1f, past the use range %.0f\n", z, range);
+				Printf("roth_trigger: eye probe -- hit at planar %.1f, past the use range %.0f\n", z, range);
 			return false;
 		}
 	}
+	if (p.kind == Pick::WallFace) return Activate(p, who, want);
+	if (p.kind != Pick::Flat || p.ceiling) return false;
 
-	// EVERYTHING PAST THE TRACE IS NOW UseFlatAt, so a pick made from a VR hand
-	// applies the same flat rules to its OWN ray instead of tracing a second
-	// time from the eye. Two rays answering one question is how the eye and the
-	// hand came to disagree about what the player was pointing at. The half
-	// below is what this function used to do from here on, unchanged.
+	FTraceResults res{};
+	res.HitType = TRACE_HitFloor;
+	res.Sector  = p.sector;
+	res.HitPos  = p.hitPos;
+	res.ffloor  = (F3DFloor *)p.ffloor;
 	return UseFlatAt(who, res, want);
 }
 
@@ -6679,6 +6722,28 @@ bool UseFlatAt(AActor *who, const FTraceResults &res, TrigEvent want)
 	// Stage "what the player just used" as the SECTOR, because a key of 0 in the
 	// chain resolves to it the same way a face does on a wall.
 	g.activeSector = res.Sector->sectornum;
+
+	// A USE IS ONE RECORD, as on a face (ActivateLine): the first of the records keyed to this
+	// sector's command id that is not spent, wants this surface (+6 bit 0) and whose SURFACE BOX
+	// holds the hit texel (roth_surfbox.h). This loop used to fire every use binding of the sector:
+	// STUDY1's desk top (id 13) carries seven, one per thing on it, each with its own box.
+	if (want == TrigEvent::Use)
+	{
+		const uint16_t rec = res.HitType == TRACE_HitFloor
+			? UseMatchFlat(res.Sector, (res.ffloor != nullptr), res.HitPos, nullptr, roth_trigger_debug) : (uint16_t)0;
+		if (rec == 0)
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: %s sector %d use -> no record matches\n", (res.ffloor != nullptr) ? "platform top" : "floor",
+					res.Sector->sectornum);
+			return false;
+		}
+		if (roth_trigger_debug)
+			Printf("roth_trigger: %s sector %d use -> record #%u fires\n", (res.ffloor != nullptr) ? "platform top" : "floor",
+				res.Sector->sectornum, (unsigned)rec);
+		FireUseRecord(rec);
+		return true;   // the click went to a record (fire_object_use_trigger returns -1 on a match)
+	}
 
 	auto it = g.bySector.find(res.Sector->sectornum);
 	if (it == g.bySector.end())
@@ -7394,8 +7459,13 @@ bool UseByHand(player_t *player, TrigEvent want)
 //     type 3: the face's 0x18 records in order, the first not +2 bit 3 whose
 //     +6 admits the band; type 2/8: the sector's 0x19 records, the first not
 //     +2 bit 3 with (+6 & 1 ? type 8 : type 2); then the flow pre-pass decides
-//     (gated -> no match). NOT PORTED: the authored bounding box (+0x0c..0x12),
-//     which no click channel of this port tests yet (REMAROTH_MEASURED.md).
+//     (gated -> no match). THE SURFACE BOX (+0x0c..0x12) against the pick's
+//     +4/+6 texel, a record outside it passed over for the next: roth_surfbox.h
+//     (its own checklist 1-13) -> WalkMatch, WallHitTexel, FlatHitTexel. The
+//     floor list is every record keyed to the sector's command id (flatById),
+//     the original's match, not the first sector with that id. Records disabled
+//     at load are bound and skipped live. [V: tools/surfbox_test against the
+//     original: every boxed record's targets, bands and edge points, 0 differ]
 // 23. dispatch_entry_command_trigger_b (the examine match) RC:3102-3195 ->
 //     ExamineMatch. ch1 type 3 with a 0x32 on the face: the first 0x32 not +2
 //     bit 3 admitting the band, then the flow -- and it RETURNS whatever that
@@ -7403,7 +7473,7 @@ bool UseByHand(player_t *player, TrigEvent want)
 //     3, then the flow. ch3 any type but 7 (and 3 with no 0x32 on the face,
 //     which falls through): the sector's 0x31 records, the first not +2 bit 3
 //     with +6 & {floor 1, ceiling 2, platform top 4, other 8}[type], then the
-//     flow. Bounding box: not ported (22). DEPARTS, unmeasured: the sector a
+//     flow. The surface box on ch1 and ch3 as on 22; ch2 has none. DEPARTS, unmeasured: the sector a
 //     face's fall-through reads is the pick's +0x0a, taken here as the sector
 //     the hit side faces into; a door (type 6) reaches ch3 with no sector here
 //     and matches nothing.
@@ -7502,7 +7572,231 @@ struct ResolvedPick
 	int       objSector = -1, objIndex = -1;   // type 4
 	const Object *obj = nullptr;
 	uint16_t  renderId = 0;
+	SurfTexel texel;             // types 3, 1, 2, 7, 8: the pick record's +4/+6 at the hit (roth_surfbox.h)
 };
+
+//--------------------------------------------------------------------------
+// THE HIT TEXEL: the pick record's +4 / +6 where a ray, a palm or a fingertip meets a face or a flat, by the
+// original's rule (roth_surfbox.h checklist 9-13, differential-tested in tools/surfbox_test). Everything is
+// read LIVE: the face's mapping record (slots and shifts a chain may have changed), the sectors' current
+// heights, the platform's, the flat's current picture -- what the original draws, so what it would pick.
+//--------------------------------------------------------------------------
+
+// Which end of a sidedef's engine line is its Realms face's FIRST vertex (a = first, b = second): sidedef 0
+// is the face the line was made from (rothmap.cpp: ld->v1/v2 = its vertex1/vertex2), sidedef 1 its sister,
+// matched by position to the front face's ends.
+bool FaceAxis(int sideIdx, DVector2 &a, DVector2 &b)
+{
+	if (g.level == nullptr || sideIdx < 0 || sideIdx >= (int)g.level->sides.Size()) return false;
+	const side_t &sd = g.level->sides[sideIdx];
+	const line_t *ln = sd.linedef;
+	if (ln == nullptr) return false;
+	a = ln->v1->fPos(); b = ln->v2->fPos();
+	if (ln->sidedef[1] != &sd) return true;
+	auto me = g.sideToFace.find(sideIdx);
+	auto f0 = ln->sidedef[0] != nullptr ? g.sideToFace.find((int)(ln->sidedef[0] - &g.level->sides[0])) : g.sideToFace.end();
+	bool reversed = true;
+	if (me != g.sideToFace.end() && f0 != g.sideToFace.end() && me->second >= 0 && me->second < (int)g.map.faces.size()
+		&& f0->second >= 0 && f0->second < (int)g.map.faces.size())
+	{
+		const Face &mine = g.map.faces[me->second], &front = g.map.faces[f0->second];
+		if (mine.vertex1 >= 0 && front.vertex1 >= 0 && front.vertex2 >= 0)
+		{
+			const Vertex &m1 = g.map.vertices[mine.vertex1], &p1 = g.map.vertices[front.vertex1], &p2 = g.map.vertices[front.vertex2];
+			reversed = hypot((double)m1.x - p2.x, (double)m1.y - p2.y) <= hypot((double)m1.x - p1.x, (double)m1.y - p1.y);
+		}
+	}
+	if (reversed) std::swap(a, b);
+	return true;
+}
+
+// A face: the ROTH face on that sidedef, the piece the band names (0x04 upper, 0x02 lower, else mid), the
+// point's distance from the FACE's first vertex along it (a back side is its sister face, which runs the
+// other way), and its height.
+SurfTexel WallHitTexel(int sideIdx, uint8_t band, const DVector3 &hit)
+{
+	SurfTexel t;
+	if (g.level == nullptr || sideIdx < 0 || sideIdx >= (int)g.level->sides.Size()) return t;
+	auto sf = g.sideToFace.find(sideIdx);
+	if (sf == g.sideToFace.end()) return t;
+	const int fi = sf->second;
+	auto wr = g.wallByFace.find(fi);
+	if (wr == g.wallByFace.end() || fi < 0 || fi >= (int)g.map.faces.size()) return t;
+	const Runtime::WallReg &reg = wr->second;
+	const int tmi = g.map.faces[fi].textureMap;
+	if (tmi < 0 || tmi >= (int)g.map.textureMaps.size()) return t;
+	const TextureMap &tm = g.map.textureMaps[tmi];
+
+	WallFace wf = reg.wf;                       // as ReapplyWallFace: the shifts and heights as they are now
+	wf.shiftX = tm.extended ? (int)tm.shiftX : 0;
+	wf.shiftY = tm.extended ? (int)tm.shiftY : 0;
+	auto planeZ = [&](int si, int plane) { return (int)floor(g.level->sectors[si].GetPlaneTexZ(plane) + 0.5); };
+	if (reg.own >= 0 && (unsigned)reg.own < g.level->sectors.Size())
+	{
+		wf.ownFloor = planeZ(reg.own, sector_t::floor);
+		wf.ownCeil  = planeZ(reg.own, sector_t::ceiling);
+	}
+	if (wf.twoSided && reg.nbr >= 0 && (unsigned)reg.nbr < g.level->sectors.Size())
+	{
+		wf.nbrFloor = planeZ(reg.nbr, sector_t::floor);
+		wf.nbrCeil  = planeZ(reg.nbr, sector_t::ceiling);
+	}
+	const WallTier tier = band == 0x04 ? WALL_UPPER : band == 0x02 ? WALL_LOWER : WALL_MID;
+	const WallPieceShape &shape = reg.piece[tier];
+	if (shape.dimU <= 0 || shape.dimV <= 0) return t;   // a solid colour or nothing drawn: no texel
+
+	DVector2 a, b;
+	if (!FaceAxis(sideIdx, a, b)) return t;
+	const DVector2 along = b - a;
+	const double len = along.Length();
+	if (len <= 0) return t;
+	double d = ((hit.XY() - a) | along) / len;
+	d = std::max(0.0, std::min(len, d));
+
+	const WallPiece wp = WallPieceRule(wf, tier, shape.dimU, shape.dimV);
+	if (!wp.drawn) return t;
+	const double z = std::max((double)wp.bot, std::min((double)wp.top, hit.Z));
+	return WallPickTexel(wp, shape.dimU, shape.dimV, d, z);
+}
+
+// A flat: the sector's floor (type 2) or ceiling (1), or its mid-platform's top (8) or underside (7), as
+// the loader and ApplySectorFlat / ApplyPlatform set them up (roth_surface.h FlatSetup), at the point in
+// REALMS coordinates (a sector the portal plan moved is shifted back). The picture's size is the registered
+// texture's, quarter-turned (roth_texture.cpp: the engine's width is the stored height).
+SurfTexel FlatHitTexel(sector_t *sec, uint8_t type, const DVector3 &hit)
+{
+	SurfTexel t;
+	if (sec == nullptr) return t;
+	const int si = sec->sectornum;
+	if (si < 0 || si >= (int)g.map.sectors.size()) return t;
+	const Sector &rs = g.map.sectors[si];
+	FlatSetup fs = {};
+	if (type == 1 || type == 2)
+	{
+		const bool isFloor = type == 2;
+		fs.textureWord = isFloor ? rs.floorTexture : rs.ceilingTexture;
+		fs.scaleBits = (uint8_t)(isFloor ? rs.FloorScaleShift() : rs.CeilingScaleShift());
+		fs.shiftX = isFloor ? rs.floorShiftX : rs.ceilShiftX;
+		fs.shiftY = isFloor ? rs.floorShiftY : rs.ceilShiftY;
+		const uint8_t flipBits = (uint8_t)(rs.flags2 >> 8);
+		fs.mirrorX = isFloor ? (flipBits & 0x01) != 0 : (flipBits & 0x04) != 0;
+		fs.mirrorY = isFloor ? (flipBits & 0x02) != 0 : (flipBits & 0x08) != 0;
+	}
+	else
+	{
+		const int pi = rs.platformIndex;
+		if (pi < 0 || pi >= (int)g.map.platforms.size()) return t;
+		const MidPlatform &mp = g.map.platforms[pi];
+		const bool top = type == 8;
+		fs.textureWord = top ? mp.topTexture : mp.undersideTexture;
+		fs.scaleBits = (uint8_t)(top ? (mp.scales >> 4) & 3 : (mp.scales >> 2) & 3);
+		fs.shiftX = top ? mp.topShiftX : mp.undersideShiftX;
+		fs.shiftY = top ? mp.topShiftY : mp.undersideShiftY;
+	}
+	auto reg = g.flatByIndex.find((int)fs.textureWord);
+	FTextureID tex = FNullTextureID();
+	if (reg != g.flatByIndex.end() && !reg->second.isSky) tex = reg->second.tex;
+	if (!tex.isValid()) { auto w = g.texByIndex.find((int)fs.textureWord); if (w != g.texByIndex.end()) tex = w->second; }
+	if (!tex.isValid()) return t;
+	FGameTexture *gt = TexMan.GetGameTexture(tex, false);
+	if (gt == nullptr) return t;
+	fs.texW = (uint16_t)gt->GetTexelHeight();      // the quarter turn
+	fs.texH = (uint16_t)gt->GetTexelWidth();
+	fs.opaque256 = reg != g.flatByIndex.end() && reg->second.opaque256;
+	double sx = 0., sy = 0.;
+	SectorShift(si, sx, sy);
+	return FlatPickTexel(fs, hit.X - sx, hit.Y - sy);
+}
+
+// One channel's records for one target, walked as the original walks the directory (roth_surfbox.h,
+// SurfFirstMatch) with each record's +2, +6 and box read live; then the flow pre-pass on the one it stops at.
+// `log`: one line per record with a box, and the decision (roth_trigger_debug, from the click paths only --
+// ClassifyPick runs this every tic).
+uint16_t WalkMatch(const std::vector<Binding> *list, TrigEvent ev, SurfChannel ch, uint8_t pickType, uint8_t band,
+	const SurfTexel &t, bool log, const char *what)
+{
+	if (list == nullptr) return 0;
+	std::vector<SurfCandidate> cands;
+	std::vector<const Binding *> from;
+	for (const Binding &b : *list)
+	{
+		if (b.event != ev) continue;
+		const Command *rec = Rec(b.record);
+		if (rec == nullptr) continue;
+		SurfCandidate c;
+		c.record = b.record;
+		c.modifier = rec->modifier;
+		c.fireFlags = rec->fireFlags;
+		c.box = RecordSurfBox(*rec);
+		cands.push_back(c);
+		from.push_back(&b);
+	}
+	const int at = SurfFirstMatch(cands, ch, pickType, band, t);
+	if (log)
+	{
+		for (const SurfCandidate &c : cands)
+		{
+			if (!SurfBoxSet(c.box)) continue;
+			Printf("roth_trigger: surface box: %s record #%u box x %d..%d y %d..%d, hit texel %s%d,%d -> %s%s\n", what,
+				(unsigned)c.record, (int16_t)c.box.x0, (int16_t)c.box.x1, (int16_t)c.box.y0, (int16_t)c.box.y1,
+				t.have ? "" : "(none) ", t.x, t.y, SurfBoxAdmits(c.box, t) ? "INSIDE" : "OUTSIDE",
+				(c.modifier & 0x08) ? " (spent)" : !SurfFlagsAdmit(ch, c.fireFlags, pickType, band) ? " (other band/surface)" : "");
+		}
+	}
+	if (at < 0) return 0;
+	if (WalkChainFlow(g.map, from[at]->chain) != 0)
+	{
+		if (log) Printf("roth_trigger: surface box: %s record #%u matches but its flow is gated: no match\n", what, (unsigned)from[at]->record);
+		return 0;
+	}
+	return from[at]->record;
+}
+
+const std::vector<Binding> *SideList(int sideIdx)
+{
+	auto it = g.bySide.find(sideIdx);
+	return it == g.bySide.end() ? nullptr : &it->second;
+}
+const std::vector<Binding> *FlatList(const sector_t *sec)
+{
+	if (sec == nullptr || sec->sectornum < 0 || sec->sectornum >= (int)g.map.sectors.size()) return nullptr;
+	const uint16_t id = g.map.sectors[sec->sectornum].commandID;
+	if (id == 0) return nullptr;
+	auto it = g.flatById.find(id);
+	return it == g.flatById.end() ? nullptr : &it->second;
+}
+
+uint16_t UseMatchFace(int sideIdx, uint8_t band, const DVector3 *hit, sector_t *sideSector, SurfTexel *texelOut, bool log)
+{
+	(void)sideSector;
+	const SurfTexel t = hit != nullptr ? WallHitTexel(sideIdx, band, *hit) : SurfTexel{};
+	if (texelOut) *texelOut = t;
+	return WalkMatch(SideList(sideIdx), TrigEvent::Use, SurfChannel::UseFace, 3, band, t, log, "face use");
+}
+
+uint16_t UseMatchFlat(sector_t *sec, bool platformTop, const DVector3 &hit, SurfTexel *texelOut, bool log)
+{
+	const uint8_t type = platformTop ? 8 : 2;
+	const SurfTexel t = FlatHitTexel(sec, type, hit);
+	if (texelOut) *texelOut = t;
+	return WalkMatch(FlatList(sec), TrigEvent::Use, SurfChannel::UseFlat, type, 0, t, log, platformTop ? "platform-top use" : "floor use");
+}
+
+// fire_object_use_trigger -> fire_command_contact_trigger (raw_commands.c:2787-2800, 1685-1708): nothing
+// while the record is armed / spent / registered (+2 & 0x29), else the record's sound (+0x0a, stored plus one)
+// latched for the chain's tail, the flow pre-pass and the chain (Fire); a one-shot record (+6 bit 4) whose
+// chain acted is spent (register_command_save_link :1645-1646). The 0x40 / 0x20 state-link latches are not
+// kept by any click channel of this port (ClassifyPick checklist 35).
+bool FireUseRecord(uint16_t recIdx)
+{
+	Command *rec = Rec(recIdx);
+	if (rec == nullptr || (rec->modifier & 0x29)) return false;
+	StageChainSound(rec->aux);
+	const bool fired = Fire(rec->chainStart);
+	Command *again = Rec(recIdx);   // the chain may have rewritten it
+	if (fired && again != nullptr && (again->fireFlags & 0x10)) { again->modifier |= 0x08; SyncDisabled(again); }
+	return fired;
+}
 
 int SideIndex(const line_t *line, int side)
 {
@@ -7536,6 +7830,7 @@ bool ResolvePick(const Pick &p, ResolvedPick &r)
 		r.sideIdx = SideIndex(p.line, p.side);
 		r.band = p.band;
 		if (p.line != nullptr && p.line->sidedef[p.side] != nullptr) r.sector = p.line->sidedef[p.side]->sector;
+		if (r.sideIdx >= 0) r.texel = WallHitTexel(r.sideIdx, r.band, p.hitPos);
 		return r.sideIdx >= 0;
 
 	case Pick::DoorLeaf:
@@ -7556,6 +7851,7 @@ bool ResolvePick(const Pick &p, ResolvedPick &r)
 					r.sideIdx = fs->second;
 					r.band = p.band;
 					r.sector = g.level->sides[fs->second].sector;
+					r.texel = WallHitTexel(r.sideIdx, r.band, p.hitPos);   // the leaf's hit, on the room face's plane
 					return true;
 				}
 			}
@@ -7578,6 +7874,7 @@ bool ResolvePick(const Pick &p, ResolvedPick &r)
 	case Pick::Flat:
 		r.sector = p.sector;
 		r.type = p.ceiling ? (p.ffloor ? 7 : 1) : (p.ffloor ? 8 : 2);
+		if (p.sector != nullptr) r.texel = FlatHitTexel(p.sector, r.type, p.hitPos);
 		return p.sector != nullptr;
 
 	default:
@@ -7624,56 +7921,34 @@ bool FaceImpactLink(int sideIdx)
 	return false;
 }
 
-// Checklist 22: the record dispatch_entry_command_trigger would return, or 0.
-uint16_t UseMatch(const ResolvedPick &r)
+// Checklist 22: the record dispatch_entry_command_trigger would return, or 0. The walk and the SURFACE BOX
+// are roth_surfbox.h's (SurfFirstMatch); the floor channel takes every record keyed to the sector's id.
+uint16_t UseMatch(const ResolvedPick &r, bool log = false)
 {
 	if (r.type == 3)
-	{
-		auto it = g.bySide.find(r.sideIdx);
-		if (it == g.bySide.end()) return 0;
-		for (const Binding &b : it->second)
-		{
-			if (b.event != TrigEvent::Use || Spent(b.record)) continue;
-			if (r.band != 0 && !(b.fireFlags & r.band)) continue;
-			return WalkChainFlow(g.map, b.chain) == 0 ? b.record : 0;
-		}
-		return 0;
-	}
+		return WalkMatch(SideList(r.sideIdx), TrigEvent::Use, SurfChannel::UseFace, 3, r.band, r.texel, log, "face use");
 	if ((r.type == 2 || r.type == 8) && r.sector != nullptr)
-	{
-		auto it = g.bySector.find(r.sector->sectornum);
-		if (it == g.bySector.end()) return 0;
-		for (const Binding &b : it->second)
-		{
-			if (b.event != TrigEvent::Use || Spent(b.record)) continue;
-			const bool fire = (b.fireFlags & 1) ? (r.type == 8) : (r.type == 2);
-			if (!fire) continue;
-			return WalkChainFlow(g.map, b.chain) == 0 ? b.record : 0;
-		}
-	}
+		return WalkMatch(FlatList(r.sector), TrigEvent::Use, SurfChannel::UseFlat, r.type, 0, r.texel, log,
+			r.type == 8 ? "platform-top use" : "floor use");
 	return 0;
 }
 
 // Checklist 23: the record dispatch_entry_command_trigger_b would return, or 0;
 // `channel` says which channel matched (for the seeds ExaminePick stages).
-uint16_t ExamineMatch(const ResolvedPick &r, int *channel = nullptr)
+uint16_t ExamineMatch(const ResolvedPick &r, int *channel = nullptr, bool log = false)
 {
 	if (channel) *channel = 0;
 	if (r.type == 3 && HasEvent(r.sideIdx, TrigEvent::Examine))
 	{
 		// ch1 returns whatever its records give: it does not fall through.
-		for (const Binding &b : g.bySide[r.sideIdx])
-		{
-			if (b.event != TrigEvent::Examine || Spent(b.record)) continue;
-			if (r.band != 0 && !(b.fireFlags & r.band)) continue;
-			if (WalkChainFlow(g.map, b.chain) != 0) return 0;
-			if (channel) *channel = 1;
-			return b.record;
-		}
-		return 0;
+		const uint16_t rec = WalkMatch(SideList(r.sideIdx), TrigEvent::Examine, SurfChannel::ExamineFace, 3, r.band, r.texel, log,
+			"face examine");
+		if (rec != 0 && channel) *channel = 1;
+		return rec;
 	}
 	if (r.type == 4)
 	{
+		// ch2: no direction mask and no box (RC:3141-3158).
 		if (r.obj == nullptr || r.obj->commandID == 0) return 0;
 		auto it = g.byObject.find((int)r.obj->commandID);
 		if (it == g.byObject.end()) return 0;
@@ -7688,18 +7963,12 @@ uint16_t ExamineMatch(const ResolvedPick &r, int *channel = nullptr)
 	}
 	if (r.type != 7 && r.type != 0 && r.sector != nullptr)
 	{
-		static const uint8_t dm2[4] = { 1, 2, 4, 8 };
-		const int idx = (r.type == 2) ? 0 : (r.type == 1) ? 1 : (r.type == 8) ? 2 : 3;
-		auto it = g.bySector.find(r.sector->sectornum);
-		if (it == g.bySector.end()) return 0;
-		for (const Binding &b : it->second)
-		{
-			if (b.event != TrigEvent::Examine || Spent(b.record)) continue;
-			if (!(b.fireFlags & dm2[idx])) continue;
-			if (WalkChainFlow(g.map, b.chain) != 0) return 0;
-			if (channel) *channel = 3;
-			return b.record;
-		}
+		// ch3 on the pick's sector: a face's texel stands for the flat's here, as the original passes the one
+		// record (+4/+6 are the face's when a face falls through).
+		const uint16_t rec = WalkMatch(FlatList(r.sector), TrigEvent::Examine, SurfChannel::ExamineFlat, r.type, 0, r.texel, log,
+			"flat examine");
+		if (rec != 0 && channel) *channel = 3;
+		return rec;
 	}
 	return 0;
 }
@@ -7755,13 +8024,26 @@ CursorClass ClassifyPick(const Pick &p, AActor *who, double depth)
 	return c;
 }
 
+void ExplainSurfaceBox(const Pick &p)
+{
+	if (!roth_trigger_debug) return;
+	ResolvedPick r;
+	if (!g.active || !ResolvePick(p, r)) return;
+	if (r.type != 3 && r.type != 1 && r.type != 2 && r.type != 7 && r.type != 8) return;
+	Printf("roth_trigger: surface box: %s, pick type %u, hit texel %s%d,%d\n", PickKindName(p), (unsigned)r.type,
+		r.texel.have ? "" : "(none) ", r.texel.x, r.texel.y);
+	const uint16_t u = UseMatch(r, true);
+	const uint16_t e = ExamineMatch(r, nullptr, true);
+	Printf("roth_trigger: surface box: use match #%u, examine match #%u (0 = none)\n", (unsigned)u, (unsigned)e);
+}
+
 bool ExaminePick(const Pick &p, AActor *who)
 {
 	ResolvedPick r;
 	if (!g.active || who == nullptr || !ResolvePick(p, r)) return false;
 
 	int channel = 0;
-	const uint16_t recIdx = ExamineMatch(r, &channel);
+	const uint16_t recIdx = ExamineMatch(r, &channel, roth_trigger_debug);
 	if (recIdx != 0)
 	{
 		Command *rec = Rec(recIdx);
@@ -7832,6 +8114,60 @@ uint16_t RuntimeSectorId(int rothSector)
 // Not a rule of the game: it only chooses something to aim a test at.
 //
 //==========================================================================
+
+bool FaceTexelWorld(int rothFace, int tx, int ty, DVector3 &at, DVector2 &outward, int &checkX, int &checkY)
+{
+	checkX = checkY = -1;
+	if (!g.active || g.level == nullptr) return false;
+	auto fs = g.faceToSide.find(rothFace);
+	auto wr = g.wallByFace.find(rothFace);
+	if (fs == g.faceToSide.end() || wr == g.wallByFace.end()) return false;
+	const int sideIdx = fs->second;
+	if (sideIdx < 0 || sideIdx >= (int)g.level->sides.Size()) return false;
+	const side_t &sd = g.level->sides[sideIdx];
+	const line_t *ln = sd.linedef;
+	if (ln == nullptr || sd.sector == nullptr) return false;
+	const Runtime::WallReg &reg = wr->second;
+	const int tmi = g.map.faces[rothFace].textureMap;
+	if (tmi < 0 || tmi >= (int)g.map.textureMaps.size()) return false;
+	const TextureMap &tm = g.map.textureMaps[tmi];
+	WallFace wf = reg.wf;
+	wf.shiftX = tm.extended ? (int)tm.shiftX : 0;
+	wf.shiftY = tm.extended ? (int)tm.shiftY : 0;
+	auto planeZ = [&](int si, int plane) { return (int)floor(g.level->sectors[si].GetPlaneTexZ(plane) + 0.5); };
+	if (reg.own >= 0 && (unsigned)reg.own < g.level->sectors.Size()) { wf.ownFloor = planeZ(reg.own, sector_t::floor); wf.ownCeil = planeZ(reg.own, sector_t::ceiling); }
+	if (wf.twoSided && reg.nbr >= 0 && (unsigned)reg.nbr < g.level->sectors.Size()) { wf.nbrFloor = planeZ(reg.nbr, sector_t::floor); wf.nbrCeil = planeZ(reg.nbr, sector_t::ceiling); }
+
+	// The face's own direction on the engine line (as WallHitTexel reads it) and its outward side: a front
+	// sidedef is on the right of v1 -> v2.
+	DVector2 a, b;
+	if (!FaceAxis(sideIdx, a, b)) return false;
+	DVector2 n(ln->Delta().Y, -ln->Delta().X);   // a front sidedef faces the right of v1 -> v2
+	if (ln->sidedef[1] == &sd) n = -n;
+	const DVector2 along = b - a;
+	const double len = along.Length();
+	if (len <= 0) return false;
+	outward = n / n.Length();
+
+	const WallTier tiers[3] = { WALL_MID, WALL_UPPER, WALL_LOWER };
+	const uint8_t bands[3] = { 0x01, 0x04, 0x02 };
+	for (int k = 0; k < 3; k++)
+	{
+		const WallPieceShape &shape = reg.piece[tiers[k]];
+		if (shape.dimU <= 0 || shape.dimV <= 0) continue;
+		const WallPiece wp = WallPieceRule(wf, tiers[k], shape.dimU, shape.dimV);
+		if (!wp.drawn || wp.su <= 0 || wp.sv <= 0 || wp.uMasked || wp.vMasked) continue;
+		const double c = wp.mirror ? (shape.dimU - 1 - tx) : tx;
+		const double d = (c + 0.5 - wp.u0) / wp.su;
+		const double z = wp.anchor - (ty + 0.5 - wp.v0) / wp.sv;
+		if (d < 0 || d > len || z < wp.bot || z > wp.top) continue;
+		at = DVector3(a + along * (d / len), z);
+		const SurfTexel t = WallHitTexel(sideIdx, bands[k], at);
+		if (t.have) { checkX = t.x; checkY = t.y; }
+		return true;
+	}
+	return false;
+}
 
 bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 &aim, DVector3 &stand)
 {

@@ -455,6 +455,12 @@ bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key);
 // A Realms sector's command id (its commandID), 0 for none.
 uint16_t RuntimeSectorId(int rothSector);
 
+// Debug only (roth_trigger_debug): print the surface-box decision a click at this pick would meet -- the hit
+// texel, each boxed record of the face's or the flat's use and examine channels inside or outside, and the
+// record each match walk stops at. Read-only; the VR hands call it when a press is refused, so a refused
+// press shows why.
+void ExplainSurfaceBox(const Pick &p);
+
 // Whether two picks name the same thing (a press that began on one target and
 // ended on another acts on neither). Compares identities, never dereferences.
 bool SamePickTarget(const Pick &a, const Pick &b);
@@ -481,6 +487,12 @@ struct PickTestHand
 	double liftMetres = 0;   // out
 };
 bool PickTestTarget(const char *kind, AActor *who, PickTestHand &hand, DVector3 &aim, DVector3 &stand);
+
+// A test instrument for roth_vrpicktest texel (roth_vrpick.cpp), not a rule of the game: the point on Realms
+// face `rothFace` whose hit texel (the pick record's +4/+6, roth_surfbox.h) is (tx, ty) -- the middle of that
+// texel, on the first piece of the face that draws it -- and the face's outward direction. `check` is the
+// texel the click paths compute back at that point (WallHitTexel), so the log shows both.
+bool FaceTexelWorld(int rothFace, int tx, int ty, DVector3 &at, DVector2 &outward, int &checkX, int &checkY);
 
 // Notice a player crossing into a new sector, and fire that sector's 0x13
 // triggers. Call once per tic per player; it compares against the sector seen

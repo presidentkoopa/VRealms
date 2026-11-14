@@ -39,7 +39,10 @@ records and 224 trigger entry points.
 +0x07  u8   sub-flags                        (triggers)
 +0x08  u16  key: an ID, looked up per-opcode (0 = "whatever the player just used")
 +0x0a  u16  sound effect or auxiliary value
-+0x0c..0x12  s16 x0, x1, z0, z1 -- optional bounding box (0 at +0x0c = no box)
++0x0c..0x12  s16 x0, x1, y0, y1 -- the SURFACE BOX on the four click channels (0x18, 0x19, 0x31, 0x32): the texel
+             rectangle on the face's or the flat's picture the click must land in (the pick record's +4/+6).
+             No box = the DWORD at +0x0c is 0 (raw_commands.c:3031), not +0x0c alone: 233 of the 309 retail
+             boxes start at x0 = 0. src/roth/roth_surfbox.h, tools/surfbox_test.
 ```
 
 Arguments are 2-byte values filling `size - 6` bytes. Observed counts run from 1 to 8;
@@ -400,6 +403,9 @@ The pool and every tick but one are implemented in `src/roth/roth_runtime.cpp`.
 - **The trigger direction mask and bounding box.** Both live in object-table refs
   this port does not build, so a face trigger over-fires: it runs whenever its
   wall is activated rather than only from the authored approach direction.
+  *Since superseded for the click channels:* the band mask (+0x06) and the surface
+  box (+0x0c..+0x12) are tested on use and examine, faces and flats
+  (`src/roth/roth_surfbox.h`, differential test `tools/surfbox_test`).
 - **The sector-keyed triggers `0x19`/`0x31` have no caller.** 173 records. The
   bits they set gate `dispatch_entry_command_trigger`, which runs from the use and
   cursor-probe paths, and this port has no equivalent probe yet.

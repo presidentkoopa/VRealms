@@ -518,7 +518,7 @@ int RightHandItem(const Inventory *inv)
 // unchanged.
 bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how, bool inReach = false)
 {
-	if (!c.CanUse()) return false;
+	if (!c.CanUse()) { ExplainSurfaceBox(p); return false; }
 	const bool itemHand = VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT;
 	Inventory *inv = InterfaceInventory();
 	const int before = RightHandItem(inv);
@@ -551,7 +551,7 @@ bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const cha
 
 bool DoExamine(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how)
 {
-	if (!c.CanExamine()) return false;
+	if (!c.CanExamine()) { ExplainSurfaceBox(p); return false; }
 	const bool acted = ExaminePick(p, pmo);
 	Printf("[roth_vrpick] %s hand %s: EXAMINE %s at depth %.0f (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
 		PickKindName(p), c.depth, (int)c.type, (unsigned)c.shape, acted ? "examined" : "nothing happened");
@@ -661,6 +661,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	else if (Logging())
 		Printf("[roth_vrpick]   surface under the palm: no Realms wall or door within %.1f units\n", kTouchRadius * upm);
 	if (haveTouch && (!haveRay || touchPick.dist < rayPick.dist)) { rayPick = touchPick; rayCls = touchCls; haveRay = true; }
+	else if (!haveTouch && touchPick.kind == Pick::WallFace) ExplainSurfaceBox(touchPick);   // roth_trigger_debug: a face under the palm that takes no click
 
 	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
 	// the cursor: a door handle on the door is taken before the door, the door
@@ -856,9 +857,13 @@ void TickHand(int role, AActor *pmo)
 			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
 			gripActed = true;
 		}
-		else if (!gripActed && Logging())
-			Printf("[roth_vrpick] %s hand grip: %s -- nothing (a grip on nothing does not attack: physical only)\n", RoleName(role),
-				!h.pointing ? "not pointing, nothing in reach" : h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
+		else if (!gripActed)
+		{
+			if (h.pointing && h.havePick) ExplainSurfaceBox(h.pick);   // roth_trigger_debug: why the pointed-at face or flat took no use
+			if (Logging())
+				Printf("[roth_vrpick] %s hand grip: %s -- nothing (a grip on nothing does not attack: physical only)\n", RoleName(role),
+					!h.pointing ? "not pointing, nothing in reach" : h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
+		}
 		if (gripActed) h.pokeArmed = false;
 	}
 
@@ -883,7 +888,11 @@ void TickHand(int role, AActor *pmo)
 			{
 				const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, along));
 				if (c.CanExamine()) DoExamine(role, p, c, pmo, "trigger");
-				else if (Logging()) Printf("[roth_vrpick] %s hand trigger on %s: %s\n", RoleName(role), PickKindName(p), WhyNotExamine(c).GetChars());
+				else
+				{
+					if (Logging()) Printf("[roth_vrpick] %s hand trigger on %s: %s\n", RoleName(role), PickKindName(p), WhyNotExamine(c).GetChars());
+					ExplainSurfaceBox(p);   // roth_trigger_debug: the surface box's part in it
+				}
 			}
 			else if (Logging())
 				Printf("[roth_vrpick] %s hand trigger: nothing in reach and nothing the finger pointed at\n", RoleName(role));
@@ -1433,6 +1442,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        In metres, because the hand is placed in metres
 //                                        (VR_UnitsPerMeter: 34 in flat, about 107 in the headset)
 //   roth_vrpicktest panel <x> <y> [metres]
+//   roth_vrpicktest texel <face> <x> <y> [metres]   stand square on to a Realms face, eye and finger on its texel x,y
 //                                        with the inventory (or the examine popup) up: aim the test ray
 //                                        at the centre of pixel (x, y) of its picture (the original's
 //                                        panel pixels: the inventory's are from its top left, 0..287 x
@@ -1471,7 +1481,7 @@ CCMD(roth_vrpicktest)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face|examine [metres]"
-			" | seek needs <item> [metres] | panel <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | aimwick <n> | look <units> [bearing] | off\n");
+			" | seek needs <item> [metres] | panel <x> <y> [metres] | texel <face> <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | aimwick <n> | look <units> [bearing] | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
@@ -1622,6 +1632,43 @@ CCMD(roth_vrpicktest)
 		Printf("roth_vrpicktest wick %d: object %d/%d's wick at (%.1f %.1f %.1f); the player moved (%.1f %.1f) to sector %d, floor %.0f, the %s hand"
 			" lifted %+.1f units (lift %.3f m), so its fingertip is %.3f m from it\n", wick + 1, P.testCandleSector, P.testCandleIndex, at.X, at.Y, at.Z,
 			move.X, move.Y, pmo->Sector != nullptr ? pmo->Sector->Index() : -1, pmo->Z(), RoleName(testRole), dz, lift, metres);
+		return;
+	}
+	// roth_vrpicktest texel <face> <x> <y> [metres]: the surface-box check (tools/surfbox_test,
+	// tools/claude_bridge/cfg/surfbox_flat.cfg). The player stands square on to Realms face <face>, the eye
+	// <metres> plus the test hand's reach in front of the point whose hit texel is (x, y), facing it and
+	// pitched at it -- so the flat use key's ray (the view's) and the test finger's ray (turned to the same
+	// aim) both meet the face there. Prints the point and the texel the click paths compute back.
+	if (!stricmp(argv[1], "texel") && argv.argc() >= 5)
+	{
+		AActor *pmo = players[consoleplayer].mo;
+		if (pmo == nullptr) { Printf("roth_vrpicktest texel: no player\n"); return; }
+		const int face = atoi(argv[2]), tx = atoi(argv[3]), ty = atoi(argv[4]);
+		const double metres = argv.argc() >= 6 ? atof(argv[5]) : 1.0;
+		DVector3 at; DVector2 out; int cx = -1, cy = -1;
+		if (!FaceTexelWorld(face, tx, ty, at, out, cx, cy)) { Printf("roth_vrpicktest texel: face %d draws no texel %d,%d on a plain piece\n", face, tx, ty); return; }
+		const int testRole = (P.testHands & 1) ? VR_MAINHAND : VR_OFFHAND;
+		DVector3 spot0;
+		VRHandTest_ActorSpot(VRHandPose_SideForRole(testRole), DVector3(0, 0, 0), 0.0, spot0);
+		const double back = metres * UPM() + (P.test ? std::max(0.0, spot0.X) : 0.0);
+		DVector3 stand(at.X + out.X * back, at.Y + out.Y * back, pmo->Z());
+		if (pmo->Level != nullptr)
+		{
+			sector_t *sec = pmo->Level->PointInSector(stand.XY());
+			if (sec != nullptr) stand.Z = sec->floorplane.ZatPoint(stand.XY());   // on the floor where it stands
+		}
+		pmo->SetOrigin(stand, false);
+		pmo->Vel.Zero();
+		pmo->Angles.Yaw = DAngle::fromDeg(atan2(-out.Y, -out.X) * (180.0 / M_PI));
+		const double eye = pmo->Z() + players[consoleplayer].viewheight;
+		pmo->Angles.Pitch = DAngle::fromDeg(atan2(eye - at.Z, back) * (180.0 / M_PI));
+		pmo->ClearInterpolation();
+		VRHandTest_SetLift(0.0);
+		P.testAimAt = true;
+		P.testAim = at;
+		Printf("roth_vrpicktest texel: face %d texel %d,%d is at (%.2f %.2f %.2f); the click paths compute %d,%d there; standing at"
+			" (%.1f %.1f %.1f), %.2f m plus the hand's reach off, facing it, pitch %.1f\n", face, tx, ty, at.X, at.Y, at.Z, cx, cy,
+			stand.X, stand.Y, stand.Z, metres, pmo->Angles.Pitch.Degrees());
 		return;
 	}
 	if (!stricmp(argv[1], "seek") && argv.argc() >= 3)
