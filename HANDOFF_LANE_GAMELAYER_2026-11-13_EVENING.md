@@ -64,6 +64,11 @@ Not seen: anything in the headset.
 5. Opening the never-opening desks (STUDY1, CHURCH1) would be new content, not a VR presentation of the original.
 6. VR_INTERACTION_RESEARCH "Phase B" ideas (sockets, drawers, books, torch beam, lamp light...) need the owner's go.
 
+## 4b. Chapter 1 answers (docs/VR_CHAPTER01_SHADOWS.md section 6)
+
+Strike a real match (off hand, 20 s); the Lamp on a hip hook, grabbed when needed; a physical attempt plays the
+original's examine line, as a pattern; the Book opens in both hands, the key drops into the palm.
+
 ## 5. Next
 
 - The darkness pass over `roth_palette_shading 1`: captures lit and dark before any tuning.

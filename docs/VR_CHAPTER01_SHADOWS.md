@@ -672,6 +672,17 @@ roth_handhold.h); P7 `fbx_pinch` for the match.
 
 ## 6. Open questions for the owner
 
+**Owner's answers (2026-11-13 evening):**
+- **Q1 / the match: strike a real match.** Strike on the box's side; a lit match in the off hand for 20 s; its flame
+  lights the wicks. The matchbox stays the right-hand item, so the use still carries item 16.
+- **Q2 / the Lamp: on a hip hook, grabbed when needed.** It lights the area around the player from the hip; grab it to
+  hold it up.
+- **Q4 / "a physical attempt plays the examine line": YES, as a pattern** everywhere the original has an examine line
+  for something that can be physically tried. No new outcome, only the original's line, plus a haptic.
+- **Q8 / the Book: YES.** Opens in both hands with its close-up film beside it; the silver key drops into the palm at
+  the original's first-look give, then goes to the inventory as in the original.
+
+
 - **Q1** The match: keep the matchbox in the item hand (as built) and strike and hold the match with the off hand?
 - **Q2** The Lamp: start it on a hip hook or in the off hand, and does the off hand holding it give up its grip-use?
 - **Q3** Knock-to-examine (two light raps of an empty, relaxed hand) on armour, doors and tables: yes or no?
