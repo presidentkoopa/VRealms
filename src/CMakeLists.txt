@@ -986,6 +986,8 @@ set (PCH_SOURCES
 	roth/roth_hands.cpp
 	roth/roth_darkness.cpp
 	roth/roth_vrpick.cpp
+	roth/roth_wicks.cpp
+	roth/roth_candles.cpp
 	roth/roth_menudraw.cpp
 	roth/roth_huddraw.cpp
 	roth/roth_dlgdraw.cpp

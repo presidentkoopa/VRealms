@@ -24,6 +24,7 @@
 
 
 #include "roth/roth_runtime.h"
+#include "roth/roth_candles.h"
 #include "p_local.h"
 #include "p_spec.h"
 
@@ -1016,6 +1017,9 @@ void FLevelLocals::Serialize(FSerializer &arc, bool hubload)
 
 	if (arc.isWriting())
 	{
+		// Realms of the Haunting: a candle's per-wick picture is presentation; the actors are saved wearing the
+		// original's picture (roth_candles.h). Inert for any other level.
+		roth::CandlesBeforeSave(this);
 		arc.Array("checksum", md5, 16);
 	}
 	else
@@ -1189,6 +1193,7 @@ void FLevelLocals::Serialize(FSerializer &arc, bool hubload)
 		// Realms of the Haunting: the props and the level logic find their
 		// state again (roth_runtime.h). Inert for any other level.
 		roth::LevelRestored(this);
+		roth::CandlesRestored(this);
 	}
 	// clean up the static data we allocated
 	StaticClearSerializeTranslationsData();

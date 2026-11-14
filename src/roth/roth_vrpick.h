@@ -14,7 +14,10 @@
 // hand test (roth_vrpicktest, roth_handtest).
 //
 
+#include "vectors.h"
+
 struct FLevelLocals;
+class AActor;
 
 namespace roth
 {
@@ -25,5 +28,14 @@ void VRPickTick(FLevelLocals *level, bool modal);
 
 // The level is going: its billboards go with it.
 void VRPickEndLevel();
+
+// FOR THE CANDLES (roth_candles.h). While the hands are live (a headset, or roth_vrpicktest): a hand's index
+// fingertip and palm in the world, as drawn this tic (FingerRay). False when that hand has none.
+bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm);
+// The original's use of a Realms object's actor from that hand, at `at`, through the hands' own use path
+// (DoUse: the item the hand holds, the original's cursor gate). True when the use acted.
+bool VRPickUseObject(int role, AActor *target, const DVector3 &at);
+// The hands' metres to map units (VR_UnitsPerMeter; 34 in flat).
+double VRPickUnitsPerMetre();
 
 } // namespace roth

@@ -49,6 +49,7 @@
 #include "hw_debrispool.h"		// [DEBRISPOOL] DebrisPool::PrepareFrame
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
+#include "roth/roth_candles.h"	// [ROTH] the candles' lights (roth::CandlesFrameLights)
 #include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::BeginFrame, PrepareFrame
 #include "hw_exposureimpulse.h"	// [EXPOSUREIMPULSE] ExposureImpulses::BeginFrame, PublishNone
 #include <algorithm>			// [LIGHTSHADOWS] std::nth_element in CollectLights
@@ -301,6 +302,11 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	// and takes a shadow-map row as any effect light (hw_emissivevolumes.h). With no volume it hands over nothing.
 	if (mainview && toscreen)
 		EmissiveVolumes::Get().BeginFrame(camera->Level, mainvp.Pos, mainvp.Angles.Yaw.Radians(), mainvp.TicFrac, LevelDataSerial(camera->Level));
+
+	// [ROTH] Realms of the Haunting's candles: one frame light per candle holder with a wick lit, handed to the
+	// effect lights before their BeginFrame below takes this frame's (roth_candles.h). Inert on any other level.
+	if (mainview && toscreen)
+		roth::CandlesFrameLights(camera->Level, mainvp.TicFrac, mainvp.Angles.Yaw.Degrees());
 
 	// [EFFECTLIGHTS] This frame's effect lights, once, before the shadow map: the queue drained, every light at this frame's
 	// level time, the pool capped, and the point lights walls block put in row order (hw_effectlights.h). True when they want

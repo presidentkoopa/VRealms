@@ -258,6 +258,14 @@ public:
 	// Registered once under `name`.
 	FTextureID LoosePicture(const char *name, const std::vector<uint8_t> &rowMajor, int w, int h);
 
+	// A PICTURE COMPOSED FROM THIS PACK'S OWN ART -- a candle with some of its wicks lit (roth_wicks.h,
+	// ComposeWicks, from the install's unlit and lit pictures) -- registered as OBJECT art exactly as Sprite()
+	// registers `likeIndex`: its translation (IT_TRANSLUCENT's third one when it carries it), index 0 a hole,
+	// the bottom-centre offsets, and with several frames the same simple animation at the same rate. Frames are
+	// row-major, w x h. Memoised by `name` (the texture manager's own lookup), so a reload builds nothing twice.
+	FTextureID CompositeSprite(const char *name, int likeIndex, const std::vector<std::vector<uint8_t>> &framesRowMajor,
+		int w, int h, Log *log);
+
 	// The decoded pack, for callers that need something other than a picture out
 	// of it -- a 3D mesh, or just the kind of an entry. Null until Open succeeds.
 	const Pack *PackData() const { return mPack; }

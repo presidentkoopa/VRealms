@@ -30,6 +30,7 @@
 */
 
 #include "roth_objects.h"
+#include "roth_candles.h"
 #include "roth_runtime.h"   // SectorShift: sectors moved by roth_portals
 #include "roth_raw.h"
 #include "roth_das.h"
@@ -1253,6 +1254,10 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	if (log && !gLogicSprites.empty())
 		log->Line("  logic sprites    %d texture word(s) pre-built for opcode 0x0d",
 			(int)gLogicSprites.size());
+
+	// THE CANDLES' PER-WICK PICTURES (roth_candles.h): composed now, from the same two packs, for the same
+	// reason as the logic sprites -- the packs do not outlive the load.
+	CandlesPrepare(rm, levelArt, haveShared ? &sharedArt : nullptr, log);
 }
 
 //==========================================================================

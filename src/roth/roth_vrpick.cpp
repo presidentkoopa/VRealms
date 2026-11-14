@@ -135,6 +135,7 @@
 #include "roth_panelmap.h"
 #include "roth_handclick.h"
 #include "roth_actors_engine.h"
+#include "roth_candles.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -244,6 +245,7 @@ struct VRPick
 	bool   testAimAt = false;
 	DVector3 testAim;
 	double testPitch = 0, testYaw = 0;
+	int testCandleSector = -1, testCandleIndex = -1;   // roth_vrpicktest candle / wick / look
 
 	const char *loggedStand = "";   // why the hands last stood down ("" = never reported)
 
@@ -511,7 +513,7 @@ int RightHandItem(const Inventory *inv)
 // other hand holds none and uses it as the original does with nothing
 // selected. The item test in the object's chain (RAW 0x27) decides the rest,
 // unchanged.
-bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how)
+bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how, bool inReach = false)
 {
 	if (!c.CanUse()) return false;
 	const bool itemHand = VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT;
@@ -519,7 +521,16 @@ bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const cha
 	const int before = RightHandItem(inv);
 	HandUse scope;
 	if (inv != nullptr) scope = HandUseBegin(*inv, itemHand);
+	// A candle's first wick (roth_candles.h): which use starts its lighting, and at which wick. Presentation;
+	// the use itself is untouched.
+	AActor *const target = p.kind == Pick::Prop ? p.actor : nullptr;
+	if (target != nullptr) CandlesBeforeUse(target);
 	const bool acted = Activate(p, pmo, TrigEvent::Use);
+	if (target != nullptr)
+	{
+		const HandState &hs = P.hand[role];
+		CandlesAfterUse(target, role, hs.haveRay ? hs.tip : p.hitPos, hs.haveRay ? hs.palm : p.hitPos, p.hitPos, inReach, acted);
+	}
 	const int during = RightHandItem(inv);      // what the use left in the right hand
 	const HandUseAfter after = inv != nullptr ? HandUseEnd(*inv, scope) : HandUseAfter::ItemHand;
 	const int now = RightHandItem(inv);
@@ -653,7 +664,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	// before a key lying a hand's width beyond it.
 	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist))
 	{
-		if (use) DoUse(role, objPick, objCls, pmo, "grip on an object");
+		if (use) DoUse(role, objPick, objCls, pmo, "grip on an object", true);
 		else DoExamine(role, objPick, objCls, pmo, "trigger, the palm on an object");
 		return 1;
 	}
@@ -1179,6 +1190,45 @@ void VRPickEndLevel()
 	ForgetLevel();
 }
 
+bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm)
+{
+	if (role < 0 || role > 1 || P.level == nullptr || !roth_vrpick) return false;
+	if (P.test && !(P.testHands & (1 << role))) return false;
+	if (!P.test && !HeadsetOn()) return false;
+	player_t *player = P.level->GetConsolePlayer();
+	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	if (pmo == nullptr) return false;
+	HandState tmp;
+	if (!FingerRay(role, tmp, pmo) || !tmp.fromFinger) return false;   // the drawn hand's own points only
+	tip = tmp.tip;
+	palm = tmp.palm;
+	return true;
+}
+
+bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
+{
+	if (target == nullptr || P.level == nullptr) return false;
+	player_t *player = P.level->GetConsolePlayer();
+	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	if (pmo == nullptr) return false;
+	DVector3 tip, palm;
+	if (!VRPickFlamePoints(role, tip, palm)) return false;
+	Pick p;
+	p.kind = Pick::Prop;
+	p.actor = target;
+	p.hitPos = at;
+	p.dist = (at - tip).Length();
+	const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, at - tip));
+	if (!c.CanUse())
+	{
+		Printf("[roth_vrpick] %s hand: a flame at a wick -- %s\n", RoleName(role), WhyNotUse(c).GetChars());
+		return false;
+	}
+	return DoUse(role, p, c, pmo, "a flame at a wick", true);
+}
+
+double VRPickUnitsPerMetre() { return UPM(); }
+
 void VRPickTick(FLevelLocals *level, bool modal)
 {
 	if (level == nullptr) return;
@@ -1327,6 +1377,14 @@ void VRPickTick(FLevelLocals *level, bool modal)
 //                                        panel at that pixel -- 0.10 hovers, -0.01 is through it, a
 //                                        touch -- raising or lowering the drawn test hand to the pixel's
 //                                        row (VRHandTest_SetLift, in the test grip's own units).
+//   roth_vrpicktest candle <sector> <index>
+//                                        the candle the next two act on (a Realms object, roth_candles.h)
+//   roth_vrpicktest wick <n> [metres]    move the player across the floor and lift the drawn TEST HAND so its
+//                                        index fingertip is at wick <n> of that candle (1 = the leftmost as
+//                                        drawn), or <metres> in front of it toward the player; the view's yaw
+//                                        is kept (a billboard's wicks lie across the view)
+//   roth_vrpicktest look <units>         stand <units> from that candle on the line it was seen along,
+//                                        facing its middle, the test hand lowered (for a capture)
 //   roth_vrpicktest off
 //
 // The buttons are the real ones, driven by the hand test's inputs
@@ -1344,7 +1402,7 @@ CCMD(roth_vrpicktest)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_vrpicktest on [main|off|both] | aim <pitch> [yaw] | seek item|door|face|examine [metres]"
-			" | seek needs <item> [metres] | panel <x> <y> [metres] | off\n");
+			" | seek needs <item> [metres] | panel <x> <y> [metres] | candle <sector> <index> | wick <n> [metres] | look <units> | off\n");
 		return;
 	}
 	if (!stricmp(argv[1], "off"))
@@ -1416,6 +1474,63 @@ CCMD(roth_vrpicktest)
 				" so its fingertip is %.3f m (%.1f units) in front of the panel over pixel %d,%d\n", move.X, move.Y, RoleName(testRole),
 				dz, lift, d / UPM(), d, lands.px, lands.py);
 		}
+		return;
+	}
+	if (!stricmp(argv[1], "candle") && argv.argc() >= 4)
+	{
+		P.testCandleSector = atoi(argv[2]);
+		P.testCandleIndex = atoi(argv[3]);
+		DVector3 c; double h = 0; int n = 0;
+		if (!CandleExtent(P.testCandleSector, P.testCandleIndex, c, h, n)) { Printf("roth_vrpicktest candle: object %s/%s is not a candle with an actor\n", argv[2], argv[3]); return; }
+		Printf("roth_vrpicktest candle: object %d/%d, %d wick(s), %.0f units tall, middle at (%.0f %.0f %.0f)\n", P.testCandleSector, P.testCandleIndex, n, h, c.X, c.Y, c.Z);
+		return;
+	}
+	if (!stricmp(argv[1], "look") && argv.argc() >= 3)
+	{
+		AActor *pmo = players[consoleplayer].mo;
+		DVector3 c; double h = 0; int n = 0;
+		if (pmo == nullptr || !CandleExtent(P.testCandleSector, P.testCandleIndex, c, h, n)) { Printf("roth_vrpicktest look: no candle (roth_vrpicktest candle first)\n"); return; }
+		const double d = atof(argv[2]);
+		DVector2 along(pmo->X() - c.X, pmo->Y() - c.Y);
+		if (along.Length() < 1e-3) along = DVector2(1, 0);
+		along = along / along.Length();
+		const DVector3 stand(c.X + along.X * d, c.Y + along.Y * d, pmo->Z());
+		pmo->SetOrigin(stand, false);
+		pmo->Vel.Zero();
+		pmo->Angles.Yaw = DAngle::fromDeg(atan2(-along.Y, -along.X) * (180.0 / M_PI));
+		const double eye = pmo->Z() + players[consoleplayer].viewheight;
+		pmo->Angles.Pitch = DAngle::fromDeg(atan2(eye - c.Z, d) * (180.0 / M_PI));
+		pmo->ClearInterpolation();
+		VRHandTest_SetLift(0.0);
+		Printf("roth_vrpicktest look: %.0f units from object %d/%d, at (%.0f %.0f %.0f) facing it, pitch %.1f\n", d, P.testCandleSector, P.testCandleIndex,
+			stand.X, stand.Y, stand.Z, pmo->Angles.Pitch.Degrees());
+		return;
+	}
+	if (!stricmp(argv[1], "wick") && argv.argc() >= 3)
+	{
+		AActor *pmo = players[consoleplayer].mo;
+		const int wick = atoi(argv[2]) - 1;
+		const double metres = argv.argc() >= 4 ? atof(argv[3]) : 0.0;
+		const int testRole = (P.testHands & 1) ? VR_MAINHAND : VR_OFFHAND;
+		DVector3 at;
+		HandState tmp;
+		if (pmo == nullptr || !CandleWickWorld(P.testCandleSector, P.testCandleIndex, wick, pmo->Angles.Yaw.Degrees(), at))
+		{ Printf("roth_vrpicktest wick: no wick %s on the candle (roth_vrpicktest candle first)\n", argv[2]); return; }
+		if (!P.test || !FingerRay(testRole, tmp, pmo)) { Printf("roth_vrpicktest wick: no fingertip yet (roth_vrpicktest on first)\n"); return; }
+		// Toward the player along the view, so <metres> in front of the wick is between it and the eye.
+		const DVector3 toward(-pmo->Angles.Yaw.Cos(), -pmo->Angles.Yaw.Sin(), 0.0);
+		const DVector3 target = at + toward * (metres * UPM());
+		const DVector3 move(target.X - tmp.tip.X, target.Y - tmp.tip.Y, 0.0);
+		const double ps = pmo->Level != nullptr && pmo->Level->pixelstretch > 0 ? pmo->Level->pixelstretch : 1.0;
+		const double dz = target.Z - tmp.tip.Z;
+		const double lift = VRHandTest_Lift() + dz * ps / UPM();
+		VRHandTest_SetLift(lift);
+		pmo->SetOrigin(pmo->Pos() + move, false);
+		pmo->Vel.Zero();
+		pmo->ClearInterpolation();
+		Printf("roth_vrpicktest wick %d: object %d/%d's wick at (%.1f %.1f %.1f); the player moved (%.1f %.1f), the %s hand lifted %+.1f units"
+			" (lift %.3f m), so its fingertip is %.3f m from it\n", wick + 1, P.testCandleSector, P.testCandleIndex, at.X, at.Y, at.Z, move.X, move.Y,
+			RoleName(testRole), dz, lift, metres);
 		return;
 	}
 	if (!stricmp(argv[1], "seek") && argv.argc() >= 3)

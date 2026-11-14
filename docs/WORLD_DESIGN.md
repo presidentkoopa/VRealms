@@ -461,9 +461,35 @@ trigger record already plays (+0x0a − 1 = 258). The catch: a soft pulse when t
 
 **The candle-merge lights [ADD]** (0.5): each lit flame is a small `AddFrameLight` point; a candelabra's flames merge
 into one light as they catch; and the cluster's light stays until the map ends (the original never puts a candle
-out). Off by default, behind its own switch, and only after the palette-shading question in 0.5 is answered. The
-111 candles already drawn lit could get the same lights [ADD]. That is the cosmetic polish the owner decides on;
-nothing here turns it on.
+out). SUPERSEDED 2026-11-13 by the owner: one light per holder, part of the candle feature (no switch), with the
+darkness pass. The 111 candles already drawn lit get no light (not asked for).
+
+**BUILT (2026-11-13, lane/gamelayer; `src/roth/roth_wicks.*` engine-free, `src/roth/roth_candles.*` the engine side).**
+- The candles are found, not listed: every object whose own click chain swaps its own picture (0x0d, key 0) and
+  whose unlit/lit pair has the flame structure (`BuildWickModel`). Retail: four pairs, 34 objects
+  (DEMO[4098]->[4148] five wicks; DEMO[4186]->[4187], DEMO[4124]->[4190], DEMO1[4185]->[4186] one each);
+  CHURCH1's DEMO1[4111]->[4222] is not one (its lit picture does not decode as a still/animated pair).
+- Per-wick pictures are composed at load from the install's two pictures, one per set of lit wicks
+  (`TextureSet::CompositeSprite`). Every changed texel goes to one wick: inside one flame's columns, else the wick
+  nearest across (`tools/wicks_test compose` prints which texels went where). [V] the full composite is the lit
+  picture and the empty one the unlit picture, texel for texel, every frame, all four pairs (`tools/wicks_test`).
+- The first wick: a flame (the item hand holding the item the chain tests, or any fingertip when it tests none)
+  within 3 cm of a wick fires the original's use from that hand (`VRPickUseObject` -> DoUse); a grip on the candle
+  or while pointing at it also starts it (the wick nearest the hand, or nearest where it pointed). "Started" is the
+  original's own sign: the chain's 0x3a re-keyed the candle (every retail candle chain does it right after the
+  item test). Later wicks fire nothing. [V] engine-free state machine, 2162 scenarios (`tools/wicks_test state`);
+  [V] the original's game state after each wick-by-wick scenario's uses equals one click's
+  (`tools/candles_test/run_diff.sh`, oracle).
+- The catch: 525 tics (15 s) after the first wick, counted only while the world ticks. Once all are lit and the
+  original's art is the lit picture, the actor wears the original's picture again.
+- Savegames: the per-wick state is presentation and is not saved; the actors are saved wearing the original's
+  picture (`CandlesBeforeSave`), and after a restore each candle shows the original's state.
+- The light: `CandlesFrameLights`, one `AddFrameLight` point per holder at the lit flames' weighted centroid;
+  0.30 x (1, 0.56, 0.22) per wick, radius 56 x sqrt(lit), each wick ramped in over 0.35 s and flickering on its own
+  phase (0.78..1.0). Tuning numbers for the headset.
+- Flat test: `tools/claude_bridge/cfg/candles_flat.cfg` (`roth_vrpicktest candle / wick / look`).
+- NOT SEEN YET: anything of this in the engine (the build, the pictures on screen, the light over the palette
+  shading, the hands at the wicks) until that cfg has run on the owner's PC.
 
 ### 2.4 VR: torches, lamps, fires, and the lantern [P / ADD]
 
@@ -494,8 +520,7 @@ nothing here turns it on.
 
 ### 2.6 Open questions
 
-1. Per-flame lighting during the delay [ADD]: does the owner want it, given that the original shows all five at
-   once after 0.43 s?
+1. ANSWERED (owner, 2026-11-13): yes, wick by wick, any order, the rest catching 15 s after the first.
 2. The lantern cone from the hand: yes or no?
 3. Effect lights over palette shading: must be checked in the engine before any [ADD] light is built.
 

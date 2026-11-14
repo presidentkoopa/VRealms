@@ -338,6 +338,51 @@ FTextureID TextureSet::LoosePicture(const char *name, const std::vector<uint8_t>
 
 //==========================================================================
 //
+// CompositeSprite -- see roth_texture.h. Sprite()'s registration, for pixels
+// the caller composed from this pack's own pictures.
+//
+//==========================================================================
+
+FTextureID TextureSet::CompositeSprite(const char *name, int likeIndex,
+	const std::vector<std::vector<uint8_t>> &framesRowMajor, int w, int h, Log *log)
+{
+	FTextureID existing = TexMan.CheckForTexture(name, ETextureType::Override);
+	if (existing.isValid()) return existing;
+	if (!mPack || w <= 0 || h <= 0 || framesRowMajor.empty()) return FNullTextureID();
+	Image like = mPack->ReadImage(likeIndex, false);
+	if (!like.ok()) return FNullTextureID();
+	SpriteInfo info;
+	ReadSpriteModifiers(like, mPack->ReadAnchor(likeIndex), info);
+	const bool translucent = (like.imageType & IT_TRANSLUCENT) != 0;
+	FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard,
+		translucent && mTranslucentTranslation >= 0 ? mTranslucentTranslation : mTranslation);
+	auto addFrame = [&](const std::vector<uint8_t> &rows, const char *texName) -> FTextureID
+	{
+		if (rows.size() < (size_t)w * h) return FNullTextureID();
+		// The paletted image takes the stored, column-major layout (see Sprite).
+		std::vector<uint8_t> cols((size_t)w * h);
+		for (int y = 0; y < h; y++)
+			for (int x = 0; x < w; x++) cols[(size_t)x * h + y] = rows[(size_t)y * w + x];
+		auto *image = new FPalettedMemoryImage(KeepObjectPixels(cols), remap, w, h, true, true);
+		auto *tex = MakeGameTexture(new FImageTexture(image), texName, ETextureType::Override);
+		tex->SetOffsets(w / 2, info.hang ? 0 : h);
+		tex->SetOffsetsNotForFont();
+		mSpritesRegistered++;
+		return TexMan.AddGameTexture(tex);
+	};
+	FTextureID id = addFrame(framesRowMajor[0], name);
+	const int frames = (int)framesRowMajor.size();
+	if (frames > 1 && id.isValid())
+	{
+		for (int f = 1; f < frames; f++) addFrame(framesRowMajor[f], FStringf("%s_%02d", name, f).GetChars());
+		TexAnim.AddSimpleAnim(id, frames, OBJECT_ANIM_FRAME_MS);
+	}
+	if (log) log->Count("objects: candle pictures composed per wick (roth_candles)");
+	return id;
+}
+
+//==========================================================================
+//
 // MeshSkin -- see roth_texture.h.
 //
 // Registered under its own names, apart from Sprite()'s, because the same

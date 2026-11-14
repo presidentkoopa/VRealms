@@ -348,6 +348,11 @@ bool PickFrom(AActor *who, const DVector3 &start, const DVector3 &dir,
 // coarser and says so (PickFrom).
 void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi);
 
+// The running level's object record (sector, index) as the logic holds it now -- its art word, its id --
+// for presentation that must read the original's state (roth_candles.cpp). Null outside a level or range.
+struct Object;
+const Object *RuntimeObject(int rothSector, int rothIndex);
+
 // A HAND LAID ON A WALL: the nearest Realms wall face or door leaf within
 // `radius` of the point `p` (a palm), measured in the map's plane, with `p`
 // inside that wall's height. Independent of which way the hand faces, which a

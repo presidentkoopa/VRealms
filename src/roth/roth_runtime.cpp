@@ -43,6 +43,7 @@
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
+#include "roth_candles.h"         // the candles' wicks, one by one (presentation)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
 #include "roth_touchgeom.h"       // a palm touching a wall (tools/vrpick_test)
 #include "p_maputl.h"             // FBlockLinesIterator, P_PointOnLineSide
@@ -6866,12 +6867,21 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 }
 
 // The box a Realms object's actor is picked by (see PickFrom).
+const Object *RuntimeObject(int rothSector, int rothIndex)
+{
+	if (!g.active || rothSector < 0 || (size_t)rothSector >= g.map.objects.size()) return nullptr;
+	if (rothIndex < 0 || (size_t)rothIndex >= g.map.objects[rothSector].size()) return nullptr;
+	return &g.map.objects[rothSector][rothIndex];
+}
+
 void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi)
 {
 	double half = mo->radius, bottom = mo->Z(), top = mo->Z() + mo->Height;
-	if (mo->sprite >= 0 && mo->sprite < (int)sprites.Size() && sprites[mo->sprite].numframes > 0)
+	// The ORIGINAL's picture: a candle's per-wick picture (roth_candles.h) is presentation and is not picked by.
+	const int spr = CandleOriginalSprite(mo, mo->sprite);
+	if (spr >= 0 && spr < (int)sprites.Size() && sprites[spr].numframes > 0)
 	{
-		const int fi = sprites[mo->sprite].spriteframes + std::min<int>(mo->frame, sprites[mo->sprite].numframes - 1);
+		const int fi = sprites[spr].spriteframes + std::min<int>(mo->frame, sprites[spr].numframes - 1);
 		FGameTexture *tex = fi >= 0 && fi < (int)SpriteFrames.Size() ? TexMan.GetGameTexture(SpriteFrames[fi].Texture[0], true) : nullptr;
 		if (tex != nullptr && tex->isValid() && tex->GetDisplayWidth() > 0)
 		{
@@ -8400,6 +8410,10 @@ void TickLevelLogic(FLevelLocals *level)
 	// a panel that just opened owns the pointer this same tic. What a gesture
 	// fires runs its chain now; the effects it registers tick from the next.
 	VRPickTick(level, false);
+
+	// The candles' wicks (roth_candles.h): after every chain of the tic and the hands' uses, so the picture a
+	// chain's 0x0d or the actors' dressing put on a candle this tic is the one the per-wick picture stands in for.
+	CandlesTick(level);
 
 	// Realms' sound: the node pump (play_nearby_sfx_emitters, from
 	// update_player_tick, player.c:420), update_active_sounds, the doors.
