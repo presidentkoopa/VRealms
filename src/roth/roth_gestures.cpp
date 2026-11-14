@@ -138,7 +138,9 @@ struct Zone
 	ZoneShape shape = ZONE_BAND;
 	int kind = ATTEMPT_PUSH;
 	const char *what = "";
-	AActor *target = nullptr;               // BAND, CLOUD: the object examined
+	AActor *target = nullptr;               // BAND, CLOUD: the object examined (its actor when built: for a log line)
+	int ts = -1, ti = -1;                   // ... the object itself, looked up each tic (its actor may be replaced)
+	std::vector<std::pair<int, int>> cloudSI;   // CLOUD: the sprites, the same way
 	double bandLo = 0, bandHi = 1;
 	std::vector<AActor *> cloud;            // CLOUD: the sprites
 	double nearM = 0;
@@ -146,6 +148,7 @@ struct Zone
 	std::vector<int> sectors;               // FLOOR: every sector carrying the record's key
 	uint16_t record = 0;                    // the examine record the zone names
 	AttemptDetector det[2];
+	int loggedBand[2] = { -1, -1 };   // the diagnostic: the hand's distance from the zone, in 5 cm bands (-1 not yet)
 };
 
 struct Motion { bool on = false; double from[3] = {}, to[3] = {}; int start = 0, tics = 0; };
@@ -164,6 +167,17 @@ struct HandG
 	int loggedWardCm = -1;
 	int placedUntil = -1;   // the flat test placed this hand (reach, look, home, a move in 0 tics): a jump until then
 	Motion motion;
+	// THE REACH HELD (roth_gesturetest reach): the original's movement owns the player (roth_playermove_engine) and
+	// pushes him out of objects, creatures and door leaves after a placement (the PC run of 367c710c: the creature
+	// punch, the sofa, the typewriter, the flies, the door search, the switch all missed so). So the player stands
+	// where the original's collision lets him and the TEST HAND reaches the rest: every tic until a move starts, the
+	// hand's place (base, camera-relative metres) is corrected so its palm or fingertip is at holdWant. A move is
+	// then relative to that base.
+	bool hold = false, holdTip = false;
+	DVector3 holdWant;
+	double base[3] = { 0, 0, 0 };
+	int holdLogged = 0;
+	long loggedNear = -2;   // the door search's diagnostic: what is along the hand when no door leaf is
 };
 
 // A punched creature, followed for a while so the log says what the original's attack did to it.
@@ -258,6 +272,12 @@ const Thing *FindThing(const std::vector<Thing> &things, const AActor *mo)
 	return nullptr;
 }
 
+const Thing *FindThingAt(const std::vector<Thing> &things, int sector, int index)
+{
+	for (const Thing &t : things) if (t.sector == sector && t.index == index) return &t;
+	return nullptr;
+}
+
 // The zones of this level, from the table (once a level, the first live tic).
 void Build(const std::vector<Thing> &things)
 {
@@ -285,7 +305,7 @@ void Build(const std::vector<Thing> &things)
 		for (const Thing *t : objectsWithId(key))
 		{
 			Zone z;
-			z.shape = ZONE_BAND; z.kind = a.kind; z.what = a.what; z.target = t->mo; z.bandLo = a.bandLo; z.bandHi = a.bandHi; z.record = a.record;
+			z.shape = ZONE_BAND; z.kind = a.kind; z.what = a.what; z.target = t->mo; z.ts = t->sector; z.ti = t->index; z.bandLo = a.bandLo; z.bandHi = a.bandHi; z.record = a.record;
 			for (AttemptDetector &d : z.det) d.kind = a.kind;
 			S.zones.push_back(z);
 		}
@@ -309,13 +329,13 @@ void Build(const std::vector<Thing> &things)
 		for (const Thing *t : objectsWithId(key))
 		{
 			Zone z;
-			z.shape = ZONE_CLOUD; z.kind = ATTEMPT_WAVE; z.what = a.what; z.target = t->mo; z.nearM = a.nearM; z.record = a.record;
+			z.shape = ZONE_CLOUD; z.kind = ATTEMPT_WAVE; z.what = a.what; z.target = t->mo; z.ts = t->sector; z.ti = t->index; z.nearM = a.nearM; z.record = a.record;
 			for (const Thing &f : things)
 			{
 				if (f.shared != a.cloudShared || f.art != a.cloudArt) continue;
 				const DVector3 fc = (f.lo + f.hi) * 0.5;
 				const double dx = std::max(0.0, std::max(t->lo.X - fc.X, fc.X - t->hi.X)), dy = std::max(0.0, std::max(t->lo.Y - fc.Y, fc.Y - t->hi.Y));
-				if (sqrt(dx * dx + dy * dy) <= a.gatherUnits) z.cloud.push_back(f.mo);
+				if (sqrt(dx * dx + dy * dy) <= a.gatherUnits) { z.cloud.push_back(f.mo); z.cloudSI.push_back({ f.sector, f.index }); }
 			}
 			for (AttemptDetector &d : z.det) d.kind = ATTEMPT_WAVE;
 			if (!z.cloud.empty()) S.zones.push_back(z);
@@ -537,7 +557,7 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 	s.grip = grip;
 	if (z.shape == ZONE_BAND)
 	{
-		const Thing *t = FindThing(things, z.target);
+		const Thing *t = FindThingAt(things, z.ts, z.ti);
 		if (t == nullptr) return s;
 		const double h = t->hi.Z - t->lo.Z;
 		const DVector3 lo(t->lo.X, t->lo.Y, t->lo.Z + h * z.bandLo), hi(t->hi.X, t->hi.Y, t->lo.Z + h * z.bandHi);
@@ -566,12 +586,12 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 	}
 	if (z.shape == ZONE_CLOUD)
 	{
-		const Thing *t = FindThing(things, z.target);
+		const Thing *t = FindThingAt(things, z.ts, z.ti);
 		if (t == nullptr) return s;
 		double best = 1e30;
-		for (AActor *f : z.cloud)
+		for (const auto &f : z.cloudSI)
 		{
-			const Thing *ft = FindThing(things, f);
+			const Thing *ft = FindThingAt(things, f.first, f.second);
 			if (ft == nullptr) continue;
 			best = std::min(best, BoxDistanceM(palm, ft->lo, ft->hi, upm) - z.nearM);   // the fly picture's own box
 		}
@@ -704,6 +724,19 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 		{
 			Pick p;
 			const AttemptSample s = SampleZone(z, h.palm, h.tip, velPalm, velTip, h.gripClosed, things, upm, p);
+			// THE DIAGNOSTIC (the flat test, roth_vrpick_debug): the hand within 30 cm of a zone, in 5 cm steps, with the
+			// sample the detector gets (the PC run of 367c710c: the sofa, typewriter and flies made no line at all)
+			if (Logging())
+			{
+				const int band = s.outside > 0.30 ? 99 : (int)(s.outside / 0.05);
+				if (band != z.loggedBand[role] && (band != 99 || z.loggedBand[role] != -1))
+				{
+					Printf("[roth_gestures] %s hand, %s %s: %s (depth %.3f m, along the axis %.2f m/s, speed %.2f m/s, grip %d, armed %d)\n",
+						RoleName(role), AttemptName(z.kind), z.what, band == 99 ? "more than 0.30 m away" : s.outside > 0 ? FStringf("%.2f m outside", s.outside).GetChars()
+						: "INSIDE", s.depth, s.axisMps, s.mps, (int)s.grip, (int)z.det[role].armed);
+					z.loggedBand[role] = band;
+				}
+			}
 			if (z.det[role].Feed(s) && p.kind != Pick::Nothing) Attempted(role, p, z.shape == ZONE_FLOOR && z.floor->tip ? h.tip : h.palm, z.what, z.kind, z.record);
 		}
 		// the door search: an open palm on a door leaf, sweeping. The leaf under the palm or the fingertip (PickTouchSurface),
@@ -727,6 +760,19 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 					door = along;
 					onDoor = true;
 					how = "along the hand";
+				}
+				else if (Logging())
+				{
+					// what IS there, within 15 cm along the hand, on each change (the door search's diagnostic)
+					Pick near;
+					const bool any = PickFrom(pmo, h.palm - h.handFwd * back, h.handFwd, back + 0.15 * upm, near);
+					const long nk = any ? (long)near.kind * 100000 + (near.line != nullptr ? near.line->Index() : 0) : -1;
+					if (nk != g.loggedNear)
+					{
+						Printf("[roth_gestures] %s hand, the door search: no door leaf; along the hand within 0.15 m: %s\n", RoleName(role),
+							any ? FStringf("%s at %.1f units", PickKindName(near), near.dist - back).GetChars() : "nothing");
+						g.loggedNear = nk;
+					}
 				}
 			}
 		}
@@ -781,14 +827,43 @@ void TickMotion()
 {
 	for (int role = 0; role < 2; role++)
 	{
-		Motion &m = S.hand[role].motion;
-		if (!m.on || S.level == nullptr) continue;
+		HandG &g = S.hand[role];
+		Motion &m = g.motion;
+		if (S.level == nullptr) continue;
 		const int side = VRHandPose_SideForRole(role);
+		if (g.hold && !m.on)
+		{
+			VRPickHand h;
+			AActor *pmo = players[consoleplayer].mo;
+			if (pmo != nullptr && VRPickHandNow(role, h) && h.havePoints)
+			{
+				const DVector3 d = g.holdWant - (g.holdTip ? h.tip : h.palm);
+				const double upm = VRPickUnitsPerMetre();
+				if (d.Length() > 0.2)
+				{
+					const double yaw = pmo->Angles.Yaw.Radians();
+					g.base[0] += (d.X * cos(yaw) + d.Y * sin(yaw)) / upm;
+					g.base[1] += (d.X * sin(yaw) - d.Y * cos(yaw)) / upm;
+					g.base[2] += d.Z * Stretch() / upm;
+					VRHandTest_SetOffset(side, g.base[0], g.base[1], g.base[2]);
+					g.placedUntil = S.level->maptime + 2;
+				}
+				else if (g.holdLogged != 1)
+				{
+					Printf("[roth_gestures] test: the %s hand's %s held at (%.1f %.1f %.1f), the player at (%.0f %.0f %.0f) where the original's movement"
+						" left him; the hand %.2f m ahead, %.2f m right, %.2f m up of its usual place\n", RoleName(role), g.holdTip ? "fingertip" : "palm",
+						g.holdWant.X, g.holdWant.Y, g.holdWant.Z, pmo->X(), pmo->Y(), pmo->Z(), g.base[0], g.base[1], g.base[2]);
+					g.holdLogged = 1;
+				}
+			}
+			continue;
+		}
+		if (!m.on) continue;
 		const int t = S.level->maptime - m.start;
 		const double f = m.tics <= 0 ? 1.0 : std::min(1.0, (double)t / m.tics);
 		double o[3];
 		for (int k = 0; k < 3; k++) o[k] = m.from[k] + (m.to[k] - m.from[k]) * f;
-		VRHandTest_SetOffset(side, o[0], o[1], o[2]);
+		VRHandTest_SetOffset(side, g.base[0] + o[0], g.base[1] + o[1], g.base[2] + o[2]);
 		if (f >= 1.0)
 		{
 			m.on = false;
@@ -865,6 +940,11 @@ void GesturesEndLevel()
 //        ... <metres> (default 0.10) above that sector's floor, over its middle.
 //   roth_gesturetest reach <main|off> <palm|tip> creature [metres]
 //        ... short of the nearest object the original's cursor makes an attack target (type 5): a creature.
+//   roth_gesturetest reach <main|off> <palm|tip> door [metres]
+//        ... <metres> (default 0.08) short of the nearest door leaf the picker's seek finds.
+//   EVERY REACH IS HELD: the original's movement (roth_playermove_engine) may push the player off where he was stood
+//   (out of an object's square, off a door leaf); the test hand then reaches the rest, corrected every tic until a
+//   move starts, and a move is relative to that place. The player is first stood clear of the thing's push-out.
 //   roth_gesturetest look thing <shared 0|1> <art> <units> [bearing]
 //        a capture's pose: stand <units> from the nearest object wearing that art at <bearing> degrees (object ->
 //        camera; default the last one given for that object, else where the player stands), facing its middle,
@@ -888,7 +968,8 @@ bool TestPoint(int role, bool tip, DVector3 &out)
 
 // Stand the player so the hand's point lands at `want` facing `look` (the point's offset from the eye, read in
 // the current yaw's frame, is kept), the height made up by the test hand's lift (as roth_vrpicktest wick does).
-void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVector3 &look)
+void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVector3 &look, const DVector3 *clearLo = nullptr,
+	const DVector3 *clearHi = nullptr, bool offFurniture = false)
 {
 	DVector3 now;
 	if (!TestPoint(role, tip, now)) { Printf("roth_gesturetest reach: no test hand (roth_vrpicktest on, roth_handtest first)\n"); return; }
@@ -897,7 +978,33 @@ void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVec
 	const double fwd = rel.X * cos(yaw0) + rel.Y * sin(yaw0), left = -rel.X * sin(yaw0) + rel.Y * cos(yaw0);
 	DVector3 face(look.X - want.X, look.Y - want.Y, 0.0);
 	double yaw = face.Length() > 1e-3 ? atan2(face.Y, face.X) : yaw0;
-	const DVector3 stand(want.X - (fwd * cos(yaw) - left * sin(yaw)), want.Y - (fwd * sin(yaw) + left * cos(yaw)), pmo->Z());
+	DVector3 stand(want.X - (fwd * cos(yaw) - left * sin(yaw)), want.Y - (fwd * sin(yaw) + left * cos(yaw)), pmo->Z());
+	// CLEAR OF THE THING'S PUSH-OUT: the original's movement keeps the player's box (+-0x1c) off an object's dimension
+	// square (roth_playermove.cpp ResolveObjects, CP:1253-1324), so stand him at least the box's half plus 0x1c (and a
+	// little) from its middle in Chebyshev distance; the held reach puts the hand the rest of the way.
+	if (clearLo != nullptr && clearHi != nullptr)
+	{
+		const DVector3 c = (*clearLo + *clearHi) * 0.5;
+		const double need = std::max(clearHi->X - clearLo->X, clearHi->Y - clearLo->Y) * 0.5 + 0x1c + 4;
+		const double cheb = std::max(fabs(stand.X - c.X), fabs(stand.Y - c.Y));
+		if (cheb < need && cheb > 1e-3)
+		{
+			const double k = need / cheb;
+			stand = DVector3(c.X + (stand.X - c.X) * k, c.Y + (stand.Y - c.Y) * k, stand.Z);
+		}
+	}
+	// OFF THE FURNITURE: a floor zone (the typewriter on its desk) put the player ON the desk top (the PC run of
+	// 367c710c: z 90, sector 321). Step back along the view until the floor there is well below the point.
+	if (offFurniture && S.level != nullptr)
+	{
+		const DVector2 back(-cos(yaw), -sin(yaw));
+		for (int k = 0; k < 24; k++)
+		{
+			sector_t *sec = S.level->PointInSector(stand.XY());
+			if (sec != nullptr && sec->floorplane.ZatPoint(stand.XY()) < want.Z - 60) break;
+			stand = DVector3(stand.X + back.X * 8, stand.Y + back.Y * 8, stand.Z);
+		}
+	}
 	const double oldZ = pmo->Z();
 	pmo->Angles.Yaw = DAngle::fromRad(yaw);
 	pmo->SetOrigin(stand, false);
@@ -912,6 +1019,13 @@ void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVec
 	}
 	pmo->ClearInterpolation();
 	if (S.level != nullptr) S.hand[role].placedUntil = S.level->maptime + 2;
+	{
+		HandG &g = S.hand[role];
+		g.hold = true; g.holdTip = tip; g.holdWant = want; g.holdLogged = 0; g.motion.on = false;
+		double f, r, u;
+		VRHandTest_Offset(VRHandPose_SideForRole(role), f, r, u);
+		g.base[0] = f; g.base[1] = r; g.base[2] = u;
+	}
 	const double upm = VRPickUnitsPerMetre();
 	const double dz = want.Z - (now.Z + (pmo->Z() - oldZ));
 	const double ps = S.level != nullptr && S.level->pixelstretch > 0 ? S.level->pixelstretch : 1.0;
@@ -963,7 +1077,7 @@ CCMD(roth_gesturetest)
 		pmo->ClearInterpolation();
 		for (int side = 0; side < 2; side++) VRHandTest_SetOffset(side, 0, 0, 0);
 		VRHandTest_SetLift(0.0);
-		for (HandG &g : S.hand) { g.motion.on = false; g.placedUntil = S.level->maptime + 2; }
+		for (HandG &g : S.hand) { g.motion.on = false; g.hold = false; g.base[0] = g.base[1] = g.base[2] = 0; g.placedUntil = S.level->maptime + 2; }
 		Printf("roth_gesturetest look: %.0f units from object %d/%d (%s[%d]) at bearing %.0f, facing its middle (%.0f %.0f %.0f), pitch %.1f\n",
 			units, t->sector, t->index, shared ? "ADEMO" : "DEMO", art, lookBearing, c.X, c.Y, c.Z, pmo->Angles.Pitch.Degrees());
 		return;
@@ -971,7 +1085,7 @@ CCMD(roth_gesturetest)
 	if (!stricmp(argv[1], "home"))
 	{
 		for (int side = 0; side < 2; side++) VRHandTest_SetOffset(side, 0, 0, 0);
-		for (HandG &g : S.hand) { g.motion.on = false; if (S.level != nullptr) g.placedUntil = S.level->maptime + 2; }
+		for (HandG &g : S.hand) { g.motion.on = false; g.hold = false; g.base[0] = g.base[1] = g.base[2] = 0; if (S.level != nullptr) g.placedUntil = S.level->maptime + 2; }
 		Printf("roth_gesturetest: both test hands at their usual place\n");
 		return;
 	}
@@ -979,9 +1093,12 @@ CCMD(roth_gesturetest)
 	const int role = !stricmp(argv[2], "off") ? VR_OFFHAND : VR_MAINHAND;
 	if (!stricmp(argv[1], "move") && argv.argc() >= 6)
 	{
-		Motion &m = S.hand[role].motion;
+		HandG &g = S.hand[role];
+		Motion &m = g.motion;
 		const int side = VRHandPose_SideForRole(role);
 		VRHandTest_Offset(side, m.from[0], m.from[1], m.from[2]);
+		for (int k = 0; k < 3; k++) m.from[k] -= g.base[k];   // relative to the held reach's base (0 without one)
+		g.hold = false;
 		m.to[0] = atof(argv[3]); m.to[1] = atof(argv[4]); m.to[2] = atof(argv[5]);
 		m.tics = argv.argc() >= 7 ? atoi(argv[6]) : 0;
 		m.start = S.level != nullptr ? S.level->maptime : 0;
@@ -991,7 +1108,7 @@ CCMD(roth_gesturetest)
 		Printf("roth_gesturetest move: the %s hand from (%.2f %.2f %.2f) to (%.2f %.2f %.2f) m in %d tic(s): %.2f m%s\n", RoleName(role),
 			m.from[0], m.from[1], m.from[2], m.to[0], m.to[1], m.to[2], m.tics, dist,
 			m.tics > 0 ? FStringf(", %.2f m/s", dist * kTicRate / m.tics).GetChars() : "");
-		if (m.tics <= 0) { VRHandTest_SetOffset(side, m.to[0], m.to[1], m.to[2]); m.on = false; if (S.level != nullptr) S.hand[role].placedUntil = S.level->maptime + 2; }
+		if (m.tics <= 0) { VRHandTest_SetOffset(side, g.base[0] + m.to[0], g.base[1] + m.to[1], g.base[2] + m.to[2]); m.on = false; if (S.level != nullptr) S.hand[role].placedUntil = S.level->maptime + 2; }
 		return;
 	}
 	if (!stricmp(argv[1], "reach") && argv.argc() >= 5 && pmo != nullptr && S.level != nullptr)
@@ -1014,7 +1131,30 @@ CCMD(roth_gesturetest)
 			const double fz = sec->floorplane.ZatPoint(c);
 			const DVector3 want(c.X, c.Y, fz + metres * upm / Stretch());
 			const DVector3 look = want + DVector3(pmo->Angles.Yaw.Cos(), pmo->Angles.Yaw.Sin(), 0) * 10.0;
-			PlaceHand(pmo, role, tip, want, look);
+			PlaceHand(pmo, role, tip, want, look, nullptr, nullptr, true);
+			return;
+		}
+		if (!stricmp(what, "door"))
+		{
+			// the nearest door leaf the picker's seek finds (PickTestTarget "door", a test instrument), the hand <metres>
+			// (default 0.08) short of it toward where seek would stand; the player kept 0x1c + 4 off the leaf
+			const double metres = argv.argc() >= 6 ? atof(argv[5]) : 0.08;
+			const int side = VRHandPose_SideForRole(role);
+			DVector3 spot0;
+			VRHandTest_ActorSpot(side, DVector3(0, 0, 0), 0.0, spot0);
+			PickTestHand hand;
+			hand.ahead = spot0.X; hand.right = -spot0.Y; hand.up = spot0.Z;
+			hand.metresOff = metres * upm;
+			hand.upm = upm;
+			DVector3 aim, stand;
+			if (!PickTestTarget("door", pmo, hand, aim, stand)) { Printf("roth_gesturetest reach: no reachable door leaf\n"); return; }
+			DVector3 away(stand.X - aim.X, stand.Y - aim.Y, 0.0);
+			if (away.Length() < 1e-3) away = DVector3(1, 0, 0);
+			away /= away.Length();
+			const DVector3 want = aim + away * (metres * upm);
+			const DVector3 lo(aim.X, aim.Y, aim.Z), hi(aim.X, aim.Y, aim.Z);
+			Printf("roth_gesturetest reach: the door leaf at (%.1f %.1f %.1f)\n", aim.X, aim.Y, aim.Z);
+			PlaceHand(pmo, role, tip, want, aim, &lo, &hi);
 			return;
 		}
 		const Thing *t = nullptr;
@@ -1060,7 +1200,7 @@ CCMD(roth_gesturetest)
 		Printf("roth_gesturetest reach: object %d/%d (%s[%d]), %s (%.0f %.0f %.0f)..(%.0f %.0f %.0f), its face at (%.1f %.1f %.1f)\n", t->sector,
 			t->index, t->shared ? "ADEMO" : "DEMO", t->art, t->creature ? "a creature: the original's body" : "its picture's box", t->lo.X, t->lo.Y,
 			t->lo.Z, t->hi.X, t->hi.Y, t->hi.Z, face.X, face.Y, face.Z);
-		PlaceHand(pmo, role, tip, want, DVector3(c.X, c.Y, z));
+		PlaceHand(pmo, role, tip, want, DVector3(c.X, c.Y, z), &t->lo, &t->hi);
 		return;
 	}
 	Printf("roth_gesturetest: unknown or short '%s'\n", argv[1]);
