@@ -572,7 +572,7 @@ CCMD(roth_colttest)
 {
 	using namespace roth;
 	AActor *pmo = Pawn();
-	if (argv.argc() < 3 || pmo == nullptr) { Printf("roth_colttest offhand <magbutton|pouch|well|slide> [dx dy dz] | rack <metres> | off <grip|trigger> <0|1>\n"); return; }
+	if (argv.argc() < 3 || pmo == nullptr) { Printf("roth_colttest hold <x y z yaw> [pitch] | offhand <magbutton|pouch|well|slide> [dx dy dz] | rack <metres> | off <grip|trigger> <0|1>\n"); return; }
 	if (!stricmp(argv[1], "offhand"))
 	{
 		DVector3 want;
@@ -598,6 +598,33 @@ CCMD(roth_colttest)
 		else { Printf("roth_colttest offhand <magbutton|pouch|well|slide>\n"); return; }
 		if (argv.argc() >= 6) want += DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
 		MoveOff(want, tip, what);
+		return;
+	}
+	// HOLD THE GUN UPRIGHT: the main hand pointing (roth_xrpose point) at x y z (metres from the head) along `yaw`, its
+	// wrist rolled (every 5 degrees) to the roll whose drawn gun stands most upright (its top toward world up); logs the
+	// drawn bore and top. The flat test's stand-in for a player holding a pistol level.
+	if (!stricmp(argv[1], "hold") && argv.argc() >= 6)
+	{
+		const double x = atof(argv[2]), y = atof(argv[3]), z = atof(argv[4]), yaw = atof(argv[5]);
+		const double pitch = argv.argc() >= 7 ? atof(argv[6]) : 0.0;
+		auto set = [&](double roll) { C_DoCommand(FStringf("roth_xrpose point main %.3f %.3f %.3f %.1f %.1f %.1f 1 0 1 0", x, y, z, yaw, pitch, roll).GetChars()); };
+		double best = -2, bestRoll = 0;
+		for (int r = -180; r < 180; r += 5)
+		{
+			set(r);
+			DVector3 o, up;
+			if (!GunPoint(DVector3(0, 0, 0), o) || !GunPoint(DVector3(0, 100, 0), up)) { Printf("roth_colttest hold: no gun drawn\n"); return; }
+			const DVector3 d = up - o;
+			const double c = d.Z / (d.Length() > 1e-9 ? d.Length() : 1);
+			if (c > best) { best = c; bestRoll = r; }
+		}
+		set(bestRoll);
+		DVector3 o, up, muz, rear, right;
+		GunPoint(DVector3(0, 0, 0), o); GunPoint(DVector3(0, 100, 0), up); GunPoint(DVector3(100, 0, 0), right);
+		GunPoint(kMuzzle, muz); GunPoint(kBoreRear, rear);
+		const DVector3 u = (up - o).Unit(), rt = (right - o).Unit(), b = (muz - rear).Unit();
+		Printf("roth_colttest hold: wrist roll %.0f: the drawn gun's top (%.2f %.2f %.2f), right side (%.2f %.2f %.2f), bore (%.2f %.2f %.2f) = yaw %.1f pitch %.1f\n",
+			bestRoll, u.X, u.Y, u.Z, rt.X, rt.Y, rt.Z, b.X, b.Y, b.Z, atan2(b.Y, b.X) * 180 / M_PI, atan2(b.Z, sqrt(b.X * b.X + b.Y * b.Y)) * 180 / M_PI);
 		return;
 	}
 	if (!stricmp(argv[1], "rack"))
