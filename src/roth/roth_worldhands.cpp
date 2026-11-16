@@ -76,6 +76,7 @@
 #include <math.h>
 #include <algorithm>
 #include <vector>
+#include <map>
 
 EXTERN_CVAR(Bool, roth_vrpick_debug)   // roth_vrpick.cpp; file scope, never inside a namespace
 
@@ -366,7 +367,7 @@ void Build(AActor *pmo)
 			ObjectPickBox(mo, lo, hi);
 			const DVector3 c = (lo + hi) * 0.5;
 			Pick w;
-			if (PickTouchSurface(pmo, c, 0.40 * upm, w) && w.kind == Pick::WallFace && FaceNormal(w, pmo, p.n))
+			if (PickTouchSurface(pmo, c, 64.0, w) && w.kind == Pick::WallFace && FaceNormal(w, pmo, p.n))   // the wall behind: within 64 map units
 			{
 				// the normal toward the room: toward the print's own side of the wall
 				if (((c.XY() - w.hitPos.XY()) | p.n) < 0) p.n = -p.n;
@@ -1070,7 +1071,7 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 			how.Format("object %d/%d (id %u)%s, its box (%.0f %.0f %.0f)..(%.0f %.0f %.0f)", s, i, key, (mo->renderflags & RF_INVISIBLE) ? ", hidden now" : "",
 				lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z);
 			Pick w;
-			if (PickTouchSurface(pmo, at, 0.40 * UPM(), w) && w.kind == Pick::WallFace && w.line != nullptr)
+			if (PickTouchSurface(pmo, at, 64.0, w) && w.kind == Pick::WallFace && w.line != nullptr)   // a test's reach: 64 units
 			{
 				normal = DVector2(w.line->delta.Y, -w.line->delta.X) / w.line->delta.Length();
 				if (((at.XY() - w.hitPos.XY()) | normal) < 0) normal = -normal;
@@ -1084,9 +1085,12 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	}
 	const bool isUse = op == 0x18 || op == 0x19;
 	DVector3 sum(0, 0, 0), lo(1e9, 1e9, 1e9), hi(-1e9, -1e9, -1e9);
-	int n = 0;
+	int n = 0, samples = 0, hits = 0;
+	int kinds[5] = { 0, 0, 0, 0, 0 };
+	std::map<int, int> met;   // the records the dispatcher matched at the samples (the diagnostic)
 	auto count = [&](const Pick &p) {
 		const uint16_t r = isUse ? UseRecordOf(p) : ExamineRecordOf(p);
+		met[r]++;
 		if (r != record) return;
 		sum += p.hitPos; n++;
 		lo = DVector3(std::min(lo.X, p.hitPos.X), std::min(lo.Y, p.hitPos.Y), std::min(lo.Z, p.hitPos.Z));
@@ -1108,7 +1112,11 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 					if (S.level->PointInSector(DVector2(x, y)) != sec) continue;
 					Pick p;
 					const DVector3 from(x, y, sec->ceilingplane.ZatPoint(DVector2(x, y)) - 1.0);
-					if (PickFrom(pmo, from, DVector3(0, 0, -1), 4000.0, p) && p.kind == Pick::Flat && p.sector == sec) count(p);
+					samples++;
+					if (!PickFrom(pmo, from, DVector3(0, 0, -1), 4000.0, p)) continue;
+					hits++;
+					kinds[std::min<int>(p.kind, 4)]++;
+					if (p.kind == Pick::Flat && !p.ceiling) count(p);
 				}
 		}
 	}
@@ -1134,16 +1142,25 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 					const DVector2 xy = v1 + ln->delta * (k / 64.0);
 					const DVector3 from(xy.X + nrm.X * 8.0, xy.Y + nrm.Y * 8.0, z);
 					Pick p;
-					if (PickFrom(pmo, from, DVector3(-nrm.X, -nrm.Y, 0), 16.0, p) && (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf) && p.line == ln) count(p);
+					samples++;
+					if (!PickFrom(pmo, from, DVector3(-nrm.X, -nrm.Y, 0), 16.0, p)) continue;
+					hits++;
+					kinds[std::min<int>(p.kind, 4)]++;
+					if (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf) count(p);   // a leaf stands in front of its room face
 				}
 		}
 		if (sides.empty()) { how = "no face carries it"; return false; }
 	}
 	else { how.Format("opcode 0x%02x: no spot", op); return false; }
-	if (n == 0) { how = "no point of its surfaces matches it now (spent, or off?)"; return false; }
+	FString diag;
+	diag.Format(" [%d sample(s), %d hit(s): %d face, %d flat, %d door leaf, %d object; records met:", samples, hits, kinds[Pick::WallFace], kinds[Pick::Flat],
+		kinds[Pick::DoorLeaf], kinds[Pick::Prop]);
+	for (const auto &m : met) diag.AppendFormat(" #%d x%d", m.first, m.second);
+	diag += "]";
+	if (n == 0) { how = "no point of its surfaces matches it now (spent, or off?)" + diag; return false; }
 	at = sum / n;
-	how.Format("%d matching point(s), (%.1f %.1f %.1f)..(%.1f %.1f %.1f)%s", n, lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z,
-		haveNormal ? FStringf(", the face toward (%.2f %.2f)", normal.X, normal.Y).GetChars() : "");
+	how.Format("%d matching point(s), (%.1f %.1f %.1f)..(%.1f %.1f %.1f)%s%s", n, lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z,
+		haveNormal ? FStringf(", the face toward (%.2f %.2f)", normal.X, normal.Y).GetChars() : "", diag.GetChars());
 	return true;
 }
 
