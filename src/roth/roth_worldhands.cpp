@@ -1215,8 +1215,19 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	{
 		// ONE FACE: the side with the most matching points (a door's two faces would put the spot inside the door:
 		// the first PC run, MAS3 #4)
+		// the faces of every record of this opcode and key (a record off at load -- MAS3 #24, on #4's face -- is bound to
+		// no face until its chain enables it)
 		std::vector<int> sides;
-		RecordSides(record, sides);
+		for (uint16_t r = 1; r < 0x4000; r++)
+		{
+			uint8_t rop = 0;
+			uint16_t rkey = 0;
+			if (!RecordKey(r, rop, rkey)) break;
+			if (rkey != key || (rop != 0x18 && rop != 0x32)) continue;
+			std::vector<int> more;
+			RecordSides(r, more);
+			for (int si : more) if (std::find(sides.begin(), sides.end(), si) == sides.end()) sides.push_back(si);
+		}
 		DVector3 bestSum(0, 0, 0), bestLo, bestHi;
 		int bestN = 0;
 		DVector2 bestNormal;

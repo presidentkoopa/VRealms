@@ -809,8 +809,10 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 		AActor *pmo = players[consoleplayer].mo;
 		Pick p;
 		const DVector3 from(bestAt.X + bestN.X * 8.0, bestAt.Y + bestN.Y * 8.0, bestAt.Z);
-		if (pmo != nullptr && PickFrom(pmo, from, DVector3(-bestN.X, -bestN.Y, 0), 16.0, p) && (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf)
-			&& p.line == bestSide->linedef)
+		// a door leaf standing in front of its room face is what the hand meets there (AELF's Shrive door, the PC run of
+		// 5b4c3979: the try was made and never fired, the pick wanting the room face's own line)
+		if (pmo != nullptr && PickFrom(pmo, from, DVector3(-bestN.X, -bestN.Y, 0), 16.0, p)
+			&& ((p.kind == Pick::WallFace && p.line == bestSide->linedef) || p.kind == Pick::DoorLeaf))
 			pick = p;
 		return s;
 	}
