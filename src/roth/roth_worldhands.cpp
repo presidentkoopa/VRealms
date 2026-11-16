@@ -20,7 +20,9 @@
 //     <- THE PULL, 8 cm: ActivateObject. The pit's chains MAS7 #22 (0x18, wall id 4, a count to 3) <- the pull,
 //     8 cm, each pull one use.
 //  7. the bookcase STUDY1 #353 (wall id 38), #420 (42), from the passage #75 (43), #354 (39): 0x18 <- THE PULL from
-//     a leaf's edge, 4 cm. The clock STUDY1 #35 (0x18, wall id 23, no box) <- the pull, 4 cm (the case door).
+//     a leaf's edge, 4 cm. The clock STUDY1 #35 (0x18, wall id 23, no box) <- THE HOUR HAND turned: one use of the
+//     face per hour passed (the chain's 0x1f #36, cmd_texture_change_count raw_commands.c:706-731, steps the count and
+//     repaints the face; its +0x0a, read live, is the hour the hand is caught at).
 //  8. MAS6's hand prints #42 (obj 5), #8 (obj 2), #41 (obj 4): 0x08 click-obj <- THE PRESS, 2 cm: ActivateObject.
 //  9. the throne MAS7 #7 (0x19 use-floor, key 8, floor, once) / #33 (0x19, key 8, +6 bit 0: the platform top)
 //     <- THE SIT: the use on the seat where a pointer straight down meets it (the floor or the platform top: the
@@ -107,7 +109,6 @@ const PullRecord kPulls[] =
 	{ "STUDY1",   420, wh::kLeafPullM,  true,  "a bookcase leaf from the Study (entry 21, #420)" },
 	{ "STUDY1",   75,  wh::kLeafPullM,  true,  "a bookcase leaf from the passage (entry 65, #75)" },
 	{ "STUDY1",   354, wh::kLeafPullM,  true,  "a bookcase leaf from the passage (entry 65, #354)" },
-	{ "STUDY1",   35,  wh::kLeafPullM,  false, "the grandfather clock's case door (entry 11, #35; Q24)" },
 };
 
 struct PressRecord { const char *map; uint16_t record; const char *what; };
@@ -117,6 +118,13 @@ const PressRecord kPresses[] =
 	{ "MAS6", 8,  "the hand print obj 2 (entry 51, MAS6 #8)" },
 	{ "MAS6", 41, "the hand print obj 4 (entry 51, MAS6 #41)" },
 };
+
+// THE CLOCK (owner, 2026-11-16, Q24 after the 0x1f reading): set by turning the hour hand. `useRecord` is the face's
+// use (#35: its chain's 0x1f #36 steps the count and repaints the face DEMO[726 + count - 1]: the hour hand at
+// `baseHour` for count 1, an hour later each step; raw_commands.c:675-731); `countRecord` the 0x1f record whose +0x0a
+// is the count the face shows.
+struct DialRecord { const char *map; uint16_t useRecord, countRecord; int baseHour; const char *what; };
+const DialRecord kDials[] = { { "STUDY1", 35, 36, 8, "the grandfather clock's hour hand (entry 11, #35; its count #36)" } };
 
 struct SeatRecord { const char *map; uint16_t sectorId; const char *what; };
 const SeatRecord kSeats[] = { { "MAS7", 8, "the throne's seat (entry 55, MAS7 #7 / #33: BRANDED)" } };
@@ -155,6 +163,16 @@ struct Seat
 	double topZ = 0;
 };
 
+struct Dial
+{
+	const DialRecord *rec = nullptr;
+	int side = -1;               // the GZDoom side the face is
+	DVector3 centre;             // the dial's middle (the face's, map units)
+	DVector2 n, right;           // the face's normal (into the room it is seen from) and the viewer's right
+	double radiusM = 0;          // the dial (metres)
+	wh::HourHand hand[2];
+};
+
 struct HandW
 {
 	wh::ReleaseEdge release;
@@ -180,6 +198,7 @@ struct State
 	std::vector<PullObj> pullObjs;
 	std::vector<PrintObj> prints;
 	std::vector<Seat> seats;
+	std::vector<Dial> dials;
 	wh::Sit sit;
 	int loggedSitBand = -1;
 	HandW hand[2];
@@ -246,6 +265,66 @@ bool FlatAt(const DVector3 &pt, double above, double below, Pick &out)
 	out.hitPos = DVector3(pt.X, pt.Y, bestZ);
 	out.dist = bestD;
 	return true;
+}
+
+// A FACE's pick at a point of it, without a trace (a door leaf, a block or a ray's own way can stand between a probe
+// and the face): the side, the point, and the band the point is in (mid 0x01, lower 0x02, upper 0x04: against the
+// sector across the line), as the picker's trace marks it.
+bool FacePickAt(int sideIdx, const DVector3 &at, Pick &out)
+{
+	if (S.level == nullptr || sideIdx < 0 || sideIdx >= (int)S.level->sides.Size()) return false;
+	side_t *sd = &S.level->sides[sideIdx];
+	line_t *ln = sd->linedef;
+	if (ln == nullptr) return false;
+	out = Pick{};
+	out.kind = Pick::WallFace;
+	out.line = ln;
+	out.side = sd == ln->sidedef[0] ? 0 : 1;
+	out.hitPos = at;
+	out.band = 0x01;
+	sector_t *other = out.side == 0 ? ln->backsector : ln->frontsector;
+	if (other != nullptr)
+	{
+		if (at.Z > other->ceilingplane.ZatPoint(at.XY())) out.band = 0x04;
+		else if (at.Z < other->floorplane.ZatPoint(at.XY())) out.band = 0x02;
+	}
+	return true;
+}
+
+// The normal of a side's face, into the sector it belongs to (where it is seen from).
+DVector2 SideNormal(int sideIdx)
+{
+	side_t *sd = &S.level->sides[sideIdx];
+	line_t *ln = sd->linedef;
+	DVector2 n(ln->delta.Y, -ln->delta.X);
+	n /= n.Length();
+	return sd == ln->sidedef[0] ? n : -n;
+}
+
+// The points of a side's face whose use (`use`) or examine the dispatcher matches to `record` (direct picks, 64 along
+// x every 2 units of height, between the lowest floor and the highest ceiling either side).
+int FaceMatches(int sideIdx, uint16_t record, bool use, std::vector<DVector3> &pts, std::map<int, int> *met = nullptr)
+{
+	side_t *sd = &S.level->sides[sideIdx];
+	line_t *ln = sd->linedef;
+	if (ln == nullptr || sd->sector == nullptr) return 0;
+	sector_t *other = sd == ln->sidedef[0] ? ln->backsector : ln->frontsector;
+	const DVector2 v1 = ln->v1->fPos();
+	for (int k = 1; k < 64; k++)
+	{
+		const DVector2 xy = v1 + ln->delta * (k / 64.0);
+		double z0 = sd->sector->floorplane.ZatPoint(xy), z1 = sd->sector->ceilingplane.ZatPoint(xy);
+		if (other != nullptr) { z0 = std::min(z0, other->floorplane.ZatPoint(xy)); z1 = std::max(z1, other->ceilingplane.ZatPoint(xy)); }
+		for (double z = z0 + 1.0; z < z1; z += 2.0)
+		{
+			Pick p;
+			if (!FacePickAt(sideIdx, DVector3(xy.X, xy.Y, z), p)) continue;
+			const uint16_t r = use ? UseRecordOf(p) : ExamineRecordOf(p);
+			if (met != nullptr) (*met)[r]++;
+			if (r == record) pts.push_back(p.hitPos);
+		}
+	}
+	return (int)pts.size();
 }
 
 // A WALL-MOUNTED OBJECT's facing (a hand print, a lever, a mask: fixed-angle quads on a wall): its actor's yaw, turned
@@ -373,6 +452,7 @@ void Build(AActor *pmo)
 	S.built = true;
 	S.pullObjs.clear();
 	S.prints.clear();
+	S.dials.clear();
 	S.seats.clear();
 	const double upm = UPM();
 	auto objectsWithId = [](uint16_t id, std::vector<std::pair<int, int>> &out) {
@@ -476,9 +556,43 @@ void Build(AActor *pmo)
 			: "NO lower neighbour: no front known, never sat on");
 		if (bestDrop > 0) S.seats.push_back(st);
 	}
+	for (const DialRecord &r : kDials)
+	{
+		if (!MapIs(r.map)) continue;
+		std::vector<int> sides;
+		RecordSides(r.useRecord, sides);
+		Dial best;
+		size_t bestN = 0;
+		for (int si : sides)
+		{
+			std::vector<DVector3> pts;
+			FaceMatches(si, r.useRecord, true, pts);
+			if (pts.size() <= bestN) continue;
+			bestN = pts.size();
+			DVector3 sum(0, 0, 0), lo(1e9, 1e9, 1e9), hi(-1e9, -1e9, -1e9);
+			for (const DVector3 &q : pts)
+			{
+				sum += q;
+				lo = DVector3(std::min(lo.X, q.X), std::min(lo.Y, q.Y), std::min(lo.Z, q.Z));
+				hi = DVector3(std::max(hi.X, q.X), std::max(hi.Y, q.Y), std::max(hi.Z, q.Z));
+			}
+			best = Dial();
+			best.rec = &r;
+			best.side = si;
+			best.centre = sum / (double)pts.size();
+			best.n = SideNormal(si);
+			best.right = DVector2(-best.n.Y, best.n.X);   // the viewer looks along -n
+			const double wM = (hi.XY() - lo.XY()).Length() / upm, hM = (hi.Z - lo.Z) * PS() / upm;
+			best.radiusM = 0.40 * std::min(wM, hM);       // [R: the dial's ring on DEMO[726] was not measured]
+		}
+		if (best.rec == nullptr) { Printf("[roth_worldhands] %s: no face point takes #%u -- no dial\n", r.what, r.useRecord); continue; }
+		Printf("[roth_worldhands] dial %s: side %d, its middle (%.1f %.1f %.1f), facing (%.2f %.2f), radius %.3f m, %d point(s) of the face take #%u\n",
+			r.what, best.side, best.centre.X, best.centre.Y, best.centre.Z, best.n.X, best.n.Y, best.radiusM, (int)bestN, r.useRecord);
+		S.dials.push_back(best);
+	}
 	if (Logging())
-		Printf("[roth_worldhands] %s: %d lever object(s), %d face pull record(s), %d hand print(s), %d seat(s)\n", S.level->MapName.GetChars(),
-			(int)S.pullObjs.size(), facePulls, (int)S.prints.size(), (int)S.seats.size());
+		Printf("[roth_worldhands] %s: %d lever object(s), %d face pull record(s), %d hand print(s), %d seat(s), %d dial(s)\n", S.level->MapName.GetChars(),
+			(int)S.pullObjs.size(), facePulls, (int)S.prints.size(), (int)S.seats.size(), (int)S.dials.size());
 }
 
 //===========================================================================
@@ -714,6 +828,7 @@ void Forget(HandW &w)
 	w.drink.Reset();
 	w.claimed = false;
 	for (PrintObj &p : S.prints) p.press[&w - S.hand].Reset();
+	for (Dial &d : S.dials) d.hand[&w - S.hand].Reset();
 }
 
 void TickHand(int role, AActor *pmo)
@@ -814,6 +929,36 @@ void TickHand(int role, AActor *pmo)
 		}
 		else if (Logging() && wasArmed != p.press[role].armed && p.press[role].armed)
 			Printf("[roth_worldhands] %s hand: the open palm in front of %s (%.3f m), %s\n", RoleName(role), p.rec->what, -depth, over ? "over it" : "beside it");
+	}
+
+	// ---- THE CLOCK'S HOUR HAND (Q24) ----
+	for (Dial &d : S.dials)
+	{
+		uint16_t count = 0;
+		if (!RecordWord(d.rec->countRecord, 0x0a, count)) continue;
+		const int hour = ((d.rec->baseHour - 1 + ((int)count + 11) % 12) % 12) + 1;   // count 1 -> baseHour
+		const double handDeg = (hour % 12) * wh::kHourDeg;
+		const DVector3 rel = h.tip - d.centre;
+		const double inFront = (rel.XY() | d.n) / upm;
+		const double u = (rel.XY() | d.right) / upm, v = rel.Z * PS() / upm;
+		const double r = sqrt(u * u + v * v);
+		const bool touching = inFront <= wh::kDialTouchM && inFront >= -wh::kDialThroughM && r <= d.radiusM && r >= 0.1 * d.radiusM;
+		const double ang = atan2(u, v) * (180.0 / M_PI);
+		const bool was = d.hand[role].engaged;
+		if (d.hand[role].Feed(touching, ang, handDeg))
+		{
+			Pick fp;
+			bool acted = false;
+			if (FacePickAt(d.side, d.centre, fp)) acted = VRPickUseAt(role, fp, h.tip, "turning the clock's hour hand");
+			uint16_t after = 0;
+			RecordWord(d.rec->countRecord, 0x0a, after);
+			Printf("[roth_worldhands] %s hand pushed %s past %d o'clock: the original's use of #%u -> %s; the count %u -> %u\n", RoleName(role), d.rec->what,
+				hour, d.rec->useRecord, acted ? "acted" : "nothing happened", count, after);
+			Buzz(role, acted ? 0.3 : 0.1, acted ? 20 : 10);
+		}
+		else if (Logging() && was != d.hand[role].engaged)
+			Printf("[roth_worldhands] %s hand %s %s (the fingertip at %.0f degrees, the hand at %d o'clock)\n", RoleName(role),
+				d.hand[role].engaged ? "catches" : "lets go of", d.rec->what, ang, hour);
 	}
 
 	// ---- THE DRINK ----
@@ -931,6 +1076,7 @@ void WorldHandsEndLevel()
 	S.pullObjs.clear();
 	S.prints.clear();
 	S.seats.clear();
+	S.dials.clear();
 	S.sit.Reset();
 	S.loggedSitBand = -1;
 	for (HandW &w : S.hand) { Forget(w); w = HandW(); }
@@ -954,6 +1100,7 @@ bool WorldHandsHolding(int role)
 {
 	if (role < 0 || role > 1 || S.level == nullptr) return false;
 	const HandW &w = S.hand[role];
+	for (const Dial &d : S.dials) if (d.hand[role].engaged) return true;   // pushing the hour hand presses nothing
 	return w.claimed || w.pull.engaged || w.twist.engaged;
 }
 
@@ -1009,6 +1156,11 @@ bool WorldHandsFlatUnder(const DVector3 &pt, double above, double below, Pick &o
 //   roth_worldtest roll <main|off> <degrees> <tics>
 //                                         turn the hand about its fingers' axis that far over <tics>
 //   roth_worldtest head <metres>          the head that far below standing (0: standing)
+//   roth_worldtest clockhand <main|off> <hours> <tics>
+//                                         the fingertip on this map's clock dial at the hour hand (as the face shows
+//                                         it now), then turned clockwise that many hours over <tics>
+//   roth_worldtest spot <record> out <units>
+//                                         the spot moved just past the record's matching points in +x (beside its box)
 //   roth_worldtest report                 the right-hand item, each hand's point and what it is engaged in
 //
 //===========================================================================
@@ -1028,12 +1180,18 @@ struct TestHold
 	double rollPerTic = 0;
 	int rollLeft = 0;
 	int logged = 0;
+	// clockhand: the fingertip on the dial at an angle (clockwise from 12), 1 cm in front, 0.6 of its radius out;
+	// held at dialFrom until dialStart, then turned to dialTo over dialTics
+	bool dialOn = false;
+	double dialFrom = 0, dialTo = 0;
+	int dialStart = 0, dialTics = 0;
 };
 struct TestState
 {
 	bool haveSpot = false, haveNormal = false;
 	DVector3 spot;
 	DVector2 normal, along;   // the spot's surface: its normal toward the room, and along it (faces; objects on a wall)
+	DVector3 lastLo, lastHi;  // the last spot's matching points' extent
 	TestHold hold[2];
 } T;
 
@@ -1095,6 +1253,26 @@ void TestTick()
 				VRPoseTest_SetHand(role, ph);
 			}
 			if (--t.rollLeft == 0) Printf("[roth_worldtest] the %s hand's roll ends (tic %d)\n", RoleName(role), S.level->maptime);
+		}
+		if (t.dialOn && !S.dials.empty())
+		{
+			const Dial &d = S.dials[0];
+			const int now = S.level->maptime;
+			const double f = now < t.dialStart ? 0.0 : std::min(1.0, (double)(now - t.dialStart) / std::max(1, t.dialTics));
+			const double a = (t.dialFrom + (t.dialTo - t.dialFrom) * f) * (M_PI / 180.0);
+			const double rM = 0.6 * d.radiusM;
+			const double upm = UPM();
+			const DVector3 want(d.centre.X + (d.right.X * sin(a) * rM + d.n.X * 0.01) * upm, d.centre.Y + (d.right.Y * sin(a) * rM + d.n.Y * 0.01) * upm,
+				d.centre.Z + cos(a) * rM * upm / PS());
+			DVector3 at;
+			if (TestPoint(role, 2, at))
+			{
+				const DVector3 err = want - at;
+				if (now < t.dialStart && err.Length() > 0.5) GesturesTestPlacing(role);
+				if (err.Length() > 0.05) Nudge(role, err, 0.6);
+			}
+			if (f >= 1.0 && now >= t.dialStart) { t.dialOn = false; Printf("[roth_worldtest] the %s hand's turn of the dial ends at %.0f degrees (tic %d)\n", RoleName(role), t.dialTo, now); }
+			continue;
 		}
 		if (!t.on || !T.haveSpot) continue;
 		DVector3 off = t.offset;
@@ -1185,6 +1363,12 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 		lo = DVector3(std::min(lo.X, p.hitPos.X), std::min(lo.Y, p.hitPos.Y), std::min(lo.Z, p.hitPos.Z));
 		hi = DVector3(std::max(hi.X, p.hitPos.X), std::max(hi.Y, p.hitPos.Y), std::max(hi.Z, p.hitPos.Z));
 	};
+	auto count1 = [&](const DVector3 &q) {   // a point already matched
+		pts.push_back(q);
+		sum += q; n++;
+		lo = DVector3(std::min(lo.X, q.X), std::min(lo.Y, q.Y), std::min(lo.Z, q.Z));
+		hi = DVector3(std::max(hi.X, q.X), std::max(hi.Y, q.Y), std::max(hi.Z, q.Z));
+	};
 	if (op == 0x19 || op == 0x31)
 	{
 		for (int sn = 0; sn < (int)S.level->sectors.Size(); sn++)
@@ -1213,10 +1397,9 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	}
 	else if (op == 0x18 || op == 0x32)
 	{
-		// ONE FACE: the side with the most matching points (a door's two faces would put the spot inside the door:
-		// the first PC run, MAS3 #4)
-		// the faces of every record of this opcode and key (a record off at load -- MAS3 #24, on #4's face -- is bound to
-		// no face until its chain enables it)
+		// ONE FACE, by direct picks on it (no trace: a door leaf, a block or a door's own sector stands in front of some
+		// faces -- MAS3 #24 after its door rose, MAUSO1EA #5's stone, the clock): the side with the most matching
+		// points, among the faces of every record of this opcode and key (a record off at load is bound to none)
 		std::vector<int> sides;
 		for (uint16_t r = 1; r < 0x4000; r++)
 		{
@@ -1228,47 +1411,18 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 			RecordSides(r, more);
 			for (int si : more) if (std::find(sides.begin(), sides.end(), si) == sides.end()) sides.push_back(si);
 		}
-		DVector3 bestSum(0, 0, 0), bestLo, bestHi;
-		int bestN = 0;
-		DVector2 bestNormal;
+		if (sides.empty()) { how = "no face carries it"; return false; }
+		std::vector<DVector3> bestPts;
+		int bestSide = -1;
 		for (int si : sides)
 		{
-			side_t *sd = &S.level->sides[si];
-			line_t *ln = sd->linedef;
-			if (ln == nullptr) continue;
-			sector_t *sec = sd->sector;
-			DVector2 nrm(ln->delta.Y, -ln->delta.X);
-			nrm /= nrm.Length();
-			if (sd != ln->sidedef[0]) nrm = -nrm;
-			const DVector2 v1 = ln->v1->fPos();
-			// both ways: a face may be seen from the sector across its line (MAUSO1EA #5's stone, the PC run of 976cb81e:
-			// from its own side every sample stood inside the block and met nothing)
-			for (int way = 0; way < 2; way++)
-			{
-				const DVector2 out = way == 0 ? nrm : -nrm;
-				sector_t *zs = S.level->PointInSector(v1 + ln->delta * 0.5 + out * 8.0);
-				if (zs == nullptr) continue;
-				const double z0 = std::max(sec->floorplane.ZatPoint(v1), zs->floorplane.ZatPoint(v1));
-				const double z1 = std::max(sec->ceilingplane.ZatPoint(v1), zs->ceilingplane.ZatPoint(v1));
-				sum = DVector3(0, 0, 0); n = 0; lo = DVector3(1e9, 1e9, 1e9); hi = DVector3(-1e9, -1e9, -1e9);
-				for (int k = 1; k < 64; k++)
-					for (double z = std::min(z0, z1 - 2.0) + 1.0; z < z1; z += 2.0)
-					{
-						const DVector2 xy = v1 + ln->delta * (k / 64.0);
-						const DVector3 from(xy.X + out.X * 8.0, xy.Y + out.Y * 8.0, z);
-						Pick p;
-						samples++;
-						if (!PickFrom(pmo, from, DVector3(-out.X, -out.Y, 0), 16.0, p)) continue;
-						hits++;
-						kinds[std::min<int>(p.kind, 4)]++;
-						if (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf) count(p);   // a leaf stands in front of its room face
-					}
-				if (n > bestN) { bestN = n; bestSum = sum; bestLo = lo; bestHi = hi; bestNormal = out; }
-			}
+			std::vector<DVector3> sp;
+			FaceMatches(si, record, isUse, sp, &met);
+			samples += 1;
+			if (sp.size() > bestPts.size()) { bestPts = sp; bestSide = si; }
 		}
-		sum = bestSum; n = bestN; lo = bestLo; hi = bestHi;
-		if (n > 0) { normal = bestNormal; haveNormal = true; }
-		if (sides.empty()) { how = "no face carries it"; return false; }
+		for (const DVector3 &q : bestPts) count1(q);
+		if (bestSide >= 0) { normal = SideNormal(bestSide); haveNormal = true; }
 	}
 	else { how.Format("opcode 0x%02x: no spot", op); return false; }
 	FString diag;
@@ -1278,6 +1432,8 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	diag += "]";
 	if (n == 0) { how = "no point of its surfaces matches it now (spent, or off?)" + diag; return false; }
 	at = sum / n;
+	T.lastLo = lo;
+	T.lastHi = hi;
 	{
 		double bd = 1e30;
 		DVector3 best = at;
@@ -1318,6 +1474,8 @@ CCMD(roth_worldtest)
 		{
 			T.spot = at; T.haveSpot = true; T.haveNormal = hn;
 			T.normal = nrm; T.along = DVector2(-nrm.Y, nrm.X);
+			// `out <units>`: just past the matching points' extent in +x, at the spot's y (a contact beside a tiny box)
+			if (argv.argc() >= 5 && !stricmp(argv[3], "out")) { T.spot.X = T.lastHi.X + atof(argv[4]); how.AppendFormat("; moved out to x %.1f", T.spot.X); }
 		}
 		Printf("[roth_worldtest] spot of record #%d in %s: %s%s\n", rec, S.level->MapName.GetChars(), how.GetChars(),
 			T.haveSpot ? FStringf(" -> the spot (%.1f %.1f %.1f)", T.spot.X, T.spot.Y, T.spot.Z).GetChars() : "");
@@ -1435,6 +1593,24 @@ CCMD(roth_worldtest)
 		ph.grip = (float)atof(argv[3]);   // the trigger and its touch as the pose gave them
 		VRPoseTest_SetHand(role, ph);
 		Printf("[roth_worldtest] the %s hand's grip %.2f (tic %d)\n", RoleName(role), ph.grip, S.level->maptime);
+		return;
+	}
+	if (!stricmp(verb, "clockhand") && argv.argc() >= 5)
+	{
+		// clockhand <role> <hours> <tics>: the fingertip to the hour hand as the face shows it now, then round clockwise
+		if (S.dials.empty()) { Printf("roth_worldtest clockhand: no dial on this map\n"); return; }
+		const Dial &d = S.dials[0];
+		uint16_t count = 0;
+		RecordWord(d.rec->countRecord, 0x0a, count);
+		const int hour = ((d.rec->baseHour - 1 + ((int)count + 11) % 12) % 12) + 1;
+		t.on = false;
+		t.dialOn = true;
+		t.dialFrom = (hour % 12) * wh::kHourDeg + 5.0;          // just past the hand: it catches it
+		t.dialTo = t.dialFrom + atof(argv[3]) * wh::kHourDeg;
+		t.dialStart = S.level->maptime + 20;
+		t.dialTics = std::max(1, atoi(argv[4]));
+		Printf("[roth_worldtest] the %s hand's fingertip to the hour hand (%d o'clock, the count %u), then %s hour(s) round over %d tics from tic %d\n",
+			RoleName(role), hour, count, argv[3], t.dialTics, t.dialStart);
 		return;
 	}
 	if (!stricmp(verb, "roll") && argv.argc() >= 5)

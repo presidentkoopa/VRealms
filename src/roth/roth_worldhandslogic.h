@@ -13,6 +13,9 @@
 //   Q18    MAS6's hand prints: the palm PRESSED ~2 cm into a print = one use                     -> Press
 //   Q19    the throne: the head lowered over the seat (really SITTING) = the use                  -> Sit
 //   Q26    a vial TIPPED at the mouth = the original's use on self                                -> Drink
+//   Q24    (owner, 2026-11-16, after the 0x1f reading) the clock is set by TURNING THE HOUR HAND: the fingertip
+//          pushes the hand round; each hour it passes = one use of the clock's record (the count steps, the face
+//          repaints to the next hour); the use that reaches 6 o'clock runs the rest (the case door)  -> HourHand
 //   Q21    tiny boxes: any overlap of the fingertip or palm with a record's surface box counts (a CONTACT DISC,
 //          not a point): the click is sent at an overlapping texel                               -> DiscOffsets
 // Every one ends in exactly ONE of the original's clicks (the engine half sends it); none adds an outcome. A
@@ -280,6 +283,58 @@ struct Drink
 	static bool Tipping(bool haveVial, double mouthDistM, double tiltDeg)
 	{
 		return haveVial && mouthDistM <= kMouthNearM && tiltDeg >= kDrinkRearmDeg;
+	}
+};
+
+//==========================================================================
+// THE HOUR HAND (Q24). Angles clockwise from 12 o'clock, degrees. The fingertip catches the hand when it touches
+// the dial within kHandGrabDeg of the hand's angle; from then on the angle it travels is added up (unwrapped); each
+// 30 degrees clockwise is one hour the hand passes: one use (the original then shows the next hour, and the hand is
+// measured from there). Back-turning is held at the hand (the original's count only steps forward: its step mode
+// 0, step_mode_inc). Lifting off the dial lets go. At most one hour a tic (each a use of its own).
+//==========================================================================
+
+constexpr double kHandGrabDeg = 25.0;     // the fingertip this near the hand catches it [R]
+constexpr double kHourDeg = 30.0;
+constexpr double kDialTouchM = 0.03;      // the fingertip within this of the dial's face (in front) [R]
+constexpr double kDialThroughM = 0.03;    // ... or this far through it (a hand passes through a picture) [R]
+
+inline double WrapDeg(double d)
+{
+	d = std::fmod(d, 360.0);
+	if (d > 180.0) d -= 360.0;
+	if (d <= -180.0) d += 360.0;
+	return d;
+}
+
+struct HourHand
+{
+	bool engaged = false;
+	double last = 0, acc = 0;
+	int pending = 0;
+	void Reset() { engaged = false; acc = 0; pending = 0; }
+	// `touching`: the fingertip on the dial; `angle`: its angle; `hand`: the hand's angle as the face shows it now.
+	// Returns 1 on a tic an hour is passed (one use), else 0.
+	int Feed(bool touching, double angle, double hand)
+	{
+		if (!touching) { Reset(); return 0; }
+		if (!engaged)
+		{
+			const double d = WrapDeg(angle - hand);
+			if (std::fabs(d) > kHandGrabDeg) return 0;
+			engaged = true;
+			last = angle;
+			acc = d;
+		}
+		else
+		{
+			acc += WrapDeg(angle - last);
+			last = angle;
+			if (acc < -kHandGrabDeg) acc = -kHandGrabDeg;
+		}
+		while (acc >= kHourDeg) { acc -= kHourDeg; pending++; }
+		if (pending > 0) { pending--; return 1; }
+		return 0;
 	}
 };
 

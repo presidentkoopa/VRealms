@@ -397,8 +397,11 @@ been lit for years."), examine only. Chapter 1's answers stand: no darkness, the
   step lands on the target (the port's `CmdCore::CountFamily`, roth_cmdcore.cpp:257-263). So **each use moves the hour
   hand one hour**, and only the use that brings it to 6 o'clock (count 11: the 10th use from load) runs the rest of the
   chain: the sfx nodes, the **0x2f door on face id 10** (s224) and, flag 293 clear, act27 / delay 400 / sfx, else `#250`.
-  At 12 the count wraps to 0 (flag 0x20), so it reaches 6 o'clock again 12 uses later. Built as the owner chose (Q24 a):
-  the case door pulled 4 cm = one use = one hour; nothing moves the hands by hand.
+  At 12 the count wraps to 0 (flag 0x20), so it reaches 6 o'clock again 12 uses later. **Built as the owner decided after
+  this reading (2026-11-16): the hour hand turned by the fingertip** -- caught within 25 degrees of where the face shows it,
+  each 30 degrees pushed clockwise one use of #35 (the hand read back from #36's count), back-turning held at the hand.
+  Found on the way: the clock's face sits behind the case door's leaf (door sector s394, DEMO[725], between s224 and
+  s399), so a probe from in front meets the leaf; the dial and the uses take the face itself (direct picks).
 - Tag: B. Effort S.
 
 **12. The gramophone**
@@ -897,7 +900,7 @@ the statuette's coils; P11 the open palm (frame 0) for hand prints; P12 a two-ha
 - **Q21 tiny boxes (`#57` 4×3 texels): any overlap of the fingertip or palm with the box counts.**
 - **Q22 documents: UNFOLDED IN BOTH HANDS** (not the recommendation) — with the owner's "openable books" (2026-11-16: "books do not open in game, it is just code. we will need to build openable books") this is new content: real documents and books held open in the hands, showing the original's own page art/text.
 - **Q23 the roll-top desk: kept shut** ("The drawers are stuck.").
-- **Q24 the clock: the case door only**; read what its counter (0x1f) does in ROTH.C first.
+- **Q24 the clock (owner, 2026-11-16, after the 0x1f reading): set by TURNING THE HOUR HAND.** The fingertip pushes the hand round; each hour it passes = one original use of #35 (the count steps, the face repaints with DEMO[726 + count - 1]); reaching 6 o'clock runs the rest of #35's chain as the original (the 0x2f door on face id 10). (Replaces the earlier "the case door only".)
 - **Q25 the gramophone: BOTH the tone arm and the crank, "if we make this a 3D model"** (owner) — depends on the item/furniture models.
 - **Q26 vials: tipped at the mouth = the original's use on self**; the inventory still works.
 - **Q27 darkness in the mausoleum: none.**

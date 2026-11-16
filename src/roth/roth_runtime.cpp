@@ -8205,6 +8205,14 @@ bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key)
 	return true;
 }
 
+bool RecordWord(uint16_t record, int offset, uint16_t &value)
+{
+	const Command *c = g.active ? Rec(record) : nullptr;
+	if (c == nullptr) return false;
+	value = c->Word(offset);
+	return true;
+}
+
 uint16_t RuntimeSectorId(int rothSector)
 {
 	if (!g.active || rothSector < 0 || rothSector >= (int)g.map.sectors.size()) return 0;

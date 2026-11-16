@@ -241,8 +241,52 @@ static void TestDrink()
 	CHECK(Drink::Tipping(true, 0.05, 40) && !Drink::Tipping(true, 0.05, 10) && !Drink::Tipping(true, 0.3, 80), "tipping");
 }
 
+static void TestHourHand()
+{
+	// the hand at 8 o'clock (240 degrees): a finger on it, pushed round clockwise 3 degrees a tic for 120 tics
+	HourHand h;
+	int uses = 0;
+	double hand = 240;
+	for (int t = 0; t <= 120; t++)
+	{
+		const int n = h.Feed(true, 240 + 3.0 * t, hand);
+		if (n) { uses += n; hand += 30; }   // the original shows the next hour
+	}
+	CHECK(uses == 12, "360 degrees round = 12 hours = 12 uses (%d)", uses);
+	// caught away from the hand: nothing
+	HourHand a;
+	int au = 0;
+	for (int t = 0; t < 20; t++) au += a.Feed(true, 100 + 3.0 * t, 240);   // 100..157: never near 240
+	CHECK(au == 0, "a finger far from the hand never catches it (%d)", au);
+	// backward: nothing, and it does not store up
+	HourHand b;
+	int bu = 0;
+	for (int t = 0; t < 30; t++) bu += b.Feed(true, 240 - 3.0 * t, 240);
+	for (int t = 0; t < 10; t++) bu += b.Feed(true, 150 + 3.0 * t, 240);
+	CHECK(bu == 0, "turning back passes no hour (%d)", bu);
+	// lifting off lets go: 20 degrees, off, 20 degrees again from far: no use
+	HourHand c;
+	int cu = 0;
+	for (int t = 0; t <= 20; t++) cu += c.Feed(true, 240 + t, 240);
+	cu += c.Feed(false, 260, 240);
+	for (int t = 0; t <= 20; t++) cu += c.Feed(true, 275 + t, 240);
+	CHECK(cu == 0, "let go: the turn so far is lost; caught 35 degrees past the hand: no catch (%d)", cu);
+	// a fast push (45 degrees in one tic) passes one hour now and one the next tic
+	HourHand d;
+	int first = d.Feed(true, 240, 240), second = d.Feed(true, 300, 240), third = d.Feed(true, 300, 270);
+	CHECK(first == 0 && second == 1 && third == 1, "two hours in one tic: one use a tic (%d %d %d)", first, second, third);
+	// across 12 o'clock (unwrapped)
+	HourHand e;
+	int eu = 0;
+	double eh = 330;
+	for (int t = 0; t <= 20; t++) { const int n = e.Feed(true, WrapDeg(330 + 3.0 * t), eh); if (n) { eu++; eh += 30; } }
+	CHECK(eu == 2, "across 12 o'clock: two hours (%d)", eu);
+	CHECK(fabs(WrapDeg(370) - 10) < 1e-9 && fabs(WrapDeg(-190) - 170) < 1e-9, "wrap");
+}
+
 int main()
 {
+	TestHourHand();
 	TestDisc();
 	TestAngles();
 	TestRelease();

@@ -11,10 +11,13 @@
 //                           middle) within 5 cm of a floor, a platform top or a wall face: the original's use there
 //                           (the record its dispatcher matches at that texel, box included; the base's disc, Q21).
 //                           The dais plates #119, #124-#129 (STUDY1), the Orb door's aperture #4 (MAS3).
-//   THE PULL (Q17, Q30, Q24) a grip closing on a lever object or on a face whose use is one of the table's records
+//   THE PULL (Q17, Q30)     a grip closing on a lever object or on a face whose use is one of the table's records
 //                           (kPulls) takes the grip (no use on the close); the hand then travels 8 cm (levers, the
-//                           chains) or 4 cm (a bookcase leaf, from within 15 cm of its edge; the clock's case
-//                           door) in any direction but into it: that use, once per grip.
+//                           chains) or 4 cm (a bookcase leaf, from within 15 cm of its edge) in any direction but
+//                           into it: that use, once per grip.
+//   THE HOUR HAND (Q24)     the fingertip on STUDY1's clock face catches the hour hand where the face shows it (its
+//                           0x1f count, #36's +0x0a) and pushes it round: each hour passed = one use of #35 (owner,
+//                           2026-11-16, after the 0x1f reading).
 //   THE TWIST (Q15, Q16)    the item hand holding the Shrive (i14) or Key i22 with the grip closed and the item within
 //                           5 cm of something its use matches (a face's record, an object's click): set; the hand
 //                           turned 180 (the Shrive) / 30 (the key) degrees about its own axis, either way: the use

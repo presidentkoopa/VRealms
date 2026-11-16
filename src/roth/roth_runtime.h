@@ -476,6 +476,9 @@ uint16_t UseRecordOf(const Pick &p);
 void RecordSides(uint16_t record, std::vector<int> &sides);
 // A command record's base opcode (& 0x7f) and key (+0x08). False outside a level or range.
 bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key);
+// A command record's word at byte offset `offset` (+0x06 up, as ROTH.C names them), live. Read only. The clock's hour
+// hand (roth_worldhands.cpp) reads its count record's +0x0a, the hour the face shows.
+bool RecordWord(uint16_t record, int offset, uint16_t &value);
 // A Realms sector's command id (its commandID), 0 for none.
 uint16_t RuntimeSectorId(int rothSector);
 
