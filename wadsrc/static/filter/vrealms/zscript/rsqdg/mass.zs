@@ -37,7 +37,8 @@
 
 class RSQDG_Mass play
 {
-	const UNITS_PER_METRE = 32.0;
+	// VREALMS (changed: owner 2026-11-16, "scale to Realms"): was 32.0, Doom's. A Realms object's size in real metres.
+	const UNITS_PER_METRE = 107.4;
 
 	// 300 kg/m^3: between softwood and a hollow steel drum. Right for "a Doom
 	// object" and wrong for everything specific, which is why MASSDEF exists.

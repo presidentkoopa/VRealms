@@ -1,7 +1,9 @@
-// VREALMS COPY (2026-11-16): this file is RSQ Distance Grab's CVARINFO from RSQ_UBQSeries b1c2a8f90b, with ONE change:
-// every declaration carries `noarchive`. VRealms shares the owner's doomxr.ini with his hands build and must never
-// write archived settings into it (CLAUDE.md), so these cvars live for the session only: names, types, scopes and
-// defaults are the package's, untouched. Nothing else in this pack is changed (see docs/rsq_distancegrab/CHECKLIST.md).
+// VREALMS COPY (2026-11-16): this file is RSQ Distance Grab's CVARINFO from RSQ_UBQSeries b1c2a8f90b, with these changes:
+// every declaration carries `noarchive` (VRealms shares the owner's doomxr.ini with his hands build and must never
+// write archived settings into it, CLAUDE.md, so these cvars live for the session only); and the owner's two decisions
+// of 2026-11-16, each changed default marked [VREALMS]: "scale to Realms" (the defaults in map units multiplied by
+// 107.4 / 34, as reach.zs's metre) and "map to VRealms grips" (the grip key codes). Names, types and scopes are the
+// package's; see docs/rsq_distancegrab/CHECKLIST.md.
 
 // AN UNDECLARED CVAR IS NOT AN ERROR IN ZSCRIPT, IT IS A ZERO.
 //
@@ -20,7 +22,7 @@
 // from and how precisely you have to point are different complaints; one
 // slider for both forces one of them to be wrong.
 user noarchive bool  rsqdg_on       = true;    // the whole mechanic
-user noarchive float rsqdg_reach    = 512.0;   // map units. ~15 m horizontally
+user noarchive float rsqdg_reach    = 1617.0;  // map units. ~15 m horizontally  [VREALMS: owner 2026-11-16, scale to Realms; was 512.0 at 34 u/m]
 user noarchive float rsqdg_spread   = 12.0;    // degrees, half-angle. A real cone in the
                                      // room, not in map space -- see cone.zs
 user noarchive bool  rsqdg_sight    = true;    // through a wall is not pointing at it
@@ -47,8 +49,8 @@ user noarchive bool  rsqdg_bonuses  = true;    // the +1 health and armour bonus
 user noarchive bool   rsqdg_near        = true;    // grip with the palm on a thing takes it (pickup used, barrel/corpse carried)
 user noarchive float  rsqdg_near_m      = 0.30;    // metres from the palm to the thing's body
 // (The Headlock and its settings rsqdg_collar* moved to RSQ Melee as rsqml_headlock* on 2026-11-01.)
-user noarchive string rsqdg_keys_main   = "446";      // the main grip's key codes (as RSQ_TacticalRig reads them)
-user noarchive string rsqdg_keys_off    = "443 436";  // the off grip's key codes
+user noarchive string rsqdg_keys_main   = "445";      // the main grip's key codes (as RSQ_TacticalRig reads them)  [VREALMS: owner 2026-11-16, map to VRealms grips; was "446"]
+user noarchive string rsqdg_keys_off    = "444 436";  // the off grip's key codes  [VREALMS: owner 2026-11-16, map to VRealms grips; was "443 436"]
 
 // ---- THE TRIGGER IS THE GESTURE ------------------------------------------
 //
@@ -159,7 +161,7 @@ user noarchive int   rsqdg_flight_mode    = 2;     // 0 steer to the palm (impul
 user noarchive float rsqdg_arc_apex       = 1.0;   // arc mode: how high the lob peaks, metres (lower ceilings win)
 user noarchive bool  rsqdg_flight_duck    = true;  // dip under a lower ceiling ahead (doorways) instead of meeting the lintel
                                           // and the cheapest thing here to A/B
-user noarchive float rsqdg_flight_radius  = 2.0;    // a pickup's radius is a TRIGGER
+user noarchive float rsqdg_flight_radius  = 6.3;    // a pickup's radius is a TRIGGER  [VREALMS: scale to Realms; was 2.0]
                                           // volume, not a hull -- a clip is 20
                                           // units wide and looks like 4
 user noarchive float rsqdg_flight_timeout = 140.0;  // the MINIMUM tics before a pull
@@ -173,7 +175,7 @@ user noarchive float rsqdg_flight_timeout = 140.0;  // the MINIMUM tics before a
 // desktop catch window came to be shut rather than merely tight. Four tics is
 // ~114 ms: several real looks at the real arrival position, including one after
 // the hand's own pose has settled.
-user noarchive float rsqdg_catch_radius = 24.0;
+user noarchive float rsqdg_catch_radius = 75.8;   // [VREALMS: owner 2026-11-16, scale to Realms; was 24.0 at 34 u/m]
 user noarchive float rsqdg_catch_hold   = 4.0;
 
 // CONSUMED ON THE WAY IN, or carried?
@@ -225,7 +227,7 @@ user noarchive float rsqdg_throw_explode = 4.0;   // m/s THROWN that sets off an
 user noarchive float rsqdg_hold_dist   = 0.30;   // metres ahead of the hand (plus half the
                                        // object), so it is not inside your view
 user noarchive float rsqdg_hold_k      = 0.6;    // spring stiffness for a weightless thing
-user noarchive float rsqdg_hold_vmax   = 40.0;   // map units/tic, ever
+user noarchive float rsqdg_hold_vmax   = 126.4;  // map units/tic, ever  [VREALMS: scale to Realms; was 40.0]
 user noarchive float rsqdg_hold_break  = 1.5;    // metres held back for half a second and
                                        // you let go. 0 never
 user noarchive bool  rsqdg_burden      = true;   // heavy things slow you down
@@ -313,8 +315,8 @@ server noarchive float rsqdg_spin       = 1.0;    // turns about its own up acro
 // a half turn snaps 180 degrees on the catch (invisible on a barrel). 0 off.
 server noarchive float rsqdg_tumble     = 1.0;   // (was 0.5: a whole turn lands the way it left)
 // Everything that leaves a hand, thrown or set down (rs_flight.zs RS_Flight):
-server noarchive float rsqdg_air_gravity = 0.27;  // fraction of Doom's gravity it falls at; 0.27 is real gravity, 1 is Doom's
-server noarchive float rsqdg_air_flutter = 0.35;  // units/tic of sideways wobble a MASSDEF `flutter` thing gets
+server noarchive float rsqdg_air_gravity = 0.75;  // fraction of Doom's gravity it falls at; 0.27 is real gravity, 1 is Doom's  [VREALMS: scale to Realms; was 0.27. 9.81 m/s^2 at 107.4 / 1.1462 vertical units a metre = 0.75 of Doom's 1 unit/tic^2]
+server noarchive float rsqdg_air_flutter = 1.1;   // units/tic of sideways wobble a MASSDEF `flutter` thing gets  [VREALMS: scale to Realms; was 0.35]
 server noarchive int   rsqdg_air_maxtics = 1400;  // world tics before the air lets go of something that never lands
 // The carry (rs_held.zs):
 server noarchive bool  rsqdg_hold_turn  = true;   // a held thing tips with your wrist (a voxel turns all three ways)

@@ -494,8 +494,13 @@ class RSQDG_Reach
 	//
 	// Sanity check against stock numbers: the player is 56 units tall and 32
 	// wide, giving 56 * 1.2 / 34 = 1.98 m and 32 / 34 = 0.94 m. Both correct.
-	const UNITS_PER_METRE_XY = 34.0;
-	const PIXELSTRETCH       = 1.2;
+	// VREALMS (changed: owner 2026-11-16, "scale to Realms"): the package's metre made a real metre on a Realms map in
+	// the headset. Was 34.0 / 1.2 (Doom's). 107.4 Realms map units to the metre horizontally (the VR scale,
+	// docs/ITEM_DESIGN.md; the headset's live metre is the eye anchor, rothmap.cpp, which a const cannot read) and
+	// the headset's vertical stretch, Realms' FY/FX 355.06 / 309.77 = 1.1462 (rothmap.cpp ROTH_VIEW_VSTRETCH: the
+	// level's pixelstretch in the headset; flat keeps 1.0).
+	const UNITS_PER_METRE_XY = 107.4;
+	const PIXELSTRETCH       = 1.1462;
 
 	// The true physical length of a map-space vector, in metres.
 	static double Metres(Vector3 v)

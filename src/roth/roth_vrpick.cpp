@@ -145,6 +145,7 @@
 #include "roth_candles.h"
 #include "roth_gestures.h"
 #include "roth_held.h"
+#include "roth_grabglue.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -767,6 +768,17 @@ void TickHand(int role, AActor *pmo)
 	ReadButtons(h, gripEdge, trigEdge);
 	// A grip closing at the Lamp's bail takes the lamp (roth_held.h, owner Q2): it is not a use.
 	if (gripEdge && HeldGripTaken(role)) gripEdge = false;
+	// THE PACKAGE'S GRIP FIRST (owner 2026-11-16, "map to VRealms grips"; roth_grabglue.h GrabGlueTakesGrip): a hand on
+	// an item RSQ Distance Grab takes (its walk-up grab) or carrying what its palm caught -- that press is the package's,
+	// which eats the grip key and takes the item through the original's pickup (its catch path). VRealms' grip keeps
+	// everything else: doors, switches, levers, wall faces, and every object that is not an offered item.
+	if (gripEdge && GrabGlueTakesGrip(P.level, role))
+	{
+		if (Logging())
+			Printf("[roth_vrpick] %s hand grip: RSQ Distance Grab's grip takes this press (its walk-up grab or its carry) -- not also a use\n",
+				RoleName(role));
+		gripEdge = false;
+	}
 
 	if (Logging())
 	{

@@ -40,6 +40,8 @@
 #include "roth_raw.h"
 #include "roth_dbase100.h"
 #include "vm.h"
+#include "events.h"
+#include "types.h"    // PField, PType (RSQDG_Near.ready)
 #include <algorithm>
 
 namespace roth
@@ -135,6 +137,22 @@ void GrabGlueTick(FLevelLocals *level)
 		gTakeable = takeable;
 		gNotItems = notItems;
 	}
+}
+
+bool GrabGlueTakesGrip(FLevelLocals *level, int role)
+{
+	if (level == nullptr || level->localEventManager == nullptr || (role != 0 && role != 1)) return false;
+	static const FName nearName("RSQDG_Near"), readyName("ready");
+	for (DStaticEventHandler *eh = level->localEventManager->FirstEventHandler; eh != nullptr; eh = eh->next)
+	{
+		if (eh->GetClass()->TypeName != nearName) continue;
+		// near.zs: `transient bool ready[2]` -- the package's own answer for this tic (its WorldTick)
+		PField *f = dyn_cast<PField>(eh->GetClass()->FindSymbol(readyName, true));
+		if (f == nullptr || f->Type == nullptr || f->Type->Size != 2 * sizeof(bool)) return false;
+		const bool *ready = (const bool *)eh->ScriptVar(readyName, nullptr);
+		return ready[role];
+	}
+	return false;
 }
 
 } // namespace roth
