@@ -1004,7 +1004,9 @@ void TickHand(int role, AActor *pmo)
 	// a surface the tip was close to last tic and has now reached or passed
 	// (along last tic's ray) counts as pressed too. Not for an object: its
 	// actor may be gone by now, and a pointer to it is not followed.
-	if (h.pressReady)
+	// a hand holding a pull or a twist (roth_worldhands.h) presses nothing with its fingertip meanwhile
+	if (h.pressReady && WorldHandsHolding(role)) { h.pokeArmed = false; h.lastPokeDist = 1e9; }
+	else if (h.pressReady)
 	{
 		if (h.havePick && h.pick.dist <= kPokeIn * upm)
 		{

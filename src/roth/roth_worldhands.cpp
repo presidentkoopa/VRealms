@@ -950,6 +950,13 @@ bool WorldHandsGripTaken(int role)
 	return TryPull(role, h, pmo);
 }
 
+bool WorldHandsHolding(int role)
+{
+	if (role < 0 || role > 1 || S.level == nullptr) return false;
+	const HandW &w = S.hand[role];
+	return w.claimed || w.pull.engaged || w.twist.engaged;
+}
+
 bool WorldHandsItemTipping(int role)
 {
 	if (S.level == nullptr || role != ItemRole() || !IsVial(RightItem())) return false;
@@ -1167,10 +1174,13 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	int n = 0, samples = 0, hits = 0;
 	int kinds[5] = { 0, 0, 0, 0, 0 };
 	std::map<int, int> met;   // the records the dispatcher matched at the samples (the diagnostic)
+	std::vector<DVector3> pts;   // every matching point: the spot is the one nearest their middle (a record over several
+	                             // sectors -- the tomb lids -- has its middle over none of them)
 	auto count = [&](const Pick &p) {
 		const uint16_t r = isUse ? UseRecordOf(p) : ExamineRecordOf(p);
 		met[r]++;
 		if (r != record) return;
+		pts.push_back(p.hitPos);
 		sum += p.hitPos; n++;
 		lo = DVector3(std::min(lo.X, p.hitPos.X), std::min(lo.Y, p.hitPos.Y), std::min(lo.Z, p.hitPos.Z));
 		hi = DVector3(std::max(hi.X, p.hitPos.X), std::max(hi.Y, p.hitPos.Y), std::max(hi.Z, p.hitPos.Z));
@@ -1257,6 +1267,12 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	diag += "]";
 	if (n == 0) { how = "no point of its surfaces matches it now (spent, or off?)" + diag; return false; }
 	at = sum / n;
+	{
+		double bd = 1e30;
+		DVector3 best = at;
+		for (const DVector3 &q : pts) { const double d = (q - at).LengthSquared(); if (d < bd) { bd = d; best = q; } }
+		at = best;
+	}
 	how.Format("%d matching point(s), (%.1f %.1f %.1f)..(%.1f %.1f %.1f)%s%s", n, lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z,
 		haveNormal ? FStringf(", the face toward (%.2f %.2f)", normal.X, normal.Y).GetChars() : "", diag.GetChars());
 	return true;
@@ -1405,9 +1421,7 @@ CCMD(roth_worldtest)
 	{
 		FVRPoseTestHand ph;
 		if (!VRPoseTest_Hand(role, ph)) { Printf("roth_worldtest grip: no %s hand (roth_xrpose hand first)\n", RoleName(role)); return; }
-		ph.grip = (float)atof(argv[3]);
-		ph.trigger = 0.f;
-		ph.triggerTouch = false;
+		ph.grip = (float)atof(argv[3]);   // the trigger and its touch as the pose gave them
 		VRPoseTest_SetHand(role, ph);
 		Printf("[roth_worldtest] the %s hand's grip %.2f (tic %d)\n", RoleName(role), ph.grip, S.level->maptime);
 		return;

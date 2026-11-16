@@ -51,6 +51,11 @@ void WorldHandsEndLevel();
 // twist (it set one up), so the picker makes no use of it.
 bool WorldHandsGripTaken(int role);
 
+// roth_vrpick.cpp: the hand of `role` is holding a pull or a twist (its grip went to one): its fingertip press makes no
+// use meanwhile (the PC run of 52a1343f: a hand gripping a lever with the index off the trigger -- the press pose --
+// pressed the lever with its fingertip before the pull, two uses for one lever).
+bool WorldHandsHolding(int role);
+
 // roth_held.cpp: the item hand's vial is being drunk (at the mouth and leaning): the eyes' examine waits.
 bool WorldHandsItemTipping(int role);
 
