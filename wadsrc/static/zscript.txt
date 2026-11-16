@@ -61,6 +61,8 @@ version "5.0.0"
 #include "zscript/actors/loaderprop.zs"
 #include "zscript/actors/realmsheld.zs"
 #include "zscript/actors/realmshands.zs"
+#include "zscript/actors/realmsgrab.zs"
+#include "zscript/rs_laser.zs"	// RS -- the RS laser (hw_rslaser.cpp; RemaSelaco's, copied for RSQ Distance Grab)
 
 // 3D Platform by FishyClock, GPL-3.0, https://github.com/FishyClock/3Dplatform
 // The library's two core files, unmodified; see zscript/fishy/CREDITS.txt.

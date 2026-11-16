@@ -1,0 +1,322 @@
+// VREALMS COPY (2026-11-16): this file is RSQ Distance Grab's CVARINFO from RSQ_UBQSeries 9eb2766d, with ONE change:
+// every declaration carries `noarchive`. VRealms shares the owner's doomxr.ini with his hands build and must never
+// write archived settings into it (CLAUDE.md), so these cvars live for the session only: names, types, scopes and
+// defaults are the package's, untouched. Nothing else in this pack is changed (see docs/rsq_distancegrab/CHECKLIST.md).
+
+// AN UNDECLARED CVAR IS NOT AN ERROR IN ZSCRIPT, IT IS A ZERO.
+//
+// So every name the code reads is declared here, and a reach of 0 or a spread
+// of 0 switches the cone off silently rather than loudly. The spin-out of the
+// desktop package nearly shipped with nineteen cvars stranded in the wrong
+// region of its own CVARINFO for exactly this reason.
+//
+// MOSTLY `user`: how YOUR hands are read and what YOU see. Thirteen are `server`
+// (the flight path, the tumble and others the playsim must agree on). Several user
+// settings do change the play (throw strength, carry, damage): QuestZDoom 17.3 has
+// no netplay, so this is single-player safe; a netplay pass would move them to server.
+
+// ---- the cone ------------------------------------------------------------
+// REACH AND SPREAD ARE SEPARATE AND MUST STAY SEPARATE. How far you can pull
+// from and how precisely you have to point are different complaints; one
+// slider for both forces one of them to be wrong.
+user noarchive bool  rsqdg_on       = true;    // the whole mechanic
+user noarchive float rsqdg_reach    = 512.0;   // map units. ~15 m horizontally
+user noarchive float rsqdg_spread   = 12.0;    // degrees, half-angle. A real cone in the
+                                     // room, not in map space -- see cone.zs
+user noarchive bool  rsqdg_sight    = true;    // through a wall is not pointing at it
+
+// ---- what may be pulled (policy.zs) ---------------------------------------
+// The table decides what is an OBJECT; these switch whole families of it on
+// and off. A living monster is never pullable from range (the off hand's walk-up
+// Headlock holds one: RSQ Melee since 11-01); the +1 bonuses are a switch since 10-29.
+user noarchive bool  rsqdg_corpses  = false;   // a corpse is a prop. OFF by default (the owner, 10-31: "i don't want to grab
+                                     // corpses"); was on since 10-29
+user noarchive bool  rsqdg_barrels  = true;    // both barrels -- the thing this is for
+user noarchive bool  rsqdg_flares   = true;    // RSQ FnF flares lying on the floor, dropped or thrown (owner 11-05)
+user noarchive bool  rsqdg_weapons  = true;    // pull a gun to you. The desktop's default
+                                     // is off because a HAND grab of a gun is a
+                                     // whole interaction; a pull is the pickup
+user noarchive bool  rsqdg_powerups = true;    // spheres, berserk, suit, map. ON by default (10-29)
+user noarchive bool  rsqdg_ammo     = true;    // ammunition (10-29: each pickup kind its own switch)
+user noarchive bool  rsqdg_health   = true;    // medikits, stimpacks
+user noarchive bool  rsqdg_armor    = true;    // armour
+user noarchive bool  rsqdg_keycards = true;    // keys
+user noarchive bool  rsqdg_bonuses  = true;    // the +1 health and armour bonuses (lowest weight)
+
+// ---- THE GRIP UP CLOSE (near.zs, the owner 10-29) -------------------------
+user noarchive bool   rsqdg_near        = true;    // grip with the palm on a thing takes it (pickup used, barrel/corpse carried)
+user noarchive float  rsqdg_near_m      = 0.30;    // metres from the palm to the thing's body
+// (The Headlock and its settings rsqdg_collar* moved to RSQ Melee as rsqml_headlock* on 2026-11-01.)
+user noarchive string rsqdg_keys_main   = "446";      // the main grip's key codes (as RSQ_TacticalRig reads them)
+user noarchive string rsqdg_keys_off    = "443 436";  // the off grip's key codes
+
+// ---- THE TRIGGER IS THE GESTURE ------------------------------------------
+//
+// There is no button in the gesture. Turning your palm out arms the reach and
+// HOLDS it, the wrist flick pulls, and rolling your palm back lets go. Three
+// acts, one continuous motion, nothing to press.
+//
+// AND A CONTINUOUSLY READABLE TRIGGER CANNOT GET STUCK, which is the real prize
+// over any button. A netevent is an edge: a release swallowed by a focus change
+// or a menu leaves the grab held forever, which is why the button path below
+// needs a timeout and the pose path does not. The pose is read fresh from the
+// controller every tic -- if your palm is not out, you are not holding
+// anything, and nothing has to be remembered to know that.
+//
+// The button survives as an optional fallback for a desktop test, or for anyone
+// who prefers one. With both on they simply both work.
+user noarchive bool rsqdg_button = false;
+
+// ---- THE PALM GATE -------------------------------------------------------
+//
+// WHERE THE HAND IS, not what it is doing. Turn your palm out and the reach
+// arms; hold the controller in a gun grip and it does not. The button alone
+// says "grab" but cannot say "I meant to reach", so without this the hand pulls
+// things across the room from a gun grip and the only warning is that it
+// happened.
+//
+// GATED ON THE TARGET, not on the drawing. Gating the beam alone would hide the
+// ray and leave the grab reaching exactly as before. No target means no beam,
+// no lock and no pull, from one test.
+//
+// THE POSE GATES, IT DOES NOT TRIGGER, and that is a netplay rule rather than a
+// preference. A pose is local -- the VR fields are written for the camera player
+// only -- so a pose-only trigger cannot be replicated. The netevent travels; the
+// pose decides whether it meant anything.
+user noarchive bool  rsqdg_palm       = true;
+
+// PALM OUT, a quarter turn. Compared as a DISTANCE from this target using the
+// ABSOLUTE roll, so one number covers both wrists -- a right hand turning
+// palm-out rolls one way and a left hand the other.
+user noarchive float rsqdg_palm_roll  = 90.0;
+
+// How far off still counts. Generous on purpose: this is a gross wrist position,
+// not precision aiming.
+user noarchive float rsqdg_palm_tol   = 30.0;
+
+// AND PITCH, BECAUSE ROLL ALONE IS NOT SAFE. An idle hand rests within any
+// useful roll tolerance, so roll by itself arms the reach whenever you are not
+// thinking about it. Pitch is what has no overlap: a hand hanging at your side
+// sits around forty degrees below level and a hand reaching at something does
+// not. Degrees; the hand must be ABOVE this. -181 disables this half.
+user noarchive float rsqdg_palm_pitch = -30.0;
+
+// ---- trusting the pose ---------------------------------------------------
+// The VR hand fields do NOT freeze when a menu opens -- they collapse to the
+// body position and snap back, so the first frame either side reads as a huge
+// swing. Latched on a jump rather than on `menuactive`, because a jump test
+// needs no engine symbol, also catches tracking loss, and cannot be wrong about
+// something it does not consult.
+//
+// Metres of apparent hand travel in ONE TIC (28.6 ms) that means the pose lied.
+// No arm moves a metre in 28 ms.
+user noarchive float rsqdg_jump_m = 1.0;
+
+// Tics the cone must hold the SAME target before the pose path locks it (G2). 0 = at once (the old way).
+user noarchive int   rsqdg_lock_dwell = 0;
+
+// ---- the tell ------------------------------------------------------------
+// A hand holding a melee weapon (a saber, a chainsaw, a fist) or another mod's
+// hand system (RS_ShieldSawQ, the QuestSaber's Force hand) does not reach: a
+// swing is full of the palm-out flick this mod listens for.
+user noarchive bool  rsqdg_yield    = true;
+// TWO-HANDING BY WHERE THE OFF HAND IS (reach.zs TwoHandRaw, 11-02 second pass): with a gun in the main hand, the off
+// controller IN FRONT of the gun hand (5 to 70 cm along the barrel) and within this many metres of the barrel line is on
+// the gun: the grab stands down. 0 = only the engine's two-hand latch and BD22 VR's two-hand tokens count.
+// A NEW NAME, NOT rsqdg_steady_m: that one was "the hands within 0.5 m of each other", which also caught an off hand
+// simply raised palm out beside the gun (hands 30-45 cm apart) and hid its beam; an archived cvar keeps its old value
+// in every player's ini, so the rule could only change under a new name.
+user noarchive float rsqdg_twohand_r = 0.2;
+user noarchive bool  rsqdg_lightup  = false;   // recolour the target itself (translation)
+user noarchive bool  rsqdg_glow     = true;    // light the target in its own silhouette
+user noarchive float rsqdg_glow_a   = 1.0;     // glow brightness multiplier
+user noarchive bool  rsqdg_voxel_flash = true; // a voxel-drawn target flashes its colour instead of the glow twin (G7)
+user noarchive float rsqdg_flash    = 24.0;    // tics per full cycle. SLOW on purpose --
+                                     // a room full of pickups must not strobe
+
+// ---- the launch gesture --------------------------------------------------
+// DEGREES OF WRIST PITCH PER TIC, so it is a RATE and not a total: a slow
+// deliberate lift of the whole forearm never crosses it however far it travels,
+// while a sharp tip of the wrist does immediately. If it ever misfires the fix
+// is to RAISE this, never to shorten the sampling window.
+user noarchive float rsqdg_flick_deg = 5.0;
+
+// ---- the flight ----------------------------------------------------------
+// Impulse-and-steer: the object is given a velocity and the engine moves it,
+// which is where collision, wall sliding and stairs come from for free.
+user noarchive float rsqdg_flight_speed   = 12.0;   // metres/sec the steering aims for
+user noarchive float rsqdg_steer          = 40.0;   // m/s^2 of steering authority, at
+                                          // the reference mass
+user noarchive float rsqdg_pull_kg        = 10.0;   // KILOGRAMS the pull moves almost
+                                          // effortlessly. A thing of this mass
+                                          // gets half the pull's strength; a
+                                          // clip gets nearly all of it, the
+                                          // barrel (60 kg) a seventh. Raise it
+                                          // and heavy things come easier.
+                                          // Masses come from MASSDEF (mass.zs)
+user noarchive bool  rsqdg_flight_gravity = false;  // let a pull sag. A legitimate feel
+user noarchive int   rsqdg_flight_mode    = 2;     // 0 steer to the palm (impulse + bounded steering), 1 a lob re-solved every tic (D9 A/B), 2 the WorldHands path (default, 10-27)
+user noarchive float rsqdg_arc_apex       = 1.0;   // arc mode: how high the lob peaks, metres (lower ceilings win)
+user noarchive bool  rsqdg_flight_duck    = true;  // dip under a lower ceiling ahead (doorways) instead of meeting the lintel
+                                          // and the cheapest thing here to A/B
+user noarchive float rsqdg_flight_radius  = 2.0;    // a pickup's radius is a TRIGGER
+                                          // volume, not a hull -- a clip is 20
+                                          // units wide and looks like 4
+user noarchive float rsqdg_flight_timeout = 140.0;  // the MINIMUM tics before a pull
+                                          // that cannot arrive is dropped. A
+                                          // slow heavy pull gets longer: twice
+                                          // its straight-line travel time
+
+// ---- arrival -------------------------------------------------------------
+// THE DWELL IS NOT POLITENESS. A state that exists for zero tics cannot be
+// observed by anything reading last tic's value, and that is exactly how the
+// desktop catch window came to be shut rather than merely tight. Four tics is
+// ~114 ms: several real looks at the real arrival position, including one after
+// the hand's own pose has settled.
+user noarchive float rsqdg_catch_radius = 24.0;
+user noarchive float rsqdg_catch_hold   = 4.0;
+
+// CONSUMED ON THE WAY IN, or carried?
+//
+// On: catching a weapon equips it and catching a medikit heals you -- "caught
+// it and used it right away". Off: everything is carried instead, which is the
+// only way to pull a medikit across a room in order to take it somewhere.
+//
+// A switch rather than a rule because both are real wants, and the desktop
+// build's mistake was offering only one of them.
+user noarchive bool rsqdg_catch_takes = true;
+
+// ---- the throw -----------------------------------------------------------
+// Opening your hand while it is moving throws what you are carrying; opening it
+// at rest drops it. One act, two meanings, decided by whether your arm was
+// doing anything -- so there is no separate throw input to get wrong.
+//
+// Scales the differenced palm velocity. There is no native hand velocity on
+// this engine, so the peak of a short window is differenced from the pose.
+user noarchive float rsqdg_throw_scale = 1.0;
+user noarchive float rsqdg_throw_boost = 2.5;    // the throw's speed is multiplied by this (after weight divides it): chuck a barrel
+user noarchive float rsqdg_throw_stun  = 20.0;   // damage from a thrown thing that knocks a monster into its pain and shoves it
+user noarchive float rsqdg_throw_spin  = 1.0;    // how fast a thrown thing turns in the air (0 = none)
+user noarchive bool  rsqdg_trail       = true;   // a faint trail behind a pulled thing
+user noarchive bool  rsqdg_dust        = true;   // a hard landing kicks up dust
+user noarchive float rsqdg_throw_assist = 12.0;  // degrees: a throw within this of a monster bends to hit it (0 = off)
+user noarchive bool  rsqdg_lockon = true;        // Barrel Lock-On (owner 11-07, ON): a free palm locks a monster; barrels thrown or uppercut (RSQ Melee) go to it
+user noarchive bool  rsqdg_swing        = true;   // a held thing swung into a monster hits it (by its weight and the swing's speed)
+user noarchive float rsqdg_swing_mps    = 3.0;    // m/s of the held thing's own travel below which a swing is not a hit
+user noarchive int   rsqdg_hitstop      = 0;      // OPTION: tics a monster a thrown thing hits freezes for (0 = off; 3 tap, 4, 6 heavy)
+user noarchive bool  rsqdg_sounds      = true;   // whoosh on a throw (higher the faster), thud on a catch and a landing (deeper the heavier)
+user noarchive float rsqdg_two_hand    = 2.0;    // the other palm on a held thing: it handles as if this many times lighter (1 = off)
+user noarchive bool  rsqdg_body_shield = true;   // a held corpse or barrel stops shots and fireballs (a barrel goes off when it is hit)
+
+// THE ARM HAS MASS TOO. Let go and the object keeps arm/(arm+kg) of the hand's
+// speed: a keycard leaves at hand speed, a 60 kg barrel at a third of it.
+user noarchive float rsqdg_arm_kg      = 30.0;
+
+// THE IMPACT (throw.zs). Kinetic energy over this many joules is one point of
+// damage: a thrown shotgun at 12 m/s ~17, a barrel at 5 m/s ~50.
+user noarchive float rsqdg_throw_j       = 15.0;
+user noarchive float rsqdg_throw_min     = 3.0;   // m/s below which nothing is an impact
+user noarchive float rsqdg_throw_explode = 4.0;   // m/s THROWN that sets off an `impact explode` MASSDEF row (a barrel)
+                                        // where it lands. 0 never
+
+// ---- the carry (hold.zs) ---------------------------------------------------
+// A SPRING, NOT A TELEPORT: the object is asked to move toward a point ahead of
+// your hand, and walls refuse. Mass scales the spring, so heavy things trail.
+user noarchive float rsqdg_hold_dist   = 0.30;   // metres ahead of the hand (plus half the
+                                       // object), so it is not inside your view
+user noarchive float rsqdg_hold_k      = 0.6;    // spring stiffness for a weightless thing
+user noarchive float rsqdg_hold_vmax   = 40.0;   // map units/tic, ever
+user noarchive float rsqdg_hold_break  = 1.5;    // metres held back for half a second and
+                                       // you let go. 0 never
+user noarchive bool  rsqdg_burden      = true;   // heavy things slow you down
+user noarchive float rsqdg_burden_kg   = 120.0;  // carrying this much halves your speed
+
+// ---- the laser, the dot, the cone (laser.zs) ---------------------------
+// THREE SINGLE OBJECTS PER HAND, each interpolated by the renderer. The bead
+// chain they replaced strobed in the headset and is gone.
+//
+//   beam  a model shaft of light, core + halo, from the palm to what it hits
+//   dot   one glow where the line lands, scaled to keep one apparent size
+//   cone  DXR's grab-reach cone: the exact volume the grab tests
+user noarchive bool  rsqdg_beam        = true;
+// Hide the grab beam on a hand RSQ_LaserSight is already lighting (G6). OFF (owner 11-02: both lasers at once).
+// A NEW NAME (was rsqdg_beam_yield, default true until 11-02): user cvars are archived, so every ini that ever ran
+// the old pack still says rsqdg_beam_yield=true and changing its default changed nothing for those players. The
+// old name is no longer declared, so its stale ini line is ignored.
+user noarchive bool  rsqdg_ls_yield    = false;
+user noarchive float rsqdg_beam_w      = 1.0;    // width multiplier
+user noarchive float rsqdg_beam_a      = 0.8;
+user noarchive bool  rsqdg_dot         = true;
+user noarchive float rsqdg_dot_size    = 1.0;
+user noarchive bool  rsqdg_cone        = true;
+user noarchive float rsqdg_cone_a      = 0.45;   // faint on purpose: it surrounds your view
+user noarchive float rsqdg_lead        = 1.0;    // TICS the hand end is drawn AHEAD of the
+                                       // hand, cancelling the renderer's one-tic
+                                       // interpolation lag. 0 off. Overshoots a
+                                       // little when a fast swing stops dead
+user noarchive bool  rsqdg_laser_idle  = true;   // draw even when it has found nothing.
+                                       // You cannot aim an invisible thing
+
+// ---- feedback (feel.zs) --------------------------------------------------
+// Report only: switching all of these off changes nothing about what the grab
+// DOES, it just does it silently.
+//
+// TWO HAPTIC ROUTES, and they cannot be mixed on one controller (feel.zs):
+//   RUMBLE (default) -- amplitude, through the engine's quake-to-controller
+//     path: a steady hum while locked, a rumble that builds through the pull,
+//     a hard hit on the catch, a shudder when a carried thing is held back.
+//   PULSE -- the fixed 0.8 / 150 ms buzz, so the grab speaks in rhythm: a tick
+//     on lock and launch, a ping that speeds up as the object closes, quiet,
+//     then a tick on the catch (two if it is heavy).
+user noarchive bool  rsqdg_haptics     = true;
+user noarchive bool  rsqdg_haptic_ramp = true;   // the speeding-up ping during a pull
+// RUMBLE: amplitude, through the engine's quake-to-controller path. It and the
+// fixed buzz cannot share a controller (feel.zs), so this picks the route.
+// Rumble feels like nothing if vr_quake_haptic_level is 0 -- turn this off then.
+user noarchive bool  rsqdg_rumble       = true;
+user noarchive float rsqdg_rumble_gain  = 1.0;
+user noarchive float rsqdg_rumble_lock  = 0.15;  // the steady level while something is locked
+user noarchive bool  rsqdg_rumble_carry = true;  // rumble when a carried thing is held back
+user noarchive bool  rsqdg_catch_flash = true;   // a green bloom at the palm on a catch
+
+// ---- diagnostics ---------------------------------------------------------
+// Separate from each other because they answer different questions: `debug`
+// reports what happened, `trace` reports why something refused. A refusal that
+// says nothing is five faults with one symptom.
+user noarchive bool  rsqdg_debug    = false;
+user noarchive bool  rsqdg_trace    = false;
+
+// Doors lifted by hand (moved from RSQ_TacticalRig, 10-27).
+user noarchive bool  rsqdg_door        = true;    // take hold of a door and lift it
+user noarchive bool  rsqdg_door_grip   = true;    // the grab's grip takes hold
+user noarchive bool  rsqdg_door_use    = true;    // Use takes hold
+user noarchive bool  rsqdg_door_palm   = true;    // a palm turned out against the door takes hold
+user noarchive float rsqdg_door_commit = 0.40;    // let go past this much open and the door finishes opening
+user noarchive float rsqdg_door_gain   = 2.5;     // door travel per unit of hand travel
+user noarchive bool  rsqdg_palm_switch = true;    // a palm laid on a switch flips it (the line's own special, as Use)
+
+// ---- FROM RS_WORLDHANDS (2026-10-27) ---------------------------------------
+// SERVER, these: they decide where a pulled or thrown thing goes, and a `user`
+// cvar's name and value share a 256-byte line. Every default is WorldHands' own
+// (its CVARINFO and code), not a new number.
+//
+// The pull's path, rsqdg_flight_mode 2 (rs_distance.zs RS_Pull):
+server noarchive float rsqdg_path_speed = 22.0;   // metres/sec; the time of flight is distance / this (was 15: owner 10-31, "quicker")
+server noarchive float rsqdg_path_tmin  = 6.0;    // tics, the shortest flight
+server noarchive float rsqdg_path_tmax  = 40.0;   // tics, the longest (was 70)
+server noarchive float rsqdg_path_accel = 1.6;    // 1 is constant speed from the first tic, above 1 a slower pick-up (flight.zs PathE, 11-05: the Whip's even pace)
+server noarchive float rsqdg_path_arc   = 0.25;   // arc height as a fraction of the launch distance, capped by the route's ceiling (was 0.15)
+server noarchive float rsqdg_path_smooth = 0.6;   // how much of the flight settles softly into the hand (0 = full speed into the palm; PathE)
+server noarchive float rsqdg_spin       = 1.0;    // turns about its own up across a pull, as well as the tumble (0 off)
+// End-over-end turns across the whole pull, every flight mode. WorldHands' shipped
+// default 0.5 ("beautiful" in the headset); whole numbers land the way they left,
+// a half turn snaps 180 degrees on the catch (invisible on a barrel). 0 off.
+server noarchive float rsqdg_tumble     = 1.0;   // (was 0.5: a whole turn lands the way it left)
+// Everything that leaves a hand, thrown or set down (rs_flight.zs RS_Flight):
+server noarchive float rsqdg_air_gravity = 0.27;  // fraction of Doom's gravity it falls at; 0.27 is real gravity, 1 is Doom's
+server noarchive float rsqdg_air_flutter = 0.35;  // units/tic of sideways wobble a MASSDEF `flutter` thing gets
+server noarchive int   rsqdg_air_maxtics = 1400;  // world tics before the air lets go of something that never lands
+// The carry (rs_held.zs):
+server noarchive bool  rsqdg_hold_turn  = true;   // a held thing tips with your wrist (a voxel turns all three ways)
+server noarchive float rsqdg_hold_sag   = 1.0;    // heavy things hang lower and dip when swung. 0 off
+user noarchive int   rsqdg_cfgver     = 0;     // settings generation (not a setting): each fix to old settings runs once

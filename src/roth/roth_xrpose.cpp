@@ -50,7 +50,9 @@
 
 #include "roth_hands.h"
 #include "roth_vrpick.h"
+#include "roth_objects.h"
 #include "actor.h"
+#include "actorinlines.h"
 #include "d_player.h"
 #include "g_levellocals.h"
 #include "c_dispatch.h"
@@ -61,6 +63,8 @@
 #include "r_data/vr_handpose.h"
 #include "r_data/vr_posemath.h"
 #include <math.h>
+
+EXTERN_CVAR(Float, vr_weaponRotate)   // file scope, never inside a namespace
 
 namespace roth
 {
@@ -295,6 +299,83 @@ CCMD(roth_xrpose)
 		VRPose_QuatFromYPR(headYaw + atof(argv[3]), atof(argv[4]), atof(argv[5]), q);
 		VRPoseTest_SetAim(role, q);
 		Printf("roth_xrpose: %s hand aim yaw %s pitch %s roll %s\n", roth::RoleName(role), argv[3], argv[4], argv[5]);
+		return;
+	}
+	if (!stricmp(verb, "aimat") || !stricmp(verb, "aimturn"))
+	{
+		// THE AIM THAT THE PUBLISHED FIELDS POINT AT A THING. What a script reads (AttackAngle + 90, AttackPitch,
+		// AttackRoll) is the aim pose through the device's arithmetic (vr_posemath.h VRPose_AimAngles,
+		// VRPose_PublishedAim): published yaw = body yaw + (aim yaw - head yaw); published pitch = aim pitch + 40
+		// (the device's bias) + 2 x vr_weaponRotate; published roll = -aim roll. Inverted here, so
+		//   aimat <main|off> item [roll]       the published aim points at the middle of the nearest Realms object
+		//                                      RSQ Distance Grab may take, wrist rolled `roll` (published; 90 = palm out)
+		//   aimat <main|off> <x> <y> <z> [roll]  at a map point
+		//   aimturn <main|off> <dpitch> <roll>   the last aimat's aim tipped up by dpitch, the wrist at `roll` (a flick
+		//                                      is a big dpitch in one tic; roll 0 turns the palm back)
+		using namespace roth;
+		const int role = argv.argc() >= 3 ? RoleArg(argv[2]) : -1;
+		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose %s <main|off> ...\n", verb); return; }
+		static double sYaw[2] = { 0, 0 }, sPitch[2] = { 0, 0 };
+		double wantYaw = 0, wantPitch = 0, roll = 90;
+		const bool turn = !stricmp(verb, "aimturn");
+		if (turn)
+		{
+			if (argv.argc() < 5) { Printf("roth_xrpose aimturn <main|off> <dpitch> <roll>\n"); return; }
+			wantYaw = sYaw[role];
+			wantPitch = sPitch[role] + atof(argv[3]);
+			roll = atof(argv[4]);
+		}
+		else
+		{
+			const DVector3 from = role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos;
+			DVector3 at;
+			int ra = 4;
+			if (argv.argc() >= 4 && !stricmp(argv[3], "item"))
+			{
+				PClassActor *cls = PClass::FindActor("RealmsTakeable");
+				AActor *best = nullptr;
+				double bestD = 1e18;
+				if (cls != nullptr && pmo->Level != nullptr)
+				{
+					auto it = pmo->Level->GetThinkerIterator<AActor>(cls->TypeName);
+					AActor *mo;
+					while ((mo = it.Next()) != nullptr)
+					{
+						if (mo->flags5 & MF5_NOINTERACTION) continue;   // not offered to the grab
+						const double d = (mo->Pos() - pmo->Pos()).Length();
+						if (d < bestD) { bestD = d; best = mo; }
+					}
+				}
+				if (best == nullptr) { Printf("roth_xrpose aimat: no Realms object the grab may take on this map\n"); return; }
+				at = best->PosPlusZ(best->Height * 0.5);
+				int rs = -1, ri = -1;
+				ObjectForActor(best, rs, ri);
+				Printf("roth_xrpose aimat: the nearest takeable Realms object is %d/%d at (%.1f %.1f %.1f), %.1f units from the %s hand\n",
+					rs, ri, at.X, at.Y, at.Z, (at - from).Length(), RoleName(role));
+			}
+			else
+			{
+				if (argv.argc() < 6) { Printf("roth_xrpose aimat <main|off> item [roll] | x y z [roll]\n"); return; }
+				at = DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
+				ra = 6;
+			}
+			if (argv.argc() > ra) roll = atof(argv[ra]);
+			const DVector3 d = at - from;
+			wantYaw = atan2(d.Y, d.X) * (180.0 / M_PI);
+			wantPitch = atan2(d.Z, sqrt(d.X * d.X + d.Y * d.Y)) * (180.0 / M_PI);
+		}
+		sYaw[role] = wantYaw;
+		sPitch[role] = wantPitch;
+		float head[3]; float headYaw = 0.f;
+		VRPoseTest_Head(head, headYaw);
+		const double bodyYaw = r_viewpoint.Angles.Yaw.Degrees();
+		const double qYaw = wantYaw - bodyYaw + headYaw;
+		const double qPitch = wantPitch - 40.0 - 2.0 * (double)vr_weaponRotate;
+		float q[4];
+		VRPose_QuatFromYPR(qYaw, qPitch, -roll, q);
+		VRPoseTest_SetAim(role, q);
+		Printf("roth_xrpose: %s hand aim published as yaw %.1f pitch %.1f (up +) roll %.1f\n", RoleName(role), wantYaw, wantPitch, roll);
 		return;
 	}
 	if (!stricmp(verb, "log")) { roth::Report(); return; }

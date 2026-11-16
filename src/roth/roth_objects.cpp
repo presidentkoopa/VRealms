@@ -216,6 +216,12 @@ struct Pending
 	uint16_t renderId = 0;
 	uint8_t  rotation = 0;
 	bool     fixedAngle = false;
+	// A PICTURE OBJECT WITH NO COMMAND (+0x0e id 0) and none of the type-4 refusals (+9 bits 0x12, 0x01): what
+	// activate_targeted_object's type-4 branch would offer to give_item_by_dbase_id (input.c:1034-1086). It is
+	// spawned as RealmsTakeable (wadsrc/static/zscript/actors/realmsgrab.zs), which draws and behaves exactly
+	// as LoaderProp until the runtime finds its picture is an item (roth_grabglue.cpp) -- then RSQ Distance Grab
+	// may take it. Meshes stay LoaderProp: their model frames are bound to that class.
+	bool   plainPicture = false;
 };
 
 std::vector<Pending> gPending;
@@ -253,6 +259,23 @@ PClassActor *PropClass()
 	static PClassActor *cls = nullptr;
 	if (cls == nullptr) cls = PClass::FindActor("LoaderProp");
 	return cls;
+}
+
+// A picture object the original could hand to give_item (Pending::plainPicture): realmsgrab.zs. Falls back to
+// LoaderProp if the class is missing, so a pk3 without it spawns exactly as before.
+PClassActor *TakeableClass()
+{
+	static PClassActor *cls = nullptr;
+	if (cls == nullptr) cls = PClass::FindActor("RealmsTakeable");
+	return cls != nullptr ? cls : PropClass();
+}
+
+// Is this a Realms prop actor (either class)?
+bool IsPropActor(const AActor *mo)
+{
+	if (mo == nullptr) return false;
+	PClassActor *a = PropClass(), *b = TakeableClass();
+	return (a != nullptr && mo->GetClass() == a) || (b != nullptr && mo->GetClass() == b);
 }
 
 } // namespace
@@ -1147,6 +1170,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			}
 			}
 
+			p.plainPicture = !p.isMesh && o.commandID == 0 && (o.renderType & 0x13) == 0;
 			gPending.push_back(p);
 		}
 	}
@@ -1345,14 +1369,13 @@ void RebindObjectActors(FLevelLocals *Level)
 	gObjectActors.clear();
 	gActorObjects.clear();
 	if (Level == nullptr) return;
-	PClassActor *cls = PropClass();
-	if (cls == nullptr) return;
+	if (PropClass() == nullptr) return;
 	auto it = Level->GetThinkerIterator<AActor>();
 	AActor *mo;
 	int found = 0;
 	while ((mo = it.Next()) != nullptr)
 	{
-		if (mo->GetClass() != cls || mo->special2 == 0) continue;
+		if (!IsPropActor(mo) || mo->special2 == 0) continue;   // LoaderProp or RealmsTakeable
 		const uint32_t key = (uint32_t)(mo->special2 - 1);
 		gObjectActors[key] = mo;
 		gActorObjects[mo] = key;
@@ -1384,7 +1407,7 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 	int spawned = 0, failed = 0, wrongSector = 0, outsideSpan = 0, modelled = 0;
 	for (const Pending &p : gPending)
 	{
-		AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
+		AActor *mo = AActor::StaticSpawn(Level, (p.plainPicture && p.rothIndex >= 0) ? TakeableClass() : cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
 		if (mo == nullptr) { failed++; continue; }
 
 		// So the level logic can find this prop again. See FindObjectActor. A

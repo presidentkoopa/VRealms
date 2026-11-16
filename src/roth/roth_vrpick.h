@@ -3,9 +3,10 @@
 // THE VR HANDS POINT AND TOUCH (roth_vrpick.cpp has the whole design).
 //
 // Each hand, every tic in VR: a ray from the index fingertip along the finger,
-// classified by the original's cursor rules (roth_runtime.h ClassifyPick), a
-// thin beam and a marker coloured by the original's cursor state while the
-// hand points, and four gestures that end in the original's own calls:
+// classified by the original's cursor rules (roth_runtime.h ClassifyPick), and
+// gestures IN REACH that end in the original's own calls (2026-11-16: no beam,
+// no marker and no action at range -- RSQ Distance Grab replaces the at-range
+// pointing; the list below is history where it is not in reach):
 //   point + dwell         -> examine   (ExaminePick: examine_object_under_cursor)
 //   point + index tap     -> use       (Activate: activate_targeted_object's port)
 //   fingertip press       -> use

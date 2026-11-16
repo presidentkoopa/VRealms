@@ -393,6 +393,10 @@ bool ActivateObject(AActor *mo, TrigEvent want);
 // frame. Inert unless a Realms level is loaded and roth_pick is set.
 bool UseByHand(player_t *player, TrigEvent want);
 
+// Is this object actor's use the original's pickup (no command chain, and the type-4 branch would take it,
+// read only)? RSQ Distance Grab is offered only these (roth_grabglue.cpp).
+bool ObjectIsPickupItem(AActor *mo);
+
 //==========================================================================
 //
 // THE ORIGINAL'S CURSOR, ON A PICK (roth_vrpick.cpp is its VR caller)

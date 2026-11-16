@@ -1,0 +1,448 @@
+// MEASUREMENT. Runs the cone, publishes what each hand is pointing at, and
+// does nothing else.
+//
+// REGISTERED BEFORE THE GRAB'S OWN HANDLERS (MAPINFO: after HandSync, Policy, MassTable and Voxels, which only
+// answer questions), and that is the semantics rather than a formality. Handlers
+// tick in registration order and that decides who sees whose writes inside one
+// tic. The desktop build's catch test lived in a handler registered 4th and
+// asked "is the flying object on my palm" BEFORE the handler registered 7th
+// wrote the object's new position -- so the only position it ever saw was last
+// tic's, ~23 units short, against a volume needing <= 1.0 where it scored ~17.
+// The window was not tight, it was shut, and it passed testing because the
+// residual error is a constant number of units and so hides entirely at arm's
+// reach.
+//
+// So: this publishes, RSQDG_Grab decides, RSQDG_Tell draws. Nothing in this
+// file writes to the playsim and nothing else in the package runs the cone.
+class RSQDG_Aim : EventHandler
+{
+	private Actor target[2];
+
+	// WHY THE CONE IS NOT RUN BY ITS CONSUMERS. It is a blockmap walk per hand
+	// per tic, and two callers would also be free to disagree about the answer
+	// -- which in a headset reads as the aim being randomly off and is
+	// unfalsifiable from inside the game.
+	static RSQDG_Aim Get()
+	{
+		return RSQDG_Aim(EventHandler.Find("RSQDG_Aim"));
+	}
+
+	Actor TargetFor(int hand) const
+	{
+		return (hand == 0 || hand == 1) ? target[hand] : null;
+	}
+
+	// BARREL LOCK-ON (lockon.zs): a palm the lock-on finds on a monster has no item pick this tic (the monster wins)
+	void Suppress(int hand)
+	{
+		if (hand == 0 || hand == 1) target[hand] = null;
+	}
+
+	// Whether the pose is trustworthy this tic. Published rather than re-derived
+	// so the lock and the carry cannot disagree with the drawing about it.
+	private bool poseTrusted;
+	bool PoseGood() const { return poseTrusted; }
+
+	override void WorldTick()
+	{
+		// consoleplayer, because the VR pose fields are written for the camera
+		// player alone and hold class defaults for everyone else -- both writers
+		// key on `r_viewpoint.camera` and touch only that pawn. There is no path
+		// by which a peer's hand pose reaches this machine.
+		//
+		// So this is a LOCAL read for a LOCAL decision. What it decides travels
+		// afterwards as a command carrying a network ID, never as a position.
+		let p = players[consoleplayer];
+		if (!p || !p.mo)
+		{
+			target[0] = null; target[1] = null; poseTrusted = false;
+			return;
+		}
+		let pmo = p.mo;
+
+		if (pmo.Health <= 0 || !RSQDG_Reach.Flag("rsqdg_on", p, true))
+		{
+			target[0] = null; target[1] = null; poseTrusted = false;
+			return;
+		}
+
+		// THE POSE COLLAPSES TO THE BODY WHEN A MENU IS OPEN -- it does not
+		// freeze, which is the trap.
+		//
+		// OpenXRDeviceMode::SetUp() calls its base unconditionally and only then
+		// gates the hand block on `gamestate == GS_LEVEL && menuactive ==
+		// MENU_Off` (hw_openxrdevice.cpp:568). The level still renders behind an
+		// open menu, so the fields fall back to the pawn's attack point, yaw
+		// becomes viewYaw - 90 and pitch -viewPitch. The first frame after the
+		// menu closes therefore reads as a one-metre swing.
+		//
+		// LATCHED ON A JUMP, NOT ON `menuactive`, and on purpose. Whether a mod
+		// can read `menuactive` from play scope is not established -- stock's own
+		// play code does it, but that is stock reading its own symbol. A jump
+		// threshold needs no engine symbol at all, catches tracking loss as well
+		// as menus, and cannot be wrong about something it does not consult.
+		//
+		// A metre in a single tic is 28.6 ms of arm movement. No arm does that.
+		// IN THE TRACKING SPACE'S FRAME, NOT THE WORLD'S (PORT_SCOPE A2).
+		//
+		// The hand is measured relative to the pawn, and un-rotated by the yaw
+		// of the TRACKING SPACE -- the room you are standing in -- before it is
+		// differenced. Then:
+		//
+		//   - WALKING IS NOT A THROW. The hand's world position moves at
+		//     walking speed while your arm is still; relative to the pawn it
+		//     does not move. Opening a hand while walking used to throw.
+		//   - A TURN IS NOT A THROW. A snap turn swings the tracking space,
+		//     hand included, through 45 degrees about the pawn in one tic -- a
+		//     third of a metre of "hand motion" in 28 ms. Un-rotated by the same
+		//     45, it cancels. Smooth stick turning likewise.
+		//   - A HEAD TURN IS NOT A THROW, and this is why it is not pmo.Angle.
+		//     On QuestZDoom the pawn's angle FOLLOWS THE HEADSET
+		//     (hw_openxrdevice.cpp: G_AddViewAngle(-hmdYawDelta)), while the
+		//     hands stay where they are in the room. Un-rotating by the pawn's
+		//     angle made a glance sideways swing every hand vector -- a hand
+		//     0.4 m out under a 200 deg/s head turn read as 1.7 m/s, a throw.
+		//     (Found in review, 2026-10-26; the first cut of this used Angle.)
+		//
+		// THE TRACKING YAW IS NOT EXPOSED, so it is inferred, and the inference
+		// is exact in the cases that matter. A head turn changes Angle and
+		// leaves both hands' world yaws alone. A snap or stick turn rotates
+		// the whole tracking space, so Angle AND BOTH HAND YAWS change by the
+		// same amount in the same tic. So the frame turns by Angle's change only
+		// on a tic where both hands turned with it. A wrist that happens to
+		// rotate by exactly the head's delta, on both hands at once, inside a
+		// degree and a half, is the only thing that can fool it.
+		//
+		// The jump test uses the same frame, so a teleporter or a fast lift no
+		// longer reads as tracking having lied.
+		poseTrusted = true;
+		// A SAVE COLLAPSES THE POSE FOR ONE TIC, and the jump test below cannot see it. The savegame
+		// picture is rendered through the MONO VRMode::SetUp (hw_entrypoint.cpp:142, toscreen false),
+		// which writes BOTH hands to the pawn's attack point, yaw - 90 and -pitch (hw_vrmodes.cpp:438-443),
+		// and the playsim reads that before the next VR frame puts the hands back. Half a metre: under
+		// rsqdg_jump_m, so a barrel held through a save was thrown at 5.6 m/s (rig, 2026-10-30). Two
+		// real controllers never share one exact position and angle; that is the test. On the tic it
+		// APPEARS only, so a flat-screen run (collapsed on every frame) is not blinded for good.
+		bool same = pmo.AttackPos == pmo.OffhandPos && pmo.AttackAngle == pmo.OffhandAngle && pmo.AttackPitch == pmo.OffhandPitch;
+		bool collapsed = same && !wasSame;
+		wasSame = same;
+		if (collapsed) poseTrusted = false;
+		double ang = pmo.Angle;
+		double hy0 = RSQDG_Reach.Yaw(pmo, 0);
+		double hy1 = RSQDG_Reach.Yaw(pmo, 1);
+		if (framePrimed)
+		{
+			double dA  = RSQDG_Reach.NormDeg(ang - lastAngle);
+			double dH0 = RSQDG_Reach.NormDeg(hy0 - lastHandYaw[0]);
+			double dH1 = RSQDG_Reach.NormDeg(hy1 - lastHandYaw[1]);
+			bool followed = abs(dH0 - dA) < FRAME_TOL && abs(dH1 - dA) < FRAME_TOL;
+			if (abs(dA) > 0.01 && followed)
+				frameYaw = RSQDG_Reach.NormDeg(frameYaw + dA);
+
+			// A HEAD TURN BLINDS THE THROW FOR TWO TICS. Measured in the rig:
+			// on the tic the head turns, the engine reports both hands rotated
+			// the OTHER way by the same amount, and puts them back the tic
+			// after -- the hand pose is built from the new headset yaw and the
+			// previous view yaw for one tic. That is engine code, so a real
+			// head turn does it too, and the hands appear to jump by turn x
+			// arm length: a 20-degree glance read as a 4.7 m/s throw. Nothing
+			// in the pose can tell that jump from a real one, so the sampler
+			// records nothing on those tics. The cost: you cannot throw in the
+			// same instant you whip your head round.
+			if (abs(dA) > HEAD_TURN_DEG && !followed) quietTics = 2;
+		}
+		else
+		{
+			frameYaw = ang;   // any start will do; only changes are ever used
+			framePrimed = true;
+		}
+		lastAngle = ang;
+		lastHandYaw[0] = hy0;
+		lastHandYaw[1] = hy1;
+
+		for (int h = 0; h < 2; h++)
+		{
+			// THE MODIFIER CHANGES WHICH CONTROLLER A HAND IS (reach.zs Ctrl): the jump from one
+			// controller to the other is not a throw nor a flick, so that hand's history restarts.
+			int ctl = RSQDG_Reach.Ctrl(pmo, h);
+			if (ctl != lastCtrl[h]) { primed[h] = false; pitchPrimed[h] = false; lastCtrl[h] = ctl; }
+			// 2026-11-03 (owner: "strafing left and right causes the melee 'whoosh'"): the frame's hand carried to where the
+			// body is this tic, against the body at the VIEW's height (RSQDG_HandSync): a tic with no frame read a still
+			// hand as a step-long throw, and a stair's view dip as a drop
+			Vector3 now = RSQDG_HandSync.Fix(pmo, RSQDG_Reach.Palm(pmo, h), ctl);
+			Vector3 off = now - RSQDG_HandSync.Body(pmo);
+			Vector2 flat = Actor.RotateVector(off.xy, -frameYaw);
+			Vector3 rel = (flat.x, flat.y, off.z);
+
+			Vector3 dRel = rel - lastRel[h];
+			if (primed[h])
+			{
+				double jumped = RSQDG_Reach.Metres(dRel);
+				if (jumped > RSQDG_Reach.Num("rsqdg_jump_m", p, 1.0))
+					poseTrusted = false;
+			}
+			// A bad pose contributes a ZERO sample rather than the collapse
+			// delta, which would otherwise be the hardest throw of the session.
+			palmVel[h * PITCH_WINDOW + palmAt[h]] =
+				(primed[h] && poseTrusted && quietTics <= 0) ? dRel : (0, 0, 0);
+			palmAt[h] = (palmAt[h] + 1) % PITCH_WINDOW;
+			// THIS TIC'S STEP for hold.zs's throw (owner 11-06, D40): a step of exactly nothing is a tic with no new pose
+			// (no frame drew the hands between two tics, so the hand is carried to the body unchanged), not a stop
+			stepNow[h] = (primed[h] && poseTrusted && quietTics <= 0) ? dRel : (0, 0, 0);
+			stepNew[h] = dRel != (0, 0, 0);
+
+			lastRel[h] = rel;
+			primed[h] = true;
+		}
+		if (quietTics > 0) quietTics--;
+
+		// The wrist is sampled whatever the pose is doing, because the sampler
+		// needs an unbroken chain to difference against -- it just contributes
+		// zero on a tic it cannot trust.
+		SampleWrist(pmo, 0, poseTrusted);
+		SampleWrist(pmo, 1, poseTrusted);
+		// and the tic after must not difference against the collapsed pose (a throw, or a flick)
+		if (collapsed) { primed[0] = false; primed[1] = false; pitchPrimed[0] = false; pitchPrimed[1] = false; }
+
+		// Hold last tic's answer through a bad pose rather than acquiring from
+		// the body. Every consumer must do the same: a carry that recomputed
+		// from the live hand point would drag a held object into the player's
+		// chest for as long as the menu stayed open.
+		if (!poseTrusted) return;
+
+		target[0] = RSQDG_Cone.Best(pmo, p, 0);
+		target[1] = RSQDG_Cone.Best(pmo, p, 1);
+	}
+
+	private bool wasSame;          // last tic both hands were written to one point (a collapse)
+	private Vector3 lastRel[2];   // palm relative to the pawn, in the tracking frame
+	private transient int lastCtrl[2];   // the controller each hand was read from last tic
+	private bool    primed[2];
+
+	// The inferred yaw of the tracking space, and what it is inferred from.
+	const FRAME_TOL = 1.5;        // degrees: how closely both hands must follow
+	const HEAD_TURN_DEG = 0.5;    // degrees/tic of unfollowed pawn turn = a head turn
+	private int     quietTics;    // tics the throw sampler records nothing
+	private double  frameYaw;
+	private double  lastAngle;
+	private double  lastHandYaw[2];
+	private bool    framePrimed;
+
+	// ---- palm velocity, for the throw --------------------------------------
+	//
+	// DIFFERENCED, because there is none to read. The fork's AttackVel and
+	// OffhandVel are OpenXR's own XrSpaceVelocity and they do not exist on
+	// stock; the entire VR surface here is ten readonly pose fields.
+	//
+	// THE PEAK OVER A WINDOW, not the last tic. A throw is decided by the
+	// fastest part of the motion, and the hand is usually already decelerating
+	// by the time the fingers open -- taking the final tic would under-read
+	// every throw and the player would have to exaggerate to compensate.
+	private Vector3 palmVel[2 * PITCH_WINDOW];
+	private int     palmAt[2];
+
+	// Map units per tic, direction included, IN THE WORLD -- a throw needs to
+	// know which way. The samples are in the tracking frame; the peak is turned
+	// back into the world by the frame's current yaw.
+	//
+	// READ OVER TWO TICS, NOT ONE (owner pick 24, 2026-10-31; apply/04_DISTANCEGRAB.md §4 item 1a,
+	// surveys/06_GRAB_INTERACTION.md §4.4). The peak is taken over the window's 2-tic deltas --
+	// each pair of adjacent per-tic samples averaged -- and no longer over single tics. A 1-tic delta
+	// carries twice the quantisation and jitter of a 2-tic one, and the MAXIMUM of a noisy set turns
+	// that noise straight into an over-read: the harder the throw, the more samples it has to find a
+	// lucky one in. It also stops one stale tic (the pose written per rendered frame, so a slow frame
+	// repeats the last hand and the next tic carries two tics of motion) from reading as a throw of
+	// twice the speed. Still per tic, so nothing that multiplies it changes units.
+	Vector3 PalmVelocity(int hand) const
+	{
+		if (hand != 0 && hand != 1) return (0, 0, 0);
+		Vector3 best = (0, 0, 0);
+		double bestLen = -1.0;
+		for (int i = 0; i < PITCH_WINDOW; i++)
+		{
+			// sample i and the one before it in time (the ring is written at palmAt, oldest first);
+			// the oldest sample has no older partner inside the window, so it is only ever the newer half
+			if (i == palmAt[hand]) continue;
+			int j = (i + PITCH_WINDOW - 1) % PITCH_WINDOW;
+			Vector3 v = (palmVel[hand * PITCH_WINDOW + i] + palmVel[hand * PITCH_WINDOW + j]) * 0.5;
+			// Compared in REAL length, not map length, or a mostly-vertical
+			// throw would be judged against a stretched axis and win ties it
+			// should lose.
+			double l = RSQDG_Reach.Metres(v);
+			if (l > bestLen) { bestLen = l; best = v; }
+		}
+		Vector2 w = Actor.RotateVector(best.xy, frameYaw);
+		return (w.x, w.y, best.z);
+	}
+
+	// The old reading (the fastest single tic), kept for the debug line only: the release prints both
+	// so the two estimators can be compared on a real throw.
+	// ---- the throw's own reads (hold.zs, owner 11-06: "Throwing is still off, sometimes it doesn't follow through, or it
+	// drops at my feet"; docs/DECISIONS.md D40) ----
+	private Vector3 stepNow[2];
+	private bool stepNew[2];
+
+	// this tic's palm step, map units, the body's motion taken out (the frame-carried hand, HandSync), in the world
+	Vector3 StepWorld(int hand) const
+	{
+		if (hand != 0 && hand != 1) return (0, 0, 0);
+		Vector2 w = Actor.RotateVector(stepNow[hand].xy, frameYaw);
+		return (w.x, w.y, stepNow[hand].z);
+	}
+
+	// this tic brought a new hand pose (false: a tic with no frame between, the step says nothing)
+	bool StepFresh(int hand) const { return (hand == 0 || hand == 1) && stepNew[hand]; }
+
+	// THE THROW'S VELOCITY: the fastest 2-tic window of the last ~200 ms that moves AWAY from you (across the ground
+	// within 60 degrees of where you face, the auto-throw's own gate), so a wind-up faster than the throw is never
+	// what leaves the hand. None such (a sideways or straight-up toss): PalmVelocity, the old read.
+	Vector3 ThrowVelocity(int hand, double faceAngle) const
+	{
+		if (hand != 0 && hand != 1) return (0, 0, 0);
+		Vector2 face = (cos(faceAngle), sin(faceAngle));
+		Vector3 best = (0, 0, 0);
+		double bestLen = -1.0;
+		for (int i = 0; i < PITCH_WINDOW; i++)
+		{
+			if (i == palmAt[hand]) continue;
+			int j = (i + PITCH_WINDOW - 1) % PITCH_WINDOW;
+			Vector3 v = (palmVel[hand * PITCH_WINDOW + i] + palmVel[hand * PITCH_WINDOW + j]) * 0.5;
+			Vector2 w = Actor.RotateVector(v.xy, frameYaw);
+			double across = w.Length();
+			if (across < 0.001 || (w dot face) <= 0.5 * across) continue;
+			double l = RSQDG_Reach.Metres(v);
+			if (l > bestLen) { bestLen = l; best = (w.x, w.y, v.z); }
+		}
+		return bestLen > 0 ? best : PalmVelocity(hand);
+	}
+
+	double PeakOneTicMps(int hand) const
+	{
+		if (hand != 0 && hand != 1) return 0;
+		double b = 0;
+		for (int i = 0; i < PITCH_WINDOW; i++) b = max(b, RSQDG_Reach.Metres(palmVel[hand * PITCH_WINDOW + i]));
+		return b * TICRATE;
+	}
+
+	// ---- the wrist, for the launch gesture ---------------------------------
+	//
+	// THERE IS NO HAND VELOCITY ON THIS ENGINE. None -- no linear velocity, no
+	// angular rate, no trigger or grip scalar. The whole VR surface is ten
+	// readonly pose fields. The fork added AttackVel/OffhandVel natives; they do
+	// not exist here, so any motion gesture has to difference the pose itself.
+	//
+	// WRIST PITCH RATE, and it is turn-immune AT SOURCE rather than by
+	// correction. Stock writes `AttackPitch = -weaponangles[PITCH]` with no yaw
+	// term at all (hw_openxrdevice.cpp:586-588); the yaw term appears only in
+	// AttackAngle (:590). So a snap turn cannot contaminate this, and the fork's
+	// VRTurnYaw accumulator -- which does not exist on stock -- is not needed.
+	//
+	// That is also why the shoulder-pull gesture is dropped rather than ported:
+	// it pairs a position delta against a yaw-carrying direction with nothing to
+	// reconcile the two frames, which is broken here and was always fragile.
+	//
+	// A RATE, NOT A TOTAL. Degrees per tic, so a slow deliberate lift of the
+	// whole forearm never crosses it however far it travels, while a sharp tip
+	// of the wrist does immediately. That is what separates the gesture from
+	// ordinary aiming, and it is why raising the threshold is the fix if it ever
+	// misfires -- not shortening the window.
+	//
+	// ERGONOMICS, not technology, decided this. Dragging the hand back toward
+	// the body is a SHOULDER movement, and seated with an elbow on an armrest
+	// that is the one motion you cannot repeat. A wrist tip is the same intent
+	// routed through the joint that is still free. This mod is played seated.
+	const PITCH_WINDOW = 7;   // ~200 ms. The peak lingers long enough that a
+	                          // release a tic or two after the flick still sees it.
+
+	private double pitchRate[2 * PITCH_WINDOW];
+	private int    pitchAt[2];
+	private double lastPitch[2];
+	private bool   pitchPrimed[2];
+
+	// The fastest single tic in the window, upward only. Upward because the
+	// gesture is "tip it up at me"; a downward flick is putting something down.
+	double PeakPitchUp(int hand) const
+	{
+		if (hand != 0 && hand != 1) return 0.0;
+		double best = 0.0;
+		for (int i = 0; i < PITCH_WINDOW; i++)
+		{
+			double v = pitchRate[hand * PITCH_WINDOW + i];
+			if (v > best) best = v;
+		}
+		return best;
+	}
+
+	// Called once the gesture has fired, so the lingering peak cannot fire a
+	// second launch the instant the first one lands.
+	void ForgetWrist(int hand)
+	{
+		if (hand != 0 && hand != 1) return;
+		for (int i = 0; i < PITCH_WINDOW; i++)
+			pitchRate[hand * PITCH_WINDOW + i] = 0.0;
+	}
+
+	private void SampleWrist(PlayerPawn pmo, int h, bool good)
+	{
+		double now = RSQDG_Reach.Pitch(pmo, h);
+		if (!pitchPrimed[h]) { lastPitch[h] = now; pitchPrimed[h] = true; }
+
+		// Wrapped, because pitch crossing +/-180 is not a 360-degree flick.
+		double d = now - lastPitch[h];
+		while (d > 180) d -= 360;
+		while (d < -180) d += 360;
+		lastPitch[h] = now;
+
+		// A bad pose contributes NOTHING rather than a huge bogus delta. The
+		// collapse to the body position when a menu opens would otherwise read
+		// as the sharpest wrist flick of the session.
+		pitchRate[h * PITCH_WINDOW + pitchAt[h]] = good ? d : 0.0;
+		pitchAt[h] = (pitchAt[h] + 1) % PITCH_WINDOW;
+	}
+
+	// SETTINGS GENERATIONS, each once (rsqdg_cfgver; FindCVar, the values the config saves).
+	// 1 (2026-10-31, owner: "smoother, quicker arc / travel time, rotating, some life"): a quicker, higher, turning pull.
+	static void Migrate()
+	{
+		let ver = CVar.FindCVar("rsqdg_cfgver");
+		if (!ver) return;
+		CVar c;
+		if (ver.GetInt() < 1)
+		{
+			c = CVar.FindCVar("rsqdg_path_speed"); if (c) c.SetFloat(22.0);
+			c = CVar.FindCVar("rsqdg_path_tmax");  if (c) c.SetFloat(40.0);
+			c = CVar.FindCVar("rsqdg_path_arc");   if (c) c.SetFloat(0.25);
+			c = CVar.FindCVar("rsqdg_tumble");     if (c) c.SetFloat(1.0);
+			ver.SetInt(1);
+		}
+		// 2 (2026-10-31, owner: "barrels blow on impact"): the barrel goes off by how hard it was THROWN, 4 m/s.
+		if (ver.GetInt() < 2)
+		{
+			c = CVar.FindCVar("rsqdg_throw_explode"); if (c) c.SetFloat(4.0);
+			ver.SetInt(2);
+		}
+		// 3 (2026-10-31, owner: "i don't want to grab corpses"): corpses off.
+		if (ver.GetInt() < 3)
+		{
+			c = CVar.FindCVar("rsqdg_corpses"); if (c) c.SetBool(false);
+			ver.SetInt(3);
+		}
+	}
+
+	override void WorldLoaded(WorldEvent e)
+	{
+		Migrate();
+		target[0] = null; target[1] = null;
+		primed[0] = false; primed[1] = false;
+		framePrimed = false;
+		poseTrusted = false;
+	}
+
+	override void WorldUnloaded(WorldEvent e)
+	{
+		target[0] = null; target[1] = null;
+		primed[0] = false; primed[1] = false;
+		framePrimed = false;
+		poseTrusted = false;
+	}
+}

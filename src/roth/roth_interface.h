@@ -142,5 +142,8 @@ void InterfaceSetMenus(RealmsMenus *menus);
 // right-click examine (examine_object_under_cursor, input.c:982-1014).
 // `use` false is the examine. True when it acted. Destroys `mo` on a pickup.
 bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use);
+// Would that pickup take this object now, as far as can be known without trying (its use branch's refusals
+// and give_item_by_dbase_id's choice of item; not the flying-item lock nor GiveItem's own answer)? Read only.
+bool InterfaceObjectTakeable(int rothSector, int rothIndex);
 
 } // namespace roth

@@ -16,16 +16,17 @@
 //     the other fingers may be curled)
 //   TRIGGER pulled, the palm on the thing      ExaminePick               examine_object_under_cursor
 //     (in reach: NearAct, GrabNear's search)                               (the primary click)
-//   TRIGGER pulled, pointing at it             ExaminePick               the same, at range
-//     (what the finger pointed at when the
-//     index left it)
 //   GRIP squeezed, the palm on it (in reach)   Activate(Use)             activate_targeted_object (the
 //                                                                          secondary click); an item goes
 //                                                                          through give_item_by_dbase_id
-//   GRIP squeezed while pointing at it         Activate(Use)             the same, at range (depth < 600,
-//     (nothing in reach)                                                   planar 268)
 //   presses it with the fingertip (the point   Activate(Use)             the same
 //     pose with the grip held, as before)
+//
+// AT RANGE (2026-11-16): NOTHING HERE. The trigger's examine and the grip's use at range, and the beam and
+// marker that showed what the finger was on, are gone: RSQ Distance Grab, copied whole (wadsrc/static/filter/
+// vrealms, roth_grabglue.cpp), replaces the at-range pointing -- its palm-out beam and cone reach, and an item
+// it brings to the hand is taken by the original's pickup (VRPickTakeCaught). What follows about "pointing"
+// is history except where it is in reach (the fingertip press, the wicks).
 //
 // IN REACH OR POINTING: as the picker always chose -- what the palm is on first
 // (NearAct: the objects within 15 cm of the palm, nearest first; a surface 20 cm
@@ -176,12 +177,10 @@ constexpr double kGrabReach   = 0.20;    // palm, along the hand
 constexpr double kGrabBack    = 0.08;    // the grip's ray starts this far behind the palm
 constexpr double kTouchRadius = 0.10;    // a palm this close to a wall or a door is on it
 constexpr double kGrabRadius  = 0.15;    // palm to an object's box
-constexpr double kNoHitBeam   = 0.60;    // the beam's length with nothing at its end
 constexpr float  kPointGrip   = 0.50f;   // the fingertip press's point pose holds the grip this far
 constexpr float  kGripClose   = 0.70f, kGripOpen = 0.35f;   // a button pressed / let go: the grip AND the trigger
 static_assert(kGripClose == invhand::kPressOn && kGripOpen == invhand::kPressOff, "the panel's buttons are the world's");
 constexpr int    kDots        = 12;
-constexpr double kDotM = 0.004, kMarkerM = 0.014;
 
 struct HandState
 {
@@ -386,17 +385,6 @@ void PlaceBB(int &id, int payload, const HandLock &L, const DVector3 &world, dou
 	b->alpha = alpha;
 }
 
-// The original's cursor families (see the header comment).
-PalEntry FamilyColour(uint16_t shape, double &alpha)
-{
-	switch (shape)
-	{
-	case 0x248: case 0x250: case 0x278: alpha = 0.75; return PalEntry(255, 236, 214, 170);
-	case 0x398: case 0x3a0:             alpha = 0.55; return PalEntry(255, 120, 124, 132);
-	case 0x258: case 0x260:             alpha = 0.70; return PalEntry(255, 150, 36, 28);
-	default:                            alpha = 0.0;  return PalEntry(255, 200, 200, 200);
-	}
-}
 
 //--------------------------------------------------------------------------
 // Inputs and the ray
@@ -702,30 +690,6 @@ void ResetGestures(HandState &h)
 	h.hover = Pick{};
 }
 
-// The beam: twelve dots from the fingertip to `end`, and the marker there when
-// the original's cursor family has one (FamilyColour).
-void DrawBeam(int role, HandState &h, AActor *pmo, const DVector3 &end, bool hit, uint16_t shape)
-{
-	const double upm = UPM();
-	h.shown = true;
-	const HandLock L = LockFor(role, pmo);
-	double markAlpha = 0.0;
-	const PalEntry col = hit ? FamilyColour(shape, markAlpha) : PalEntry(255, 200, 200, 200);
-	const bool marked = hit && markAlpha > 0.0;
-	const double beamAlpha = marked ? 0.30 : 0.12;
-	const DVector3 span = end - h.tip;
-	const double len = span.Length();
-	const DVector3 dir = len > 1e-6 ? span / len : h.dir;
-	for (int i = 0; i < kDots; i++)
-		PlaceBB(h.dot[i], BB_PANEL, L, h.tip + dir * (len * (i + 0.5) / kDots), kDotM * upm, marked ? col : PalEntry(255, 200, 200, 200), beamAlpha);
-	if (marked)
-		// Pulled back a little toward the hand so the surface does not cut it.
-		PlaceBB(h.marker, BB_RING, L, h.tip + dir * std::max(0.0, len - 0.006 * upm), kMarkerM * upm, col, markAlpha);
-	else HideBB(h.marker);
-	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
-	h.lineShown = 0;
-}
-
 // The two buttons' press edges (pressed at 0.70, let go at 0.35, for both). A
 // button already down when the hand comes back (a controller found, the hands
 // back from a menu or a panel) is not a press.
@@ -861,18 +825,13 @@ void TickHand(int role, AActor *pmo)
 		// THE TALL WICKS (owner, Q13): the flame hand pointing at a wick in reach -- the wick nearest its ray --
 		// and the grip: that wick's flame (CandlesPointGrip, the same route as a flame brought to it).
 		if (!gripActed && h.pointing && CandlesPointGrip(role, h.tip, h.dir)) gripActed = true;
-		if (!gripActed && h.pointing && h.havePick && h.cls.CanUse())
-		{
-			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
-			gripActed = true;
-		}
-		else if (!gripActed)
-		{
-			if (h.pointing && h.havePick) ExplainSurfaceBox(h.pick);   // roth_trigger_debug: why the pointed-at face or flat took no use
-			if (Logging())
-				Printf("[roth_vrpick] %s hand grip: %s -- nothing (a grip on nothing does not attack: physical only)\n", RoleName(role),
-					!h.pointing ? "not pointing, nothing in reach" : h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
-		}
+		// NO USE AT RANGE (2026-11-16): the grip while pointing at something out of reach used it here. RSQ
+		// Distance Grab, copied (wadsrc/static/filter/vrealms), replaces the at-range pointing: what is out of
+		// reach is reached by its palm-out gesture, and an item it brings to the hand is taken by the original's
+		// pickup (roth_grabglue.cpp). The grip acts on what the hand is on, as before.
+		if (!gripActed && Logging())
+			Printf("[roth_vrpick] %s hand grip: nothing in reach -- nothing (no use at range: RSQ Distance Grab reaches; "
+				"a grip on nothing does not attack: physical only)\n", RoleName(role));
 		if (gripActed) h.pokeArmed = false;
 	}
 
@@ -886,25 +845,10 @@ void TickHand(int role, AActor *pmo)
 		{
 			if (Logging()) Printf("[roth_vrpick] %s hand trigger: the hand holds a weapon -- it fires, nothing to examine\n", RoleName(role));
 		}
-		else if (NearAct(role, h, pmo, false) == 0)
+		else if (NearAct(role, h, pmo, false) == 0 && Logging())
 		{
-			Pick p;
-			bool have = false;
-			DVector3 along = h.dir;
-			if (h.aimHeld && h.aimHave) { have = PickFrom(pmo, h.aimTip, h.aimDir, PickTraceRange(h.aimDir), p); along = h.aimDir; }
-			else if (h.pointing && h.havePick) { p = h.pick; have = true; }
-			if (have)
-			{
-				const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, along));
-				if (c.CanExamine()) DoExamine(role, p, c, pmo, "trigger");
-				else
-				{
-					if (Logging()) Printf("[roth_vrpick] %s hand trigger on %s: %s\n", RoleName(role), PickKindName(p), WhyNotExamine(c).GetChars());
-					ExplainSurfaceBox(p);   // roth_trigger_debug: the surface box's part in it
-				}
-			}
-			else if (Logging())
-				Printf("[roth_vrpick] %s hand trigger: nothing in reach and nothing the finger pointed at\n", RoleName(role));
+			// NO EXAMINE AT RANGE (2026-11-16): the at-range pointing is replaced by RSQ Distance Grab (see the grip).
+			Printf("[roth_vrpick] %s hand trigger: nothing in reach to examine (no examine at range)\n", RoleName(role));
 		}
 	}
 
@@ -944,17 +888,10 @@ void TickHand(int role, AActor *pmo)
 	h.lastShape = h.havePick ? h.cls.shape : 0;
 	h.lastType = h.havePick ? h.cls.type : 1;
 
-	// ---- HAPTIC TICK on coming onto something actionable ----
-	const bool actionable = h.pointing && h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
-	if (actionable && !SamePickTarget(h.pick, h.hover)) { h.hover = h.pick; Haptic(role, 0.12, 12); }
-	else if (!actionable) h.hover = Pick{};
-
-	// ---- THE BEAM ----
-	if (h.pointing || h.pressReady)
-		DrawBeam(role, h, pmo, h.havePick ? h.pick.hitPos : h.tip + h.dir * (kNoHitBeam * upm), h.havePick, h.havePick ? h.cls.shape : 0);
-	else if (h.aimHeld && h.aimHave)
-		DrawBeam(role, h, pmo, h.aimHit, true, h.aimShape);
-	else HideHand(h);
+	// NO BEAM AND NO MARKER IN THE WORLD, and no haptic tick for what a pointing finger is on (2026-11-16): the
+	// at-range pointing they drew is replaced by RSQ Distance Grab's own beam, dot and cone (its laser.zs). The
+	// finger's ray is still traced above, for the fingertip press and the wicks, which are in reach.
+	HideHand(h);
 }
 
 //--------------------------------------------------------------------------

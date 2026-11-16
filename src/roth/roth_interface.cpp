@@ -2233,6 +2233,37 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 	return true;
 }
 
+// WOULD THE ORIGINAL'S PICKUP TAKE THIS OBJECT NOW? InterfaceObjectAction's use branch above, read only:
+// activate_targeted_object's type-4 refusals (input.c:1037, 1056; +9 bits 0x12, 0x01, 0x10) and
+// give_item_by_dbase_id's choice of item (roth_inventory.cpp GiveItemByRenderId, inventory.c:348-362: a render
+// id of at least 0x200, an item record wearing it, not marked unpickable, not an INFO entry). What it leaves
+// out is what can only be known by trying -- the pickup lock while an item still flies (:1055) and GiveItem's
+// own answer -- so a catch still goes through the original's use (roth_vrpick.h VRPickTakeCaught) and can be
+// refused there. For RSQ Distance Grab: only such an object is offered to it (roth_grabglue.cpp).
+bool InterfaceObjectTakeable(int rothSector, int rothIndex)
+{
+	if (!U.attached || U.db == nullptr || U.core == nullptr) return false;
+	Object o;
+	if (!RuntimeObjectRecord(rothSector, rothIndex, o)) return false;
+	const uint8_t b9 = o.renderType;
+	if (b9 & 0x12) return false;
+	if (b9 & 1) return false;
+	if (b9 & 0x10) return false;
+	const int32_t renderId = (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8));
+	if (renderId < 0x200) return false;
+	const int n = U.db->ItemCount();
+	for (int i = 0; i < n; i++)
+	{
+		const DbItem *rec = U.db->Item(i + 1);
+		if (rec == nullptr) continue;
+		if ((int32_t)(int16_t)rec->renderId != renderId) continue;
+		if (rec->flags & DBI_NOT_PICKABLE) continue;
+		if (rec->Category() == DB_CATEGORY_INFO) continue;
+		return true;
+	}
+	return false;
+}
+
 //==========================================================================
 //
 // Console commands.

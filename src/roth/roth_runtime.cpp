@@ -46,6 +46,7 @@
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
 #include "r_data/vr_handpose.h"   // VRHandPose_InputLive: live hands (UseByHand)
+#include "roth_grabglue.h"        // RSQ Distance Grab's Realms glue (GrabGlueTick)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
 #include "roth_candles.h"         // the candles' wicks, one by one (presentation)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
@@ -7385,6 +7386,23 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 	return any;
 }
 
+// IS THIS OBJECT'S USE THE ORIGINAL'S PICKUP? ActivateObject's routing above: an object with no command
+// (+0x0e id 0), or one whose id binds no record, goes to the type-4 branch (InterfaceObjectAction) -- and
+// that branch would take it (InterfaceObjectTakeable, read only). An object whose use runs a chain is the
+// chain's, whatever the chain does: not offered to RSQ Distance Grab (roth_grabglue.cpp).
+bool ObjectIsPickupItem(AActor *mo)
+{
+	if (!g.active || mo == nullptr) return false;
+	int rothSector = -1, rothIndex = -1;
+	if (!ObjectForActor(mo, rothSector, rothIndex)) return false;
+	if (rothSector < 0 || rothSector >= (int)g.map.objects.size()) return false;
+	const std::vector<Object> &group = g.map.objects[rothSector];
+	if (rothIndex < 0 || rothIndex >= (int)group.size()) return false;
+	const uint16_t id = group[rothIndex].commandID;
+	if (id != 0 && g.byObject.find((int)id) != g.byObject.end()) return false;
+	return InterfaceObjectTakeable(rothSector, rothIndex);
+}
+
 bool UseByHand(player_t *player, TrigEvent want)
 {
 	if (!g.active || player == nullptr || player->mo == nullptr) return false;
@@ -8677,6 +8695,8 @@ void TickLevelLogic(FLevelLocals *level)
 	// The VR hands' actors (roth_hands.h): before the menu and death returns
 	// below, so neither takes the hands away. Presentation only.
 	HandsTick(level);
+	// Which Realms objects RSQ Distance Grab may take (roth_grabglue.h): the original's pickup items only.
+	GrabGlueTick(level);
 
 	// THE INVENTORY SCREEN PAUSES THE WORLD, as the original's does (owner,
 	// 2026-11-13: "pause like the original"). With the panel up the original's
