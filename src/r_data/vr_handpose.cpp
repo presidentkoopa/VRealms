@@ -606,8 +606,11 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out)
 
 namespace
 {
-	// Each hand's FBX mesh selector, as vrealms_iwad/MODELDEF.txt names it (after "hand_final.fbx:"): the other hand's
-	// model is found by it when a frame is copied from its take (checklist 76).
+	// Each hand's FBX mesh, as vrealms_iwad/MODELDEF.txt names it (after "<file>.fbx:"): the other hand's model is found by
+	// it when a frame is copied from its take (checklist 76). The model already loaded under that mesh's name, with any
+	// options ("Hand_Low1" or "Hand_Low1?mirrorskin=Hand_Low"), is taken; if none is loaded yet, kHandSelector loads it
+	// (hand_final.fbx's left hand draws with the right's skin; the Godot hands' left has its own and is named plainly).
+	const char *const kHandMesh[SIDE_COUNT] = { "Hand_Low", "Hand_Low1" };
 	const char *const kHandSelector[SIDE_COUNT] = { "Hand_Low", "Hand_Low1?mirrorskin=Hand_Low" };
 
 	// HandFrameFromJoints' P[5]: wrist, index, middle, ring, pinky knuckles (RIG:733-750).
@@ -754,13 +757,28 @@ namespace
 			const ptrdiff_t colon = mine.LastIndexOf(':');
 			if (colon > 0)
 			{
-				const FString otherName = mine.Left(colon + 1) + kHandSelector[1 - side];
-				const unsigned idx = FindModel(nullptr, otherName.GetChars(), true);
-				if (idx < Models.Size() && Models[idx] != model) otherModel = Models[idx];
+				const FString bare = mine.Left(colon + 1) + kHandMesh[1 - side];
+				for (unsigned i = 0; i < Models.Size() && otherModel == nullptr; i++)
+				{
+					FModel *m = Models[i];
+					if (m == nullptr || m == model) continue;
+					const FString &n = m->mFileName;
+					if (n.Len() >= bare.Len() && !strnicmp(n.GetChars(), bare.GetChars(), bare.Len())
+						&& (n.Len() == bare.Len() || n.GetChars()[bare.Len()] == '?')) otherModel = m;
+				}
+				if (otherModel == nullptr)
+				{
+					for (const char *sel : { kHandSelector[1 - side], kHandMesh[1 - side] })
+					{
+						const FString otherName = mine.Left(colon + 1) + sel;
+						const unsigned idx = FindModel(nullptr, otherName.GetChars(), true);
+						if (idx < Models.Size() && Models[idx] != model) { otherModel = Models[idx]; break; }
+					}
+				}
 			}
 			if (otherModel == nullptr)
 				Printf(TEXTCOLOR_RED "VR hands: %s as the %s hand -- the other hand's model (%s) is not loaded: no frame can be copied from its take\n",
-					model->mFileName.GetChars(), sideName, kHandSelector[1 - side]);
+					model->mFileName.GetChars(), sideName, kHandMesh[1 - side]);
 		}
 		auto getQOther = [otherModel](int frame, const char *name, double q[4]) {
 			if (otherModel == nullptr) return false;

@@ -137,10 +137,11 @@ static void PublishHeld()
 		held[VR_MAINHAND].weapon = true;
 		held[VR_MAINHAND].gripClass = w.gripClass;
 		held[VR_MAINHAND].propClass = w.propClass;
-		// THE COLT'S MESH (roth_coltvr.h): the trigger finger measured on it -- the open frame toward grip_pistol's index
-		// until the pad meets the trigger face; untouched, straight along the frame (vr_handpose_math.h indexReady).
-		float ready = 0.f, fire = 0.f;
-		if (ColtHeldIndex(VRHandPose_SideForRole(VR_MAINHAND), ready, fire)) { held[VR_MAINHAND].indexReady = ready; held[VR_MAINHAND].indexFire = fire; }
+		// THE COLT'S MESH (roth_coltvr.h): the fingers measured on it (tools/colt_test/colt_fit) -- the trigger finger from
+		// the open frame toward grip_pistol's index until the pad meets the trigger face (untouched: straight along the
+		// frame, vr_handpose_math.h indexReady), its knuckle by its own amount (indexBase), and the thumb, middle, ring and
+		// little closed from the open frame until they meet the gun (wrap, wrapBase).
+		ColtHeldFingers(VRHandPose_SideForRole(VR_MAINHAND), held[VR_MAINHAND]);
 		if (held[VR_MAINHAND].item == 0) held[VR_MAINHAND].item = w.item;
 	}
 	// The held objects' poses (roth_held.h): the match pinched, the lamp by its bail, both hands round the Book --

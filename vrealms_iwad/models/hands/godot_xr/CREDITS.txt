@@ -1,0 +1,19 @@
+THE VR HANDS: the Godot XR Tools hand models
+
+Model: the "hand_r" and "hand_l" hands of Godot XR Tools (https://github.com/GodotVR/godot-xr-tools,
+addons/godot-xr-tools/hands/model/hand_r.gltf and hand_l.gltf, commit 6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60).
+Skin: addons/godot-xr-tools/hands/textures/caucasian_realistic_baseColor.png, unchanged.
+
+Author: DigitalN8m4r3 (Miodrag Sejic). Made with MakeHuman Community Edition, slightly modified in Blender and
+textured in Substance Painter (the hands' About.md).
+
+Licence: CC0 1.0 Universal (public domain dedication). The hands' License.md: "To the extent possible under law,
+DigitalN8m4r3 aka Miodrag Sejic has waived all copyright and related or neighboring rights to Hand Models for the
+Godot XR Tools. This work is published from: Austria. Date: 7th November 2022." MakeHuman's licence makes no claim on
+its output (https://github.com/makehumancommunity/makehuman/blob/master/LICENSE.md, section D). No attribution is
+required; it is given here anyway.
+
+What VRealms did to them (godot_xr_hands.fbx, written by tools/hand_retarget/retarget_godot.py): the two glTF meshes
+and their skins put into one FBX with the joint names and the take of the owner's hand_final.fbx, every frame of that
+take carried onto these hands as joint angles in each rig's own finger frames (the thumb also kept where it touches
+the fingers), scaled to the owner's 0.19 m from the wrist to the middle fingertip.

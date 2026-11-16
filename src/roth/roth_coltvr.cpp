@@ -6,7 +6,9 @@
 // stays the authored grip_pistol; the gun is placed in the hand frame by three measured points -- the beavertail on the
 // thumb-index web, the index pad toward the trigger face, the grip in the wrapped fingers (no finger in the gun) -- by
 // least squares; the index on the trigger is the in-between of the authored open frame and the grip's own index whose
-// pad meets the face. The residuals are in the report (not all within the owner's tolerances: written down there).
+// pad meets the face, and the thumb, middle, ring and little each closed from the open frame until they meet the gun.
+// On the Godot XR Tools hands (2026-11-16) every colt_fit check passes: the pad 1.6 / 1.1 mm from the trigger face, the
+// web 3.1 / 3.7 mm from the beavertail, no finger skin more than 2 mm in the gun (right / left; colt_fit.txt).
 // `roth_colt fit` nudges it live (never archived); the owner's result is baked in here.
 //
 //---------------------------------------------------------------------------
@@ -47,18 +49,24 @@ namespace
 
 using namespace colt;
 
-// ---- the fit (colt_fit.txt, 2026-11-16) ----
+// ---- the fit (colt_fit.txt, 2026-11-16, on the Godot XR Tools hands: vrealms_iwad/models/hands/godot_xr) ----
 // The seat: the gun's render coords (file x, z, y) -> the hand frame (X fingers, Y back of the hand, Z thumb axis) in
 // the gun's file units, column-major; MODELDEF Scale (metres a unit) then takes it to metres (models.cpp, the grip path).
 constexpr float kSeat[2][16] =
 {
-	{ 0.0300216867f, 0.995446897f, 0.0904664241f, 0.f, 0.0939496891f, 0.0872963214f, -0.991742309f, 0.f,
-	  0.99512419f, -0.0382730693f, 0.0909011437f, 0.f, 236.13224f, 157.639087f, -63.8903402f, 1.f },     // right (Hand_Low)
-	{ -0.0867959872f, -0.99242879f, 0.0868996795f, 0.f, 0.0806646454f, 0.0799413559f, 0.993530369f, 0.f,
-	  0.99295502f, -0.093244181f, -0.0731153274f, 0.f, 235.654805f, 144.787435f, 66.9781703f, 1.f },     // left (Hand_Low1)
+	{ 0.118161848f, 0.989816172f, 0.0793833955f, 0.f, 0.0473605014f, 0.0742348244f, -0.996115542f, 0.f,
+	  0.991864285f, -0.121462491f, 0.0381064661f, 0.f, 256.62311f, 78.7492864f, -113.351589f, 1.f },     // right (Hand_Low)
+	{ -0.123734018f, -0.988672523f, 0.0849501971f, 0.f, 0.0450013103f, 0.079929269f, 0.995784211f, 0.f,
+	  0.991294495f, -0.127035252f, -0.0346015894f, 0.f, 255.29005f, 78.8155651f, 118.030926f, 1.f },     // left (Hand_Low1)
 };
-constexpr float kIndexReady[2] = { 0.4813f, 0.5250f };   // the index's in-between (open -> grip_pistol) on the trigger face
-constexpr float kIndexFire[2] = { 0.5013f, 0.5500f };    // ... and with the trigger back its travel (10 units)
+// The fingers measured on the gun (vr_handpose_math.h HeldState; each the in-between of the authored open frame and
+// grip_pistol's own finger, the knuckle by its own amount): right, left.
+constexpr float kIndexReady[2] = { 0.2151f, 0.2679f };   // the index's outer joints with its pad on the trigger face
+constexpr float kIndexFire[2] = { 0.3601f, 0.3879f };    // ... and with the trigger back its travel (10 units)
+constexpr float kIndexBase[2] = { 1.0f, 1.0f };          // the index's knuckle, the same at trigger 0 and 1
+// thumb, index (unused: kIndex*), middle, ring, little: the outer joints, then the knuckles
+constexpr float kWrap[2][5] = { { 1.0f, -1.f, 0.6505f, 0.2634f, 0.0f }, { 1.0f, -1.f, 0.5812f, 0.3878f, 0.0457f } };
+constexpr float kWrapBase[2][5] = { { 0.0f, -1.f, 0.8965f, 0.9254f, 0.7237f }, { 0.0f, -1.f, 0.8864f, 0.9716f, 0.7427f } };
 constexpr double kUnit = 0.000271900171;                 // metres a gun file unit (0.216 m muzzle to tang)
 
 // Points of the gun, render coords (file x, z, y), file units (colt_fit's measures; roth_colt.h's take frames).
@@ -421,12 +429,18 @@ bool ColtBoreAim(double &yawDeg, double &pitchUpDeg, DVector3 &muzzle)
 	return true;
 }
 
-bool ColtHeldIndex(int side, float &ready, float &fire)
+bool ColtHeldFingers(int side, VRHandPose::HeldState &held)
 {
 	if (!Alive(S.gun) || !S.hands.vr) return false;
 	const int k = side == VRHandPose::SIDE_LEFT ? 1 : 0;
-	ready = kIndexReady[k];
-	fire = kIndexFire[k];
+	held.indexReady = kIndexReady[k];
+	held.indexFire = kIndexFire[k];
+	held.indexBase = kIndexBase[k];
+	for (int f = 0; f < 5; f++)
+	{
+		held.wrap[f] = kWrap[k][f];
+		held.wrapBase[f] = kWrapBase[k][f];
+	}
 	return true;
 }
 

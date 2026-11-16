@@ -38,14 +38,14 @@ g++ -std=c++17 -O2 -Wall -Wextra -Isrc/common/models -Ilibraries/ufbx tools/colt
 "$OUT/fbx_part" vrealms_iwad/models/weapons/colt1911/colt1911.fbx
 echo
 echo "== colt_fit: the gun fitted to the authored grip_pistol hand (numbers; COLT_FIT_RENDER=1 renders the views)"
+HANDS=vrealms_iwad/models/hands/godot_xr/godot_xr_hands.fbx   # vrealms_iwad/MODELDEF.txt's hands
 g++ -std=c++17 -O3 -Wall -Wextra -Isrc/common/models -Isrc/r_data -Ilibraries/ufbx tools/colt_test/colt_fit.cpp src/common/models/fbx_skinned.cpp "$OUT/ufbx.o" -o "$OUT/colt_fit" -lm
-"$OUT/colt_fit" vrealms_iwad/models/hands/hand_final.fbx vrealms_iwad/models/weapons/colt1911/colt1911.fbx "$OUT" | grep -v knuckle || true
+FIT=0
+"$OUT/colt_fit" "$HANDS" vrealms_iwad/models/weapons/colt1911/colt1911.fbx "$OUT" > "$OUT/colt_fit.log" || FIT=1
+grep -v knuckle "$OUT/colt_fit.log"
 if ! diff -q "$OUT/colt_fit.txt" tools/colt_test/colt_fit.txt >/dev/null; then echo "NOTE: colt_fit.txt differs from the committed one (the baked seat in roth_coltvr.cpp came from that)"; diff "$OUT/colt_fit.txt" tools/colt_test/colt_fit.txt || true; fi
 if [ -n "$COLT_FIT_RENDER" ]; then
-	for v in "side:0,-1,0:1,0,0" "top:0,0,1:0,1,0" "eye:-1,0,0:0,1,0" "under:0,0,-1:0,1,0"; do
-		n=${v%%:*}; r=${v#*:}; d=${r%%:*}; u=${r#*:}
-		python3 -I tools/colt_test/rend.py "$OUT/fit_$n.png" 800 600 view=$d up=$u "mesh=$OUT/Hand_Low_gun.txt:vrealms_iwad/models/weapons/colt1911/colt1911_diffuse.jpg" \
-			"mesh=$OUT/Hand_Low_hand_ready.txt:0.85,0.7,0.6" "pts=$OUT/Hand_Low_pts.txt"
-	done
-	echo "renders in $OUT/fit_*.png"
+	python3 -I tools/colt_test/fitviews.py "$OUT" fit vrealms_iwad/models/hands/godot_xr/caucasian_realistic_baseColor.png
+	echo "renders in $OUT/fit_*.png (the gun's left side, its right side, oblique; both hands: fit_all.png)"
 fi
+[ $FIT -eq 0 ] || { echo "FAIL: colt_fit"; exit 1; }

@@ -18,6 +18,7 @@
 struct FLevelLocals;
 class AActor;
 class PClassActor;
+namespace VRHandPose { struct HeldState; }	// r_data/vr_handpose_math.h
 
 namespace roth
 {
@@ -44,8 +45,10 @@ void ColtPresent(AActor *gun, const colt::Game &g);
 // mesh drawn this tic (the aim pose, as before).
 bool ColtBoreAim(double &yawDeg, double &pitchUpDeg, DVector3 &muzzle);
 
-// The main hand's measured trigger finger while the mesh is drawn (vr_handpose_math.h HeldState::indexReady/Fire).
-bool ColtHeldIndex(int side, float &ready, float &fire);
+// The main hand's fingers measured on the mesh while it is drawn (tools/colt_test/colt_fit): the trigger finger
+// (vr_handpose_math.h HeldState::indexReady / indexFire / indexBase) and the other fingers' wraps (wrap / wrapBase),
+// written into `held`. False (nothing written): no mesh drawn.
+bool ColtHeldFingers(int side, VRHandPose::HeldState &held);
 
 // The off hand's grip belongs to the Colt this tic (at the release, the pouch, the slide, or carrying a magazine): the
 // picker's grip and the gestures stand down for it (roth_vrweapons.cpp VRWeaponsGripTaken).

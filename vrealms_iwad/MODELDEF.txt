@@ -1,49 +1,31 @@
-// THE VR HANDS -- the owner's hand_final.fbx (from his dxr repo, models/hands/), read by the engine
-// itself at load with ufbx (src/common/models/model_fbx.h). No conversion: this IS that file.
+// THE VR HANDS -- the Godot XR Tools hands (CC0, DigitalN8m4r3, made with MakeHuman CE; models/hands/godot_xr/CREDITS.txt),
+// the owner's decision 2026-11-16: hand_final.fbx's fingers were too short for a real-size grip (index 61 mm knuckle to
+// tip). models/hands/godot_xr/godot_xr_hands.fbx is written by tools/hand_retarget/retarget_godot.py and read by the
+// engine itself with ufbx (src/common/models/model_fbx.h), exactly as hand_final.fbx was:
+//   the same two models -- Hand_Low (the RIGHT hand) and Hand_Low1 (the LEFT, its own mesh and skin, under a Root_joint
+//   with hand_final's -1 X scale) -- the same 22 joint names, the same take ("Take 001", 1,279 frames at 60 fps), and
+//   in every frame hand_final's own frame of that number carried onto these hands as joint angles in each rig's own
+//   finger frames (tools/hand_retarget/check_retarget.cpp: every pose rotation the engine makes equals hand_final's,
+//   but the thumb where it touches the fingers). So kPoseSources, kOwnerPoses and the poses' frame numbers stand.
+//   Frame 0 is the rest pose and hand_final's open frame.
 //
-// ONE FILE, TWO MODELS. "<file>.fbx:<mesh>" picks one skinned mesh of an FBX by its node's name, and
-// with it the skeleton its skin binds to (src/common/models/model.cpp FindModel). hand_final.fbx has two:
-//   Hand_Low   skinned to the joints under GLOBAL_MAIN_CONTROL_R   -- the RIGHT hand
-//   Hand_Low1  skinned to the joints under GLOBAL_MAIN_CONTROL_R1  -- the LEFT hand, a separate model with
-//              its own skeleton and animation; the file sets a -1 X scale on that control (that is what
-//              makes it a left hand in Maya), and the loader keeps that transform
-// Each model has its own 22 joints under the FBX's own names and its own take: every frame of
-// "Take 001", 1,279 frames at 60 fps (0 = 0 s ... 1278 = 21.3 s: the joints' baked keys end at frame
-// 1277, the controls above them are keyed to 1278). Frame 0 is the scene's rest pose (every finger
-// joint at its bind rotation; tools/fbxload_test checks it equals the take at 0 s).
+// SIZE: Scale is metres per file unit (the hand path is in metres, vr_handpose.cpp VRHandPose_HandFrame). The file is
+// written so that the wrist (Root_joint) is 1.712605 units from the farthest middle-fingertip vertex at rest, as in
+// hand_final.fbx: 0.19 m at 0.11094212 (the owner's 0.19 m). Index knuckle to tip 86.4 mm along its bones.
 //
-// THE FINGERS are posed by the engine on top of frame 0 (src/r_data/vr_handpose.cpp) with the AUTHORED poses of
-// each hand's own take: the capacitive touches pick fist / point / thumb up / finger gun, and the grip and trigger
-// take each finger from the open frame 0 toward that pose's authored frame (vr_handpose_math.h kPoseSources, chosen
-// by tools/fbxload_test/walk_poses.py). The hands draw frame 0 (FrameIndex below); the engine turns the finger
-// joints (and, in the fist, the palm) from there.
+// SKIN: each hand's material names caucasian_realistic_baseColor.png, found beside the file; no Skin line. No normal
+// or roughness map (the Godot hands' normal and ORM maps are not attached).
 //
-// SIZE: THE HAND PATH IS IN METRES (vr_handpose.cpp VRHandPose_HandFrame: the grip frame is multiplied
-// by VR_UnitsPerMeter() at every draw and never divided back), so Scale is metres per FILE unit. The
-// file says centimetres but its hand is 1.712605 units from the wrist (Root_joint) to the farthest
-// vertex of the middle fingertip (the vertices whose largest weight is MIDDLE_F_TOP/UP_TOP), measured
-// by tools/fbxload_test (T5) on the rest mesh, the same measure the old converter used. For the hand
-// to be 0.19 m: 0.19 / 1.712605 = 0.11094212, at whatever units per metre the level has.
+// No Offset or angle offsets: the engine seats the mesh from its own wrist and knuckles (vr_handpose_math.h ModelSeat).
+// NoPixelStretch: the grip frame already carries the world's pixel stretch. NoAutoReverse: each hand is its own mesh.
 //
-// SKIN. Hand_Low's own material (aiStandardSurface1) names lambert1_Base_Color.png, and the engine
-// finds it beside the file; no Skin line is needed. The material's normal map (lambert1_Normal_OpenGL.png,
-// 16-bit) and roughness map (lambert1_Roughness.png) exist only inside the FBX: the engine registers them
-// from the FBX's embedded bytes and hangs them on that skin as its PBR material (models_fbx.cpp E10).
-// Hand_Low1's own material (blinn1) links no texture, and its UVs are Hand_Low's mirrored in u. The owner
-// (2026-11-13): the left hand reads the right hand's skin with that flip undone. "?mirrorskin=Hand_Low" says
-// exactly that: draw Hand_Low1 with Hand_Low's material (base colour, normal and roughness maps) and its u
-// un-mirrored. The loader checks the claim on every polygon corner and logs the mirror's axis (measured
-// 1.002832, i.e. about the UV islands' centre 0.501416, not 0.5) -- a mesh that is not such a twin is
-// refused (fbx_skinned.cpp C21). No Skin line: a MODELDEF Skin would replace the material's skin.
-//
-// No Offset or angle offsets: the engine seats the mesh from its own wrist and knuckles
-// (vr_handpose_math.h ModelSeat). NoPixelStretch: the grip frame already carries the world's pixel
-// stretch. NoAutoReverse: each hand is its own mesh.
+// hand_final.fbx (the owner's, models/hands/) stays in the IWAD: "hand_final.fbx:Hand_Low" and
+// "hand_final.fbx:Hand_Low1?mirrorskin=Hand_Low" with Path "models/hands" draw it as before.
 
 Model RealmsHandRight
 {
-	Path "models/hands"
-	Model 0 "hand_final.fbx:Hand_Low"
+	Path "models/hands/godot_xr"
+	Model 0 "godot_xr_hands.fbx:Hand_Low"
 	Scale 0.11094212 0.11094212 0.11094212
 	NoAutoReverse
 	NoPixelStretch
@@ -52,8 +34,8 @@ Model RealmsHandRight
 
 Model RealmsHandLeft
 {
-	Path "models/hands"
-	Model 0 "hand_final.fbx:Hand_Low1?mirrorskin=Hand_Low"
+	Path "models/hands/godot_xr"
+	Model 0 "godot_xr_hands.fbx:Hand_Low1"
 	Scale 0.11094212 0.11094212 0.11094212
 	NoAutoReverse
 	NoPixelStretch

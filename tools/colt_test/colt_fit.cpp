@@ -1,6 +1,7 @@
 // tools/colt_test/colt_fit.cpp -- THE COLT FITTED TO THE AUTHORED HAND (owner's plan, 2026-11-16).
 //
-// The hand pose stays authored: each hand (hand_final.fbx, Hand_Low / Hand_Low1) is posed through the engine's own
+// The hand pose stays authored: each hand (the MODELDEF's FBX, Hand_Low / Hand_Low1: since 2026-11-16 the Godot XR Tools
+// hands, vrealms_iwad/models/hands/godot_xr; hand_final.fbx still loads) is posed through the engine's own
 // path (vr_handpose_math.h: SelectHold + StepPoseHeld converged, PosePalette) as a weapon of grip class "pistol" --
 // grip_pistol, the index on the trigger (wrap_half at trigger 0) -- and the GUN is fitted to it with three points
 // measured on the meshes:
@@ -14,7 +15,7 @@
 // (trigger untouched) along the frame. Writes the numbers, the seat for the engine (gun render coords -> the hand
 // frame in gun file units, as vr_handpose_math.h ModelSeat is for a hand), and mesh dumps for py/rend.py.
 //
-//   colt_fit <hand_final.fbx> <colt1911.fbx> <outdir>
+//   colt_fit <hands.fbx> <colt1911.fbx> <outdir>
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -183,6 +184,31 @@ static M3 Rodrigues(V3 w)
 	return r;
 }
 
+// the rotation vector of a rotation (log map)
+static V3 RotVec(const M3 &R)
+{
+	double c = (R.m[0][0] + R.m[1][1] + R.m[2][2] - 1) * 0.5;
+	c = c > 1 ? 1 : (c < -1 ? -1 : c);
+	const double th = acos(c);
+	if (th < 1e-9) return V3();
+	const V3 a(R.m[2][1] - R.m[1][2], R.m[0][2] - R.m[2][0], R.m[1][0] - R.m[0][1]);
+	if (M_PI - th < 1e-6)
+	{
+		// near 180 degrees: the axis from the symmetric part
+		V3 k(sqrt(fmax(0.0, (R.m[0][0] + 1) * 0.5)), sqrt(fmax(0.0, (R.m[1][1] + 1) * 0.5)), sqrt(fmax(0.0, (R.m[2][2] + 1) * 0.5)));
+		if (R.m[0][1] < 0) k.y = -k.y;
+		if (R.m[0][2] < 0) k.z = -k.z;
+		return Unit(k) * th;
+	}
+	return a * (th / (2 * sin(th)));
+}
+
+// the previous hand's fit (colt_fit fits the right hand first): its rotation and parameters, for the mirrored start
+static constexpr int kNP = 16;
+static M3 gPrevR;
+static double gPrevPrm[kNP];
+static bool gHavePrev = false;
+
 // closest point on triangle (Ericson, Real-Time Collision Detection 5.1.5)
 static V3 ClosestOnTri(V3 p, V3 a, V3 b, V3 c, double &u, double &v, double &w)
 {
@@ -302,7 +328,7 @@ struct GunSDF
 
 int main(int argc, char **argv)
 {
-	if (argc < 4) { fprintf(stderr, "usage: colt_fit <hand_final.fbx> <colt1911.fbx> <outdir>\n"); return 2; }
+	if (argc < 4) { fprintf(stderr, "usage: colt_fit <hands.fbx> <colt1911.fbx> <outdir>\n"); return 2; }
 	const std::vector<char> handFile = ReadFile(argv[1]), gunFile = ReadFile(argv[2]);
 	const std::string outDir = argv[3];
 
@@ -384,7 +410,13 @@ int main(int argc, char **argv)
 
 	// ---- each hand ----
 	const char *meshes[2] = { "Hand_Low", "Hand_Low1" };
+	// as vrealms_iwad/MODELDEF.txt names them: hand_final.fbx's left hand draws with the right's skin (mirrorskin); a file
+	// whose left hand has its own skin (the Godot hands) takes the plain name
 	const char *selectors[2] = { "Hand_Low", "Hand_Low1?mirrorskin=Hand_Low" };
+	{
+		Result probe;
+		if (!Load(handFile.data(), handFile.size(), selectors[1], probe, err)) selectors[1] = "Hand_Low1";
+	}
 	for (int h = 0; h < 2; h++)
 	{
 		const bool right = h == 0;
@@ -594,8 +626,13 @@ int main(int argc, char **argv)
 			padVid = pad(pk, mk);
 		}
 		std::vector<int> skinIdx, skinFinger, skinSeg;
-		for (size_t i = 0; i < meshAt[0].v.size(); i += 3)
+		const size_t kSkinStride = getenv("COLT_STRIDE") ? (size_t)atoi(getenv("COLT_STRIDE")) : 1;
+		// one vertex per control point (the loader writes one vertex per polygon corner: every skin point appears several
+		// times, and a stride over corners missed some of them -- the check reads every one)
+		std::vector<char> cpSeen(r.verts.size() + 1, 0);
+		for (size_t i = 0; i < meshAt[0].v.size(); i += kSkinStride)
 		{
+			if (kSkinStride == 1) { const uint32_t cp = r.verts[i].controlPoint; if (cp < cpSeen.size() && cpSeen[cp]) continue; if (cp < cpSeen.size()) cpSeen[cp] = 1; }
 			if (meshAt[0].v[i].bone == hand && Dot(meshAt[0].v[i].p, V3(1, 0, 0)) < -0.04) continue;   // not the forearm
 			skinIdx.push_back((int)i); skinFinger.push_back(fingerOf(meshAt[0].v[i].bone)); skinSeg.push_back(segOf(meshAt[0].v[i].bone));
 		}
@@ -613,14 +650,15 @@ int main(int argc, char **argv)
 		};
 		for (int k = 0; k < kSamples; k += 4) printf("  index in-between %.2f: its pad %.1f mm from the web (the gun: the beavertail to the trigger face %.1f mm)\n",
 			(double)k / (kSamples - 1), Len(padAt[k] - web) * 1000, Len(trig - beaver) * s * 1000);
-		const double kPenW = 5.0, kSlack = 0.0005;   // penetration weight; skin give (0.5 mm)
-		const double kWebGive = 0.016;               // the web may sit up to 16 mm from the beavertail point (this hand's index is 61 mm knuckle to tip)
+		double kPenW = 5.0; const double kSlack = 0.0005;   // penetration weight (raised for the last stage); skin give (0.5 mm)
+		const double kWebGive = 0.008;               // the web may sit up to 8 mm from the beavertail point (16 for hand_final, whose index was 61 mm knuckle to tip)
 		// TWO STAGES: first the index may pass through the guard (no index penetration) so its pad can reach the trigger
 		// INSIDE the guard; then every finger counts again, from there.
+		auto cl01 = [](double u) { return u < 0 ? 0.0 : (u > 1 ? 1.0 : u); };
 		bool indexFree = false;
-		const double kPadW = getenv("COLT_PADW") ? atof(getenv("COLT_PADW")) : 1.0;
+		const double kPadW = getenv("COLT_PADW") ? atof(getenv("COLT_PADW")) : 10.0;   // the pad on the trigger is a hard check (6 mm): it weighs as much as 10x its distance
 		const double kContactW = 1.0;                // a wrapped finger's nearest skin pulled onto the grip
-		constexpr int NP = 16;  // rotation vector, translation, the index's in-between, the wraps (thumb, middle, ring, little: outer joints), their knuckles
+		constexpr int NP = kNP;  // rotation vector, translation, the index's in-between, the wraps (thumb, middle, ring, little: outer joints), their knuckles
 		const int kParamOf[5] = { 7, 6, 8, 9, 10 };
 		const int kBaseOf[5] = { 11, 15, 12, 13, 14 };
 		// the trigger face as a segment (its front edge, top to bottom, 3 units in from each end): the pad may meet it anywhere
@@ -704,13 +742,83 @@ int main(int argc, char **argv)
 				const double c = solve(q, 25);
 				if (c < bestCost) { bestCost = c; memcpy(prm, q, sizeof(q)); }
 			}
-		solve(prm, 60);
-		indexFree = false;
-		solve(prm, 80);
+		// THE OTHER HAND'S FIT, MIRRORED, as one more start (the hands are mirror images, the Colt nearly so: hand frame Z and
+		// gun x flip), so a hand whose own starts fall into a worse basin (the left, on the Godot hands) is not left there.
+		// THE THUMB, CHOSEN ON THE EXACT POSE. Its depth in the gun is not monotonic in its two amounts (the Godot thumb's
+		// metacarpal swings its base across the frame's side), so the solver can stay where the thumb is inside. With the
+		// gun where the fit put it, every (knuckle, outer) pair on a 0.1 grid is posed through the engine path and skinned
+		// whole: the thumb's skin may be no more than 1 mm in the gun; of those, the pair whose nearest middle/outer thumb
+		// skin is closest to the gun's surface wins (closed until it meets the gun, never into it). Then the fit again.
+		auto thumbPick = [&](const char *when) {
+			const M3 Rq = Mul(Rodrigues(V3(prm[0], prm[1], prm[2])), R0);
+			const V3 tq(prm[3], prm[4], prm[5]);
+			M3 Rt; for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) Rt.m[a][b] = Rq.m[b][a];
+			HeldState hs = held; hs.indexReady = hs.indexFire = (float)cl01(prm[6]); hs.indexBase = (float)cl01(prm[15]);
+			for (int f : { 2, 3, 4 }) { hs.wrap[f] = (float)cl01(prm[kParamOf[f]]); hs.wrapBase[f] = (float)cl01(prm[kBaseOf[f]]); }
+			double bestScore = 1e30; int ba = -1, bb = -1; double bDepth = 0, bGap = 0;
+			for (int a = 0; a <= 10; a++)
+				for (int b = 0; b <= 10; b++)
+				{
+					hs.wrapBase[0] = a / 10.f; hs.wrap[0] = b / 10.f;
+					const Posed ps = PoseHand(r, Wrest, rig, hp, ready, &hold, &hs);
+					const Mesh ms = Skin(r, ps.P);
+					double depth = 0, gap = 1e9;
+					for (const MeshV &v : ms.v)
+					{
+						if (fingerOf(v.bone) != 0) continue;
+						const double d = sdf.Query(Rt * (toHand(v.p) - tq) * (1.0 / s)) * s;
+						depth = fmin(depth, d);
+						if (segOf(v.bone) >= 1) gap = fmin(gap, d);
+					}
+					const double score = (depth < -0.001 ? 1.0 + (-depth - 0.001) * 1000 : 0.0) + fabs(fmax(gap, 0.0)) * 10;
+					if (score < bestScore) { bestScore = score; ba = a; bb = b; bDepth = depth; bGap = gap; }
+				}
+			prm[kBaseOf[0]] = ba / 10.0; prm[kParamOf[0]] = bb / 10.0;
+			printf("  the thumb chosen on the exact pose (%s): knuckle %.1f, outer %.1f -- its skin %.1f mm deep at most, its nearest middle/outer skin %.1f mm %s the gun\n",
+				when, ba / 10.0, bb / 10.0, -bDepth * 1000, fabs(bGap) * 1000, bGap < 0 ? "into" : "from");
+		};
+		// THE STAGES, from one start: the index free to pass the guard, then every finger, then the penetration weighed
+		// 4x, then the thumb chosen on the exact pose and the fit again.
+		auto stages = [&](double q[NP], const char *what) {
+			memcpy(prm, q, sizeof(prm));
+			indexFree = true; kPenW = 5.0;
+			solve(prm, 60);
+			indexFree = false;
+			solve(prm, 80);
+			kPenW = getenv("COLT_PENW2") ? atof(getenv("COLT_PENW2")) : 20.0;
+			solve(prm, 80);
+			thumbPick(what);
+			solve(prm, 40);
+			thumbPick(what);
+			memcpy(q, prm, sizeof(prm));
+			return cost(prm);
+		};
+		double own[NP];
+		memcpy(own, prm, sizeof(own));
+		double best[NP];
+		const double cOwn = stages(own, "from this hand's own starts");
+		memcpy(best, own, sizeof(best));
+		// THE OTHER HAND'S FIT, MIRRORED, as a second start (the hands are mirror images, the Colt nearly so: hand frame Z
+		// and gun x flip), through the same stages; the lower final cost wins. A hand whose own starts fall into a worse
+		// basin (the Godot left hand: its index pad 10.7 mm off the trigger) is not left there.
+		if (gHavePrev)
+		{
+			const M3 S = FromCols({ 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, -1 }), Sg = FromCols({ -1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 });
+			const M3 Rm = Mul(Mul(S, gPrevR), Sg);
+			M3 R0t; for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) R0t.m[i][j] = R0.m[j][i];
+			const V3 w = RotVec(Mul(Rm, R0t));
+			double q[NP];
+			memcpy(q, gPrevPrm, sizeof(q));
+			q[0] = w.x; q[1] = w.y; q[2] = w.z;
+			q[3] = gPrevPrm[3]; q[4] = gPrevPrm[4]; q[5] = -gPrevPrm[5];
+			const double cMir = stages(q, "from the other hand's fit, mirrored");
+			printf("  final cost from this hand's own starts %.4g; from the other hand's fit, mirrored, %.4g\n", cOwn, cMir);
+			if (cMir < cOwn) memcpy(best, q, sizeof(best));
+		}
+		memcpy(prm, best, sizeof(prm));
 		const double idxReady = prm[6] < 0 ? 0 : (prm[6] > 1 ? 1 : prm[6]);
 		printf("  multi-start: the best cost %.3g; the index on the trigger: %.3f of the way from the open frame to the grip's\n", cost(prm), idxReady);
 		double wrapOut[5] = { -1, -1, -1, -1, -1 }, baseOut[5] = { -1, -1, -1, -1, -1 };
-		auto cl01 = [](double u) { return u < 0 ? 0.0 : (u > 1 ? 1.0 : u); };
 		for (int f : { 0, 2, 3, 4 }) { wrapOut[f] = cl01(prm[kParamOf[f]]); baseOut[f] = cl01(prm[kBaseOf[f]]); }
 		printf("  the wraps (open -> grip_pistol's own finger), knuckle / outer joints: thumb %.3f/%.3f middle %.3f/%.3f ring %.3f/%.3f little %.3f/%.3f\n",
 			baseOut[0], wrapOut[0], baseOut[2], wrapOut[2], baseOut[3], wrapOut[3], baseOut[4], wrapOut[4]);
@@ -722,11 +830,16 @@ int main(int argc, char **argv)
 		const Posed pfit = PoseHand(r, Wrest, rig, hp, ready, &hold, &hfit);
 		handR = Skin(r, pfit.P);
 		for (MeshV &v : handR.v) { v.p = toHand(v.p); v.n = dirHand(v.n); }
+		// THE PAD CHECKED IS THE PAD FITTED: one skin vertex, padVid (the distal segment's most palmward vertex with the index
+		// half closed), so the fit and the check measure the same point of skin. Re-picking "the most palmward vertex" on
+		// each pose wanders along the 24 mm segment with the joint angles (Godot hand: up to ~10 mm on a straight index);
+		// that re-picked vertex is printed below for information.
 		const int padV = pad(pfit, handR);
-		const V3 pR = padV >= 0 ? handR.v[padV].p : padOf(idxReady);
+		const V3 pR = handR.v[padVid].p;
 		const M3 R = Mul(Rodrigues(V3(prm[0], prm[1], prm[2])), R0);
 		const V3 t(prm[3], prm[4], prm[5]);
 		auto T = [&](V3 p) { return R * (p * s) + t; };
+		gPrevR = R; memcpy(gPrevPrm, prm, sizeof(gPrevPrm)); gHavePrev = true;
 		double chanErr = 0;   // information only: the grip's centreline against the hole's centres
 		{
 			const V3 l0 = T(mc), ld = R * gd;
@@ -734,6 +847,7 @@ int main(int argc, char **argv)
 		}
 		M3 RtF; for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) RtF.m[a][b] = R.m[b][a];
 		const double webErr = Len(T(beaver) - web), padErr = Len(T(onFace(RtF * (pR - t) * (1.0 / s))) - pR);
+		if (padV >= 0) { const V3 q = handR.v[padV].p; printf("  (information: the most palmward distal vertex of this pose, v%d, is %.1f mm from the trigger face; the fitted pad v%d %.1f mm)\n", padV, Len(T(onFace(RtF * (q - t) * (1.0 / s))) - q) * 1000, padVid, padErr * 1000); }
 		const V3 bore = R * V3(0, 1, 0), mz = T(muzzle);
 		printf("  FIT: the grip's centreline %.1f mm (worst) from the hole's centres (information); the web %.1f mm from the beavertail point; the index pad %.1f mm from the trigger face\n",
 			chanErr * 1000, webErr * 1000, padErr * 1000);
@@ -789,7 +903,7 @@ int main(int argc, char **argv)
 			padErr * 1000, padFace * 1000, padFireErr * 1000);
 		char line[256];
 		snprintf(line, sizeof line, "%s: the index pad on the trigger face within 6 mm (%.1f)", meshes[h], padErr * 1000); Check(padErr < 0.006, line);
-		snprintf(line, sizeof line, "%s: the web at the beavertail within 18 mm (%.1f)", meshes[h], webErr * 1000); Check(webErr < 0.018, line);
+		snprintf(line, sizeof line, "%s: the web at the beavertail within 8 mm (%.1f)", meshes[h], webErr * 1000); Check(webErr < 0.008, line);
 		snprintf(line, sizeof line, "%s: no finger vertex more than 2 mm inside the gun (%d)", meshes[h], insideFingers); Check(insideFingers == 0, line);
 		for (int f : { 2, 3, 4 }) { snprintf(line, sizeof line, "%s: %s wrapped onto the grip within 3 mm (%.1f)", meshes[h], kFingerJointNames[f][0], touch[f] * 1000); Check(touch[f] < 0.003, line); }
 

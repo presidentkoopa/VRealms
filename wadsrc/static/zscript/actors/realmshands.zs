@@ -6,8 +6,10 @@
 // and capacitive touches (src/r_data/vr_handpose.cpp) -- not yet for the FBX hands: which
 // frames of its take are the pose targets is not chosen, so they show frame 0.
 //
-// The meshes are the owner's hand_final.fbx, read by the engine itself (src/common/models/model_fbx.h):
-// Hand_Low for the right, Hand_Low1 for the left; the MODELDEF is vrealms_iwad/MODELDEF.txt.
+// The meshes are the Godot XR Tools hands carrying the poses of the owner's hand_final.fbx
+// (vrealms_iwad/models/hands/godot_xr/godot_xr_hands.fbx, tools/hand_retarget), read by the engine itself
+// (src/common/models/model_fbx.h): Hand_Low for the right, Hand_Low1 for the left; the MODELDEF is
+// vrealms_iwad/MODELDEF.txt.
 // Presentation only: no collision, no interaction, nothing in the game reads them. The weapon (RealmsHeld) is separate.
 //
 class RealmsHand : Actor
