@@ -2103,6 +2103,9 @@ VSMatrix FSpriteModelFrame::ObjectToWorldMatrix(FLevelLocals *Level, DVector3 tr
 	{
 		VSMatrix seat;
 		if (VRHandPose_ModelSeat(Models[modelIDs[0]], gripSide, seat)) objectToWorldMatrix.multMatrix(seat);
+		// RS FORK -- A HELD THING'S OWN SEAT (vr_handpose.h VRHandPose_SetActorSeat): a model that is not a hand (the
+		// Colt) carries the seat its game layer measured for it, per actor, in the same terms.
+		else if (VRHandPose_ActorSeat(handFreezeActor, seat)) objectToWorldMatrix.multMatrix(seat);
 	}
 
 	if (!(flags & MDL_CORRECTPIXELSTRETCH) && !(flags & MDL_NOPIXELSTRETCH) && modelIDs.Size() > 0)	// NoPixelStretch (GZSelaco 1e7fd30b59)

@@ -635,6 +635,45 @@ int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Lo
 	return spriteNum;
 }
 
+// A MODEL FILE BOUND TO AN OBJECT'S CLASS (the Colt lying in the world, roth_img3d.cpp): the file through the engine's
+// own loader (FindModel, which keeps one copy per path and name), its skin, the angle offsets of a MODELDEF block, on a
+// runtime sprite of this load, frame 0 of the file. -1 when the file is not there or the binding did not take.
+int BindModelFile(const char *key, const char *path, const char *file, const char *skin, PClassActor *cls, float angle, float pitch, float roll, Log *log)
+{
+	if (key == nullptr || cls == nullptr || path == nullptr || file == nullptr) return -1;
+	if (!gSpriteMarkValid) return -1;
+	const unsigned modelIndex = FindModel(path, file, true);
+	if (modelIndex == unsigned(-1) || modelIndex >= Models.Size()) { if (log) log->Warn("objects: model %s%s not loaded", path, file); return -1; }
+	const int spriteNum = MakeRuntimeSprite(FNullTextureID(), log);
+	if (spriteNum < 0) return -1;
+	FSpriteModelFrame smf;
+	memset((void *)&smf, 0, sizeof(smf));
+	smf.modelsAmount = 1;
+	smf.modelIDs.Alloc(1);
+	smf.modelIDs[0] = (int)modelIndex;
+	smf.modelframes.Alloc(1);
+	smf.modelframes[0] = 0;
+	smf.skinIDs.Alloc(1);
+	FTextureID sk = FNullTextureID();
+	if (skin != nullptr) sk = LoadSkin(path, skin);
+	smf.skinIDs[0] = sk;
+	smf.animationIDs.Alloc(1);
+	smf.animationIDs[0] = -1;
+	smf.surfaceskinIDs.Alloc(MD3_MAX_SURFACES);
+	for (unsigned i = 0; i < smf.surfaceskinIDs.Size(); i++) smf.surfaceskinIDs[i] = FNullTextureID();
+	smf.xscale = smf.yscale = smf.zscale = 1.f;
+	smf.angleoffset = angle;
+	smf.pitchoffset = pitch;
+	smf.rolloffset = roll;
+	smf.setFlags(MDL_NOPIXELSTRETCH);
+	smf.type = cls;
+	smf.sprite = (short)spriteNum;
+	smf.frame = 0;
+	AddSpriteModelFrame(smf);
+	if (FindModelFrame(cls, spriteNum, 0, false) == nullptr) { if (log) log->Warn("objects: model binding for %s did not take", key); return -1; }
+	return spriteNum;
+}
+
 //==========================================================================
 //
 //

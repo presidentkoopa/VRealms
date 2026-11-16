@@ -102,6 +102,9 @@ int FindLogicSprite(uint16_t textureWord);
 // called after PrepareObjects in the same load, because that is where the
 // sprite table and the added model frames are reset; `data` is consumed.
 int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log);
+// A model FILE (path + "<file>[:selector]") bound to `cls` on a runtime sprite of this load, with its skin and a
+// MODELDEF block's angle offsets (degrees): the Colt's own mesh lying in the world (roth_img3d.cpp). -1: not bound.
+int BindModelFile(const char *key, const char *path, const char *file, const char *skin, PClassActor *cls, float angle, float pitch, float roll, Log *log);
 
 // The rotation byte -> yaw conversion the objects were built with, exported so a
 // later rotation lands on the same convention as the original spawn instead of a

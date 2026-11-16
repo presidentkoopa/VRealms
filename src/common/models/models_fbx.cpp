@@ -352,6 +352,10 @@ bool FFBXModel::Load(const char* path, int lumpnum, const char* buffer, int leng
 			fileName.GetChars(), MeshSelector.GetChars(), m.twin.c_str(), m.twin.c_str(), r.material.name.c_str(), r.material.ownName.c_str(),
 			m.twin.c_str(), m.axis, m.corners, m.faces, m.uSpread, m.vSpread, m.reversedFaces, m.positionDiff, m.axis);
 	}
+	if (!r.part.empty())
+		Printf("FBX model %s:%s -- part=%s: %u vertices and %u triangles of the mesh bound to %s or a joint under it, centred on their box"
+			" (its centre %.3f %.3f %.3f in the file's space, taken off)\n", fileName.GetChars(), MeshSelector.GetChars(), r.part.c_str(),
+			NumVertices, mesh.NumTriangles, r.part.c_str(), r.partCentre[0], r.partCentre[1], r.partCentre[2]);
 	if (d.rebaseMaxDev > 1e-4)
 		Printf(PRINT_HIGH, TEXTCOLOR_RED "FBX model %s:%s -- the skin's bind is not one transform at the rest pose (%.3g): the drawn skin will differ from the file's\n",
 			fileName.GetChars(), MeshSelector.GetChars(), d.rebaseMaxDev);

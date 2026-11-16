@@ -2386,3 +2386,47 @@ DEFINE_ACTION_FUNCTION(AActor, ClearModelReachChain)
 	}
 	return 0;
 }
+
+// ---- RS FORK -- THE C++ FACE OF THE JOINT DRAW POSE (model_reach.h ModelDrawPose_SetJoint) ---------------------------
+//
+// SetModelJointDrawPose and SetModelJointDrawOffset in one call, for a game layer that poses a rigged mesh's parts from
+// C++ every tic (src/roth/roth_colt.cpp: the Colt's slide, hammer, trigger, magazine). The same entry, the same rules:
+// idempotent, a value change bumps the entry's generation so the once-a-frame cache is not reused; both modes CLEAR
+// drops the joint's entry. Render-only, as every draw pose.
+bool ModelDrawPose_SetJoint(AActor *actor, FName joint, int modelIndex, int rotMode, const FQuaternion &q, int ofsMode, const FVector3 &ofs)
+{
+	if (actor == nullptr || joint == NAME_None || modelIndex < 0 || rotMode < JDP_CLEAR || rotMode > JDP_HIDE || ofsMode < JDO_CLEAR || ofsMode > JDO_REPLACE)
+		return false;
+	FQuaternion qq(0, 0, 0, 1);
+	if (rotMode == JDP_MULTIPLY || rotMode == JDP_REPLACE)
+	{
+		qq = q;
+		if (qq.LengthSquared() < 1.e-12) return false;
+		qq.MakeUnit();
+	}
+	const FVector3 o = ofsMode == JDO_CLEAR ? FVector3(0, 0, 0) : ofs;
+	const bool clear = rotMode == JDP_CLEAR && ofsMode == JDO_CLEAR;
+	FDrawPoseEntry *e = EntryFor(actor, !clear);
+	if (e == nullptr) return clear;
+	FJointDrawPose *p = PoseFor(*e, joint, modelIndex, !clear);
+	if (p == nullptr) { DropIfEmpty(actor); return clear; }
+	if (p->rotMode != rotMode || !(p->rotation == qq) || p->ofsMode != ofsMode || !(p->offset == o))
+	{
+		p->rotMode = rotMode;
+		p->rotation = qq;
+		p->ofsMode = ofsMode;
+		p->offset = o;
+		Changed(*e);
+	}
+	DropEmptyPoses(*e);
+	DropIfEmpty(actor);
+	return true;
+}
+
+void ModelDrawPose_ClearActor(AActor *actor)
+{
+	FDrawPoseEntry *e = EntryFor(actor, false);
+	if (e == nullptr) return;
+	if (e->poses.Size() > 0) { e->poses.Clear(); Changed(*e); }
+	DropIfEmpty(actor);
+}

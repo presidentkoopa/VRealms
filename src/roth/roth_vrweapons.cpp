@@ -9,6 +9,7 @@
 
 #include "roth_vrweapons.h"
 #include "roth_vrweapon.h"
+#include "roth_coltvr.h"
 #include "roth_vrpick.h"
 #include "roth_hands.h"
 #include "roth_objects.h"
@@ -209,6 +210,7 @@ bool VRWeaponsGripTaken(int role)
 {
 	AActor *pmo = Pawn();
 	if (!HandsOn(pmo)) return false;
+	if (ColtGripTaken(role)) return true;   // the Colt's release, pouch, slide or magazine (roth_coltvr.h)
 	const int held = HeldItem();
 	if (role == VR_OFFHAND)
 	{
@@ -314,6 +316,9 @@ void VRWeaponsTick(FLevelLocals *level, bool live)
 	}
 	else S.rig.ResetHand();
 	if (S.pulse2Tic >= 0 && level->maptime >= S.pulse2Tic) { Pulse(VR_MAINHAND, 0.3, 3, "refused, the second pulse"); S.pulse2Tic = -1; }
+
+	// ---- THE COLT'S REAL PARTS (roth_coltvr.h): the off hand against the drawn gun ----
+	ColtHandsTick(level, live);
 }
 
 } // namespace roth

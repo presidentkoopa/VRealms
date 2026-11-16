@@ -11,6 +11,7 @@
 #include "roth_objects.h"
 #include "roth_dbase100.h"
 #include "roth_vrpick.h"
+#include "roth_colt.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -348,8 +349,29 @@ PClassActor *HeldClass()
 
 } // namespace
 
+// THE COLT'S OWN MESH LYING IN THE WORLD (owner 2026-11-16: "lying in the world as the same mesh"): item 9's object
+// wears vrealms_iwad/models/weapons/colt1911 (the mesh drawn in the hand, CC BY 4.0), not a generated model: the whole
+// mesh at rest on its left side (MODELDEF block angles: pitch -90 about the bore lays the gun's -X side up), 0.216 m long,
+// its lowest point on the picture's bottom. The picture is kept for picking, as every world model here.
+namespace
+{
+constexpr double kColtUnit = 0.000271900171;                 // metres a file unit (vrealms_iwad/MODELDEF.txt)
+constexpr double kColtRightSide = 56.73;                     // the mesh's +X extent: on its left side, the depth below its origin
+std::map<const PClass *, int> gColtSprites;
+int ColtWorldSprite(PClassActor *cls)
+{
+	auto it = gColtSprites.find(cls);
+	if (it != gColtSprites.end()) return it->second;
+	const int sn = BindModelFile("colt1911/world", "models/weapons/colt1911/", "colt1911.fbx:Default_1", "colt1911_diffuse.jpg", cls, 0.f, -90.f, 0.f, nullptr);
+	if (sn < 0) Printf(TEXTCOLOR_RED "[roth_img3d] the Colt's mesh could not be bound to %s -- its picture is kept\n", cls->TypeName.GetChars());
+	gColtSprites[cls] = sn;
+	return sn;
+}
+}
+
 void Img3dNewLoad()
 {
+	gColtSprites.clear();
 	S.sprites.clear();
 	S.worn.clear();
 }
@@ -361,10 +383,44 @@ bool Img3dWearWorld(AActor *mo, uint16_t renderId, uint8_t rotation, bool fixedA
 	if (mo == nullptr) return false;
 	ReadFolder(false);
 	auto was = S.worn.find(mo);
-	if (S.models.empty() && was == S.worn.end()) return false;   // the common case: no models, nothing worn
+	const bool coltItem = TheDbase100().FindItemByRenderId(renderId) == colt::kColt;
+	if (!coltItem && S.models.empty() && was == S.worn.end()) return false;   // the common case: no models, nothing worn
 	const bool keyMatch = was != S.worn.end() && was->second.key == mo->special2;
 	if (was != S.worn.end() && !keyMatch) { S.worn.erase(was); was = S.worn.end(); }   // another actor at that address
 	const int item = TheDbase100().FindItemByRenderId(renderId);
+	if (coltItem && item == colt::kColt)
+	{
+		const int sn = ColtWorldSprite(mo->GetClass());
+		if (sn >= 0)
+		{
+			if (keyMatch && mo->sprite == sn && was->second.item == item) return true;
+			State::Worn w = keyMatch ? was->second : State::Worn();
+			w.item = item;
+			w.pictureSprite = mo->sprite;
+			if (!keyMatch) { w.scale = mo->Scale; w.z = mo->Z(); w.renderRadius = mo->renderradius; w.key = mo->special2; }
+			double picMetres = 0.0, bottom = mo->Z();
+			const bool havePic = PictureNow(mo, picMetres, bottom);
+			const double upm = UnitsPerMetre(), ps = Stretch(mo->Level);
+			const double k = upm * kColtUnit;
+			mo->sprite = sn;
+			mo->frame = 0;
+			mo->Scale = DVector2(k, k / ps);
+			mo->PrevScale = mo->Scale;
+			w.modelSprite = sn;
+			w.modelScale = mo->Scale;
+			S.worn[mo] = w;
+			double z = (havePic ? bottom : mo->Z()) + kColtRightSide * k / ps;
+			if (mo->Sector != nullptr) { const double fz = mo->Sector->floorplane.ZatPoint(mo->Pos()); if (z < fz) z = fz; }
+			mo->Angles.Yaw = DAngle::fromDeg(ObjectYaw(rotation));
+			mo->renderradius = 0.5 * 0.216 * upm;
+			mo->SetOrigin(DVector3(mo->X(), mo->Y(), z), false);
+			mo->SetZ(z);
+			mo->ClearInterpolation();
+			if (!keyMatch) Printf("[roth_img3d] object (key %d) shows item 9: the Colt's own mesh (colt1911.fbx), 0.216 m on its left side, its origin at z %.1f (the picture's bottom %.1f), yaw %.0f\n",
+				mo->special2 - 1, z, bottom, ObjectYaw(rotation));
+			return true;
+		}
+	}
 	ItemModel *m = item > 0 ? FindModelFor(item) : nullptr;
 	if (m == nullptr)
 	{

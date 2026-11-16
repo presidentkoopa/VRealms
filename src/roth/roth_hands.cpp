@@ -34,6 +34,7 @@
 #include "roth_interface.h"
 #include "roth_inventory.h"
 #include "roth_actors_engine.h"
+#include "roth_coltvr.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -136,6 +137,10 @@ static void PublishHeld()
 		held[VR_MAINHAND].weapon = true;
 		held[VR_MAINHAND].gripClass = w.gripClass;
 		held[VR_MAINHAND].propClass = w.propClass;
+		// THE COLT'S MESH (roth_coltvr.h): the trigger finger measured on it -- the open frame toward grip_pistol's index
+		// until the pad meets the trigger face; untouched, straight along the frame (vr_handpose_math.h indexReady).
+		float ready = 0.f, fire = 0.f;
+		if (ColtHeldIndex(VRHandPose_SideForRole(VR_MAINHAND), ready, fire)) { held[VR_MAINHAND].indexReady = ready; held[VR_MAINHAND].indexFire = fire; }
 		if (held[VR_MAINHAND].item == 0) held[VR_MAINHAND].item = w.item;
 	}
 	// The held objects' poses (roth_held.h): the match pinched, the lamp by its bail, both hands round the Book --

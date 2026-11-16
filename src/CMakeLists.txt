@@ -991,6 +991,7 @@ set (PCH_SOURCES
 	roth/roth_grabglue.cpp
 	roth/roth_gestures.cpp
 	roth/roth_vrweapons.cpp
+	roth/roth_coltvr.cpp
 	roth/roth_wicks.cpp
 	roth/roth_candles.cpp
 	roth/roth_heldlogic.cpp

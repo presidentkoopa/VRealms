@@ -93,6 +93,11 @@ void VRPoseTest_PublishAim(AActor *mo);
 // The model's seat in that hand frame (vr_handpose_math.h ModelSeat), measured once per model from
 // its own bind pose. False when the model lacks the wrist or knuckle joints.
 bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out);
+// RS FORK -- A HELD THING'S SEAT, per actor: a model drawn at a hand's grip frame (FollowHandMode 3/4) that is not a
+// hand has no joints to seat it, so its game layer gives the seat (model render coords -> the hand frame, the model's
+// own units, as ModelSeat's) -- src/roth/roth_colt.cpp, the Colt fitted to the authored grip. Render-only; null clears.
+void VRHandPose_SetActorSeat(const AActor *actor, const float m[16]);
+bool VRHandPose_ActorSeat(const AActor *actor, VSMatrix &out);
 
 // The finger pose, on a finished bone palette (models.cpp RenderModelFrame, beside
 // ModelDrawPose_Apply): UZDXREMA's curl rule (trigger, grip, touches -> how far each finger folds,

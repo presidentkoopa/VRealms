@@ -102,3 +102,30 @@ DBASE200 frames, decoded with the original's rules) on a flat card:
 - `roth_give <index> [tic]`: give_item, as the scripts do (a weapon equips itself).
 - `roth_trigger [tic]`: pull the trigger once (the fire button does it every tic it is held).
 - `roth_weapon [tic]`: state, frame, timing and the held actor.
+
+## The Colt (i9) as a real M1911 in VR (2026-11-16)
+
+The owner's mesh: "Colt 1911" by AlexChuchvaga, Sketchfab, CC BY 4.0
+(https://sketchfab.com/3d-models/colt-1911-561fccb5b3314feda06da315b8d36553), in
+`vrealms_iwad/models/weapons/colt1911/` with its `CREDITS.txt` (the FBX byte for byte; the diffuse reduced to 2048²).
+Code: `src/roth/roth_colt.h` (engine-free rules and state machine), `src/roth/roth_coltvr.{h,cpp}` (the engine side);
+tests `tools/colt_test/run.sh`; PC run `tools/claude_bridge/cfg/colt_flat.cfg`.
+
+- **Flat** is unchanged: the original's picture and its automatic reload on the pull.
+- **VR** (a headset or the controller-pose test): `RealmsColt1911` replaces the card. The mesh rides the main hand's
+  GRIP frame (FollowHandMode 3) at a seat measured by `tools/colt_test/colt_fit` on the authored `grip_pistol` hand
+  (the owner's three points: beavertail on the web, index pad toward the trigger face, the grip in the wrapped fingers;
+  the residuals are printed by the test). `roth_colt fit dx dy dz rx ry rz` nudges it live, never archived.
+- The shot leaves the drawn muzzle along the drawn bore (`ColtBoreAim`, read by WeaponTick).
+- The parts are posed from the mesh's own take on the original's fire events (`roth_colt.h PartsFor`): trigger and
+  hammer before the shot frame, the slide's recoil from the shot to the cycle's end, locked back on the last round.
+- The spent case (`?part=Gils`) and a dropped magazine (`?part=Magaz`) are world actors with gravity and collision;
+  presentation only. The loader's `part=<joint>` option keeps one joint's triangles (fbx_skinned.h).
+- **The reload's rules** (each the original's, the hands only choosing when; full text in `roth_colt.h`): the release
+  drops the magazine only when the word is 0 (the original has no partial magazines); a magazine is taken from the
+  belt pouch only when one is carried; let go before it seats, it goes back; **the seat is the original's reload**: the
+  engine pulls `trigger_weapon_fire` once (WC:843-866: remove_item(i51), the word 0 + 12, the reload picture's lock,
+  no shot); a pull on the empty word with i51 carried is a dry click (the automatic reload replaced); with none
+  carried it is the original's (message 6, the next weapon); the slide must be racked or released before a shot.
+- `roth_colt release` / `roth_colt sliderelease` are the reload inputs (bindable). The Colt lying in the world
+  (ADEMO[99]) is the same mesh (roth_img3d.cpp), the picture kept for picking.

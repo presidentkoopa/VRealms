@@ -838,6 +838,36 @@ namespace
 
 }
 
+namespace
+{
+	struct FActorSeat { const AActor *actor; float m[16]; };
+	TArray<FActorSeat> gActorSeats;
+}
+
+void VRHandPose_SetActorSeat(const AActor *actor, const float m[16])
+{
+	for (unsigned i = 0; i < gActorSeats.Size(); i++)
+		if (gActorSeats[i].actor == actor)
+		{
+			if (m == nullptr) gActorSeats.Delete(i);
+			else memcpy(gActorSeats[i].m, m, sizeof(gActorSeats[i].m));
+			return;
+		}
+	if (m == nullptr || actor == nullptr) return;
+	FActorSeat s;
+	s.actor = actor;
+	memcpy(s.m, m, sizeof(s.m));
+	gActorSeats.Push(s);
+}
+
+bool VRHandPose_ActorSeat(const AActor *actor, VSMatrix &out)
+{
+	if (actor == nullptr) return false;
+	for (const FActorSeat &s : gActorSeats)
+		if (s.actor == actor) { out.loadMatrix(s.m); return true; }
+	return false;
+}
+
 bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out)
 {
 	if (model == nullptr || side < 0 || side >= SIDE_COUNT) return false;

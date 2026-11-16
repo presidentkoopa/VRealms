@@ -174,7 +174,13 @@ bool ParseSelector(const char *text, Selector &out, std::string &err)
 			if (!out.mirrorSkin.empty()) { err = "mirrorskin given twice"; return false; }
 			out.mirrorSkin = val;
 		}
-		else { err = "unknown option '" + o + "' after '?' (known: mirrorskin=<mesh>)"; return false; }
+		else if (IEquals(key.c_str(), "part"))
+		{
+			if (val.empty()) { err = "part needs a joint's name (part=<joint>)"; return false; }
+			if (!out.part.empty()) { err = "part given twice"; return false; }
+			out.part = val;
+		}
+		else { err = "unknown option '" + o + "' after '?' (known: mirrorskin=<mesh>, part=<joint>)"; return false; }
 		at = end + 1;
 	}
 	return true;
@@ -339,6 +345,43 @@ static void JointLocals(const ufbx_scene *sc, const std::vector<uint32_t> &nodeI
 		outLocal[j] = FromTransform(ufbx_matrix_to_transform(&local));
 		if (outWorld) ToMat(n->node_to_world, outWorld[j].data());
 	}
+}
+
+// part=<joint>: keep the triangles whose three corners are bound (largest weight) to `joint` or a joint under it,
+// drop every other vertex, and centre what is left on its own box. The skeleton and the frames are untouched.
+static bool KeepPart(Result &out, const std::string &joint, std::string &err)
+{
+	int root = -1;
+	for (size_t j = 0; j < out.joints.size(); j++) if (IEquals(out.joints[j].name.c_str(), joint.c_str())) root = (int)j;
+	if (root < 0) { err = "part: no joint named '" + joint + "' in the mesh's skeleton"; return false; }
+	std::vector<char> under(out.joints.size(), 0);
+	for (size_t j = 0; j < out.joints.size(); j++)	// parents first: one pass
+		under[j] = (int)j == root || (out.joints[j].parent >= 0 && under[out.joints[j].parent]);
+	auto owner = [&](const Vertex &v) { int b = 0; uint8_t w = 0; for (int k = 0; k < 4; k++) if (v.weight[k] > w) { w = v.weight[k]; b = v.bone[k]; } return b; };
+	std::vector<int> remap(out.verts.size(), -1);
+	std::vector<Vertex> verts;
+	std::vector<uint32_t> tris;
+	for (size_t t = 0; t + 2 < out.tris.size(); t += 3)
+	{
+		bool keep = true;
+		for (int c = 0; c < 3; c++) if (!under[owner(out.verts[out.tris[t + c]])]) keep = false;
+		if (!keep) continue;
+		for (int c = 0; c < 3; c++)
+		{
+			const uint32_t v = out.tris[t + c];
+			if (remap[v] < 0) { remap[v] = (int)verts.size(); verts.push_back(out.verts[v]); }
+			tris.push_back((uint32_t)remap[v]);
+		}
+	}
+	if (tris.empty()) { err = "part: no triangle of the mesh is bound to '" + joint + "' or a joint under it"; return false; }
+	double lo[3] = { 1e300, 1e300, 1e300 }, hi[3] = { -1e300, -1e300, -1e300 };
+	for (const Vertex &v : verts) for (int k = 0; k < 3; k++) { lo[k] = std::min(lo[k], (double)v.pos[k]); hi[k] = std::max(hi[k], (double)v.pos[k]); }
+	for (int k = 0; k < 3; k++) { out.partCentre[k] = 0.5 * (lo[k] + hi[k]); out.partLo[k] = lo[k]; out.partHi[k] = hi[k]; }
+	for (Vertex &v : verts) for (int k = 0; k < 3; k++) v.pos[k] = (float)(v.pos[k] - out.partCentre[k]);
+	out.verts.swap(verts);
+	out.tris.swap(tris);
+	out.part = out.joints[root].name;
+	return true;
 }
 
 bool Load(const void *data, size_t size, const char *meshSelector, Result &out, std::string &err)
@@ -716,6 +759,7 @@ bool Load(const void *data, size_t size, const char *meshSelector, Result &out, 
 		out.frames = restLocal;
 		out.numFrames = 1;
 	}
+	if (!sel.part.empty() && !KeepPart(out, sel.part, err)) return false;
 	return true;
 }
 

@@ -1,0 +1,42 @@
+1 ticktrace 1
+2 call give_item 9 0 0 0
+2 call give_item 33 0 0 0
+2 call give_item 33 0 0 0
+2 call give_item 33 0 0 0
+3 dump start
+150 pull
+180 pull
+210 pull
+240 pull
+270 pull
+300 pull
+330 pull
+360 pull
+390 pull
+420 pull
+450 pull
+480 pull
+510 pull
+540 pull
+570 pull
+600 pull
+630 pull
+660 pull
+690 pull
+720 pull
+750 pull
+780 pull
+810 pull
+840 pull
+870 pull
+900 pull
+930 pull
+960 pull
+990 pull
+1020 pull
+1050 pull
+1080 pull
+1110 pull
+1140 pull
+1170 pull
+1200 pull

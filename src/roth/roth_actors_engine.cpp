@@ -26,6 +26,7 @@
 #include "roth_inventory.h"
 #include "roth_hands.h"
 #include "roth_vrweapons.h"
+#include "roth_coltvr.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -549,6 +550,15 @@ void TrackHandShot()
 	g_shotTrack.on = false;
 }
 
+// THE COLT AS A REAL M1911 IN VR (roth_coltvr.h, roth_colt.h): what the original's weapon is doing, for its rig.
+colt::Game ColtGame(uint32_t ev)
+{
+	const ActorWorld &w = g_actors.world;
+	const int qty = w.weapon.heldSlot >= 0 ? g_actors.host.SlotQuantity(w.weapon.heldSlot) : 0;
+	const int frames = w.weapon.sprite != 0 ? g_actors.host.WeaponFrames(w.weapon.sprite) : 0;
+	return colt::GameOf(w, qty, frames, ev);
+}
+
 void WeaponTick(int ticks)
 {
 	ActorWorld &w = g_actors.world;
@@ -578,6 +588,13 @@ void WeaponTick(int ticks)
 			aimPitch = DAngle::fromDeg(-p);
 			handAt = rear;
 			twoHand = true;
+		}
+		// THE COLT'S MESH (roth_coltvr.h): the shot leaves the drawn muzzle along the drawn bore.
+		else if (w.weapon.item0 == colt::kColt && ColtBoreAim(y, p, rear))
+		{
+			aimYaw = DAngle::fromDeg(y);
+			aimPitch = DAngle::fromDeg(-p);
+			handAt = rear;
 		}
 	}
 	else if (testHand != nullptr)
@@ -664,7 +681,20 @@ void WeaponTick(int ticks)
 		Printf("[roth_gestures] the hand's attack (weapon i%d, bullet i%d): trigger_weapon_fire %s\n", (int)w.weapon.item0, (int)w.weapon.pendingDef,
 			g_fireAt.holding ? "pulled, aimed at the contact" : "refused by the original's weapon (still in its last swing, or no hands)");
 	}
-	else if (button) w.TriggerFire(0, 0);                  // key_fire_weapon (WC:912)
+	else
+	{
+		// THE COLT'S REAL-PARTS RELOAD (roth_colt.h R4-R6): the new magazine seated is the original's reload, pulled
+		// once here; a pull the rig refuses is a dry click and never reaches the original's trigger.
+		const colt::Game cg = ColtGame(w.weaponEvents);
+		if (ColtReloadDue(cg))
+		{
+			const int q0 = cg.qty, m0 = cg.mags;
+			w.TriggerFire(0, 0);
+			const colt::Game c1 = ColtGame(w.weaponEvents);
+			ColtReloadDone(q0, m0, c1.qty, c1.mags, (int)w.weapon.lock);
+		}
+		else if (button && ColtPullReaches(cg)) w.TriggerFire(0, 0);   // key_fire_weapon (WC:912)
+	}
 	if (g_fireAt.holding)
 	{
 		double dx = 0, dy = 0;
@@ -700,6 +730,7 @@ void WeaponTick(int ticks)
 		Printf("[roth_gestures] the fist's attack: %s\n", (evFrame & ActorWorld::WE_SHOT) ? "the shot left, aimed at the contact" : "the swing ended");
 	}
 	w.RechargeFrame(ticks);
+	ColtAfterWeapon(ColtGame(w.weaponEvents));
 	w.player.pitch = 0;
 	if (w.shotSerial != g_shotSerialSeen && !(hand || g_gunAimLogFlat)) g_shotSerialSeen = w.shotSerial;
 	if (w.shotSerial != g_shotSerialSeen)
@@ -799,9 +830,17 @@ void PresentHeld()
 	PClassActor *cls = PClass::FindActor(FName(FStringf("RealmsWeapon%d", (int)pr.item).GetChars()));
 	if (cls == nullptr) cls = PClass::FindActor("RealmsHeld");
 	if (cls == nullptr) return;
+	// THE COLT AS ITS MESH IN VR (roth_coltvr.h): its own class when its model loaded; flat keeps the original's card.
+	PClassActor *coltCls = (pmo->OverrideAttackPosDir && pr.item == colt::kColt) ? ColtMeshClass() : nullptr;
+	if (coltCls != nullptr)
+	{
+		const AActor *cdef = GetDefaultByType(coltCls);
+		if (cdef != nullptr && cdef->SpawnState != nullptr && FindModelFrame(coltCls, cdef->SpawnState->sprite, 0, false) != nullptr) cls = coltCls;
+		else coltCls = nullptr;
+	}
 	AActor *&mo = g_actors.held;
 	if (mo != nullptr && (mo->ObjectFlags & OF_EuthanizeMe)) mo = nullptr;
-	if (mo != nullptr && mo->GetClass() != cls) { mo->Destroy(); mo = nullptr; }
+	if (mo != nullptr && mo->GetClass() != cls) { if (mo->GetClass() == ColtMeshClass()) ColtGunGone(); mo->Destroy(); mo = nullptr; }
 	if (mo == nullptr) mo = AActor::StaticSpawn(g_actors.level, cls, pmo->Pos(), NO_REPLACE);
 	if (mo == nullptr) return;
 
@@ -824,8 +863,9 @@ void PresentHeld()
 
 	const bool vr = pmo->OverrideAttackPosDir;
 	const bool hidden = pr.state == ActorWorld::WS_AWAY || pr.item == 0 || pr.sprite == 0 || pmo->health <= 0;
-	if (hidden) { mo->renderflags |= RF_INVISIBLE; return; }
+	if (hidden) { mo->renderflags |= RF_INVISIBLE; if (coltCls != nullptr) ColtGunGone(); return; }
 	mo->renderflags &= ~RF_INVISIBLE;
+	if (coltCls != nullptr) { ColtPresent(mo, ColtGame(ev)); return; }
 
 	// The modder's mesh when there is one: the class's own sprite, frame letter
 	// = the original's frame. Otherwise the card.
@@ -996,7 +1036,7 @@ bool ActorsHeldWeaponDrawn(int32_t &item, const char *&cls)
 	item = 0;
 	cls = nullptr;
 	AActor *mo = g_actors.held;
-	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE) || mo->FollowHandMode != 1) return false;
+	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || (mo->renderflags & RF_INVISIBLE) || (mo->FollowHandMode != 1 && mo->FollowHandMode != FOLLOWHAND_GRIP_MAIN)) return false;
 	item = mo->IntVar(FName("RealmsItem"));
 	cls = mo->GetClass()->TypeName.GetChars();
 	return item != 0;
@@ -1145,6 +1185,7 @@ void ActorsEndLevel()
 	g_actors.dressed.clear();
 	g_actors.wearing.clear();
 	g_actors.cards.clear();
+	ColtEndLevel();
 	g_actors.held = nullptr;
 	g_actors.active = false;
 	g_actors.level = nullptr;

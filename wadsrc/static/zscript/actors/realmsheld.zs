@@ -108,3 +108,88 @@ class RealmsWeapon150 : RealmsHeld { States { Spawn: R150 A -1; Stop; } }
 class RealmsWeapon156 : RealmsHeld { States { Spawn: R156 A -1; Stop; } }
 class RealmsWeapon221 : RealmsHeld { States { Spawn: R221 A -1; Stop; } }
 class RealmsWeapon222 : RealmsHeld { States { Spawn: R222 A -1; Stop; } }
+
+//
+// THE COLT AS A REAL M1911 IN VR (src/roth/roth_coltvr.cpp, roth_colt.h). The owner's mesh (vrealms_iwad/models/weapons/
+// colt1911, CC BY 4.0 -- CREDITS.txt there), drawn at the main hand's grip at the fit measured on the authored grip
+// (tools/colt_test/colt_fit). Its parts (slide, barrel, hammer, trigger, magazine release, magazine, rounds) are posed
+// by the engine every tic from the mesh's own take on the original's fire events; the weapon logic is the original's.
+// Flat play keeps RealmsWeapon9 (the original's picture). Presentation only, as every RealmsHeld.
+//
+class RealmsColt1911 : RealmsHeld { States { Spawn: C191 A -1; Stop; } }
+
+//
+// A PART OF THE COLT IN THE WORLD: the spent case thrown from the port with each shot, the empty magazine dropped from
+// the grip. The same mesh's own part (MODELDEF "?part="), falling under the level's gravity (the engine sets this
+// actor's Gravity to 9.8 m/s^2 in map units), stopped by walls and floors as any actor; it tumbles while it flies, lies
+// still where it lands, and goes after RealmsLife tics. Presentation only: no game record, nothing reads it.
+//
+class RealmsColtPart : Actor
+{
+	int RealmsLife;               // tics it stays once it has landed
+	double SpinYaw, SpinPitch, SpinRoll;
+	double LandPitch, LandRoll;   // how it lies
+	bool Landed;
+
+	Default
+	{
+		Radius 1;
+		Height 1;
+		+DROPOFF;
+		+NOBLOCKMONST;
+		+NOTELEPORT;
+		+DONTSPLASH;
+		+NOTONAUTOMAP;
+		+CANNOTPUSH;
+		+NODAMAGE;
+		+NOTRIGGER;
+		+MOVEWITHSECTOR;
+		-SOLID;
+		-SHOOTABLE;
+	}
+
+	override void Tick()
+	{
+		Super.Tick();
+		if (bDestroyed) return;
+		if (!Landed)
+		{
+			if (pos.z <= floorz + 0.05 && vel.z <= 0)
+			{
+				Landed = true;
+				vel = (0, 0, 0);
+				Pitch = LandPitch;
+				Roll = LandRoll;
+			}
+			else
+			{
+				Angle += SpinYaw;
+				Pitch += SpinPitch;
+				Roll += SpinRoll;
+			}
+		}
+		else if (--RealmsLife <= 0) Destroy();
+	}
+
+	States
+	{
+	Spawn:
+		TNT1 A -1;
+		Stop;
+	}
+}
+
+class RealmsColtCasing : RealmsColtPart
+{
+	override void BeginPlay() { Super.BeginPlay(); RealmsLife = 35 * 15; SpinYaw = 23; SpinPitch = 31; SpinRoll = 0; LandPitch = 0; LandRoll = 90; }
+	States { Spawn: C19C A -1; Stop; }
+}
+
+class RealmsColtMagazine : RealmsColtPart
+{
+	override void BeginPlay() { Super.BeginPlay(); RealmsLife = 35 * 60; SpinYaw = 3; SpinPitch = 9; SpinRoll = 2; LandPitch = 90; LandRoll = 0; }
+	States { Spawn: C19M A -1; Stop; }
+}
+
+// The new magazine in the off hand, from the belt pouch to the magwell (FollowHandMode 4, its seat from the engine).
+class RealmsColtMagazineHeld : RealmsHeld { States { Spawn: C19M A -1; Stop; } }

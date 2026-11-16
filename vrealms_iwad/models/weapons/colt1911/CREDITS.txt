@@ -1,0 +1,13 @@
+"Colt 1911" by AlexChuchvaga
+https://sketchfab.com/3d-models/colt-1911-561fccb5b3314feda06da315b8d36553
+Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+Files here and what was changed:
+  colt1911.fbx           the model's source/Anim.fbx, unchanged (byte for byte; md5 013e420ec899c70a69af99a135c6d87a).
+  colt1911_diffuse.jpg   the model's textures/Dif2f.jpg, reduced from 4096 x 4096 to 2048 x 2048 (Lanczos), JPEG
+                         quality 92. Nothing else changed.
+Not included: the model's Normal, Metallic and Roughness maps (4096 x 4096), not used by the engine yet.
+
+Used in VRealms (REMAROTH) as the Colt .45 (Realms of the Haunting item 9) held in the VR hand, lying in the world,
+and its parts (casing, magazine). Not retail art; the original game's own pictures are untouched.

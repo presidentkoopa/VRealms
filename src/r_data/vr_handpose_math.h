@@ -1049,6 +1049,12 @@ struct HeldState
 	// the same tries and the same "one pose wins whole"); "" = none.
 	std::string pose;
 	int item = 0;					// for the log only: what the game holds there (a DBASE100 index), 0 none
+	// NOT IN THE SOURCE: A TRIGGER FINGER MEASURED ON ITS GUN (owner 2026-11-16; src/roth/roth_colt.cpp, tools/colt_test
+	// colt_fit). indexReady >= 0: a weapon's index is the in-between of two AUTHORED frames -- the open frame (fbx_open)
+	// toward the grip pose's own index -- by indexReady at trigger 0 and indexFire at trigger 1 (the amounts at which the
+	// index pad meets the gun's trigger face, measured on the meshes); with the trigger untouched (no capacitive touch,
+	// trigger 0) the index lies straight, the open frame, along the frame above the guard. -1: the source's index.
+	float indexReady = -1.f, indexFire = -1.f;
 };
 
 inline bool EqualNoCase(const char *a, const char *b)	// stricmp, as VRAvatar_NamedPose compares names (VA:323, 338)
@@ -1319,6 +1325,8 @@ struct HoldChoice
 	int   Src[FINGER_COUNT][FINGER_JOINTS];
 	int   IdxReady = -1, IdxFire = -1;
 	float IdxT = 0.f;
+	int   IdxOpen = -1;				// NOT IN THE SOURCE (HeldState::indexReady): the open pose the measured index blends from
+	float IdxBlend = 0.f;			// ... and how far toward IdxReady's index (0 = straight)
 	HoldChoice() { for (int f = 0; f < FINGER_COUNT; ++f) for (int j = 0; j < FINGER_JOINTS; ++j) Src[f][j] = -1; }
 	bool Any() const
 	{
@@ -1379,6 +1387,17 @@ inline void SelectHold(const HoldPoses *hp, const HeldState &mine, const HeldSta
 			{
 				const int pr = HoldFind(hp, base, FINGER_INDEX), pf = HoldFind(hp, fire, FINGER_INDEX);
 				if (pr >= 0 && pf >= 0) { out.IdxReady = pr; out.IdxFire = pf; out.IdxT = t; }
+			}
+		}
+		if (mine.indexReady >= 0.f && out.IdxReady >= 0)											// NOT IN THE SOURCE: HeldState::indexReady
+		{
+			const int po = HoldFind(hp, "fbx_open", FINGER_INDEX);
+			if (po >= 0)
+			{
+				const float t = in.valid ? Clamp01(in.trigger) : 0.f;
+				const bool straight = !in.valid || (!in.triggerTouch && t <= 0.f);
+				out.IdxOpen = po;
+				out.IdxBlend = straight ? 0.f : mine.indexReady + (mine.indexFire - mine.indexReady) * t;
 			}
 		}
 	}
@@ -1444,7 +1463,15 @@ inline void HoldTargets(const HoldPoses *hp, const HoldChoice &ch, float target[
 		{
 			float wq[4];																			// :672
 			bool have = false;																		// :673
-			if (f == FINGER_INDEX && ch.IdxReady >= 0)												// :674-682
+			if (f == FINGER_INDEX && ch.IdxOpen >= 0)												// NOT IN THE SOURCE: the measured index
+			{
+				float qa[4], qb[4];
+				if (HoldRot(hp, ch.IdxOpen, f, j, qa) && HoldRot(hp, ch.IdxReady, f, j, qb))
+				{
+					QSlerp(qa, qb, ch.IdxBlend, wq); have = true;
+				}
+			}
+			else if (f == FINGER_INDEX && ch.IdxReady >= 0)											// :674-682
 			{
 				float qa[4], qb[4];
 				if (HoldRot(hp, ch.IdxReady, f, j, qa) && HoldRot(hp, ch.IdxFire, f, j, qb))

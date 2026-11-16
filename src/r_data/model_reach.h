@@ -45,6 +45,8 @@
 
 #include "tarray.h"
 #include "matrix.h"
+#include "vectors.h"
+#include "quaternion.h"
 
 class AActor;
 class FModel;
@@ -157,3 +159,9 @@ enum EJointFollowOutcome
 	JFO_FULL,			// the joint followers' table is full
 };
 int ModelJointFollow_Read(AActor *parent, int modelIndex, bool sharedPalette, FName joint, double motionOut[16]);
+
+// RS FORK -- THE JOINT DRAW POSE FROM C++ (Actor.SetModelJointDrawPose + SetModelJointDrawOffset in one call). rotMode:
+// 0 clear, 1 multiply, 2 replace, 3 hide (local scale 0: the joint and everything under it collapse); ofsMode: 0 clear,
+// 1 add, 2 replace (the local translation, in the joint's parent's units). Both 0 drops the joint's pose. Render-only.
+bool ModelDrawPose_SetJoint(AActor *actor, FName joint, int modelIndex, int rotMode, const FQuaternion &q, int ofsMode, const FVector3 &ofs);
+void ModelDrawPose_ClearActor(AActor *actor);

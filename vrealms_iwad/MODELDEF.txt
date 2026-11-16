@@ -59,3 +59,63 @@ Model RealmsHandLeft
 	NoPixelStretch
 	FrameIndex RHDL A 0 0
 }
+
+// THE COLT .45 AS A REAL M1911 (src/roth/roth_coltvr.cpp, roth_colt.h). "Colt 1911" by AlexChuchvaga, Sketchfab,
+// CC BY 4.0 (models/weapons/colt1911/CREDITS.txt): the file as published, read by the engine's FBX loader; one skinned
+// mesh, Default_1, every vertex rigid on one joint (Main: the frame; Slide, Dyl the barrel, Hammer, Trig, Mag_button,
+// Magaz the magazine with Bullet_2 its top round, Bullet + Gils the chambered round). The file has no material: its
+// diffuse is named here (reduced to 2048 squared). Z up, +Y the muzzle, +X the gun's right; 794.41 file units muzzle to
+// tang = 0.216 m: 0.000271900171 m a unit.
+//   In the hand: the grip path in METRES (as the hands), the seat from the engine (the fit on the authored grip);
+//   FrameIndex 0 = the take's frame 0, the rest pose; the parts are posed by the engine from the take's own frames.
+//   In the world: the parts "?part=<joint>" (the triangles bound to that joint and those under it, centred on their
+//   box), scaled by the engine (map units a file unit, as roth_img3d's world models).
+Model RealmsColt1911
+{
+	Path "models/weapons/colt1911"
+	Model 0 "colt1911.fbx:Default_1"
+	Skin 0 "colt1911_diffuse.jpg"
+	Scale 0.000271900171 0.000271900171 0.000271900171
+	NoAutoReverse
+	NoPixelStretch
+	FrameIndex C191 A 0 0
+}
+
+Model RealmsColtMagazineHeld
+{
+	Path "models/weapons/colt1911"
+	Model 0 "colt1911.fbx:Default_1?part=Magaz"
+	Skin 0 "colt1911_diffuse.jpg"
+	Scale 0.000271900171 0.000271900171 0.000271900171
+	NoAutoReverse
+	NoPixelStretch
+	FrameIndex C19M A 0 0
+}
+
+Model RealmsColtCasing
+{
+	Path "models/weapons/colt1911"
+	Model 0 "colt1911.fbx:Default_1?part=Gils"
+	Skin 0 "colt1911_diffuse.jpg"
+	Scale 1 1 1
+	NoPixelStretch
+	UseActorPitch
+	UseActorRoll
+	FrameIndex C19C A 0 0
+}
+
+Model RealmsColtMagazine
+{
+	Path "models/weapons/colt1911"
+	Model 0 "colt1911.fbx:Default_1?part=Magaz"
+	Skin 0 "colt1911_diffuse.jpg"
+	Scale 1 1 1
+	NoPixelStretch
+	UseActorPitch
+	UseActorRoll
+	FrameIndex C19M A 0 0
+}
+
+// The Colt lying in the world (ADEMO[99] on the study desk, the cellars' spare) is this same file, bound by the engine
+// to the object's own actor at load (roth_img3d.cpp Img3dWearWorld, roth_objects.cpp BindModelFile): the whole mesh at
+// rest, on its left side; the item's picture is kept for picking, as every world model.

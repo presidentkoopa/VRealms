@@ -122,10 +122,16 @@ struct MirrorSkin
 
 // The part of a MODELDEF name after "<file>.fbx:", parsed: `<mesh>[?<option>[,<option>...]]`.
 //   mirrorskin=<twin>   see MirrorSkin
+//   part=<joint>        ONE RIGID PART of the mesh: only the triangles every corner of which is bound (its largest
+//                       weight) to that joint or a joint under it, centred on their own box (Result::partCentre is
+//                       the centre that was taken off, in the file's space); the skeleton is kept whole, so joint
+//                       names, frames and draw poses work as on the whole mesh. A part of a gun lying in the world
+//                       (a dropped magazine, a spent case) is the same file's own part, not a copy.
 struct Selector
 {
 	std::string mesh;
 	std::string mirrorSkin;
+	std::string part;
 };
 bool ParseSelector(const char *text, Selector &out, std::string &err);
 
@@ -161,6 +167,9 @@ struct Result
 	Material material;
 	MirrorSkin mirror;
 	Diag diag;
+	std::string part;			// the part=<joint> asked for ("" = the whole mesh)
+	double partCentre[3] = { 0, 0, 0 };	// the box centre taken off the part's vertices (file space, rest)
+	double partLo[3] = { 0, 0, 0 }, partHi[3] = { 0, 0, 0 };	// the part's box before centring
 };
 
 // meshSelector: the node name of the skinned mesh to load (case-insensitive), optionally followed by options

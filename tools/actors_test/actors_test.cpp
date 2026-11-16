@@ -75,6 +75,9 @@ struct TestHost : ActorHost
 	void RemoveItem(int16_t id) override
 	{
 		hooks++;
+		// remove_item's own hook (inventory.c:263-267, roth_inventory.cpp:521): the active weapon's ammo item taken
+		// away lowers g_active_weapon_ammo (the engine's RuntimeInvSink::AmmoDisplayChanged(-1)).
+		if (world != nullptr && world->weapon.actions[0].D(0x30) == (int32_t)id) world->weapon.ammo--;
 		for (auto &e : slotIds)
 			if (e.second == id)
 			{
