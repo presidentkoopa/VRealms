@@ -106,6 +106,13 @@ entries use it.
 | 35 | Movies on a world-locked screen | VR | M1 | all |
 | 37 | A held item brought to the eyes plays its examine | VR | X1 | all |
 
+## Decided 2026-11-16 (RSQ Distance Grab in VRealms)
+
+| change | owner decision |
+|---|---|
+| Scale the package's metre to Realms' (reach.zs's two metre constants and its unit settings), so its reach, catch radius and throw speeds are real metres in VRealms — the ONE edit to the package | "Scale to Realms" |
+| The package's grip keys default to VRealms' grips (445 right, 444 left), so its walk-up grab, grip-to-hold and door grip work | "Map to VRealms grips" |
+
 ## Decided, LATER
 
 | change | owner decision |

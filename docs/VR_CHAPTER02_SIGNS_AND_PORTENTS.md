@@ -858,7 +858,7 @@ the statuette's coils; P11 the open palm (frame 0) for hand prints; P12 a two-ha
 
 ## 6. Open questions for the owner (chapter 2)
 
-**Owner's answers (2026-11-13/14; questions 1-12 asked, 13-32 NOT YET ASKED — ask them next):**
+**Owner's answers (2026-11-13/14 for 1-12, 2026-11-16 for 13-32; ALL ASKED):**
 - **Q1 statuettes: lower onto the dais and release** = the original's use where the base lands (the plate's box decides); pointer kept.
 - **Q2 plate help:** owner: "in flat-screen they auto assign. It never occurred to me they would be specific." No hint chosen. **Check first** (measurement M2): does the original place a statuette on whichever plate is clicked/next free (auto-assign), or does each plate want its own statuette? If the original auto-assigns, the VR release anywhere on the dais must do the same; if plates are specific, bring it back to the owner.
 - **Q3 lifting a placed statuette back = the original's click on it: YES.**
@@ -871,6 +871,26 @@ the statuette's coils; P11 the open palm (frame 0) for hand prints; P12 a two-ha
 - **Q10 Staff: read the original's WeaponAction, but in VR it is "a combination projectile and melee"** (owner): a swing is melee and the trigger fires its projectile, each with the original's numbers where the original has them; design after reading.
 - **Q11 the choice menu: world-locked where the movie screen stood**, picked by laser or fingertip.
 - **Q12 the words of passing: VOICE.** Owner: "Speaking the dialog would be awesome. Later we might entertain voice recognition to more organically unlock dialogs." Now: the player SPEAKS the words (speech recognition of the original's choice texts), the original's choice is what fires. Later: voice for dialogs generally. (New content, approved.)
+- **Q13 the altar's Staff: the grab is the original's click; the choice is made in the (world-locked) choice menu.**
+- **Q14 the Orb door: release the Orb into the aperture = `#4`; grab it back out = `#24`.**
+- **Q15 the Shrive: set in the socket, a 180° twist commits** (= the original's use); pointer kept.
+- **Q16 the lock lever: the key into its lock and a 30° turn = the use.**
+- **Q17 levers and the pit's chains: grip and pull ~8 cm = one use.**
+- **Q18 MAS6's hand prints: the palm pressed ~2 cm into a print = one use.**
+- **Q19 the throne: really sit (the head lowered over the seat) = the use**; pointer kept.
+- **Q20 involuntary falls: as the original now**; a comfort fade later.
+- **Q21 tiny boxes (`#57` 4×3 texels): any overlap of the fingertip or palm with the box counts.**
+- **Q22 documents: UNFOLDED IN BOTH HANDS** (not the recommendation) — with the owner's "openable books" (2026-11-16: "books do not open in game, it is just code. we will need to build openable books") this is new content: real documents and books held open in the hands, showing the original's own page art/text.
+- **Q23 the roll-top desk: kept shut** ("The drawers are stuck.").
+- **Q24 the clock: the case door only**; read what its counter (0x1f) does in ROTH.C first.
+- **Q25 the gramophone: BOTH the tone arm and the crank, "if we make this a 3D model"** (owner) — depends on the item/furniture models.
+- **Q26 vials: tipped at the mouth = the original's use on self**; the inventory still works.
+- **Q27 darkness in the mausoleum: none.**
+- **Q28 magic torches: the original's light** (until cosmetic work is asked for).
+- **Q29 forced turns: the chapter 1 rule** (snap at the movie's black, else at once).
+- **Q30 the bookcase doors: grip a leaf's edge and pull ~4 cm = the use.**
+- **Q31 ward tingle: Aelf's wards only**, not the green sigils.
+- **Q32 physical attempts: where the original's record is a use, the attempt is that use; where it is an examine, the examine.**
 
 
 Each is a concrete choice; **R** marks the recommendation and why.
