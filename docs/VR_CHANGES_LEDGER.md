@@ -151,6 +151,14 @@ was touched. **Q24, the clock's 0x1f, read in ROTH.C:** see the chapter doc entr
 - the off-hand walk-up grab, the distance grab (LOCKED → LAUNCHED dist 387 → caught → the original's pickup) and gestures_flat unchanged on 60540638.
 Not seen: the headset.
 
+
+**Chapter 2 world by hand, last PC runs (e2a0befc, flat, real controller path, log-worldhands_*.txt):**
+- the clock by its hour hand (owner's Q24 of 2026-11-16): ten hours pushed round, each "the original's use of #35 -> acted", the count 1 -> 11 (6 o'clock), then the original's chain continues ("0x12 delay #196, 400 frame ticks"); the case door opening itself was not captured in that run;
+- MAS4 lever #3 pulled 0.083 m -> acted; MAUSO1EA levers #30 and #101 0.083 m -> acted; Key i22 turned 35 degrees -> acted; #18 -> acted;
+- the contact disc (Q21): placed 0.2 units beside #57's 4x3-texel box -> "the contact's disc (40 mm) finds a record ... the click goes there" -> "#57 fires";
+- MAS3: the Orb released -> #4; the Shrive -> #113.
+Still unseen (test placement, not the game): the Orb taken back (#24, the aperture moves with the door), the words-wall push (MAUSO1EA #5: the test hand stayed 5-30 cm off the stone), the bookcase from the passage (#75/#354: the palm met nothing).
+
 ## Decided, LATER
 
 | change | owner decision |
