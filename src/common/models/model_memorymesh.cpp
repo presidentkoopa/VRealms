@@ -119,7 +119,8 @@ void FMemoryMeshModel::BuildVertexBuffer(FModelRenderer *renderer)
 		FModelVertex *out = vertptr + mSurfaces[si].vbStart;
 
 		auto emitTri = [&](int a, int b, int c, const FVector2 &ua, const FVector2 &ub,
-			const FVector2 &uc)
+			const FVector2 &uc, const FVector3 *na = nullptr, const FVector3 *nb = nullptr,
+			const FVector3 *nc = nullptr, float sign = 1.f)
 		{
 			const FVector3 &va = mData.vertices[a];
 			const FVector3 &vb = mData.vertices[b];
@@ -131,7 +132,15 @@ void FMemoryMeshModel::BuildVertexBuffer(FModelRenderer *renderer)
 			out[0].Set(va.X, va.Y, va.Z, ua.X, ua.Y);
 			out[1].Set(vb.X, vb.Y, vb.Z, ub.X, ub.Y);
 			out[2].Set(vc.X, vc.Y, vc.Z, uc.X, uc.Y);
-			for (int k = 0; k < 3; k++) out[k].SetNormal(n.X, n.Y, n.Z);
+			if (na != nullptr && nb != nullptr && nc != nullptr)
+			{
+				// The mesh's own normals (FMemoryMeshFace::hasNormals); `sign` turns them for a back face.
+				out[0].SetNormal(sign * na->X, sign * na->Y, sign * na->Z);
+				out[1].SetNormal(sign * nb->X, sign * nb->Y, sign * nb->Z);
+				out[2].SetNormal(sign * nc->X, sign * nc->Y, sign * nc->Z);
+			}
+			else
+				for (int k = 0; k < 3; k++) out[k].SetNormal(n.X, n.Y, n.Z);
 			out += 3;
 		};
 
@@ -139,20 +148,22 @@ void FMemoryMeshModel::BuildVertexBuffer(FModelRenderer *renderer)
 		{
 			if (f.skin != mSurfaces[si].skin) continue;
 			if (f.count != 3 && f.count != 4) continue;
+			const FVector3 *N = f.hasNormals ? f.normal : nullptr;
+			auto nrm = [&](int k) -> const FVector3 * { return N != nullptr ? &N[k] : nullptr; };
 			if (f.count == 3)
 			{
-				emitTri(f.vertex[0], f.vertex[1], f.vertex[2], f.uv[0], f.uv[1], f.uv[2]);
+				emitTri(f.vertex[0], f.vertex[1], f.vertex[2], f.uv[0], f.uv[1], f.uv[2], nrm(0), nrm(1), nrm(2));
 				if (mData.doubleSided)
-					emitTri(f.vertex[0], f.vertex[2], f.vertex[1], f.uv[0], f.uv[2], f.uv[1]);
+					emitTri(f.vertex[0], f.vertex[2], f.vertex[1], f.uv[0], f.uv[2], f.uv[1], nrm(0), nrm(2), nrm(1), -1.f);
 			}
 			else
 			{
-				emitTri(f.vertex[0], f.vertex[1], f.vertex[2], f.uv[0], f.uv[1], f.uv[2]);
-				emitTri(f.vertex[0], f.vertex[2], f.vertex[3], f.uv[0], f.uv[2], f.uv[3]);
+				emitTri(f.vertex[0], f.vertex[1], f.vertex[2], f.uv[0], f.uv[1], f.uv[2], nrm(0), nrm(1), nrm(2));
+				emitTri(f.vertex[0], f.vertex[2], f.vertex[3], f.uv[0], f.uv[2], f.uv[3], nrm(0), nrm(2), nrm(3));
 				if (mData.doubleSided)
 				{
-					emitTri(f.vertex[0], f.vertex[2], f.vertex[1], f.uv[0], f.uv[2], f.uv[1]);
-					emitTri(f.vertex[0], f.vertex[3], f.vertex[2], f.uv[0], f.uv[3], f.uv[2]);
+					emitTri(f.vertex[0], f.vertex[2], f.vertex[1], f.uv[0], f.uv[2], f.uv[1], nrm(0), nrm(2), nrm(1), -1.f);
+					emitTri(f.vertex[0], f.vertex[3], f.vertex[2], f.uv[0], f.uv[3], f.uv[2], nrm(0), nrm(3), nrm(2), -1.f);
 				}
 			}
 		}

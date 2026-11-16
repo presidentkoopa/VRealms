@@ -33,3 +33,10 @@ class RealmsHand : Actor
 
 class RealmsHandRight : RealmsHand { States { Spawn: RHDR A -1; Stop; } }
 class RealmsHandLeft : RealmsHand { States { Spawn: RHDL A -1; Stop; } }
+
+//
+// AN ITEM'S GENERATED MODEL IN A HAND (src/roth/roth_img3d.cpp): spawned and placed by the engine where roth_held
+// would draw the item's card, when the owner's PC made a model for that item (tools/img3d). It wears a sprite the
+// engine binds to the model at load; the TNT1 here is never seen. Presentation only, as RealmsHand.
+//
+class RealmsItemModel : RealmsHand { }

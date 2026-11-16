@@ -37,6 +37,7 @@
 #include "roth_panelmap.h"
 #include "roth_objects.h"
 #include "roth_movie.h"
+#include "roth_img3d.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -325,9 +326,13 @@ void HideUnshown()
 	H.shown.clear();
 }
 
-// An item's card at `at`: its own picture, its own size.
-void ShowCard(int &id, int item, const DVector3 &at, int role, double scale = 1.0)
+// An item's card at `at`: its own picture, its own size -- or, where the owner's PC generated a model for the item
+// (roth_img3d.h), that model in held slot `slot` instead: in the hand's grip frame for a hand, upright at `at`,
+// facing the player, for the world.
+void ShowCard(int &id, int slot, int item, const DVector3 &at, int role, double scale = 1.0)
 {
+	if (AActor *pmo = players[consoleplayer].mo)
+		if (Img3dShowHeld(H.level, slot, item, at, role, CardMetres(item) * scale, pmo->Angles.Yaw.Degrees() + 180.0)) return;
 	int w = 0, h = 0;
 	const int tex = IconTexture(item, w, h);
 	if (tex < 0 || w <= 0 || h <= 0) return;
@@ -453,7 +458,8 @@ void HeldBeginLevel(const Map &map, FLevelLocals *level)
 
 void HeldEndLevel()
 {
-	// The billboards go with the level.
+	// The billboards go with the level, and the held models' actors.
+	Img3dEndLevel();
 	const bool turnHeld = H.turnHeld;
 	const double turnTo = H.turnTo;
 	H = HeldWorld();
@@ -659,8 +665,8 @@ void HeldTick(FLevelLocals *level, bool worldTicks)
 		for (int r = 0; r < 2; r++)
 		{
 			if (!hand[r].ok) continue;
-			if (shows[r].item > 0) ShowCard(H.card[r], shows[r].item, hand[r].palm, r);
-			if (shows[r].palm > 0) ShowCard(H.palmBB, shows[r].palm, hand[r].palm, r);
+			if (shows[r].item > 0) ShowCard(H.card[r], r, shows[r].item, hand[r].palm, r);
+			if (shows[r].palm > 0) ShowCard(H.palmBB, 2, shows[r].palm, hand[r].palm, r);
 			if (shows[r].match && H.haveFlame)
 			{
 				const V3 tip = M(hand[r].tip), dir = FingerDir(hand[r]);
@@ -680,12 +686,13 @@ void HeldTick(FLevelLocals *level, bool worldTicks)
 			// The lamp hangs by its bail: the card (30 cm) centred about half its height below the bail. On the hook it
 			// rides the body (world points), in a hand that hand.
 			const DVector3 centre = bail - DVector3(0, 0, held::kGlobeBelowBail * UPM() / PS());
-			ShowCard(H.lampBB, kLampItem, centre, lampHand);
+			ShowCard(H.lampBB, 3, kLampItem, centre, lampHand);
 		}
 		if (H.book.Item() != 0 && hand[0].ok && hand[1].ok)
-			ShowCard(H.bookBB, H.book.Item(), (hand[0].palm + hand[1].palm) * 0.5, -1);
+			ShowCard(H.bookBB, 4, H.book.Item(), (hand[0].palm + hand[1].palm) * 0.5, -1);
 	}
 	HideUnshown();
+	Img3dHeldEndTick(level);
 }
 
 //==========================================================================

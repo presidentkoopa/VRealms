@@ -52,6 +52,11 @@ struct FMemoryMeshFace
 	FVector2   uv[4];                       // one per corner, same order
 	int        count = 0;                   // 3 or 4; anything else is dropped
 	FTextureID skin = FNullTextureID();     // the texture this face is drawn with
+	// RS FORK -- per-corner normals, for a mesh that carries its own (roth_img3d: the generated item models, smooth
+	// surfaces of thousands of faces). Without them every face is drawn flat with the normal of its own corners'
+	// cross product, as before. A doubleSided face's back is drawn with these negated.
+	bool       hasNormals = false;
+	FVector3   normal[4];
 };
 
 //==========================================================================

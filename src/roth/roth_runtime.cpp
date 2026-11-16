@@ -65,6 +65,7 @@
 #include "p_spec.h"
 #include "playsim/p_local.h"
 #include "roth_objects.h"
+#include "roth_img3d.h"
 #include "roth_platforms.h"      // roth_platforms: moving sectors as platform actors
 #include "roth_platformplan.h"   // which vertices cmd_move_sector takes
 #include "actor.h"
@@ -2870,6 +2871,7 @@ static void ApplyObjectTexture(const ObjectRef &r, uint16_t word)
 	const int sn = FindLogicSprite(word);
 	if (sn >= 0) mo->sprite = sn;
 	else g.unhandledOps[0x0D]++;      // no sprite was built for this word
+	Img3dWearWorld(mo, word, o.rotation, o.FixedAngle());   // an item's generated model, or the picture back (roth_img3d.h)
 }
 
 // cmd_change_object_texture's EXECUTE entry (raw_commands.c:4520-4549), whole:
@@ -6991,18 +6993,23 @@ const Object *RuntimeObject(int rothSector, int rothIndex)
 
 void ObjectPickBox(AActor *mo, DVector3 &lo, DVector3 &hi)
 {
-	double half = mo->radius, bottom = mo->Z(), top = mo->Z() + mo->Height;
-	// The ORIGINAL's picture: a candle's per-wick picture (roth_candles.h) is presentation and is not picked by.
-	const int spr = CandleOriginalSprite(mo, mo->sprite);
+	// The ORIGINAL's picture: a candle's per-wick picture (roth_candles.h) and an item's generated model
+	// (roth_img3d.h) are presentation and are not picked by.
+	int picSprite = mo->sprite;
+	DVector2 picScale = mo->Scale;
+	double picZ = mo->Z();
+	const bool modelled = Img3dPickPicture(mo, picSprite, picScale, picZ);
+	double half = mo->radius, bottom = picZ, top = picZ + mo->Height;
+	const int spr = CandleOriginalSprite(mo, picSprite);
 	if (spr >= 0 && spr < (int)sprites.Size() && sprites[spr].numframes > 0)
 	{
-		const int fi = sprites[spr].spriteframes + std::min<int>(mo->frame, sprites[spr].numframes - 1);
+		const int fi = sprites[spr].spriteframes + std::min<int>(modelled ? 0 : mo->frame, sprites[spr].numframes - 1);
 		FGameTexture *tex = fi >= 0 && fi < (int)SpriteFrames.Size() ? TexMan.GetGameTexture(SpriteFrames[fi].Texture[0], true) : nullptr;
 		if (tex != nullptr && tex->isValid() && tex->GetDisplayWidth() > 0)
 		{
-			const double sx = fabs(mo->Scale.X), sy = fabs(mo->Scale.Y);
+			const double sx = fabs(picScale.X), sy = fabs(picScale.Y);
 			half = std::max(1.0, tex->GetDisplayWidth() * sx * 0.5);   // the picture, not Actor's default radius 20
-			top = mo->Z() + tex->GetDisplayTopOffset() * sy + mo->SpriteOffset.Y;
+			top = picZ + tex->GetDisplayTopOffset() * sy + mo->SpriteOffset.Y;
 			bottom = top - tex->GetDisplayHeight() * sy;
 			if (top < bottom) std::swap(top, bottom);
 		}
@@ -7271,6 +7278,7 @@ static void FlipObjectTexture(int rothSector, int rothIndex)
 	const int sn = FindLogicSprite(word);
 	if (sn >= 0) mo->sprite = sn;
 	else g.unhandledOps[0x02]++;    // no sprite built for the flipped word
+	Img3dWearWorld(mo, word, o.rotation, o.FixedAngle());   // an item's generated model, or the picture back (roth_img3d.h)
 }
 
 bool ActivateObject(AActor *mo, TrigEvent want)

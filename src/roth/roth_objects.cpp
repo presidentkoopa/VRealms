@@ -37,6 +37,7 @@
 #include "roth_install.h"
 #include "roth_texture.h"
 #include "roth_log.h"
+#include "roth_img3d.h"
 
 #include "actor.h"
 #include "info.h"
@@ -210,6 +211,11 @@ struct Pending
 	// SpriteInfo::lateralOffset. Zero for all but a handful of entries.
 	double spriteOffsetX = 0;
 	bool   isMesh = false;
+	// The record's own words, for the item models (roth_img3d.h): the render id (+0x04 pair), its rotation byte
+	// and whether it is a fixed-angle quad.
+	uint16_t renderId = 0;
+	uint8_t  rotation = 0;
+	bool     fixedAngle = false;
 };
 
 std::vector<Pending> gPending;
@@ -625,6 +631,7 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	gPending.clear();
 	MarkSpriteTable();
 	ClearAddedSpriteModelFrames();
+	Img3dNewLoad();   // the item models' bindings went with the frames
 
 	if (PropClass() == nullptr)
 	{
@@ -859,6 +866,9 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			p.yaw = ObjectYaw(o.rotation);
 			p.rothSector = (int)si;
 			p.rothIndex = (int)oi;
+			p.renderId = (uint16_t)(o.textureIndex | (o.textureSource << 8));
+			p.rotation = o.rotation;
+			p.fixedAngle = o.FixedAngle();
 			if (o.light != 0) lit++;
 
 			// THE OBJECT'S OWN LIGHT BYTE, which this loader read and ignored
@@ -1371,7 +1381,7 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 	// The Z check is the same idea a level up: an absolute Z that lands outside
 	// its own sector's floor-to-ceiling span is either a Z convention error or a
 	// prop the original hangs through a ceiling. Counted, not corrected.
-	int spawned = 0, failed = 0, wrongSector = 0, outsideSpan = 0;
+	int spawned = 0, failed = 0, wrongSector = 0, outsideSpan = 0, modelled = 0;
 	for (const Pending &p : gPending)
 	{
 		AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
@@ -1416,13 +1426,18 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 		// and authoritative.
 		mo->SetZ(p.z);
 
+		// An item lying here that has a generated model (roth_img3d.h) wears it instead of its picture. The checks
+		// below keep the record's own z: a model moves the actor to the picture's bottom.
+		const double placedZ = p.z;
+		if (p.rothIndex >= 0 && !p.isMesh && Img3dWearWorld(mo, p.renderId, p.rotation, p.fixedAngle)) modelled++;
+
 		if (mo->Sector != nullptr && p.rothSector >= 0)
 		{
 			const int landed = mo->Sector->Index();
 			if (landed != p.rothSector) wrongSector++;
 			double fz = mo->Sector->floorplane.ZatPoint(p.x, p.y);
 			double cz = mo->Sector->ceilingplane.ZatPoint(p.x, p.y);
-			if (p.z < fz - 1.0 || p.z > cz + 1.0) outsideSpan++;
+			if (placedZ < fz - 1.0 || placedZ > cz + 1.0) outsideSpan++;
 		}
 
 		spawned++;
@@ -1445,6 +1460,8 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 				wrongSector);
 			fprintf(f, "  z outside their own sector's floor-to-ceiling span        %d\n",
 				outsideSpan);
+			fprintf(f, "  items drawn with a generated model (roth_img3d)            %d\n",
+				modelled);
 			fclose(f);
 		}
 	}

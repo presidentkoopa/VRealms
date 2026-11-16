@@ -14,6 +14,7 @@
 #include "roth_actors.h"
 #include "roth_runtime.h"
 #include "roth_objects.h"
+#include "roth_img3d.h"
 #include "roth_raw.h"
 #include "roth_dbase100.h"
 #include "roth_install.h"
@@ -355,6 +356,9 @@ void Dress(ObjectUid uid, const Object &o, AActor *mo, int playerView)
 	if (main != nullptr) mo->Scale = DVector2(main->info.unitsPerPixel, main->info.unitsPerPixel);
 	if (o.flags & 0x80) mo->renderflags |= RF_INVISIBLE;     // hidden (renderer.c:8035)
 	else mo->renderflags &= ~RF_INVISIBLE;
+	// An item's picture with a generated model (roth_img3d.h) wears the model; anything else gives one back.
+	if (views == 1 && g_actors.world.CreaturePictureOf(o, 0, false) == 0)
+		Img3dWearWorld(mo, (uint16_t)(o.textureIndex | (o.textureSource << 8)), o.rotation, o.FixedAngle());
 }
 
 // THE FRAME'S DRAW, once a tic after the tic's rules, whatever the number of
