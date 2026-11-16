@@ -277,6 +277,7 @@ struct State
 	// The held weapon's actor (RealmsHeld) and the cards built for weapons with
 	// no model: (picture, frame, vr) -> sprite bound to a card mesh.
 	AActor *held = nullptr;
+	int noPictureSaid = -1;   // the item last logged as drawn with no picture in VR (PresentHeld)
 	std::map<std::pair<std::pair<int32_t, int>, std::pair<bool, const PClass *>>, int> cards;
 	int lastPull = -1, lastShot = -1, lastAmmo = -1, lastReload = -1, lastNoAmmo = -1, lastEquip = -1, lastCycleEnd = -1;
 };
@@ -862,7 +863,21 @@ void PresentHeld()
 	mo->IntVar(FName("RealmsCycleEndTic")) = g_actors.lastCycleEnd;
 
 	const bool vr = pmo->OverrideAttackPosDir;
-	const bool hidden = pr.state == ActorWorld::WS_AWAY || pr.item == 0 || pr.sprite == 0 || pmo->health <= 0;
+	// NO WEAPON PICTURE IN VR FOR ADAM'S FISTS OR THE COLT (owner 2026-11-16: "we should not use sprite layer for our
+	// meshes, and we should not draw sprite weapons for fist and pistol for now"): the hands are the fists, the mesh is
+	// the Colt. Their logic (frames, timing, fire, reload) runs as before; only the original's picture is not drawn.
+	// Flat keeps the original's pictures (1:1).
+	const Inventory *invNow = InterfaceInventory();
+	const int adamItem = invNow != nullptr ? (int)invNow->AdamItemId() : 0;
+	const bool noPictureInVr = vr && ((adamItem != 0 && pr.item == adamItem) || (pr.item == colt::kColt && coltCls == nullptr));
+	if (noPictureInVr && g_actors.noPictureSaid != pr.item)
+	{
+		g_actors.noPictureSaid = pr.item;
+		Printf("[roth_colt] VR: no weapon picture for i%d (%s): %s\n", (int)pr.item, pr.item == adamItem ? "Adam's fists" : "the Colt",
+			pr.item == adamItem ? "the hands are the fists" : "its mesh did not load -- nothing is drawn rather than the picture");
+	}
+	if (!noPictureInVr) g_actors.noPictureSaid = -1;
+	const bool hidden = pr.state == ActorWorld::WS_AWAY || pr.item == 0 || pr.sprite == 0 || pmo->health <= 0 || noPictureInVr;
 	if (hidden) { mo->renderflags |= RF_INVISIBLE; if (coltCls != nullptr) ColtGunGone(); return; }
 	mo->renderflags &= ~RF_INVISIBLE;
 	if (coltCls != nullptr) { ColtPresent(mo, ColtGame(ev)); return; }

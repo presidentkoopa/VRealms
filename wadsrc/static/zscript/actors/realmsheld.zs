@@ -123,6 +123,11 @@ class RealmsColt1911 : RealmsHeld { States { Spawn: C191 A -1; Stop; } }
 // the grip. The same mesh's own part (MODELDEF "?part="), falling under the level's gravity (the engine sets this
 // actor's Gravity to 9.8 m/s^2 in map units), stopped by walls and floors as any actor; it tumbles while it flies, lies
 // still where it lands, and goes after RealmsLife tics. Presentation only: no game record, nothing reads it.
+// OBJECT-OBJECT COLLISION (owner 2026-11-16: wanted, "if not now then later as it isn't essential"): not built. A part
+// is non-SOLID, so it passes through other parts and through actors; object-world collision (floors, walls, ledges) is
+// the engine's own movement. When it comes, it goes here: the part made SOLID against other RealmsColtPart (and the
+// Realms items' actors) only -- CanCollideWith -- with its Radius/Height from the mesh's box, and a resting contact
+// instead of the Landed snap below.
 //
 class RealmsColtPart : Actor
 {

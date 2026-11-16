@@ -478,6 +478,22 @@ CCMD(roth_colt)
 			S.tune[0], S.tune[1], S.tune[2], S.tune[3], S.tune[4], S.tune[5], ActName(S.lastAct));
 		Printf("roth_colt: off hand at the release %d, at the pouch %d, at the slide %d, magazine at the well %d, grip %d\n",
 			(int)S.hands.offAtMagButton, (int)S.hands.offAtPouch, (int)S.hands.offAtSlide, (int)S.hands.magAtWell, (int)S.hands.offGrip);
+		// the loose parts in the world: where each is, how high above its floor, landed or flying
+		if (S.level != nullptr)
+		{
+			PClassActor *pc = PClass::FindActor("RealmsColtPart");
+			auto it = S.level->GetThinkerIterator<AActor>();
+			AActor *a;
+			int n = 0;
+			while (pc != nullptr && (a = it.Next()) != nullptr)
+			{
+				if (!a->IsKindOf(pc)) continue;
+				n++;
+				Printf("roth_colt: %s at (%.1f %.1f %.1f), %.2f above its floor (%.1f), %s, %d tics left once landed\n", a->GetClass()->TypeName.GetChars(),
+					a->X(), a->Y(), a->Z(), a->Z() - a->floorz, a->floorz, a->BoolVar(FName("Landed")) ? "LANDED" : "flying", a->IntVar(FName("RealmsLife")));
+			}
+			Printf("roth_colt: %d loose part(s) in the world\n", n);
+		}
 		return;
 	}
 	if (!stricmp(argv[1], "release")) { S.cmdRelease = true; Printf("roth_colt: the magazine release pressed (the reload input)\n"); return; }
