@@ -170,6 +170,14 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
 - Floor frames (zzzz26, c50d5b07): the camera now stands in the room (06_floor from (928 3946), 145 units from the magazine; 06b_cases from (893 4110)). The magazine is at most a few pixels at 320x200, and no case is visible. **Not seen.** All 12 cases logged LANDED at the same point (844.5 3972.8). This is reasoning only and not checked: they probably stop against the corridor's north wall.
 - Not seen: the held magazine in the off hand; anything in a headset.
 
+**VR hands replaced: the Godot XR Tools hands, CC0 (owner 2026-11-16; 0df85ed9, 54b2a152, 3821f331):**
+- Why: the old hand_final.fbx had a real 186 mm length but short fingers (index 61 mm from knuckle to tip; a real hand is about 90 mm), so no pose could hold a real-size 1911. My own attempt with per-finger wraps (0df85ed9) left the index pad 12-22 mm short of the trigger.
+- New hand: Godot XR Tools hand (CC0, DigitalN8m4r3, made with MakeHuman CE), vrealms_iwad/models/hands/godot_xr/. Converted by tools/hand_retarget into an FBX with the old joint names and take, so the engine and kOwnerPoses are unchanged. Index 86 mm from knuckle to tip at the old 0.19 m scale. hand_final.fbx is kept.
+- Verified, engine-free: every engine pose (52 kOwnerPoses plus the controller poses) has the same angles as before for index, middle, ring and little (< 4e-6 deg). The thumb departs on purpose, fitted where the old thumb touched a finger (up to 54.6 deg in the fist). Pose-by-pose renders, old beside new, in the hand-back.
+- Verified, Colt fit (colt_fit, every check PASS): pad 2.5 / 2.3 mm from the trigger face; web 4.2 / 7.1 mm from the beavertail; no finger skin more than 2 mm in the gun; middle, ring and little fingertip segments on the grip. The fit renders show the fingers curling round the front strap below the guard. The palm presses up to 4.6 mm into the grip panel on the palm side; it is hidden in the renders.
+- Verified, PC (bridge): build exit 0; the log shows both hands loaded with 52 of 52 poses; colt_flat reload log lines as before; hands_pose / hold captures show the same pose families.
+- Not seen: any of it in a headset; the Colt side view in-engine (the capture's roll was missed); whether the baked wraps apply in the engine (no log line yet). The skin draws without its normal and ORM maps (cosmetic, waits for the owner).
+
 ## Decided, LATER
 
 | change | owner decision |
