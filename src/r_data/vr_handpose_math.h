@@ -1055,6 +1055,16 @@ struct HeldState
 	// index pad meets the gun's trigger face, measured on the meshes); with the trigger untouched (no capacitive touch,
 	// trigger 0) the index lies straight, the open frame, along the frame above the guard. -1: the source's index.
 	float indexReady = -1.f, indexFire = -1.f;
+	// ... and the index's knuckle by its own amount, the same at trigger 0 and 1 (a trigger finger runs along the frame
+	// from the knuckle and hooks the pad in with its outer joints). -1: the knuckle follows indexReady / indexFire.
+	float indexBase = -1.f;
+	// NOT IN THE SOURCE: THE OTHER FINGERS MEASURED ON THE GUN (colt_fit, 2026-11-16). wrap[f] >= 0: finger f (thumb,
+	// middle, ring, little; the index is indexReady's) is the in-between of the open frame (fbx_open) and the grip pose's
+	// own finger by wrap[f] -- closed until it meets the grip, never into it. -1: the grip pose's finger as authored.
+	float wrap[FINGER_COUNT] = { -1.f, -1.f, -1.f, -1.f, -1.f };
+	// ... and the knuckle (the finger's first joint) by its own amount: a thick grip wants the knuckle closed and the
+	// outer joints open. -1: the knuckle takes wrap[f].
+	float wrapBase[FINGER_COUNT] = { -1.f, -1.f, -1.f, -1.f, -1.f };
 };
 
 inline bool EqualNoCase(const char *a, const char *b)	// stricmp, as VRAvatar_NamedPose compares names (VA:323, 338)
@@ -1327,6 +1337,10 @@ struct HoldChoice
 	float IdxT = 0.f;
 	int   IdxOpen = -1;				// NOT IN THE SOURCE (HeldState::indexReady): the open pose the measured index blends from
 	float IdxBlend = 0.f;			// ... and how far toward IdxReady's index (0 = straight)
+	float IdxBlendBase = -1.f;		// ... its knuckle's (-1: IdxBlend)
+	int   WrapOpen = -1;			// NOT IN THE SOURCE (HeldState::wrap): the open pose the measured fingers blend from
+	float Wrap[FINGER_COUNT] = { -1.f, -1.f, -1.f, -1.f, -1.f };	// ... and how far toward Src's finger (-1: Src as is)
+	float WrapBase[FINGER_COUNT] = { -1.f, -1.f, -1.f, -1.f, -1.f };	// ... its knuckle's (-1: Wrap's)
 	HoldChoice() { for (int f = 0; f < FINGER_COUNT; ++f) for (int j = 0; j < FINGER_JOINTS; ++j) Src[f][j] = -1; }
 	bool Any() const
 	{
@@ -1398,7 +1412,20 @@ inline void SelectHold(const HoldPoses *hp, const HeldState &mine, const HeldSta
 				const bool straight = !in.valid || (!in.triggerTouch && t <= 0.f);
 				out.IdxOpen = po;
 				out.IdxBlend = straight ? 0.f : mine.indexReady + (mine.indexFire - mine.indexReady) * t;
+				out.IdxBlendBase = straight || mine.indexBase < 0.f ? -1.f : Clamp01(mine.indexBase);
 			}
+		}
+		{																							// NOT IN THE SOURCE: HeldState::wrap
+			const int po = FindOwnerPose("fbx_open");
+			bool any = false;
+			for (int f = 0; f < FINGER_COUNT; ++f)
+				if (f != FINGER_INDEX && mine.wrap[f] >= 0.f && po >= 0 && HoldHas(hp, po, f))
+				{
+					out.Wrap[f] = Clamp01(mine.wrap[f]);
+					out.WrapBase[f] = mine.wrapBase[f] >= 0.f ? Clamp01(mine.wrapBase[f]) : out.Wrap[f];
+					any = true;
+				}
+			if (any) out.WrapOpen = po;
 		}
 	}
 	else																							// :558
@@ -1468,7 +1495,7 @@ inline void HoldTargets(const HoldPoses *hp, const HoldChoice &ch, float target[
 				float qa[4], qb[4];
 				if (HoldRot(hp, ch.IdxOpen, f, j, qa) && HoldRot(hp, ch.IdxReady, f, j, qb))
 				{
-					QSlerp(qa, qb, ch.IdxBlend, wq); have = true;
+					QSlerp(qa, qb, j == 0 && ch.IdxBlendBase >= 0.f ? ch.IdxBlendBase : ch.IdxBlend, wq); have = true;
 				}
 			}
 			else if (f == FINGER_INDEX && ch.IdxReady >= 0)											// :674-682
@@ -1477,6 +1504,14 @@ inline void HoldTargets(const HoldPoses *hp, const HoldChoice &ch, float target[
 				if (HoldRot(hp, ch.IdxReady, f, j, qa) && HoldRot(hp, ch.IdxFire, f, j, qb))
 				{
 					QSlerp(qa, qb, ch.IdxT, wq); have = true;
+				}
+			}
+			if (!have && f != FINGER_INDEX && ch.WrapOpen >= 0 && ch.Wrap[f] >= 0.f && ch.Src[f][j] >= 0)	// NOT IN THE SOURCE: the measured wrap
+			{
+				float qa[4], qb[4];
+				if (HoldRot(hp, ch.WrapOpen, f, j, qa) && HoldRot(hp, ch.Src[f][j], f, j, qb))
+				{
+					QSlerp(qa, qb, j == 0 ? ch.WrapBase[f] : ch.Wrap[f], wq); have = true;
 				}
 			}
 			if (!have && ch.Src[f][j] >= 0)															// :683-684
