@@ -40,6 +40,7 @@
 #include "roth_img3d.h"
 #include "roth_dbase100.h"    // TheDbase100: which objects are items (Pending::plainPicture)
 #include "roth_inventory.h"   // IsItemIdPickable
+#include "roth_actors_engine.h"   // ActorsBindLoadedObjects
 
 #include "actor.h"
 #include "info.h"
@@ -1502,6 +1503,8 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 		failed ? FStringf(", %d failed", failed).GetChars() : "");
 
 	gPending.clear();
+	// The level logic's actors now have the loader's props to bind to (roth_actors_engine.h).
+	ActorsBindLoadedObjects();
 }
 
 //==========================================================================

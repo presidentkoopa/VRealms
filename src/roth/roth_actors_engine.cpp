@@ -972,6 +972,33 @@ void EngineHost::EquipFirstUsableWeapon()
 
 void ActorsDrainConsole();
 
+// Bind every object that has a loader-spawned actor and no engine actor yet (see ActorsBeginLevel).
+static int BindLoaded()
+{
+	const Map *map = g_actors.world.MapPtr();
+	if (map == nullptr) return 0;
+	int props = 0;
+	for (size_t s = 0; s < map->objects.size(); s++)
+		for (size_t i = 0; i < map->objects[s].size(); i++)
+		{
+			const ObjectUid uid = g_actors.world.UidAt((int)s, (int)i);
+			if (g_actors.host.engineActors.count(uid)) continue;
+			if (AActor *mo = FindObjectActor((int)s, (int)i))
+			{
+				g_actors.host.engineActors[uid] = mo; props++;
+				g_actors.loadedArt[uid] = (uint16_t)(map->objects[s][i].textureIndex | (map->objects[s][i].textureSource << 8));
+			}
+		}
+	return props;
+}
+
+void ActorsBindLoadedObjects()
+{
+	if (!g_actors.active) return;
+	const int props = BindLoaded();
+	Printf("Realms: %d object(s) bound to their loaded actors (the level logic moves and removes those)\n", props);
+}
+
 void ActorsBeginLevel(Map &map, FLevelLocals *level, Log *log)
 {
 	ActorsEndLevel();
@@ -1024,19 +1051,20 @@ void ActorsBeginLevel(Map &map, FLevelLocals *level, Log *log)
 			log->Warn("actors: the map pack did not open for object art: %s", g_art.level->Error().c_str());
 	}
 
-	int props = 0, creatures = 0;
+	int creatures = 0;
 	for (size_t s = 0; s < map.objects.size(); s++)
 		for (size_t i = 0; i < map.objects[s].size(); i++)
 		{
-			const ObjectUid uid = g_actors.world.UidAt((int)s, (int)i);
-			if (AActor *mo = FindObjectActor((int)s, (int)i))
-			{
-				g_actors.host.engineActors[uid] = mo; props++;
-				g_actors.loadedArt[uid] = (uint16_t)(map.objects[s][i].textureIndex | (map.objects[s][i].textureSource << 8));
-			}
 			const Object &o = map.objects[s][i];
 			if (g_actors.tables.CreatureIndexForId((uint16_t)(o.textureIndex | (o.textureSource << 8))) >= 0) creatures++;
 		}
+	// The loader's actors are bound where they exist. On a Realms map this runs inside LoadRothMap, BEFORE the
+	// engine spawns the loader's props (maploader.cpp: roth::SpawnPreparedObjects after SpawnThings), so here it
+	// binds none ("0 objects bound", roth_STUDY1.log on the owner's PC, 5d569d2f) and SpawnPreparedObjects binds
+	// them (ActorsBindLoadedObjects). Without that, DrawAndPresent found no engine actor for any object and spawned
+	// a second actor for each one it draws, at the record's z, and the level logic moved and removed only that
+	// second one (on the PC, 5d569d2f: each of STUDY1's 19 shown items offered to the grab twice).
+	const int props = BindLoaded();
 	g_actors.active = true;
 	g_actors.ticks = 0;
 	if (log) log->Line("actors: %d creature placeholders, %d objects bound to engine actors, %d creature records",

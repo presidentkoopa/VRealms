@@ -65,6 +65,12 @@ void MakeTakeable(AActor *mo)
 	FLinkContext ctx;
 	mo->UnlinkFromWorld(&ctx);
 	mo->flags5 &= ~MF5_NOINTERACTION;
+	// AND BACK INTO THE BLOCKMAP. A NOINTERACTION actor's first tick unlinks it from the blockmap for good
+	// (p_mobj.cpp AActor::Tick, the NOINTERACTION branch: `flags |= MF_NOBLOCKMAP`), and clearing NOINTERACTION
+	// does not undo that. The grab's cone walks the blockmap (cone.zs Best / Explain, BlockThingsIterator), so
+	// without this the item is never a candidate: "refused -- nothing in the cone" with no nearest
+	// (owner's PC, 5d569d2f, x01_dgrab_dbg, t91).
+	mo->flags &= ~MF_NOBLOCKMAP;
 	mo->radius = r;
 	mo->Height = h;
 	mo->LinkToWorld(&ctx);
@@ -75,6 +81,7 @@ void MakeInert(AActor *mo)
 	FLinkContext ctx;
 	mo->UnlinkFromWorld(&ctx);
 	mo->flags5 |= MF5_NOINTERACTION;
+	mo->flags |= MF_NOBLOCKMAP;   // as NOINTERACTION's own tick leaves it (p_mobj.cpp AActor::Tick)
 	mo->LinkToWorld(&ctx);
 }
 

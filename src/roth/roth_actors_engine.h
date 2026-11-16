@@ -25,6 +25,9 @@ class Log;
 // object lists the rules then edit in place.
 void ActorsBeginLevel(Map &map, FLevelLocals *level, Log *log);
 void ActorsEndLevel();
+// Called by roth_objects.cpp SpawnPreparedObjects once the loader's props exist: binds each object to its loaded
+// actor. ActorsBeginLevel runs inside LoadRothMap, before the engine spawns those props, so it binds none itself.
+void ActorsBindLoadedObjects();
 
 // Once per engine tic: `ticks` 70 Hz ticks of the original's frame
 // (tick_dynamic_entities runs its pass that many times, EA:1358-1377).
