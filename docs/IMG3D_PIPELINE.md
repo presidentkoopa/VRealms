@@ -61,16 +61,16 @@ fetched separately [R: whether that needs a Hugging Face access approval was not
 
 1. **Once:** double-click `tools\img3d\SETUP_IMG3D.bat`. It prints `[n/11]` per step (setup_img3d.py): licence; a
    Python 3.10-3.12 (`winget install -e --id Python.Python.3.10` if none); `nvidia-smi`; **nvcc 12.x** (if missing it
-   stops and names the CUDA Toolkit 12.4.1 download); VS 2022 (vswhere); the venv `E:\DOOMWork\tools\img3d_env` with
-   torch 2.5.1+cu124; Hunyuan3D-2 cloned into `E:\DOOMWork\tools\img3d_models\Hunyuan3D-2` (its commit written to
+   stops and names the CUDA Toolkit 12.4.1 download); VS 2022 (vswhere); the venv `D:\VRealms_img3d\img3d_env` with
+   torch 2.5.1+cu124; Hunyuan3D-2 cloned into `D:\VRealms_img3d\img3d_models\Hunyuan3D-2` (its commit written to
    `hunyuan3d2_commit.txt`), its requirements; the two texture modules compiled; spandrel + Real-ESRGAN x4plus
    weights; the Hunyuan weights (~20 GB) into `img3d_models\tencent\Hunyuan3D-2`; `img3d_bin\img3d_extract.exe`
    built with cl; the **self-test**: a red can drawn by the script (no game art) through shape and texture into
-   `E:\DOOMWork\tools\img3d_work\selftest.glb`. Run it again to resume: finished steps are skipped.
+   `D:\VRealms_img3d\img3d_work\selftest.glb`. Run it again to resume: finished steps are skipped.
 2. **Then:** `tools\img3d\RUN_IMG3D.bat` (all chapter 1-2 items) or `RUN_IMG3D.bat 16 21` (some).
-   Work: `E:\DOOMWork\tools\img3d_work\<item>\` (`views.png` every picture source with the chosen one framed;
+   Work: `D:\VRealms_img3d\img3d_work\<item>\` (`views.png` every picture source with the chosen one framed;
    `input.png` what the model saw; `shape.glb`, `raw.glb`; a `choose.txt` with a file name, e.g. `film_004.tga`, picks
-   another view next run). Models: `E:\DOOMWork\REMAROTH_local\items\<id>_<name>.glb` + `manifest.json`;
+   another view next run). Models: `D:\VRealms_img3d\items\<id>_<name>.glb` + `manifest.json`;
    `img3d_path.txt` is written beside every `build-dxr\*\doomxr.exe`, so the engine finds them with no setting.
    Each GLB opens in Windows' 3D Viewer.
 3. In the game: the console `roth_img3d status` lists what was read; `roth_img3d reload` re-reads (a map reload

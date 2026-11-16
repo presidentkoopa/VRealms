@@ -5,11 +5,11 @@ rem   tools\img3d\RUN_IMG3D.bat                      the chapter 1 and 2 items (
 rem   tools\img3d\RUN_IMG3D.bat 16 21                only these items
 rem   tools\img3d\RUN_IMG3D.bat 16 --steps post      one step again (extract / generate / post, comma separated)
 rem
-rem Pictures and raw meshes: E:\DOOMWork\tools\img3d_work\<item>\ (views.png shows the view chosen; put a file name in
-rem choose.txt there to choose another). Models and manifest.json: E:\DOOMWork\REMAROTH_local\items\. The engine finds
+rem Pictures and raw meshes: D:\VRealms_img3d\img3d_work\<item>\ (views.png shows the view chosen; put a file name in
+rem choose.txt there to choose another). Models and manifest.json: D:\VRealms_img3d\items\. The engine finds
 rem them through img3d_path.txt, written beside every doomxr.exe under build-dxr. Nothing is written into the repo.
 setlocal
-if "%IMG3D_ROOT%"=="" set IMG3D_ROOT=E:\DOOMWork\tools
+if "%IMG3D_ROOT%"=="" set IMG3D_ROOT=D:\VRealms_img3d
 set PY=%IMG3D_ROOT%\img3d_env\Scripts\python.exe
 if not exist "%PY%" (
 	echo No venv at %IMG3D_ROOT%\img3d_env: run tools\img3d\SETUP_IMG3D.bat first.

@@ -12,12 +12,12 @@ import time
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-ROOT = os.environ.get("IMG3D_ROOT", r"E:\DOOMWork\tools")
+ROOT = os.environ.get("IMG3D_ROOT", r"D:\VRealms_img3d")
 ENV_DIR = os.environ.get("IMG3D_ENV", os.path.join(ROOT, "img3d_env"))
 MODELS_DIR = os.environ.get("IMG3D_MODELS", os.path.join(ROOT, "img3d_models"))
 WORK_DIR = os.environ.get("IMG3D_WORK", os.path.join(ROOT, "img3d_work"))
 BIN_DIR = os.environ.get("IMG3D_BIN", os.path.join(ROOT, "img3d_bin"))
-OUT_DIR = os.environ.get("IMG3D_OUT", r"E:\DOOMWork\REMAROTH_local\items")
+OUT_DIR = os.environ.get("IMG3D_OUT", r"D:\VRealms_img3d\items")
 
 ESRGAN_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"
 ESRGAN_FILE = os.path.join(MODELS_DIR, "upscale", "RealESRGAN_x4plus.pth")

@@ -1,7 +1,7 @@
 """setup_img3d.py -- ONE-TIME SETUP of the image-to-3D pipeline on the owner's PC (SETUP_IMG3D.bat runs this).
 Windows, an NVIDIA GPU (written for the RTX 3080 Ti, 12 GB), Visual Studio 2022 (the engine's own compiler).
 
-Everything goes OUTSIDE the repository, under IMG3D_ROOT (default E:\\DOOMWork\\tools):
+Everything goes OUTSIDE the repository, under IMG3D_ROOT (default D:\\VRealms_img3d):
   img3d_env\\      the Python venv (Python 3.10 preferred; 3.11 / 3.12 accepted) with CUDA torch
   img3d_models\\   Hunyuan3D-2's code (git clone), its weights (Hugging Face), Real-ESRGAN x4plus, the HF cache
   img3d_bin\\      img3d_extract.exe (tools/img3d/img3d_extract.cpp, built here with MSVC)
