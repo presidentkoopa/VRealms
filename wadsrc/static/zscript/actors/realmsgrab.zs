@@ -44,7 +44,7 @@ class RealmsTakeable : Inventory
 	}
 
 	// Never the engine's pickup: the original's, through the catch (RealmsGrabEventService).
-	override protected bool TryPickup(in out Actor toucher) { return false; }
+	override bool TryPickup(in out Actor toucher) { return false; }
 
 	States
 	{
