@@ -414,13 +414,16 @@ bool Img3dWearWorld(AActor *mo, uint16_t renderId, uint8_t rotation, bool fixedA
 			S.worn[mo] = w;
 			double z = (havePic ? bottom : mo->Z()) + kColtRightSide * k / ps;
 			if (mo->Sector != nullptr) { const double fz = mo->Sector->floorplane.ZatPoint(mo->Pos()); if (z < fz) z = fz; }
-			mo->Angles.Yaw = DAngle::fromDeg(ObjectYaw(rotation));
+			// the barrel along the picture's own long side, as the original draws the gun (its frame: the muzzle to the right)
+			mo->Angles.Yaw = DAngle::fromDeg(ObjectYaw(rotation) - 90.0);
 			mo->renderradius = 0.5 * 794.41 * k;
 			mo->SetOrigin(DVector3(mo->X(), mo->Y(), z), false);
 			mo->SetZ(z);
 			mo->ClearInterpolation();
 			if (!keyMatch) Printf("[roth_img3d] object (key %d) shows item 9: the Colt's own mesh (colt1911.fbx) on its left side, %.1f units long (%s), its origin at z %.1f (the picture's bottom %.1f), yaw %.0f\n",
-				mo->special2 - 1, 794.41 * k, havePic ? "the original's picture's longest side" : "0.216 m at the VR metre", z, bottom, ObjectYaw(rotation));
+				mo->special2 - 1, 794.41 * k, havePic ? "the original's picture's longest side" : "0.216 m at the VR metre", z, bottom, ObjectYaw(rotation) - 90.0);
+			if (!keyMatch) Printf("[roth_img3d] the Colt on the desk is %.1f units = %.3f m at the VR metre (%.1f units a metre); in the hand it is 0.216 m = %.1f units: the desk's %.2f times the hand's\n",
+				794.41 * k, 794.41 * k / upm, upm, 0.216 * upm, 794.41 * k / (0.216 * upm));
 			return true;
 		}
 	}

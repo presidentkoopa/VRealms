@@ -639,9 +639,28 @@ CCMD(roth_colttest)
 		AActor *a, *found = nullptr;
 		while ((a = it.Next()) != nullptr) if (a->IsKindOf(pc) && a->BoolVar(FName("Landed"))) { found = a; break; }
 		if (found == nullptr) { Printf("roth_colttest lookat: no landed %s\n", argv[2]); return; }
-		DVector2 d = pmo->Pos().XY() - found->Pos().XY();
-		if (d.Length() < 1e-3) d = DVector2(1, 0);
-		d = d.Unit();
+		// of eight directions, the first whose camera spot and the way to it stand on the part's own floor, under a
+		// ceiling above the eye (the same room, nothing between): toward the player first
+		DVector2 d0 = pmo->Pos().XY() - found->Pos().XY();
+		if (d0.Length() < 1e-3) d0 = DVector2(1, 0);
+		d0 = d0.Unit();
+		DVector2 d = d0;
+		bool ok = false;
+		for (int k = 0; k < 8 && !ok; k++)
+		{
+			const double t = k * M_PI / 4;
+			d = DVector2(d0.X * cos(t) - d0.Y * sin(t), d0.X * sin(t) + d0.Y * cos(t));
+			ok = true;
+			for (int q = 1; q <= 6 && ok; q++)
+			{
+				const DVector2 p = found->Pos().XY() + d * (146.0 * q / 6);
+				sector_t *sec = S.level->PointInSector(p);
+				if (sec == nullptr) { ok = false; break; }
+				const double fz = sec->floorplane.ZatPoint(p), cz = sec->ceilingplane.ZatPoint(p);
+				if (fabs(fz - found->floorz) > 1.0 || cz - fz < 150.0) ok = false;
+			}
+		}
+		if (!ok) Printf("roth_colttest lookat: no clear spot 146 units from it on its floor; looking from toward the player\n");
 		const DVector2 at = found->Pos().XY() + d * 146.0;
 		const double yaw = atan2(-d.Y, -d.X) * 180.0 / M_PI;
 		const int ang = (int)lround((yaw - 90.0) * 512.0 / 360.0) & 511;
