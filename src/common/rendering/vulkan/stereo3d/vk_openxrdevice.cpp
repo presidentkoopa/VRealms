@@ -39,6 +39,7 @@
 #include "common/rendering/hwrenderer/data/hw_viewpointbuffer.h"
 #include "v_draw.h"
 #include "i_net.h"
+#include "r_data/vr_posemath.h"   // OffsetToWorld and the grip offset, shared with roth_xrpose
 
 #include <cstring>
 #include <cmath>
@@ -4019,13 +4020,12 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		}
 
 		// Apply vr_weaponRotate as a pure pitch-domain adjustment
-		const XrVector3f euler = OpenVREulerAnglesFromQuaternion(location.pose.orientation);
-		angles[YAW] = (float)(euler.x * (180.0 / M_PI));
-		// Match OpenVR pitch-adjust direction: negative vr_weaponRotate should tilt the weapon downward
-		constexpr float openxrWeaponPitchBiasDeg = -40.0f;
-		angles[PITCH] = -(float)(euler.y * (180.0 / M_PI)) - (vr_weaponRotate * 2.0f) + openxrWeaponPitchBiasDeg;
-		// Apply extra 180-degree roll flip to match the expected OpenVR-facing baseline
-		angles[ROLL] = (float)NormalizeAngle(-(float)(euler.z * (180.0 / M_PI)));
+		// OpenVREulerAnglesFromQuaternion, the -40 degree pitch bias that matches OpenVR's pitch-adjust direction
+		// (negative vr_weaponRotate tilts the weapon down) and the 180-degree roll flip to the OpenVR-facing
+		// baseline: r_data/vr_posemath.h VRPose_AimAngles, shared with the controller-pose test (roth_xrpose).
+		static_assert(PITCH == 0 && YAW == 1 && ROLL == 2, "VRPose_AimAngles writes { pitch, yaw, roll }");
+		const float aq[4] = { location.pose.orientation.x, location.pose.orientation.y, location.pose.orientation.z, location.pose.orientation.w };
+		VRPose_AimAngles(aq, vr_weaponRotate, angles);
 		return true;
 	};
 
@@ -4064,14 +4064,9 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 
 		xrGripPoses[gh] = gl.pose;
 
-		float go[3] = { gl.pose.position.x - hmdPosition[0],
-		                gl.pose.position.y - hmdPosition[1],
-		                gl.pose.position.z - hmdPosition[2] };
-		const float gYaw = GetViewpointYaw() - hmdorientation[1];
-		DVector2 gRot = DVector2(go[0], go[2]).Rotated(-gYaw);
-		xrGripOffset[gh][0] = (float)gRot.Y;
-		xrGripOffset[gh][1] = go[1];
-		xrGripOffset[gh][2] = (float)gRot.X;
+		// r_data/vr_posemath.h, shared with the controller-pose test (roth_xrpose).
+		const float gpos[3] = { gl.pose.position.x, gl.pose.position.y, gl.pose.position.z };
+		VRPose_HeadRelativeOffset(gpos, hmdPosition, GetViewpointYaw(), hmdorientation[1], xrGripOffset[gh]);
 		xrGripPoseValid[gh] = true;
 	}
 
@@ -7374,15 +7369,17 @@ bool VKOpenXRDeviceMode::OffsetToWorld(const float ofs[3], const float rotXR[4],
 
 	const double pixelstretch = r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2;
 
-	mat->loadIdentity();
-	mat->translate((float)r_viewpoint.CenterEyePos.X,
-	               (float)r_viewpoint.CenterEyePos.Z - GetDoomPlayerHeightWithoutCrouch(player),
-	               (float)r_viewpoint.CenterEyePos.Y);
-	mat->scale((float)VR_UnitsPerMeter(), (float)VR_UnitsPerMeter(), (float)-VR_UnitsPerMeter());
-	mat->translate(-ofs[0], (hmdPosition[1] + ofs[1] + (float)vr_height_adjust) / (float)pixelstretch, ofs[2]);
-	mat->scale(1, 1 / (float)pixelstretch, 1);
-	mat->rotate(-90 + doomYaw - hmdorientation[1], 0, 1, 0);
-	mat->multQuaternion(FVector4(rotXR[0], rotXR[1], rotXR[2], rotXR[3]));
+	// The arithmetic is r_data/vr_posemath.h's, shared with the controller-pose test (roth_xrpose).
+	FVRPoseWorld W;
+	W.centerEye = r_viewpoint.CenterEyePos;
+	W.playerHeight = GetDoomPlayerHeightWithoutCrouch(player);
+	W.unitsPerMetre = (float)VR_UnitsPerMeter();
+	W.pixelStretch = (float)pixelstretch;
+	W.hmdHeight = hmdPosition[1];
+	W.heightAdjust = (float)vr_height_adjust;
+	W.bodyYaw = doomYaw;
+	W.hmdYaw = hmdorientation[1];
+	VRPose_OffsetToWorld(mat, W, ofs, rotXR);
 	return true;
 }
 

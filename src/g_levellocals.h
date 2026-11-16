@@ -43,6 +43,7 @@
 #include "r_data/r_sections.h"
 #include "r_data/r_canvastexture.h"
 #include "r_data/r_interpolate.h"
+#include "r_data/vr_posemath.h"	// [RS FORK] BillboardHandFrame's angles from the hand's frame
 #include "doom_aabbtree.h"
 #include "doom_levelmesh.h"
 #include "p_visualthinker.h"
@@ -467,18 +468,36 @@ struct FBillboardGroup
 // False when the billboard is not hand-locked, or there is no pawn to ask --
 // during a level change, for instance. A caller that gets false leaves the
 // billboard where it was authored.
-inline bool BillboardHandFrame(const FBillboard &bb, DVector3 &origin, double &yaw, double &pitch, double &roll)
+//
+// [RS FORK 2026-11-16] THE FRAME IS THE DRAWN HAND'S, NOT THE PAWN'S PUBLISHED AIM POSE. Everything above
+// about reading AttackPos / AttackAngle / AttackPitch / MainHandRoll is history: those fields are the gun's
+// AIM pose (a different tracked pose from the grip the hand is drawn on, with the OpenXR device's -40
+// degree pitch bias in it), and the conversion here took the stored pitch with the wrong sign -- AttackPitch
+// is already positive UP (g_game.cpp, "pitch is negated"; p_map.cpp aims with -AttackPitch as Doom's
+// down-positive pitch), so negating it again made a hand raised 30 degrees resolve 30 degrees DOWN -- and
+// the stored roll turns the other way from BillboardHandAxes'. Anything welded to a hand therefore swung
+// AGAINST the hand, twice the hand's own turn, about a point that was not the hand: the owner's "sprites ...
+// orbit my hand when i move my hand". The frame now comes from the matrix the hand model itself is seated
+// in (r_data/vr_handpose.h VRHandPose_MapFrame: grip x DefaultHandFit, in map units), so a point stored in
+// it is a point ON the drawn hand. False when there is no grip (no headset, no controller-pose test): the
+// billboard stays where it was authored.
+//
+// Declared here rather than included: this header must not pull in the VR hands.
+bool VRHandPose_MapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &right, DVector3 &up);
+
+inline bool BillboardHandBasis(const FBillboard &bb, DVector3 &origin, DVector3 &forward, DVector3 &right, DVector3 &up)
 {
 	if (!(bb.flags & BBFL_HANDANY) || (bb.flags & BBFL_VIEWLOCKED)) return false;
-	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS) return false;
-	AActor *const mo = players[consoleplayer].mo;
-	if (mo == nullptr) return false;
+	return VRHandPose_MapFrame((bb.flags & BBFL_HANDOFF) ? 1 /* VR_OFFHAND */ : 0 /* VR_MAINHAND */, origin, forward, right, up);
+}
 
-	const bool offhand = (bb.flags & BBFL_HANDOFF) != 0;
-	origin = offhand ? mo->OffhandPos : mo->AttackPos;
-	yaw    = (offhand ? mo->OffhandAngle : mo->AttackAngle).Degrees() + 90.0;
-	pitch  = -(offhand ? mo->OffhandPitch : mo->AttackPitch).Degrees();
-	roll   = (offhand ? mo->OffhandRoll : mo->MainHandRoll).Degrees();
+// The same frame as yaw, pitch (positive UP) and roll, exactly as BillboardHandAxes rebuilds it -- for
+// BillboardBasis' BBF_FIXED card, which turns by angles (r_data/vr_posemath.h VRPose_FrameAngles).
+inline bool BillboardHandFrame(const FBillboard &bb, DVector3 &origin, double &yaw, double &pitch, double &roll)
+{
+	DVector3 f, r, u;
+	if (!BillboardHandBasis(bb, origin, f, r, u)) return false;
+	VRPose_FrameAngles(f, r, yaw, pitch, roll);
 	return true;
 }
 

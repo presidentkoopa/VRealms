@@ -222,6 +222,7 @@
 
 #include "vr_handpose.h"
 #include "vr_handpose_math.h"
+#include "vr_posemath.h"
 #include "model_reach_math.h"
 #include "actor.h"
 #include "model.h"
@@ -230,6 +231,7 @@
 #include "hw_vrmodes.h"
 #include "r_utility.h"
 #include "g_levellocals.h"
+#include "d_player.h"
 #include "c_cvars.h"
 #include "v_video.h"
 #include "printf.h"
@@ -395,15 +397,196 @@ void VRHandTest_ActorSpot(int side, const DVector3 &eye, double yawDeg, DVector3
 //
 //===========================================================================
 
+//===========================================================================
+//
+// THE CONTROLLER-POSE TEST (roth_xrpose, src/roth/roth_xrpose.cpp). See vr_handpose.h. The grip is built
+// by the device's own two steps (vr_posemath.h); only the inputs are given instead of tracked: the head
+// at the player's eye (its height is what puts it there: eye - player height + head height), the body
+// yaw the view's, no vr_height_adjust (the head is placed exactly, so there is nothing to adjust).
+//
+//===========================================================================
+
+namespace
+{
+	struct FPoseTest
+	{
+		bool on = false;
+		float hmdYaw = 0.f;
+		float hmdPos[3] = { 0, 0, 0 };
+		FVRPoseTestHand hand[2];
+		bool aimSet[2] = { false, false };
+		float aim[2][4] = { { 0, 0, 0, 1 }, { 0, 0, 0, 1 } };
+	};
+	FPoseTest gPose;
+
+	FVRPoseWorld PoseTestWorld()
+	{
+		FVRPoseWorld W;
+		W.centerEye = r_viewpoint.CenterEyePos;
+		W.playerHeight = (float)players[consoleplayer].DefaultViewHeight();
+		W.unitsPerMetre = VR_UnitsPerMeter();
+		W.pixelStretch = (float)(r_viewpoint.ViewLevel ? r_viewpoint.ViewLevel->pixelstretch : 1.2);
+		W.hmdHeight = gPose.hmdPos[1];
+		W.heightAdjust = 0.f;
+		W.bodyYaw = (float)r_viewpoint.Angles.Yaw.Degrees();
+		W.hmdYaw = gPose.hmdYaw;
+		return W;
+	}
+
+	// q1 * q2, (x, y, z, w)
+	void QuatMul(const float a[4], const float b[4], float o[4])
+	{
+		o[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+		o[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
+		o[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
+		o[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+	}
+
+	void PoseTestAim(int role, float q[4])
+	{
+		if (gPose.aimSet[role]) { for (int i = 0; i < 4; i++) q[i] = gPose.aim[role][i]; return; }
+		float rx[4];
+		VRPose_QuatFromYPR(0, -90, 0, rx);
+		QuatMul(gPose.hand[role].quat, rx, q);
+	}
+
+	bool PoseTestGrip(int role, VSMatrix &out)
+	{
+		if (!gPose.on || role < 0 || role > 1 || !gPose.hand[role].valid) return false;
+		if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS || players[consoleplayer].mo == nullptr) return false;
+		const FVRPoseTestHand &h = gPose.hand[role];
+		const FVRPoseWorld W = PoseTestWorld();
+		float ofs[3];
+		VRPose_HeadRelativeOffset(h.pos, gPose.hmdPos, W.bodyYaw, W.hmdYaw, ofs);
+		VRPose_OffsetToWorld(&out, W, ofs, h.quat);
+		return true;
+	}
+}
+
+void VRPoseTest_Set(bool on, float hmdYawDeg, const float hmdPos[3])
+{
+	gPose.on = on;
+	gPose.hmdYaw = hmdYawDeg;
+	for (int i = 0; i < 3; i++) gPose.hmdPos[i] = hmdPos != nullptr ? hmdPos[i] : 0.f;
+	if (!on)
+	{
+		for (FVRPoseTestHand &h : gPose.hand) h = FVRPoseTestHand();
+		gPose.aimSet[0] = gPose.aimSet[1] = false;
+	}
+}
+
+void VRPoseTest_SetHand(int role, const FVRPoseTestHand &h)
+{
+	if (role < 0 || role > 1) return;
+	gPose.hand[role] = h;
+}
+
+bool VRPoseTest_Active() { return gPose.on; }
+
+bool VRPoseTest_Hand(int role, FVRPoseTestHand &out)
+{
+	if (!gPose.on || role < 0 || role > 1) return false;
+	out = gPose.hand[role];
+	return out.valid;
+}
+
+bool VRPoseTest_Head(float pos[3], float &yawDeg)
+{
+	if (!gPose.on) return false;
+	for (int i = 0; i < 3; i++) pos[i] = gPose.hmdPos[i];
+	yawDeg = gPose.hmdYaw;
+	return true;
+}
+
+void VRPoseTest_SetAim(int role, const float quat[4])
+{
+	if (role < 0 || role > 1) return;
+	gPose.aimSet[role] = quat != nullptr;
+	if (quat != nullptr) for (int i = 0; i < 4; i++) gPose.aim[role][i] = quat[i];
+}
+
+EXTERN_CVAR(Float, vr_weaponRotate)
+
+void VRPoseTest_PublishAim(AActor *mo)
+{
+	if (!gPose.on || mo == nullptr) return;
+	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS || players[consoleplayer].mo != mo) return;
+	mo->OverrideAttackPosDir = true;
+	const FVRPoseWorld W = PoseTestWorld();
+	for (int role = 0; role < 2; role++)
+	{
+		const FVRPoseTestHand &h = gPose.hand[role];
+		if (!h.valid) continue;
+		float q[4], angles[3], ofs[3];
+		PoseTestAim(role, q);
+		VRPose_AimAngles(q, vr_weaponRotate, angles);
+		double ang, pit, rol;
+		VRPose_PublishedAim(angles, W.bodyYaw, W.hmdYaw, ang, pit, rol);
+		VRPose_HeadRelativeOffset(h.pos, gPose.hmdPos, W.bodyYaw, W.hmdYaw, ofs);
+		VSMatrix m;
+		VRPose_OffsetToWorld(&m, W, ofs, q);
+		const DVector3 at = VRPose_LocalToMap(m, 0, 0, 0);
+		if (role == VR_MAINHAND)
+		{
+			mo->AttackPos = at;
+			mo->AttackAngle = DAngle::fromDeg(ang);
+			mo->AttackPitch = DAngle::fromDeg(pit);
+			mo->AttackRoll = DAngle::fromDeg(rol);
+			mo->MainHandRoll = mo->AttackRoll;
+		}
+		else
+		{
+			mo->OffhandPos = at;
+			mo->OffhandAngle = DAngle::fromDeg(ang);
+			mo->OffhandPitch = DAngle::fromDeg(pit);
+			mo->OffhandRoll = DAngle::fromDeg(rol);
+		}
+	}
+}
+
+bool VRHandPose_Grip(int role, VSMatrix &out)
+{
+	if (gPose.on) return PoseTestGrip(role, out);
+	const VRMode *vm = VRMode::GetVRModeCached(true);
+	return vm != nullptr && vm->IsVR() && vm->GetGripTransform(role, &out);
+}
+
+bool VRHandPose_Fingers(int role, VRFingerInput &out)
+{
+	if (gPose.on)
+	{
+		FVRPoseTestHand h;
+		if (!VRPoseTest_Hand(role, h)) return false;
+		out = VRFingerInput();
+		out.trigger = h.trigger;
+		out.grip = h.grip;
+		out.triggerTouch = h.triggerTouch;
+		out.thumbTouch = h.thumbTouch;
+		return true;
+	}
+	const VRMode *vm = VRMode::GetVRModeCached(true);
+	return vm != nullptr && vm->IsVR() && vm->GetFingerInput(role, out);
+}
+
+bool VRHandPose_InputLive()
+{
+	if (gPose.on) return true;
+	const VRMode *vm = VRMode::GetVRModeCached(true);
+	return vm != nullptr && vm->IsVR();
+}
+
+bool VRHandPose_MapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &right, DVector3 &up)
+{
+	VSMatrix m;
+	if (!VRHandPose_HandFrame(role, m)) return false;
+	return VRPose_HandMapFrame(m, VRHandPose_SideForRole(role) == SIDE_RIGHT, origin, fwd, right, up);
+}
+
 bool VRHandPose_HandFrame(int role, VSMatrix &out)
 {
 	VSMatrix g;
 	bool got = TestGrip(role, g);
-	if (!got)
-	{
-		const VRMode *vm = VRMode::GetVRModeCached(true);
-		got = vm != nullptr && vm->IsVR() && vm->GetGripTransform(role, &g);
-	}
+	if (!got) got = VRHandPose_Grip(role, g);
 	if (!got) return false;
 	float fit[16];
 	DefaultHandFit(VRHandPose_SideForRole(role) == SIDE_RIGHT, fit);
@@ -697,14 +880,12 @@ namespace
 			in.valid = true;
 			return;
 		}
-		const VRMode *vm = VRMode::GetVRModeCached(true);
-		if (vm == nullptr || !vm->IsVR()) return;
 		const int role = VRHandPose_RoleForSide(side);
 		VSMatrix g;
-		if (!vm->GetGripTransform(role, &g)) return;
+		if (!VRHandPose_Grip(role, g)) return;
 		in.valid = true;
 		VRFingerInput fi;
-		if (vm->GetFingerInput(role, fi))
+		if (VRHandPose_Fingers(role, fi))
 		{
 			in.trigger = fi.trigger;
 			in.grip = fi.grip;

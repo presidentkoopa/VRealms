@@ -68,6 +68,7 @@
 #include "serializer_doom.h"
 #include "vm.h"
 #include "roth/roth_runtime.h"
+#include "r_data/vr_handpose.h"   // [RS FORK] the controller-pose test publishes the hands (VRPoseTest_PublishAim)
 
 extern int paused;
 
@@ -105,7 +106,7 @@ static void UpdateCanonicalMainHandPose(player_t *player)
 	}
 	else
 	{
-		player->mo->OverrideAttackPosDir = !puristmode && (isLocalVr || vr_override_weap_pos);
+		player->mo->OverrideAttackPosDir = !puristmode && (isLocalVr || vr_override_weap_pos || VRPoseTest_Active());
 	}
 
 	if (!player->mo->OverrideAttackPosDir)
@@ -144,6 +145,14 @@ static void UpdateCanonicalMainHandPose(player_t *player)
 	player->mo->AttackPitch = CmdAngleToDAngle(player->cmd.weaponpitch);
 	player->mo->AttackAngle = CmdAngleToDAngle(player->cmd.weaponyaw);
 	player->mo->AttackRoll = nullAngle;
+	// [RS FORK 2026-11-16] SINGLE-PLAYER VR KEEPS THE WRIST'S ROLL in AttackRoll, as stock QuestZDoom 17.3
+	// does: RSQ Distance Grab (wadsrc_dgrab, reach.zs Roll) reads the main hand's roll from AttackRoll -- its
+	// palm gate is a quarter turn of it -- and a zero here every tic left the main hand unable ever to reach.
+	// The zero exists for netplay determinism (a peer cannot know this machine's wrist), which a single
+	// player does not have; MainHandRoll is the device's value, written every rendered frame.
+	if (!multiplayer && isLocalVr) player->mo->AttackRoll = player->mo->MainHandRoll;
+	// The controller-pose test (roth_xrpose) publishes its hands as the device would, over the flat aim.
+	if (!multiplayer && VRPoseTest_Active()) VRPoseTest_PublishAim(player->mo);
 
 	// Multiplayer fake-6DoF uses a single canonical weapon aim. Mirror that
 	// pose into the offhand fields too so any offhand code path that still

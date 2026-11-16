@@ -153,7 +153,8 @@ void HandsTick(FLevelLocals *level)
 	if (pmo != nullptr && pmo->Level != level) pmo = nullptr;
 
 	const VRMode *vm = VRMode::GetVRModeCached(true);
-	const bool vr = vr_mode != 0 && vm != nullptr && vm->IsVR();
+	// The controller-pose test (roth_xrpose) counts as a headset: the hands ride its poses through the device's path.
+	const bool vr = (vr_mode != 0 && vm != nullptr && vm->IsVR()) || VRPoseTest_Active();
 	const bool test = VRHandTest_Active();
 	const bool want = pmo != nullptr && (vr || test);
 
@@ -177,7 +178,12 @@ void HandsTick(FLevelLocals *level)
 		if (test)
 			VRHandTest_ActorSpot(side, DVector3(pmo->X(), pmo->Y(), pmo->player ? pmo->player->viewz : pmo->Z()), pmo->Angles.Yaw.Degrees(), at);
 		else
-			at = (role == VR_MAINHAND) ? pmo->AttackPos : pmo->OffhandPos;
+		{
+			// The hand's own grip socket (VRHandPose_MapFrame), so culling and the sector light follow the drawn
+			// hand; the aim pose's position when there is no grip this tic (the actor is hidden then anyway).
+			DVector3 o, f, r, u;
+			at = VRHandPose_MapFrame(role, o, f, r, u) ? o : ((role == VR_MAINHAND) ? pmo->AttackPos : pmo->OffhandPos);
+		}
 
 		if (mo == nullptr) mo = AActor::StaticSpawn(level, cls, at, NO_REPLACE);
 		if (mo == nullptr) continue;
@@ -189,10 +195,11 @@ void HandsTick(FLevelLocals *level)
 		mo->Angles.Yaw = pmo->Angles.Yaw;
 
 		VSMatrix grip;
-		const bool have = test || (vm != nullptr && vm->GetGripTransform(role, &grip));
+		const bool have = test || VRHandPose_Grip(role, grip);
 		if (have) mo->renderflags &= ~RF_INVISIBLE;
 		else mo->renderflags |= RF_INVISIBLE;
 	}
+	XRPoseTick(level);
 }
 
 } // namespace roth

@@ -188,10 +188,9 @@ bool ReadGrip(int role)
 	}
 	else
 	{
-		const VRMode *vm = VRMode::GetVRModeCached(true);
 		VSMatrix gm;
 		VRFingerInput fi;
-		if (vm != nullptr && vm->GetGripTransform(role, &gm)) { valid = true; if (vm->GetFingerInput(role, fi)) g = fi.grip; }
+		if (VRHandPose_Grip(role, gm)) { valid = true; if (VRHandPose_Fingers(role, fi)) g = fi.grip; }
 	}
 	bool &c = H.gripClosed[role];
 	if (!valid) c = false;
@@ -284,13 +283,15 @@ struct Lock
 Lock LockFor(int role)
 {
 	Lock L;
+	// THE DRAWN HAND'S FRAME (BillboardHandBasis -> VRHandPose_MapFrame), the one the renderer resolves the
+	// offset in. It was the aim pose's angles, whose pitch was taken with the wrong sign: the card, the match
+	// and the lamp swung against the hand and orbited it (owner, 2026-11-16). Live hands only (a headset, or
+	// roth_xrpose); under roth_handtest, world points as before.
 	AActor *pmo = players[consoleplayer].mo;
-	if (role < 0 || pmo == nullptr || !pmo->OverrideAttackPosDir) return L;   // no VR pose published: world points
+	if (role < 0 || pmo == nullptr || !VRHandPose_InputLive()) return L;
 	FBillboard probe;
 	probe.flags = role == VR_MAINHAND ? BBFL_HANDMAIN : BBFL_HANDOFF;
-	double yaw, pitch, roll;
-	if (!BillboardHandFrame(probe, L.origin, yaw, pitch, roll)) return L;
-	BillboardHandAxes(yaw, pitch, roll, L.fwd, L.right, L.up);
+	if (!BillboardHandBasis(probe, L.origin, L.fwd, L.right, L.up)) return L;
 	L.on = true;
 	L.flag = probe.flags;
 	return L;

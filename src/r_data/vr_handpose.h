@@ -43,6 +43,53 @@ int  VRHandPose_RoleForSide(int side);
 // flat test (roth_handtest) supplies a grip in front of the camera instead. False: no grip now.
 bool VRHandPose_HandFrame(int role, VSMatrix &out);
 
+// THE ONE HAND FRAME EVERY READER USES (2026-11-16): VRHandPose_HandFrame -- the very matrix the drawn hand
+// is seated in -- in MAP coordinates (r_data/vr_posemath.h VRPose_HandMapFrame): origin at the grip socket,
+// `fwd` along the hand (wrist to knuckles), `right` to the hand's right, `up` = right x fwd (the thumb's
+// side). Hand-locked billboards (g_levellocals.h BillboardHandFrame), the picker's controller ray and its
+// locks, the panels' pointer and the held objects all read THIS, never AttackAngle / AttackPitch /
+// MainHandRoll: those are the gun's AIM pose (another tracked pose, with the device's -40 degree pitch bias)
+// in the playsim's stored convention, and three readers took its pitch with the wrong sign. False: no grip.
+bool VRHandPose_MapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &right, DVector3 &up);
+
+// THE HANDS' INPUT DOOR: a role's grip transform and finger values from the injected controller pose
+// (roth_xrpose, below) when that is on, else the headset's (VRMode::GetGripTransform / GetFingerInput, only
+// while the VR mode is VR). Every game-layer reader of the controllers goes through these.
+bool VRHandPose_Grip(int role, VSMatrix &out);
+bool VRHandPose_Fingers(int role, struct VRFingerInput &out);
+// A headset is on, or the controller-pose test drives the hands.
+bool VRHandPose_InputLive();
+
+// ---- THE CONTROLLER-POSE TEST (roth_xrpose): test-only, inert until typed ----
+// Not roth_handtest's camera-relative grip: given OpenXR TRACKING-SPACE poses (metres, +X right, +Y up,
+// -Z ahead; a quaternion) for the head and each hand, the grip goes through the device's own arithmetic
+// (vr_posemath.h VRPose_HeadRelativeOffset, VRPose_OffsetToWorld), with the player's view yaw as the body
+// yaw and the eye at the head, so everything downstream -- the drawn hands, their fingers, the picker, the
+// hand-locked billboards -- runs exactly as in the headset.
+struct FVRPoseTestHand
+{
+	bool valid = false;
+	float pos[3] = { 0, 0, 0 };      // tracking space, metres
+	float quat[4] = { 0, 0, 0, 1 };  // tracking space, the grip pose's orientation (x, y, z, w)
+	float trigger = 0.f, grip = 0.f;
+	bool triggerTouch = false, thumbTouch = false;
+};
+void VRPoseTest_Set(bool on, float hmdYawDeg, const float hmdPos[3]);
+void VRPoseTest_SetHand(int role, const FVRPoseTestHand &h);
+bool VRPoseTest_Active();
+bool VRPoseTest_Hand(int role, FVRPoseTestHand &out);
+// The hmd pose the test gives (tracking space): position, yaw. False while off.
+bool VRPoseTest_Head(float pos[3], float &yawDeg);
+// Each hand's AIM pose (the gun's: OpenXR's aim space), tracking space. Unset, it is the grip turned so the
+// aim's -Z runs along the fingers (the grip x Rx(-90)).
+void VRPoseTest_SetAim(int role, const float quat[4]);
+// WHAT THE DEVICE PUBLISHES ON THE PAWN, from the test's poses (vr_posemath.h VRPose_AimAngles,
+// VRPose_PublishedAim, OffsetToWorld's origin for the position): AttackPos / AttackAngle / AttackPitch /
+// AttackRoll / MainHandRoll and the Offhand* five. Called by the playsim (p_user.cpp
+// UpdateCanonicalMainHandPose) after its own canonical writes, so scripts that read those fields -- RSQ
+// Distance Grab -- see the test's hands as they see a headset's. Single player only.
+void VRPoseTest_PublishAim(AActor *mo);
+
 // The model's seat in that hand frame (vr_handpose_math.h ModelSeat), measured once per model from
 // its own bind pose. False when the model lacks the wrist or knuckle joints.
 bool VRHandPose_ModelSeat(FModel *model, int side, VSMatrix &out);

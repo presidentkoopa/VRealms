@@ -291,8 +291,10 @@ double UPM()
 	return u > 1e-3 ? u : 34.0;
 }
 
+// A headset is on -- or the controller-pose test (roth_xrpose) drives the hands through the headset's own path.
 bool HeadsetOn()
 {
+	if (VRPoseTest_Active()) return true;
 	const VRMode *vm = VRMode::GetVRModeCached(true);
 	return vr_mode != 0 && vm != nullptr && vm->IsVR();
 }
@@ -358,15 +360,16 @@ struct HandLock
 	}
 };
 
+// THE DRAWN HAND'S FRAME (g_levellocals.h BillboardHandBasis -> vr_handpose.h VRHandPose_MapFrame), the one
+// the renderer resolves the offset in -- never the aim pose's angles (2026-11-16: the stored pitch was taken
+// with the wrong sign there, so everything locked here swung against the hand). No grip: world points.
 HandLock LockFor(int role, AActor *pmo)
 {
 	HandLock L;
-	if (pmo == nullptr || !pmo->OverrideAttackPosDir) return L;   // no VR pose published: world points
+	if (pmo == nullptr || !VRHandPose_InputLive()) return L;   // roth_handtest: world points, as before
 	FBillboard probe;
 	probe.flags = (role == VR_MAINHAND) ? BBFL_HANDMAIN : BBFL_HANDOFF;
-	double yaw, pitch, roll;
-	if (!BillboardHandFrame(probe, L.origin, yaw, pitch, roll)) return L;
-	BillboardHandAxes(yaw, pitch, roll, L.fwd, L.right, L.up);
+	if (!BillboardHandBasis(probe, L.origin, L.fwd, L.right, L.up)) return L;
 	L.on = true;
 	L.flag = probe.flags;
 	return L;
@@ -412,11 +415,10 @@ void ReadInputs(int role, HandState &h)
 		h.valid = true;
 		return;
 	}
-	const VRMode *vm = VRMode::GetVRModeCached(true);
 	VSMatrix g;
-	if (vm == nullptr || !vm->GetGripTransform(role, &g)) return;
+	if (!VRHandPose_Grip(role, g)) return;   // the headset's, or the controller-pose test's (roth_xrpose)
 	VRFingerInput fi;
-	if (vm->GetFingerInput(role, fi))
+	if (VRHandPose_Fingers(role, fi))
 	{
 		h.trigger = fi.trigger; h.grip = fi.grip; h.triggerTouch = fi.triggerTouch; h.thumbTouch = fi.thumbTouch;
 	}
@@ -456,18 +458,21 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 		}
 		else h.rayWhy = "no draw transform for the hand";
 	}
-	if (!h.haveRay && !P.test && pmo != nullptr && pmo->OverrideAttackPosDir)
+	if (!h.haveRay && !P.test && pmo != nullptr)
 	{
-		// The controller's aim pose, as roth_pick and the panels read it: the
-		// stored angle carries the engine's +90 (UseByHand).
-		const bool main = role == VR_MAINHAND;
-		const DAngle yaw = (main ? pmo->AttackAngle : pmo->OffhandAngle) + DAngle::fromDeg(90.);
-		const DAngle pitch = main ? pmo->AttackPitch : pmo->OffhandPitch;
-		h.tip = main ? pmo->AttackPos : pmo->OffhandPos;
-		h.dir = DVector3(yaw.Cos() * pitch.Cos(), yaw.Sin() * pitch.Cos(), -pitch.Sin());
-		h.palm = h.tip;
-		h.handFwd = h.dir;
-		h.haveRay = true;
+		// No drawn hand: the hand's own frame (VRHandPose_MapFrame, the matrix the hand model would be seated
+		// in), along the hand from the grip socket. Not the aim pose (AttackAngle / AttackPitch): another
+		// tracked pose with a -40 degree pitch bias, and its stored pitch was read here with the wrong sign
+		// (2026-11-16), so a raised hand's ray went down.
+		DVector3 o, f, r, u;
+		if (VRHandPose_MapFrame(role, o, f, r, u))
+		{
+			h.tip = o;
+			h.dir = f;
+			h.palm = o;
+			h.handFwd = f;
+			h.haveRay = true;
+		}
 	}
 	if (h.haveRay && P.test)
 	{
@@ -1225,6 +1230,31 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
 	return DoUse(role, p, c, pmo, "a flame at a wick", true);
 }
 
+static CursorClass ClassifyFrom(AActor *pmo, const Pick &p, const DVector3 &from);
+
+bool VRPickTakeCaught(int role, AActor *item)
+{
+	if (item == nullptr || role < 0 || role > 1) return false;
+	AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+	if (pmo == nullptr) return false;
+	// The palm the item arrived at (as drawn), else the item itself: the original's cursor on it from there.
+	HandState tmp;
+	const DVector3 at = item->PosPlusZ(item->Height * 0.5);
+	const DVector3 from = FingerRay(role, tmp, pmo) ? tmp.palm : at;
+	Pick p;
+	p.kind = Pick::Prop;
+	p.actor = item;
+	p.hitPos = at;
+	p.dist = (at - from).Length();
+	const CursorClass c = ClassifyFrom(pmo, p, from);
+	if (!c.CanUse())
+	{
+		Printf("[roth_vrpick] %s hand: distance grab catch -- %s\n", RoleName(role), WhyNotUse(c).GetChars());
+		return false;
+	}
+	return DoUse(role, p, c, pmo, "distance grab catch", true);
+}
+
 double VRPickUnitsPerMetre() { return UPM(); }
 
 bool VRPickHandNow(int role, VRPickHand &out)
@@ -1251,6 +1281,19 @@ bool VRPickHandNow(int role, VRPickHand &out)
 	out.dir = tmp.dir;
 	out.palm = tmp.palm;
 	out.handFwd = tmp.handFwd;
+	return true;
+}
+
+bool VRPickHandRay(int role, DVector3 &start, DVector3 &dir, bool *fromFinger)
+{
+	if (role < 0 || role > 1) return false;
+	AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+	if (pmo == nullptr) return false;
+	HandState tmp;
+	if (!FingerRay(role, tmp, pmo)) return false;
+	start = tmp.tip;
+	dir = tmp.dir;
+	if (fromFinger != nullptr) *fromFinger = tmp.fromFinger;
 	return true;
 }
 

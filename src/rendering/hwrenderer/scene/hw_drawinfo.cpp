@@ -3389,14 +3389,11 @@ void HWDrawInfo::DispatchBillboards()
 			// VR backend rewrites every rendered frame (BillboardHandFrame).
 			// With no pawn to ask -- a level change, say -- the billboard
 			// stays where it was authored rather than snapping to the origin.
-			DVector3 handOrigin;
-			double handYaw, handPitch, handRoll;
-			if (BillboardHandFrame(bb, handOrigin, handYaw, handPitch, handRoll))
-			{
-				DVector3 forward, right, up;
-				BillboardHandAxes(handYaw, handPitch, handRoll, forward, right, up);
+			// [RS FORK 2026-11-16] The drawn hand's own frame (BillboardHandBasis), the one the game
+			// layer stored this offset in -- not the aim pose's Euler angles.
+			DVector3 handOrigin, forward, right, up;
+			if (BillboardHandBasis(bb, handOrigin, forward, right, up))
 				bpos = handOrigin + forward * lpos.X + right * lpos.Y + up * lpos.Z;
-			}
 		}
 		else if ((bb.flags & BBFL_ATTACHED) && bb.attachedTo != nullptr)
 		{

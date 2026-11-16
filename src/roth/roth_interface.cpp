@@ -64,6 +64,7 @@ EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoin
 #include "hwrenderer/postprocessing/hw_postprocessshader.h"   // the low-health edge (GLDEFS RothLowHealth)
 EXTERN_CVAR(Bool, gl_custompost)   // file scope: inside the namespace it would name another variable
 #include "roth_hands.h"
+#include "roth_vrpick.h"            // VRPickHandRay: the hands' rays (PointerRays)
 
 
 EXTERN_CVAR(Float, bb_scale)
@@ -490,17 +491,21 @@ bool PointerRays(player_t *player, Ray out[2], int &n)
 	n = 0;
 	if (player == nullptr || player->mo == nullptr) return false;
 	AActor *mo = player->mo;
-	if (mo->OverrideAttackPosDir)
+	if (VRHandPose_InputLive())
 	{
-		// The runtime's hand convention (UseByHand): the stored angle carries +90.
-		const DAngle y0 = mo->AttackAngle + DAngle::fromDeg(90.);
-		out[n].start = mo->AttackPos;
-		out[n].dir = DVector3(y0.Cos() * mo->AttackPitch.Cos(), y0.Sin() * mo->AttackPitch.Cos(), -mo->AttackPitch.Sin());
-		n++;
-		const DAngle y1 = mo->OffhandAngle + DAngle::fromDeg(90.);
-		out[n].start = mo->OffhandPos;
-		out[n].dir = DVector3(y1.Cos() * mo->OffhandPitch.Cos(), y1.Sin() * mo->OffhandPitch.Cos(), -mo->OffhandPitch.Sin());
-		n++;
+		// THE HANDS' OWN RAYS (roth_vrpick.h VRPickHandRay): the drawn index finger, else the hand's frame.
+		// Not the aim pose's angles, whose stored pitch this read with the wrong sign (2026-11-16): a hand
+		// raised at a panel pointed below it. Index 0 is the main hand (the primary button), 1 the off hand.
+		for (int role = VR_MAINHAND; role <= VR_OFFHAND; role++)
+		{
+			DVector3 s, d;
+			// A hand with no ray keeps its index (its button) with a ray that meets nothing: every reader
+			// (HitElement, PanelRay) refuses a zero direction.
+			if (!VRPickHandRay(role, s, d)) { s = mo->Pos(); d = DVector3(0, 0, 0); }
+			out[n].start = s;
+			out[n].dir = d;
+			n++;
+		}
 		return true;
 	}
 	const DAngle y = mo->Angles.Yaw, p = mo->Angles.Pitch;
@@ -866,7 +871,7 @@ bool MountWanted()
 	if (U.level == nullptr) return false;
 	player_t *pl = U.level->GetConsolePlayer();
 	if (pl == nullptr || pl->mo == nullptr) return false;
-	const bool vr = pl->mo->OverrideAttackPosDir;
+	const bool vr = VRHandPose_InputLive();   // a headset, or the controller-pose test (roth_xrpose)
 	if (!vr && !(U.mountTest && VRHandTest_Active())) return false;
 	AActor *ha = HandActor(VRHandPose_SideForRole(VR_OFFHAND));
 	return ha != nullptr && !(ha->renderflags & RF_INVISIBLE);
@@ -901,12 +906,13 @@ MountLock MountLockNow()
 {
 	MountLock L;
 	player_t *pl = U.level != nullptr ? U.level->GetConsolePlayer() : nullptr;
-	if (pl == nullptr || pl->mo == nullptr || !pl->mo->OverrideAttackPosDir) return L;
+	// The drawn off hand's frame (BillboardHandBasis), as the renderer resolves it; not the aim pose (2026-11-16).
+	// Only with live hands (a headset, or roth_xrpose): under roth_handtest the mount is placed in world
+	// points as before (its `look` placement below needs that).
+	if (pl == nullptr || pl->mo == nullptr || !VRHandPose_InputLive()) return L;
 	FBillboard probe;
 	probe.flags = BBFL_HANDOFF;
-	double yaw, pitch, roll;
-	if (!BillboardHandFrame(probe, L.origin, yaw, pitch, roll)) return L;
-	BillboardHandAxes(yaw, pitch, roll, L.fwd, L.right, L.up);
+	if (!BillboardHandBasis(probe, L.origin, L.fwd, L.right, L.up)) return L;
 	L.on = true;
 	return L;
 }

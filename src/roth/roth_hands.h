@@ -23,6 +23,10 @@ void HandsTick(FLevelLocals *level);
 // The level's actors are going: forget them (EndLevel).
 void HandsEndLevel();
 
+// The controller-pose test (roth_xrpose, roth_xrpose.cpp), once a tic after the hands: its published aim
+// and its pinned marker's line. Inert unless typed.
+void XRPoseTick(FLevelLocals *level);
+
 // The hand actor standing for a physical hand (VRHandPose::SIDE_RIGHT / SIDE_LEFT), or null when
 // there is none (flat, no controller this tic). The VR picker (roth_vrpick.cpp) reads its fingertip.
 AActor *HandActor(int side);

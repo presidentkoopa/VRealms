@@ -45,6 +45,7 @@
 #include "roth_held.h"        // the held objects (chapter 1): presentation, and the forced turn's view snap
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
+#include "r_data/vr_handpose.h"   // VRHandPose_InputLive: live hands (UseByHand)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
 #include "roth_candles.h"         // the candles' wicks, one by one (presentation)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
@@ -7388,11 +7389,9 @@ bool UseByHand(player_t *player, TrigEvent want)
 {
 	if (!g.active || player == nullptr || player->mo == nullptr) return false;
 
-	// NOT in a netgame and not without a controller. AttackPos and its offhand
-	// pair are written by the VR backend every frame and are local state; with
-	// no device they are the pawn's own position and the ray would be a
-	// confusing duplicate of the eye probe rather than a hand.
-	if (!player->mo->OverrideAttackPosDir) return false;
+	// NOT without live hands (a headset, or the controller-pose test): with no
+	// device the ray would be a confusing duplicate of the eye probe.
+	if (!VRHandPose_InputLive()) return false;
 
 	AActor *const mo = player->mo;
 
@@ -7402,28 +7401,19 @@ bool UseByHand(player_t *player, TrigEvent want)
 	// probe already uses, so the two agree about how far a press carries.
 	const double range = mo->FloatVar(NAME_UseRange);
 
-	struct HandRay { DVector3 pos; DAngle pitch; DAngle yaw; const char *name; };
-	const HandRay hands[2] = {
-		{ mo->AttackPos,  mo->AttackPitch,  mo->AttackAngle,  "main" },
-		{ mo->OffhandPos, mo->OffhandPitch, mo->OffhandAngle, "off"  },
-	};
-
-	for (const HandRay &h : hands)
+	// THE HANDS' OWN RAYS (roth_vrpick.h VRPickHandRay: the drawn index finger,
+	// else the hand's frame), 2026-11-16. This read the aim pose's angles and
+	// took AttackPitch -- already positive UP -- as Doom's down-positive pitch,
+	// so a raised hand's press went down.
+	const char *const names[2] = { "main", "off" };
+	for (int role = 0; role < 2; role++)
 	{
-		// THE +90 IS THE ENGINE'S, NOT THE CONTROLLER'S. P_UseLines builds its
-		// hand ray as AttackAngle + 90 and that is the convention the stored
-		// angle carries, so it is kept here rather than "corrected" -- the
-		// drawn laser disagreeing with it is a separate fault in the laser.
-		const DAngle yaw = h.yaw + DAngle::fromDeg(90.);
-		const DVector3 dir(
-			yaw.Cos() * h.pitch.Cos(),
-			yaw.Sin() * h.pitch.Cos(),
-			-h.pitch.Sin());
-
+		DVector3 pos, dir;
+		if (!VRPickHandRay(role, pos, dir)) continue;
 		Pick p;
-		if (!PickFrom(mo, h.pos, dir, range, p)) continue;
+		if (!PickFrom(mo, pos, dir, range, p)) continue;
 		if (roth_useray_debug)
-			Printf("roth_pick: %s hand -> ", h.name);
+			Printf("roth_pick: %s hand -> ", names[role]);
 		if (Activate(p, mo, want)) return true;
 	}
 	return false;
