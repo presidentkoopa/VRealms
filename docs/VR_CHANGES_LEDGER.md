@@ -143,6 +143,13 @@ was touched. **Q24, the clock's 0x1f, read in ROTH.C:** see the chapter doc entr
 | Scale the package's metre to Realms' (reach.zs's two metre constants and its unit settings), so its reach, catch radius and throw speeds are real metres in VRealms — the ONE edit to the package | "Scale to Realms" |
 | The package's grip keys default to VRealms' grips (445 right, 444 left), so its walk-up grab, grip-to-hold and door grip work | "Map to VRealms grips" |
 
+
+**RSQ Distance Grab, owner's 2026-11-16 decisions done (60540638, 35dd2048), seen on the owner's PC (flat, real controller path):**
+- every Doom-unit literal in the package ×107.4/34 (CHECKLIST #6-#28; the beam/cone mesh lengths stay: the code stretches them to the real distance); Catch Distance slider 25.3..202.2;
+- the main grip grabs on the SQUEEZE: "the main grip squeezed (analog): ... press sent now, tic 70" → "the main hand caught Realms object 412/0" → one "use -> firing" → "right hand: item 17 (Book)"; at the release (tic 100) "key 445 ... swallowed";
+- the off-hand walk-up grab, the distance grab (LOCKED → LAUNCHED dist 387 → caught → the original's pickup) and gestures_flat unchanged on 60540638.
+Not seen: the headset.
+
 ## Decided, LATER
 
 | change | owner decision |
