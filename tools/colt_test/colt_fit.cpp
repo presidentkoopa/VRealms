@@ -657,7 +657,7 @@ int main(int argc, char **argv)
 		auto cl01 = [](double u) { return u < 0 ? 0.0 : (u > 1 ? 1.0 : u); };
 		bool indexFree = false;
 		const double kPadW = getenv("COLT_PADW") ? atof(getenv("COLT_PADW")) : 10.0;   // the pad on the trigger is a hard check (6 mm): it weighs as much as 10x its distance
-		const double kContactW = 1.0;                // a wrapped finger's nearest skin pulled onto the grip
+		const double kContactW = getenv("COLT_CONTACTW") ? atof(getenv("COLT_CONTACTW")) : 8.0;   // a wrapped finger's end pulled onto the grip (8: as firmly as the pad onto the trigger)
 		constexpr int NP = kNP;  // rotation vector, translation, the index's in-between, the wraps (thumb, middle, ring, little: outer joints), their knuckles
 		const int kParamOf[5] = { 7, 6, 8, 9, 10 };
 		const int kBaseOf[5] = { 11, 15, 12, 13, 14 };
@@ -689,7 +689,11 @@ int main(int argc, char **argv)
 				const V3 gp = Rt * (hpnt - t) * (1.0 / s);
 				const double d = sdf.Query(gp) * s;   // metres, negative inside
 				e.push_back(d < -kSlack && !(f == 1 && indexFree) ? (d + kSlack) * kPenW : 0.0);
-				if (f >= 0 && f != 1 && skinSeg[n] >= 1) nearest[f] = fmin(nearest[f], f == 0 ? d : gripSdf.Query(gp) * s);
+				// the thumb: its middle and outer segments to the gun; middle, ring, little: their END segment (the pad and the
+				// tip) to the grip's surface -- a finger is wrapped round the grip when its end lies on it, not when its first
+				// bone brushes the front strap (2026-11-16: that passed with the fingers straight past the strap)
+				if (f == 0 && skinSeg[n] >= 1) nearest[f] = fmin(nearest[f], d);
+				else if (f >= 2 && skinSeg[n] >= 2) nearest[f] = fmin(nearest[f], fabs(gripSdf.Query(gp)) * s);
 			}
 			for (int f : { 0, 2, 3, 4 }) e.push_back(nearest[f] > kSlack ? (nearest[f] - kSlack) * kContactW : 0.0);
 		};
@@ -890,11 +894,11 @@ int main(int argc, char **argv)
 		for (int i = 0; i < nh; i++)
 		{
 			const int f = fingerOf(handR.v[i].bone);
-			if (f < 0 || segOf(handR.v[i].bone) < 1) continue;
+			if (f < 0 || segOf(handR.v[i].bone) < (f >= 2 ? 2 : 1)) continue;
 			const V3 gp = RtF * (handR.v[i].p - t) * (1.0 / s);
-			touch[f] = fmin(touch[f], (f == 0 || f == 1 ? sdf.Query(gp) : gripSdf.Query(gp)) * s);
+			touch[f] = fmin(touch[f], (f == 0 || f == 1 ? sdf.Query(gp) : fabs(gripSdf.Query(gp))) * s);
 		}
-		printf("  CHECK each finger's nearest skin (middle and outer segments) to the gun (middle, ring, little: to the grip): thumb %.1f index %.1f middle %.1f ring %.1f little %.1f mm\n",
+		printf("  CHECK each finger's nearest skin to the gun (thumb, index: middle and outer segments, signed; middle, ring, little: the END segment, its distance to the grip's surface): thumb %.1f index %.1f middle %.1f ring %.1f little %.1f mm\n",
 			touch[0] * 1000, touch[1] * 1000, touch[2] * 1000, touch[3] * 1000, touch[4] * 1000);
 		printf("  CHECK hand vertices more than 1 mm inside the gun: %d of %d (finger vertices more than 2 mm in: %d); the deepest %.1f mm (vertex %d, joint %s)\n",
 			inside, nh, insideFingers, -deepest * 1000, deepV, deepV >= 0 ? r.joints[handR.v[deepV].bone].name.c_str() : "-");
@@ -905,7 +909,7 @@ int main(int argc, char **argv)
 		snprintf(line, sizeof line, "%s: the index pad on the trigger face within 6 mm (%.1f)", meshes[h], padErr * 1000); Check(padErr < 0.006, line);
 		snprintf(line, sizeof line, "%s: the web at the beavertail within 8 mm (%.1f)", meshes[h], webErr * 1000); Check(webErr < 0.008, line);
 		snprintf(line, sizeof line, "%s: no finger vertex more than 2 mm inside the gun (%d)", meshes[h], insideFingers); Check(insideFingers == 0, line);
-		for (int f : { 2, 3, 4 }) { snprintf(line, sizeof line, "%s: %s wrapped onto the grip within 3 mm (%.1f)", meshes[h], kFingerJointNames[f][0], touch[f] * 1000); Check(touch[f] < 0.003, line); }
+		for (int f : { 2, 3, 4 }) { snprintf(line, sizeof line, "%s: %s wrapped onto the grip: its end segment within 3 mm of the grip (%.1f)", meshes[h], kFingerJointNames[f][0], touch[f] * 1000); Check(touch[f] < 0.003, line); }
 
 		// The seat for the engine: model render coords (x, z, y of the file) -> the hand frame in GUN FILE units,
 		// so MODELDEF Scale s takes it to metres (models.cpp: the seat first, then Scale, in the grip frame).

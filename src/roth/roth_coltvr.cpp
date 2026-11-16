@@ -7,8 +7,9 @@
 // thumb-index web, the index pad toward the trigger face, the grip in the wrapped fingers (no finger in the gun) -- by
 // least squares; the index on the trigger is the in-between of the authored open frame and the grip's own index whose
 // pad meets the face, and the thumb, middle, ring and little each closed from the open frame until they meet the gun.
-// On the Godot XR Tools hands (2026-11-16) every colt_fit check passes: the pad 1.6 / 1.1 mm from the trigger face, the
-// web 3.1 / 3.7 mm from the beavertail, no finger skin more than 2 mm in the gun (right / left; colt_fit.txt).
+// On the Godot XR Tools hands (2026-11-16) every colt_fit check passes (right / left; colt_fit.txt): the pad 2.5 / 2.3 mm
+// from the trigger face, the web 4.2 / 7.1 mm from the beavertail, no finger skin more than 2 mm in the gun, the middle,
+// ring and little fingers' end segments on the grip (0.0 / 0.0 / 1.9 and 0.1 / 0.3 / 0.1 mm).
 // `roth_colt fit` nudges it live (never archived); the owner's result is baked in here.
 //
 //---------------------------------------------------------------------------
@@ -54,19 +55,19 @@ using namespace colt;
 // the gun's file units, column-major; MODELDEF Scale (metres a unit) then takes it to metres (models.cpp, the grip path).
 constexpr float kSeat[2][16] =
 {
-	{ 0.118161848f, 0.989816172f, 0.0793833955f, 0.f, 0.0473605014f, 0.0742348244f, -0.996115542f, 0.f,
-	  0.991864285f, -0.121462491f, 0.0381064661f, 0.f, 256.62311f, 78.7492864f, -113.351589f, 1.f },     // right (Hand_Low)
-	{ -0.123734018f, -0.988672523f, 0.0849501971f, 0.f, 0.0450013103f, 0.079929269f, 0.995784211f, 0.f,
-	  0.991294495f, -0.127035252f, -0.0346015894f, 0.f, 255.29005f, 78.8155651f, 118.030926f, 1.f },     // left (Hand_Low1)
+	{ 0.0892910168f, 0.995177693f, 0.0406014064f, 0.f, 0.0503695027f, 0.0362002479f, -0.998074374f, 0.f,
+	  0.994731133f, -0.0911641483f, 0.0468942485f, 0.f, 256.917832f, 86.2404987f, -109.790016f, 1.f },     // right (Hand_Low)
+	{ -0.0706316313f, -0.996925039f, 0.0339358085f, 0.f, 0.0669132504f, 0.0292088636f, 0.997331168f, 0.f,
+	  0.99525564f, -0.0727138826f, -0.0646444251f, 0.f, 255.514448f, 87.3340048f, 112.069804f, 1.f },     // left (Hand_Low1)
 };
 // The fingers measured on the gun (vr_handpose_math.h HeldState; each the in-between of the authored open frame and
 // grip_pistol's own finger, the knuckle by its own amount): right, left.
-constexpr float kIndexReady[2] = { 0.2151f, 0.2679f };   // the index's outer joints with its pad on the trigger face
-constexpr float kIndexFire[2] = { 0.3601f, 0.3879f };    // ... and with the trigger back its travel (10 units)
+constexpr float kIndexReady[2] = { 0.1682f, 0.2003f };   // the index's outer joints with its pad on the trigger face
+constexpr float kIndexFire[2] = { 0.3282f, 0.3553f };    // ... and with the trigger back its travel (10 units)
 constexpr float kIndexBase[2] = { 1.0f, 1.0f };          // the index's knuckle, the same at trigger 0 and 1
 // thumb, index (unused: kIndex*), middle, ring, little: the outer joints, then the knuckles
-constexpr float kWrap[2][5] = { { 1.0f, -1.f, 0.6505f, 0.2634f, 0.0f }, { 1.0f, -1.f, 0.5812f, 0.3878f, 0.0457f } };
-constexpr float kWrapBase[2][5] = { { 0.0f, -1.f, 0.8965f, 0.9254f, 0.7237f }, { 0.0f, -1.f, 0.8864f, 0.9716f, 0.7427f } };
+constexpr float kWrap[2][5] = { { 0.4f, -1.f, 0.8902f, 0.6629f, 0.4448f }, { 0.2f, -1.f, 0.9429f, 0.6261f, 0.5952f } };
+constexpr float kWrapBase[2][5] = { { 0.0f, -1.f, 0.7753f, 0.9140f, 0.6449f }, { 0.0f, -1.f, 0.7743f, 1.0f, 0.7344f } };
 constexpr double kUnit = 0.000271900171;                 // metres a gun file unit (0.216 m muzzle to tang)
 
 // Points of the gun, render coords (file x, z, y), file units (colt_fit's measures; roth_colt.h's take frames).
