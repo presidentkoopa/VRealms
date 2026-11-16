@@ -44,6 +44,7 @@
 #include "vulkan/stereo3d/vk_openxrdevice.h"
 #include <QzDoom/VrCommon.h>
 #include "p_vrdemo.h"
+#include "r_data/vr_handpose.h"   // VRPoseTest_Active / _PublishAim (the controller-pose test)
 
 #include "textures.h"
 #include "gametexture.h"
@@ -1584,8 +1585,18 @@ void VRMode::SetUp() const
 		// transform instead of resetting to the generic head-height fallback.
 		if (!multiplayer && !replayingVrDemo)
 		{
-			player->mo->OverrideAttackPosDir = !puristmode && (IsVR() || vr_override_weap_pos);
-			if (player->mo->OverrideAttackPosDir && IsVR())
+			// The controller-pose test (roth_xrpose, r_data/vr_handpose.h) stands in for the headset: its hands are
+			// published here every rendered frame as the device's are, not reset to the body below. The playsim
+			// publishes them each tic (p_user.cpp); without this, every frame drawn between tics put OffhandPos /
+			// AttackPos back at the body in flat, and whatever read them before the next player think -- a network
+			// event (RSQ Distance Grab's walk-up grip, near.zs NetworkProcess) -- saw the body, not the hand.
+			const bool poseTest = VRPoseTest_Active();
+			player->mo->OverrideAttackPosDir = !puristmode && (IsVR() || vr_override_weap_pos || poseTest);
+			if (poseTest && !IsVR())
+			{
+				VRPoseTest_PublishAim(player->mo);
+			}
+			else if (player->mo->OverrideAttackPosDir && IsVR())
 			{
 				VSMatrix attackTransform;
 				if (GetWeaponTransform(&attackTransform, VR_MAINHAND))
