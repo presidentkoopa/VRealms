@@ -8170,6 +8170,32 @@ uint16_t ExamineRecordOf(const Pick &p)
 	return ExamineMatch(r);
 }
 
+uint16_t UseRecordOf(const Pick &p)
+{
+	ResolvedPick r;
+	if (!g.active || !ResolvePick(p, r)) return 0;
+	if (r.type == 4)
+	{
+		// The object channel (ActivateObject): the first live click record keyed to the object's id.
+		if (r.obj == nullptr || r.obj->commandID == 0) return 0;
+		auto it = g.byObject.find((int)r.obj->commandID);
+		if (it == g.byObject.end()) return 0;
+		for (const Binding &b : it->second)
+			if (b.event == TrigEvent::Use && !Spent(b.record)) return b.record;
+		return 0;
+	}
+	return UseMatch(r);
+}
+
+void RecordSides(uint16_t record, std::vector<int> &sides)
+{
+	sides.clear();
+	if (!g.active || record == 0) return;
+	for (const auto &kv : g.bySide)
+		for (const Binding &b : kv.second)
+			if (b.record == record) { sides.push_back(kv.first); break; }
+}
+
 bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key)
 {
 	const Command *c = g.active ? Rec(record) : nullptr;

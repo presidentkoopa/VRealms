@@ -61,6 +61,12 @@ int InterfacePopupItem();
 // popup and, on the first look, its OnInspect; when that popup ends, the original's close key. False (nothing done)
 // while a panel, a menu or a line owns the pointer, or one is already under way.
 bool InterfaceExamineRightHand(int item);
+// A VIAL TIPPED AT THE MOUTH (roth_worldhands.cpp, the owner's Q26): the original's use on self of the right-hand
+// item (`item`, for the log), made by the original's own clicks over the next tics: the inventory opened, the
+// secondary click on the right-hand box, the secondary click on its cell (onto the cursor), the primary click on
+// the held cell (use_item_on_self), the close key. False (nothing done) while a panel, a menu or a line owns
+// the pointer, or one is already under way.
+bool InterfaceUseRightHandOnSelf(int item);
 // The popup's billboard placed in the hands (the Book, owner Q8): at `at`, squared to the eye, its size times
 // `scale`; `on` false puts it back where the original's screen has it. Presentation: the same picture, content,
 // timing and hit test (the hands' laser reads the billboard where it stands).

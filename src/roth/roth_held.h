@@ -53,5 +53,8 @@ bool HeldHandCarries(int role);
 void HeldPose(int role, VRHandPose::HeldState &held);
 void HeldForcedTurn(double fromYawDeg, double toYawDeg);
 void HeldMovieOver();
+// The item card's drawn height in the hand (metres), as the item hand shows `item` (the card's longest side is the
+// object's own size, kRealSize, its aspect the icon's): where its base is, under the palm (roth_worldhands.cpp).
+double HeldItemCardHeightM(int item);
 
 } // namespace roth

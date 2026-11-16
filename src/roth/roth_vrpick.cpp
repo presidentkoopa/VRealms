@@ -146,6 +146,8 @@
 #include "roth_gestures.h"
 #include "roth_held.h"
 #include "roth_grabglue.h"
+#include "roth_worldhands.h"
+#include "roth_worldhandslogic.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -571,6 +573,28 @@ bool DoExamine(int role, const Pick &p, const CursorClass &c, AActor *pmo, const
 	return acted;
 }
 
+// THE CONTACT DISC (owner, 2026-11-16, chapter 2 Q21: "any overlap of the fingertip or palm with the box counts"):
+// a contact whose point the original's dispatcher matches to no record -- a face, a door leaf, a flat -- is moved
+// to the first point of its disc (roth_worldhands.h WorldHandsContactDisc: centre first, ring by ring) that it
+// does match, and the one click goes there. The cursor gate is then the original's at that point, as for any
+// click. False: nothing in the disc (the pick and its class stay as they were).
+bool DiscPick(int role, AActor *pmo, Pick &p, CursorClass &c, double radiusM, bool use, const DVector3 &from)
+{
+	if (p.kind != Pick::WallFace && p.kind != Pick::DoorLeaf && p.kind != Pick::Flat) return false;
+	if (use ? c.CanUse() : c.CanExamine()) return false;
+	Pick d;
+	if (!WorldHandsContactDisc(p, radiusM, use, d)) return false;
+	DVector3 dir = d.hitPos - from;
+	if (dir.Length() < 1e-6) dir = d.hitPos - pmo->Pos();
+	const CursorClass dc = ClassifyPick(d, pmo, DepthOf(pmo, d, dir));
+	if (use ? !dc.CanUse() : !dc.CanExamine()) return false;
+	Printf("[roth_vrpick] %s hand: the contact's disc (%.0f mm) finds a record %.1f units from the point, on %s -- the click goes there\n",
+		RoleName(role), radiusM * 1000.0, (d.hitPos - p.hitPos).Length(), PickKindName(d));
+	p = d;
+	c = dc;
+	return true;
+}
+
 // IN REACH: what the palm is on -- for the grip's use, or the trigger's examine
 // (`use` false). The Realms objects within reach of the palm first -- an item on
 // a table is small and a ray misses it easily -- nearest first, the first the
@@ -645,6 +669,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	{
 		rayPick.dist -= back;   // from the palm; negative: just behind it
 		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.handFwd));
+		if (!can(rayCls)) DiscPick(role, pmo, rayPick, rayCls, wh::kPalmDiscM, use, h.palm);
 		haveRay = can(rayCls);
 		if (Logging())
 			Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): %s %.1f units from the palm:"
@@ -665,6 +690,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	if (PickTouchSurface(pmo, h.palm, kTouchRadius * upm, touchPick))
 	{
 		touchCls = ClassifyPick(touchPick, pmo, DepthOf(pmo, touchPick, touchPick.hitPos - h.palm));
+		if (!can(touchCls)) DiscPick(role, pmo, touchPick, touchCls, wh::kPalmDiscM, use, h.palm);
 		haveTouch = can(touchCls);
 		if (Logging())
 			Printf("[roth_vrpick]   surface under the palm: %s %.1f units from it (at %.1f %.1f): cursor type %d shape 0x%x -> %s\n",
@@ -675,6 +701,26 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 		Printf("[roth_vrpick]   surface under the palm: no Realms wall or door within %.1f units\n", kTouchRadius * upm);
 	if (haveTouch && (!haveRay || touchPick.dist < rayPick.dist)) { rayPick = touchPick; rayCls = touchCls; haveRay = true; }
 	else if (!haveTouch && touchPick.kind == Pick::WallFace) ExplainSurfaceBox(touchPick);   // roth_trigger_debug: a face under the palm that takes no click
+
+	// THE FLAT UNDER THE PALM (2026-11-16, chapter 2 Q21: the palm laid on a table top's letter, on the dais): a floor or
+	// a platform top within kTouchRadius under the palm, its point the palm's, its disc the palm's. Last: a wall,
+	// a door or an object the palm is on comes first.
+	if (!haveRay)
+	{
+		Pick flat;
+		const double r = kTouchRadius * upm;
+		const double ps = P.level != nullptr && P.level->pixelstretch > 0.1 ? P.level->pixelstretch : 1.2;
+		if (PickFrom(pmo, h.palm + DVector3(0, 0, 0.02 * upm / ps), DVector3(0, 0, -1), r / ps + 0.02 * upm / ps, flat) && flat.kind == Pick::Flat && !flat.ceiling)
+		{
+			CursorClass fc = ClassifyPick(flat, pmo, DepthOf(pmo, flat, flat.hitPos - h.palm));
+			if (!can(fc)) DiscPick(role, pmo, flat, fc, wh::kPalmDiscM, use, h.palm);
+			if (Logging())
+				Printf("[roth_vrpick]   the flat under the palm: %s at (%.1f %.1f %.1f): cursor type %d shape 0x%x -> %s\n", PickKindName(flat), flat.hitPos.X,
+					flat.hitPos.Y, flat.hitPos.Z, (int)fc.type, (unsigned)fc.shape, why(fc).GetChars());
+			if (can(fc)) { rayPick = flat; rayCls = fc; haveRay = true; }
+			else ExplainSurfaceBox(flat);
+		}
+	}
 
 	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
 	// the cursor: a door handle on the door is taken before the door, the door
@@ -779,6 +825,10 @@ void TickHand(int role, AActor *pmo)
 				RoleName(role));
 		gripEdge = false;
 	}
+	// A grip closing on a lever, a chain, a bookcase leaf's edge, the clock's case door, or with the Shrive / Key i22 set
+	// in a socket (roth_worldhands.h, the owner's Q15-Q17, Q24, Q30): its use comes from the pull or the twist that
+	// follows, not from the closing.
+	if (gripEdge && WorldHandsGripTaken(role)) gripEdge = false;
 
 	if (Logging())
 	{
@@ -949,15 +999,20 @@ void TickHand(int role, AActor *pmo)
 			if (h.pokeArmed)
 			{
 				h.pokeArmed = false;
-				DoUse(role, h.pick, h.cls, pmo, "fingertip press");
+				Pick tp = h.pick;
+				CursorClass tc = h.cls;
+				DiscPick(role, pmo, tp, tc, wh::kTipDiscM, true, h.tip);   // Q21: the fingertip's disc
+				DoUse(role, tp, tc, pmo, "fingertip press");
 			}
 		}
 		else if (h.pokeArmed && h.wasPressReady && hadPick && before.kind != Pick::Prop && h.lastPokeDist <= kPokeOut * upm
 			&& ((before.hitPos - h.tip) | h.lastDir) <= kPokeIn * upm)
 		{
 			h.pokeArmed = false;
-			const CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before, h.lastDir));
-			DoUse(role, before, c, pmo, "fingertip press (through)");
+			CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before, h.lastDir));
+			Pick tp = before;
+			DiscPick(role, pmo, tp, c, wh::kTipDiscM, true, h.tip);   // Q21: the fingertip's disc
+			DoUse(role, tp, c, pmo, "fingertip press (through)");
 		}
 		else if (!h.havePick || h.pick.dist > kPokeOut * upm) h.pokeArmed = true;
 		h.lastPokeDist = h.havePick ? h.pick.dist : 1e9;
@@ -1219,6 +1274,7 @@ void VRPickEndLevel()
 {
 	ForgetLevel();
 	GesturesEndLevel();
+	WorldHandsEndLevel();
 }
 
 bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm)
@@ -1472,6 +1528,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	}
 	// THE GESTURES (roth_gestures.h), after both hands, while the hands work the world.
 	GesturesTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
+	WorldHandsTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);   // chapter 2's world by hand (roth_worldhands.h)
 
 	// WHAT IT COSTS, measured every tic it runs: into the perf log's CPU
 	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),

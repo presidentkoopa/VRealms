@@ -38,6 +38,7 @@
 #include "roth_objects.h"
 #include "roth_movie.h"
 #include "roth_img3d.h"
+#include "roth_worldhands.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -150,8 +151,11 @@ double PS() { return H.level != nullptr && H.level->pixelstretch > 0 ? H.level->
 V3 M(const DVector3 &w) { const double u = UPM(); return V3(w.X / u, w.Y / u, w.Z * PS() / u); }
 DVector3 W(const V3 &m) { const double u = UPM(); return DVector3(m.x * u, m.y * u, m.z * u / PS()); }
 
+// A headset is on -- or the controller-pose test (roth_xrpose) drives the hands through the headset's own path, as
+// the picker counts it (roth_vrpick.cpp HeadsetOn; 2026-11-16: the item in the hand was not drawn under it).
 bool HeadsetOn()
 {
+	if (VRPoseTest_Active()) return true;
 	const VRMode *vm = VRMode::GetVRModeCached(true);
 	return vr_mode != 0 && vm != nullptr && vm->IsVR();
 }
@@ -431,6 +435,16 @@ void Light(const DVector3 &at, const float colour[3], double intensity, double r
 
 } // namespace (anonymous)
 
+double HeldItemCardHeightM(int item)
+{
+	// As ShowCard draws it: the longest side CardMetres, the stored rows at the 320x200 screen's aspect.
+	int w = 0, h = 0;
+	const double longest = CardMetres(item);
+	if (IconTexture(item, w, h) < 0 || w <= 0 || h <= 0) return longest;
+	const double aspectH = h * 0.6;
+	return w >= aspectH ? longest * aspectH / w : longest;
+}
+
 //==========================================================================
 // Level
 //==========================================================================
@@ -644,7 +658,8 @@ void HeldTick(FLevelLocals *level, bool worldTicks)
 	// ---- a held item brought to the eyes plays its examine (ledger row 37, the owner's X1) ----
 	if (worldTicks)
 	{
-		const bool haveItem = H.live && hand[itemRole].ok && shows[itemRole].item > 0;
+		// A vial being drunk (tipped at the mouth, roth_worldhands.cpp, Q26) is not being looked at: the eyes wait.
+		const bool haveItem = H.live && hand[itemRole].ok && shows[itemRole].item > 0 && !WorldHandsItemTipping(itemRole);
 		double dist = 1e9;
 		if (H.live && hand[itemRole].ok)
 		{

@@ -994,6 +994,7 @@ set (PCH_SOURCES
 	roth/roth_candles.cpp
 	roth/roth_heldlogic.cpp
 	roth/roth_held.cpp
+	roth/roth_worldhands.cpp
 	# The item models generated on the owner's PC (tools/img3d): the reader (engine-free, tools/img3d_test)
 	# and where they replace the item pictures.
 	roth/roth_img3d_core.cpp

@@ -388,6 +388,17 @@ been lit for years."), examine only. Chapter 1's answers stand: no darkness, the
   (ANUBIS `#34`, chapter 7) is clear: act27 again, delay 400, sfx; else `#250`: act28 and toggle `#251`. Examine `#251`
   "Hand's not working. But it's still ticking. Doesn't make any damn sense." [V: chain; R: what the 0x1f counter shows].
 - VR: the case door by its edge (the use). Nothing more until 0x1f is read in ROTH.C (Q24).
+- **The 0x1f counter, read in ROTH.C (2026-11-16)** [V: read; the pictures looked at]: `#36` is
+  `cmd_texture_change_count` (raw_commands.c:706-731) with `rawcmd_step_count_apply_primary` (:675-704): words +08 limit
+  12, +0a count 1, +0c target 11, +0e key 23, +10 base 726, +06 flags 0x20 (wrap). Each use steps the count by one
+  (step mode 0: `step_mode_inc`, :156) and repaints every face keyed 23 -- the clock's own face, slot +2 (flags bits 0/1
+  clear) -- with DEMO[726 + count - 1]. Those twelve pictures are the clock face with its hour hand at each hour
+  (DEMO[726] 8 o'clock, [727] 9, [735] 5, [737] 7: looked at). The count family stops the chain (interrupt 1) until the
+  step lands on the target (the port's `CmdCore::CountFamily`, roth_cmdcore.cpp:257-263). So **each use moves the hour
+  hand one hour**, and only the use that brings it to 6 o'clock (count 11: the 10th use from load) runs the rest of the
+  chain: the sfx nodes, the **0x2f door on face id 10** (s224) and, flag 293 clear, act27 / delay 400 / sfx, else `#250`.
+  At 12 the count wraps to 0 (flag 0x20), so it reaches 6 o'clock again 12 uses later. Built as the owner chose (Q24 a):
+  the case door pulled 4 cm = one use = one hour; nothing moves the hands by hand.
 - Tag: B. Effort S.
 
 **12. The gramophone**

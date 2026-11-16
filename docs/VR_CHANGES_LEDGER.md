@@ -70,6 +70,31 @@ entries use it.
 | 1:1 runtime fix: each Realms object had TWO actors (the binder ran before the loader spawned the props); now one ("242 object(s) bound to their loaded actors") | b8f514e1 | gestures_flat and held_flat re-run after it: every line as before (knock, attempts, punch 500 → 403 → 317, match, candles, niche 78 → 118 → 148 → 118, Lamp, Book, forced turn) | objects the logic moves/repaints beyond those runs |
 | Item models (img3d): generated GLBs replace item pictures in the world and in the hand; pipeline on D:\VRealms_img3d | 6108c51c, 5c371b9c, a8f983b2 | placeholder boxes drawn on the table and in the hand | the owner's SETUP (CUDA 12.4 toolkit) and the first real models |
 
+## 2026-11-16: chapter 2's world by hand (the owner's Q1-Q32), built; flat PC runs pending (the PC build was down)
+
+Rules engine-free in `src/roth/roth_worldhandslogic.h` (`tools/worldhands_test`: 80 checks, 0 failed); the engine half
+`src/roth/roth_worldhands.cpp` (its port checklist names each record and the click path it ends in). Every one ends in ONE
+of the original's clicks through the hands' use path (VRPickUseAt) or its inventory clicks; no game logic added.
+Test-only `roth_worldtest` (spot / stand / hold / move / grip / roll / head) on roth_xrpose's real controller path.
+
+| change | kind | owner decision | chapter 2 records | evidence |
+|---|---|---|---|---|
+| Release a held Statuette (its base: the bottom of the card in the hand) or the Orb within 5 cm of a floor / face = the original's use there (the record at that texel, box included; the base's 3 cm disc). One release = one use | VR | Q1-Q3, Q14 | STUDY1 #119, #124-#129; MAS3 #4 | — (`worldhands_study1_flat`, `worldhands_mas3_flat`) |
+| A placed statuette taken back = RSQ Distance Grab's walk-up grip (it offers them: their click gives i4), whose catch is the original's click #121 / #136-#141; the Orb in the door = the picker's grip on the face (#24) | VR (built) | Q3, Q14 | #121, #136-#141; MAS3 #24 | — (same cfgs) |
+| Twist: the Shrive set (5 cm) and turned 180 degrees / Key i22 in the lock lever turned 30 degrees = the use from the item hand; a grip closing in the socket makes no use | VR | Q15, Q16 | AELF #80, MAS3 #113; MAUSO1EA #76 | — (`worldhands_aelf_flat`, `_mas3_`, `_mauso_`) |
+| Pull: grip a lever / the chains and pull 8 cm; a bookcase leaf's edge (15 cm) or the clock's case door 4 cm = one use; the grip's close makes none (a leaf's middle: nothing) | VR | Q17, Q30, Q24 | MAS4 #3; MAUSO1EA #18, #30, #101; MAS6 #20; MAS7 #22; STUDY1 #353, #420, #75, #354, #35 | — |
+| Press: the open palm 2 cm past a hand print's face = its click | VR | Q18 | MAS6 #42, #8, #41 | — (`worldhands_mas6_flat`) |
+| Sit: the head 35 cm below standing, within 45 cm of the seat, facing away from its back = the use on the seat | VR | Q19 | MAS7 #7 / #33 | — (`worldhands_mas7_flat`) |
+| Drink: a Vial within 10 cm of the mouth tipped 60 degrees for 6 tics = the original's use on self, by its own inventory clicks (InterfaceUseRightHandOnSelf); the eyes' examine waits while it is tipped | VR | Q26 | i143, i206, i170, i199 | — (`worldhands_mas3_flat`) |
+| Contact disc: a fingertip (1 cm) / palm (4 cm) contact matching no record goes to the first point of its disc that does; the picker's palm also finds the flat under it (10 cm) | VR | Q21 | STUDY1 #57 (4 x 3 texels), every boxed record | — |
+| Attempts: an empty palm pushed through a face fires the original's use there, else its examine; tomb lids pressed = their examine; Claymore / Scimitar tugged = their examine | VR | Q32 | STUDY1 #304, #325, #326; MAUSO1EA #5, #108; MAS6 #62; MAS7 #39; AELF #1, #95, #96, #107 | — |
+| Ward tingle on Aelf's wards DEMO4[4273] only (followed while shown) | VR | Q31 | AELF obj 2 | — (`worldhands_aelf_flat`) |
+| roth_held counts roth_xrpose as a headset (the item card was not drawn under it) | tool | — | all | — |
+| Who owns a grip: a CLOSE goes to the Lamp's bail, then RSQ Distance Grab (an offered lying item: every chapter-2 statuette, the Orb on its ledge, the vials), then the pull / twist claims, then the picker's use; an OPENING with a held item is the release's (the package has no carry in the Realms: its catch is the original's use at once) | VR | 2026-11-16 grab mapping | all | — |
+
+**Nothing built changes** falls (Q20), forced turns (Q29), darkness (Q27) or the torches' light (Q28): no file of those paths
+was touched. **Q24, the clock's 0x1f, read in ROTH.C:** see the chapter doc entry 11.
+
 ## In progress (agents running)
 
 **Gestures (rows 19-23), first PC run of 03548253 (2026-11-13, flat, gestures_flat.cfg):**

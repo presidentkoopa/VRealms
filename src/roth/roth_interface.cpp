@@ -252,6 +252,15 @@ struct Ui
 	int eyeStep = 0;                                // 0 none, 1 opened, 2 clicked, 3 the popup is up
 	int eyeTics = 0;
 	int eyeItem = 0;
+	// A VIAL TIPPED AT THE MOUTH (roth_worldhands.cpp, the owner's Q26): the original's use on self of the right-hand
+	// item, by the original's own clicks -- the inventory opened, a secondary click on the right-hand box (its tab
+	// and entry brought into view, dialogue_ui.c:1704-1708), a secondary click on that entry's cell (onto the
+	// cursor, the hand emptied, :1768-1787), a primary click on the held cell (use_item_on_self, :1745-1747), and
+	// the close key.
+	int drinkStep = 0;                              // 0 none, 1 opened, 2 hand box clicked, 3 picked onto the cursor, 4 used
+	int drinkTics = 0;
+	int drinkItem = 0;
+	int drinkCell = -1;
 
 	FLevelLocals *level = nullptr;
 	std::vector<Element> elements;
@@ -1869,7 +1878,7 @@ int32_t InterfaceInspectPopupActive() { return U.screen.g_inspect_popup_active; 
 
 bool InterfaceExamineRightHand(int item)
 {
-	if (!U.attached || U.eyeStep != 0) return false;
+	if (!U.attached || U.eyeStep != 0 || U.drinkStep != 0) return false;
 	if (U.screen.IsOpen() || U.screen.PopupUp() || InterfacePointerBusy()) return false;   // a panel or a line already owns the pointer
 	U.screen.Open();
 	U.eyeStep = 1;
@@ -1877,6 +1886,62 @@ bool InterfaceExamineRightHand(int item)
 	U.eyeItem = item;
 	Printf("[roth_ui] the item held to the eyes (%d): the inventory opened, its right-hand box clicked next\n", item);
 	return true;
+}
+
+bool InterfaceUseRightHandOnSelf(int item)
+{
+	if (!U.attached || U.eyeStep != 0 || U.drinkStep != 0) return false;
+	if (U.screen.IsOpen() || U.screen.PopupUp() || InterfacePointerBusy()) return false;   // a panel or a line already owns the pointer
+	U.screen.Open();
+	U.drinkStep = 1;
+	U.drinkTics = 0;
+	U.drinkItem = item;
+	U.drinkCell = -1;
+	Printf("[roth_ui] the item tipped at the mouth (%d): the inventory opened, its use on self by the original's clicks next\n", item);
+	return true;
+}
+
+static void TickDrink()
+{
+	if (U.drinkStep == 0) return;
+	U.drinkTics++;
+	auto stop = [](const char *why) {
+		if (U.screen.IsOpen()) U.screen.KeySelect();      // the original's close key (commits a held item back)
+		Printf("[roth_ui] the item tipped at the mouth: %s, the inventory closed\n", why);
+		U.drinkStep = 0;
+	};
+	if (!U.screen.IsOpen()) { U.drinkStep = 0; return; }
+	if (U.drinkStep == 1)
+	{
+		U.screen.ClickHandBox(1, InventoryScreen::SECONDARY);
+		Printf("[roth_ui] the item tipped at the mouth: the secondary click on the right-hand box (its tab and entry in view)\n");
+		U.drinkStep = 2;
+		return;
+	}
+	if (U.drinkStep == 2)
+	{
+		const int entry = U.screen.Entries().rightEntry;
+		const int cell = entry - U.screen.ScrollOffset();
+		if (entry < 0 || cell < 0 || cell >= InventoryScreen::CELLS) { stop("the right-hand item is not on the open tab's page"); return; }
+		U.drinkCell = cell;
+		U.screen.ClickCell(cell, InventoryScreen::SECONDARY);
+		Printf("[roth_ui] the item tipped at the mouth: the secondary click on its cell %d (entry %d): onto the cursor, held entry %d\n", cell, entry,
+			U.screen.HeldEntry());
+		U.drinkStep = 3;
+		return;
+	}
+	if (U.drinkStep == 3)
+	{
+		if (U.screen.HeldEntry() < 0) { stop("nothing came onto the cursor"); return; }
+		U.screen.ClickCell(U.drinkCell, InventoryScreen::PRIMARY);
+		Printf("[roth_ui] the item tipped at the mouth: the primary click on the held cell -- the original's use on self of item %d\n", U.drinkItem);
+		U.drinkStep = 4;
+		U.drinkTics = 0;
+		return;
+	}
+	if (U.screen.PopupUp() || U.popup.Active()) return;
+	if (U.drinkTics < 2) return;
+	stop("its use on self is over");
 }
 
 static void TickEyeExamine()
@@ -2084,6 +2149,7 @@ void InterfaceTick(FLevelLocals *level)
 	// (:894), at the original's 70 Hz frame tick.
 	if (U.screen.IsOpen() && !U.popup.Active()) U.painter.RedrawInventoryCursorCell((uint16_t)(level->maptime * 2));
 	TickEyeExamine();                                    // an item held to the eyes (row 37): before the screen's tail takes the request
+	TickDrink();                                         // a vial tipped at the mouth (Q26): the original's use on self, by its clicks
 	if (!U.popup.Active()) U.screen.Post();              // update_inventory_screen's tail
 	TickPopup(level);                                    // the popup's own loops
 	// tick_item_pickup_lock and the fly-in it times: gameplay_frame_step's

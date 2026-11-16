@@ -467,6 +467,13 @@ bool ExaminePick(const Pick &p, AActor *who);
 // THE EXAMINE RECORD the original's examine dispatcher (dispatch_entry_command_trigger_b, ExamineMatch) matches
 // for this pick now, 1-based; 0 none. The gestures' attempts check it is the record their zone names.
 uint16_t ExamineRecordOf(const Pick &p);
+// THE USE RECORD the original's use dispatcher matches for this pick now (dispatch_entry_command_trigger, UseMatch:
+// a face's or a flat's, box included; an object's first live click record), 1-based; 0 none. Read only. The
+// chapter-2 hands (roth_worldhands.cpp) ask it where a contact disc or a socket may send the one click.
+uint16_t UseRecordOf(const Pick &p);
+// The GZDoom side indices whose face carries a binding of trigger record `record` (the use and examine
+// channels' face lists). Read only; empty outside a level.
+void RecordSides(uint16_t record, std::vector<int> &sides);
 // A command record's base opcode (& 0x7f) and key (+0x08). False outside a level or range.
 bool RecordKey(uint16_t record, uint8_t &opcode, uint16_t &key);
 // A Realms sector's command id (its commandID), 0 for none.
