@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "generator": "tools/img3d/make_placeholder.py (procedural boxes, no retail art)",
+  "items": [
+    {
+      "item": 16,
+      "name": "Matchbox (placeholder box)",
+      "file": "16_placeholder.glb",
+      "metres": 0.055,
+      "size": "table",
+      "grip": [
+        0.0,
+        -0.025,
+        0.0
+      ],
+      "grip_rot": [
+        0,
+        0,
+        0
+      ],
+      "hold": "palm",
+      "world_yaw": 0
+    },
+    {
+      "item": 21,
+      "name": "Key (placeholder box)",
+      "file": "21_placeholder.glb",
+      "metres": 0.06,
+      "size": "table",
+      "grip": [
+        0.0,
+        0.003,
+        0.0
+      ],
+      "grip_rot": [
+        0,
+        0,
+        0
+      ],
+      "hold": "fist",
+      "world_yaw": 0
+    },
+    {
+      "item": 17,
+      "name": "Book (placeholder box)",
+      "file": "17_placeholder.glb",
+      "metres": 0.2,
+      "size": "table",
+      "grip": [
+        0.0,
+        -0.025,
+        0.0
+      ],
+      "grip_rot": [
+        0,
+        0,
+        0
+      ],
+      "hold": "palm",
+      "world_yaw": 0
+    }
+  ]
+}
