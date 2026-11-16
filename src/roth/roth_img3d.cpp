@@ -400,8 +400,11 @@ bool Img3dWearWorld(AActor *mo, uint16_t renderId, uint8_t rotation, bool fixedA
 			if (!keyMatch) { w.scale = mo->Scale; w.z = mo->Z(); w.renderRadius = mo->renderradius; w.key = mo->special2; }
 			double picMetres = 0.0, bottom = mo->Z();
 			const bool havePic = PictureNow(mo, picMetres, bottom);
+			// THE ORIGINAL'S SIZE: the mesh's length (794.41 file units, muzzle to tang) on the longest side of the
+			// picture the original draws there (as every world model here sized "picture"), so the desk shows the Colt as
+			// big as the original's frame does; without a picture, its real 0.216 m at the VR metre.
 			const double upm = UnitsPerMetre(), ps = Stretch(mo->Level);
-			const double k = upm * kColtUnit;
+			const double k = havePic ? picMetres * upm / 794.41 : upm * kColtUnit;
 			mo->sprite = sn;
 			mo->frame = 0;
 			mo->Scale = DVector2(k, k / ps);
@@ -412,12 +415,12 @@ bool Img3dWearWorld(AActor *mo, uint16_t renderId, uint8_t rotation, bool fixedA
 			double z = (havePic ? bottom : mo->Z()) + kColtRightSide * k / ps;
 			if (mo->Sector != nullptr) { const double fz = mo->Sector->floorplane.ZatPoint(mo->Pos()); if (z < fz) z = fz; }
 			mo->Angles.Yaw = DAngle::fromDeg(ObjectYaw(rotation));
-			mo->renderradius = 0.5 * 0.216 * upm;
+			mo->renderradius = 0.5 * 794.41 * k;
 			mo->SetOrigin(DVector3(mo->X(), mo->Y(), z), false);
 			mo->SetZ(z);
 			mo->ClearInterpolation();
-			if (!keyMatch) Printf("[roth_img3d] object (key %d) shows item 9: the Colt's own mesh (colt1911.fbx), 0.216 m on its left side, its origin at z %.1f (the picture's bottom %.1f), yaw %.0f\n",
-				mo->special2 - 1, z, bottom, ObjectYaw(rotation));
+			if (!keyMatch) Printf("[roth_img3d] object (key %d) shows item 9: the Colt's own mesh (colt1911.fbx) on its left side, %.1f units long (%s), its origin at z %.1f (the picture's bottom %.1f), yaw %.0f\n",
+				mo->special2 - 1, 794.41 * k, havePic ? "the original's picture's longest side" : "0.216 m at the VR metre", z, bottom, ObjectYaw(rotation));
 			return true;
 		}
 	}

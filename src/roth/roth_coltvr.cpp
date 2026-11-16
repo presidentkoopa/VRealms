@@ -627,6 +627,29 @@ CCMD(roth_colttest)
 			bestRoll, u.X, u.Y, u.Z, rt.X, rt.Y, rt.Z, b.X, b.Y, b.Z, atan2(b.Y, b.X) * 180 / M_PI, atan2(b.Z, sqrt(b.X * b.X + b.Y * b.Y)) * 180 / M_PI);
 		return;
 	}
+	// LOOK AT A LOOSE PART: stand 146 units from the first landed part of the class (on the side toward the player) and
+	// take rothdiff_shot looking at it from above (the original's steepest pitch, -126: about 45 degrees down from an
+	// eye 144 units up, so the part is mid-frame). Realms and map coordinates are taken as equal here (no sector shift
+	// in the study's corridor; the log shows both).
+	if (!stricmp(argv[1], "lookat") && argv.argc() >= 4)
+	{
+		PClassActor *pc = PClass::FindActor(argv[2]);
+		if (pc == nullptr || S.level == nullptr) { Printf("roth_colttest lookat: no class %s\n", argv[2]); return; }
+		auto it = S.level->GetThinkerIterator<AActor>();
+		AActor *a, *found = nullptr;
+		while ((a = it.Next()) != nullptr) if (a->IsKindOf(pc) && a->BoolVar(FName("Landed"))) { found = a; break; }
+		if (found == nullptr) { Printf("roth_colttest lookat: no landed %s\n", argv[2]); return; }
+		DVector2 d = pmo->Pos().XY() - found->Pos().XY();
+		if (d.Length() < 1e-3) d = DVector2(1, 0);
+		d = d.Unit();
+		const DVector2 at = found->Pos().XY() + d * 146.0;
+		const double yaw = atan2(-d.Y, -d.X) * 180.0 / M_PI;
+		const int ang = (int)lround((yaw - 90.0) * 512.0 / 360.0) & 511;
+		Printf("roth_colttest lookat: %s landed at (%.1f %.1f %.1f); the camera at (%.0f %.0f) angle %d (yaw %.1f), pitch -126\n",
+			argv[2], found->X(), found->Y(), found->Z(), at.X, at.Y, ang, yaw);
+		C_DoCommand(FStringf("rothdiff_shot %d %d %d %s -126 - 20", (int)lround(at.X), (int)lround(at.Y), ang, argv[3]).GetChars());
+		return;
+	}
 	if (!stricmp(argv[1], "rack"))
 	{
 		DVector3 muz, rear, sock, f, r, u;
