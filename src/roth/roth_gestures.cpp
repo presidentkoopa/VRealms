@@ -784,12 +784,15 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 			const double len = ln->delta.Length();
 			if (len < 1e-6) continue;
 			DVector2 n(ln->delta.Y / len, -ln->delta.X / len);
-			if (sd != ln->sidedef[0]) n = -n;
 			const DVector2 v1 = ln->v1->fPos();
+			// toward the player: a face may be seen from across its line (MAUSO1EA #5's stone)
+			if (AActor *pm = players[consoleplayer].mo) { if (((pm->Pos().XY() - v1) | n) < 0) n = -n; }
 			const double t = ((palm.XY() - v1) | ln->delta) / (len * len);
 			if (t < 0 || t > 1) continue;
 			const DVector2 foot = v1 + ln->delta * t;
-			const double z0 = sd->sector->floorplane.ZatPoint(foot), z1 = sd->sector->ceilingplane.ZatPoint(foot);
+			sector_t *front = S.level->PointInSector(foot + n * 4.0);
+			const double z0 = std::min(sd->sector->floorplane.ZatPoint(foot), front != nullptr ? front->floorplane.ZatPoint(foot) : 1e9);
+			const double z1 = std::max(sd->sector->ceilingplane.ZatPoint(foot), front != nullptr ? front->ceilingplane.ZatPoint(foot) : -1e9);
 			if (palm.Z < z0 || palm.Z > z1) continue;
 			const double d = ((palm.XY() - foot) | n) / upm;
 			if (d < -0.15) continue;                                       // far behind it: another room
@@ -1060,13 +1063,15 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 	{
 		double best = 1e30;
 		const char *which = nullptr;
-		for (const auto &w : S.wards)
-		{
-			const Thing *t = FindThingAt(things, w.sector, w.index);   // shown things only: a hidden ward does not tingle
-			if (t == nullptr) continue;
-			const double d = BoxDistanceM(h.palm, t->lo, t->hi, upm);
-			if (d < best) { best = d; which = w.what; }
-		}
+		// the wards SHOWN now, looked for each tic: AELF's have no actor until Florentine's trap shows them (the PC run of
+		// 976cb81e: "0 ward(s)" at the level's start)
+		for (const Thing &t : things)
+			for (const WardKind &k : kWardKinds)
+			{
+				if (!MapIs(k.map) || t.shared != k.shared || t.art != k.art) continue;
+				const double d = BoxDistanceM(h.palm, t.lo, t.hi, upm);
+				if (d < best) { best = d; which = k.what; }
+			}
 		const double amp = WardTingle(best);
 		if (amp > 0 && now - g.wardTic >= kWardPulseTics)
 		{

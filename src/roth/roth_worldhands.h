@@ -36,6 +36,7 @@
 //
 
 struct FLevelLocals;
+#include "vectors.h"
 
 namespace roth
 {
@@ -57,5 +58,10 @@ bool WorldHandsItemTipping(int role);
 // of the disc of `radiusM` metres round its hit, on its surface, centre first, whose USE (`use`) or EXAMINE record
 // the original's dispatcher matches, as `out`. False: none in the disc (or not a surface).
 bool WorldHandsContactDisc(const Pick &p, double radiusM, bool use, Pick &out);
+
+// The floor or mid-platform top under (or just over) map point `pt`, nearest it, with the point at most `above` map
+// units over it and `below` under it: a Flat pick as the picker's trace would make it. No trace (a ray straight
+// down is not one the picker's trace answers).
+bool WorldHandsFlatUnder(const DVector3 &pt, double above, double below, Pick &out);
 
 } // namespace roth

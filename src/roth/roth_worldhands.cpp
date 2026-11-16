@@ -63,6 +63,7 @@
 
 #include "actor.h"
 #include "actorinlines.h"
+#include "p_3dfloors.h"
 #include "d_player.h"
 #include "g_levellocals.h"
 #include "c_cvars.h"
@@ -216,6 +217,54 @@ DVector3 BoxClosest(const DVector3 &p, const DVector3 &lo, const DVector3 &hi)
 }
 double BoxDistM(const DVector3 &p, const DVector3 &lo, const DVector3 &hi) { return M(p - BoxClosest(p, lo, hi)).Length(); }
 
+// THE FLAT UNDER A POINT, without a trace (2026-11-16, the PC runs: a pointer straight down met no flat at all in
+// thousands of tries -- a vertical ray is not one the picker's trace answers): the sector's floor or a mid-platform's
+// top (a 3D floor of that sector, Pick::ffloor, the original's type 8) nearest the point, the point at most `above`
+// map units over it and at most `below` under it. A Flat pick, as the picker's trace would have made it.
+bool FlatAt(const DVector3 &pt, double above, double below, Pick &out)
+{
+	if (S.level == nullptr) return false;
+	sector_t *sec = S.level->PointInSector(pt.XY());
+	if (sec == nullptr) return false;
+	double bestD = 1e30, bestZ = 0;
+	const F3DFloor *bestFF = nullptr;
+	auto consider = [&](double z, const F3DFloor *ff) {
+		const double d = pt.Z - z;
+		if (d > above || d < -below) return;
+		if (fabs(d) < bestD) { bestD = fabs(d); bestZ = z; bestFF = ff; }
+	};
+	consider(sec->floorplane.ZatPoint(pt.XY()), nullptr);
+	if (sec->e != nullptr)
+		for (F3DFloor *ff : sec->e->XFloor.ffloors)
+			if (ff != nullptr && (ff->flags & FF_EXISTS) && ff->top.plane != nullptr) consider(ff->top.plane->ZatPoint(pt.XY()), ff);
+	if (bestD >= 1e29) return false;
+	out = Pick{};
+	out.kind = Pick::Flat;
+	out.sector = sec;
+	out.ffloor = bestFF;
+	out.ceiling = false;
+	out.hitPos = DVector3(pt.X, pt.Y, bestZ);
+	out.dist = bestD;
+	return true;
+}
+
+// A WALL-MOUNTED OBJECT's facing (a hand print, a lever, a mask: fixed-angle quads on a wall): its actor's yaw, turned
+// to the open side (the side where a point 16 units out lies in a sector whose floor and ceiling hold the object's
+// middle). False: neither side is open.
+bool ObjectFacing(AActor *mo, const DVector3 &centre, DVector2 &n)
+{
+	const DVector2 f(mo->Angles.Yaw.Cos(), mo->Angles.Yaw.Sin());
+	auto open = [&](const DVector2 &d) {
+		const DVector2 q = centre.XY() + d * 16.0;
+		sector_t *s2 = S.level->PointInSector(q);
+		return s2 != nullptr && s2->floorplane.ZatPoint(q) <= centre.Z && s2->ceilingplane.ZatPoint(q) >= centre.Z;
+	};
+	const bool a = open(f), b = open(-f);
+	if (!a && !b) return false;
+	n = (a && !b) || (a && b) ? f : -f;
+	return true;
+}
+
 DVector3 EyeNow(AActor *pmo)
 {
 	if (r_viewpoint.ViewLevel == S.level) return r_viewpoint.Pos;
@@ -367,13 +416,11 @@ void Build(AActor *pmo)
 			DVector3 lo, hi;
 			ObjectPickBox(mo, lo, hi);
 			const DVector3 c = (lo + hi) * 0.5;
-			Pick w;
-			if (PickTouchSurface(pmo, c, 64.0, w) && w.kind == Pick::WallFace && FaceNormal(w, pmo, p.n))   // the wall behind: within 64 map units
+			// the print's plane: through its actor, facing the open side (its fixed-angle quad's own yaw)
+			if (ObjectFacing(mo, c, p.n))
 			{
-				// the normal toward the room: toward the print's own side of the wall
-				if (((c.XY() - w.hitPos.XY()) | p.n) < 0) p.n = -p.n;
 				p.plane = true;
-				p.wallAt = w.hitPos.XY();
+				p.wallAt = mo->Pos().XY();
 				p.along = DVector2(-p.n.Y, p.n.X);
 				p.offsetM = ((c.XY() - p.wallAt) | p.n) / upm;
 				double a0 = 1e9, a1 = -1e9;
@@ -382,8 +429,8 @@ void Build(AActor *pmo)
 				p.a0 = a0; p.a1 = a1; p.z0 = lo.Z; p.z1 = hi.Z;
 			}
 			Printf("[roth_worldhands] press %s: object %d/%d at (%.0f %.0f %.0f), %s\n", r.what, o.first, o.second, c.X, c.Y, c.Z,
-				p.plane ? FStringf("its face %.3f m in front of the wall, %.2f m wide, %.2f m tall", p.offsetM, p.a1 - p.a0, (p.z1 - p.z0) * PS() / upm).GetChars()
-				        : "NO wall found behind it: not pressable");
+				p.plane ? FStringf("facing (%.2f %.2f), %.2f m wide, %.2f m tall", p.n.X, p.n.Y, p.a1 - p.a0, (p.z1 - p.z0) * PS() / upm).GetChars()
+				        : "neither side of it is open: not pressable");
 			if (p.plane) S.prints.push_back(p);
 		}
 	}
@@ -461,8 +508,7 @@ void Release(int role, const HandNow &h, AActor *pmo, int item)
 	const DVector3 pt = ContactPoint(h, *r);
 	Pick fp, wp, q;
 	double df = 1e9, dw = 1e9;
-	if (PickFrom(pmo, pt + DVector3(0, 0, wh::kSocketM * upm / ps), DVector3(0, 0, -1), (wh::kSocketM + 0.03) * upm / ps, fp) && fp.kind == Pick::Flat && !fp.ceiling)
-		df = fabs(pt.Z - fp.hitPos.Z) * ps / upm;
+	if (FlatAt(pt, wh::kSocketM * upm / ps, 0.03 * upm / ps, fp)) df = fabs(pt.Z - fp.hitPos.Z) * ps / upm;
 	if (PickTouchSurface(pmo, pt, wh::kSocketM * upm, wp) && (wp.kind == Pick::WallFace || wp.kind == Pick::DoorLeaf)) dw = wp.dist / upm;
 	if (df > wh::kSocketM && dw > wh::kSocketM)
 	{
@@ -557,10 +603,23 @@ bool TryPull(int role, const HandNow &h, AActor *pmo)
 	if (w.pull.engaged || w.twist.engaged) return false;
 	const double upm = UPM();
 	// a lever object within reach of the palm
+	// looked up at each grip, shown objects only: a lever a chain shows later has no actor until then (MAS6 #20's,
+	// the PC run of 976cb81e: "0 object(s) with id 3" at the level's start)
+	std::vector<PullObj> levers;
+	for (const PullRecord &r : kPulls)
+	{
+		uint8_t op = 0;
+		uint16_t key = 0;
+		if (!MapIs(r.map) || !RecordKey(r.record, op, key) || op != 0x08) continue;
+		ForObjects([&](AActor *, int s, int i) {
+			const Object *o = RuntimeObject(s, i);
+			if (o != nullptr && o->commandID == key) { PullObj po; po.sector = s; po.index = i; po.rec = &r; levers.push_back(po); }
+		});
+	}
 	const PullObj *best = nullptr;
 	double bestD = kPullGripM;
 	DVector3 bestLo, bestHi;
-	for (const PullObj &o : S.pullObjs)
+	for (const PullObj &o : levers)
 	{
 		AActor *mo = FindObjectActor(o.sector, o.index);
 		if (mo == nullptr || (mo->renderflags & RF_INVISIBLE)) continue;
@@ -824,12 +883,13 @@ void TickSit(AActor *pmo)
 			}
 		}
 		if (!S.sit.Feed(drop, over, away)) continue;
-		sector_t *sec = &S.level->sectors[st.sectors[0]];
+		// the seat's surface under the head (or under the seat's middle): its floor or platform top, highest first
 		Pick p;
-		const DVector3 from(st.centre.X, st.centre.Y, sec->ceilingplane.ZatPoint(st.centre) - 1.0);
-		if (!PickFrom(pmo, from, DVector3(0, 0, -1), 4000.0, p) || p.kind != Pick::Flat)
+		const DVector2 at = (eye.X >= st.lo.X && eye.X <= st.hi.X && eye.Y >= st.lo.Y && eye.Y <= st.hi.Y) ? eye.XY() : st.centre;
+		sector_t *sec = S.level->PointInSector(at);
+		if (sec == nullptr || !FlatAt(DVector3(at.X, at.Y, sec->ceilingplane.ZatPoint(at) - 1.0), 1e6, 0.0, p))
 		{
-			Printf("[roth_worldhands] sat on %s: nothing under a pointer straight down at its middle -- nothing\n", st.rec->what);
+			Printf("[roth_worldhands] sat on %s: no floor under (%.0f %.0f) -- nothing\n", st.rec->what, at.X, at.Y);
 			continue;
 		}
 		const bool acted = VRPickUseAt(ItemRole(), p, eye, "sat down");
@@ -904,6 +964,11 @@ bool WorldHandsItemTipping(int role)
 bool WorldHandsContactDisc(const Pick &p, double radiusM, bool use, Pick &out)
 {
 	return Disc(p, radiusM, use, out);
+}
+
+bool WorldHandsFlatUnder(const DVector3 &pt, double above, double below, Pick &out)
+{
+	return FlatAt(pt, above, below, out);
 }
 
 } // namespace roth
@@ -1074,18 +1139,28 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 			at = (lo + hi) * 0.5;
 			how.Format("object %d/%d (id %u)%s, its box (%.0f %.0f %.0f)..(%.0f %.0f %.0f)", s, i, key, (mo->renderflags & RF_INVISIBLE) ? ", hidden now" : "",
 				lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z);
-			Pick w;
-			if (PickTouchSurface(pmo, at, 64.0, w) && w.kind == Pick::WallFace && w.line != nullptr)   // a test's reach: 64 units
+			if (ObjectFacing(mo, at, normal))
 			{
-				normal = DVector2(w.line->delta.Y, -w.line->delta.X) / w.line->delta.Length();
-				if (((at.XY() - w.hitPos.XY()) | normal) < 0) normal = -normal;
 				haveNormal = true;
-				how.AppendFormat("; on a wall %.1f units behind it, facing (%.2f %.2f)", (at.XY() - w.hitPos.XY()).Length(), normal.X, normal.Y);
+				how.AppendFormat("; facing (%.2f %.2f)", normal.X, normal.Y);
 			}
 			found = true;
 		}
 		if (!found) how.Format("no object carries id %u", key);
 		return found;
+	}
+	if (op == 0x13)
+	{
+		// an enter-sector record: the middle of the first sector carrying its key (no surface to match)
+		for (int sn = 0; sn < (int)S.level->sectors.Size(); sn++)
+		{
+			if (RuntimeSectorId(sn) != key) continue;
+			at = DVector3(S.level->sectors[sn].centerspot.X, S.level->sectors[sn].centerspot.Y, S.level->sectors[sn].floorplane.ZatPoint(S.level->sectors[sn].centerspot));
+			how.Format("sector %d (id %u), its middle", sn, key);
+			return true;
+		}
+		how.Format("no sector carries id %u", key);
+		return false;
 	}
 	const bool isUse = op == 0x18 || op == 0x19;
 	DVector3 sum(0, 0, 0), lo(1e9, 1e9, 1e9), hi(-1e9, -1e9, -1e9);
@@ -1114,13 +1189,15 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 				for (double y = y0 + step * 0.5; y < y1; y += step)
 				{
 					if (S.level->PointInSector(DVector2(x, y)) != sec) continue;
-					Pick p;
-					const DVector3 from(x, y, sec->ceilingplane.ZatPoint(DVector2(x, y)) - 1.0);
+					// every surface of the point: the floor and each platform top (FlatAt: no vertical trace)
 					samples++;
-					if (!PickFrom(pmo, from, DVector3(0, 0, -1), 4000.0, p)) continue;
-					hits++;
-					kinds[std::min<int>(p.kind, 4)]++;
-					if (p.kind == Pick::Flat && !p.ceiling) count(p);
+					const DVector2 xy(x, y);
+					Pick p;
+					if (FlatAt(DVector3(x, y, sec->floorplane.ZatPoint(xy)), 0.5, 0.5, p)) { hits++; kinds[Pick::Flat]++; count(p); }
+					if (sec->e != nullptr)
+						for (F3DFloor *ff : sec->e->XFloor.ffloors)
+							if (ff != nullptr && (ff->flags & FF_EXISTS) && ff->top.plane != nullptr
+								&& FlatAt(DVector3(x, y, ff->top.plane->ZatPoint(xy)), 0.5, 0.5, p) && p.ffloor == ff) { hits++; kinds[Pick::Flat]++; count(p); }
 				}
 		}
 	}
@@ -1135,7 +1212,6 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 		DVector2 bestNormal;
 		for (int si : sides)
 		{
-			sum = DVector3(0, 0, 0); n = 0; lo = DVector3(1e9, 1e9, 1e9); hi = DVector3(-1e9, -1e9, -1e9);
 			side_t *sd = &S.level->sides[si];
 			line_t *ln = sd->linedef;
 			if (ln == nullptr) continue;
@@ -1144,20 +1220,30 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 			nrm /= nrm.Length();
 			if (sd != ln->sidedef[0]) nrm = -nrm;
 			const DVector2 v1 = ln->v1->fPos();
-			const double z0 = sec->floorplane.ZatPoint(v1), z1 = sec->ceilingplane.ZatPoint(v1);
-			for (int k = 1; k < 64; k++)
-				for (double z = z0 + 1.0; z < z1; z += 2.0)
-				{
-					const DVector2 xy = v1 + ln->delta * (k / 64.0);
-					const DVector3 from(xy.X + nrm.X * 8.0, xy.Y + nrm.Y * 8.0, z);
-					Pick p;
-					samples++;
-					if (!PickFrom(pmo, from, DVector3(-nrm.X, -nrm.Y, 0), 16.0, p)) continue;
-					hits++;
-					kinds[std::min<int>(p.kind, 4)]++;
-					if (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf) count(p);   // a leaf stands in front of its room face
-				}
-			if (n > bestN) { bestN = n; bestSum = sum; bestLo = lo; bestHi = hi; bestNormal = nrm; }
+			// both ways: a face may be seen from the sector across its line (MAUSO1EA #5's stone, the PC run of 976cb81e:
+			// from its own side every sample stood inside the block and met nothing)
+			for (int way = 0; way < 2; way++)
+			{
+				const DVector2 out = way == 0 ? nrm : -nrm;
+				sector_t *zs = S.level->PointInSector(v1 + ln->delta * 0.5 + out * 8.0);
+				if (zs == nullptr) continue;
+				const double z0 = std::max(sec->floorplane.ZatPoint(v1), zs->floorplane.ZatPoint(v1));
+				const double z1 = std::max(sec->ceilingplane.ZatPoint(v1), zs->ceilingplane.ZatPoint(v1));
+				sum = DVector3(0, 0, 0); n = 0; lo = DVector3(1e9, 1e9, 1e9); hi = DVector3(-1e9, -1e9, -1e9);
+				for (int k = 1; k < 64; k++)
+					for (double z = std::min(z0, z1 - 2.0) + 1.0; z < z1; z += 2.0)
+					{
+						const DVector2 xy = v1 + ln->delta * (k / 64.0);
+						const DVector3 from(xy.X + out.X * 8.0, xy.Y + out.Y * 8.0, z);
+						Pick p;
+						samples++;
+						if (!PickFrom(pmo, from, DVector3(-out.X, -out.Y, 0), 16.0, p)) continue;
+						hits++;
+						kinds[std::min<int>(p.kind, 4)]++;
+						if (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf) count(p);   // a leaf stands in front of its room face
+					}
+				if (n > bestN) { bestN = n; bestSum = sum; bestLo = lo; bestHi = hi; bestNormal = out; }
+			}
 		}
 		sum = bestSum; n = bestN; lo = bestLo; hi = bestHi;
 		if (n > 0) { normal = bestNormal; haveNormal = true; }

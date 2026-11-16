@@ -711,7 +711,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 		Pick flat;
 		const double r = kTouchRadius * upm;
 		const double ps = P.level != nullptr && P.level->pixelstretch > 0.1 ? P.level->pixelstretch : 1.2;
-		if (PickFrom(pmo, h.palm + DVector3(0, 0, 0.02 * upm / ps), DVector3(0, 0, -1), r / ps + 0.02 * upm / ps, flat) && flat.kind == Pick::Flat && !flat.ceiling)
+		if (WorldHandsFlatUnder(h.palm, r / ps, 0.02 * upm / ps, flat))
 		{
 			CursorClass fc = ClassifyPick(flat, pmo, DepthOf(pmo, flat, flat.hitPos - h.palm));
 			if (!can(fc)) DiscPick(role, pmo, flat, fc, wh::kPalmDiscM, use, h.palm);
