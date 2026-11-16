@@ -166,6 +166,7 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
 | Real-parts reload with high-quality meshes (drop mag, insert, rack the slide, world collision, nothing on a sprite layer); still one magazine item per reload | W2 |
 | On-gun ammo display, from REMASelacoVR's ideas | G1 |
 | Dedicated left-hand support | Q11 |
+| Object-world collision AND object-object collision for loose things (dropped magazines, casings, thrown/dropped items, held models): world collision as far as the Colt work needs it now, object-object later; not essential yet (owner 2026-11-16) | owner |
 | Openable books: the original only shows a book's page as code/popup; real books that open in the hands (pages to turn) are NEW CONTENT to build (owner 2026-11-16: "books do not open in game, it is just code. we will need to build openable books") | owner |
 | Item models for the typewriter and other map-built furniture: the typewriter is made of map sectors (s306, s313-s316), not an item picture, so the image-to-3D pipeline needs a captured image of it as input | owner asked for a typewriter mesh, 2026-11-16 |
 
