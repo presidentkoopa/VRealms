@@ -860,7 +860,11 @@ the statuette's coils; P11 the open palm (frame 0) for hand prints; P12 a two-ha
 
 **Owner's answers (2026-11-13/14 for 1-12, 2026-11-16 for 13-32; ALL ASKED):**
 - **Q1 statuettes: lower onto the dais and release** = the original's use where the base lands (the plate's box decides); pointer kept.
-- **Q2 plate help:** owner: "in flat-screen they auto assign. It never occurred to me they would be specific." No hint chosen. **Check first** (measurement M2): does the original place a statuette on whichever plate is clicked/next free (auto-assign), or does each plate want its own statuette? If the original auto-assigns, the VR release anywhere on the dais must do the same; if plates are specific, bring it back to the owner.
+- **Q2 plate help: nothing added.** Checked (2026-11-16, from the records above): the seven plates are SPECIFIC SPOTS (each
+  use-floor record `#119`, `#124`-`#129` has its own surface box on the dais picture), but the statuettes are all the
+  SAME item (i4), so any statuette goes on any free plate. In flat the click has to land on a plate's spot; in VR the
+  statuette is set down on a spot. Each plate is one-shot; a placed statuette can be lifted back. [V: records; the
+  in-game behaviour is reasoning until built and run.]
 - **Q3 lifting a placed statuette back = the original's click on it: YES.**
 - **Q4 the lid (opens in chapter 7): add nothing.**
 - **Q5 masks: lift off the wall; held to the face = examine** (built: item to the eyes).
