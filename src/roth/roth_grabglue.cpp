@@ -37,11 +37,15 @@
 #include "actorinlines.h"
 #include "g_levellocals.h"
 #include "printf.h"
+#include "roth_raw.h"
+#include "roth_dbase100.h"
 #include "vm.h"
 #include <algorithm>
 
 namespace roth
 {
+
+bool RuntimeObjectRecord(int rothSector, int rothIndex, Object &out);   // roth_runtime.cpp (as roth_interface.cpp declares it)
 
 namespace
 {
@@ -96,7 +100,19 @@ void GrabGlueTick(FLevelLocals *level)
 		if (item)
 		{
 			takeable++;
-			if (inert) { MakeTakeable(mo); made++; }
+			if (inert)
+			{
+				MakeTakeable(mo);
+				made++;
+				int rs = -1, ri = -1;
+				Object o;
+				if (ObjectForActor(mo, rs, ri) && RuntimeObjectRecord(rs, ri, o))
+				{
+					const uint16_t rid = (uint16_t)(o.textureIndex | (o.textureSource << 8));
+					Printf("[roth_grab]   offered: object %d/%d, item %d (render id 0x%04x, command id %u), at (%.0f %.0f %.0f)\n",
+						rs, ri, TheDbase100().FindItemByRenderId(rid), (unsigned)rid, (unsigned)o.commandID, mo->X(), mo->Y(), mo->Z());
+				}
+			}
 		}
 		else
 		{

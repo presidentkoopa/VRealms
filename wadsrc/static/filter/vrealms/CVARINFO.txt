@@ -1,4 +1,4 @@
-// VREALMS COPY (2026-11-16): this file is RSQ Distance Grab's CVARINFO from RSQ_UBQSeries 9eb2766d, with ONE change:
+// VREALMS COPY (2026-11-16): this file is RSQ Distance Grab's CVARINFO from RSQ_UBQSeries b1c2a8f90b, with ONE change:
 // every declaration carries `noarchive`. VRealms shares the owner's doomxr.ini with his hands build and must never
 // write archived settings into it (CLAUDE.md), so these cvars live for the session only: names, types, scopes and
 // defaults are the package's, untouched. Nothing else in this pack is changed (see docs/rsq_distancegrab/CHECKLIST.md).

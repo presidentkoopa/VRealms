@@ -7386,10 +7386,21 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 	return any;
 }
 
-// IS THIS OBJECT'S USE THE ORIGINAL'S PICKUP? ActivateObject's routing above: an object with no command
-// (+0x0e id 0), or one whose id binds no record, goes to the type-4 branch (InterfaceObjectAction) -- and
-// that branch would take it (InterfaceObjectTakeable, read only). An object whose use runs a chain is the
-// chain's, whatever the chain does: not offered to RSQ Distance Grab (roth_grabglue.cpp).
+// IS THIS OBJECT AN ITEM THE ORIGINAL'S USE PICKS UP? (RSQ Distance Grab's set, roth_grabglue.cpp.) The
+// original's left click on an object (activate_targeted_object, ROTH.C input.c:1026-1066, type 4): +9 bits
+// 0x12 refuse it; a matching left-click record runs its chain (run_leftclick_object_trigger); with none, a
+// non-keyed object without bit 0x10 goes to give_item_by_dbase_id(its render id). So an object is taken by
+// its use when
+//   - it IS an item: its picture is a pickable inventory record's (is_item_id_pickable, IsItemIdPickable), and
+//   - its use gives it: a use record of its id (0x08 / 0x02, as bound here) whose chain, walked by its links to
+//     the next trigger as roth_vrpicktest's "needs" walks it, holds a 0x29 give_item of THAT item or of key 0
+//     (the object just clicked, raw_commands.c:4801-4822) -- the Key, the Book, the Matchbox in STUDY1 -- or it
+//     has no record at all and the type-4 branch would give it (InterfaceObjectTakeable: no chain, not keyed).
+// An object whose use gives some OTHER item (a drawer, a box, a painting that hands something over) is not the
+// item and is not offered; nor one whose id binds only an examine record (this port's ActivateObject then does
+// nothing on a use, where the original's type-4 branch would give it -- not changed here). The chain's own
+// conditions are not evaluated: the catch runs the original's use itself, and if that gives nothing the grab
+// carries the thing.
 bool ObjectIsPickupItem(AActor *mo)
 {
 	if (!g.active || mo == nullptr) return false;
@@ -7398,9 +7409,28 @@ bool ObjectIsPickupItem(AActor *mo)
 	if (rothSector < 0 || rothSector >= (int)g.map.objects.size()) return false;
 	const std::vector<Object> &group = g.map.objects[rothSector];
 	if (rothIndex < 0 || rothIndex >= (int)group.size()) return false;
-	const uint16_t id = group[rothIndex].commandID;
-	if (id != 0 && g.byObject.find((int)id) != g.byObject.end()) return false;
-	return InterfaceObjectTakeable(rothSector, rothIndex);
+	const Object &o = group[rothIndex];
+	if (o.renderType & 0x12) return false;                                   // input.c:1034
+	if (!TheDbase100().IsLoaded()) return false;
+	const int32_t renderId = (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8));
+	if (!IsItemIdPickable(TheDbase100(), renderId)) return false;           // not an item at all
+	const int item = TheDbase100().FindItemByRenderId((uint16_t)renderId);
+	const uint16_t id = o.commandID;
+	auto it = id != 0 ? g.byObject.find((int)id) : g.byObject.end();
+	if (it == g.byObject.end()) return InterfaceObjectTakeable(rothSector, rothIndex);   // the type-4 pickup
+	for (const Binding &b : it->second)
+	{
+		if (b.event != TrigEvent::Use) continue;
+		int guard = 0;
+		for (uint16_t k = b.chain; k != 0 && guard < 64; guard++)
+		{
+			const Command *c = Rec(k);
+			if (c == nullptr || (guard > 0 && c->isTrigger)) break;
+			if (c->opcode == 0x29 && (c->key == 0 || (int)c->key == item)) return true;
+			k = c->nextIndex;
+		}
+	}
+	return false;
 }
 
 bool UseByHand(player_t *player, TrigEvent want)

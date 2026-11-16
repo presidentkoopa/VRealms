@@ -38,6 +38,8 @@
 #include "roth_texture.h"
 #include "roth_log.h"
 #include "roth_img3d.h"
+#include "roth_dbase100.h"    // TheDbase100: which objects are items (Pending::plainPicture)
+#include "roth_inventory.h"   // IsItemIdPickable
 
 #include "actor.h"
 #include "info.h"
@@ -216,11 +218,12 @@ struct Pending
 	uint16_t renderId = 0;
 	uint8_t  rotation = 0;
 	bool     fixedAngle = false;
-	// A PICTURE OBJECT WITH NO COMMAND (+0x0e id 0) and none of the type-4 refusals (+9 bits 0x12, 0x01): what
-	// activate_targeted_object's type-4 branch would offer to give_item_by_dbase_id (input.c:1034-1086). It is
-	// spawned as RealmsTakeable (wadsrc/static/zscript/actors/realmsgrab.zs), which draws and behaves exactly
-	// as LoaderProp until the runtime finds its picture is an item (roth_grabglue.cpp) -- then RSQ Distance Grab
-	// may take it. Meshes stay LoaderProp: their model frames are bound to that class.
+	// A PICTURE OBJECT THAT IS AN ITEM: its render id is a pickable inventory record's (is_item_id_pickable), and
+	// +9 has neither type-4 refusal (0x12). Whatever its command id: most Realms items carry one, and their use
+	// record's chain gives them (0x29). Spawned as RealmsTakeable (wadsrc/static/zscript/actors/realmsgrab.zs),
+	// which draws and behaves exactly as LoaderProp until the runtime finds the original's use picks it up
+	// (roth_runtime.h ObjectIsPickupItem, roth_grabglue.cpp) -- then RSQ Distance Grab may take it. Meshes stay
+	// LoaderProp: their model frames are bound to that class.
 	bool   plainPicture = false;
 };
 
@@ -261,7 +264,7 @@ PClassActor *PropClass()
 	return cls;
 }
 
-// A picture object the original could hand to give_item (Pending::plainPicture): realmsgrab.zs. Falls back to
+// A picture object that is an item (Pending::plainPicture): realmsgrab.zs. Falls back to
 // LoaderProp if the class is missing, so a pk3 without it spawns exactly as before.
 PClassActor *TakeableClass()
 {
@@ -655,6 +658,11 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	MarkSpriteTable();
 	ClearAddedSpriteModelFrames();
 	Img3dNewLoad();   // the item models' bindings went with the frames
+	// DBASE100 is game-global (ROTH.C loads it once at startup, game_core.c:1060); BeginLevel loads it on the first
+	// map, which is AFTER this. Which objects are items (Pending::plainPicture) needs it now: loaded here first, the
+	// same call, so BeginLevel finds it loaded. (STUDY1 is the first map: without this none of its items was one.)
+	if (!TheDbase100().IsLoaded())
+		LoadDbase100FromInstall(TheInstall(), TheDbase100(), log);
 
 	if (PropClass() == nullptr)
 	{
@@ -1170,7 +1178,8 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			}
 			}
 
-			p.plainPicture = !p.isMesh && o.commandID == 0 && (o.renderType & 0x13) == 0;
+			p.plainPicture = !p.isMesh && (o.renderType & 0x12) == 0 && TheDbase100().IsLoaded()
+				&& IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)));
 			gPending.push_back(p);
 		}
 	}

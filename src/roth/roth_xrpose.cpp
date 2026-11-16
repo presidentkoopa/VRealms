@@ -365,8 +365,7 @@ CCMD(roth_xrpose)
 			wantYaw = atan2(d.Y, d.X) * (180.0 / M_PI);
 			wantPitch = atan2(d.Z, sqrt(d.X * d.X + d.Y * d.Y)) * (180.0 / M_PI);
 		}
-		sYaw[role] = wantYaw;
-		sPitch[role] = wantPitch;
+		if (!turn) { sYaw[role] = wantYaw; sPitch[role] = wantPitch; }   // aimturn is always from the last aimat
 		float head[3]; float headYaw = 0.f;
 		VRPoseTest_Head(head, headYaw);
 		const double bodyYaw = r_viewpoint.Angles.Yaw.Degrees();

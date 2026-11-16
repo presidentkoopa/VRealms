@@ -1,7 +1,10 @@
 # RSQ Distance Grab in VRealms: the copy's checklist (2026-11-16)
 
-Source: `presidentkoopa/RSQ_UBQSeries`, `DistanceGrab/` at **9eb2766d** ("the engine laser where there is one
-(RemaSelaco), model beam elsewhere"). The owner's instruction: copy it completely, not a rewrite.
+Source: `presidentkoopa/RSQ_UBQSeries` origin/main **eb0136239e**; `DistanceGrab/`'s newest commit there is
+**b1c2a8f90b** (flight.zs +14/-1, the fallback word as a toast), after 9eb2766d ("the engine laser where there is
+one (RemaSelaco), model beam elsewhere"). The owner's instruction: copy it completely, not a rewrite. Nothing in this
+copy adds behaviour the package does not have: the zscript and every lump but CVARINFO are byte-identical to that
+tree, and CVARINFO differs only by `noarchive`.
 
 Where it lives: `wadsrc/static/filter/vrealms/` (the engine pk3). The engine moves `filter/<game>/` files to the end
 of its pk3 under their own names when the game is VRealms (`resourcefile.cpp` PostProcessArchive, the IWAD's autoname
@@ -23,7 +26,7 @@ provides what the package reads), **not copied** (why), **open** (a known diverg
 | 5 | `zscript/rsqdg/cone.zs` (196) | same path | copied unchanged |
 | 6 | `zscript/rsqdg/door.zs` (504) | same path | copied unchanged |
 | 7 | `zscript/rsqdg/feel.zs` (725) | same path | copied unchanged |
-| 8 | `zscript/rsqdg/flight.zs` (1410) | same path | copied unchanged |
+| 8 | `zscript/rsqdg/flight.zs` (1423, b1c2a8f90b) | same path | copied unchanged (re-copied 2026-11-16 from b1c2a8f90b) |
 | 9 | `zscript/rsqdg/glow.zs` (100) | same path | copied unchanged |
 | 10 | `zscript/rsqdg/grab.zs` (546) | same path | copied unchanged |
 | 11 | `zscript/rsqdg/handsync.zs` (160) | same path | copied unchanged |
@@ -74,13 +77,13 @@ provides what the package reads), **not copied** (why), **open** (a known diverg
 
 | # | Behaviour | Package | VRealms | Status |
 |---|---|---|---|---|
-| 49 | What a hand may pull: the policy table, first match wins; `Inventory` is its catch-all row ("a pickup in the world", weight 1) | policy.zs:211-297 `Build`, :368 `Decide` | a Realms picture object with no command chain is spawned as `RealmsTakeable : Inventory` (roth_objects.cpp `Pending::plainPicture`, `TakeableClass`; wadsrc/static/zscript/actors/realmsgrab.zs) -- LoaderProp's flags, NOINTERACTION included | glue |
-| 50 | Never a NOINTERACTION actor, whatever the table says | policy.zs:374 | every Realms object keeps NOINTERACTION -- refused by the package's own Decide -- unless its use IS the original's pickup: roth_runtime.cpp `ObjectIsPickupItem` (ActivateObject's routing: no command chain) + roth_interface.cpp `InterfaceObjectTakeable` (activate_targeted_object's type-4 refusals and give_item_by_dbase_id's choice of item, read only). Those lose NOINTERACTION and take their pick box as their size (roth_grabglue.cpp `MakeTakeable`, once a second); a LoaderProp matches no table row and is refused there too | glue |
-| 51 | A caught pickup is used: `TakeInto` asks every "GrabEventService" first ("pickup.first": 1 = given to this hand and taken away) | flight.zs:588-612, feel.zs:714 `RSQDG_Events.Ask` | `RealmsGrabEventService` (realmsgrab.zs) answers for a RealmsTakeable: `RealmsGrab.TakeCaught` -> roth_vrpick.cpp `VRPickTakeCaught` -> `DoUse` -> `Activate(Use)` -> the type-4 branch -> `give_item_by_dbase_id` (InterfaceObjectAction), gated by the original's cursor from the palm. Log: `[roth_grab] ... caught Realms object s/i`, `[roth_vrpick] ... distance grab catch: USE ... -> acted`, `[roth_ui] picked up item N (name)` | glue |
-| 52 | The original refuses (an item still flying to the inventory, GiveItem's own answer) | flight.zs:631-665 (the pickup refused -> claim -> carry) | the service answers 0; `RealmsTakeable.TryPickup` is false; the package carries it as anything it caught | glue |
+| 49 | What a hand may pull: the policy table, first match wins; `Inventory` is its catch-all row ("a pickup in the world", weight 1) | policy.zs:211-297 `Build`, :368 `Decide` | an object whose picture IS an item (is_item_id_pickable: its render id is a pickable DBASE100 record's) and whose +9 has neither 0x12 bit is spawned as `RealmsTakeable : Inventory` (roth_objects.cpp `Pending::plainPicture`, `TakeableClass`; realmsgrab.zs) -- LoaderProp's flags, NOINTERACTION included. Meshes stay LoaderProp. DBASE100 is loaded before the objects are prepared (it used to load only at BeginLevel, after them: on the first map, STUDY1, no object was an item -- the owner's PC run of 6b8abd03, "may take 0") | glue |
+| 50 | Never a NOINTERACTION actor, whatever the table says | policy.zs:374 | every Realms object keeps NOINTERACTION -- refused by the package's own Decide -- unless the original's left click picks it up: roth_runtime.cpp `ObjectIsPickupItem`, after ROTH.C activate_targeted_object (input.c:1026-1066): it is an item (above), and either a use record of its id (0x08/0x02) has a chain holding a 0x29 give_item of THAT item or of key 0 (the clicked object) -- the Key 21, the Book 17, item 4, item 45, item 51 (key 0) ... in STUDY1 -- or it has no record and the type-4 branch would give it (`InterfaceObjectTakeable`). Those lose NOINTERACTION and take their pick box as their size (roth_grabglue.cpp `MakeTakeable`, once a second). Not offered: an object whose use gives some OTHER item (a box, a drawer, a picture that hands something over), and one whose id binds only an examine record (this port's ActivateObject does nothing on its use; the original would give it -- not changed here) | glue |
+| 51 | A caught pickup is used: `TakeInto` asks every "GrabEventService" first ("pickup.first": 1 = given to this hand and taken away) | flight.zs:601-625, feel.zs:714 `RSQDG_Events.Ask` | `RealmsGrabEventService` (realmsgrab.zs) answers for a RealmsTakeable: `RealmsGrab.TakeCaught` -> roth_vrpick.cpp `VRPickTakeCaught` -> `DoUse` -> `Activate(Use)` -> the type-4 branch -> `give_item_by_dbase_id` (InterfaceObjectAction), gated by the original's cursor from the palm. Log: `[roth_grab] ... caught Realms object s/i`, `[roth_vrpick] ... distance grab catch: USE ... -> acted`, `[roth_ui] picked up item N (name)` | glue |
+| 52 | The original refuses (an item still flying to the inventory, GiveItem's own answer) | flight.zs:644-678 (the pickup refused -> claim -> carry) | the service answers 0; `RealmsTakeable.TryPickup` is false; the package carries it as anything it caught | glue |
 | 53 | A Realms item at rest | -- | RealmsTakeable does not tick until something moves it (realmsgrab.zs `Tick`), so P_ZMovement never lifts one the map placed below its floor (loaderprop.zs's measured reason for NOINTERACTION) | glue |
 | 54 | Walking into an item | Inventory +SPECIAL | `-SPECIAL`: the original takes an item by its click only | glue |
-| 55 | The at-range pointing it replaces | -- | roth_vrpick.cpp: the beam dots and ring marker in the world, the grip's use at range and the trigger's examine at range are removed (`DrawBeam`, `FamilyColour` deleted). Kept: in reach (palm on it: trigger = examine, grip = use; the fingertip press; the wicks), the gestures, the held objects, and the panel laser on the inventory screen and the popup | glue |
+| 55 | The at-range pointing | -- | KEPT (owner, "far things: Pointer fine"; lead 2026-11-16): the finger beam and ring marker, the trigger's examine at range and the grip's use at range on what the grab does not take (switches, casements, doors beyond reach), along the corrected finger ray. A takeable item at range is the grab's: the grip while pointing at one logs "RSQ Distance Grab takes it" and does nothing (roth_vrpick.cpp TickHand, `ObjectIsPickupItem`). In reach, unchanged | glue |
 
 ## D. Known divergences (open)
 
@@ -88,6 +91,6 @@ provides what the package reads), **not copied** (why), **open** (a known diverg
 |---|---|---|
 | 56 | The package's metre is Doom's: `UNITS_PER_METRE_XY = 34`, `PIXELSTRETCH = 1.2` (reach.zs:497-498), and its cvars are in Doom map units (reach 512, catch radius 24, ...). VRealms' metre is the eye anchor's (about 107 units on a Realms map) and its pixel stretch is 1.0. | In a Realms room the reach is about 4.8 m instead of 15 m, the catch radius about 22 cm, speeds read in "metres per second" are about 3x the hand's real speed (throws and the punch-speed stand-down trigger at a third of the real speed), and the cone is 20% tight vertically. Left as copied (the instruction: unchanged); the fix would be two lines in reach.zs (read the live metre and stretch) plus the unit cvars, the owner's call. |
 | 57 | Mesh objects (EntryKind::Object3D) stay LoaderProp: their model frames are bound to that class | a Realms item drawn as a mesh is not offered to the grab |
-| 58 | An object whose use runs a command chain (a nonzero id with a bound record) is not offered, even if the chain gives an item | its outcome is the chain's, not a pickup; offering it would run a chain at range |
+| 58 | The chain's own conditions are not evaluated (a 0x29 behind an if-flag counts) | the catch runs the original's use itself; if it gives nothing the package carries the thing |
 | 59 | The pick tracer now meets takeable items' cylinders (they left NOINTERACTION) as well as their boxes | the nearer of the two wins; both name the same object |
 | 60 | ZScript compile | no engine binary here: the package and the glue were not compiled. The first PC run is the compile check (the engine stops with the error and its line if anything is wrong). |
