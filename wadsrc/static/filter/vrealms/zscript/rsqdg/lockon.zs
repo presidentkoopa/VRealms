@@ -25,7 +25,7 @@ class RSQDG_LockOn : EventHandler
 {
 	const HOLD_TICS  = 105;   // 3 s with no palm on it
 	const GRACE_TICS = 18;    // then 0.5 s (17.5 tics) of grace
-	const PUNCH_RANGE = 64.0; // Doom's MELEERANGE: how far the fist reaches from the body (A_Punch)
+	const PUNCH_RANGE = 202.2; // Doom's MELEERANGE: how far the fist reaches from the body (A_Punch)  // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 64.0
 	const AHEAD_DEG  = 60.0;  // "roughly ahead": the throw's forward gate (aim.zs ThrowVelocity)
 	const MAX_STEER  = 8;
 
@@ -152,7 +152,7 @@ class RSQDG_LockOn : EventHandler
 	{
 		let hold = RSQDG_Hold.Get();
 		let fl = RSQDG_Flight.Get();
-		let it = BlockThingsIterator.Create(pmo, PUNCH_RANGE + 32);
+		let it = BlockThingsIterator.Create(pmo, PUNCH_RANGE + 101.1);   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was + 32
 		while (it.Next())
 		{
 			Actor b = it.thing;
@@ -390,9 +390,9 @@ class RSQDG_LockOn : EventHandler
 	// bodies 10 + 16), so the test is the boxes'.
 	private static bool Meets(Actor a, Actor t)
 	{
-		double r = a.Radius + t.Radius + 8;
+		double r = a.Radius + t.Radius + 25.3;   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was + 8 (and the two below)
 		if (abs(t.Pos.x - a.Pos.x) > r || abs(t.Pos.y - a.Pos.y) > r) return false;
-		return a.Pos.z <= t.Pos.z + t.Height + 8 && t.Pos.z <= a.Pos.z + a.Height + 8;
+		return a.Pos.z <= t.Pos.z + t.Height + 25.3 && t.Pos.z <= a.Pos.z + a.Height + 25.3;
 	}
 
 	// RSQ MELEE'S UPPERCUT BARREL (asked by name: RSQDG_ThrowService "lockon.kick"). `hs` is Melee's own forward kick,

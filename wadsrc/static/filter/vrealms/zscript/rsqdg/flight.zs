@@ -1337,7 +1337,7 @@ class RSQDG_Flight : EventHandler
 	// the next few tics and cap the climb so the top passes under it. Floors are
 	// not mirrored -- stepping up is already the engine's. rsqdg_flight_duck 0 off.
 	const DUCK_AHEAD = 4;       // tics of flight looked along
-	const DUCK_MARGIN = 2.0;    // units kept under the ceiling
+	const DUCK_MARGIN = 6.3;    // units kept under the ceiling  // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 2.0
 	static void Duck(Actor a, PlayerInfo p)   // also the Barrel Lock-On's steered barrel (lockon.zs)
 	{
 		if (!RSQDG_Reach.Flag("rsqdg_flight_duck", p, true)) return;

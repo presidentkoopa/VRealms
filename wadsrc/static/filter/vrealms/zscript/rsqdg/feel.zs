@@ -265,7 +265,7 @@ class RSQDG_Feel : EventHandler
 	// Generous on purpose: the spot is placed before the player moves this
 	// tic and tested in 2D, and with falloff 0 a wider radius costs nothing
 	// -- at 24 a fast mover or a teleport tic dropped out of it (review).
-	const TREMOR_RADIUS = 64;
+	const TREMOR_RADIUS = 202;   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 64
 	// ---- the rhythm scheduler ----------------------------------------------
 	//
 	// Priorities, so an important tick is QUEUED rather than lost to a busy

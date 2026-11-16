@@ -60,6 +60,7 @@
 #include "printf.h"
 #include "d_eventbase.h"   // D_PostEvent, event_t (the grip key)
 #include "keydef.h"
+#include "roth_grabglue.h"   // GrabGlueGripKey
 #include "hw_vrmodes.h"
 #include "r_utility.h"
 #include "r_data/models.h"
@@ -201,6 +202,8 @@ void XRPoseTick(FLevelLocals *level)
 //
 //===========================================================================
 
+EXTERN_CVAR(Bool, vr_secondary_button_mappings)
+
 static int RoleArg(const char *s)
 {
 	if (!stricmp(s, "main")) return VR_MAINHAND;
@@ -305,16 +308,31 @@ CCMD(roth_xrpose)
 		h.grip = (float)atof(argv[3]);
 		VRPoseTest_SetHand(role, h);
 		const bool down = h.grip >= 0.5f, wasDown = was >= 0.5f;
-		const int key = role == VR_MAINHAND ? KEY_PAD_RSHOULDER : KEY_PAD_LSHOULDER;
+		const int key = roth::GrabGlueGripKey(role);
+		// AS THE DEVICE SENDS IT (vk_openxrdevice.cpp): the main (dominant) grip under vr_secondary_button_mappings is the
+		// shift layer while held and sends its key only as a clean tap's one-frame pulse, down and up, at the RELEASE;
+		// every other grip sends its key down at the press and up at the release.
+		const bool tapPulse = role == VR_MAINHAND && vr_secondary_button_mappings;
+		FString said = " (no key: the grip did not cross 0.5)";
 		if (down != wasDown)
 		{
 			event_t ev{};
-			ev.type = down ? EV_KeyDown : EV_KeyUp;
 			ev.data1 = (int16_t)key;
-			D_PostEvent(&ev);
+			if (!tapPulse)
+			{
+				ev.type = down ? EV_KeyDown : EV_KeyUp;
+				D_PostEvent(&ev);
+				said.Format(", key %d %s posted", key, down ? "down" : "up");
+			}
+			else if (!down)
+			{
+				ev.type = EV_KeyDown; D_PostEvent(&ev);
+				ev.type = EV_KeyUp;   D_PostEvent(&ev);
+				said.Format(", key %d posted as the tap's pulse at the release (down and up: vr_secondary_button_mappings)", key);
+			}
+			else said.Format(", no key at the press (key %d comes as a tap's pulse at the release: vr_secondary_button_mappings)", key);
 		}
-		Printf("roth_xrpose: %s hand grip %.2f%s\n", roth::RoleName(role), h.grip,
-			down != wasDown ? FStringf(", key %d %s posted", key, down ? "down" : "up").GetChars() : " (no key: the grip did not cross 0.5)");
+		Printf("roth_xrpose: %s hand grip %.2f%s\n", roth::RoleName(role), h.grip, said.GetChars());
 		return;
 	}
 	if (!stricmp(verb, "aim"))

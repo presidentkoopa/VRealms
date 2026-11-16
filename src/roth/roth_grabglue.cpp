@@ -42,7 +42,16 @@
 #include "vm.h"
 #include "events.h"
 #include "types.h"    // PField, PType (RSQDG_Near.ready)
+#include "c_cvars.h"
+#include "d_eventbase.h"   // event_t, EV_KeyDown / EV_KeyUp
+#include "keydef.h"
+#include "i_time.h"
+#include "hw_vrmodes.h"     // VR_MAINHAND
+#include "r_data/vr_handpose.h"   // VRHandPose_InputLive, VRHandPose_SideForRole
+#include "r_data/vr_handpose_math.h"   // SIDE_RIGHT
 #include <algorithm>
+
+EXTERN_CVAR(Bool, vr_secondary_button_mappings)
 
 namespace roth
 {
@@ -151,6 +160,71 @@ bool GrabGlueTakesGrip(FLevelLocals *level, int role)
 		if (f == nullptr || f->Type == nullptr || f->Type->Size != 2 * sizeof(bool)) return false;
 		const bool *ready = (const bool *)eh->ScriptVar(readyName, nullptr);
 		return ready[role];
+	}
+	return false;
+}
+
+// ---- the main grip on the squeeze (see the header) ----
+namespace
+{
+bool gFed[2] = { false, false };        // a press sent at the squeeze, not yet released
+bool gSwallow[2] = { false, false };    // the late tap pulse of such a press is still to come
+bool gSwallowingDown[2] = { false, false };
+uint64_t gSwallowUntil[2] = { 0, 0 };   // after the release: how long the pulse is waited for (ms)
+}
+
+int GrabGlueGripKey(int role)
+{
+	return VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT ? KEY_PAD_RSHOULDER : KEY_PAD_LSHOULDER;
+}
+
+bool GrabGlueSqueezeFeeds(int role)
+{
+	return role == VR_MAINHAND && vr_secondary_button_mappings && VRHandPose_InputLive();
+}
+
+void GrabGlueGripPress(FLevelLocals *level, int role)
+{
+	if (role != 0 && role != 1) return;
+	if (!GrabGlueSqueezeFeeds(role) || gFed[role] || level == nullptr || level->localEventManager == nullptr) return;
+	level->localEventManager->SendNetworkEvent("rsqdg_ngrip", role, 1, 0, false);
+	gFed[role] = true;
+	gSwallow[role] = true;
+	gSwallowingDown[role] = false;
+	gSwallowUntil[role] = 0;
+	Printf("[roth_grab] the main grip squeezed (analog): RSQ Distance Grab's grip press sent now, tic %d (its key, %d, comes only as"
+		" a tap's pulse at the release under vr_secondary_button_mappings)\n", level->maptime, GrabGlueGripKey(role));
+}
+
+void GrabGlueGripRelease(FLevelLocals *level, int role)
+{
+	if ((role != 0 && role != 1) || !gFed[role]) return;
+	gFed[role] = false;
+	gSwallowUntil[role] = I_msTime() + 500;   // the device posts the pulse on the release's own frame
+	if (level != nullptr && level->localEventManager != nullptr)
+		level->localEventManager->SendNetworkEvent("rsqdg_ngrip", role, 0, 0, false);
+	Printf("[roth_grab] the main grip opened (analog): RSQ Distance Grab's grip release sent, tic %d\n", level != nullptr ? level->maptime : -1);
+}
+
+bool GrabGlueResponder(const event_t *ev)
+{
+	if (ev == nullptr || (ev->type != EV_KeyDown && ev->type != EV_KeyUp)) return false;
+	for (int role = 0; role < 2; role++)
+	{
+		if (!gSwallow[role] || ev->data1 != GrabGlueGripKey(role)) continue;
+		if (ev->type == EV_KeyDown)
+		{
+			if (!gFed[role] && gSwallowUntil[role] != 0 && I_msTime() > gSwallowUntil[role]) { gSwallow[role] = false; continue; }
+			gSwallowingDown[role] = true;
+			Printf("[roth_grab] the main grip's key %d (the tap's pulse at its release) swallowed: its press was sent at the squeeze\n", ev->data1);
+			return true;
+		}
+		if (gSwallowingDown[role])
+		{
+			gSwallowingDown[role] = false;
+			if (!gFed[role]) gSwallow[role] = false;
+			return true;
+		}
 	}
 	return false;
 }

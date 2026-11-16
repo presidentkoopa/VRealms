@@ -218,7 +218,7 @@ class RSQDG_Laser : EventHandler
 	private Vector3 lastPalm[2], lastDir[2], lastTo[2];
 	private bool    leadPrimed[2], toPrimed[2];
 	private double  leadTics;
-	const LEAD_JUMP = 17.0;   // map units in one tic (~0.5 m) that is not a hand moving
+	const LEAD_JUMP = 53.7;   // map units in one tic (~0.5 m) that is not a hand moving  // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 17.0
 
 	private void UpdateLead(int h, PlayerPawn pmo, PlayerInfo p)
 	{

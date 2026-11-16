@@ -812,7 +812,10 @@ void TickHand(int role, AActor *pmo)
 	// the grip held (>= 0.5) and the index off the trigger.
 	h.pressReady = h.valid && h.grip >= kPointGrip && !h.triggerTouch;
 	bool gripEdge = false, trigEdge = false;
+	const bool gripWasClosed = h.gripClosed;
 	ReadButtons(h, gripEdge, trigEdge);
+	// The main grip opened: the release of a press RSQ Distance Grab was handed at the squeeze (roth_grabglue.h).
+	if (gripWasClosed && !h.gripClosed) GrabGlueGripRelease(P.level, role);
 	// A grip closing at the Lamp's bail takes the lamp (roth_held.h, owner Q2): it is not a use.
 	if (gripEdge && HeldGripTaken(role)) gripEdge = false;
 	// THE PACKAGE'S GRIP FIRST (owner 2026-11-16, "map to VRealms grips"; roth_grabglue.h GrabGlueTakesGrip): a hand on
@@ -824,6 +827,8 @@ void TickHand(int role, AActor *pmo)
 		if (Logging())
 			Printf("[roth_vrpick] %s hand grip: RSQ Distance Grab's grip takes this press (its walk-up grab or its carry) -- not also a use\n",
 				RoleName(role));
+		// The main grip's key comes only at its release under secondary mappings: the package gets the press now.
+		GrabGlueGripPress(P.level, role);
 		gripEdge = false;
 	}
 	// A WEAPON'S GRIP (roth_vrweapons.h): the off hand on the Shotgun's fore-end, the main hand in a body slot.

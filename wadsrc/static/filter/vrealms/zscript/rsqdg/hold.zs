@@ -115,7 +115,7 @@ class RSQDG_Hold : EventHandler
 
 	// A palm that moves further than this in one tic did not move, it was
 	// moved -- a teleport, a level-start pose. No feed-forward from that.
-	const PALM_JUMP = 64.0;
+	const PALM_JUMP = 202.2;   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 64.0
 
 	static RSQDG_Hold Get()
 	{
@@ -652,7 +652,7 @@ class RSQDG_Hold : EventHandler
 		Vector3 mid = (last + now) * 0.5;
 		// COLLECTED FIRST, STRUCK AFTER (throw.zs's rule): damage inside the iterator can kill and unlink.
 		Array<Actor> victims;
-		let it = BlockThingsIterator.CreateFromPos(mid.x, mid.y, mid.z, 128, sqrt(len2) * 0.5 + br + 8, false);
+		let it = BlockThingsIterator.CreateFromPos(mid.x, mid.y, mid.z, 128, sqrt(len2) * 0.5 + br + 25.3, false);   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was + 8
 		while (it.Next())
 		{
 			Actor t = it.thing;
@@ -740,14 +740,14 @@ class RSQDG_Hold : EventHandler
 		double heading = VectorAngle(v.x, v.y);
 		Actor best = null;
 		double bestOff = cone;
-		let it = BlockThingsIterator.Create(a, 1200);
+		let it = BlockThingsIterator.Create(a, 3790.6);   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 1200
 		while (it.Next())
 		{
 			Actor t = it.thing;
 			if (!t || t == a || t == p.mo || !t.bISMONSTER || t.Health <= 0 || !t.bSHOOTABLE || t.bFRIENDLY || RSQDG_Throw.Helper(t)) continue;
 			Vector2 d = t.Pos.xy - a.Pos.xy;
 			double dl = d.Length();
-			if (dl < 32 || dl > 1200) continue;
+			if (dl < 101.1 || dl > 3790.6) continue;   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 32 / 1200
 			double off = abs(Actor.DeltaAngle(heading, VectorAngle(d.x, d.y)));
 			if (off >= bestOff || !p.mo.CheckSight(t, SF_IGNOREVISIBILITY)) continue;
 			best = t;

@@ -709,7 +709,7 @@ class RSQDG_Throw : EventHandler
 			if ((!a.bSOLID || a.bTHRUACTORS) && mps >= minMps)
 			{
 				Actor hitT = null;
-				let it = BlockThingsIterator.Create(a, BodyRadius(a) + 8);
+				let it = BlockThingsIterator.Create(a, BodyRadius(a) + 25.3);   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was + 8
 				while (it.Next())
 				{
 					Actor t = it.thing;

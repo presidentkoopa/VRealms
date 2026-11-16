@@ -135,7 +135,7 @@ class RSQDG_Near : EventHandler
 		// corpse. The + 8 is slack against the rounding in a diagonal corner and costs one cell at
 		// most. checkh is left at 128: it is not the box, only the height the portal groups are
 		// collected over (checkz + checkh, :1083).
-		let it = BlockThingsIterator.CreateFromPos(hp.x, hp.y, hp.z, 128, nearU + 8, false);
+		let it = BlockThingsIterator.CreateFromPos(hp.x, hp.y, hp.z, 128, nearU + 25.3, false);   // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was + 8
 		while (it.Next())
 		{
 			Actor a = it.thing;

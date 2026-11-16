@@ -29,7 +29,7 @@
 
 class RSQDG_Door : EventHandler
 {
-	const TOUCH = 7.0;          // map units from the hand to the door face
+	const TOUCH = 22.1;         // map units from the hand to the door face  // VREALMS: changed owner 2026-11-16, scale to Realms (x 107.4 / 34); was 7.0
 	const LIFT_CAP = 4.0;       // x the door's own speed
 
 	// ---- synced: one held door per player -------------------------------------------
