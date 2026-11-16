@@ -830,6 +830,12 @@ void TickHand(int role, AActor *pmo)
 		// The main grip's key comes only at its release under secondary mappings: the package gets the press now.
 		GrabGlueGripPress(P.level, role);
 		gripEdge = false;
+		// ONE ACT PER PRESS covers the fingertip too: a pointing hand whose grip closes has its fingertip press ready
+		// (pressReady), and its tip on the same item would use it this very tic -- before the package's press, sent
+		// as a network event, lands on the next. Owner's PC, 60540638, dgrab_walkup_main_flat: "fingertip press: USE
+		// object at depth 1" took the Book at the squeeze and the package found nothing. Disarmed as a grip that
+		// acted disarms it (re-armed when the tip backs off).
+		h.pokeArmed = false;
 	}
 	// A WEAPON'S GRIP (roth_vrweapons.h): the off hand on the Shotgun's fore-end, the main hand in a body slot.
 	if (gripEdge && VRWeaponsGripTaken(role))
