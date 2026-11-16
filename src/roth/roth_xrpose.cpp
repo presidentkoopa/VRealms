@@ -56,6 +56,7 @@
 #include "d_player.h"
 #include "g_levellocals.h"
 #include "c_dispatch.h"
+#include "c_cvars.h"
 #include "printf.h"
 #include "hw_vrmodes.h"
 #include "r_utility.h"
@@ -375,6 +376,22 @@ CCMD(roth_xrpose)
 		VRPose_QuatFromYPR(qYaw, qPitch, -roll, q);
 		VRPoseTest_SetAim(role, q);
 		Printf("roth_xrpose: %s hand aim published as yaw %.1f pitch %.1f (up +) roll %.1f\n", RoleName(role), wantYaw, wantPitch, roll);
+		// RSQ Distance Grab's palm gate on these numbers (its reach.zs PalmPose: |roll| within rsqdg_palm_tol of
+		// rsqdg_palm_roll, and pitch ABOVE rsqdg_palm_pitch), with the package's own cvars -- so a run says at once
+		// whether the test's aim can arm the reach. Without RSQ_Accessibility (no Gesture Ease), as here.
+		{
+			FBaseCVar *cr = FindCVar("rsqdg_palm_roll", nullptr), *ct = FindCVar("rsqdg_palm_tol", nullptr), *cp = FindCVar("rsqdg_palm_pitch", nullptr);
+			if (cr != nullptr && ct != nullptr && cp != nullptr)
+			{
+				const double tgt = cr->GetGenericRep(CVAR_Float).Float, tol = ct->GetGenericRep(CVAR_Float).Float;
+				const double minP = cp->GetGenericRep(CVAR_Float).Float;
+				double rl = fmod(fabs(roll), 360.0);
+				if (rl > 180.0) rl = 360.0 - rl;
+				const bool rollOk = fabs(rl - tgt) <= tol, pitchOk = minP <= -180.0 || wantPitch >= minP;
+				Printf("roth_xrpose: RSQ Distance Grab's palm gate here: |roll| %.1f vs %.0f +- %.0f %s, pitch %.1f vs above %.0f %s -> the reach %s\n",
+					rl, tgt, tol, rollOk ? "ok" : "OUT", wantPitch, minP, pitchOk ? "ok" : "TOO LOW", rollOk && pitchOk ? "ARMS" : "does not arm");
+			}
+		}
 		return;
 	}
 	if (!stricmp(verb, "log")) { roth::Report(); return; }

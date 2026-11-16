@@ -1513,10 +1513,10 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 //
 //==========================================================================
 
-AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z)
+AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z, bool item)
 {
 	if (Level == nullptr || rothSector < 0 || rothIndex < 0) return nullptr;
-	PClassActor *cls = PropClass();
+	PClassActor *cls = item ? TakeableClass() : PropClass();
 	if (cls == nullptr) return nullptr;
 	AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(x, y, z), NO_REPLACE);
 	if (mo == nullptr) return nullptr;
