@@ -47,4 +47,9 @@ void GesturesEndLevel();
 // movement leaves the player. Not a rule of the game.
 void GesturesHoldReach(int role, bool tip, double wx, double wy, double wz, double lx, double ly, double lz);
 
+// A test instrument (roth_worldtest hold, roth_worldhands.cpp): the test is carrying hand `role` to its place this tic
+// (the controller pose corrected toward a target); for two tics nothing of its motion counts (no punch, knock or try),
+// as a hand placed by roth_gesturetest. Not a rule of the game.
+void GesturesTestPlacing(int role);
+
 } // namespace roth

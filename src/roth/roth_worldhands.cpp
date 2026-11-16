@@ -59,6 +59,7 @@
 #include "roth_held.h"
 #include "roth_raw.h"
 #include "roth_grabglue.h"
+#include "roth_gestures.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -1035,6 +1036,9 @@ void TestTick()
 		if (!TestPoint(role, t.what, at)) continue;
 		const DVector3 want = T.spot + off;
 		const DVector3 err = want - at;
+		// carried to its place (not a scripted move): the gestures take none of it as a motion (the first PC run: the
+		// correction swung the fist at 9.6 m/s into the Orb door -- a punch, the original's use)
+		if (t.moveTics == 0 && err.Length() > 0.5) GesturesTestPlacing(role);
 		if (err.Length() > 0.05) Nudge(role, err, 0.6);
 		else if (t.logged != 1)
 		{
@@ -1122,10 +1126,16 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 	}
 	else if (op == 0x18 || op == 0x32)
 	{
+		// ONE FACE: the side with the most matching points (a door's two faces would put the spot inside the door:
+		// the first PC run, MAS3 #4)
 		std::vector<int> sides;
 		RecordSides(record, sides);
+		DVector3 bestSum(0, 0, 0), bestLo, bestHi;
+		int bestN = 0;
+		DVector2 bestNormal;
 		for (int si : sides)
 		{
+			sum = DVector3(0, 0, 0); n = 0; lo = DVector3(1e9, 1e9, 1e9); hi = DVector3(-1e9, -1e9, -1e9);
 			side_t *sd = &S.level->sides[si];
 			line_t *ln = sd->linedef;
 			if (ln == nullptr) continue;
@@ -1133,7 +1143,6 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 			DVector2 nrm(ln->delta.Y, -ln->delta.X);
 			nrm /= nrm.Length();
 			if (sd != ln->sidedef[0]) nrm = -nrm;
-			if (!haveNormal) { normal = nrm; haveNormal = true; }
 			const DVector2 v1 = ln->v1->fPos();
 			const double z0 = sec->floorplane.ZatPoint(v1), z1 = sec->ceilingplane.ZatPoint(v1);
 			for (int k = 1; k < 64; k++)
@@ -1148,7 +1157,10 @@ bool RecordSpot(uint16_t record, DVector3 &at, FString &how, bool &haveNormal, D
 					kinds[std::min<int>(p.kind, 4)]++;
 					if (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf) count(p);   // a leaf stands in front of its room face
 				}
+			if (n > bestN) { bestN = n; bestSum = sum; bestLo = lo; bestHi = hi; bestNormal = nrm; }
 		}
+		sum = bestSum; n = bestN; lo = bestLo; hi = bestHi;
+		if (n > 0) { normal = bestNormal; haveNormal = true; }
 		if (sides.empty()) { how = "no face carries it"; return false; }
 	}
 	else { how.Format("opcode 0x%02x: no spot", op); return false; }

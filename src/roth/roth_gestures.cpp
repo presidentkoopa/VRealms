@@ -1308,6 +1308,11 @@ void PlaceHand(AActor *pmo, int role, bool tip, const DVector3 &want, const DVec
 
 } // namespace
 
+void GesturesTestPlacing(int role)
+{
+	if (S.level != nullptr && role >= 0 && role < 2) S.hand[role].placedUntil = S.level->maptime + 2;
+}
+
 void GesturesHoldReach(int role, bool tip, double wx, double wy, double wz, double lx, double ly, double lz)
 {
 	AActor *pmo = players[consoleplayer].mo;
