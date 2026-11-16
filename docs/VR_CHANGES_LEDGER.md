@@ -59,6 +59,17 @@ entries use it.
 
 **Found on the way:** examine records with no chain were never bound, so no object/face/floor examine line played by mouse or hand (fixed e145db53, gameproof and dialogue_test identical after); a use on a face fired every use binding there instead of the one record the original stops at (fixed 5fc3b774); an MSVC link trap (`struct player_t` forward declaration, fixed 367c710c). The Book's first look never gives the silver key in the original (its OnInspect's `if-flag 4` / `!if-flag 4` can't both pass): Q8's "key into the palm" has nothing to show (VR_CHAPTER01_SHADOWS entry 7).
 
+
+## 2026-11-16: the headset report, the hand frame, RSQ Distance Grab (owner's PC, flat, real controller path via roth_xrpose)
+
+| change | commits | seen on the PC | still open |
+|---|---|---|---|
+| Every hand reader (rays, hand-locked billboards, held cards, mount, UseByHand) rides the DRAWN hand's frame (they read the gun's aim pose with a flipped pitch: lasers sideways/behind, billboards orbiting) | a3f36ce7 | rays: "ray vs drawn finger 0.00 deg, start 0.00 units" at every pose; pins: "error 0.00 units, worst 0.00" through tilt, roll, moves, player and head turns | the headset |
+| RSQ Distance Grab copied whole from RSQ_UBQSeries/DistanceGrab (origin/main b1c2a8f90b; byte-identical but CVARINFO noarchive); a catch = the original's pickup; replaces at-range taking | cb7ad5dd, 6b8abd03 (ZScript fix), 5efafc2a, 5d569d2f, b8f514e1 | dgrab_study1_flat: 19 takeable; LOCKED → LAUNCHED dist 125 → "the off hand caught Realms object 412/0" → "412/0 (id 57) base 0x08 use -> firing" → "right hand: item 17 (Book)" → "caught and USED"; then 18 takeable | the headset; the package's metre is Doom's (reach/catch/throw speeds ~3x in Realms units) and its grip key codes are QuestZDoom's — owner's call |
+| At-range pointing kept for what the grab doesn't take: trigger at range = examine, grip at range = use on switches/doors | 5efafc2a | — | — |
+| 1:1 runtime fix: each Realms object had TWO actors (the binder ran before the loader spawned the props); now one ("242 object(s) bound to their loaded actors") | b8f514e1 | gestures_flat and held_flat re-run after it: every line as before (knock, attempts, punch 500 → 403 → 317, match, candles, niche 78 → 118 → 148 → 118, Lamp, Book, forced turn) | objects the logic moves/repaints beyond those runs |
+| Item models (img3d): generated GLBs replace item pictures in the world and in the hand; pipeline on D:\VRealms_img3d | 6108c51c, 5c371b9c, a8f983b2 | placeholder boxes drawn on the table and in the hand | the owner's SETUP (CUDA 12.4 toolkit) and the first real models |
+
 ## In progress (agents running)
 
 **Gestures (rows 19-23), first PC run of 03548253 (2026-11-13, flat, gestures_flat.cfg):**
