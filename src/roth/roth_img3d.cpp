@@ -351,18 +351,18 @@ PClassActor *HeldClass()
 
 // THE COLT'S OWN MESH LYING IN THE WORLD (owner 2026-11-16: "lying in the world as the same mesh"): item 9's object
 // wears vrealms_iwad/models/weapons/colt1911 (the mesh drawn in the hand, CC BY 4.0), not a generated model: the whole
-// mesh at rest on its left side (MODELDEF block angles: pitch -90 about the bore lays the gun's -X side up), 0.216 m long,
+// mesh at rest on its right side (MODELDEF block angles: pitch +90 about the bore lays the gun's +X side down: its grip toward the viewer, as the original's picture lies), 0.216 m long,
 // its lowest point on the picture's bottom. The picture is kept for picking, as every world model here.
 namespace
 {
 constexpr double kColtUnit = 0.000271900171;                 // metres a file unit (vrealms_iwad/MODELDEF.txt)
-constexpr double kColtRightSide = 56.73;                     // the mesh's +X extent: on its left side, the depth below its origin
+constexpr double kColtRightSide = 62.72;                     // the larger of the mesh's side extents (-X 62.72, +X 56.73): on its side it never sinks into the desk
 std::map<const PClass *, int> gColtSprites;
 int ColtWorldSprite(PClassActor *cls)
 {
 	auto it = gColtSprites.find(cls);
 	if (it != gColtSprites.end()) return it->second;
-	const int sn = BindModelFile("colt1911/world", "models/weapons/colt1911/", "colt1911.fbx:Default_1", "colt1911_diffuse.jpg", cls, 0.f, -90.f, 0.f, nullptr);
+	const int sn = BindModelFile("colt1911/world", "models/weapons/colt1911/", "colt1911.fbx:Default_1", "colt1911_diffuse.jpg", cls, 0.f, 90.f, 0.f, nullptr);
 	if (sn < 0) Printf(TEXTCOLOR_RED "[roth_img3d] the Colt's mesh could not be bound to %s -- its picture is kept\n", cls->TypeName.GetChars());
 	gColtSprites[cls] = sn;
 	return sn;
@@ -420,7 +420,7 @@ bool Img3dWearWorld(AActor *mo, uint16_t renderId, uint8_t rotation, bool fixedA
 			mo->SetOrigin(DVector3(mo->X(), mo->Y(), z), false);
 			mo->SetZ(z);
 			mo->ClearInterpolation();
-			if (!keyMatch) Printf("[roth_img3d] object (key %d) shows item 9: the Colt's own mesh (colt1911.fbx) on its left side, %.1f units long (%s), its origin at z %.1f (the picture's bottom %.1f), yaw %.0f\n",
+			if (!keyMatch) Printf("[roth_img3d] object (key %d) shows item 9: the Colt's own mesh (colt1911.fbx) on its side, %.1f units long (%s), its origin at z %.1f (the picture's bottom %.1f), yaw %.0f\n",
 				mo->special2 - 1, 794.41 * k, havePic ? "the original's picture's longest side" : "0.216 m at the VR metre", z, bottom, ObjectYaw(rotation) - 90.0);
 			if (!keyMatch) Printf("[roth_img3d] the Colt on the desk is %.1f units = %.3f m at the VR metre (%.1f units a metre); in the hand it is 0.216 m = %.1f units: the desk's %.2f times the hand's\n",
 				794.41 * k, 794.41 * k / upm, upm, 0.216 * upm, 794.41 * k / (0.216 * upm));
