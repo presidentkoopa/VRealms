@@ -159,6 +159,17 @@ Not seen: the headset.
 - MAS3: the Orb released -> #4; the Shrive -> #113.
 Still unseen (test placement, not the game): the Orb taken back (#24, the aperture moves with the door), the words-wall push (MAUSO1EA #5: the test hand stayed 5-30 cm off the stone), the bookcase from the passage (#75/#354: the palm met nothing).
 
+**The Colt (i9) as a real M1911 in VR (591b203f .. c50d5b07; full checklist in docs/REALMS_WEAPONS.md):**
+- Mesh: Sketchfab "Colt 1911" by AlexChuchvaga, CC BY 4.0 (vrealms_iwad/models/weapons/colt1911/CREDITS.txt). Parts driven from its own joints: trigger, hammer, slide, magazine, cases.
+- Owner's decisions 2026-11-16: real-parts reload (drop the magazine, seat one, rack the slide); no sprite layer for meshes; VR draws no weapon picture for the fists (i68) or the Colt (i9), and flat keeps them; world collision for loose parts now, object-object collision later; **the desk Colt is the original picture's size (32.0 units), the held Colt is real size (0.216 m = 21.6 units at 100 u/m), so the desk one is 1.48 times the hand's.**
+- Verified, differential test against the running original: the Colt reload has 0 differences over 24183 weapon and inventory states and 36 pulls. All 15 weapon replays have 0 differences. The magazine is taken when it is SEATED (the original's remove_item, WC:849): i51 2 -> 1, the word 0 -> 12.
+- Verified, engine-free tests: test_colt 27/27, vrweapon_test 70/70, gameproof mode 0 exit 0.
+- Verified, PC log (zzzz23, flat, real controller path): 13 shots along the bore; the slide locks back on the last round; DRY CLICK; magazine dropped and LANDED at z 0; cases LANDED; magazine taken and SEATED; the original's reload (i51 2 -> 1, word 0 -> 12); racked; word 12 -> 11. A release while a shot is cycling is refused (R1).
+- Seen in PC captures (tools/claude_bridge_remaroth/logs/): zzzz_colt_02_side and 04_lockedback (gun in hand, slide back); 03_recoil (a case in the air); 05b_magfalling (the magazine below the open grip); 07_desk (the mesh flat on the desk, barrel right, grip toward the viewer); 08_flat_picture (flat keeps the original picture).
+- NOT met, by measurement only (tools/colt_test/colt_fit.txt): the authored grip_pistol hand does not fit a real M1911 grip. The index pad is 14 mm short of the trigger face, and up to 6.5 mm of finger sits inside the grip. Its hole is 20-29 mm; the grip is about 33 x 55 mm. This needs new finger poses (see the hand-pose plan, owner 2026-11-16).
+- Floor frames (zzzz26, c50d5b07): the camera now stands in the room (06_floor from (928 3946), 145 units from the magazine; 06b_cases from (893 4110)). The magazine is at most a few pixels at 320x200, and no case is visible. **Not seen.** All 12 cases logged LANDED at the same point (844.5 3972.8). This is reasoning only and not checked: they probably stop against the corridor's north wall.
+- Not seen: the held magazine in the off hand; anything in a headset.
+
 ## Decided, LATER
 
 | change | owner decision |
