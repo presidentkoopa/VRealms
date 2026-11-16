@@ -25,6 +25,7 @@
 #include "roth_interface.h"
 #include "roth_inventory.h"
 #include "roth_hands.h"
+#include "roth_vrweapons.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -448,6 +449,14 @@ void DrawAndPresent(int ticks)
 static bool g_fireButtonAllowed = true;
 struct FireAt { bool pending = false, holding = false; double x = 0, y = 0, z = 0; };
 static FireAt g_fireAt;
+// THE STAFF SWUNG (owner 2026-11-16, chapter 2 Q10; roth_vrweapon.h 1b): the original's Staff has no melee, so a swing
+// that lands fires ADAM'S FISTS' attack as the original has it -- his own WeaponAction table (activate_weapon_item(0, 0)
+// parses it, WC:430), its first block: the bullet (i107: damage 100, life 8) and its sound, from his spot, aimed at the
+// contact exactly as the fist's (PunchAimAt) -- and the next one waits for that block's cycle (its picture's frames x its
+// rate, player.c:509-521). The Staff's own lock, charge and timing are not touched; a blow is refused while the Staff's
+// own shot cycles.
+struct BorrowedBlow { bool pending = false; double x = 0, y = 0, z = 0; int cycleLeft = 0; };
+static BorrowedBlow g_borrow;
 // THE FIST'S SHOT, FOLLOWED (a log only): the flying object the punch's attack spawned, every sweep it makes
 // (SweepLog below) until it is gone -- where it went, what stopped it (a wall, a floor, an object, the player), and
 // the object it hit. The PC run of d3eb1564: "the shot left" and the creature's health stayed 500.
@@ -553,11 +562,23 @@ void WeaponTick(int ticks)
 	// The aim, in the view's own terms: world yaw, pitch positive DOWN.
 	DAngle aimYaw = pmo->Angles.Yaw, aimPitch = pmo->Angles.Pitch;
 	DVector3 handAt;
+	bool twoHand = false;
 	if (vr)
 	{
 		aimYaw = pmo->AttackAngle + DAngle::fromDeg(90.);
 		aimPitch = -pmo->AttackPitch;
 		handAt = pmo->AttackPos;
+		// THE SHOTGUN IN TWO HANDS (owner, chapter 2 Q9; roth_vrweapons.h): while the off hand holds the fore-end the
+		// shot leaves the rear hand along the line through the fore hand. Everything else is the original's.
+		double y = 0, p = 0;
+		DVector3 rear;
+		if (VRWeaponsTwoHandAim(y, p, rear))
+		{
+			aimYaw = DAngle::fromDeg(y);
+			aimPitch = DAngle::fromDeg(-p);
+			handAt = rear;
+			twoHand = true;
+		}
 	}
 	else if (testHand != nullptr)
 	{
@@ -592,6 +613,47 @@ void WeaponTick(int ticks)
 		w.handShot.z = (int16_t)floor(handAt.Z);
 	}
 	const bool button = (pmo->player->cmd.buttons & BT_ATTACK) && g_fireButtonAllowed;
+	// THE STAFF'S BORROWED BLOW (ActorsRequestBorrowedBlowAt), before the weapon's own tick.
+	if (g_borrow.cycleLeft > 0) g_borrow.cycleLeft -= ticks;
+	if (g_borrow.pending)
+	{
+		g_borrow.pending = false;
+		const Inventory *inv = InterfaceInventory();
+		const int adam = inv != nullptr ? (int)inv->AdamItemId() : 0;
+		WeaponAction fist[4];
+		const int n = adam > 0 ? ParseWeaponActions(TheDbase100(), adam, fist, 4) : 0;
+		const int32_t bullet = n > 0 ? fist[0].D(0x08) : 0;
+		if (n <= 0 || bullet == 0)
+			Printf("[roth_gestures] the staff's swing: Adam's fists (i%d) have no attack to borrow -- nothing fired\n", adam);
+		else if (w.weapon.lock != 0 || g_borrow.cycleLeft > 0)
+			Printf("[roth_gestures] the staff's swing: refused -- %s\n", w.weapon.lock != 0 ? "the Staff's own shot is cycling"
+				: FStringf("the fists' cycle is still running (%d ticks left)", g_borrow.cycleLeft).GetChars());
+		else
+		{
+			double dx = 0, dy = 0;
+			if (w.player.sector >= 0) SectorShift(w.player.sector, dx, dy);
+			const PunchAim a = PunchAimAt(w.player, (int16_t)lround(g_borrow.x - dx), (int16_t)lround(g_borrow.y - dy), (int32_t)lround(g_borrow.z));
+			const int32_t pitchWas = w.player.pitch;
+			const ActorWorld::HandShot handWas = w.handShot;
+			w.player.pitch = a.pitch;
+			w.handShot = ActorWorld::HandShot();             // from Adam's own spot, as the fist's
+			const int32_t sfx = fist[0].D(0x10);
+			if (sfx != 0) g_actors.host.WeaponSound(sfx - 1);   // WC:896-899
+			const int rate = fist[0].D(0x3c) != 0 ? fist[0].D(0x3c) : 8;
+			const int frames = g_actors.host.WeaponFrames(fist[0].D(0x00));
+			const int slot = w.FirePlayer((uint16_t)bullet, a.yawOffset);
+			const ActorWorld::ShotStart &st = w.lastShot;
+			g_fistShot = st.object;
+			g_fistShotTicks = 0;
+			g_borrow.cycleLeft = (frames > 0 ? frames : 1) * rate;
+			Printf("[roth_gestures] the staff's swing: Adam's fists' attack borrowed (fists i%d, bullet i%d, flying slot %d) from (%d %d %d) sector %d,"
+				" aimed at (%.0f %.0f %.0f), yaw offset %d, z speed %d%s; the next blow in %d ticks (%d frames x rate %d); the Staff (lock %d) untouched\n",
+				adam, (int)bullet, slot, st.x, st.y, st.z, st.sector, g_borrow.x, g_borrow.y, g_borrow.z, (int)a.yawOffset, (int)st.zvel,
+				st.object == 0 ? " -- NO FLYING OBJECT (spawn failed)" : "", g_borrow.cycleLeft, frames, rate, (int)w.weapon.lock);
+			w.player.pitch = pitchWas;
+			w.handShot = handWas;
+		}
+	}
 	// A FIST THAT LANDED (ActorsRequestFireAt): the original's aimed attack, its aim the contact.
 	if (g_fireAt.pending)
 	{
@@ -599,8 +661,8 @@ void WeaponTick(int ticks)
 		const bool ready = w.weapon.lock == 0 && w.weapon.slots != 0;   // TriggerFire's own first gates (WC:781-783)
 		w.TriggerFire(0, 0);
 		g_fireAt.holding = ready && w.weapon.lock != 0;
-		Printf("[roth_gestures] the fist's attack: trigger_weapon_fire %s\n", g_fireAt.holding ? "pulled, aimed at the contact"
-			: "refused by the original's weapon (still in its last swing, or no hands)");
+		Printf("[roth_gestures] the hand's attack (weapon i%d, bullet i%d): trigger_weapon_fire %s\n", (int)w.weapon.item0, (int)w.weapon.pendingDef,
+			g_fireAt.holding ? "pulled, aimed at the contact" : "refused by the original's weapon (still in its last swing, or no hands)");
 	}
 	else if (button) w.TriggerFire(0, 0);                  // key_fire_weapon (WC:912)
 	if (g_fireAt.holding)
@@ -652,8 +714,8 @@ void WeaponTick(int ticks)
 		g_shotSerialSeen = w.shotSerial;
 		const ActorWorld::ShotStart &st = w.lastShot;
 		const int ang = (int)(st.angleSource & 511);
-		Printf("[roth_gunaim] %s shot from Realms %d,%d z %d (sector %d)%s: angle %d of 512 = engine yaw %.1f (the view: %d = %.1f), climb %d a 128 run (aim pitch %.1f up)%s\n",
-			vr ? "VR" : (hand ? "test-hand" : "flat (the original's)"), st.x, st.y, st.z, st.sector,
+		Printf("[roth_gunaim] %s shot (weapon i%d) from Realms %d,%d z %d (sector %d)%s: angle %d of 512 = engine yaw %.1f (the view: %d = %.1f), climb %d a 128 run (aim pitch %.1f up)%s\n",
+			vr ? (twoHand ? "VR two-hand" : "VR") : (hand ? "test-hand" : "flat (the original's)"), (int)w.weapon.item0, st.x, st.y, st.z, st.sector,
 			hand ? (st.fromHand ? " -- the hand" : " -- the player's own start") : "",
 			ang, fmod(ang * 360.0 / 512.0 + 90.0, 360.0), (int)w.player.angle, fmod(w.player.angle * 360.0 / 512.0 + 90.0, 360.0),
 			(int)st.zvel, -aimPitch.Degrees(),
@@ -901,6 +963,7 @@ void ActorsAddWeaponAmmo(int delta) { g_actors.world.weapon.ammo += delta; }
 // Outside the anonymous namespace: declared in roth_actors_engine.h (the MSVC link trap).
 void ActorsSetFireButtonAllowed(bool allowed) { g_fireButtonAllowed = allowed; }
 void ActorsRequestFireAt(double x, double y, double z) { g_fireAt.pending = true; g_fireAt.x = x; g_fireAt.y = y; g_fireAt.z = z; }
+void ActorsRequestBorrowedBlowAt(double x, double y, double z) { g_borrow.pending = true; g_borrow.x = x; g_borrow.y = y; g_borrow.z = z; }
 int ActorsTickCount() { return g_actors.ticks; }
 
 bool ActorsCreatureBody(int rothSector, int rothIndex, int &radius, int &height)

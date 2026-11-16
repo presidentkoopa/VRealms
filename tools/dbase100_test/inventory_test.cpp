@@ -206,6 +206,45 @@ void TestQuery(const roth::Dbase100 &db)
 	CHECK_EQ(inv.RightHand(), -1);
 }
 
+// VR (chapter 2 Q7): the worn item counts as in a hand for the select-mode
+// test, exactly as the weapon hand does (inventory.c:490-492): 1, no scan, no
+// slide reset; not in count mode; nothing worn = the original's answers.
+void TestWorn(const roth::Dbase100 &db)
+{
+	g_test = "worn item (VR Q7): select mode answers 1";
+	roth::Inventory inv; inv.Reset();
+	Recorder r;
+	const int gunSlot = Put(inv, 3, 6);
+	CHECK_EQ(inv.Query(db, 3, 3, &r), 0);          // carried, not in a hand, mode 3: 0 (the original)
+	CHECK_EQ(inv.RightHand(), -1);
+	inv.SetWorn(3);
+	CHECK_EQ(inv.Query(db, 3, 3, &r), 1);          // worn: in hand
+	CHECK_EQ(inv.Query(db, 3, 1, &r), 1);          // select mode with scan: worn answers first, no auto-select
+	CHECK_EQ(inv.RightHand(), -1);
+	CHECK(!inv.AutoSelected());
+	CHECK_EQ(inv.Query(db, 3, 0, &r), 1);          // count mode: the slot count, as without it
+	CHECK_EQ(inv.Query(db, 1, 3, &r), 0);          // another item: not in hand
+	int32_t ids[2] = { 9, 3 };
+	roth::RothIndexRng rng;
+	CHECK_EQ(inv.FindOrAutoselect(ids, 2, 3, rng, &r), 1);   // the list form too
+	CHECK_EQ(inv.LastItem(), 3);
+	inv.SetWorn(0);
+	CHECK_EQ(inv.Query(db, 3, 3, &r), 0);          // nothing worn: the original's answer again
+	CHECK_EQ(inv.FindOrAutoselect(ids, 2, 3, rng, &r), 0);
+	inv.SetLeftHand(gunSlot);
+	CHECK_EQ(inv.Query(db, 3, 3, &r), 1);          // the weapon hand, as before
+
+	g_test = "the inventory's weapon click and the empty weapon hand";
+	r = Recorder();
+	inv.SetLeftHand(-1);
+	inv.WeaponClick(gunSlot, &r);
+	CHECK_EQ(inv.LeftHand(), gunSlot);
+	inv.EmptyWeaponHand(&r);
+	CHECK_EQ(inv.LeftHand(), -1);
+	inv.WeaponClick(200, &r);                      // an empty slot: nothing
+	CHECK_EQ(inv.LeftHand(), -1);
+}
+
 void TestRemove(const roth::Dbase100 &db)
 {
 	g_test = "remove_item: stack (§10 test 5)";
@@ -1678,6 +1717,7 @@ int main(int argc, char **argv)
 	TestPickable(db);
 	TestFreeSlot();
 	TestQuery(db);
+	TestWorn(db);
 	TestRemove(db);
 	TestFilter(db);
 	TestSwapAndSave(db);

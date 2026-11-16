@@ -256,6 +256,22 @@ public:
 	int32_t GiveItemByRenderId(const Dbase100 &db, int32_t renderId, const GiveContext *ctx = nullptr,
 		InventorySink *sink = nullptr);
 
+	// THE WORN ITEM (VR, owner's chapter 2 Q7: the Shield ALWAYS on the off
+	// forearm). Not the original's: an item the VR body wears counts as in a
+	// hand for the select-mode test (the in-hand test, RAW 0x27's mode 1/3),
+	// as the weapon hand does (inventory.c:490-492: answers 1, no slide reset,
+	// no scan). 0 = nothing worn (always, in flat). The VR layer sets it every
+	// tic to an item that is carried (roth_vrweapons.cpp); nothing saves it.
+	void SetWorn(int32_t id) { mWorn = id; }
+	int32_t Worn() const { return mWorn; }
+
+	// The inventory's weapon click on `slot` (commit_held_cursor_item, list 1:
+	// activate_weapon_item(slot, id), inventory.c:2183-2192), and its way to
+	// empty the weapon hand (activate_weapon_item(0, 0), dialogue_ui.c:1776-
+	// 1778). For the VR body slots (roth_vrweapons.cpp): the same calls.
+	void WeaponClick(int slot, InventorySink *sink) { if (slot >= 0 && slot < SLOT_COUNT && mSlots[slot].id != 0) EquipLeft(slot, SignedId(slot), sink); }
+	void EmptyWeaponHand(InventorySink *sink) { EquipLeft(-1, 0, sink); }
+
 	// query_player_inventory (0x1ccf7, inventory.c:472-531). flags&1 = select
 	// mode, flags&2 = never auto-select.
 	int Query(const Dbase100 &db, uint16_t id, int flags, InventorySink *sink = nullptr);
@@ -354,6 +370,7 @@ private:
 	bool mAutoSelected = false;
 	bool mEasy = false;
 	int32_t mLastItem = 0;
+	int32_t mWorn = 0;          // SetWorn (VR only)
 	uint32_t mPickupFlags = 0;
 	int32_t mPickupTimer = 0;
 };

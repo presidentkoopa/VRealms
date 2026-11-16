@@ -883,7 +883,7 @@ the statuette's coils; P11 the open palm (frame 0) for hand prints; P12 a two-ha
 - **Q7 Shield: ALWAYS on the off forearm** (not the recommendation).
 - **Q8 weapon switching: both** the inventory and body slots that run the original's select click.
 - **Q9 Shotgun: TWO-HANDED NOW** (off hand on the fore-end aims it); the reload/pump waits for adequate meshes (owner will find them).
-- **Q10 Staff: read the original's WeaponAction, but in VR it is "a combination projectile and melee"** (owner): a swing is melee and the trigger fires its projectile, each with the original's numbers where the original has them; design after reading.
+- **Q10 Staff: read the original's WeaponAction, but in VR it is "a combination projectile and melee"** (owner): a swing is melee and the trigger fires its projectile, each with the original's numbers where the original has them; design after reading. Read (2026-11-16): projectile only. Owner 2026-11-16: "it is a vr game and we are holding a staff, we will be able to swing it" -- the swing borrows Adam's fists' numbers (ledger row 42).
 - **Q11 the choice menu: world-locked where the movie screen stood**, picked by laser or fingertip.
 - **Q12 the words of passing: VOICE.** Owner: "Speaking the dialog would be awesome. Later we might entertain voice recognition to more organically unlock dialogs." Now: the player SPEAKS the words (speech recognition of the original's choice texts), the original's choice is what fires. Later: voice for dialogs generally. (New content, approved.)
 - **Q13 the altar's Staff: the grab is the original's click; the choice is made in the (world-locked) choice menu.**
@@ -1046,9 +1046,25 @@ The rows that reach chapter 2, and where:
 | 36 | quicksave / quickload | built | all |
 | 37 | item to the eyes = examine | built | 6, 9, 30, 31 (documents) |
 | — | mirrors keep the glass; desks never open | decided | 19 (Q23) |
+| 38 | the Sword swung (Q6) | built, not seen | every fight with the Sword |
+| 39 | the Shield worn on the off forearm (Q7) | built, not seen | given at STUDY1 `#13`; its tests are ANUBIS's |
+| 40 | body slots (Q8) | built, not seen | all |
+| 41 | the Shotgun two-handed (Q9) | built, not seen | 32 and every fight after |
+| 42 | the Staff (Q10): its trigger the original's projectile; swung, with Adam's fists' blow borrowed (owner 2026-11-16: the original's Staff has no melee) | built, not seen | the altar (MAUSO1EB) and on |
+
+**The four weapons as the original has them** (read from the retail DBASE100 with the port's own readers, ParseWeaponActions
+and BulletFor, which tools/actors_test proves against the running original; the four weapon replays re-run 2026-11-16:
+i29 7845, i28 7315, i38 7890, i12 8776 weapon states, 0 differ): the **Sword** has three swing pictures (11, 7 and 7
+frames at 4 ticks; the next one rng(3) at each cycle's end), every pull free, the shot at frame 3, bullet i164 (damage 200,
+speed 12, life 10 ticks: the short-lived bullet melee is); the **Shield**'s one block has a picture and no bullet (25 pulls
+in the running original: 0 shots) -- its only effect is the in-hand test (RAW 0x27 select mode, "in-hand,no-autoselect")
+in ANUBIS (`#83` damage without it, `#11` / `#49` a spawn without it); the **Shotgun** a magazine of 6 from item i48, the
+shot at frame 2, rate 5, bullet i62 (damage 350, speed 32); the **Staff** a recharging weapon (charge 6, rate 2), the shot
+at frame 5, rate 8, bullet i59 (damage 205, speed 15, hit picture 2b7) and NO melee. Eternity (i97) is the original's
+one weapon with both a projectile (block 1, recharging) and melee (blocks 2-3, bullet i280, damage 350, life 10).
 
 **What chapter 2 needs that is not built:** N14 socket release, N15 fly to the hand, N16 sit, N17 press-to-use, N18
-lever pull, N19 melee weapon swing, N20 weapon body slots (if Q8), N21 the choice panel's placement, N22 drink, N23
+lever pull, N19 melee weapon swing (built for the Sword, row 38), N20 weapon body slots (built, row 40), N21 the choice panel's placement, N22 drink, N23
 twist, N4 door handles and key turn (chapter 1's, still new); M2-M10; P8-P13 (section 5).
 
 ---

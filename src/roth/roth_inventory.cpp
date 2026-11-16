@@ -356,6 +356,7 @@ int Inventory::Query(const Dbase100 &db, uint16_t id, int flags, InventorySink *
 			return 1;
 		}
 		if (mLeft >= 0 && mSlots[mLeft].id == id) return 1;               // :489-492
+		if (mWorn != 0 && (uint16_t)mWorn == id) return 1;                // VR: the worn item (SetWorn), as the left hand
 		if (!noScan)                                                      // :493
 		{
 			int seen = 0;
@@ -441,6 +442,9 @@ int Inventory::FindOrAutoselect(const int32_t *ids, int count, int flags, Invent
 			for (int p = 0; p < count; p++)
 				if (eid == ids[p]) { mLastItem = eid; return 1; }         // :1419
 		}
+		if (mWorn != 0)                                                   // VR: the worn item (SetWorn), as the left hand
+			for (int p = 0; p < count; p++)
+				if (mWorn == ids[p]) { mLastItem = mWorn; return 1; }
 		if (!noScan)                                                      // :1421
 		{
 			int pick[24];

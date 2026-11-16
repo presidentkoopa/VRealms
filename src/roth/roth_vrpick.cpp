@@ -133,6 +133,7 @@
 //
 
 #include "roth_vrpick.h"
+#include "roth_vrweapons.h"
 #include "roth_runtime.h"
 #include "roth_interface.h"
 #include "roth_hands.h"
@@ -825,6 +826,12 @@ void TickHand(int role, AActor *pmo)
 				RoleName(role));
 		gripEdge = false;
 	}
+	// A WEAPON'S GRIP (roth_vrweapons.h): the off hand on the Shotgun's fore-end, the main hand in a body slot.
+	if (gripEdge && VRWeaponsGripTaken(role))
+	{
+		gripEdge = false;
+		if (Logging()) Printf("[roth_vrpick] %s hand grip: a weapon's (the fore-end, or a body slot) -- not a use\n", RoleName(role));
+	}
 	// A grip closing on a lever, a chain, a bookcase leaf's edge, the clock's case door, or with the Shrive / Key i22 set
 	// in a socket (roth_worldhands.h, the owner's Q15-Q17, Q24, Q30): its use comes from the pull or the twist that
 	// follows, not from the closing.
@@ -1453,13 +1460,17 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	if (player != nullptr)
 	{
 		const bool handsOwnAttack = roth_vrpick && pmo != nullptr && (HeadsetOn() || P.test);
-		const bool allowed = !handsOwnAttack || HandHoldsWeapon(VR_MAINHAND);
+		// THE SWORD IS SWUNG, NEVER TRIGGERED (owner, chapter 2 Q6): its attack is the swing's (roth_gestures.cpp, the
+		// blade), so the fire button does not reach it (roth_vrweapons.h VRWeaponsTriggerHeldBack).
+		const bool swung = handsOwnAttack && VRWeaponsTriggerHeldBack();
+		const bool allowed = !handsOwnAttack || (HandHoldsWeapon(VR_MAINHAND) && !swung);
 		ActorsSetFireButtonAllowed(allowed);
 		if (allowed) player->ButtonMask &= ~BT_ATTACK;
 		else player->ButtonMask |= BT_ATTACK;
 		if (Logging() && allowed != P.loggedFireAllowed)
 		{
 			Printf("[roth_vrpick] the fire button (attack) %s\n", allowed ? (handsOwnAttack ? "reaches the weapon: the main hand holds one" : "reaches the weapon")
+				: swung ? "is held back: the main hand holds a swung weapon (a blade that lands attacks)"
 				: "is held back: the main hand holds no weapon (its trigger examines; a fist that lands attacks)");
 			P.loggedFireAllowed = allowed;
 		}
@@ -1529,6 +1540,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	// THE GESTURES (roth_gestures.h), after both hands, while the hands work the world.
 	GesturesTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
 	WorldHandsTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);   // chapter 2's world by hand (roth_worldhands.h)
+	// CHAPTER 2'S WEAPONS (roth_vrweapons.h): the worn Shield, the Shotgun's second hand, the body slots.
+	VRWeaponsTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
 
 	// WHAT IT COSTS, measured every tic it runs: into the perf log's CPU
 	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),

@@ -22,6 +22,7 @@
 //---------------------------------------------------------------------------
 
 #include "roth_held.h"
+#include "roth_vrweapons.h"
 #include "roth_heldlogic.h"
 #include "roth_hands.h"
 #include "roth_handhold.h"
@@ -77,7 +78,8 @@ constexpr int kLampItem = 15;   // the Lamp (ITEM_DESIGN 15)
 // The objects' own sizes for their cards, metres, the longest side (the dossiers: ITEM_DESIGN 15 "30 cm tall",
 // 16 "5.5 x 3.6 x 1.6 cm"; the Book's world sprite is drawn 0.39 m: a novel is about 0.20 m). Others: 0.10 m.
 struct RealSize { int item; double metres; };
-constexpr RealSize kRealSize[] = { { 15, 0.30 }, { 16, 0.055 }, { 17, 0.20 }, { 20, 0.06 }, { 21, 0.06 } };
+// The Shield (i28), worn on the off forearm (chapter 2 Q7): 0.55 m [R: no size in the original; a round shield's].
+constexpr RealSize kRealSize[] = { { 15, 0.30 }, { 16, 0.055 }, { 17, 0.20 }, { 20, 0.06 }, { 21, 0.06 }, { 28, 0.55 } };
 double CardMetres(int item)
 {
 	for (const RealSize &r : kRealSize) if (r.item == item) return r.metres;
@@ -137,7 +139,7 @@ struct HeldWorld
 	double turnTo = 0.0;
 	int loggedLantern = -1;
 	// billboards
-	int card[2] = { 0, 0 }, stick[6] = {}, flameBB = 0, flameCore = 0, lampBB = 0, bookBB = 0, palmBB = 0;
+	int card[2] = { 0, 0 }, stick[6] = {}, flameBB = 0, flameCore = 0, lampBB = 0, bookBB = 0, palmBB = 0, shieldBB = 0;
 	std::vector<int> shown, shownLast;
 	// the flat test's scripted motion (roth_heldtest)
 	int scriptStroke = 0;                    // tics left in a scripted stroke
@@ -706,6 +708,16 @@ void HeldTick(FLevelLocals *level, bool worldTicks)
 		}
 		if (H.book.Item() != 0 && hand[0].ok && hand[1].ok)
 			ShowCard(H.bookBB, 4, H.book.Item(), (hand[0].palm + hand[1].palm) * 0.5, -1);
+	}
+	// THE SHIELD ON THE OFF FOREARM (owner, chapter 2 Q7; roth_vrweapons.h: worn whenever it is carried, VR only): its card
+	// (or its model) on the forearm, 12 cm from the wrist along the hand's own axis carried on past the wrist [R: the
+	// place on the forearm]. Drawn whenever the hands are live (a headset or the controller-pose test), riding the off hand.
+	int worn = 0;
+	Hand offHand;
+	if (pmo != nullptr && player->health > 0 && VRWeaponsShieldWorn(worn) && ReadHand(VR_OFFHAND, offHand))
+	{
+		const V3 wr = M(offHand.wrist), along = (M(offHand.middle) - wr).Unit();
+		ShowCard(H.shieldBB, 5, worn, W(wr - along * 0.12), VR_OFFHAND);
 	}
 	HideUnshown();
 	Img3dHeldEndTick(level);

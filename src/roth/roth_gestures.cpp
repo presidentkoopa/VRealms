@@ -6,6 +6,8 @@
 #include "roth_gestures.h"
 #include "roth_held.h"
 #include "roth_gesture.h"
+#include "roth_vrweapon.h"
+#include "roth_vrweapons.h"
 #include "roth_handclick.h"
 #include "roth_vrpick.h"
 #include "roth_runtime.h"
@@ -197,6 +199,11 @@ struct Motion { bool on = false; double from[3] = {}, to[3] = {}; int start = 0,
 struct HandG
 {
 	PunchReader punch;
+	// THE BLADE (chapter 2 Q6, roth_vrweapon.h 1): the fists' reader fed the striking point of the Sword in the main hand
+	PunchReader blade;
+	bool bladePrev = false;
+	DVector3 bladeGrip, bladeTip;   // last tic's blade
+	int bladePrevTic = 0;
 	RapDetector rap;
 	AttemptDetector sweep;
 	long sweepKey = -1;
@@ -435,13 +442,15 @@ bool ClearPath(AActor *pmo, const DVector3 &from, const Thing &t)
 // BODY (an object) its axis at the height the fist met it -- RSQ's ClearPath target (gloves.zs:774), where Deliver
 // lands the blow on the body -- not the face of its pick box (the PC run of 03548253: aimed at the box's face, close
 // and low, the shot dived under the creature); on a surface (glass) the point the fist met.
-bool Strike(int role, HandG &g, const Pick &p, const DVector3 &contact, const DVector3 &palm, SecondaryVerb v, int type, int now, const char *what)
+bool Strike(int role, PunchReader &rd, const char *blow, const Pick &p, const DVector3 &contact, const DVector3 &palm, SecondaryVerb v, int type, int now, const char *what,
+	bool borrowed = false)
 {
 	if (v == SECONDARY_ATTACK_AIMED)
 	{
 		DVector3 aim = contact;
 		if (p.kind == Pick::Prop && p.actor != nullptr) aim = DVector3(p.actor->X(), p.actor->Y(), contact.Z);
-		ActorsRequestFireAt(aim.X, aim.Y, aim.Z);
+		if (borrowed) ActorsRequestBorrowedBlowAt(aim.X, aim.Y, aim.Z);   // the Staff: Adam's fists' attack (roth_vrweapon.h 1b)
+		else ActorsRequestFireAt(aim.X, aim.Y, aim.Z);
 		FString health;
 		int s = -1, i = -1;
 		int32_t hp = 0;
@@ -452,21 +461,21 @@ bool Strike(int role, HandG &g, const Pick &p, const DVector3 &contact, const DV
 			Watch w; w.sector = s; w.index = i; w.hp = hp; w.st = st; w.until = now + 70;
 			S.watches.push_back(w);
 		}
-		Printf("[roth_gestures] %s hand punch (%.2f m/s average) lands on %s at (%.1f %.1f %.1f): cursor type %d -> the original's attack,"
-			" aimed at (%.1f %.1f %.1f)%s\n", RoleName(role), g.punch.avgMps, what, contact.X, contact.Y, contact.Z, type, aim.X, aim.Y, aim.Z,
-			health.GetChars());
-		Buzz(role, 0.5, 4 * 1000.0 / kTicRate, "a landed punch");
-		g.punch.Landed(now);
+		Printf("[roth_gestures] %s hand %s (%.2f m/s average) lands on %s at (%.1f %.1f %.1f): cursor type %d -> the original's attack,"
+			" aimed at (%.1f %.1f %.1f)%s%s\n", RoleName(role), blow, rd.avgMps, what, contact.X, contact.Y, contact.Z, type, aim.X, aim.Y, aim.Z,
+			health.GetChars(), borrowed ? " (the blow borrowed from Adam's fists)" : "");
+		Buzz(role, 0.5, 4 * 1000.0 / kTicRate, "a landed blow");
+		rd.Landed(now);
 		return true;
 	}
 	if (v == SECONDARY_USE)
 	{
-		const bool acted = VRPickUseAt(role, p, palm, "punch");
-		Printf("[roth_gestures] %s hand punch (%.2f m/s average) meets %s: cursor type %d -> the original's use: %s\n", RoleName(role),
-			g.punch.avgMps, what, type, acted ? "acted" : "nothing happened");
+		const bool acted = VRPickUseAt(role, p, palm, blow);
+		Printf("[roth_gestures] %s hand %s (%.2f m/s average) meets %s: cursor type %d -> the original's use: %s\n", RoleName(role),
+			blow, rd.avgMps, what, type, acted ? "acted" : "nothing happened");
 		if (!acted) return false;
-		Buzz(role, 0.5, 4 * 1000.0 / kTicRate, "a punch worked it");
-		g.punch.Landed(now);
+		Buzz(role, 0.5, 4 * 1000.0 / kTicRate, "a blow worked it");
+		rd.Landed(now);
 		return true;
 	}
 	return false;
@@ -512,7 +521,7 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 			if (Logging()) Printf("[roth_gestures] %s hand punch: pulled back out of object %d/%d, not a blow\n", RoleName(role), best->sector, best->index);
 			return;
 		}
-		Strike(role, g, bestPick, bestP, b, SecondaryClick(bestType), bestType, now,
+		Strike(role, g.punch, "punch", bestPick, bestP, b, SecondaryClick(bestType), bestType, now,
 			FStringf("object %d/%d (%s at (%.0f %.0f %.0f), %s (%.0f %.0f %.0f)..(%.0f %.0f %.0f), the fist %.1f units from its axis)", best->sector,
 				best->index, best->creature ? "a creature" : "an object", best->mo->X(), best->mo->Y(), best->mo->Z(),
 				best->creature ? "the original's body" : "its picture's box", best->lo.X, best->lo.Y, best->lo.Z, best->hi.X, best->hi.Y, best->hi.Z,
@@ -546,7 +555,110 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 			RoleName(role), g.punch.avgMps, PickKindName(p), type);
 		return;
 	}
-	Strike(role, g, p, p.hitPos, b, v, type, now, PickKindName(p));                  // 23
+	Strike(role, g.punch, "punch", p, p.hitPos, b, v, type, now, PickKindName(p));   // 23
+}
+
+//===========================================================================
+// The blade (chapter 2 Q6: roth_vrweapon.h 1) -- the punch's contact (items 17-23 above) along the Sword's blade
+//===========================================================================
+
+// The blade swept from (grip0, tip0) to (grip1, tip1) this tic, map units. As PunchContact: the bodies first (a creature
+// by the original's body, any other object by its pick box), the FIRST the blade met in the tic and the nearest of
+// those; what the original's click does there decides (19); a wall between the blade and the body stops it (18); a blade
+// drawn back out of a body is no blow (20). No body: what the tip met along its travel, then the blade along its length
+// (a wall, a door, the glass) (22). The blow is Strike's: the original's attack aimed at the contact (the Sword equipped:
+// its bullet, damage and rate), or the original's use where the cursor says use, as the fist's.
+void BladeContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &things, const DVector3 &grip0, const DVector3 &tip0,
+	const DVector3 &grip1, const DVector3 &tip1, double upm, int now, int item)
+{
+	const bool borrowed = vrweapon::SwingBorrowsFists(item);
+	const char *blow = item == vrweapon::kStaff ? "staff swing" : "sword swing";
+	const double gr = vrweapon::kBladeHalfM * upm;
+	auto v3 = [](const DVector3 &d) { return gesture::V3(d.X, d.Y, d.Z); };
+	const Thing *best = nullptr;
+	vrweapon::BladeContact bestC;
+	Pick bestPick;
+	int bestType = 1;
+	for (const Thing &t : things)
+	{
+		const vrweapon::BladeContact c = vrweapon::BladeSweptBoxContact(v3(grip0), v3(tip0), v3(grip1), v3(tip1), gr, v3(t.lo), v3(t.hi));
+		if (!c.hit) continue;
+		if (best != nullptr && (c.u > bestC.u || (c.u == bestC.u && c.dxy >= bestC.dxy))) continue;
+		const DVector3 at(c.p.x, c.p.y, c.p.z);
+		Pick pk;
+		pk.kind = Pick::Prop;
+		pk.actor = t.mo;
+		pk.hitPos = BoxClosest(at, t.lo, t.hi);
+		pk.dist = (pk.hitPos - grip1).Length();
+		const int type = VRPickCursorType(role, pk, grip1);
+		if (SecondaryClick(type) == SECONDARY_NOTHING) continue;
+		if (!ClearPath(pmo, at, t))
+		{
+			if (Logging()) Printf("[roth_gestures] %s hand %s: object %d/%d is behind a wall from the blade\n", RoleName(role), blow, t.sector, t.index);
+			continue;
+		}
+		best = &t; bestC = c; bestPick = pk; bestType = type;
+	}
+	if (best != nullptr)
+	{
+		// 20: the blade's point there moving into the body (its own travel this tic), not drawn back out of it
+		const DVector3 p0 = grip0 + (tip0 - grip0) * bestC.s, p1 = grip1 + (tip1 - grip1) * bestC.s;
+		const gesture::V3 body((best->lo.X + best->hi.X) * 0.5, (best->lo.Y + best->hi.Y) * 0.5, best->lo.Z);
+		if (!DrivesInto(v3(p1 - p0), v3(p0), body))
+		{
+			if (Logging()) Printf("[roth_gestures] %s hand %s: drawn back out of object %d/%d, not a blow\n", RoleName(role), blow, best->sector, best->index);
+			return;
+		}
+		Strike(role, g.blade, blow, bestPick, DVector3(bestC.p.x, bestC.p.y, bestC.p.z), grip1, SecondaryClick(bestType), bestType, now,
+			FStringf("object %d/%d (%s at (%.0f %.0f %.0f), %s (%.0f %.0f %.0f)..(%.0f %.0f %.0f), the blade %.0f%% of the way to its tip, %.0f%% through the tic)",
+				best->sector, best->index, best->creature ? "a creature" : "an object", best->mo->X(), best->mo->Y(), best->mo->Z(),
+				best->creature ? "the original's body" : "its picture's box", best->lo.X, best->lo.Y, best->lo.Z, best->hi.X, best->hi.Y,
+				best->hi.Z, bestC.s * 100.0, bestC.u * 100.0).GetChars(), borrowed);
+		return;
+	}
+	// 22: no body -- the tip's travel, then the blade itself
+	Pick p;
+	bool have = false;
+	const DVector3 mv = tip1 - tip0;
+	if (mv.Length() > 1e-6 && PickFrom(pmo, tip0, mv / mv.Length(), mv.Length() + gr, p)) have = true;
+	const DVector3 bl = tip1 - grip1;
+	Pick q;
+	if (bl.Length() > 1e-6 && PickFrom(pmo, grip1, bl / bl.Length(), bl.Length() + gr, q) && (!have || q.dist < p.dist)) { p = q; have = true; }
+	if (!have)
+	{
+		if (Logging()) Printf("[roth_gestures] %s hand %s (%.2f m/s average): meets nothing\n", RoleName(role), blow, g.blade.avgMps);
+		return;
+	}
+	if (p.kind == Pick::Prop)
+		for (const Thing &t : things)
+			if (t.mo == p.actor && t.creature)
+			{
+				if (Logging()) Printf("[roth_gestures] %s hand %s passes creature %d/%d's picture, not its body\n", RoleName(role), blow, t.sector, t.index);
+				return;
+			}
+	const int type = VRPickCursorType(role, p, grip1);
+	const SecondaryVerb v = SecondaryClick(type);
+	if (v == SECONDARY_NOTHING)
+	{
+		if (Logging()) Printf("[roth_gestures] %s hand %s (%.2f m/s average) meets %s: cursor type %d -> the original's click does nothing there\n",
+			RoleName(role), blow, g.blade.avgMps, PickKindName(p), type);
+		return;
+	}
+	Strike(role, g.blade, blow, p, p.hitPos, grip1, v, type, now, PickKindName(p), borrowed);
+}
+
+// The blade this tic: the grip (the aim pose's place, where the held weapon is drawn: AttackPos) and the tip along the
+// aim pose (AttackAngle is the world yaw less 90, AttackPitch positive up; the vertical through the pixel stretch).
+bool BladeNow(AActor *pmo, double upm, int item, DVector3 &grip, DVector3 &tip, DVector3 &strike)
+{
+	if (pmo == nullptr || !pmo->OverrideAttackPosDir) return false;
+	const double yaw = (pmo->AttackAngle.Degrees() + 90.0) * (M_PI / 180.0), pit = pmo->AttackPitch.Radians();
+	const DVector3 dir(cos(pit) * cos(yaw), cos(pit) * sin(yaw), sin(pit) / Stretch());
+	const double len = vrweapon::SwungLengthM(item) * upm;
+	grip = pmo->AttackPos;
+	tip = grip + dir * len;
+	strike = grip + dir * (len * vrweapon::kStrikeAt);
+	return true;
 }
 
 //===========================================================================
@@ -764,6 +876,8 @@ void Attempted(int role, const Pick &p, const DVector3 &from, const char *what, 
 void Forget(HandG &g)
 {
 	g.punch.Invalidate();
+	g.blade.Invalidate();
+	g.bladePrev = false;
 	g.rap.Reset();
 	g.sweep.Reset();
 	g.sweepKey = -1;
@@ -809,13 +923,41 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 		g.punch.Jumped();
 		velOk = false;
 	}
-	const bool fist = h.gripClosed && !HandHoldsWeapon(role) && !HeldHandCarries(role);   // a hand round the Lamp's bail is no fist
+	// THE SWORD in the main hand (Q6): the blade is read below, the hand is no fist; a hand whose grip is a weapon's (the
+	// Shotgun's fore-end, a body slot: roth_vrweapons.h) is no fist either.
+	const int heldItem = role == VR_MAINHAND ? VRWeaponsHeldItem() : 0;
+	const bool swordHand = role == VR_MAINHAND && vrweapon::IsSwung(heldItem);   // the Sword or the Staff
+	const bool fist = h.gripClosed && !HandHoldsWeapon(role) && !HeldHandCarries(role) && !swordHand && !VRWeaponsGripTaken(role);   // a hand round the Lamp's bail is no fist
 	const bool open = !h.gripClosed && h.grip <= 0.35f && h.trigger <= 0.35f && HandIsEmpty(role);
 
 	// ---- THE PUNCH ----
 	const bool swing = !jump && g.punch.Feed(fist, relPalm, now, pmo->Angles.Yaw.Degrees(), Stretch());
 	if (jump && fist) { g.punch.prevValid = true; g.punch.prevTic = now; g.punch.loc = relPalm; g.punch.prevYaw = pmo->Angles.Yaw.Degrees(); }
 	if (swing && g.havePrev) PunchContact(role, g, pmo, things, g.prevPalm, h.palm, upm, now);
+
+	// ---- THE SWORD (Q6) AND THE STAFF (Q10): the fists' reader on the striking point; the contact along its length ----
+	{
+		DVector3 grip, tip, strike;
+		const bool haveBlade = swordHand && BladeNow(pmo, upm, heldItem, grip, tip, strike);
+		if (!haveBlade) { g.blade.Invalidate(); g.bladePrev = false; }
+		else
+		{
+			// a step no hand makes (HandStepIsJump) on the GRIP, the hand itself: the blade's point may outrun 12 m/s in a real cut
+			const int dt = now - g.bladePrevTic;
+			const bool gripJump = g.bladePrev && dt >= 1 && HandStepIsJump(Metres(grip - g.bladeGrip, upm).Length() * kTicRate / dt);
+			if (gripJump || now <= g.placedUntil)
+			{
+				if (Logging() && g.blade.armed) Printf("[roth_gestures] %s hand %s: a step the hand did not make -- dropped\n", RoleName(role), heldItem == vrweapon::kStaff ? "staff" : "sword");
+				g.blade.Jumped();
+			}
+			const bool cut = !gripJump && now > g.placedUntil && g.blade.Feed(true, Metres(strike - body, upm), now, pmo->Angles.Yaw.Degrees(), Stretch());
+			if (cut && g.bladePrev) BladeContact(role, g, pmo, things, g.bladeGrip, g.bladeTip, grip, tip, upm, now, heldItem);
+			g.bladePrev = true;
+			g.bladeGrip = grip;
+			g.bladeTip = tip;
+			g.bladePrevTic = now;
+		}
+	}
 
 	// ---- THE KNOCK ----
 	if (velOk || !g.havePrev)

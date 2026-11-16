@@ -86,6 +86,10 @@ int ActorsLoosePicture(const char *name, const std::vector<uint8_t> &rowMajor, i
 // trigger_weapon_fire at the next weapon tick, its shot aimed at the contact (x, y, z map units).
 void ActorsSetFireButtonAllowed(bool allowed);
 void ActorsRequestFireAt(double x, double y, double z);
+// THE STAFF SWUNG (owner 2026-11-16, chapter 2 Q10): the original's Staff has no melee, so a staff that lands fires
+// ADAM'S FISTS' attack as the original has it (his own WeaponAction table, its first block: bullet i107), aimed at the
+// contact, at the next weapon tick; the Staff's own weapon state is not touched (roth_actors_engine.cpp WeaponTick).
+void ActorsRequestBorrowedBlowAt(double x, double y, double z);
 // A creature's slot for the object (sector, index): its health (+0x0c) and state (+0x08, 0x20 a corpse). False:
 // the object has no creature slot. For a log line (the gestures' punch: the health before and after).
 bool ActorsObjectHealth(int rothSector, int rothIndex, int32_t &health, uint8_t &state);
