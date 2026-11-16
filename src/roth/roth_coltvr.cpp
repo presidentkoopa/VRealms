@@ -33,6 +33,7 @@
 #include "r_data/vr_handpose_math.h"
 #include "r_data/model_reach.h"
 #include "model.h"
+#include "p_maputl.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -659,8 +660,27 @@ CCMD(roth_colttest)
 				const double fz = sec->floorplane.ZatPoint(p), cz = sec->ceilingplane.ZatPoint(p);
 				if (fabs(fz - found->floorz) > 1.0 || cz - fz < 150.0) ok = false;
 			}
+			// AND NO WALL BETWEEN. PointInSector answers for a spot outside the map too (the nearest subsector), so the
+			// samples alone passed a camera standing in the void behind the corridor's end wall (zzzz23: a black frame
+			// from (976 3845)). Every line crossed on the way out, and a player's radius past the camera, must be
+			// two-sided with an opening on the part's floor tall enough for the eye.
+			if (ok)
+			{
+				const DVector2 from = found->Pos().XY(), to = from + d * (146.0 + 24.0);
+				FPathTraverse trav(S.level, from.X, from.Y, to.X, to.Y, PT_ADDLINES);
+				while (intercept_t *in = trav.Next())
+				{
+					if (!in->isaline) continue;
+					const line_t *ln = in->d.line;
+					if (ln->backsector == nullptr) { ok = false; break; }
+					FLineOpening op;
+					P_LineOpening(op, nullptr, ln, trav.InterceptPoint(in));
+					if (op.top - op.bottom < 150.0 || fabs(op.bottom - found->floorz) > 1.0) { ok = false; break; }
+				}
+			}
+			if (!ok) Printf("roth_colttest lookat: not from yaw %.0f (a wall, a step or a low ceiling on the way)\n", atan2(-d.Y, -d.X) * 180.0 / M_PI);
 		}
-		if (!ok) Printf("roth_colttest lookat: no clear spot 146 units from it on its floor; looking from toward the player\n");
+		if (!ok) { d = d0; Printf("roth_colttest lookat: no clear spot 146 units from it on its floor; looking from toward the player\n"); }
 		const DVector2 at = found->Pos().XY() + d * 146.0;
 		const double yaw = atan2(-d.Y, -d.X) * 180.0 / M_PI;
 		const int ang = (int)lround((yaw - 90.0) * 512.0 / 360.0) & 511;
