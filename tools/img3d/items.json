@@ -1,32 +1,215 @@
 {
-  "comment": [
-    "The items RUN_IMG3D.bat makes by default, and what post.py needs per item. Ids and names: tools/item_dossier on",
-    "the install (2026-11-16 run): 16 Matchbox, 15 Lamp, 21 Key (the brass key of the candle niche), 17 Book, 1 Shards",
-    "and Seals, 4 Statuette (the four lying in the Study), 24 / 25 / 26 Mask, 9 Colt-45, 51 Colt-45 magazine.",
-    "metres: the longest side of the real object where a dossier gives it (roth_held.cpp kRealSize: Lamp 30 cm tall,",
-    "Matchbox 5.5 cm, Book 20 cm, Key 6 cm); null = not known: the engine sizes the lying item to its picture and the",
-    "held one to its card (0.10 m). The Colt's 0.216 m is the M1911's length (reasoning only, not from the game).",
-    "hold: palm (lies in the open palm), fist (held in the fist, up along the thumb), hang (hangs from the hand,",
-    "upright). grip_frac: the grip point as fractions of the model's box (x left->right, y bottom->top, z back->front);",
-    "grip_offset: metres added (palm: -0.025 puts the base 2.5 cm out of the palm from the grip socket).",
-    "grip_rot: degrees (yaw about +Y, pitch about +X, roll about +Z). front_yaw: degrees about +Y applied to the",
-    "generated mesh before anything else, if the generator's front is not +Z for this item. fill_holes: the film's",
-    "ground mask cuts dark glass out as holes (the Lamp); true makes every hole the border cannot reach part of the",
-    "item again (extract.py). All TUNING NUMBERS:",
-    "nothing here was seen in a headset."
-  ],
-  "default_items": [16, 15, 21, 17, 1, 4, 24, 25, 26, 9, 51],
-  "items": {
-    "16": { "name": "Matchbox",          "metres": 0.055, "hold": "palm", "grip_frac": [0.5, 0.0, 0.5], "grip_offset": [0, -0.025, 0] },
-    "15": { "name": "Lamp",              "metres": 0.30,  "hold": "hang", "fill_holes": true, "grip_frac": [0.5, 1.0, 0.5], "grip_offset": [0, 0, 0] },
-    "21": { "name": "Key",               "metres": 0.06,  "hold": "fist", "grip_frac": [0.5, 0.5, 0.5], "grip_offset": [0, 0, 0] },
-    "17": { "name": "Book",              "metres": 0.20,  "hold": "palm", "grip_frac": [0.5, 0.0, 0.5], "grip_offset": [0, -0.025, 0] },
-    "1":  { "name": "Shards and Seals",  "metres": null,  "hold": "palm", "grip_frac": [0.5, 0.0, 0.5], "grip_offset": [0, -0.025, 0] },
-    "4":  { "name": "Statuette",         "metres": null,  "hold": "fist", "grip_frac": [0.5, 0.4, 0.5], "grip_offset": [0, 0, 0] },
-    "24": { "name": "Mask",              "metres": null,  "hold": "palm", "grip_frac": [0.5, 0.0, 0.5], "grip_offset": [0, -0.025, 0] },
-    "25": { "name": "Mask",              "metres": null,  "hold": "palm", "grip_frac": [0.5, 0.0, 0.5], "grip_offset": [0, -0.025, 0] },
-    "26": { "name": "Mask",              "metres": null,  "hold": "palm", "grip_frac": [0.5, 0.0, 0.5], "grip_offset": [0, -0.025, 0] },
-    "9":  { "name": "Colt-45",           "metres": 0.216, "hold": "fist", "grip_frac": [0.5, 0.5, 0.3], "grip_offset": [0, 0, 0] },
-    "51": { "name": "Colt-45 magazine",  "metres": null,  "hold": "fist", "grip_frac": [0.5, 0.5, 0.5], "grip_offset": [0, 0, 0] }
+ "comment": [
+  "The items RUN_IMG3D.bat makes by default, and what post.py needs per item. Ids and names: tools/item_dossier on",
+  "the install (2026-11-16 run): 16 Matchbox, 15 Lamp, 21 Key (the brass key of the candle niche), 17 Book, 1 Shards",
+  "and Seals, 4 Statuette (the four lying in the Study), 24 / 25 / 26 Mask, 9 Colt-45, 51 Colt-45 magazine.",
+  "metres: the longest side of the real object where a dossier gives it (roth_held.cpp kRealSize: Lamp 30 cm tall,",
+  "Matchbox 5.5 cm, Book 20 cm, Key 6 cm); null = not known: the engine sizes the lying item to its picture and the",
+  "held one to its card (0.10 m). The Colt's 0.216 m is the M1911's length (reasoning only, not from the game).",
+  "hold: palm (lies in the open palm), fist (held in the fist, up along the thumb), hang (hangs from the hand,",
+  "upright). grip_frac: the grip point as fractions of the model's box (x left->right, y bottom->top, z back->front);",
+  "grip_offset: metres added (palm: -0.025 puts the base 2.5 cm out of the palm from the grip socket).",
+  "grip_rot: degrees (yaw about +Y, pitch about +X, roll about +Z). front_yaw: degrees about +Y applied to the",
+  "generated mesh before anything else, if the generator's front is not +Z for this item. fill_holes: the film's",
+  "ground mask cuts dark glass out as holes (the Lamp); true makes every hole the border cannot reach part of the",
+  "item again (extract.py). All TUNING NUMBERS:",
+  "nothing here was seen in a headset."
+ ],
+ "default_items": [
+  16,
+  15,
+  21,
+  17,
+  1,
+  4,
+  24,
+  25,
+  26,
+  9,
+  51,
+  28
+ ],
+ "items": {
+  "16": {
+   "name": "Matchbox",
+   "metres": 0.055,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "15": {
+   "name": "Lamp",
+   "metres": 0.3,
+   "hold": "hang",
+   "fill_holes": true,
+   "grip_frac": [
+    0.5,
+    1.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  "21": {
+   "name": "Key",
+   "metres": 0.06,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.5,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  "17": {
+   "name": "Book",
+   "metres": 0.2,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "1": {
+   "name": "Shards and Seals",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "4": {
+   "name": "Statuette",
+   "metres": null,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.4,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  "24": {
+   "name": "Mask",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "25": {
+   "name": "Mask",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "26": {
+   "name": "Mask",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "9": {
+   "name": "Colt-45",
+   "metres": 0.216,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.5,
+    0.3
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  "51": {
+   "name": "Colt-45 magazine",
+   "metres": null,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.5,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ]
+  },
+  "28": {
+   "name": "Shield",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
   }
+ }
 }
