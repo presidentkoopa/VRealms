@@ -182,6 +182,7 @@ def selftest(out):
 
 
 def main():
+    C.keep_everything_on_root()   # every cache and temp folder under IMG3D_ROOT (owner: everything on D:)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("items", nargs="*")
     ap.add_argument("--backend", default=os.environ.get("IMG3D_BACKEND", "hunyuan2"), choices=["hunyuan2", "trellis2"])

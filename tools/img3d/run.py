@@ -44,6 +44,7 @@ def point_engine(out, dirs):
 
 
 def main():
+    C.keep_everything_on_root()   # every cache and temp folder under IMG3D_ROOT (owner: everything on D:)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("items", nargs="*")
     ap.add_argument("--steps", default="extract,generate,post")

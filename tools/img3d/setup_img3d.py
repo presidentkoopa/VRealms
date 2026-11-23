@@ -137,6 +137,11 @@ def main():
     log.write("\n\n######## SETUP_IMG3D %s ########\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
     sys.stdout = _Tee(sys.stdout, log)
     sys.stderr = _Tee(sys.stderr, log)
+    C.keep_everything_on_root()
+    print("Everything goes under %s: caches, temp and downloads too (%s)." % (C.ROOT, ", ".join(sorted(C._ON_D))), flush=True)
+    print("Free space: %s %.1f GB, C: %.1f GB." % (os.path.splitdrive(C.ROOT)[0], C.free_gb(C.ROOT), C.free_gb("C:\\")), flush=True)
+    if 0 <= C.free_gb(C.ROOT) < 35:
+        die("%s needs about 35 GB free for the setup (25 GB of models plus room to unpack)." % os.path.splitdrive(C.ROOT)[0])
     t0 = time.time()
 
     step(1, "the licence of the primary model (Tencent Hunyuan3D-2)")

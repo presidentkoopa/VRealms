@@ -19,6 +19,45 @@ WORK_DIR = os.environ.get("IMG3D_WORK", os.path.join(ROOT, "img3d_work"))
 BIN_DIR = os.environ.get("IMG3D_BIN", os.path.join(ROOT, "img3d_bin"))
 OUT_DIR = os.environ.get("IMG3D_OUT", r"D:\VRealms_img3d\items")
 
+# EVERYTHING ON D: (owner, 2026-11-23: "everything needs to go on D, I only have 14 GB on C"). Every cache, temp and
+# download folder the tools would put under the user's profile on C: is sent under ROOT instead, for this process and
+# every process it starts: pip's cache and build temp, torch's hub, Hugging Face, rembg's u2net (the background
+# remover hy3dgen uses), CUDA's kernel cache, torch's compiled extensions, and the generic temp / cache folders.
+CACHE_DIR = os.path.join(ROOT, "cache")
+TEMP_DIR = os.path.join(ROOT, "tmp")
+_ON_D = {
+    "PIP_CACHE_DIR": os.path.join(CACHE_DIR, "pip"),
+    "TORCH_HOME": os.path.join(CACHE_DIR, "torch"),
+    "HF_HOME": os.path.join(MODELS_DIR, "hf"),
+    "HUGGINGFACE_HUB_CACHE": os.path.join(MODELS_DIR, "hf", "hub"),
+    "U2NET_HOME": os.path.join(CACHE_DIR, "u2net"),
+    "CUDA_CACHE_PATH": os.path.join(CACHE_DIR, "cuda"),
+    "TORCH_EXTENSIONS_DIR": os.path.join(CACHE_DIR, "torch_extensions"),
+    "XDG_CACHE_HOME": CACHE_DIR,
+    "TEMP": TEMP_DIR,
+    "TMP": TEMP_DIR,
+    "TMPDIR": TEMP_DIR,
+}
+
+
+def keep_everything_on_root():
+    """Point every cache and temp folder under ROOT (os.environ, so child processes inherit it)."""
+    for k, v in _ON_D.items():
+        os.makedirs(v, exist_ok=True)
+        os.environ[k] = v
+    import tempfile
+    tempfile.tempdir = TEMP_DIR
+
+
+def free_gb(path):
+    import shutil
+    drive = os.path.splitdrive(os.path.abspath(path))[0] or path
+    try:
+        return shutil.disk_usage(drive + os.sep if drive else path).free / 1e9
+    except OSError:
+        return -1.0
+
+
 ESRGAN_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"
 ESRGAN_FILE = os.path.join(MODELS_DIR, "upscale", "RealESRGAN_x4plus.pth")
 

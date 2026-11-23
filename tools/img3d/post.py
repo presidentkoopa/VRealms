@@ -158,6 +158,7 @@ def run(items, work, out, faces_max=20000, tex_max=1024):
 
 
 def main():
+    C.keep_everything_on_root()   # every cache and temp folder under IMG3D_ROOT (owner: everything on D:)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("items", nargs="*")
     ap.add_argument("--work", default=C.WORK_DIR)
