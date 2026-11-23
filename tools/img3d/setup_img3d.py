@@ -41,6 +41,12 @@ TORCH = ["torch==2.5.1", "torchvision==0.20.1", "--index-url", "https://download
 # both paint folders are fetched, so generate.py can fall back to the plain one.
 WEIGHTS = ["hunyuan3d-dit-v2-0/*", "hunyuan3d-paint-v2-0-turbo/*", "hunyuan3d-paint-v2-0/*", "hunyuan3d-delight-v2-0/*"]
 STEPS = 11
+# Hunyuan3D-2's requirements.txt pins nothing. In 2026 pip takes transformers 5.x and diffusers 0.43, which both need
+# torch >= 2.6 ("Dinov2Model requires PyTorch >= 2.6", setup_log.txt 2026-11-23), while Hunyuan3D-2 is tested on torch
+# 2.5.1+cu124 and the texture modules are built for it. The Hugging Face stack is held at its early-2025 releases (the
+# model's release, Jan 2025), and torch is held where it is.
+HF_PINS = ["transformers==4.48.3", "tokenizers>=0.21,<0.22", "huggingface_hub==0.28.1", "diffusers==0.32.2",
+           "accelerate==1.3.0", "torch==2.5.1", "torchvision==0.20.1"]
 
 
 class _Tee:
@@ -217,8 +223,14 @@ def main():
     with open(os.path.join(C.MODELS_DIR, "hunyuan3d2_commit.txt"), "w") as f:
         f.write(commit + "\n")
     print("  Hunyuan3D-2 at commit " + commit)
-    run([py, "-m", "pip", "install", "-r", os.path.join(HY_CODE, "requirements.txt")])
-    run([py, "-m", "pip", "install", "-e", HY_CODE])
+    pins = os.path.join(C.ROOT, "constraints.txt")   # the pins as a pip constraints file: nothing in -r may pass them
+    with open(pins, "w") as f:
+        f.write("\n".join(HF_PINS) + "\n")
+    run([py, "-m", "pip", "install", "-r", os.path.join(HY_CODE, "requirements.txt"), "-c", pins])
+    run([py, "-m", "pip", "install"] + HF_PINS)
+    run([py, "-m", "pip", "install", "-e", HY_CODE, "--no-deps"])
+    run([py, "-c", "import torch, transformers, diffusers; from transformers import Dinov2Model; "
+                   "print('torch', torch.__version__, 'transformers', transformers.__version__, 'diffusers', diffusers.__version__)"])
 
     step(7, "the texture stage's native modules (custom_rasterizer, mesh_processor)")
     # PREBUILT FIRST (2026-11-23). CUDA 12.4's nvcc cannot compile with Visual Studio 2026: its version check refuses
