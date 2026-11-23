@@ -1176,6 +1176,14 @@ void TickHand(int role, AActor *pmo)
 	// POINTING: the index straight, as the hand's pose shows it (PoseRule: off the
 	// trigger, not touching it); the other fingers may be curled by the grip.
 	h.pointing = h.valid && InvHandIndexStraight(h.triggerTouch, h.trigger);
+	// A HAND THAT HOLDS SOMETHING DOES NOT POINT (owner in the headset, 2026-11-23: "a dotted line extending from my
+	// hand at some goofy angle and it's jumping all over the place"). Holding an item, a tool, a weapon or the gun's
+	// support, its index is part of the grip; its ray came off a curled finger. That hand targets by touch (D3).
+	{
+		const hands::State was = HandStateNow(role);
+		if (h.pointing && (was == hands::State::Holding || was == hands::State::Supporting || HandHoldsWeapon(role)))
+			h.pointing = false;
+	}
 	// The fingertip press keeps its own readiness, unchanged: the point pose with
 	// the grip held (>= 0.5) and the index off the trigger.
 	h.pressReady = h.valid && h.grip >= kPointGrip && !h.triggerTouch;
@@ -1366,8 +1374,10 @@ void TickHand(int role, AActor *pmo)
 	else if (!actionable) h.hover = Pick{};
 
 	// ---- THE BEAM ----
-	if (h.pointing || h.pressReady)
-		DrawBeam(role, h, pmo, h.havePick ? h.pick.hitPos : h.tip + h.dir * (kNoHitBeam * upm), h.havePick, h.havePick ? h.cls.shape : 0);
+	// The beam only ON SOMETHING (owner, 2026-11-23): a pick the original's cursor would mark (usable, too far, keyed or
+	// blocked). Pointing at nothing draws nothing, instead of a line swinging out into the room.
+	if ((h.pointing || h.pressReady) && h.havePick && RulesClassOf(h.cls) != rules::Class::Nothing)
+		DrawBeam(role, h, pmo, h.pick.hitPos, true, h.cls.shape);
 	else if (h.aimHeld && h.aimHave)
 		DrawBeam(role, h, pmo, h.aimHit, true, h.aimShape);
 	else HideHand(h);
