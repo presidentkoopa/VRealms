@@ -1112,7 +1112,8 @@ Step2 L2Tick(int role, HandState &h, AActor *pmo, bool haveRay, bool gripEdge, b
 	f.heldObject = HeldHandOwned(role);
 	f.toolInHand = HeldMatchIn(role);
 	f.weaponInHand = HandHoldsWeapon(role);
-	f.itemCarried = role == ItemHandRole() && SelectedItem() > 0;
+	// the item carried in the hand, unless a weapon is drawn in it (the weapon's grip wins while it is drawn: PublishHeld)
+	f.itemCarried = role == ItemHandRole() && SelectedItem() > 0 && !f.weaponInHand;
 	PickerClaims claims(role, h, pmo, haveRay);
 	const hands::Step st = L.Tick(f, claims);
 	gHoldEnded[role] = st.holdEnded;
