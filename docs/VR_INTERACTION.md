@@ -279,7 +279,9 @@ Where the original shows nothing, the hand still feels the squeeze land or be re
 - 2e022212 an opaque face ends L1's pick; pickups found by the inventory; roth_xrpose pointat / standat.
 - d200e498, f7e9d35d, bfad0e32 tests and cfgs (a chain gives while a hand squeezes; the view at the target; no closing on
   the carried item over a drawn weapon; worldhands_study1 stands the player in reach of plate #124).
-- (this commit) the picked object's own picture for the fly-in; this section.
+- 3b5a9210 the picked object's own picture for the fly-in; this section.
+- 0efaf6f4 worldhands_study1: the stand at plate #124 with a bearing (#124 fires again on the PC).
+- 5ec84a26, 94233338 the band of a face in the pick (not effective on the two misses below; the rangeprobe logs +0x1a).
 
 ### Evidence
 - **L1 against the original** (tools/userange_test l1diff: the original's eye rays from the headless ROTH.C rangeprobe,
@@ -291,6 +293,15 @@ Where the original shows nothing, the hand still feels the squeeze land or be re
   1481 / 1800, the centre column (where D2 is the original's z) 481 / 600. 488 aimed rays at every use / examine
   target: record 346 / 488 (walls 282 / 385, floors 27 / 51, objects 37 / 43); what a use or examine reaches the same
   367 / 488 (use: chain 56 / 86, give 0 / 3, nothing 114 / 155; examine: record 39 / 55, nothing 158 / 189).
+  The centre column (where D2 is the original's z), 119 class misses of 600: 117 have a different record (P3's boxes
+  against texels: L1 an object where the original a face 31; the sky or no record against a face 19; another face 18;
+  ...), and **2 have the same record and a different class -- an L1 bug, NOT resolved**: STUDY1 faces 1361 (pose r97,
+  dy -80) and 1527 (r104, dy -170), hit above the sister sector's ceiling. The original's pick record +0x1a there is 1
+  (dir_mask 4: the upper band; the rangeprobe now logs it as band1a) and the faces' 0x18 records #13 and #555 admit
+  only the mid band (+6 0x01), so the original shows no use; L1 matches the record (too far, 0x398), so the port's band
+  at those hits is mid or unknown. Two fixes were tried and neither changed them (5ec84a26: the band by WallPartBit;
+  94233338: by the .RAW sister when the engine line has no back sector; 94233338's totals are 2e022212's in every
+  category). Next step: log the pick's band and the line's EffectiveBackSector at those two hits on the PC.
   The main remaining cause: L1 picks an object's box where the original saw the wall through the sprite's transparent
   texels (92 of the random set's 159 remaining wall differences) -- decision 7's model and texel shape is P3. The result
   comparison is of the dispatchers' matched record against the calls the original reached (its HOOK lines); its
@@ -320,7 +331,8 @@ Where the original shows nothing, the hand still feels the squeeze land or be re
 ### Not done or not seen
 - **Nothing here is seen in the headset.** The haptics are logged, not felt (no headset in the flat runs).
 - The fly-in: the port finds no picture for these items' render ids, so the pickups landed at once ("no picture to
-  fly"); the picked object's own picture is used from the last commit (not yet seen). A chain's give (0x29) still
+  fly"); 3b5a9210's fallback to the object's own picture did not help either (the PC run of 3b5a9210 still says "no
+  picture to fly"): NOT done. A chain's give (0x29) still
   starts no fly-in in the port (roth_runtime.cpp, the [unverified] give context).
 - The rim and the stow's coat flight are drawn but not yet looked at in a capture beside anything.
 - The use / examine result differences above; the object box vs the original's opaque texels (P3).
