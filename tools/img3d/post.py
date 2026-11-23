@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -121,6 +122,48 @@ def process(item, work, out, faces_max, tex_max):
             "hold": info.get("hold", "palm"), "world_yaw": info.get("world_yaw", 0), "faces": int(len(faces)), "source": src}
 
 
+def resize(item, out):
+    """--resize: the item's model already in <out> sized again to items.json "metres" (and its grip found again), the
+    mesh and its picture untouched -- for a size set after the model was made. Not for a model of several parts
+    (film_build.py makes those, and sizes them itself)."""
+    info = C.item_info(item)
+    old = {}
+    mp = os.path.join(out, "manifest.json")
+    if os.path.exists(mp):
+        with open(mp, encoding="utf-8") as f:
+            old = {e.get("item"): e for e in json.load(f).get("items", [])}
+    name = old.get(item, {}).get("file") or "%d_%s.glb" % (item, slug(info["name"]))   # the file it was made as
+    path = os.path.join(out, name)
+    if not os.path.exists(path):
+        C.log("item %d: no %s to resize" % (item, name))
+        return None
+    with open(path, "rb") as f:
+        data = f.read()
+    jlen = struct.unpack("<I", data[12:16])[0]
+    if len(json.loads(data[20:20 + jlen].decode("utf-8")).get("materials", [])) > 1:
+        C.log("item %d: %s has several parts -- resized by film_build.py, not here" % (item, name))
+        return None
+    g = glbio.read_glb(path)
+    v, faces = g["positions"], g["indices"].astype(np.int64)
+    lo, hi = v.min(0), v.max(0)
+    metres = info.get("metres")
+    scale = float(metres or 0.10) / float((hi - lo).max())
+    centre = np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2])
+    v = (v - centre) * scale
+    lo, hi = v.min(0), v.max(0)
+    grip = lo + np.array(info.get("grip_frac", [0.5, 0.5, 0.5]), np.float64) * (hi - lo) + np.array(info.get("grip_offset", [0, 0, 0]), np.float64)
+    glbio.write_glb(path, v.reshape(-1).tolist(), g["normals"].reshape(-1).tolist(), g["uvs"].reshape(-1).tolist(),
+                    faces.reshape(-1).tolist(), g["image"], name=info["name"])
+    ext = hi - lo
+    C.log("item %d %s: resized to %.3f x %.3f x %.3f m (%s), grip (%.3f %.3f %.3f), hold %s" % (item, info["name"], ext[0], ext[1], ext[2],
+          "its real size" if metres else "sized later to its picture", grip[0], grip[1], grip[2], info.get("hold", "palm")))
+    e = dict(old.get(item, {}))
+    e.update({"item": item, "name": info["name"], "file": name, "metres": round(float(ext.max()), 5), "size": "table" if metres else "picture",
+              "grip": [round(float(x), 5) for x in grip], "grip_rot": info.get("grip_rot", [0, 0, 0]), "hold": info.get("hold", "palm"),
+              "world_yaw": info.get("world_yaw", 0), "faces": int(len(faces))})
+    return e
+
+
 def write_manifest(out, entries):
     mp = os.path.join(out, "manifest.json")
     old = {"version": 1, "items": []}
@@ -165,7 +208,14 @@ def main():
     ap.add_argument("--out", default=C.OUT_DIR)
     ap.add_argument("--faces", type=int, default=20000)
     ap.add_argument("--tex", type=int, default=1024)
+    ap.add_argument("--resize", action="store_true", help="only size the models already made again (items.json metres)")
     a = ap.parse_args()
+    if a.resize:
+        out = C.outside_repo(a.out)
+        entries = [e for e in (resize(i, out) for i in C.item_list(a.items)) if e]
+        if entries:
+            write_manifest(out, entries)
+        return 0 if entries else 1
     done = run(C.item_list(a.items), a.work, a.out, a.faces, a.tex)
     return 0 if done else 1
 

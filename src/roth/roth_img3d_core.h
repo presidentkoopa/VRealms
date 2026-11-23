@@ -26,6 +26,12 @@
 // material's baseColorTexture (post.py writes a single material), kept ENCODED (PNG/JPG) for the engine's own
 // stb_image (common/models/fbx_image.h).
 //
+// THE PARTS (2026-11-23, tools/img3d/film_build.py: glass, a glowing liquid, a cork, a cut gem): every primitive is a
+// part with its own material, primitives sharing a material joined into one. Of a material this reads: the base
+// colour picture (embedded), baseColorFactor (used as the part's colour when it has no picture; a picture is drawn as
+// it is), alphaMode BLEND (drawn see-through at the factor's alpha) and a non-zero emissiveFactor (it glows: drawn
+// fullbright). A primitive with no material is one opaque white part. `image` above stays the FIRST part's picture.
+//
 // THE TWO PLACEMENTS (the engine's model space puts the vertical in the MIDDLE, model_memorymesh.h):
 //   lying in the world   glTF (x, y, z) -> Doom (forward = +z, left = +x, up = +y) -> model (z, y, x). A proper
 //                        turn, so the item is not mirrored; the actor's yaw is the object's facing.
@@ -75,6 +81,19 @@ struct Entry
 bool ParseManifest(const char *json, size_t length, std::vector<Entry> &out, std::string &err,
 	std::vector<std::string> *skipped = nullptr);
 
+struct Part
+{
+	size_t firstIndex = 0, indexCount = 0;   // its triangles: idx[firstIndex .. firstIndex + indexCount)
+	int material = -1;                       // the glTF material (-1: none)
+	std::string name;
+	std::vector<uint8_t> image;              // its base colour picture, encoded; empty: drawn in `color`
+	std::string imageMime;
+	float color[4] = { 1.f, 1.f, 1.f, 1.f };   // baseColorFactor, 0..1
+	bool blend = false;                      // alphaMode BLEND: see-through at color[3]
+	bool glow = false;                       // emissiveFactor not zero: fullbright
+	bool Plain() const { return !blend && !glow; }
+};
+
 struct Mesh
 {
 	std::vector<float> pos;        // x y z per vertex, metres, glTF axes, node transforms applied
@@ -85,6 +104,9 @@ struct Mesh
 	std::string imageMime;
 	float lo[3] = { 0, 0, 0 }, hi[3] = { 0, 0, 0 };   // bounds of pos
 	int primitives = 0;
+	std::vector<Part> parts;       // at least one when ReadGlb succeeds (THE PARTS)
+	// The part the item's own object wears: the first plain one (neither see-through nor glowing), else the first.
+	int Primary() const { for (size_t k = 0; k < parts.size(); k++) if (parts[k].Plain()) return (int)k; return 0; }
 	size_t Vertices() const { return pos.size() / 3; }
 	size_t Triangles() const { return idx.size() / 3; }
 	float Longest() const;

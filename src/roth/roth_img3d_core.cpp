@@ -312,18 +312,54 @@ struct Glb
 			}
 			if (!T.empty()) { out.uv.push_back((float)T[k * 2]); out.uv.push_back((float)T[k * 2 + 1]); }
 		}
+		const size_t first = out.idx.size();
 		for (double v : I)
 		{
 			if (v < 0 || v >= (double)n) { err = "an index past the primitive's vertices"; return false; }
 			out.idx.push_back((uint32_t)(base + (size_t)v));
 		}
 		// The picture: the first primitive's material's base colour.
-		if (out.primitives == 0) Picture(Int(prim, "material", -1), out);
+		const int material = Int(prim, "material", -1);
+		if (out.primitives == 0) Picture(material, out.image, out.imageMime);
+		// Its part (THE PARTS): a primitive whose material is the last part's extends it.
+		if (!out.parts.empty() && out.parts.back().material == material && out.parts.back().firstIndex + out.parts.back().indexCount == first)
+			out.parts.back().indexCount += out.idx.size() - first;
+		else
+		{
+			Part part;
+			part.firstIndex = first;
+			part.indexCount = out.idx.size() - first;
+			part.material = material;
+			Material(material, part);
+			out.parts.push_back(std::move(part));
+		}
 		out.primitives++;
 		return err.empty();
 	}
 
-	void Picture(int material, Mesh &out)
+	void Material(int material, Part &part)
+	{
+		const rapidjson::Value *mat = At("materials", material);
+		if (mat == nullptr) return;
+		auto nm = mat->FindMember("name");
+		if (nm != mat->MemberEnd() && nm->value.IsString()) part.name = nm->value.GetString();
+		auto am = mat->FindMember("alphaMode");
+		part.blend = am != mat->MemberEnd() && am->value.IsString() && !strcmp(am->value.GetString(), "BLEND");
+		auto em = mat->FindMember("emissiveFactor");
+		if (em != mat->MemberEnd() && em->value.IsArray())
+			for (auto &c : em->value.GetArray()) if (c.IsNumber() && c.GetDouble() > 0.0) part.glow = true;
+		auto pbr = mat->FindMember("pbrMetallicRoughness");
+		if (pbr != mat->MemberEnd() && pbr->value.IsObject())
+		{
+			auto f = pbr->value.FindMember("baseColorFactor");
+			if (f != pbr->value.MemberEnd() && f->value.IsArray() && f->value.Size() == 4)
+				for (unsigned k = 0; k < 4; k++)
+					if (f->value[k].IsNumber()) part.color[k] = (float)std::min(1.0, std::max(0.0, f->value[k].GetDouble()));
+		}
+		Picture(material, part.image, part.imageMime);
+	}
+
+	void Picture(int material, std::vector<uint8_t> &image, std::string &imageMime)
 	{
 		const rapidjson::Value *mat = At("materials", material);
 		if (mat == nullptr) return;
@@ -338,9 +374,9 @@ struct Glb
 		const int bv = Int(*img, "bufferView", -1);
 		const uint8_t *p; size_t len; int stride;
 		if (bv < 0 || !View(bv, p, len, stride)) { err.clear(); return; }   // a URI picture: not embedded, none
-		out.image.assign(p, p + len);
+		image.assign(p, p + len);
 		auto mime = img->FindMember("mimeType");
-		out.imageMime = (mime != img->MemberEnd() && mime->value.IsString()) ? mime->value.GetString() : "";
+		imageMime = (mime != img->MemberEnd() && mime->value.IsString()) ? mime->value.GetString() : "";
 	}
 
 	bool Node(int index, const M4 &parent, Mesh &out, int depth)

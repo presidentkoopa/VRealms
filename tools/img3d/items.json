@@ -14,7 +14,9 @@
   "ground mask cuts dark glass out as holes (the Lamp); true makes every hole the border cannot reach part of the",
   "item again (extract.py). All TUNING NUMBERS:",
   "nothing here was seen in a headset.",
-  "default_items (2026-11-23): every item obtainable in chapters 1 and 2 (tools/item_dossier on STUDY1, STUDY3, MAS3, MAS4, MAS6, MAS7, MAUSO1EA/EB, AELF, ANUBIS) except the Colt and its magazine (own mesh), the Shotgun 38 and the Gun 54 (real meshes to be found), category-4 papers (letters, notes, maps: made another way), cards and creatures. The Shield 28's view: img3d_work/28/choose.txt film_017.tga (straight on; the most-pixels frame made a wedge)."
+  "default_items (2026-11-23): every item obtainable in chapters 1 and 2 (tools/item_dossier on STUDY1, STUDY3, MAS3, MAS4, MAS6, MAS7, MAUSO1EA/EB, AELF, ANUBIS) except the Colt and its magazine (own mesh), the Shotgun 38 and the Gun 54 (real meshes to be found), category-4 papers (letters, notes, maps: made another way), cards and creatures. The Shield 28's view: img3d_work/28/choose.txt film_017.tga (straight on; the most-pixels frame made a wedge).",
+  "2026-11-23 sizes (owner: the chapter 1-2 batch came out 10 cm each): metres set by JUDGEMENT of the real object, not from the game (reasoning only, nothing seen in a headset): Shards 12 cm, Shrive 25, Orb 8, Keys 8, Masks 22-25, Staff 33 30 (the film shows a sceptre's proportions), Crystals 12 / 6 / 5, Jewel 6, Helm 30, Cartridges 12, Chalice 18, Vials 12 / 10, Coin 3.5. The Shield (worn on the off forearm: its fit there comes first) and the long weapons (Staff 12, Aelf's Dagger, Sword, Eternity, Wand) keep the picture size until their hilts and grips are set. post.py --resize sizes models already made.",
+  "film: film_build.py's recipe (the gems and the glass the generator cannot make): see film_build.py's header."
  ],
  "default_items": [
   1,
@@ -113,7 +115,7 @@
   },
   "1": {
    "name": "Shards and Seals",
-   "metres": null,
+   "metres": 0.12,
    "hold": "palm",
    "grip_frac": [
     0.5,
@@ -158,7 +160,7 @@
   },
   "25": {
    "name": "Mask",
-   "metres": null,
+   "metres": 0.22,
    "hold": "palm",
    "grip_frac": [
     0.5,
@@ -173,7 +175,7 @@
   },
   "26": {
    "name": "Mask",
-   "metres": null,
+   "metres": 0.22,
    "hold": "palm",
    "grip_frac": [
     0.5,
@@ -218,6 +220,447 @@
   },
   "28": {
    "name": "Shield",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "37": {
+   "name": "Crystal",
+   "metres": 0.06,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.5,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ],
+   "film": {
+    "recipe": "hull",
+    "gem": true,
+    "facet_deg": 16,
+    "elevation_deg": 10,
+    "parts": [
+     {
+      "name": "gem",
+      "opacity": 0.85,
+      "roughness": 0.2,
+      "lift": 0.7
+     }
+    ]
+   }
+  },
+  "103": {
+   "name": "Jewel",
+   "metres": 0.06,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.5,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ],
+   "film": {
+    "recipe": "hull",
+    "gem": true,
+    "facet_deg": 16,
+    "elevation_deg": 10,
+    "parts": [
+     {
+      "name": "gem",
+      "opacity": 0.85,
+      "roughness": 0.2,
+      "lift": 0.7
+     }
+    ],
+    "same_as": 37
+   }
+  },
+  "35": {
+   "name": "Crystal",
+   "metres": 0.12,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.5,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ],
+   "film": {
+    "recipe": "crystal",
+    "sides": 6,
+    "tips": [
+     0.16,
+     0.1
+    ],
+    "flatten": 0.85,
+    "parts": [
+     {
+      "name": "gem",
+      "opacity": 0.85,
+      "roughness": 0.2,
+      "lift": 0.7
+     }
+    ]
+   }
+  },
+  "249": {
+   "name": "Crystal",
+   "metres": 0.05,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "film": {
+    "recipe": "cut",
+    "corner_deg": 25,
+    "cut": {
+     "table": 0.6,
+     "crown": 0.14,
+     "pavilion": 0.43,
+     "girdle": 0.02
+    },
+    "parts": [
+     {
+      "name": "gem",
+      "opacity": 0.85,
+      "roughness": 0.2,
+      "lift": 0.7
+     }
+    ]
+   }
+  },
+  "206": {
+   "name": "Vial",
+   "metres": 0.1,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.4,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ],
+   "film": {
+    "recipe": "hull",
+    "elevation_deg": 10,
+    "parts": [
+     {
+      "name": "glass",
+      "colour_of": "rest",
+      "tint": 0.75,
+      "opacity": 0.3,
+      "roughness": 0.1,
+      "smooth": 2.0
+     },
+     {
+      "name": "liquid",
+      "pixels": [
+       "g > 120",
+       "g > r + 50"
+      ],
+      "glow": 1.0,
+      "smooth": 2.0,
+      "fill": true,
+      "wall_px": 1.5
+     },
+     {
+      "name": "cork",
+      "pixels": [
+       "r > 95",
+       "r >= g",
+       "g >= b",
+       "r - b > 12",
+       "r - b < 60"
+      ],
+      "smooth": 2.0
+     }
+    ],
+    "voxel": 1.5
+   }
+  },
+  "143": {
+   "name": "Vial",
+   "metres": 0.12,
+   "hold": "fist",
+   "grip_frac": [
+    0.5,
+    0.4,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    0,
+    0
+   ],
+   "film": {
+    "recipe": "hull",
+    "elevation_deg": 10,
+    "parts": [
+     {
+      "name": "glass",
+      "colour_of": "rest",
+      "tint": 0.75,
+      "opacity": 0.3,
+      "roughness": 0.1,
+      "smooth": 2.0
+     },
+     {
+      "name": "contents",
+      "pixels": [
+       "r > 140",
+       "r > b + 60"
+      ],
+      "smooth": 2.0,
+      "fill": true,
+      "wall_px": 1.5
+     }
+    ],
+    "voxel": 1.5
+   }
+  },
+  "14": {
+   "name": "The Shrive",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.25
+  },
+  "18": {
+   "name": "Orb",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.08
+  },
+  "22": {
+   "name": "Key",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.08
+  },
+  "173": {
+   "name": "Key",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.08
+  },
+  "60": {
+   "name": "Mask",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.25
+  },
+  "33": {
+   "name": "Staff",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.3
+  },
+  "45": {
+   "name": "Helm",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.3
+  },
+  "48": {
+   "name": "Cartridges",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.12
+  },
+  "127": {
+   "name": "Chalice",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.18
+  },
+  "185": {
+   "name": "Coin",
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ],
+   "metres": 0.035
+  },
+  "12": {
+   "name": "Staff",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "19": {
+   "name": "Aelf's Dagger",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "29": {
+   "name": "Sword",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "97": {
+   "name": "Eternity, the Dragon Sword",
+   "metres": null,
+   "hold": "palm",
+   "grip_frac": [
+    0.5,
+    0.0,
+    0.5
+   ],
+   "grip_offset": [
+    0,
+    -0.025,
+    0
+   ]
+  },
+  "150": {
+   "name": "Wand",
    "metres": null,
    "hold": "palm",
    "grip_frac": [

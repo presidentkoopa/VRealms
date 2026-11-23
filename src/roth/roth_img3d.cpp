@@ -38,6 +38,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -75,19 +76,24 @@ public:
 	}
 };
 
-// One grey 8 x 8 for a mesh that came without a picture (it is still drawn, and says so).
-class FImg3dGrey : public FImageSource
+// One colour 8 x 8: a part drawn in its material's colour (film_build.py's glass, liquid, gems), or grey for a mesh
+// that came without a picture (it is still drawn, and says so).
+class FImg3dColour : public FImageSource
 {
+	uint8_t R, G, B;
 public:
-	FImg3dGrey() { Width = Height = 8; bMasked = false; bTranslucent = 0; }
+	FImg3dColour(uint8_t r = 160, uint8_t g = 160, uint8_t b = 160) : R(r), G(g), B(b) { Width = Height = 8; bMasked = false; bTranslucent = 0; }
 	int CopyPixels(FBitmap *bmp, int, int) override
 	{
 		uint8_t px[8 * 8 * 4];
-		for (int i = 0; i < 64; i++) { px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = 160; px[i * 4 + 3] = 255; }
+		for (int i = 0; i < 64; i++) { px[i * 4] = R; px[i * 4 + 1] = G; px[i * 4 + 2] = B; px[i * 4 + 3] = 255; }
 		bmp->CopyPixelDataRGB(0, 0, px, 8, 8, 4, 32, 0, CF_RGBA);
 		return 0;
 	}
 };
+
+// A companion (THE PARTS below): a RealmsItemModel drawing one more part of the model its master wears.
+constexpr int kCompanionTag = 0x1A3D;
 
 constexpr double kDeg = 3.14159265358979323846 / 180.0;
 
@@ -97,8 +103,8 @@ struct ItemModel
 {
 	img3d::Entry entry;
 	img3d::Mesh mesh;
-	FTextureID tex = FNullTextureID();
-	bool texTried = false;
+	std::vector<FTextureID> tex;     // one a part
+	std::vector<bool> texTried;
 };
 
 struct State
@@ -107,11 +113,16 @@ struct State
 	std::string folder;               // the folder last read
 	int generation = 0;               // bumped on every read: the model and texture names carry it
 	std::map<int, ItemModel> models;      // item -> its model
-	std::map<std::tuple<int, int, const PClass *>, int> sprites;   // (item, kind, class) -> this load's sprite
+	std::map<std::tuple<int, int, const PClass *, int>, int> sprites;   // (item, kind, class, part) -> this load's sprite
+	// THE PARTS: a sprite wearing the primary part of a model with more parts -> which model and placement, so the
+	// companions that draw the other parts can follow whoever wears it (PartsTick).
+	struct Multi { int item = 0; int kind = 0; };
+	std::map<int, Multi> multi;
 	// The objects wearing a model: what to give back when their render id stops naming one.
 	// The picture is what the game picks by (roth_runtime.cpp ObjectPickBox): its sprite, scale and z are kept.
 	struct Worn { int item = 0; int pictureSprite = -1; DVector2 scale; double z = 0; double renderRadius = 0; int key = 0;
-		int modelSprite = -1; DVector2 modelScale; };
+		int modelSprite = -1; DVector2 modelScale;
+		bool styled = false; FRenderStyle style; double alpha = 1.0; bool fullbright = false; };   // a gem's own look, given back
 	std::map<AActor *, Worn> worn;
 	AActor *held[kImg3dHeldSlots] = {};
 	bool shown[kImg3dHeldSlots] = {};
@@ -187,6 +198,7 @@ void ReadFolder(bool force)
 	S.generation++;
 	S.models.clear();
 	S.sprites.clear();
+	S.multi.clear();
 	if (dir.empty()) { Printf("[roth_img3d] no model folder (roth_img3d_dir empty, no img3d_path.txt beside the exe): every item keeps its picture\n"); return; }
 	const std::vector<uint8_t> man = ReadAll(dir + "manifest.json");
 	if (man.empty()) { Printf("[roth_img3d] %smanifest.json: missing or empty -- every item keeps its picture\n", dir.c_str()); return; }
@@ -215,6 +227,17 @@ void ReadFolder(bool force)
 			e.name.empty() ? "?" : e.name.c_str(), e.file.c_str(), (int)m.mesh.Triangles(), (int)m.mesh.Vertices(), m.mesh.Longest(),
 			e.sizeFromTable ? "its real size" : "sized to its picture", m.mesh.image.empty() ? "NO" : m.mesh.imageMime.c_str(),
 			m.mesh.image.empty() ? "(grey)" : FStringf("%u bytes", (unsigned)m.mesh.image.size()).GetChars(), img3d::HoldName(e.hold));
+		if (m.mesh.parts.size() > 1 || !m.mesh.parts[0].Plain())
+			for (size_t k = 0; k < m.mesh.parts.size(); k++)
+			{
+				const img3d::Part &p = m.mesh.parts[k];
+				Printf("[roth_img3d] item %d part %d '%s': %d triangles, %s, colour %.2f %.2f %.2f%s%s%s\n", e.item, (int)k, p.name.c_str(),
+					(int)(p.indexCount / 3), p.image.empty() ? "its colour" : "its picture", p.color[0], p.color[1], p.color[2],
+					p.blend ? FStringf(", see-through %.2f", p.color[3]).GetChars() : "", p.glow ? ", glowing (fullbright)" : "",
+					(int)k == m.mesh.Primary() ? ", worn by the object itself" : ", drawn by a companion");
+			}
+		m.tex.assign(m.mesh.parts.size(), FNullTextureID());
+		m.texTried.assign(m.mesh.parts.size(), false);
 		S.models[e.item] = std::move(m);
 	}
 	Printf("[roth_img3d] %s: %d model(s) read\n", dir.c_str(), (int)S.models.size());
@@ -227,34 +250,42 @@ ItemModel *FindModelFor(int item)
 	return it == S.models.end() ? nullptr : &it->second;
 }
 
-FTextureID ModelTexture(int item, ItemModel &m)
+FTextureID ModelTexture(int item, ItemModel &m, int part)
 {
-	if (m.texTried) return m.tex;
-	m.texTried = true;
-	const FString name = FStringf("IMG3D_G%d_%d", S.generation, item);
+	if (part < 0 || (size_t)part >= m.tex.size()) return FNullTextureID();
+	if (m.texTried[part]) return m.tex[part];
+	m.texTried[part] = true;
+	const FString name = part == 0 ? FStringf("IMG3D_G%d_%d", S.generation, item) : FStringf("IMG3D_G%d_%d_P%d", S.generation, item, part);
 	FTextureID have = TexMan.CheckForTexture(name.GetChars(), ETextureType::Any);
-	if (have.isValid()) return m.tex = have;
+	if (have.isValid()) return m.tex[part] = have;
+	const img3d::Part &p = m.mesh.parts[part];
 	FImageSource *src = nullptr;
 	FBXSkinned::ImageInfo info;
-	if (!m.mesh.image.empty() && FBXSkinned::ImageInfoOf(m.mesh.image.data(), m.mesh.image.size(), info))
+	if (!p.image.empty() && FBXSkinned::ImageInfoOf(p.image.data(), p.image.size(), info))
 	{
-		uint8_t *bytes = (uint8_t *)ImageArena.Alloc(m.mesh.image.size());
-		memcpy(bytes, m.mesh.image.data(), m.mesh.image.size());
-		src = new FImg3dImage(bytes, m.mesh.image.size(), info.width, info.height);
+		uint8_t *bytes = (uint8_t *)ImageArena.Alloc(p.image.size());
+		memcpy(bytes, p.image.data(), p.image.size());
+		src = new FImg3dImage(bytes, p.image.size(), info.width, info.height);
+	}
+	else if (p.image.empty() && p.material >= 0)
+	{
+		// a part whose material is a colour alone (film_build.py)
+		auto c8 = [](float v) { return (uint8_t)(v <= 0.f ? 0 : v >= 1.f ? 255 : (int)(v * 255.f + 0.5f)); };
+		src = new FImg3dColour(c8(p.color[0]), c8(p.color[1]), c8(p.color[2]));
 	}
 	else
 	{
-		Printf(TEXTCOLOR_RED "[roth_img3d] item %d: %s -- drawn grey\n", item, m.mesh.image.empty() ? "the GLB has no base colour picture" : "its picture does not decode");
-		src = new FImg3dGrey();
+		Printf(TEXTCOLOR_RED "[roth_img3d] item %d part %d: %s -- drawn grey\n", item, part, p.image.empty() ? "the GLB has no base colour picture" : "its picture does not decode");
+		src = new FImg3dColour();
 	}
 	auto *tex = MakeGameTexture(new FImageTexture(src), name.GetChars(), ETextureType::Override);
-	m.tex = TexMan.AddGameTexture(tex);
-	return m.tex;
+	m.tex[part] = TexMan.AddGameTexture(tex);
+	return m.tex[part];
 }
 
 // The mesh in the engine's model space for `kind` (roth_img3d_core.h): world in metres (the actor's Scale makes map
 // units), hands in the grip frame's metres.
-FMemoryMeshData Build(ItemModel &m, int kind, FTextureID tex)
+FMemoryMeshData Build(ItemModel &m, int kind, FTextureID tex, int part)
 {
 	FMemoryMeshData d;
 	const img3d::Mesh &me = m.mesh;
@@ -276,11 +307,12 @@ FMemoryMeshData Build(ItemModel &m, int kind, FTextureID tex)
 			normals[v] = FVector3(o[0], o[1], o[2]);
 		}
 	}
-	const size_t nt = me.Triangles();
+	const img3d::Part &pa = me.parts[part];
+	const size_t t0 = pa.firstIndex / 3, nt = pa.indexCount / 3;
 	d.faces.Resize((unsigned)nt);
-	for (size_t t = 0; t < nt; t++)
+	for (size_t t = t0; t < t0 + nt; t++)
 	{
-		FMemoryMeshFace &f = d.faces[(unsigned)t];
+		FMemoryMeshFace &f = d.faces[(unsigned)(t - t0)];
 		f.count = 3;
 		f.skin = tex;
 		f.hasNormals = !normals.empty();
@@ -296,19 +328,32 @@ FMemoryMeshData Build(ItemModel &m, int kind, FTextureID tex)
 	return d;
 }
 
-int SpriteFor(int item, ItemModel &m, int kind, PClassActor *cls)
+// The sprite wearing `part` of the item's model (-1: the primary part, the one its own object wears).
+int SpriteFor(int item, ItemModel &m, int kind, PClassActor *cls, int part = -1)
 {
 	if (cls == nullptr) return -1;
-	const auto key = std::make_tuple(item, kind, static_cast<const PClass *>(cls));
+	const int primary = m.mesh.Primary();
+	if (part < 0) part = primary;
+	if ((size_t)part >= m.mesh.parts.size()) return -1;
+	const auto key = std::make_tuple(item, kind, static_cast<const PClass *>(cls), part);
 	auto it = S.sprites.find(key);
 	if (it != S.sprites.end()) return it->second;
-	const FTextureID tex = ModelTexture(item, m);
+	const FTextureID tex = ModelTexture(item, m, part);
 	const char *kn = kind == KIND_WORLD ? "world" : kind == KIND_HAND_RIGHT ? "handR" : "handL";
-	const FString mkey = FStringf("img3d/g%d/%d/%s", S.generation, item, kn);
-	const int sn = BindMemoryMesh(mkey.GetChars(), Build(m, kind, tex), cls, nullptr);
-	if (sn < 0) Printf(TEXTCOLOR_RED "[roth_img3d] item %d: the %s model could not be bound to %s -- its picture is kept\n", item, kn, cls->TypeName.GetChars());
+	const FString mkey = part == 0 ? FStringf("img3d/g%d/%d/%s", S.generation, item, kn) : FStringf("img3d/g%d/%d/%s/p%d", S.generation, item, kn, part);
+	const int sn = BindMemoryMesh(mkey.GetChars(), Build(m, kind, tex, part), cls, nullptr);
+	if (sn < 0) Printf(TEXTCOLOR_RED "[roth_img3d] item %d: the %s model (part %d) could not be bound to %s -- its picture is kept\n", item, kn, part, cls->TypeName.GetChars());
 	S.sprites[key] = sn;
+	if (sn >= 0 && part == primary && m.mesh.parts.size() > 1) S.multi[sn] = State::Multi{ item, kind };
 	return sn;
+}
+
+// A part's look on the actor drawing it: see-through at its alpha, glowing fullbright, or plain.
+void ApplyStyle(AActor *mo, const img3d::Part &p)
+{
+	if (p.blend) { mo->RenderStyle = LegacyRenderStyles[STYLE_Translucent]; mo->Alpha = p.color[3]; }
+	else { mo->RenderStyle = LegacyRenderStyles[STYLE_Normal]; mo->Alpha = 1.0; }
+	if (p.glow) mo->renderflags |= RF_FULLBRIGHT; else mo->renderflags &= ~RF_FULLBRIGHT;
 }
 
 double UnitsPerMetre() { return VRPickUnitsPerMetre(); }
@@ -332,6 +377,12 @@ bool PictureNow(AActor *mo, double &longestMetres, double &bottomZ)
 
 void GiveBack(AActor *mo, const State::Worn &w)
 {
+	if (w.styled)
+	{
+		mo->RenderStyle = w.style;
+		mo->Alpha = w.alpha;
+		if (w.fullbright) mo->renderflags |= RF_FULLBRIGHT; else mo->renderflags &= ~RF_FULLBRIGHT;
+	}
 	mo->Scale = w.scale;
 	mo->PrevScale = w.scale;
 	mo->renderradius = w.renderRadius;
@@ -469,6 +520,11 @@ bool Img3dWearWorld(AActor *mo, uint16_t renderId, uint8_t rotation, bool fixedA
 	mo->PrevScale = mo->Scale;
 	w.modelSprite = sn;
 	w.modelScale = mo->Scale;
+	// A primary part with a look of its own (a cut gem, see-through): the object takes it, and gives its own back
+	// with the picture (GiveBack). The other parts are drawn by companions (PartsTick).
+	const img3d::Part &prim = m->mesh.parts[m->mesh.Primary()];
+	if (!prim.Plain() && !w.styled) { w.styled = true; w.style = mo->RenderStyle; w.alpha = mo->Alpha; w.fullbright = (mo->renderflags & RF_FULLBRIGHT) != 0; }
+	if (w.styled) ApplyStyle(mo, prim);
 	S.worn[mo] = w;
 	// The base on the picture's bottom, never under the floor.
 	double z = havePic ? bottom : mo->Z();
@@ -529,6 +585,7 @@ bool Img3dShowHeld(FLevelLocals *level, int slot, int item, const DVector3 &at, 
 	mo->sprite = sn;
 	mo->frame = 0;
 	mo->renderflags &= ~RF_INVISIBLE;
+	ApplyStyle(mo, m->mesh.parts[m->mesh.Primary()]);
 	const double meshLong = m->mesh.Longest();
 	const double metres = m->entry.sizeFromTable ? meshLong : (fallbackMetres > 0 ? fallbackMetres : meshLong);
 	if (handLocked)
@@ -564,6 +621,80 @@ bool Img3dShowHeld(FLevelLocals *level, int slot, int item, const DVector3 &at, 
 	return true;
 }
 
+// THE PARTS (roth_img3d_core.h): a model of several parts -- a vial's glass, its glowing liquid, its cork -- is drawn by
+// its wearer (the primary part) and one COMPANION a further part: a RealmsItemModel whose master is the wearer, taking
+// the part's own look (see-through, fullbright), following the wearer's place, turn, scale and hand every tic, and
+// hidden with it. GZDoom draws a look per actor, not per surface, so each look needs its own actor; the translucent
+// ones are then drawn in the translucent pass after everything opaque, as any see-through sprite. Kept by the level
+// (saved and loaded with it); one whose wearer no longer wears a model of parts goes.
+static void PartsTick(FLevelLocals *level)
+{
+	PClassActor *cls = HeldClass();
+	if (level == nullptr || cls == nullptr) return;
+	std::set<std::pair<AActor *, int>> have;
+	TArray<AActor *> gone;
+	auto follow = [&](AActor *co, AActor *ma, const State::Multi &mu, int part) -> bool
+	{
+		ItemModel *m = FindModelFor(mu.item);
+		if (m == nullptr || part < 0 || (size_t)part >= m->mesh.parts.size() || part == m->mesh.Primary()) return false;
+		const int sn = SpriteFor(mu.item, *m, mu.kind, cls, part);
+		if (sn < 0) return false;
+		co->sprite = sn;
+		co->frame = 0;
+		ApplyStyle(co, m->mesh.parts[part]);
+		co->flags5 |= MF5_NOTIMEFREEZE;
+		co->FollowHandMode = ma->FollowHandMode;
+		co->Scale = ma->Scale;
+		co->PrevScale = ma->PrevScale;
+		co->Angles = ma->Angles;
+		co->PrevAngles = ma->PrevAngles;
+		co->renderradius = ma->renderradius;
+		if (co->Pos() != ma->Pos()) co->SetOrigin(ma->Pos(), true);
+		co->Prev = ma->Prev;
+		if (ma->renderflags & RF_INVISIBLE) co->renderflags |= RF_INVISIBLE; else co->renderflags &= ~RF_INVISIBLE;
+		return true;
+	};
+	{
+		auto it = level->GetThinkerIterator<AActor>(cls->TypeName);
+		AActor *co;
+		while ((co = it.Next()) != nullptr)
+		{
+			if (co->special1 != kCompanionTag || (co->ObjectFlags & OF_EuthanizeMe)) continue;
+			AActor *ma = co->master;
+			auto mu = ma != nullptr && !(ma->ObjectFlags & OF_EuthanizeMe) ? S.multi.find(ma->sprite) : S.multi.end();
+			if (mu == S.multi.end() || have.count({ ma, co->special2 }) || !follow(co, ma, mu->second, co->special2)) { gone.Push(co); continue; }
+			have.insert({ ma, co->special2 });
+		}
+	}
+	for (AActor *x : gone) x->Destroy();
+	if (S.multi.empty()) return;
+	auto all = level->GetThinkerIterator<AActor>();
+	TArray<AActor *> wearers;
+	AActor *ma;
+	while ((ma = all.Next()) != nullptr)
+		if (ma->special1 != kCompanionTag && S.multi.count(ma->sprite) && !(ma->ObjectFlags & OF_EuthanizeMe)) wearers.Push(ma);
+	for (AActor *w : wearers)
+	{
+		const State::Multi mu = S.multi[w->sprite];
+		ItemModel *m = FindModelFor(mu.item);
+		if (m == nullptr) continue;
+		for (int part = 0; part < (int)m->mesh.parts.size(); part++)
+		{
+			if (part == m->mesh.Primary() || have.count({ w, part })) continue;
+			AActor *co = AActor::StaticSpawn(level, cls, w->Pos(), NO_REPLACE);
+			if (co == nullptr) continue;
+			co->special1 = kCompanionTag;
+			co->special2 = part;
+			co->master = w;
+			if (!follow(co, w, mu, part)) { co->Destroy(); continue; }
+			co->ClearInterpolation();
+			Printf("[roth_img3d] item %d: part %d '%s' drawn by a companion of %s%s%s\n", mu.item, part, m->mesh.parts[part].name.c_str(),
+				w->GetClass()->TypeName.GetChars(), m->mesh.parts[part].blend ? FStringf(", see-through %.2f", m->mesh.parts[part].color[3]).GetChars() : "",
+				m->mesh.parts[part].glow ? ", glowing" : "");
+		}
+	}
+}
+
 void Img3dHeldEndTick(FLevelLocals *level)
 {
 	// Once a level: the held models a loaded save brought back are not this tic's; they go (roth_hands.cpp Adopt).
@@ -577,7 +708,7 @@ void Img3dHeldEndTick(FLevelLocals *level)
 			AActor *mo;
 			while ((mo = it.Next()) != nullptr)
 			{
-				bool ours = false;
+				bool ours = mo->special1 == kCompanionTag;   // a companion (PartsTick) keeps itself or goes on its own
 				for (AActor *h : S.held) if (h == mo) ours = true;
 				if (!ours && !(mo->ObjectFlags & OF_EuthanizeMe)) stray.Push(mo);
 			}
@@ -595,6 +726,7 @@ void Img3dHeldEndTick(FLevelLocals *level)
 		}
 		S.shown[s] = false;
 	}
+	PartsTick(level);
 }
 
 void Img3dEndLevel()
@@ -635,8 +767,8 @@ CCMD(roth_img3d)
 	for (const auto &p : S.models)
 	{
 		const img3d::Entry &e = p.second.entry;
-		Printf("  item %d %s: %s, %d tris, %.3f m (%s), grip (%.3f %.3f %.3f) turn (%.0f %.0f %.0f), hold %s\n", e.item, e.name.c_str(), e.file.c_str(),
-			(int)p.second.mesh.Triangles(), p.second.mesh.Longest(), e.sizeFromTable ? "real" : "to the picture", e.grip[0], e.grip[1], e.grip[2],
+		Printf("  item %d %s: %s, %d tris in %d part(s), %.3f m (%s), grip (%.3f %.3f %.3f) turn (%.0f %.0f %.0f), hold %s\n", e.item, e.name.c_str(), e.file.c_str(),
+			(int)p.second.mesh.Triangles(), (int)p.second.mesh.parts.size(), p.second.mesh.Longest(), e.sizeFromTable ? "real" : "to the picture", e.grip[0], e.grip[1], e.grip[2],
 			e.gripRot[0], e.gripRot[1], e.gripRot[2], img3d::HoldName(e.hold));
 	}
 }

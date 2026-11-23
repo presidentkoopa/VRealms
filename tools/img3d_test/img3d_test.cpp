@@ -187,6 +187,26 @@ static void TestBuilt()
 	Check(!ReadGlb(g.data(), g.size(), m, err) && err.find("KHR_draco") != std::string::npos, "a required extension is refused and named: " + err);
 	g = MakeGlb(head + "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}]}", std::vector<uint8_t>(bin.begin(), bin.begin() + 20));
 	Check(!ReadGlb(g.data(), g.size(), m, err), "a BIN chunk too short for its accessors is refused: " + err);
+	// THE PARTS (film_build.py's glass, glowing liquid and cork): one part a material, a primitive sharing the last
+	// part's material joins it, a primitive with none is a plain white part, and the object wears the first plain one.
+	g = MakeGlb(head + "\"materials\":[{\"name\":\"glass\",\"alphaMode\":\"BLEND\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.5,0.6,0.7,0.3]}},"
+		"{\"name\":\"liquid\",\"emissiveFactor\":[0.2,0.9,0.3],\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.2,0.9,0.3,1]}}],"
+		"\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":1},"
+		"{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":1},{\"attributes\":{\"POSITION\":0},\"indices\":1}]}]}", bin);
+	{
+		const bool read = ReadGlb(g.data(), g.size(), m, err);
+		Check(read && m.parts.size() == 3 && m.Triangles() == 4, "four primitives, three materials: three parts: " + err);
+		if (read && m.parts.size() == 3)
+		{
+			const Part &a = m.parts[0], &b = m.parts[1], &c = m.parts[2];
+			Check(a.name == "glass" && a.blend && !a.glow && fabs(a.color[3] - 0.3f) < 1e-6f && a.firstIndex == 0 && a.indexCount == 3 && a.image.empty(),
+				"the glass: see-through at 0.3, three indices, no picture");
+			Check(b.name == "liquid" && b.glow && !b.blend && b.firstIndex == 3 && b.indexCount == 6 && fabs(b.color[1] - 0.9f) < 1e-6f,
+				"the liquid: glowing, its two primitives joined (six indices from 3)");
+			Check(c.material == -1 && c.Plain() && c.firstIndex == 9 && c.indexCount == 3 && c.color[0] == 1.f, "no material: a plain white part");
+			Check(m.Primary() == 2, "the object wears the first plain part");
+		}
+	}
 	bin[36] = 9;   // an index past the vertices
 	g = MakeGlb(head + "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}]}", bin);
 	Check(!ReadGlb(g.data(), g.size(), m, err), "an index past the vertices is refused: " + err);

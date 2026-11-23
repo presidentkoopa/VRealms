@@ -106,6 +106,78 @@ def write_glb(path, positions, normals, uvs, indices, image_bytes, image_mime="i
     return total
 
 
+def write_glb_parts(path, parts, name="item"):
+    """A GLB of several parts, one primitive and one material each (film_build.py: the glass, the liquid, the cork, a
+    cut gem). Each part is a dict: positions, normals (3 floats a vertex), uvs (2 a vertex, or None), indices,
+    "material": {"name", "color": [r, g, b, a] 0..1, "blend": bool (alphaMode BLEND, the colour's alpha the opacity),
+    "emissive": [r, g, b] (non-zero: it glows, the engine draws it fullbright), "image": PNG bytes or None}.
+    The engine reads every part with its material (src/roth/roth_img3d_core.h, THE PARTS)."""
+    blobs, views, accessors = [], [], []
+    images, textures, materials, prims = [], [], [], []
+
+    def add_view(data, target=None):
+        off = sum(len(b) for b in blobs)
+        blobs.append(_pad4(data))
+        v = {"buffer": 0, "byteOffset": off, "byteLength": len(data)}
+        if target is not None:
+            v["target"] = target
+        views.append(v)
+        return len(views) - 1
+
+    def add_float(vals, comps, minmax=False):
+        data = array("f", [float(v) for v in vals]).tobytes()
+        acc = {"bufferView": add_view(data, 34962), "componentType": 5126, "count": len(vals) // comps,
+               "type": {2: "VEC2", 3: "VEC3"}[comps]}
+        if minmax:
+            acc["min"] = [min(vals[k::comps]) for k in range(comps)]
+            acc["max"] = [max(vals[k::comps]) for k in range(comps)]
+        accessors.append(acc)
+        return len(accessors) - 1
+
+    for p in parts:
+        pos, nrm, uvs, idx, mat = p["positions"], p.get("normals"), p.get("uvs"), p["indices"], p["material"]
+        n = len(pos) // 3
+        if n == 0 or len(pos) != n * 3 or len(idx) % 3 or max(idx) >= n or min(idx) < 0:
+            raise ValueError("write_glb_parts: part %s is malformed" % mat.get("name"))
+        attrs = {"POSITION": add_float(pos, 3, True)}
+        if nrm is not None:
+            attrs["NORMAL"] = add_float(nrm, 3)
+        if uvs is not None:
+            attrs["TEXCOORD_0"] = add_float(uvs, 2)
+        idata = array("I", [int(i) for i in idx])
+        accessors.append({"bufferView": add_view(idata.tobytes(), 34963), "componentType": 5125, "count": len(idx), "type": "SCALAR"})
+        pbr = {"baseColorFactor": [float(c) for c in mat.get("color", [1, 1, 1, 1])], "metallicFactor": 0.0,
+               "roughnessFactor": float(mat.get("roughness", 1.0))}
+        if mat.get("image"):
+            images.append({"bufferView": add_view(bytes(mat["image"])), "mimeType": "image/png"})
+            textures.append({"source": len(images) - 1, "sampler": 0})
+            pbr["baseColorTexture"] = {"index": len(textures) - 1}
+        m = {"name": mat.get("name", "part"), "pbrMetallicRoughness": pbr,
+             "alphaMode": "BLEND" if mat.get("blend") else "OPAQUE"}
+        if any(mat.get("emissive", [0, 0, 0])):
+            m["emissiveFactor"] = [float(c) for c in mat["emissive"]]
+        materials.append(m)
+        prims.append({"attributes": attrs, "indices": len(accessors) - 1, "mode": 4, "material": len(materials) - 1})
+    doc = {"asset": {"version": "2.0", "generator": "VRealms tools/img3d glbio.py (parts)"},
+           "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0, "name": name}],
+           "meshes": [{"name": name, "primitives": prims}], "materials": materials}
+    if images:
+        doc["images"] = images
+        doc["textures"] = textures
+        doc["samplers"] = [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}]
+    binary = b"".join(blobs)
+    doc["buffers"] = [{"byteLength": len(binary)}]
+    doc["bufferViews"] = views
+    doc["accessors"] = accessors
+    js = _pad4(json.dumps(doc, separators=(",", ":")).encode("utf-8"), b" ")
+    total = 12 + 8 + len(js) + 8 + len(binary)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<III", 0x46546C67, 2, total))
+        f.write(struct.pack("<II", len(js), 0x4E4F534A) + js)
+        f.write(struct.pack("<II", len(binary), 0x004E4942) + binary)
+    return total
+
+
 def read_glb(path):
     """The reading half (numpy): every triangle primitive the default scene reaches, node transforms applied, joined.
     Returns dict(positions Nx3, normals Nx3 or None, uvs Nx2 (glTF's, top-left origin) or None, indices Mx3,

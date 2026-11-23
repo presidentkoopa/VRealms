@@ -90,6 +90,13 @@ fetched separately [R: whether that needs a Hugging Face access approval was not
 the "68" in the task is Adam Randall, the magazine is 51]) and per item the size, hold, grip and turn: ALL TUNING
 NUMBERS, none seen in a headset.
 
+**film_build.py** (2026-11-23): items the generator cannot make (cut gems, glass) built from the item's own close-up
+film by items.json `film` recipes: `hull` (the 20 frames of a full turn carve the shape; pixel rules sort the parts;
+`gem` flattens it into facets; `fill` makes a liquid the glass's inside up to its level), `crystal` (a faceted prism
+measured from a tumbling film), `cut` (an octagonal or n-sided cut gem from one still outline). Writes a GLB of parts
+(glbio `write_glb_parts`: one material each, colour, BLEND, emissive) and the manifest entry. `post.py --resize` sizes
+models already made to items.json `metres` again.
+
 ## 5. The engine (VRealms)
 
 Files: `src/roth/roth_img3d_core.{h,cpp}` (engine-free: manifest, GLB reader, the two placements),
@@ -115,6 +122,12 @@ Files: `src/roth/roth_img3d_core.{h,cpp}` (engine-free: manifest, GLB reader, th
   `palm` / `fist`: FollowHandMode 3/4 (the controller's grip frame at draw rate, metres; X fingers, +Y back of the
   hand, thumb -Z right / +Z left), the grip point on the grip socket. `hang` and the cards placed in the world (the
   Lamp on its hook, the Book between the hands): upright at the card's point, facing the player, placed each tic.
+- **Parts** (2026-11-23): each primitive's material is a part (roth_img3d_core.h THE PARTS): its picture or its
+  colour, see-through (BLEND, at the colour's alpha: STYLE_Translucent) and glowing (emissive: RF_FULLBRIGHT). The
+  object (or the held RealmsItemModel) wears the first plain part; every other part is a companion RealmsItemModel
+  (special1 0x1A3D, master = the wearer) that follows the wearer each tic (`PartsTick`) and goes when the wearer stops
+  wearing a model of parts. A gem with one see-through part: the object takes the look and gives its own back with the
+  picture.
 - **Fallback:** no model, or any read error (named once in the console) -> the picture / the card, as before.
 - **Limits** [R]: 3 meshes per item, each its own vertex buffer (<= 20k triangles each, 60k per item); one runtime
   sprite per binding per load (the sprite frame table's 0xffff ceiling is shared with the objects); one 1024^2 RGBA

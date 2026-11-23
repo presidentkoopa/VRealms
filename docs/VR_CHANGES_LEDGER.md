@@ -215,6 +215,13 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
   - casings are not visible in the floor frames (they stop against the corridor wall);
   - nothing tried in a headset.
 
+**Glass, glow and cut gems for the item models; real sizes (owner, 2026-11-23, of the chapter 1-2 batch: "the green vial is supposed to be glass, half full of a glowing green liquid ... the red gem needs tightened up ... all the crystals seem bad"):**
+- `tools/img3d/film_build.py` makes the items the generator cannot, from the item's own close-up film. A film that turns the item a full circle in 20 frames is carved into the item's shape (a visual hull), and its pixel colours sort the parts (glass, liquid, cork). A gem's carving is flattened into cut facets. A tumbling crystal is a faceted prism measured from the film. A still film's outline gives an octagonal cut gem: the Crystal 249 has 8 corners. The items: Crystal 37 and Jewel 103 (the same film in the game), Crystal 35, Crystal 249, Vial 206 (glass, a glowing green liquid at 35 % of its height, a cork), Vial 143 (glass, its orange contents as the film shows them).
+- The engine reads a model of several parts, each with its own material: colour, see-through (alphaMode BLEND) and glowing (emissive: fullbright). The object wears the first plain part. Each further part is drawn by a companion actor that follows it, because GZDoom draws a look per actor (roth_img3d.cpp PartsTick).
+- Sizes (items.json `metres`; `post.py --resize`) are my judgement of the real object, not the game's. Small items only; the Shield and the long weapons wait for their grips.
+- Verified: img3d_test 100/0, including the parts reader; the 31 models read back by the engine's reader (cloud); syntax check of roth_img3d.cpp.
+- Not seen: any of it in the engine until the PC capture (img3d_parts_flat.cfg); the glass's look in a headset. Opacity 0.30, gem 0.85 and the glow are tuning numbers.
+
 ## Decided, LATER
 
 | change | owner decision |
