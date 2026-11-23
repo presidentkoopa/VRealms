@@ -49,3 +49,16 @@ if [ -n "$COLT_FIT_RENDER" ]; then
 	echo "renders in $OUT/fit_*.png (the gun's left side, its right side, oblique; both hands: fit_all.png)"
 fi
 [ $FIT -eq 0 ] || { echo "FAIL: colt_fit"; exit 1; }
+echo
+echo "== support_fit: the other hand fitted to the gun and the posed shooting hand (two hands; SUPPORT_RENDER=1 renders the views)"
+g++ -std=c++17 -O3 -Wall -Wextra -Itools/colt_test -Isrc/common/models -Isrc/r_data -Ilibraries/ufbx tools/colt_test/support_fit.cpp src/common/models/fbx_skinned.cpp "$OUT/ufbx.o" -o "$OUT/support_fit" -lm
+SFIT=0
+"$OUT/support_fit" "$HANDS" vrealms_iwad/models/weapons/colt1911/colt1911.fbx tools/colt_test/colt_fit.txt "$OUT" > "$OUT/support_fit.log" || SFIT=1
+grep -E "^(PASS|FAIL|NOT MET)|hard check|  (fingers|the palm|the thumb|support skin)" "$OUT/support_fit.log"
+if ! diff -q "$OUT/support_fit.txt" tools/colt_test/support_fit.txt >/dev/null; then echo "NOTE: support_fit.txt differs from the committed one (the baked seat in roth_coltvr.cpp came from that)"; diff "$OUT/support_fit.txt" tools/colt_test/support_fit.txt || true; fi
+if [ -n "$SUPPORT_RENDER" ]; then
+	python3 -I tools/colt_test/supportviews.py "$OUT" support vrealms_iwad/models/hands/godot_xr/caucasian_realistic_baseColor.png
+	SUPPORT_SKIN=1 python3 -I tools/colt_test/supportviews.py "$OUT" support_skin vrealms_iwad/models/hands/godot_xr/caucasian_realistic_baseColor.png
+	echo "renders in $OUT/support*_<pair>_*.png (pair 0: the right hand shoots; 1: the left)"
+fi
+[ $SFIT -eq 0 ] || { echo "FAIL: support_fit (a hand in the gun or in the other hand)"; exit 1; }

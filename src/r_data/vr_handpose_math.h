@@ -1470,6 +1470,21 @@ inline void SelectHold(const HoldPoses *hp, const HeldState &mine, const HeldSta
 					for (int j = 0; j < FINGER_JOINTS; ++j)
 						if (HoldHas(hp, use, f)) out.Src[f][j] = use;
 		}
+		// NOT IN THE SOURCE: HeldState::wrap on a held subject (2026-11-23, the Colt's support hand measured on the gun and
+		// on the shooting hand, tools/colt_test/support_fit): every finger, the index too (no trigger here), the in-between
+		// of the open frame and the subject's own finger. Unset (-1, every subject but that one): nothing changes.
+		{
+			const int po = FindOwnerPose("fbx_open");
+			bool any = false;
+			for (int f = 0; f < FINGER_COUNT; ++f)
+				if (mine.wrap[f] >= 0.f && po >= 0 && HoldHas(hp, po, f) && out.Src[f][0] >= 0)
+				{
+					out.Wrap[f] = Clamp01(mine.wrap[f]);
+					out.WrapBase[f] = mine.wrapBase[f] >= 0.f ? Clamp01(mine.wrapBase[f]) : out.Wrap[f];
+					any = true;
+				}
+			if (any) out.WrapOpen = po;
+		}
 	}
 }
 
@@ -1506,7 +1521,8 @@ inline void HoldTargets(const HoldPoses *hp, const HoldChoice &ch, float target[
 					QSlerp(qa, qb, ch.IdxT, wq); have = true;
 				}
 			}
-			if (!have && f != FINGER_INDEX && ch.WrapOpen >= 0 && ch.Wrap[f] >= 0.f && ch.Src[f][j] >= 0)	// NOT IN THE SOURCE: the measured wrap
+			// the index only on a held subject (the weapon path never sets Wrap[index]: its index is IdxOpen / IdxReady's)
+			if (!have && ch.WrapOpen >= 0 && ch.Wrap[f] >= 0.f && ch.Src[f][j] >= 0)	// NOT IN THE SOURCE: the measured wrap
 			{
 				float qa[4], qb[4];
 				if (HoldRot(hp, ch.WrapOpen, f, j, qa) && HoldRot(hp, ch.Src[f][j], f, j, qb))

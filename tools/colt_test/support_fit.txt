@@ -1,0 +1,8 @@
+# tools/colt_test/support_fit.cpp output: the support hand's frame in the shooting hand's frame (metres, column-major 4x4),
+# and its fingers (thumb, index, middle, ring, little: knuckle, outer) from fbx_open toward fbx_twohand_support
+support_rightshoots 0.957706181 0.286287182 -0.0289572084 0 0.282343079 -0.954360022 -0.0973618765 0 -0.0555090592 0.0850682036 -0.994827697 0 0.017301433 0.00339735343 0.0314832141 1
+fingers_rightshoots thumb 1.0000 1.0000 index 1.0000 1.0000 middle 1.0000 1.0000 ring 1.0000 1.0000 little 1.0000 1.0000 (knuckle, outer)
+check_rightshoots palm_plane_mm 25.09 palm_mm 17.40 palm_deg 12.0 ends_mm 0.86 3.48 0.40 7.08 thumb_deg 15.5 thumb_mm 4.82 in_gun 0 in_main 0 main_in 0
+support_leftshoots 0.910755632 0.382023523 -0.156787138 0 0.403268705 -0.90452604 0.138589303 0 -0.0888736754 -0.189448334 -0.977860316 0 0.00696863994 -0.00629817851 -0.0277350184 1
+fingers_leftshoots thumb 1.0000 1.0000 index 1.0000 1.0000 middle 1.0000 1.0000 ring 1.0000 1.0000 little 1.0000 1.0000 (knuckle, outer)
+check_leftshoots palm_plane_mm 32.67 palm_mm 17.40 palm_deg 20.0 ends_mm 0.19 0.74 0.33 1.21 thumb_deg 19.0 thumb_mm 5.07 in_gun 0 in_main 0 main_in 0
