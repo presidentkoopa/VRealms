@@ -1,6 +1,7 @@
 # VR interaction: one system, built on the original's cursor (design, 2026-11-23)
 
-Status: DESIGN. Nothing here is built yet unless a line says so. This replaces the RSQ Distance Grab port.
+Status: P1 BUILT (2026-11-23, section 8 lists the commits and the evidence; seen in flat on the owner's PC, NOT yet in
+the headset). P2-P4 are design. This replaces the RSQ Distance Grab port, which is removed.
 
 ## 0. Why
 
@@ -145,6 +146,44 @@ HOLDING a weapon: the weapon (the Colt's reload, the blades) owns the hand until
 
 This replaces the claim order (Lamp, package, weapons, world hands, picker) and the pulse swallowing.
 
+**Built (P1): src/roth/roth_handstate.h** (engine-free, tools/handstate_test) and roth_vrpick.cpp L2Tick. One owner per
+hand per tic. The standing owners first, in this order; each keeps the hand while it lasts:
+1. the Colt's reload action (the off hand at the magazine button, the pouch or the slide, a magazine in it, racking):
+   ACTING, the Colt;
+2. a world gesture held (a pull, a twist, the hour hand): ACTING, the gesture;
+3. the off hand on a held weapon's support (the Shotgun's fore-end latch): **SUPPORTING**, the weapon. It gives way the
+   moment the off hand starts a reload action (1 is checked first);
+4. a held object that owns the grip (the Lamp by its bail, the open Book): HOLDING, held;
+5. an item squeezed into the hand: HOLDING, the item.
+
+Then the holdings that keep the hand's trigger and drawing but leave its grip to the claims: a weapon drawn in the main
+hand, the lit match, the carried item (6-8). A closing grip asks, in order: the Lamp's bail, the Colt, the weapon (the
+fore-end: SUPPORTING; a body slot), a world gesture (a lever's pull, a socket's twist), then the picker's squeeze. Every
+owner asks `HandMayAct` before it acts (the weapons' latch and slots, the Colt's off hand, the prints, the hour hand, the
+twist, the fingertip press, the fists).
+
+**THE TARGETING RULE (owner 2026-11-23, D3 with numbers).** A usable thing within **5 cm** of the palm or the fingertip is
+TOUCHED: it is the target, it gets the rim and the light tick (every tic), and it beats whatever the index points at.
+With no touch, the extended index's ray is the target. With neither, a squeeze still searches the in-reach zone it
+always did: an object's box within **15 cm** of the palm, a surface **20 cm** along the hand, a wall or door within
+**10 cm** of the palm, a flat **10 cm** under it. The zone only chooses WHAT is used; HOW FAR the use reaches is always
+L1's, from the body (D2, 268 units). A squeeze pointed at something too far or blocked is refused (the double buzz).
+
+**THE ITEM IN THE HAND (owner 2026-11-23):**
+- An item the game puts in a hand (the inventory panel, the auto-select, start items, a chain's give) is drawn in that
+  hand with the grip free (the hand on the right side unless a pickup put it elsewhere), and a squeeze on a target uses
+  with it. Releasing does NOT stow it, because no grip was closed on it: during the auto-select the player lets go of
+  the door between the first squeeze (the key appears) and the second (it opens).
+- A squeeze on NOTHING while such an item is in the hand takes hold of it (HOLDING). Releasing that hold stows it.
+- So closing the hand on the item and letting go puts it away, whether a squeeze or the game put it there.
+- Not while a weapon is drawn in that hand: the weapon's grip wins.
+
+**WHICH HAND A PICKUP LANDS IN (owner, via the lead, 2026-11-23).** A pickup is the inventory changing inside one hand's
+own L1 Use: a snapshot is taken immediately before that use's `Activate()` and compared immediately after it returns
+(roth_vrpick.cpp DoUse). What that use's own chain gives -- the drawer's Matchbox from the squeeze that opened it --
+lands in that hand; that is the VR feel wanted. An item given by anything else (a timer's chain, a dialogue, a combine,
+the start items, `roth_fire`) never passes through a hand's use and is the game's: it goes where the game puts it.
+
 ### L3. Gestures are the verbs
 - **Use:**
   - squeeze the grip on a usable target, touched or pointed at in reach;
@@ -180,6 +219,7 @@ vibrates on the hand concerned.
 | An item is picked up | it flies into the hand and stays there | the original's pickup sound | a pulse on landing |
 | The game fetches a carried item (auto-select, 1.3) | the item comes out of the coat into the free hand | | a pulse |
 | An item is put away | it is drawn into the coat | | a soft pulse |
+| The hand closes on the item it carries (a squeeze on nothing) | it stays in the hand, held | | a pulse |
 | Examine | Adam's comment as a subtitle on the wrist mount, or the original's close-up window | Adam's voice | |
 | Use on yourself, combine | the original's timed message ("used X", "can't combine X and Y") on the wrist mount | | a pulse |
 
@@ -227,3 +267,81 @@ Where the original shows nothing, the hand still feels the squeeze land or be re
   - the close-up at the eyes;
   - taking an item out of the inventory into the hand.
 - **Later:** the trenchcoat (with the player model).
+
+## 8. P1 as built (2026-11-23)
+
+### Commits (lane/gamelayer)
+- 553a9c05 L1: one rules entry (roth_vrrules.h; RulesPick / RulesClassify / RulesUse / RulesExamine in roth_vrpick.h);
+  D2 reach; the dead hand-ray use (roth_pick, UseByHand) removed; roth_l1diff and userange.py l1diff.
+- 6c926e59 RSQ Distance Grab removed (the filter/vrealms copy, roth_grabglue, realmsgrab.zs, the RS laser copied for it,
+  its test and cfgs). One actor per object (ActorsBindLoadedObjects) kept.
+- 3e39115f L2 (roth_handstate.h), the pickup into the hand, letting go stows, the feedback pulses.
+- 2e022212 an opaque face ends L1's pick; pickups found by the inventory; roth_xrpose pointat / standat.
+- d200e498, f7e9d35d, bfad0e32 tests and cfgs (a chain gives while a hand squeezes; the view at the target; no closing on
+  the carried item over a drawn weapon; worldhands_study1 stands the player in reach of plate #124).
+- (this commit) the picked object's own picture for the fly-in; this section.
+
+### Evidence
+- **L1 against the original** (tools/userange_test l1diff: the original's eye rays from the headless ROTH.C rangeprobe,
+  through roth_l1diff on the owner's PC, build 2e022212). 1800 eye rays, 120 random STUDY1 poses x 15 cursor points:
+  record the same 1497 / 1800 -- walls 1219 / 1378 (102 before the opaque-face fix), floors 168 / 189, ceilings
+  82 / 96, objects 28 / 61, the parallax sky and no-record rays 0 / 75 (L1 meets a ceiling or a face there; the class is
+  "nothing" either way), platform top 0 / 1. No door leaf (type 6) was among the original's picks in either set: a
+  closed door picks as its room face (type 3). Class the same, by the original's own measure: 1482 / 1800; by D2:
+  1481 / 1800, the centre column (where D2 is the original's z) 481 / 600. 488 aimed rays at every use / examine
+  target: record 346 / 488 (walls 282 / 385, floors 27 / 51, objects 37 / 43); what a use or examine reaches the same
+  367 / 488 (use: chain 56 / 86, give 0 / 3, nothing 114 / 155; examine: record 39 / 55, nothing 158 / 189).
+  The main remaining cause: L1 picks an object's box where the original saw the wall through the sprite's transparent
+  texels (92 of the random set's 159 remaining wall differences) -- decision 7's model and texel shape is P3. The result
+  comparison is of the dispatchers' matched record against the calls the original reached (its HOOK lines); its
+  disagreements (35 uses where L1 matches a chain and the original reached none, 22 such examines) are NOT yet run down.
+- **L2 engine-free:** tools/handstate_test, 2970 checks, 0 failed: every state, every owner, every claim order (32
+  combinations), the pickup hold and its end, the carried item, the standing owners, SUPPORTING giving way to the Colt,
+  the twist on a held item, the lit match, the weapon hand; and L1's rules (bands, D2, the four classes against the
+  original's use gate).
+- **On the owner's PC, flat, roth_xrpose** (tools/claude_bridge/cfg/interact_flat.cfg, log-interact_flat.txt): a
+  pickup by touch (STUDY1 object 169/0, the Helm, i45: "TOUCHES object ... the rim and the light tick", "PICKUP ...
+  HOLDING", let go: "STOWED into the coat ... right hand slot now -1"), by point (41/1, i51, depth 346: "grip while
+  pointing: USE object", PICKUP, STOWED), refused too far (face 1386 at the original's wall_270 pose: "refused -- not
+  usable: depth 604 >= 600 (planar 270 >= 268) (too far)" and both buzzes), a keyed object (109/2: the original's use,
+  no PICKUP), a carried item closed on and stowed (i4), a weapon with the main hand free (the desk Colt 305/0: "PICKUP:
+  the original equipped weapon i9 ... the main hand is free"), a chain's give while a hand squeezes (roth_fire 210:
+  "right hand: item 43", no PICKUP).
+- **Regressions on the PC (build 3e39115f), against the same cfgs' earlier logs:** colt_flat identical (13 shots, 13
+  cases, magazine dropped 3 / taken 2 / seated 2, reload pulled 1, slide back 2 / forward 4, dry click 1);
+  vrweapons_sword_flat (lands, refused in its cycle, lands again); vrweapons_shotgun_flat, worldhands_mas4 (the lever),
+  worldhands_mauso (the key's twist) the same acts; worldhands_study1 the statuette set down on #119 as before. Changed
+  on purpose: the RSQ catch is gone; one use per squeeze where the fist's punch used to add a second; plate #124 was
+  refused by D2 because the cfg held the off hand 378 units from the player (now the cfg stands him in reach).
+- Engine-free suites: gameproof modes 0 1 2 4 7 (H 6156 / 6156, actions 694 / 694), vrpick_test (786432 cursor cases, 0
+  differ), worldhands_test 87 / 0, vrweapon_test 70 / 0, gesture_test 63 / 0, held_test 84 / 0, colt_test PASS,
+  hands_test 13 / 0.
+
+### Not done or not seen
+- **Nothing here is seen in the headset.** The haptics are logged, not felt (no headset in the flat runs).
+- The fly-in: the port finds no picture for these items' render ids, so the pickups landed at once ("no picture to
+  fly"); the picked object's own picture is used from the last commit (not yet seen). A chain's give (0x29) still
+  starts no fly-in in the port (roth_runtime.cpp, the [unverified] give context).
+- The rim and the stow's coat flight are drawn but not yet looked at in a capture beside anything.
+- The use / examine result differences above; the object box vs the original's opaque texels (P3).
+
+### Porting checklist (CLAUDE.md porting rule)
+L1 -- roth_vrrules.h carries the numbered list (ROTH.C file:line -> port file:line). In short:
+1. the pick record (E/renderer.c:8962-9090, 3283, 4510, 13007) -> PickFrom / PickRecord (roth_runtime.cpp);
+2. the first opaque texel (E/renderer.c:3261-3283, 4480-4500) -> the first drawn face, flat or object box (not texels);
+3. depth 2z + 64 -> rules::DepthOfZ(rules::ReachZ) (D2);
+4. the bands 0x258 / 0x7d0 / 0x1388 (E/input.c:1031, 1123-1217, 1145) -> rules::kUseDepth / kFarDepth / kExamineDepth;
+5. classify_cursor_target_object (E/input.c:1111-1245) -> roth_cursor.h ClassifyCursorFacts (unchanged);
+6. the click gates (E/game_core.c:604-699) -> CursorClass::CanUse / CanExamine (unchanged);
+7. the cursor pictures -> rules::ClassOf;
+8. activate_targeted_object (E/input.c:1026-1100) -> roth_runtime.cpp Activate behind RulesUse (unchanged);
+9. the item the use carries (E/raw_commands.c:4760-4789) -> roth_handuse.h behind RulesUse (the hand is ItemHandRole);
+10. examine_object_under_cursor (E/input.c:979-1024) -> ExaminePick behind RulesExamine (unchanged).
+The pickup and the stow, the original's own calls:
+11. give_item selects / equips (E/inventory.c:416-434) -> unchanged; the hand that made the use holds it (VR);
+12. the fly-in (E/inventory.c:106-139, 0x1c ticks, the fractions at 0x7115c) -> roth_interface.cpp TickFly, aimed at the
+    palm (VR); 
+13. the stow: the right hand's cell taken onto the cursor (E/dialogue_ui.c:1767-1787) and put back (:1743-1744) ->
+    Inventory::PickUpToCursor + DropHeld (roth_vrpick.cpp Stow);
+14. a weapon to its body slot: the inventory's weapon click / activate_weapon_item(0, 0) (E/inventory.c:2183-2192,
+    E/dialogue_ui.c:1776-1778) -> VRWeaponsToBodySlot (roth_vrweapons.cpp).

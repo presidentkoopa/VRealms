@@ -287,6 +287,7 @@ struct Ui
 	DVector3 pendingFlyFrom;
 	bool havePendingFly = false;
 	int pendingFlyHand = -1;        // InterfacePickupHand: the hand a use is made from
+	FTextureID pendingFlyTex = FNullTextureID();   // the picked object's own picture, when the render id finds none
 
 	std::vector<std::vector<std::string>> queue;    // test commands, drained per tic
 	RealmsMenus *menus = nullptr;                   // roth_menus, owned by the runtime
@@ -1782,6 +1783,7 @@ void StartFly(const DVector3 &from, uint16_t renderId)
 	const int sn = FindLogicSprite(renderId);
 	if (sn >= 0 && sn < (int)sprites.Size() && sprites[sn].numframes > 0)
 		tex = SpriteFrames[sprites[sn].spriteframes].Texture[0];
+	if (!tex.isValid()) tex = U.pendingFlyTex;   // the object as the world drew it (a type-4 pickup)
 	if (!tex.isValid()) return;
 	if (U.fly.active)
 		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
@@ -2357,8 +2359,13 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 	ctx.x = o.x; ctx.y = o.y; ctx.id = renderId; ctx.flags7 = o.flags; ctx.z = o.z;
 	U.pendingFlyFrom = mo->Pos() + DVector3(0, 0, mo->Height / 2);
 	U.havePendingFly = true;
+	// The picture the object is drawn with, for the fly-in when its render id names no logic sprite (presentation).
+	U.pendingFlyTex = mo->picnum;
+	if (!U.pendingFlyTex.isValid() && mo->sprite >= 0 && mo->sprite < (int)sprites.Size() && mo->frame < sprites[mo->sprite].numframes)
+		U.pendingFlyTex = SpriteFrames[sprites[mo->sprite].spriteframes + mo->frame].Texture[0];
 	const int32_t r = U.core->Items().GiveItemByRenderId(*U.db, renderId, &ctx, U.core->InvSink());   // :1077
 	U.havePendingFly = false;
+	U.pendingFlyTex = FNullTextureID();
 	if (r == 0) return false;                                // not an item: nothing happens (:1078)
 	Printf("[roth_ui] picked up item %d (%s)\n", (int)r, U.dialogue.LineText(U.db->Item(r) ? U.db->Item(r)->name : 0, 0x61).c_str());
 	mo->Destroy();                                           // destroy_dynamic_entity, :1085
