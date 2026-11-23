@@ -487,7 +487,9 @@ CCMD(roth_xrpose)
 		pmo->SetZ(pmo->floorz);
 		pmo->Vel.Zero();
 		pmo->Angles.Yaw = DAngle::fromDeg(atan2(-d.Y, -d.X) * (180.0 / M_PI));
-		pmo->Angles.Pitch = nullAngle;
+		// the view pitched at the thing's middle (+ looks down), so a capture shows it and the hand on it
+		const double eye = pmo->Z() + (pmo->player != nullptr ? pmo->player->viewheight : 41.0);
+		pmo->Angles.Pitch = DAngle::fromDeg(atan2(eye - (t->Z() + t->Height * 0.5), std::max(1.0, m)) * (180.0 / M_PI));
 		pmo->ClearInterpolation();
 		int rs = -1, ri = -1;
 		ObjectForActor(t, rs, ri);
