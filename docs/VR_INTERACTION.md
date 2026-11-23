@@ -343,10 +343,17 @@ Where the original shows nothing, the hand still feels the squeeze land or be re
 
 ### Not done or not seen
 - **Nothing here is seen in the headset.** The haptics are logged, not felt (no headset in the flat runs).
-- The fly-in: the port finds no picture for these items' render ids, so the pickups landed at once ("no picture to
-  fly"); 3b5a9210's fallback to the object's own picture did not help either (the PC run of 3b5a9210 still says "no
-  picture to fly"): NOT done. A chain's give (0x29) still
-  starts no fly-in in the port (roth_runtime.cpp, the [unverified] give context).
+- The fly-in (960adba7, 2026-11-23): an item with a model flies AS ITS MODEL (roth_img3d.h THE FLIGHTS), the
+  original's 0x1c ticks and fractions, from its size and facing as it lay to its size in the hand, turning to face the
+  player; the hand shows it only once it lands. Items without a model fly their picture, with the kept picture of a
+  modelled object and the inventory icon as fallbacks. Verified on the PC (fly_flat.cfg, log-fly_flat.txt: "the pickup
+  flies to the main hand as item 45's model ... 0.30 m as it lay -> 0.30 m in the hand", "flight 0: landed", the held
+  model after; captures flyb01..08). Not seen: a pickup from across the room (the cfg touches the Helm, so its flight is
+  a few cm); the picture fallbacks for an item with no model. A chain's give (0x29) still starts no fly-in in the port
+  (roth_runtime.cpp, the [unverified] give context).
+- The stow (3b): from the hand over that hand's shoulder (20 cm behind the head, 15 cm below the eyes), 0.35 s,
+  shrinking; the model where there is one. Log "flight 1: item 45's model flies ... landed"; the capture shows it
+  leaving the hand, not the shoulder (behind the camera).
 - The rim and the stow's coat flight are drawn but not yet looked at in a capture beside anything.
 - The use / examine result differences above; the object box vs the original's opaque texels (P3).
 
