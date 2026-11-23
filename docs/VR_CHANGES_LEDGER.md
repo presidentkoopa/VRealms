@@ -220,7 +220,8 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
 - The engine reads a model of several parts, each with its own material: colour, see-through (alphaMode BLEND) and glowing (emissive: fullbright). The object wears the first plain part. Each further part is drawn by a companion actor that follows it, because GZDoom draws a look per actor (roth_img3d.cpp PartsTick).
 - Sizes (items.json `metres`; `post.py --resize`) are my judgement of the real object, not the game's. Small items only; the Shield and the long weapons wait for their grips.
 - Verified: img3d_test 100/0, including the parts reader; the 31 models read back by the engine's reader (cloud); syntax check of roth_img3d.cpp.
-- Not seen: any of it in the engine until the PC capture (img3d_parts_flat.cfg); the glass's look in a headset. Opacity 0.30, gem 0.85 and the glow are tuning numbers.
+- Verified, PC flat (img3d_parts_flat.cfg, captures logs/img3dparts2_*.png, log "part 0 'glass' drawn by a companion of RealmsItemModel" and "of LoaderProp" for the Vial lying in STUDY1): both vials in the hand with the glass see-through over the hand, the green liquid fullbright, the orange contents; the three gems see-through in the open palm. Held in the fist the small gems sat inside the hand (img3dparts_37): they lie in the palm now.
+- Not seen: the glass in a headset (0.30 is faint against skin); the facets under the engine's flat lighting; the vial lying in the world. Opacity 0.30, gem 0.85 and the glow are tuning numbers.
 
 ## Decided, LATER
 
