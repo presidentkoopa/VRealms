@@ -165,6 +165,26 @@ This replaces the claim order (Lamp, package, weapons, world hands, picker) and 
 - **Stow:** D7.
 - **The original's own results stay:** sounds, messages, the examine popup, dialogue, the door swing.
 
+## 4b. Feedback: every state and every result is seen, heard or felt
+
+The owner (2026-11-23): "as long as I have the visual feedback I need to know what is happening". Every event below
+has a sign. The original's own sign is used first, where one exists. The haptic pulse is new: the controller
+vibrates on the hand concerned.
+
+| What happens | Seen | Heard | Felt |
+|---|---|---|---|
+| The finger points at something | the original's cursor picture on it: usable, too far or locked (1.11) | | |
+| The hand touches something usable | a soft rim on it | | a light tick |
+| A squeeze uses it | the original's result: the door swings, the chain's effect | the original's sound | a firm pulse |
+| A squeeze is refused (too far, locked, wrong item) | the cursor picture stays too far or locked; the original's message, if it prints one, on the wrist mount | the original's refusal sound, if any | a double buzz |
+| An item is picked up | it flies into the hand and stays there | the original's pickup sound | a pulse on landing |
+| The game fetches a carried item (auto-select, 1.3) | the item comes out of the coat into the free hand | | a pulse |
+| An item is put away | it is drawn into the coat | | a soft pulse |
+| Examine | Adam's comment as a subtitle on the wrist mount, or the original's close-up window | Adam's voice | |
+| Use on yourself, combine | the original's timed message ("used X", "can't combine X and Y") on the wrist mount | | a pulse |
+
+Where the original shows nothing, the hand still feels the squeeze land or be refused.
+
 ## 5. What is removed or folded
 
 - **Removed:**
