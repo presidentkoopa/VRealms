@@ -138,6 +138,21 @@ AActor *NearestPickupItem(AActor *pmo)
 	return best;
 }
 
+// A TEST TARGET: "item" (the nearest pickup item) or "object <sector> <index>" (that Realms object's actor), from
+// argv[a] on; `a` is left after it. Null: none.
+AActor *TargetActor(AActor *pmo, FCommandLine &argv, int &a)
+{
+	if (a >= argv.argc()) return nullptr;
+	if (!stricmp(argv[a], "item")) { a++; return NearestPickupItem(pmo); }
+	if (!stricmp(argv[a], "object") && a + 2 < argv.argc())
+	{
+		const int rs = atoi(argv[a + 1]), ri = atoi(argv[a + 2]);
+		a += 3;
+		return FindObjectActor(rs, ri);
+	}
+	return nullptr;
+}
+
 void Report()
 {
 	AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
@@ -236,7 +251,8 @@ CCMD(roth_xrpose)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_xrpose on [headyaw] | off | hand <main|off> x y z yaw pitch roll [grip trig tt th] | point <main|off> x y z yaw pitch [wristroll] [grip trig tt th]\n"
-			"            | grip|trigger <main|off> <0..1> | handat <main|off> item [palm] [dx dy dz] | pointat <main|off> item | x y z\n"
+			"            | grip|trigger <main|off> <0..1> | handat <main|off> item|object s i [palm] [dx dy dz] | pointat <main|off> item|object s i|x y z\n"
+			"            | stand item|object s i <metres>\n"
 			"            | aim <main|off> yaw pitch roll | aim <main|off> grip | log | pin <main|off> <palm|tip> | pin off\n");
 		return;
 	}
@@ -350,13 +366,13 @@ CCMD(roth_xrpose)
 		const int role = argv.argc() >= 4 ? RoleArg(argv[2]) : -1;
 		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
 		FVRPoseTestHand h;
-		if (role < 0 || pmo == nullptr || stricmp(argv[3], "item")) { Printf("roth_xrpose handat <main|off> item [palm] [dx dy dz]\n"); return; }
+		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose handat <main|off> item|object <s> <i> [palm] [dx dy dz]\n"); return; }
 		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose handat: the %s hand has no pose (roth_xrpose hand first)\n", RoleName(role)); return; }
-		int a = 4;
+		int a = 3;
+		AActor *best = TargetActor(pmo, argv, a);
 		const bool palm = argv.argc() > a && !stricmp(argv[a], "palm");
 		if (palm) a++;
-		AActor *best = NearestPickupItem(pmo);
-		if (best == nullptr) { Printf("roth_xrpose handat: no Realms object the original's use picks up on this map\n"); return; }
+		if (best == nullptr) { Printf("roth_xrpose handat: no such target (item: the nearest pickup item; object <s> <i>)\n"); return; }
 		DVector3 want = best->PosPlusZ(best->Height * 0.5);
 		if (argv.argc() >= a + 3) want += DVector3(atof(argv[a]), atof(argv[a + 1]), atof(argv[a + 2]));
 		DVector3 palmOff(0, 0, 0);
@@ -394,8 +410,8 @@ CCMD(roth_xrpose)
 		const DVector3 got = publish(pf);
 		int rs = -1, ri = -1;
 		ObjectForActor(best, rs, ri);
-		Printf("roth_xrpose handat: the %s hand%s on Realms object %d/%d (a pickup item) at (%.1f %.1f %.1f): published at (%.1f %.1f %.1f)%s,"
-			" %.2f units off\n", RoleName(role), palm ? "'s palm" : "", rs, ri, want.X + palmOff.X, want.Y + palmOff.Y, want.Z + palmOff.Z,
+		Printf("roth_xrpose handat: the %s hand%s on Realms object %d/%d%s at (%.1f %.1f %.1f): published at (%.1f %.1f %.1f)%s,"
+			" %.2f units off\n", RoleName(role), palm ? "'s palm" : "", rs, ri, ObjectIsPickupItem(best) ? " (a pickup item)" : "", want.X + palmOff.X, want.Y + palmOff.Y, want.Z + palmOff.Z,
 			got.X, got.Y, got.Z, palm ? FStringf(", the palm %.1f units from it", palmOff.Length()).GetChars() : "",
 			(got - want).Length());
 		return;
@@ -415,14 +431,10 @@ CCMD(roth_xrpose)
 		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose pointat <main|off> item | x y z\n"); return; }
 		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose pointat: the %s hand has no pose\n", RoleName(role)); return; }
 		DVector3 at;
-		if (!stricmp(argv[3], "item"))
-		{
-			AActor *best = NearestPickupItem(pmo);
-			if (best == nullptr) { Printf("roth_xrpose pointat: no pickup item on this map\n"); return; }
-			at = best->PosPlusZ(best->Height * 0.5);
-		}
-		else if (argv.argc() >= 6) at = DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
-		else { Printf("roth_xrpose pointat <main|off> item | x y z\n"); return; }
+		int a = 3;
+		if (AActor *best = TargetActor(pmo, argv, a)) at = best->PosPlusZ(best->Height * 0.5);
+		else if (argv.argc() >= 6 && stricmp(argv[3], "item") && stricmp(argv[3], "object")) at = DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
+		else { Printf("roth_xrpose pointat <main|off> item | object <s> <i> | x y z: no such target\n"); return; }
 		DVector3 s, d;
 		if (!VRPickHandRay(role, s, d)) s = role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos;
 		const DVector3 v = at - s;
@@ -442,6 +454,32 @@ CCMD(roth_xrpose)
 		VRPoseTest_SetHand(role, h);
 		Printf("roth_xrpose pointat: the %s hand points from (%.1f %.1f %.1f) at (%.1f %.1f %.1f), %.1f units: yaw %.1f off the body, pitch %.1f\n",
 			RoleName(role), s.X, s.Y, s.Z, at.X, at.Y, at.Z, v.Length(), yaw, wantPitch);
+		return;
+	}
+	// THE PLAYER BEFORE A THING: `stand item|object <s> <i> <metres>` stands the player on the floor <metres> (map
+	// units at roth_vr_units_per_metre) from the target, on the line from where he is, facing it, the view level.
+	if (!stricmp(verb, "stand"))
+	{
+		using namespace roth;
+		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+		int a = 2;
+		AActor *t = pmo != nullptr ? TargetActor(pmo, argv, a) : nullptr;
+		if (t == nullptr || a >= argv.argc()) { Printf("roth_xrpose stand item|object <s> <i> <metres>\n"); return; }
+		const double m = atof(argv[a]) * UPM();
+		DVector2 d = pmo->Pos().XY() - t->Pos().XY();
+		if (d.Length() < 1e-3) d = DVector2(1, 0);
+		d /= d.Length();
+		const DVector3 stand(t->X() + d.X * m, t->Y() + d.Y * m, pmo->Z());
+		pmo->SetOrigin(stand, false);
+		pmo->SetZ(pmo->floorz);
+		pmo->Vel.Zero();
+		pmo->Angles.Yaw = DAngle::fromDeg(atan2(-d.Y, -d.X) * (180.0 / M_PI));
+		pmo->Angles.Pitch = nullAngle;
+		pmo->ClearInterpolation();
+		int rs = -1, ri = -1;
+		ObjectForActor(t, rs, ri);
+		Printf("roth_xrpose stand: the player %.0f units (%s m) from Realms object %d/%d%s, at (%.0f %.0f %.0f), facing it\n", m, argv[a], rs, ri,
+			ObjectIsPickupItem(t) ? " (a pickup item)" : "", pmo->X(), pmo->Y(), pmo->Z());
 		return;
 	}
 	if (!stricmp(verb, "log")) { roth::Report(); return; }

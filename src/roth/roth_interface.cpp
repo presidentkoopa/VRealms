@@ -175,6 +175,17 @@ struct Fly
 	int ticks = 0;          // 70 Hz ticks since start
 	FTextureID tex;
 	int bb = 0;
+	int hand = -1;          // VR: the hand it flies to (docs/VR_INTERACTION.md 1.5, D6); -1 the original's spot
+	int count = 0;          // fly-ins started, ever (a use asks whether it started one)
+};
+
+// THE STOW (docs/VR_INTERACTION.md D7): an item put away is drawn from the hand into the coat. Presentation only.
+struct Stow
+{
+	bool active = false;
+	DVector3 from, to;
+	int tics = 0, total = 7;
+	int bb = 0;
 };
 
 struct Ui
@@ -272,8 +283,10 @@ struct Ui
 
 	int hoverBb = 0;                                // the element the pointer is on
 	Fly fly;
+	Stow stow;
 	DVector3 pendingFlyFrom;
 	bool havePendingFly = false;
+	int pendingFlyHand = -1;        // InterfacePickupHand: the hand a use is made from
 
 	std::vector<std::vector<std::string>> queue;    // test commands, drained per tic
 	RealmsMenus *menus = nullptr;                   // roth_menus, owned by the runtime
@@ -1707,6 +1720,20 @@ static const uint8_t kFlyFrac[0x1c] = {
 	70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 5,
 };
 
+// VR (docs/VR_INTERACTION.md 1.5, D6): the same flight, the same 0x1c ticks and fractions, aimed at the palm of the
+// hand that made the use instead of the original's spot in front of the camera; it lands in that hand.
+bool FlyTarget(player_t *player, DVector3 &target)
+{
+	AActor *mo = player->mo;
+	if (U.fly.hand >= 0)
+	{
+		VRPickHand h;
+		if (VRPickHandNow(U.fly.hand, h) && h.havePoints) { target = h.palm; return true; }
+	}
+	target = mo->Pos() + DVector3(mo->Angles.Yaw.Cos(), mo->Angles.Yaw.Sin(), 0) * 64.0 + DVector3(0, 0, 0x50 * 0.5);
+	return true;
+}
+
 void TickFly(player_t *player)
 {
 	if (!U.fly.active || U.level == nullptr) return;
@@ -1719,12 +1746,33 @@ void TickFly(player_t *player)
 			for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
 				if (U.level->Billboards[i].id == U.fly.bb) { U.level->Billboards.Delete(i); break; }
 		U.fly.active = false;
+		const int hand = U.fly.hand;
+		U.fly.hand = -1;
+		if (hand >= 0) VRPickPickupLanded(hand);
 		return;
 	}
-	AActor *mo = player->mo;
-	const DVector3 target = mo->Pos() + DVector3(mo->Angles.Yaw.Cos(), mo->Angles.Yaw.Sin(), 0) * 64.0 + DVector3(0, 0, 0x50 * 0.5);
+	DVector3 target;
+	FlyTarget(player, target);
 	const double f = kFlyFrac[U.fly.ticks] / 128.0;
 	bb->pos = target + (U.fly.from - target) * f;
+}
+
+// D7: the item's picture from the hand into the coat, shrinking, over kStowTics; then gone.
+void TickStow()
+{
+	if (!U.stow.active || U.level == nullptr) return;
+	FBillboard *bb = nullptr;
+	for (FBillboard &b : U.level->Billboards) if (b.id == U.stow.bb) { bb = &b; break; }
+	if (++U.stow.tics >= U.stow.total || bb == nullptr)
+	{
+		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
+			if (U.level->Billboards[i].id == U.stow.bb) { U.level->Billboards.Delete(i); break; }
+		U.stow.active = false;
+		return;
+	}
+	const double t = (double)U.stow.tics / U.stow.total;
+	bb->pos = U.stow.from + (U.stow.to - U.stow.from) * t;
+	bb->width = bb->height = 12.0 * (1.0 - 0.8 * t);
 }
 
 void StartFly(const DVector3 &from, uint16_t renderId)
@@ -1754,6 +1802,21 @@ void StartFly(const DVector3 &from, uint16_t renderId)
 	U.fly.from = from;
 	U.fly.ticks = 0;
 	U.fly.bb = bb.id;
+	U.fly.hand = U.pendingFlyHand;
+	U.fly.count++;
+	if (U.fly.hand >= 0) Printf("[roth_ui] the pickup flies to the %s hand (0x1c ticks, the original's fly-in aimed at its palm)\n", U.fly.hand == 0 ? "main" : "off");
+}
+
+// The item's picture (as the fly-in finds it), for the stow.
+FTextureID ItemPicture(int item)
+{
+	FTextureID tex = FNullTextureID();
+	const DbItem *rec = U.db != nullptr ? U.db->Item(item) : nullptr;
+	if (rec == nullptr) return tex;
+	const int sn = FindLogicSprite(rec->renderId);
+	if (sn >= 0 && sn < (int)sprites.Size() && sprites[sn].numframes > 0)
+		tex = SpriteFrames[sprites[sn].spriteframes].Texture[0];
+	return tex;
 }
 
 } // namespace
@@ -2159,6 +2222,7 @@ void InterfaceTick(FLevelLocals *level)
 		U.core->Items().TickPickupLock(2);
 		TickFly(player);
 	}
+	TickStow();
 	UpdateHover(player);
 	TickMenuPictures();
 	TickHud(level);
@@ -2328,6 +2392,38 @@ bool InterfaceObjectTakeable(int rothSector, int rothIndex)
 		return true;
 	}
 	return false;
+}
+
+void InterfacePickupHand(int role) { U.pendingFlyHand = role; }
+int InterfaceFlyCount() { return U.fly.count; }
+bool InterfaceFlyingTo(int role) { return U.fly.active && U.fly.hand == role; }
+void InterfaceRetargetFly(int role) { if (U.fly.active) U.fly.hand = role; }
+
+void InterfaceStowPicture(int item, const DVector3 &from, const DVector3 &to)
+{
+	if (U.level == nullptr) return;
+	const FTextureID tex = ItemPicture(item);
+	if (!tex.isValid()) return;
+	if (U.stow.active)
+		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
+			if (U.level->Billboards[i].id == U.stow.bb) { U.level->Billboards.Delete(i); break; }
+	FBillboard bb;
+	bb.id = U.level->NextBillboardID++;
+	bb.pos = from;
+	bb.width = bb.height = 12.0;
+	bb.facing = BBF_CAMERA;
+	bb.payload = BB_TEXTURE;
+	bb.data = tex.GetIndex();
+	bb.color = PalEntry(255, 255, 255, 255);
+	bb.flags = BBFL_PERSISTENT | BBFL_NOSAVE | BBFL_NOHIT;
+	bb.spawntic = U.level->maptime;
+	U.level->Billboards.Push(bb);
+	U.stow = Stow();
+	U.stow.active = true;
+	U.stow.from = from;
+	U.stow.to = to;
+	U.stow.total = std::max(1, (int)(0.2 * TICRATE + 0.5));   // D7: 0.2 s
+	U.stow.bb = bb.id;
 }
 
 //==========================================================================

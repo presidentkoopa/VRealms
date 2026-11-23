@@ -32,6 +32,7 @@
 #include "roth_handhold.h"
 #include "roth_held.h"
 #include "roth_interface.h"
+#include "roth_vrpick.h"   // ItemHandRole (L2)
 #include "roth_inventory.h"
 #include "roth_actors_engine.h"
 #include "roth_coltvr.h"
@@ -122,8 +123,10 @@ static void PublishHeld()
 		if (slot >= 0) item = (int16_t)inv->Slot(slot).id;
 	}
 	VRHandPose::HeldState held[2];
-	const int itemRole = VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
-	held[itemRole] = HeldFor(item > 0 ? item : 0, false);
+	// The hand the item is in (L2, roth_vrpick.h ItemHandRole: the hand that picked it up, else the right side's); not
+	// yet while the pickup still flies to it (roth_interface.h InterfaceFlyingTo).
+	const int itemRole = ItemHandRole();
+	held[itemRole] = HeldFor(item > 0 && !InterfaceFlyingTo(itemRole) ? item : 0, false);
 	// the main hand: the weapon slot's thing, while its actor is drawn there. Adam's own item (his fists) is not a
 	// thing in the hand.
 	int32_t wpn = 0;

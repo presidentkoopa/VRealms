@@ -183,6 +183,7 @@ struct State
 {
 	FLevelLocals *level = nullptr;
 	bool built = false;
+	bool releasedAt[2] = { false, false };   // this tic: a held item was set down by its release (no stow)
 	std::vector<PullObj> pullObjs;
 	std::vector<PrintObj> prints;
 	std::vector<Seat> seats;
@@ -209,7 +210,9 @@ void Buzz(int role, double amp, double ms)
 	if (VRHandPose_InputLive() && !VRPoseTest_Active()) VR_ScriptHaptic(role, amp, ms);
 }
 
-int ItemRole() { return VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT); }
+// The hand the original's right-hand item is in (L2, roth_vrpick.h ItemHandRole: the hand a pickup put it in, else the
+// right side's).
+int ItemRole() { return ItemHandRole(); }
 
 int RightItem()
 {
@@ -598,13 +601,14 @@ DVector3 ContactPoint(const HandNow &h, const ReleaseItem &r)
 	return p;
 }
 
-void Release(int role, const HandNow &h, AActor *pmo, int item)
+// True when the release set the item down somewhere (a record matched there and the original's use ran): no stow.
+bool Release(int role, const HandNow &h, AActor *pmo, int item)
 {
 	const ReleaseItem *r = ReleaseOf(item);
 	if (r == nullptr)
 	{
 		if (Logging() && item > 0) Printf("[roth_worldhands] %s hand opens holding item %d: not set down anywhere (only the Statuette and the Orb are)\n", RoleName(role), item);
-		return;
+		return false;
 	}
 	const double upm = UPM(), ps = PS();
 	const DVector3 pt = ContactPoint(h, *r);
@@ -614,9 +618,9 @@ void Release(int role, const HandNow &h, AActor *pmo, int item)
 	if (PickTouchSurface(pmo, pt, wh::kSocketM * upm, wp) && (wp.kind == Pick::WallFace || wp.kind == Pick::DoorLeaf)) dw = wp.dist / upm;
 	if (df > wh::kSocketM && dw > wh::kSocketM)
 	{
-		Printf("[roth_worldhands] %s hand releases %s at (%.1f %.1f %.1f): nothing within %.2f m of it -- nothing (it stays in the hand)\n", RoleName(role),
+		Printf("[roth_worldhands] %s hand releases %s at (%.1f %.1f %.1f): nothing within %.2f m of it -- not set down\n", RoleName(role),
 			r->what, pt.X, pt.Y, pt.Z, wh::kSocketM);
-		return;
+		return false;
 	}
 	q = df <= dw ? fp : wp;
 	const double dist = std::min(df, dw);
@@ -630,15 +634,16 @@ void Release(int role, const HandNow &h, AActor *pmo, int item)
 	if (rec == 0)
 	{
 		Printf("[roth_worldhands] %s hand releases %s on %s at (%.1f %.1f %.1f), %.3f m from it: the original's use matches no record there, nor within %.2f m"
-			" -- nothing (it stays in the hand)\n", RoleName(role), r->what, PickKindName(q), q.hitPos.X, q.hitPos.Y, q.hitPos.Z, dist, wh::kBaseDiscM);
+			" -- not set down\n", RoleName(role), r->what, PickKindName(q), q.hitPos.X, q.hitPos.Y, q.hitPos.Z, dist, wh::kBaseDiscM);
 		ExplainSurfaceBox(q);
-		return;
+		return false;
 	}
 	const bool acted = RulesUse(role, q, "release (set down)");
 	Printf("[roth_worldhands] %s hand releases %s on %s at (%.1f %.1f %.1f)%s: the original's use, record #%u -> %s; the right hand now holds %d\n",
 		RoleName(role), r->what, PickKindName(q), q.hitPos.X, q.hitPos.Y, q.hitPos.Z, moved ? " (its disc's nearest point in a box)" : "", rec,
 		acted ? "acted" : "nothing happened", RightItem());
 	Buzz(role, acted ? 0.35 : 0.12, acted ? 30 : 12);
+	return true;
 }
 
 //===========================================================================
@@ -828,10 +833,13 @@ void TickHand(int role, AActor *pmo)
 	const bool itemHand = role == ItemRole();
 
 	// ---- THE RELEASE ----
+	// Only a HOLD of the item ending (L2: the grip closed on it, now open; roth_handstate.h): an item the game put in the
+	// hand with the grip free is not let go by an opening.
+	S.releasedAt[role] = false;
 	if (w.release.Feed(true, h.grip))
 	{
 		if (w.claimed) { if (Logging()) Printf("[roth_worldhands] %s hand opens: the grip was a pull or a twist -- no release\n", RoleName(role)); }
-		else if (itemHand) Release(role, h, pmo, item);
+		else if (itemHand && HandHoldEndedThisTic(role)) S.releasedAt[role] = Release(role, h, pmo, item);
 	}
 	if (!h.grip) w.claimed = false;
 
@@ -863,7 +871,9 @@ void TickHand(int role, AActor *pmo)
 	}
 
 	// ---- THE TWIST ----
-	if (!w.twist.engaged && h.grip && itemHand) TryTwist(role, h, pmo, "moved in with the grip closed");
+	// The held item's own gesture: the hand holding it, or a hand nobody owns (L2).
+	const bool twistMay = HandMayAct(role, hands::Owner::Gesture) || HandOwnerNow(role) == hands::Owner::Item;
+	if (!w.twist.engaged && h.grip && itemHand && twistMay) TryTwist(role, h, pmo, "moved in with the grip closed");
 	if (w.twist.engaged && w.twistItem != nullptr)
 	{
 		const double off = M(h.palm - w.socketAt).Length();
@@ -893,10 +903,11 @@ void TickHand(int role, AActor *pmo)
 
 	// ---- THE PRESS ----
 	const double upm = UPM();
+	const bool free = HandMayAct(role, hands::Owner::Gesture);   // L2: a hand another owner holds presses nothing
 	for (PrintObj &p : S.prints)
 	{
 		AActor *mo = FindObjectActor(p.sector, p.index);
-		const bool live = mo != nullptr && !(mo->renderflags & RF_INVISIBLE) && !h.grip;
+		const bool live = mo != nullptr && !(mo->renderflags & RF_INVISIBLE) && !h.grip && free;
 		const double depth = p.offsetM - ((h.palm.XY() - p.wallAt) | p.n) / upm;
 		const double along = ((h.palm.XY() - p.wallAt) | p.along) / upm;
 		const double disc = wh::kPalmDiscM;
@@ -930,7 +941,7 @@ void TickHand(int role, AActor *pmo)
 		const double inFront = (rel.XY() | d.n) / upm;
 		const double u = (rel.XY() | d.right) / upm, v = rel.Z * PS() / upm;
 		const double r = sqrt(u * u + v * v);
-		const bool touching = inFront <= wh::kDialTouchM && inFront >= -wh::kDialThroughM && r <= d.radiusM && r >= 0.1 * d.radiusM;
+		const bool touching = free && inFront <= wh::kDialTouchM && inFront >= -wh::kDialThroughM && r <= d.radiusM && r >= 0.1 * d.radiusM;
 		const double ang = atan2(u, v) * (180.0 / M_PI);
 		const bool was = d.hand[role].engaged;
 		if (d.hand[role].Feed(touching, ang, handDeg))
@@ -1089,6 +1100,11 @@ bool WorldHandsHolding(int role)
 	const HandW &w = S.hand[role];
 	for (const Dial &d : S.dials) if (d.hand[role].engaged) return true;   // pushing the hour hand presses nothing
 	return w.claimed || w.pull.engaged || w.twist.engaged;
+}
+
+bool WorldHandsReleasedThisTic(int role)
+{
+	return role >= 0 && role <= 1 && S.releasedAt[role];
 }
 
 bool WorldHandsItemTipping(int role)

@@ -50,6 +50,10 @@ bool HeldGripTaken(int role);
 // Whether the hand of `role` carries a held object this tic -- the Lamp, the lit match, the open Book -- so it is
 // neither an empty hand (the knock) nor a fist (the punch) for the gestures (roth_gestures.cpp).
 bool HeldHandCarries(int role);
+// L2 (roth_handstate.h): the hand of `role` is held by a held object that owns its grip -- the Lamp by its bail, the
+// open Book (both hands) -- or holds the lit match (its grip still points and grips a tall wick: HeldMatchIn).
+bool HeldHandOwned(int role);
+bool HeldMatchIn(int role);
 void HeldPose(int role, VRHandPose::HeldState &held);
 void HeldForcedTurn(double fromYawDeg, double toYawDeg);
 void HeldMovieOver();

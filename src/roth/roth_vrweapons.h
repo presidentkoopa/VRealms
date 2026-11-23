@@ -48,6 +48,14 @@ bool VRWeaponsTriggerHeldBack();
 // inside a body slot. The picker's grip and the gestures' fist stand down for it.
 bool VRWeaponsGripTaken(int role);
 
+// The off hand holds the two-handed weapon's support (the fore-end latch engaged): L2's SUPPORTING (roth_handstate.h).
+bool VRWeaponsSupportHeld();
+
+// A WEAPON PICKED UP WHILE THE MAIN HAND IS NOT FREE (docs/VR_INTERACTION.md 1.5): the original has equipped it
+// (give_item -> activate_weapon_item); it goes to its body slot (its own, else the first free one it may enter) and
+// the main hand keeps what it held: `before` re-equipped by the inventory's weapon click, or nothing. True: a slot.
+bool VRWeaponsToBodySlot(int item, int before);
+
 // The two-hand aim of a two-handed weapon while the off hand holds it: the line from the rear (main) hand through the
 // fore (off) hand -- yaw in the engine's degrees, pitch POSITIVE UP -- and the rear hand (AttackPos). False: one hand.
 bool VRWeaponsTwoHandAim(double &yawDeg, double &pitchUpDeg, DVector3 &rear);

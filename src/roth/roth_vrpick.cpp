@@ -28,7 +28,15 @@
 //   presses it with the fingertip (the point   Activate(Use)             the same
 //     pose with the grip held, as before)
 //
-// IN REACH OR POINTING: as the picker always chose -- what the palm is on first
+// L1 AND L2 (docs/VR_INTERACTION.md 4; roth_vrrules.h, roth_handstate.h). Every use and examine below is L1's
+// (RulesUse / RulesExamine: the original's gate, reach by D2 from the body). Who owns each hand is L2's, once a tic
+// (L2Tick): the Colt's reload parts, a world gesture, the fore-end (SUPPORTING), the Lamp or the Book, a held item, a
+// drawn weapon, the lit match, the carried item, else nobody. A closing grip asks the Lamp's bail, the Colt, the
+// weapon, a world gesture, then the picker's squeeze, D3: what the palm or fingertip TOUCHES (5 cm; it also gets the
+// rim and the light tick, every tic), else what the index POINTS at, else the in-reach zone below. A squeeze that
+// picks an item up flies it to that hand (HOLDING); letting go stows it (the original's own deselect, D7).
+//
+// THE IN-REACH ZONE (a squeeze with no touch and no point), as the picker always chose -- what the palm is on first
 // (NearAct: the objects within 15 cm of the palm, nearest first; a surface 20 cm
 // along the hand; the wall or door the palm is on), else along the pointing
 // finger. A button acts once, on its press edge (pressed at 0.70, let go at 0.35:
@@ -132,6 +140,7 @@
 #include "roth_dbase100.h"   // roth_l1diff: the item an object is
 #include "roth_raw.h"        // roth_l1diff: the object record
 #include "roth_vrweapons.h"
+#include "roth_coltvr.h"     // ColtGripTaken (L2's claims)
 #include "roth_runtime.h"
 #include "roth_interface.h"
 #include "roth_hands.h"
@@ -146,6 +155,7 @@
 #include "roth_held.h"
 #include "roth_worldhands.h"
 #include "roth_worldhandslogic.h"
+#include "roth_handstate.h"
 #include "actor.h"
 #include "actorinlines.h"
 #include "d_player.h"
@@ -178,10 +188,10 @@ namespace
 // ---- tuning (metres unless said) ----
 constexpr double kPokeIn      = 0.025;   // fingertip contact
 constexpr double kPokeOut     = 0.06;    // re-arm distance
-constexpr double kGrabReach   = 0.20;    // palm, along the hand
+constexpr double kGrabReach   = hands::kZoneAlongM;     // palm, along the hand (the in-reach zone, roth_handstate.h)
 constexpr double kGrabBack    = 0.08;    // the grip's ray starts this far behind the palm
-constexpr double kTouchRadius = 0.10;    // a palm this close to a wall or a door is on it
-constexpr double kGrabRadius  = 0.15;    // palm to an object's box
+constexpr double kTouchRadius = hands::kZoneSurfaceM;   // a palm this close to a wall or a door is on it
+constexpr double kGrabRadius  = hands::kZoneObjectM;    // palm to an object's box
 constexpr double kNoHitBeam   = 0.60;    // the beam's length with nothing at its end
 constexpr float  kPointGrip   = 0.50f;   // the fingertip press's point pose holds the grip this far
 constexpr float  kGripClose   = 0.70f, kGripOpen = 0.35f;   // a button pressed / let go: the grip AND the trigger
@@ -228,6 +238,14 @@ struct HandState
 	Pick  logged;           // the last target reported (debug line)
 	uint16_t loggedShape = 0;
 
+	// THE TOUCH (D3, roth_handstate.h): what the palm or the fingertip is on within 5 cm, usable; its rim and its tick
+	bool        touchHave = false;
+	Pick        touch;
+	CursorClass touchCls;
+	bool        touchObj = false;
+	Pick        touchTicked;        // the touch last ticked (a new one ticks again)
+	int         rim = 0;
+
 	// billboards
 	int dot[kDots] = {};
 	int marker = 0;
@@ -270,6 +288,15 @@ struct VRPick
 	double costSum = 0, costMax = 0;
 };
 VRPick P;
+
+// ---- L2, each hand's state (roth_handstate.h; the exports are below, after the anonymous namespace) ----
+hands::Hand gL2[2];
+bool gHoldEnded[2] = { false, false };     // this tic: an item's hold ended (the world hands' release asks)
+bool gStowPending[2] = { false, false };   // ... to be stowed at the tic's end, unless set down or still flying in
+int gItemRole = -1, gItemSlot = -1;        // the hand a pickup (or a closing on it) put the selected item in, its slot
+uint16_t gItemId = 0;                      // ... and its id word then
+hands::State gLoggedState[2] = { hands::State::Free, hands::State::Free };
+hands::Owner gLoggedOwner[2] = { hands::Owner::None, hands::Owner::None };
 
 const char *RoleName(int role) { return role == VR_MAINHAND ? "main" : "off"; }
 
@@ -532,6 +559,9 @@ constexpr double kTickAmp = 0.12, kTickMs = 12;       // the hand touches someth
 constexpr double kUseAmp = 0.45, kUseMs = 35;         // a squeeze uses it: a firm pulse
 constexpr double kRefuseAmp = 0.30, kRefuseMs = 12;   // a squeeze refused: a double buzz, the second 3 tics on
 constexpr int    kRefuseGapTics = 3;
+constexpr double kLandAmp = 0.50, kLandMs = 30;       // a pickup lands in the hand: a pulse on landing
+constexpr double kStowAmp = 0.20, kStowMs = 20;       // an item put away: a soft pulse
+constexpr double kHoldAmp = 0.30, kHoldMs = 20;       // the hand closes on its item
 int gSecondBuzz[2] = { -1, -1 };                      // the refusal's second buzz, at this maptime
 
 void Refused(int role, const char *how)
@@ -558,6 +588,83 @@ int RightHandItem(const Inventory *inv)
 	return (int16_t)inv->Slot(inv->RightHand()).id;
 }
 
+int SelectedItem()
+{
+	return RightHandItem(InterfaceInventory());
+}
+
+// THE MAIN HAND IS FREE for a weapon picked up (1.5): no weapon drawn in it, no item in it, no held object.
+bool MainHandFree()
+{
+	if (HandHoldsWeapon(VR_MAINHAND)) return false;
+	if (gL2[VR_MAINHAND].itemHeld) return false;
+	if (ItemHandRole() == VR_MAINHAND && SelectedItem() > 0) return false;
+	return !HeldHandOwned(VR_MAINHAND);
+}
+
+// A USE THAT STARTED A FLY-IN gave something (give_item's flight, from a type-4 pickup or a chain's 0x29): the original
+// has already put it where it puts it -- a weapon equipped, anything else selected (inventory.c:416-434). Here the VR
+// hands take it (1.5): a weapon to the main hand if it is free, else to its body slot; an item into the hand that made
+// the use, HOLDING while its grip stays closed.
+void AfterPickup(int role, int weapon0, bool mainFree)
+{
+	Inventory *inv = InterfaceInventory();
+	const int w = VRWeaponsHeldItem();
+	if (w > 0 && w != weapon0)
+	{
+		InterfaceRetargetFly(VR_MAINHAND);
+		Printf("[roth_vrpick] PICKUP: the original equipped weapon i%d (activate_weapon_item); the main hand %s\n", w,
+			mainFree ? "is free: it flies to it and is drawn there" : "is not free: to its body slot");
+		if (!mainFree) VRWeaponsToBodySlot(w, weapon0);
+		return;
+	}
+	const int slot = inv != nullptr ? inv->RightHand() : -1;
+	const int item = RightHandItem(inv);
+	if (slot < 0 || item <= 0) return;
+	gItemRole = role;
+	gItemSlot = slot;
+	gItemId = inv->Slot(slot).id;
+	const bool squeezed = P.hand[role].gripClosed;
+	if (squeezed) gL2[role].BeginPickup();
+	Printf("[roth_vrpick] PICKUP: the original gave item %d and selected it (give_item); it flies to the %s hand (the original's fly-in, 0x1c ticks)%s\n",
+		item, RoleName(role), squeezed ? " and stays in it while the grip is closed: HOLDING" : ": the grip is open, it is carried in that hand");
+}
+
+// D7: THE STOW. The original's own calls put the selection away: the right hand's cell taken onto the cursor
+// (dialogue_ui.c:1767-1787: g_selected_item_primary = 0) and the cursor's item put back (:1743-1744). The item stays
+// carried; nothing is selected. Its picture is drawn into the coat over 0.2 s.
+void Stow(int role)
+{
+	Inventory *inv = InterfaceInventory();
+	InventorySink *sink = InterfaceInventorySink();
+	const int slot = inv != nullptr ? inv->RightHand() : -1;
+	if (slot < 0 || ItemHandRole() != role)
+	{
+		Printf("[roth_vrpick] %s hand let go: nothing to stow (the item is no longer the selected one in this hand)\n", RoleName(role));
+		if (gItemRole == role) { gItemRole = gItemSlot = -1; gItemId = 0; }
+		return;
+	}
+	const int item = (int16_t)inv->Slot(slot).id;
+	AActor *pmo = P.level != nullptr && P.level->GetConsolePlayer() != nullptr ? P.level->GetConsolePlayer()->mo : nullptr;
+	const HandState &h = P.hand[role];
+	DVector3 from = h.palm, to = from;
+	if (pmo != nullptr)
+	{
+		const double vh = pmo->player != nullptr ? pmo->player->viewheight : 41.0;
+		to = pmo->Pos() + DVector3(pmo->Angles.Yaw.Cos(), pmo->Angles.Yaw.Sin(), 0) * 4.0 + DVector3(0, 0, vh * 0.6);
+		if (!h.haveRay) from = to;
+	}
+	inv->PickUpToCursor(slot, sink);
+	inv->DropHeld();
+	gItemRole = gItemSlot = -1;
+	gItemId = 0;
+	InterfaceStowPicture(item, from, to);
+	Haptic(role, kStowAmp, kStowMs, "stowed: a soft pulse");
+	Printf("[roth_vrpick] %s hand let go of item %d: STOWED into the coat -- the original's own calls: its cell onto the cursor"
+		" (dialogue_ui.c:1782-1787, g_selected_item_primary = 0) and put back (:1744); carried, not selected (right hand slot now %d)\n",
+		RoleName(role), item, inv->RightHand());
+}
+
 // EVERY USE A HAND MAKES -- the grip (in reach or pointing), the fingertip
 // press -- is the original's secondary (use) click, through the port's use path (Activate), WITH
 // THE ITEM THAT HAND HOLDS (roth_handuse.h): the hand on the RIGHT side holds
@@ -568,16 +675,22 @@ int RightHandItem(const Inventory *inv)
 bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how, bool inReach = false)
 {
 	if (!c.CanUse()) { ExplainSurfaceBox(p); Refused(role, how); return false; }
-	const bool itemHand = VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT;
+	// THE ITEM OF THE HAND THAT MAKES THE USE (1.1): the hand the selected item is in (L2, ItemHandRole) uses with it
+	// selected; the other with nothing selected (roth_handuse.h).
+	const bool itemHand = role == ItemHandRole();
 	Inventory *inv = InterfaceInventory();
 	const int before = RightHandItem(inv);
+	const int fly0 = InterfaceFlyCount(), weapon0 = VRWeaponsHeldItem();
+	const bool mainFree = MainHandFree();
 	HandUse scope;
 	if (inv != nullptr) scope = HandUseBegin(*inv, itemHand);
 	// A candle's first wick (roth_candles.h): which use starts its lighting, and at which wick. Presentation;
 	// the use itself is untouched.
 	AActor *const target = p.kind == Pick::Prop ? p.actor : nullptr;
 	if (target != nullptr) CandlesBeforeUse(target);
+	InterfacePickupHand(role);   // a pickup this use makes flies to this hand (D6)
 	const bool acted = Activate(p, pmo, TrigEvent::Use);
+	InterfacePickupHand(-1);
 	if (target != nullptr)
 	{
 		const HandState &hs = P.hand[role];
@@ -594,6 +707,7 @@ bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const cha
 		acted ? "acted" : "nothing happened");
 	if (during != before || now != before || after != HandUseAfter::ItemHand)
 		Printf("[roth_vrpick]   the right hand: %d before, %d after the use, %d now (%s)\n", before, during, now, HandUseAfterName(after));
+	if (InterfaceFlyCount() != fly0) AfterPickup(role, weapon0, mainFree);
 	if (acted) Haptic(role, kUseAmp, kUseMs, FStringf("a use acted: %s", how).GetChars());
 	else Refused(role, how);
 	return acted;
@@ -641,13 +755,29 @@ bool DiscPick(int role, AActor *pmo, Pick &p, CursorClass &c, double radiusM, bo
 // CursorClass::CanUse); the trigger's is the same search gated by CanExamine.
 // Returns 0 when nothing in reach could take the click (the caller then looks
 // along the pointing finger), 1 when it went to something in reach.
-int NearAct(int role, HandState &h, AActor *pmo, bool use)
+// THE REACH OF A SEARCH (roth_handstate.h, the targeting rule): the in-reach zone a squeeze searches with no touch and
+// no point, or D3's touch (5 cm, from the fingertip too; quiet and without the contact disc when it runs every tic for
+// the rim and the tick).
+struct Reach
+{
+	double objM, alongM, surfaceM, flatM;
+	bool tip;       // the fingertip counts as well as the palm
+	bool quiet;     // no log lines, no contact disc (every tic)
+};
+const Reach kZone = { hands::kZoneObjectM, hands::kZoneAlongM, hands::kZoneSurfaceM, hands::kZoneSurfaceM, false, false };
+const Reach kTouch = { hands::kTouchM, hands::kTouchM, hands::kTouchM, hands::kTouchM, true, false };
+const Reach kTouchQuiet = { hands::kTouchM, hands::kTouchM, hands::kTouchM, hands::kTouchM, true, true };
+
+// What the hand is on within `R`: the nearer of an object and a surface the original's cursor lets the click (`use`:
+// the use, else the examine) act on. False: nothing.
+bool NearFind(int role, HandState &h, AActor *pmo, bool use, const Reach &R, Pick &out, CursorClass &outc, bool &isObject)
 {
 	auto can = [use](const CursorClass &c) { return use ? c.CanUse() : c.CanExamine(); };
 	auto why = [use](const CursorClass &c) { return use ? WhyNotUse(c) : WhyNotExamine(c); };
 	const char *what = use ? "grip closes" : "trigger pulled";
+	const bool logging = Logging() && !R.quiet;
 	const double upm = UPM();
-	const double r = kGrabRadius * upm;
+	const double r = R.objM * upm;
 	std::vector<std::pair<double, AActor *>> near;
 	auto it = P.level->GetThinkerIterator<AActor>();
 	AActor *mo;
@@ -659,16 +789,20 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 		// distance from the palm to the box the object is picked by
 		DVector3 lo, hi;
 		ObjectPickBox(mo, lo, hi);
-		const double dx = std::max(0.0, std::max(lo.X - h.palm.X, h.palm.X - hi.X));
-		const double dy = std::max(0.0, std::max(lo.Y - h.palm.Y, h.palm.Y - hi.Y));
-		const double dz = std::max(0.0, std::max(lo.Z - h.palm.Z, h.palm.Z - hi.Z));
-		const double d = sqrt(dx * dx + dy * dy + dz * dz);
+		auto boxDist = [&](const DVector3 &q)
+		{
+			const double dx = std::max(0.0, std::max(lo.X - q.X, q.X - hi.X));
+			const double dy = std::max(0.0, std::max(lo.Y - q.Y, q.Y - hi.Y));
+			const double dz = std::max(0.0, std::max(lo.Z - q.Z, q.Z - hi.Z));
+			return sqrt(dx * dx + dy * dy + dz * dz);
+		};
+		const double d = R.tip ? std::min(boxDist(h.palm), boxDist(h.tip)) : boxDist(h.palm);
 		if (d <= r) near.push_back({ d, mo });
 	}
 	std::sort(near.begin(), near.end(), [](const std::pair<double, AActor *> &a, const std::pair<double, AActor *> &b) { return a.first < b.first; });
-	if (Logging())
+	if (logging)
 		Printf("[roth_vrpick] %s hand %s: palm at (%.1f %.1f %.1f), %d object(s) within %.1f units (%.2f m)\n",
-			RoleName(role), what, h.palm.X, h.palm.Y, h.palm.Z, (int)near.size(), r, kGrabRadius);
+			RoleName(role), what, h.palm.X, h.palm.Y, h.palm.Z, (int)near.size(), r, R.objM);
 	Pick objPick;
 	CursorClass objCls;
 	bool haveObj = false;
@@ -680,7 +814,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 		p.hitPos = n.second->PosPlusZ(n.second->Height * 0.5);
 		p.dist = n.first;
 		const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
-		if (Logging())
+		if (logging)
 			Printf("[roth_vrpick]   object %.1f units from the palm: cursor type %d shape 0x%x -> %s\n",
 				n.first, (int)c.type, (unsigned)c.shape, why(c).GetChars());
 		if (!can(c)) continue;
@@ -697,25 +831,26 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	// through it: the ray starts kGrabBack behind and hits count from there to
 	// kGrabReach in front.
 	const double back = kGrabBack * upm;
+	const double along = R.alongM * upm;
 	const DVector3 rayFrom = h.palm - h.handFwd * back;
 	Pick rayPick;
 	CursorClass rayCls;
 	bool haveRay = false;
-	if (RulesPick(rayFrom, h.handFwd, rayPick, back + kGrabReach * upm))
+	if (RulesPick(rayFrom, h.handFwd, rayPick, back + along))
 	{
 		rayPick.dist -= back;   // from the palm; negative: just behind it
 		rayCls = ClassifyPick(rayPick, pmo, BodyDepth(pmo, rayPick));
-		if (!can(rayCls)) DiscPick(role, pmo, rayPick, rayCls, wh::kPalmDiscM, use, h.palm);
-		haveRay = can(rayCls);
-		if (Logging())
+		if (!can(rayCls) && !R.quiet) DiscPick(role, pmo, rayPick, rayCls, wh::kPalmDiscM, use, h.palm);
+		haveRay = can(rayCls) && rayPick.dist <= along;
+		if (logging)
 			Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): %s %.1f units from the palm:"
 				" cursor type %d shape 0x%x -> %s\n", rayFrom.X, rayFrom.Y, rayFrom.Z, h.handFwd.X, h.handFwd.Y, h.handFwd.Z,
 				PickKindName(rayPick), rayPick.dist, (int)rayCls.type, (unsigned)rayCls.shape, why(rayCls).GetChars());
-		if (!haveRay) ExplainSurfaceBox(rayPick);   // roth_trigger_debug: where on the face the hand is, against its boxes
+		if (!haveRay && !R.quiet) ExplainSurfaceBox(rayPick);   // roth_trigger_debug: where on the face the hand is, against its boxes
 	}
-	else if (Logging())
+	else if (logging)
 		Printf("[roth_vrpick]   surface along the hand, from (%.1f %.1f %.1f) along (%.2f %.2f %.2f): nothing from %.1f behind the palm"
-			" to %.1f in front\n", rayFrom.X, rayFrom.Y, rayFrom.Z, h.handFwd.X, h.handFwd.Y, h.handFwd.Z, back, kGrabReach * upm);
+			" to %.1f in front\n", rayFrom.X, rayFrom.Y, rayFrom.Z, h.handFwd.X, h.handFwd.Y, h.handFwd.Z, back, along);
 
 	// THE SURFACE THE PALM IS ON, whichever way the hand faces: the nearest
 	// Realms wall face or door leaf within kTouchRadius of the palm in the
@@ -723,20 +858,22 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	Pick touchPick;
 	CursorClass touchCls;
 	bool haveTouch = false;
-	if (PickTouchSurface(pmo, h.palm, kTouchRadius * upm, touchPick))
+	bool touched = PickTouchSurface(pmo, h.palm, R.surfaceM * upm, touchPick);
+	if (!touched && R.tip) touched = PickTouchSurface(pmo, h.tip, R.surfaceM * upm, touchPick);
+	if (touched)
 	{
 		touchCls = ClassifyPick(touchPick, pmo, BodyDepth(pmo, touchPick));
-		if (!can(touchCls)) DiscPick(role, pmo, touchPick, touchCls, wh::kPalmDiscM, use, h.palm);
+		if (!can(touchCls) && !R.quiet) DiscPick(role, pmo, touchPick, touchCls, wh::kPalmDiscM, use, h.palm);
 		haveTouch = can(touchCls);
-		if (Logging())
+		if (logging)
 			Printf("[roth_vrpick]   surface under the palm: %s %.1f units from it (at %.1f %.1f): cursor type %d shape 0x%x -> %s\n",
 				PickKindName(touchPick), touchPick.dist, touchPick.hitPos.X, touchPick.hitPos.Y, (int)touchCls.type,
 				(unsigned)touchCls.shape, why(touchCls).GetChars());
 	}
-	else if (Logging())
-		Printf("[roth_vrpick]   surface under the palm: no Realms wall or door within %.1f units\n", kTouchRadius * upm);
+	else if (logging)
+		Printf("[roth_vrpick]   surface under the palm: no Realms wall or door within %.1f units\n", R.surfaceM * upm);
 	if (haveTouch && (!haveRay || touchPick.dist < rayPick.dist)) { rayPick = touchPick; rayCls = touchCls; haveRay = true; }
-	else if (!haveTouch && touchPick.kind == Pick::WallFace) ExplainSurfaceBox(touchPick);   // roth_trigger_debug: a face under the palm that takes no click
+	else if (!haveTouch && touchPick.kind == Pick::WallFace && !R.quiet) ExplainSurfaceBox(touchPick);   // roth_trigger_debug: a face under the palm that takes no click
 
 	// THE FLAT UNDER THE PALM (2026-11-16, chapter 2 Q21: the palm laid on a table top's letter, on the dais): a floor or
 	// a platform top within kTouchRadius under the palm, its point the palm's, its disc the palm's. Last: a wall,
@@ -744,38 +881,42 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	if (!haveRay)
 	{
 		Pick flat;
-		const double r = kTouchRadius * upm;
+		const double r = R.flatM * upm;
 		const double ps = P.level != nullptr && P.level->pixelstretch > 0.1 ? P.level->pixelstretch : 1.2;
 		if (WorldHandsFlatUnder(h.palm, r / ps, 0.02 * upm / ps, flat))
 		{
 			CursorClass fc = ClassifyPick(flat, pmo, BodyDepth(pmo, flat));
-			if (!can(fc)) DiscPick(role, pmo, flat, fc, wh::kPalmDiscM, use, h.palm);
-			if (Logging())
+			if (!can(fc) && !R.quiet) DiscPick(role, pmo, flat, fc, wh::kPalmDiscM, use, h.palm);
+			if (logging)
 				Printf("[roth_vrpick]   the flat under the palm: %s at (%.1f %.1f %.1f): cursor type %d shape 0x%x -> %s\n", PickKindName(flat), flat.hitPos.X,
 					flat.hitPos.Y, flat.hitPos.Z, (int)fc.type, (unsigned)fc.shape, why(fc).GetChars());
 			if (can(fc)) { rayPick = flat; rayCls = fc; haveRay = true; }
-			else ExplainSurfaceBox(flat);
+			else if (!R.quiet) ExplainSurfaceBox(flat);
 		}
 	}
 
 	// THE NEARER OF THE TWO, as the original's pick is the nearest thing under
 	// the cursor: a door handle on the door is taken before the door, the door
 	// before a key lying a hand's width beyond it.
-	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist))
-	{
-		if (use) DoUse(role, objPick, objCls, pmo, "grip on an object", true);
-		else DoExamine(role, objPick, objCls, pmo, "trigger, the palm on an object");
-		return 1;
-	}
-	if (haveRay)
-	{
-		if (use) DoUse(role, rayPick, rayCls, pmo, "grip on a surface");
-		else DoExamine(role, rayPick, rayCls, pmo, "trigger, the palm on a surface");
-		return 1;
-	}
-	if (Logging())
+	if (haveObj && (!haveRay || objPick.dist <= rayPick.dist)) { out = objPick; outc = objCls; isObject = true; return true; }
+	if (haveRay) { out = rayPick; outc = rayCls; isObject = false; return true; }
+	if (logging)
 		Printf("[roth_vrpick] %s hand %s: nothing within reach to %s\n", RoleName(role), what, use ? "use" : "examine");
-	return 0;
+	return false;
+}
+
+// IN REACH (the zone, or the touch): what the palm is on -- for the grip's use, or the trigger's examine (`use` false).
+// Returns 0 when nothing could take the click (the caller then looks along the pointing finger), 1 when it went there.
+int NearAct(int role, HandState &h, AActor *pmo, bool use, const Reach &R = kZone)
+{
+	Pick p;
+	CursorClass c;
+	bool isObject = false;
+	if (!NearFind(role, h, pmo, use, R, p, c, isObject)) return 0;
+	const bool touch = &R != &kZone;
+	if (use) DoUse(role, p, c, pmo, isObject ? (touch ? "grip, touching an object" : "grip on an object") : (touch ? "grip, touching a surface" : "grip on a surface"), isObject);
+	else DoExamine(role, p, c, pmo, isObject ? "trigger, the palm on an object" : "trigger, the palm on a surface");
+	return 1;
 }
 
 //--------------------------------------------------------------------------
@@ -832,6 +973,176 @@ void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
 	h.primed = h.valid;
 }
 
+// THE RIM on a touched usable thing (docs/VR_INTERACTION.md 4b, D4): a soft ring round it, in the world -- its box
+// for an object, a hand's width at the point for a surface. Presentation; the cursor picture at the pointed point is P2's.
+void DrawRim(HandState &h)
+{
+	const double upm = UPM();
+	DVector3 at = h.touch.hitPos;
+	double size = 0.06 * upm;
+	if (h.touch.kind == Pick::Prop && h.touch.actor != nullptr)
+	{
+		DVector3 lo, hi;
+		ObjectPickBox(h.touch.actor, lo, hi);
+		at = (lo + hi) * 0.5;
+		size = std::max(0.03 * upm, std::max(hi.X - lo.X, std::max(hi.Y - lo.Y, hi.Z - lo.Z)) * 1.15);
+	}
+	PlaceBB(h.rim, BB_RING, HandLock{}, at, size, PalEntry(255, 236, 214, 170), 0.35);
+}
+
+// D3, EVERY TIC: the usable thing the palm or the fingertip is on, within 5 cm (NearFind with the touch's reach, quiet).
+// A new one ticks the hand lightly (4b) and gets the rim; none hides it. Only for a hand the picker may act with.
+void UpdateTouch(int role, HandState &h, AActor *pmo, bool haveRay)
+{
+	h.touchHave = false;
+	if (haveRay && gL2[role].MayAct(hands::Owner::Picker))
+		h.touchHave = NearFind(role, h, pmo, true, kTouchQuiet, h.touch, h.touchCls, h.touchObj);
+	if (!h.touchHave)
+	{
+		h.touchTicked = Pick{};
+		HideBB(h.rim);
+		return;
+	}
+	if (!SamePickTarget(h.touch, h.touchTicked))
+	{
+		h.touchTicked = h.touch;
+		Printf("[roth_vrpick] %s hand TOUCHES %s (usable, %s): the rim and the light tick\n", RoleName(role), PickKindName(h.touch),
+			rules::ClassName(RulesClassOf(h.touchCls)));
+		Haptic(role, kTickAmp, kTickMs, "a touch: the light tick");
+	}
+	DrawRim(h);
+}
+
+// THE PICKER'S SQUEEZE (L2's last claim): D3 -- the touch (5 cm, the palm or the fingertip), else the point (the
+// extended index's ray; the tall wicks first), else the in-reach zone. Every one is L1's use (RulesUse's body: DoUse
+// behind the original's gate). 1: it went to a target (acted, or the original refused it: a double buzz); 0: nothing.
+int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
+{
+	if (!haveRay) return 0;
+	if (NearAct(role, h, pmo, true, kTouch)) return 1;
+	if (h.pointing)
+	{
+		// THE TALL WICKS (owner, Q13): the flame hand pointing at a wick in reach -- the wick nearest its ray -- and the
+		// grip: that wick's flame (CandlesPointGrip, the same route as a flame brought to it).
+		if (CandlesPointGrip(role, h.tip, h.dir)) return 1;
+		const rules::Class k = h.havePick ? RulesClassOf(h.cls) : rules::Class::Nothing;
+		if (k == rules::Class::Usable)
+		{
+			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");   // an item the original's use picks up flies to this hand
+			return 1;
+		}
+		if (k != rules::Class::Nothing)
+		{
+			ExplainSurfaceBox(h.pick);   // roth_trigger_debug: why the pointed-at face or flat took no use
+			Printf("[roth_vrpick] %s hand grip while pointing at %s: refused -- %s (%s)\n", RoleName(role), PickKindName(h.pick),
+				WhyNotUse(h.cls).GetChars(), rules::ClassName(k));
+			Refused(role, "grip while pointing");
+			return 1;
+		}
+	}
+	if (NearAct(role, h, pmo, true, kZone)) return 1;
+	if (Logging())
+		Printf("[roth_vrpick] %s hand grip: %s -- nothing (a grip on nothing does not attack: physical only)\n", RoleName(role),
+			!h.pointing ? "not pointing, nothing in reach" : h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
+	return 0;
+}
+
+// L2's claims for one hand's closing grip, in roth_handstate.h's order; each takes what it claims.
+struct PickerClaims : hands::Claims
+{
+	int role;
+	HandState &h;
+	AActor *pmo;
+	bool haveRay;
+	PickerClaims(int r, HandState &hs, AActor *p, bool ray) : role(r), h(hs), pmo(p), haveRay(ray) {}
+	bool Held() override { return HeldGripTaken(role); }                       // the Lamp's bail (roth_held.h)
+	bool Colt() override { return ColtGripTaken(role); }                       // the Colt's reload parts (roth_coltvr.h)
+	bool Weapon(bool &supporting) override                                     // the fore-end, a body slot (roth_vrweapons.h)
+	{
+		supporting = role == VR_OFFHAND;
+		return VRWeaponsGripTaken(role);
+	}
+	bool Gesture() override { return WorldHandsGripTaken(role); }              // a pull, a twist (roth_worldhands.h)
+	int Use() override { return GripUse(role, h, pmo, haveRay); }
+};
+
+struct Step2 { hands::Owner gripTo = hands::Owner::None; };
+
+Step2 L2Tick(int role, HandState &h, AActor *pmo, bool haveRay, bool gripEdge, bool releaseEdge)
+{
+	hands::Hand &L = gL2[role];
+	// THE SELECTION FOLLOWS THE HANDS (1.1): an item held by this hand that the game no longer has selected here (used,
+	// given away, another pickup selected) is no longer in the hand -- nothing to stow, the game moved it.
+	if (L.itemHeld && !InterfaceFlyingTo(role) && (ItemHandRole() != role || SelectedItem() <= 0))
+	{
+		L.Drop();
+		Printf("[roth_vrpick] %s hand: its item is no longer the selected one (the game changed the selection): the hold ends, nothing to stow\n",
+			RoleName(role));
+	}
+	hands::Facts f;
+	f.valid = h.valid;
+	f.gripClosed = h.gripClosed;
+	f.gripEdge = gripEdge;
+	f.releaseEdge = releaseEdge;
+	f.target = h.touchHave || (h.pointing && h.havePick && RulesClassOf(h.cls) != rules::Class::Nothing);
+	f.coltAction = ColtGripTaken(role);
+	f.gestureHeld = WorldHandsHolding(role);
+	f.supportHeld = role == VR_OFFHAND && VRWeaponsSupportHeld();
+	f.heldObject = HeldHandOwned(role);
+	f.toolInHand = HeldMatchIn(role);
+	f.weaponInHand = HandHoldsWeapon(role);
+	f.itemCarried = role == ItemHandRole() && SelectedItem() > 0;
+	PickerClaims claims(role, h, pmo, haveRay);
+	const hands::Step st = L.Tick(f, claims);
+	gHoldEnded[role] = st.holdEnded;
+	if (st.holdEnded)
+	{
+		gStowPending[role] = true;
+		Printf("[roth_vrpick] %s hand opens: its hold of item %d ends\n", RoleName(role), SelectedItem());
+	}
+	if (st.tookHold)
+	{
+		Inventory *inv = InterfaceInventory();
+		gItemRole = role;
+		gItemSlot = inv != nullptr ? inv->RightHand() : -1;
+		gItemId = gItemSlot >= 0 ? inv->Slot(gItemSlot).id : 0;
+		Haptic(role, kHoldAmp, kHoldMs, "the hand closes on its item");
+		Printf("[roth_vrpick] %s hand closes on item %d in it (nothing to use there): HOLDING -- let go to stow it\n", RoleName(role), SelectedItem());
+	}
+	if (L.state != gLoggedState[role] || L.owner != gLoggedOwner[role])
+	{
+		const bool quiet = (L.state == hands::State::Free || L.state == hands::State::Targeting)
+			&& (gLoggedState[role] == hands::State::Free || gLoggedState[role] == hands::State::Targeting);
+		if (!quiet || Logging())
+			Printf("[roth_vrpick] L2 %s hand: %s, %s%s\n", RoleName(role), hands::StateName(L.state), hands::OwnerName(L.owner),
+				st.gripTo != hands::Owner::None ? FStringf(" (the grip's press went to %s)", hands::OwnerName(st.gripTo)).GetChars() : "");
+		gLoggedState[role] = L.state;
+		gLoggedOwner[role] = L.owner;
+	}
+	Step2 r;
+	r.gripTo = st.gripTo;
+	return r;
+}
+
+// The end of the tic, after the world hands and the weapons: a hold that ended is stowed, unless its release set the
+// item down somewhere (roth_worldhands.h) or it still flies in (it is stowed when it lands).
+void L2EndTick()
+{
+	for (int role = 0; role < 2; role++)
+	{
+		if (!gStowPending[role]) continue;
+		if (WorldHandsReleasedThisTic(role))
+		{
+			gStowPending[role] = false;
+			Printf("[roth_vrpick] %s hand: its item was set down by the release (the original's use there): not stowed\n", RoleName(role));
+			continue;
+		}
+		if (InterfaceFlyingTo(role)) continue;
+		gStowPending[role] = false;
+		Stow(role);
+	}
+}
+
 // THE OWNER'S BUTTONS (2026-11-13): the TRIGGER is the original's PRIMARY click
 // (examine), the GRIP its SECONDARY (use). See the header.
 void TickHand(int role, AActor *pmo)
@@ -849,18 +1160,7 @@ void TickHand(int role, AActor *pmo)
 	bool gripEdge = false, trigEdge = false;
 	const bool gripWasClosed = h.gripClosed;
 	ReadButtons(h, gripEdge, trigEdge);
-	// A grip closing at the Lamp's bail takes the lamp (roth_held.h, owner Q2): it is not a use.
-	if (gripEdge && HeldGripTaken(role)) gripEdge = false;
-	// A WEAPON'S GRIP (roth_vrweapons.h): the off hand on the Shotgun's fore-end, the main hand in a body slot.
-	if (gripEdge && VRWeaponsGripTaken(role))
-	{
-		gripEdge = false;
-		if (Logging()) Printf("[roth_vrpick] %s hand grip: a weapon's (the fore-end, or a body slot) -- not a use\n", RoleName(role));
-	}
-	// A grip closing on a lever, a chain, a bookcase leaf's edge, the clock's case door, or with the Shrive / Key i22 set
-	// in a socket (roth_worldhands.h, the owner's Q15-Q17, Q24, Q30): its use comes from the pull or the twist that
-	// follows, not from the closing.
-	if (gripEdge && WorldHandsGripTaken(role)) gripEdge = false;
+	const bool releaseEdge = h.valid && gripWasClosed && !h.gripClosed;
 
 	if (Logging())
 	{
@@ -875,28 +1175,23 @@ void TickHand(int role, AActor *pmo)
 		}
 	}
 
-	// A HAND THAT IS DOING NOTHING COSTS NOTHING: no fingertip, no trace, no
-	// classification, no billboards -- only the inputs above. Work is done while
-	// pointing, while the aim is held (the index down after pointing), for the
-	// fingertip press, and on the tic a button is pressed.
+	// THE HAND'S POINTS, every tic it has a controller (the touch is looked for every tic, D3); the trace, the
+	// classification and the beam only while it points, holds its aim, is ready to press or a button is pressed.
 	const bool busy = h.valid && (h.pointing || h.wasPointing || h.pressReady || h.aimHeld || gripEdge || trigEdge);
-	if (busy && !FingerRay(role, h, pmo) && Logging() && h.rayWhy != h.loggedRayWhy)
+	const bool haveRay = h.valid && FingerRay(role, h, pmo);
+	if (busy && !haveRay && Logging() && h.rayWhy != h.loggedRayWhy)
 		Printf("[roth_vrpick] %s hand: no ray -- %s\n", RoleName(role), h.rayWhy ? h.rayWhy : "unknown");
 	if (busy) h.loggedRayWhy = h.haveRay ? nullptr : h.rayWhy;
-	if (!busy || !h.haveRay)
-	{
-		h.havePick = false;
-		ResetGestures(h);
-		HideHand(h);
-		return;
-	}
+
+	// ---- TARGETING BY TOUCH (D3): what the palm or the fingertip is on, within 5 cm: the rim and the light tick ----
+	UpdateTouch(role, h, pmo, haveRay);
 
 	const double upm = UPM();
 
 	// THE PICK while the finger is out (the beam, the grip's far use, the press).
 	const Pick before = h.havePick ? h.pick : Pick{};
 	const bool hadPick = h.havePick;
-	if (h.pointing || h.pressReady)
+	if (busy && haveRay && (h.pointing || h.pressReady))
 	{
 		h.havePick = RulesPick(h.tip, h.dir, h.pick, PickTraceRange(h.dir));
 		h.cls = h.havePick ? ClassifyPick(h.pick, pmo, BodyDepth(pmo, h.pick)) : CursorClass{};
@@ -905,6 +1200,21 @@ void TickHand(int role, AActor *pmo)
 	{
 		h.havePick = false;
 		h.cls = CursorClass{};
+	}
+
+	// ---- L2: WHO OWNS THIS HAND THIS TIC (roth_handstate.h) ----
+	// The standing owners first, then a closing grip's claims in order -- the Lamp's bail, the Colt, the weapon (the
+	// fore-end: SUPPORTING; a body slot), a world gesture (a lever's pull, a socket's twist), the picker's use (D3: the
+	// touch, the point, the in-reach zone) -- and with nothing to use, the hand closes on the item it carries.
+	const Step2 st = L2Tick(role, h, pmo, haveRay, gripEdge, releaseEdge);
+	if (st.gripTo != hands::Owner::None) h.pokeArmed = false;   // one act per press: not also the fingertip press below
+
+	if (!busy || !haveRay)
+	{
+		h.havePick = false;
+		ResetGestures(h);
+		HideHand(h);
+		return;
 	}
 
 	// THE AIM HELD: the index leaving its straight position (onto the trigger, or
@@ -946,37 +1256,6 @@ void TickHand(int role, AActor *pmo)
 		}
 	}
 
-	// ---- THE GRIP (the original's secondary: use) ----
-	// In reach first (the palm on it: NearAct, GrabNear's search), else along the
-	// pointing finger at range, through the same use path and the same gate.
-	// One action per press: a grip that went somewhere is not also the
-	// fingertip press below (re-armed when the tip backs off). A grip on nothing
-	// does nothing (physical only: the fists attack where they land,
-	// roth_gestures.cpp).
-	bool gripActed = false;
-	if (gripEdge)
-	{
-		gripActed = NearAct(role, h, pmo, true) != 0;
-		// THE TALL WICKS (owner, Q13): the flame hand pointing at a wick in reach -- the wick nearest its ray --
-		// and the grip: that wick's flame (CandlesPointGrip, the same route as a flame brought to it).
-		if (!gripActed && h.pointing && CandlesPointGrip(role, h.tip, h.dir)) gripActed = true;
-		// POINTED AT, IN REACH (L1: the body's reach, D2): the use there -- an item the original's use picks up flies
-		// to this hand (docs/VR_INTERACTION.md 1.5).
-		if (!gripActed && h.pointing && h.havePick && h.cls.CanUse())
-		{
-			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
-			gripActed = true;
-		}
-		else if (!gripActed)
-		{
-			if (h.pointing && h.havePick) ExplainSurfaceBox(h.pick);   // roth_trigger_debug: why the pointed-at face or flat took no use
-			if (Logging())
-				Printf("[roth_vrpick] %s hand grip: %s -- nothing (a grip on nothing does not attack: physical only)\n", RoleName(role),
-					!h.pointing ? "not pointing, nothing in reach" : h.havePick ? WhyNotUse(h.cls).GetChars() : "nothing on the pointing finger's ray");
-		}
-		if (gripActed) h.pokeArmed = false;
-	}
-
 	// ---- THE TRIGGER (the original's primary: examine) ----
 	// Not on the hand holding a weapon: its trigger fires it (the binding's
 	// +attack, WeaponTick), as before. In reach first, else what the finger
@@ -986,6 +1265,12 @@ void TickHand(int role, AActor *pmo)
 		if (HandHoldsWeapon(role))
 		{
 			if (Logging()) Printf("[roth_vrpick] %s hand trigger: the hand holds a weapon -- it fires, nothing to examine\n", RoleName(role));
+		}
+		else if (gL2[role].owner == hands::Owner::Colt || gL2[role].state == hands::State::Supporting)
+		{
+			// L2: the off hand on the gun (a reload part, the fore-end): its trigger is the weapon's (the magazine release)
+			if (Logging()) Printf("[roth_vrpick] %s hand trigger: the hand is %s's (%s) -- nothing to examine\n", RoleName(role),
+				hands::OwnerName(gL2[role].owner), hands::StateName(gL2[role].state));
 		}
 		else if (NearAct(role, h, pmo, false) == 0)
 		{
@@ -1015,8 +1300,9 @@ void TickHand(int role, AActor *pmo)
 	// a surface the tip was close to last tic and has now reached or passed
 	// (along last tic's ray) counts as pressed too. Not for an object: its
 	// actor may be gone by now, and a pointer to it is not followed.
-	// a hand holding a pull or a twist (roth_worldhands.h) presses nothing with its fingertip meanwhile
-	if (h.pressReady && WorldHandsHolding(role)) { h.pokeArmed = false; h.lastPokeDist = 1e9; }
+	// a hand another owner holds (L2: a pull or a twist, the gun, a held object, a held item) presses nothing with its
+	// fingertip meanwhile
+	if (h.pressReady && !gL2[role].MayAct(hands::Owner::Picker)) { h.pokeArmed = false; h.lastPokeDist = 1e9; }
 	else if (h.pressReady)
 	{
 		if (h.havePick && h.pick.dist <= kPokeIn * upm)
@@ -1284,6 +1570,9 @@ void ForgetLevel()
 		h.line.clear();
 		h.lineShown = 0;
 		h.marker = 0;
+		h.rim = 0;
+		h.touchHave = false;
+		h.touchTicked = Pick{};
 		h.shown = false;
 		h.havePick = false;
 		h.primed = false;
@@ -1291,9 +1580,35 @@ void ForgetLevel()
 	}
 	ForgetPanel();
 	P.panelWhich = HANDPANEL_NONE;
+	for (int r = 0; r < 2; r++) { gL2[r].Reset(); gHoldEnded[r] = gStowPending[r] = false; }
+	gItemRole = gItemSlot = -1;
+	gItemId = 0;
 }
 
 } // namespace (anonymous)
+
+hands::Owner HandOwnerNow(int role) { return role >= 0 && role <= 1 ? gL2[role].owner : hands::Owner::None; }
+hands::State HandStateNow(int role) { return role >= 0 && role <= 1 ? gL2[role].state : hands::State::Free; }
+bool HandMayAct(int role, hands::Owner who) { return role < 0 || role > 1 || gL2[role].MayAct(who); }
+bool HandEmptyNow(int role) { return role < 0 || role > 1 || gL2[role].Empty(); }
+bool HandHoldEndedThisTic(int role) { return role >= 0 && role <= 1 && gHoldEnded[role]; }
+
+int ItemHandRole()
+{
+	const Inventory *inv = InterfaceInventory();
+	if (gItemRole >= 0 && gItemSlot >= 0 && inv != nullptr && inv->RightHand() == gItemSlot && inv->Slot(gItemSlot).id == gItemId)
+		return gItemRole;
+	return VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
+}
+
+void VRPickPickupLanded(int role)
+{
+	if (role < 0 || role > 1) return;
+	gL2[role].Landed();
+	Haptic(role, kLandAmp, kLandMs, "the pickup lands in the hand");
+	Printf("[roth_vrpick] %s hand: the pickup lands in it%s\n", RoleName(role),
+		gL2[role].itemHeld ? " -- HOLDING (let go to stow it)" : gStowPending[role] ? " -- the grip opened in flight: stowed now" : "");
+}
 
 void VRPickEndLevel()
 {
@@ -1530,6 +1845,9 @@ void VRPickTick(FLevelLocals *level, bool modal)
 			h.havePick = false;
 			h.pointing = false;
 			h.primed = false;
+			h.touchHave = false;
+			HideBB(h.rim);
+			gHoldEnded[role] = false;
 			ResetGestures(h);
 			HideHand(h);
 			continue;
@@ -1541,6 +1859,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	WorldHandsTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);   // chapter 2's world by hand (roth_worldhands.h)
 	// CHAPTER 2'S WEAPONS (roth_vrweapons.h): the worn Shield, the Shotgun's second hand, the body slots.
 	VRWeaponsTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
+	// L2's end of the tic: the stows (after the world hands' release had its say).
+	if (!stand && panel == HANDPANEL_NONE && !dialogueOwns) L2EndTick();
 
 	// WHAT IT COSTS, measured every tic it runs: into the perf log's CPU
 	// timings as "game.vrpick" (summed per frame, like every cpu_fx_ms entry),

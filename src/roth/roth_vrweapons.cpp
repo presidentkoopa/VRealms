@@ -209,7 +209,8 @@ bool VRWeaponsGripTaken(int role)
 {
 	AActor *pmo = Pawn();
 	if (!HandsOn(pmo)) return false;
-	if (ColtGripTaken(role)) return true;   // the Colt's release, pouch, slide or magazine (roth_coltvr.h)
+	// The Colt's release, pouch, slide or magazine (roth_coltvr.h ColtGripTaken) is its own owner of the hand (L2,
+	// roth_handstate.h): asked before this, by the hand's state.
 	const int held = HeldItem();
 	if (role == VR_OFFHAND)
 	{
@@ -225,6 +226,31 @@ bool VRWeaponsGripTaken(int role)
 	double f, l, u;
 	BodyFrame(pmo, pmo->AttackPos, f, l, u);
 	return S.rig.Pick(f, l, u, World(held)) >= 0;
+}
+
+bool VRWeaponsSupportHeld()
+{
+	return HandsOn(Pawn()) && S.latch.engaged && IsTwoHanded(HeldItem());
+}
+
+bool VRWeaponsToBodySlot(int item, int before)
+{
+	Inventory *inv = InterfaceInventory();
+	InventorySink *sink = InterfaceInventorySink();
+	if (inv == nullptr || item <= 0) return false;
+	const HolsterWorld w = World(0);
+	int r = S.rig.HomeOf(item);
+	if (r < 0)
+		for (int k = 0; k < kHolsterCount && r < 0; k++)
+			if (S.rig.owner[k] == 0 && S.rig.MayEnter(item, k, w)) { S.rig.Assign(item, k); r = k; }
+	// The hand keeps what it held: the weapon before by the inventory's weapon click, or nothing
+	// (activate_weapon_item(0, 0)) -- the original's own calls, as a body slot's draw and put-away make them.
+	if (before > 0 && SlotOf(before) >= 0) inv->WeaponClick(SlotOf(before), sink);
+	else inv->EmptyWeaponHand(sink);
+	Printf("[roth_vrweapons] %s (i%d) picked up with the main hand not free: to %s; the main hand keeps %s\n", ItemName(item), item,
+		r >= 0 ? FStringf("its body slot, the %s", kPlaces[r].name).GetChars() : "no body slot (none free: carried)",
+		before > 0 ? FStringf("%s, i%d (the inventory's weapon click)", ItemName(before), before).GetChars() : "nothing (activate_weapon_item(0, 0))");
+	return r >= 0;
 }
 
 bool VRWeaponsTwoHandAim(double &yawDeg, double &pitchUpDeg, DVector3 &rear)
@@ -280,7 +306,9 @@ void VRWeaponsTick(FLevelLocals *level, bool live)
 	if (on && live && IsTwoHanded(held))
 	{
 		VRPickHand off;
-		const bool grip = VRPickHandNow(VR_OFFHAND, off) && off.gripClosed;
+		// L2 (roth_handstate.h): the off hand's grip is the weapon's only while nobody else holds that hand (an item, a
+		// held object, the Colt's reload)
+		const bool grip = VRPickHandNow(VR_OFFHAND, off) && off.gripClosed && HandMayAct(VR_OFFHAND, hands::Owner::Weapon);
 		engaged = S.latch.Feed(Barrel(pmo), Metres(pmo->OffhandPos - pmo->AttackPos), grip, Settings());
 	}
 	else S.latch.Reset();
@@ -307,7 +335,7 @@ void VRWeaponsTick(FLevelLocals *level, bool live)
 		double f, l, u;
 		BodyFrame(pmo, pmo->AttackPos, f, l, u);
 		VRPickHand mh;
-		const bool grip = VRPickHandNow(VR_MAINHAND, mh) && mh.gripClosed;
+		const bool grip = VRPickHandNow(VR_MAINHAND, mh) && mh.gripClosed && HandMayAct(VR_MAINHAND, hands::Owner::Weapon);   // L2
 		const HolsterEvent e = S.rig.Step(true, f, l, u, grip, World(held));
 		if (e.act != HOLSTER_NONE) Act(e, held);
 	}

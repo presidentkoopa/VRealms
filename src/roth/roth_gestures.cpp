@@ -893,7 +893,8 @@ bool HandIsEmpty(int role)
 {
 	if (HandHoldsWeapon(role)) return false;
 	if (HeldHandCarries(role)) return false;   // the Lamp, the lit match, the open Book (roth_held.h)
-	if (VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT)
+	if (!HandEmptyNow(role)) return false;     // L2: another owner holds the hand (roth_handstate.h)
+	if (role == ItemHandRole())
 	{
 		const Inventory *inv = InterfaceInventory();
 		if (inv != nullptr && inv->RightHand() >= 0 && (int16_t)inv->Slot(inv->RightHand()).id > 0) return false;   // holds the right-hand item
@@ -932,7 +933,9 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 	// Shotgun's fore-end, a body slot: roth_vrweapons.h) is no fist either.
 	const int heldItem = role == VR_MAINHAND ? VRWeaponsHeldItem() : 0;
 	const bool swordHand = role == VR_MAINHAND && vrweapon::IsSwung(heldItem);   // the Sword or the Staff
-	const bool fist = h.gripClosed && !HandHoldsWeapon(role) && !HeldHandCarries(role) && !swordHand && !VRWeaponsGripTaken(role);   // a hand round the Lamp's bail is no fist
+	// L2 (roth_handstate.h): a fist is a closed hand nobody owns -- not round the Lamp's bail, an item, the fore-end, a
+	// body slot, the Colt's parts or a lever.
+	const bool fist = h.gripClosed && !HandHoldsWeapon(role) && !HeldHandCarries(role) && !swordHand && HandEmptyNow(role);
 	const bool open = !h.gripClosed && h.grip <= 0.35f && h.trigger <= 0.35f && HandIsEmpty(role);
 
 	// ---- THE PUNCH ----

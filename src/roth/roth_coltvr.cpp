@@ -256,8 +256,11 @@ void ColtHandsTick(FLevelLocals *level, bool live)
 	const bool haveOff = VRPickHandNow(VR_OFFHAND, off);
 	DVector3 sock, f, r, u;
 	const bool haveSock = VRHandPose_MapFrame(VR_OFFHAND, sock, f, r, u);
-	h.offGrip = haveOff && off.gripClosed;
-	const bool trig = haveOff && off.trigDown;
+	// L2 (roth_handstate.h): the off hand acts on the gun while the Colt owns it or nobody does (not while it holds an
+	// item or a held object, or supports another weapon).
+	const bool mine = HandMayAct(VR_OFFHAND, hands::Owner::Colt);
+	h.offGrip = haveOff && off.gripClosed && mine;
+	const bool trig = haveOff && off.trigDown && mine;
 	DVector3 p;
 	if (haveOff && off.havePoints && GunPoint(kMagButton, p)) h.offAtMagButton = Metres(off.tip - p) < kAtButton;
 	h.magButtonPress = trig && !S.trigWas;

@@ -300,7 +300,7 @@ void CandlesTick(FLevelLocals *level)
 	DVector3 tip[2], palm[2];
 	bool have[2] = { false, false };
 	for (int role = 0; role < 2; role++) have[role] = VRPickFlamePoints(role, tip[role], palm[role]);
-	const int itemRole = VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
+	const int itemRole = ItemHandRole();   // L2: the hand the item is in
 	const int rightItem = RightItem();
 	// THE STRUCK MATCH (roth_held.h; owner Q1): a flame in the off hand. Its use is the item hand's -- the chain tests the
 	// right-hand item, the Matchbox, and the match is presentation -- so a candle it lights sees exactly the use the
@@ -442,7 +442,7 @@ bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
 	if (pmo == nullptr) return false;
 	const double yaw = ViewYawDeg(g_level, pmo);
 	const double upm = VRPickUnitsPerMetre();
-	const int itemRole = VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT);
+	const int itemRole = ItemHandRole();   // L2: the hand the item is in
 	const int rightItem = RightItem();
 	Candle *best = nullptr;
 	AActor *bestMo = nullptr;

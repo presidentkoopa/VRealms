@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 #include "roth_panelmap.h"
+#include "vectors.h"   // DVector3 (the stow)
 
 class FLevelLocals;
 class AActor;
@@ -151,5 +152,16 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use);
 // Would that pickup take this object now, as far as can be known without trying (its use branch's refusals
 // and give_item_by_dbase_id's choice of item; not the flying-item lock nor GiveItem's own answer)? Read only.
 bool InterfaceObjectTakeable(int rothSector, int rothIndex);
+
+// THE PICKUP INTO A VR HAND (docs/VR_INTERACTION.md 1.5, D6). InterfacePickupHand(role) before a use made from a VR
+// hand (-1 after): a fly-in the use starts (give_item's) flies to that hand's palm and lands in it
+// (roth_vrpick.h VRPickPickupLanded). InterfaceFlyCount: fly-ins started so far (a use compares it before and after).
+// InterfaceFlyingTo: one is in the air toward that hand. InterfaceRetargetFly: aim the one in the air at another hand.
+void InterfacePickupHand(int role);
+int InterfaceFlyCount();
+bool InterfaceFlyingTo(int role);
+void InterfaceRetargetFly(int role);
+// THE STOW (D7): the item's picture drawn from `from` (the hand) to `to` (the coat) over 0.2 s. Presentation only.
+void InterfaceStowPicture(int item, const DVector3 &from, const DVector3 &to);
 
 } // namespace roth

@@ -164,7 +164,9 @@ bool HeadsetOn()
 
 void Haptic(int role, double amp, double ms) { if (HeadsetOn()) VR_ScriptHaptic(role, amp, ms); }
 
-int ItemRole() { return VRHandPose_RoleForSide(VRHandPose::SIDE_RIGHT); }
+// The hand the original's right-hand item is in (L2, roth_vrpick.h ItemHandRole: the hand a pickup put it in, else the
+// right side's).
+int ItemRole() { return ItemHandRole(); }
 int OffRole() { return 1 - ItemRole(); }
 const char *RoleWord(int role) { return role == VR_MAINHAND ? "main" : "off"; }
 
@@ -781,6 +783,20 @@ bool HeldHandCarries(int role)
 	const bool lampSelected = inv != nullptr && inv->RightHand() >= 0 && (int16_t)inv->Slot(inv->RightHand()).id == kLampItem;
 	if (!lampSelected && H.lamp.Hand() == role) return true;
 	return role == OffRole() && H.match.Lit();
+}
+
+bool HeldHandOwned(int role)
+{
+	if (!H.live || role < 0 || role > 1) return false;
+	if (H.book.Item() != 0) return true;
+	const Inventory *inv = InterfaceInventory();
+	const bool lampSelected = inv != nullptr && inv->RightHand() >= 0 && (int16_t)inv->Slot(inv->RightHand()).id == kLampItem;
+	return !lampSelected && H.lamp.Hand() == role;
+}
+
+bool HeldMatchIn(int role)
+{
+	return H.live && role == OffRole() && H.match.Lit() && !HeldHandOwned(role);
 }
 
 void HeldPose(int role, VRHandPose::HeldState &held)

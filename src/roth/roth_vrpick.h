@@ -16,6 +16,7 @@
 
 #include "vectors.h"
 #include "roth_vrrules.h"
+#include "roth_handstate.h"
 
 struct FLevelLocals;
 class AActor;
@@ -66,6 +67,23 @@ CursorClass RulesClassify(const Pick &p);
 rules::Class RulesClassOf(const CursorClass &c);
 bool RulesUse(int role, const Pick &p, const char *how);
 bool RulesExamine(int role, const Pick &p, const char *how);
+// L2, EACH HAND'S STATE (roth_handstate.h; docs/VR_INTERACTION.md 4, L2): one owner per hand per tic, decided at the
+// start of the tic by VRPickTick, asked by every owner before it acts.
+//   HandOwnerNow / HandStateNow   the hand's owner and state this tic
+//   HandMayAct                    may `who` act with that hand this tic (its owner, or nobody's hand)
+//   HandEmptyNow                  the hand is empty for the fists (the punch, the knock): nobody holds it
+//   HandHoldEndedThisTic          an item's hold ended this tic (the grip opened on it): the world hands' release asks
+//   ItemHandRole                  the hand the original's right-hand item is in: the hand a pickup put it in while it
+//                                 is the selected item, else the hand on the right side (1.1)
+//   VRPickPickupLanded            the fly-in landed in that hand (roth_interface.cpp TickFly)
+hands::Owner HandOwnerNow(int role);
+hands::State HandStateNow(int role);
+bool HandMayAct(int role, hands::Owner who);
+bool HandEmptyNow(int role);
+bool HandHoldEndedThisTic(int role);
+int ItemHandRole();
+void VRPickPickupLanded(int role);
+
 // Under roth_vrpicktest (the flat test).
 bool VRPickTesting();
 
