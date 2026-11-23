@@ -189,6 +189,18 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
   - later, the trenchcoat stow.
 - My choices D1-D7 are in the doc, and he may overrule any. Nothing is built yet: phases P1-P4.
 
+**VR interaction P1 built (553a9c05 .. 9c41084e; docs/VR_INTERACTION.md section 8):**
+- Distance Grab is removed, including its RS laser. A grep finds nothing left; the engine's laser sight and the picker's beam are untouched.
+- L1 is one rules entry (pick, classify, use, examine). L2 gives each hand one owner per tic. Squeeze to pick up into the hand; letting go stows. Haptics are added.
+- Verified, engine-free: handstate_test 2970/0; vrpick_test 786432 cursor cases, 0 differ; worldhands 87/0; vrweapon 70/0; gesture 63/0; held 84/0; colt PASS; hands 13/0; gameproof H 6156/6156.
+- Verified, L1 against the original (1800 STUDY1 eye rays): the same record in 1497/1800 (walls 1219/1378, floors 168/189, ceilings 82/96, objects 28/61). Most of the rest are object boxes against the original's transparent texels (P3).
+- Verified, PC flat (log-interact_flat.txt): touch pickup, point pickup, too far refused (depth 604), keyed object with no pickup, a carried item closed on and stowed, the desk Colt to the free main hand, a chain's give not attributed to a squeezing hand. The regression cfgs (colt, sword, shotgun, the mas4 lever, the mauso key, study1) act as before. Capture zzzzi_interact_00_touch_rim shows the rim on the Helm.
+- Not met:
+  - 2 class-only misses in the L1 diff, on STUDY1 faces 1361 and 1527 above the sister ceiling; an L1 bug, open;
+  - the pickup fly-in shows no picture;
+  - the coat stow and the item in the hand are not seen in a capture;
+  - nothing tried in the headset; the haptics are logged, not felt.
+
 ## Decided, LATER
 
 | change | owner decision |
