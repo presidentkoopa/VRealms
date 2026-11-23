@@ -168,17 +168,23 @@ void DoubleBuzz(int role, const char *why)
 	S.pulse2Role = role; S.pulse2Amp = 0.3; S.pulse2Tics = 3;
 }
 
-// The column-major 4x4 inverse (a hand frame: orthonormal, possibly reflected) and product, in doubles.
+// The column-major 4x4 inverse and product, in doubles. GENERAL (Gauss-Jordan): the hand frames in render space are not
+// orthonormal (PC run zzzzj06: a transpose-inverse put an exactly placed off hand 93.7 deg from the seat).
 void Inv4(const double m[16], double o[16])
 {
-	// the 3x3's transpose divided by each column's squared length (orthogonal columns), then -R^-1 t
-	for (int r = 0; r < 3; r++)
+	double a[4][8];
+	for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) { a[r][c] = m[c * 4 + r]; a[r][4 + c] = r == c ? 1.0 : 0.0; }
+	for (int c = 0; c < 4; c++)
 	{
-		const double l2 = m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2];
-		for (int c = 0; c < 3; c++) o[c * 4 + r] = m[r * 4 + c] / (l2 > 1e-12 ? l2 : 1.0);
+		int piv = c;
+		for (int r = c + 1; r < 4; r++) if (fabs(a[r][c]) > fabs(a[piv][c])) piv = r;
+		if (piv != c) for (int k = 0; k < 8; k++) { const double t = a[c][k]; a[c][k] = a[piv][k]; a[piv][k] = t; }
+		const double d = a[c][c];
+		if (fabs(d) < 1e-15) { for (int i = 0; i < 16; i++) o[i] = (i % 5 == 0) ? 1.0 : 0.0; return; }
+		for (int k = 0; k < 8; k++) a[c][k] /= d;
+		for (int r = 0; r < 4; r++) if (r != c) { const double f = a[r][c]; for (int k = 0; k < 8; k++) a[r][k] -= f * a[c][k]; }
 	}
-	o[3] = o[7] = o[11] = 0; o[15] = 1;
-	for (int r = 0; r < 3; r++) o[12 + r] = -(o[r] * m[12] + o[4 + r] * m[13] + o[8 + r] * m[14]);
+	for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) o[c * 4 + r] = a[r][4 + c];
 }
 void Mul4d(const double a[16], const double b[16], double o[16])
 {
