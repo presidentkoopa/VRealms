@@ -34,6 +34,8 @@ import img3d_common as C  # noqa: E402
 
 HY_GIT = "https://github.com/Tencent/Hunyuan3D-2.git"
 HY_CODE = os.path.join(C.MODELS_DIR, "Hunyuan3D-2")
+KIJAI_GIT = "https://github.com/kijai/ComfyUI-Hunyuan3DWrapper.git"
+KIJAI_COMMIT = "2609efa38f6a98292476f714839b7c1e5f9b699a"   # 2026-03-16: wheels/custom_rasterizer-0.1-cp312 and mesh_processor.cp312 .pyd
 TORCH = ["torch==2.5.1", "torchvision==0.20.1", "--index-url", "https://download.pytorch.org/whl/cu124"]
 # The turbo paint folder's name is the model zoo's "Paint-v2-0-Turbo" by the repo's naming (not seen in a listing):
 # both paint folders are fetched, so generate.py can fall back to the plain one.
@@ -218,27 +220,44 @@ def main():
     run([py, "-m", "pip", "install", "-r", os.path.join(HY_CODE, "requirements.txt")])
     run([py, "-m", "pip", "install", "-e", HY_CODE])
 
-    step(7, "the texture stage's native modules (custom_rasterizer with nvcc, differentiable_renderer)")
-    benv = model_env(vc)
-    benv["CUDA_HOME"] = cuda_home
-    benv["CUDA_PATH"] = cuda_home
-    benv["DISTUTILS_USE_SDK"] = "1"
-    benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
-    # CUDA 12.4's nvcc accepts Visual Studio 2017-2022 only; the owner's PC has Visual Studio 2026 (MSVC 14.52), and
-    # setup_log.txt (2026-11-23) stopped here on host_config.h's version check. nvcc's own override flag lets it use
-    # the newer compiler, and the STL's matching check is waived the same way. CUDA 12.4 stays: torch is cu124, and
-    # an extension must be built with the toolkit torch was built with. NVCC_APPEND_FLAGS reaches every nvcc call.
-    benv["NVCC_APPEND_FLAGS"] = (benv.get("NVCC_APPEND_FLAGS", "") +
-                                 " -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
-    benv["CL"] = (benv.get("CL", "") + " /D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
-    print("  nvcc with Visual Studio 2026: NVCC_APPEND_FLAGS=%s" % benv["NVCC_APPEND_FLAGS"], flush=True)
-    probe = subprocess.run([py, "-c", "import custom_rasterizer_kernel, mesh_processor"], capture_output=True, env=benv)
-    if probe.returncode == 0:
-        print("  both already built")
+    step(7, "the texture stage's native modules (custom_rasterizer, mesh_processor)")
+    # PREBUILT FIRST (2026-11-23). CUDA 12.4's nvcc cannot compile with Visual Studio 2026: its version check refuses
+    # it, and with -allow-unsupported-compiler its front end crashes (setup_log.txt: "'cudafe++' died with status
+    # 0xC0000409"). torch is 2.5.1+cu124, and an extension must match it. kijai's ComfyUI-Hunyuan3DWrapper ships both
+    # modules prebuilt for Windows, Python 3.12, with torch built on cu124 ("custom_rasterizer-0.1-cp312"; its readme:
+    # compiled with cu126, works with torch built on 124): the wheel, and mesh_processor's .pyd beside
+    # hy3dgen's own mesh_processor.py (an extension module wins over the .py in the same folder). Same Hunyuan3D-2
+    # community licence, already accepted in step 1. Pinned commit; compiling is the fallback.
+    check = ("import torch, custom_rasterizer, custom_rasterizer_kernel; "
+             "from hy3dgen.texgen.differentiable_renderer import mesh_processor as m; "
+             "print('native modules:', custom_rasterizer_kernel.__file__, m.__file__)")
+    if subprocess.run([py, "-c", check], capture_output=True, env=model_env()).returncode == 0:
+        print("  both already in place")
     else:
-        for sub in ("custom_rasterizer", "differentiable_renderer"):
-            run([py, "setup.py", "install"], env=benv, cwd=os.path.join(HY_CODE, "hy3dgen", "texgen", sub))
-        run([py, "-c", "import torch, custom_rasterizer_kernel; import mesh_processor; print('native modules: ok')"], env=benv)
+        wrap = os.path.join(C.MODELS_DIR, "ComfyUI-Hunyuan3DWrapper")
+        if not os.path.exists(os.path.join(wrap, ".git")):
+            run(["git", "clone", "--depth", "1", KIJAI_GIT, wrap])
+        have = subprocess.run(["git", "-C", wrap, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if have != KIJAI_COMMIT:
+            run(["git", "-C", wrap, "fetch", "--depth", "1", "origin", KIJAI_COMMIT])
+            run(["git", "-C", wrap, "checkout", "--detach", KIJAI_COMMIT])
+        run([py, "-m", "pip", "install", "--no-deps", "--force-reinstall",
+             os.path.join(wrap, "wheels", "custom_rasterizer-0.1-cp312-cp312-win_amd64.whl")])
+        pyd = "mesh_processor.cp312-win_amd64.pyd"
+        shutil.copy2(os.path.join(wrap, "hy3dgen", "texgen", "differentiable_renderer", pyd),
+                     os.path.join(HY_CODE, "hy3dgen", "texgen", "differentiable_renderer", pyd))
+        if run([py, "-c", check], env=model_env(), check=False) != 0:
+            print("  the prebuilt modules did not load; compiling them instead", flush=True)
+            benv = model_env(vc)
+            benv["CUDA_HOME"] = cuda_home
+            benv["CUDA_PATH"] = cuda_home
+            benv["DISTUTILS_USE_SDK"] = "1"
+            benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
+            benv["NVCC_APPEND_FLAGS"] = (benv.get("NVCC_APPEND_FLAGS", "") +
+                                         " -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
+            for sub in ("custom_rasterizer", "differentiable_renderer"):
+                run([py, "setup.py", "install"], env=benv, cwd=os.path.join(HY_CODE, "hy3dgen", "texgen", sub))
+            run([py, "-c", check], env=benv)
 
     step(8, "the upscaler (Real-ESRGAN x4plus through spandrel)")
     run([py, "-m", "pip", "install", "spandrel", "pillow", "numpy"])
