@@ -201,6 +201,20 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
   - the coat stow and the item in the hand are not seen in a capture;
   - nothing tried in the headset; the haptics are logged, not felt.
 
+**The Colt in two hands, and the reload finished (173cfba2 .. 71d57205; docs/REALMS_WEAPONS.md):**
+- The support hand is fitted to the gun and the shooting hand (tools/colt_test/support_fit). The off hand latches within 6 cm / 50 deg with its grip closed and lets go on any reload action. Aim stays the shooting hand's.
+- The main hand's A/X button releases the magazine, or works the slide stop when the slide is locked on a fresh magazine. R1 still refuses a release with rounds left.
+- Haptics: recoil, the dry click, the seat, the slide. The gun stays drawn through the original's Away.
+- Verified:
+  - test_colt 54/54; the reload against the original: 30,285 states, 0 differences;
+  - PC log: the two-hand latch, the button in every state, the reload "i51 2 -> 1, word 0 -> 12";
+  - captures zzzzj_colt_20_twohand_eye and 21_twohand_side show both hands on the gun.
+- Not met:
+  - the support palm stands 25 mm off the grip panel;
+  - the trigger finger is nearly straight (a hooked finger was dropped by the owner, 2026-11-23);
+  - casings are not visible in the floor frames (they stop against the corridor wall);
+  - nothing tried in a headset.
+
 ## Decided, LATER
 
 | change | owner decision |
