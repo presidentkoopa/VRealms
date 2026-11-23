@@ -50,9 +50,26 @@ bool ColtBoreAim(double &yawDeg, double &pitchUpDeg, DVector3 &muzzle);
 // written into `held`. False (nothing written): no mesh drawn.
 bool ColtHeldFingers(int side, VRHandPose::HeldState &held);
 
-// The off hand's grip belongs to the Colt this tic (at the release, the pouch, the slide, or carrying a magazine): the
-// picker's grip and the gestures stand down for it (roth_vrweapons.cpp VRWeaponsGripTaken).
+// The off hand's grip belongs to the Colt this tic (at the release, the pouch, the slide, or carrying a magazine): L2's
+// standing Colt state and its claim (roth_handstate.h Facts.coltAction, Claims::Colt).
 bool ColtGripTaken(int role);
+
+// R9, TWO HANDS (roth_colt.h; tools/colt_test/support_fit): the off hand at the main hand's grip, where the support fit
+// put it, takes the gun with its grip; while it holds it is drawn there (VRHandPose_SetHeldBy) and L2 counts it
+// SUPPORTING (roth_vrweapons.cpp VRWeaponsSupportHeld / VRWeaponsGripTaken ask these). It lets go when it leaves the
+// place, when its grip opens, and at once on a reload action (the catch, the pouch, the slide). The aim stays the
+// shooting hand's bore (ColtBoreAim).
+//   ColtSupportHeld       the off hand supports the Colt this tic
+//   ColtSupportWouldTake  a grip closing now would take it (the hand at the place, the gun free to be taken)
+//   ColtSupportFingers    the off hand's fingers while it supports (GRIPSUBJ_Support with the fit's amounts); false: not
+bool ColtSupportHeld();
+bool ColtSupportWouldTake();
+bool ColtSupportFingers(VRHandPose::HeldState &held);
+
+// R8: the shooting hand's lower face button is the Colt's (the catch, the slide stop) while the Colt is drawn in the VR
+// hands and the button is down: the +use key it also posts (KEY_PAD_A / KEY_PAD_X) must not use the world too
+// (p_map.cpp P_UseLines asks).
+bool ColtTakesUseKey();
 
 // The drawn gun went away (put away, hidden, another weapon): its seat and its part poses with it.
 void ColtGunGone();

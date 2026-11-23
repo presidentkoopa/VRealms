@@ -34,13 +34,18 @@
 #include "r_data/models.h"
 #include "r_data/vr_handpose.h"
 #include "r_data/vr_handpose_math.h"
+#include "r_data/vr_posemath.h"
 #include "r_data/model_reach.h"
 #include "model.h"
 #include "p_maputl.h"
+#include "c_cvars.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+// The engine's own support-hold mode (hw_vrmodes.cpp), read only: R9 takes it as the Shotgun's fore-end does. File scope.
+EXTERN_CVAR(Int, vr_support_mode)
 
 namespace roth
 {
@@ -69,6 +74,22 @@ constexpr float kIndexBase[2] = { 1.0f, 1.0f };          // the index's knuckle,
 constexpr float kWrap[2][5] = { { 0.4f, -1.f, 0.8902f, 0.6629f, 0.4448f }, { 0.2f, -1.f, 0.9429f, 0.6261f, 0.5952f } };
 constexpr float kWrapBase[2][5] = { { 0.0f, -1.f, 0.7753f, 0.9140f, 0.6449f }, { 0.0f, -1.f, 0.7743f, 1.0f, 0.7344f } };
 constexpr double kUnit = 0.000271900171;                 // metres a gun file unit (0.216 m muzzle to tang)
+
+// ---- R9, two hands (tools/colt_test/support_fit.txt, 2026-11-23): the support hand's frame in the SHOOTING hand's frame
+// (metres, column-major; the hand frames of vr_handpose_math.h), and its fingers (thumb, index, middle, ring, little:
+// knuckle / outer, open -> fbx_twohand_support). [0]: the right hand shoots, the left supports; [1]: the mirror.
+// The fit: no skin of either hand more than 2 mm into the gun or the other hand; the thumb forward on the frame under the
+// shooting thumb; the index, middle and ring ends on the shooting fingers in front of the strap. NOT met: the support
+// palm's centre stands 25 / 33 mm out from the off panel (the shooting fingertips come round onto it).
+constexpr double kSupportSeat[2][16] =
+{
+	{ 0.957706181, 0.286287182, -0.0289572084, 0, 0.282343079, -0.954360022, -0.0973618765, 0,
+	  -0.0555090592, 0.0850682036, -0.994827697, 0, 0.017301433, 0.00339735343, 0.0314832141, 1 },
+	{ 0.910755632, 0.382023523, -0.156787138, 0, 0.403268705, -0.90452604, 0.138589303, 0,
+	  -0.0888736754, -0.189448334, -0.977860316, 0, 0.00696863994, -0.00629817851, -0.0277350184, 1 },
+};
+constexpr float kSupportWrap[2][5] = { { 1.f, 1.f, 1.f, 1.f, 1.f }, { 1.f, 1.f, 1.f, 1.f, 1.f } };       // outer joints
+constexpr float kSupportWrapBase[2][5] = { { 1.f, 1.f, 1.f, 1.f, 1.f }, { 1.f, 1.f, 1.f, 1.f, 1.f } };   // knuckles
 
 // Points of the gun, render coords (file x, z, y), file units (colt_fit's measures; roth_colt.h's take frames).
 const DVector3 kMuzzle(-0.066, 196.51, 395.90);
@@ -101,6 +122,13 @@ struct State
 	int dryLogTic = -1000;
 	double tune[6] = { 0, 0, 0, 0, 0, 0 };   // mm and degrees in the hand frame (roth_colt fit)
 	Act lastAct = ACT_NONE;
+	// R9: the off hand on the grip
+	SupportGrip support;
+	SupportPlace place;          // this tic's tracked off hand against the fitted place
+	bool heldBySet = false;      // the off hand drawn on the gun (VRHandPose_SetHeldBy)
+	bool rawTrigWas = false, buttonWas = false;
+	int releaseRole = VR_OFFHAND;    // the hand whose press asked for the magazine (a refusal buzzes it)
+	int pulse2Tic = -1, pulse2Role = 0; double pulse2Amp = 0; int pulse2Tics = 0;   // a refusal's second buzz
 } S;
 
 AActor *Pawn()
@@ -121,12 +149,81 @@ bool GunPoint(const DVector3 &render, DVector3 &world)
 	return Alive(S.gun) && Model_ActorPointToWorld(S.gun, render, world);
 }
 
+// THE COLT'S ONE HAPTIC OUTPUT: VR_ScriptHaptic, the engine's live haptic call (OpenXR's xrApplyHapticFeedback through
+// VRMode::Vibrate) -- the same output L2's feedback uses (roth_vrpick.cpp Haptic). With no headset (the controller-pose
+// test) nothing is sent and a line says what would have been.
 void Pulse(int role, double amp, int tics, const char *why)
 {
 	const VRMode *vm = VRMode::GetVRModeCached(true);
 	const bool real = !VRPoseTest_Active() && vm != nullptr && vm->IsVR();
 	if (real) VR_ScriptHaptic(role, amp, tics * 1000.0 / TICRATE);
 	else Printf("[roth_colt] %s hand haptic %.2f for %d tics (%s; no headset: not sent)\n", role == VR_MAINHAND ? "main" : "off", amp, tics, why);
+}
+
+// A refusal: two buzzes, the second 4 tics after the first ends (docs/VR_INTERACTION.md 4b, as RSQ Tactical Rig's).
+void DoubleBuzz(int role, const char *why)
+{
+	Pulse(role, 0.3, 3, why);
+	S.pulse2Tic = S.level != nullptr ? S.level->maptime + 3 + 4 : -1;
+	S.pulse2Role = role; S.pulse2Amp = 0.3; S.pulse2Tics = 3;
+}
+
+// The column-major 4x4 inverse (a hand frame: orthonormal, possibly reflected) and product, in doubles.
+void Inv4(const double m[16], double o[16])
+{
+	// the 3x3's transpose divided by each column's squared length (orthogonal columns), then -R^-1 t
+	for (int r = 0; r < 3; r++)
+	{
+		const double l2 = m[r * 4] * m[r * 4] + m[r * 4 + 1] * m[r * 4 + 1] + m[r * 4 + 2] * m[r * 4 + 2];
+		for (int c = 0; c < 3; c++) o[c * 4 + r] = m[r * 4 + c] / (l2 > 1e-12 ? l2 : 1.0);
+	}
+	o[3] = o[7] = o[11] = 0; o[15] = 1;
+	for (int r = 0; r < 3; r++) o[12 + r] = -(o[r] * m[12] + o[4 + r] * m[13] + o[8 + r] * m[14]);
+}
+void Mul4d(const double a[16], const double b[16], double o[16])
+{
+	double r[16];
+	for (int c = 0; c < 4; c++) for (int rr = 0; rr < 4; rr++) { double t = 0; for (int k = 0; k < 4; k++) t += a[k * 4 + rr] * b[c * 4 + k]; r[c * 4 + rr] = t; }
+	memcpy(o, r, sizeof(r));
+}
+bool FrameOf(int role, double out[16])
+{
+	VSMatrix m;
+	if (!VRHandPose_TrackedHandFrame(role, m)) return false;
+	const FLOATTYPE *g = m.get();
+	for (int i = 0; i < 16; i++) out[i] = g[i];
+	return true;
+}
+int SupportSide() { return VRHandPose_SideForRole(VR_MAINHAND) == VRHandPose::SIDE_LEFT ? 1 : 0; }
+
+// R9: the off hand drawn on the gun while it supports, its tracked place no longer moving it; or not.
+void SetSupportDrawn(bool on)
+{
+	if (on == S.heldBySet) return;
+	if (on)
+	{
+		float rel[16];
+		for (int i = 0; i < 16; i++) rel[i] = (float)kSupportSeat[SupportSide()][i];
+		VRHandPose_SetHeldBy(VR_OFFHAND, rel);
+	}
+	else VRHandPose_SetHeldBy(VR_OFFHAND, nullptr);
+	S.heldBySet = on;
+}
+
+// A map point measured on the DRAWN off hand (the picker's fingertip) where it would be on the TRACKED hand: the same
+// coordinates in the hand's own map frame (origin, fwd, right, up), the frame swapped. Equal while the hand is not drawn
+// elsewhere.
+bool TrackedPoint(const DVector3 &drawn, DVector3 &tracked)
+{
+	DVector3 o, f, r, u, to, tf, tr, tu;
+	if (!VRHandPose_MapFrame(VR_OFFHAND, o, f, r, u) || !VRHandPose_TrackedMapFrame(VR_OFFHAND, to, tf, tr, tu)) return false;
+	const DVector3 d = drawn - o;
+	auto det3 = [](const DVector3 &a, const DVector3 &b, const DVector3 &c) { return a | (b ^ c); };
+	const double D = det3(f, r, u);
+	if (fabs(D) < 1e-12) return false;
+	const double a = det3(d, r, u) / D, b = det3(f, d, u) / D, c = det3(f, r, d) / D;
+	tracked = to + tf * a + tr * b + tu * c;
+	return true;
 }
 
 // column-major 4x4
@@ -226,6 +323,7 @@ const char *ActName(Act a)
 	case ACT_RACK_BACK: return "SLIDE BACK";
 	case ACT_SLIDE_FORWARD: return "SLIDE FORWARD";
 	case ACT_DRY: return "dry";
+	case ACT_BUTTON_NONE: return "the button: nothing";
 	default: return "-";
 	}
 }
@@ -243,28 +341,53 @@ PClassActor *ColtMeshClass()
 void ColtHandsTick(FLevelLocals *level, bool live)
 {
 	if (level == nullptr) return;
-	if (S.level != level) { const double keep[6] = { S.tune[0], S.tune[1], S.tune[2], S.tune[3], S.tune[4], S.tune[5] }; S = State(); memcpy(S.tune, keep, sizeof(keep)); S.level = level; }
+	if (S.level != level) { const double keep[6] = { S.tune[0], S.tune[1], S.tune[2], S.tune[3], S.tune[4], S.tune[5] }; SetSupportDrawn(false); S = State(); memcpy(S.tune, keep, sizeof(keep)); S.level = level; }
+	if (S.pulse2Tic >= 0 && level->maptime >= S.pulse2Tic) { Pulse(S.pulse2Role, S.pulse2Amp, S.pulse2Tics, "refused, the second buzz"); S.pulse2Tic = -1; }
 	AActor *pmo = Pawn();
 	Hands h;
 	h.vr = HandsOn(pmo) && pmo->health > 0;
 	h.reloadInput = S.cmdRelease;
 	h.slideRelease = S.cmdSlide;
+	if (S.cmdRelease) S.releaseRole = VR_MAINHAND;
 	S.cmdRelease = S.cmdSlide = false;
-	if (!h.vr || !live || !Alive(S.gun)) { const bool ri = h.reloadInput, sr = h.slideRelease; h = Hands(); h.vr = HandsOn(pmo); h.reloadInput = ri; h.slideRelease = sr; S.hands = h; return; }
+	// R8: the shooting hand's lower face button (A / X), read as the trigger and grip are (VRFingerInput::faceLower)
+	VRFingerInput mainIn;
+	const bool button = VRHandPose_Fingers(VR_MAINHAND, mainIn) && mainIn.faceLower;
+	const bool buttonEdge = button && !S.buttonWas;
+	S.buttonWas = button;
+	if (!h.vr || !live || !Alive(S.gun))
+	{
+		const bool ri = h.reloadInput, sr = h.slideRelease;
+		h = Hands(); h.vr = HandsOn(pmo); h.reloadInput = ri; h.slideRelease = sr;
+		S.hands = h;
+		if (S.support.engaged) { S.support.Reset(); Printf("[roth_colt] TWO HANDS: the off hand lets go -- the gun is not drawn in the hands\n"); }
+		SetSupportDrawn(false);
+		return;
+	}
+	if (buttonEdge && HandMayAct(VR_MAINHAND, hands::Owner::Colt))
+	{
+		h.mainButton = true;
+		S.releaseRole = VR_MAINHAND;
+		Printf("[roth_colt] the shooting hand's button (%s) pressed: magazine %s, slide %s\n",
+			VRHandPose_SideForRole(VR_MAINHAND) == VRHandPose::SIDE_LEFT ? "X" : "A", S.rig.magIn ? "in" : "out", S.rig.slideLocked ? "locked back" : "forward");
+	}
 
 	VRPickHand off;
 	const bool haveOff = VRPickHandNow(VR_OFFHAND, off);
+	// THE OFF HAND AS TRACKED: while it supports it is DRAWN on the gun (VRHandPose_SetHeldBy), so everything the Colt
+	// asks of it -- the catch, the pouch, the slide, the latch itself -- is measured where the player's hand really is.
 	DVector3 sock, f, r, u;
-	const bool haveSock = VRHandPose_MapFrame(VR_OFFHAND, sock, f, r, u);
-	// L2 (roth_handstate.h): the off hand acts on the gun while the Colt owns it or nobody does (not while it holds an
-	// item or a held object, or supports another weapon).
-	const bool mine = HandMayAct(VR_OFFHAND, hands::Owner::Colt);
-	h.offGrip = haveOff && off.gripClosed && mine;
-	const bool trig = haveOff && off.trigDown && mine;
+	const bool haveSock = VRHandPose_TrackedMapFrame(VR_OFFHAND, sock, f, r, u);
+	const bool rawTrig = haveOff && off.trigDown;
+	const bool rawTrigEdge = rawTrig && !S.rawTrigWas;
+	S.rawTrigWas = rawTrig;
 	DVector3 p;
-	if (haveOff && off.havePoints && GunPoint(kMagButton, p)) h.offAtMagButton = Metres(off.tip - p) < kAtButton;
-	h.magButtonPress = trig && !S.trigWas;
-	S.trigWas = trig;
+	if (haveOff && off.havePoints && GunPoint(kMagButton, p))
+	{
+		DVector3 tip = off.tip;
+		if (S.heldBySet) TrackedPoint(off.tip, tip);
+		h.offAtMagButton = Metres(tip - p) < kAtButton;
+	}
 	if (haveSock)
 	{
 		// the pouch, in the body frame (metres from the eye; forward, toward the off side, up)
@@ -294,6 +417,37 @@ void ColtHandsTick(FLevelLocals *level, bool live)
 			if (Model_ActorPointToWorld(S.heldMag, DVector3(0, 0, 0), heldAt)) h.magAtWell = Metres(heldAt - well) < kAtWell;
 		}
 	}
+
+	// R9: TWO HANDS. The tracked off hand against the place support_fit measured, in the shooting hand's frame.
+	double mainF[16], offF[16];
+	if (FrameOf(VR_MAINHAND, mainF) && FrameOf(VR_OFFHAND, offF))
+	{
+		double inv[16], have[16];
+		Inv4(mainF, inv);
+		Mul4d(inv, offF, have);
+		S.place = SupportPlaceOf(kSupportSeat[SupportSide()], have);
+	}
+	else S.place = SupportPlace();
+	const bool reloadAction = (h.offAtMagButton && rawTrigEdge) || h.offAtPouch || h.offAtSlide;
+	const bool allowed = !S.rig.magInHand && !S.rig.racking;
+	// L2 (roth_handstate.h): the grip is the weapon's only while nobody else holds that hand (an item, a held object)
+	const bool supGrip = haveOff && off.gripClosed && HandMayAct(VR_OFFHAND, hands::Owner::Weapon);
+	const int ev = S.support.Feed(S.place, supGrip, vr_support_mode, reloadAction, allowed);
+	if (ev != 0)
+	{
+		Printf("[roth_colt] TWO HANDS: the off hand %s -- %s (%.3f m and %.1f deg from the fitted place)%s\n", ev > 0 ? "TAKES the grip" : "lets go of the grip",
+			S.support.why, S.place.dist, S.place.deg, ev > 0 ? "; drawn there now, its tracked place no longer moves it; the aim stays the shooting hand's bore" : "");
+		Pulse(VR_OFFHAND, ev > 0 ? 0.4 : 0.25, ev > 0 ? 3 : 2, ev > 0 ? "the off hand takes the grip" : "the off hand lets go of the grip");
+	}
+	SetSupportDrawn(S.support.engaged);
+
+	// L2 (roth_handstate.h): the off hand acts on the gun while the Colt owns it or nobody does (not while it holds an
+	// item or a held object, or supports a weapon). A support let go this tic for a reload action passes that action on.
+	const bool mine = HandMayAct(VR_OFFHAND, hands::Owner::Colt) || (ev < 0 && reloadAction);
+	h.offGrip = haveOff && off.gripClosed && mine;
+	h.magButtonPress = mine && rawTrigEdge;
+	if (h.magButtonPress && h.offAtMagButton) S.releaseRole = VR_OFFHAND;
+	S.trigWas = rawTrig && mine;
 	S.hands = h;
 }
 
@@ -335,8 +489,14 @@ void ColtAfterWeapon(const Game &g)
 {
 	if (!g.colt) { S.rig.gripWas = S.hands.offGrip; return; }
 	const Event e = Step(S.rig, g, S.hands, kTravel);
-	S.hands.reloadInput = S.hands.slideRelease = false;
-	if (g.shotLeft && S.hands.vr) S.spawnCase = true;
+	S.hands.reloadInput = S.hands.slideRelease = S.hands.mainButton = false;
+	if (g.shotLeft && S.hands.vr)
+	{
+		S.spawnCase = true;
+		// the recoil: the shooting hand, and the supporting hand with it (R9)
+		Pulse(VR_MAINHAND, 0.9, 4, "recoil");
+		if (S.support.engaged) Pulse(VR_OFFHAND, 0.6, 4, "recoil, the supporting hand");
+	}
 	if (g.shotLeft && S.hands.vr && g.qty == 0) Printf("[roth_colt] the last round fired: the slide locks back at the cycle's end (the word 0, i51 carried %d)\n", g.mags);
 	if (e.act == ACT_NONE) return;
 	S.lastAct = e.act;
@@ -344,11 +504,12 @@ void ColtAfterWeapon(const Game &g)
 	switch (e.act)
 	{
 	case ACT_DROP_MAG: S.spawnMag = true; Pulse(VR_MAINHAND, 0.3, 3, "magazine out"); break;
-	case ACT_REFUSE_DROP: case ACT_REFUSE_TAKE: Pulse(VR_OFFHAND, 0.3, 3, "refused"); break;
+	case ACT_REFUSE_DROP: DoubleBuzz(S.releaseRole, "the release refused: the magazine does not move (R1)"); break;
+	case ACT_REFUSE_TAKE: DoubleBuzz(VR_OFFHAND, "no magazine to take (R2)"); break;
 	case ACT_TAKE_MAG: Pulse(VR_OFFHAND, 0.4, 3, "magazine taken"); break;
-	case ACT_SEAT: if (g.qty == 0) S.reloadDue = true; Pulse(VR_MAINHAND, 0.6, 4, "seated"); Pulse(VR_OFFHAND, 0.6, 4, "seated"); break;
+	case ACT_SEAT: if (g.qty == 0) S.reloadDue = true; Pulse(VR_MAINHAND, 0.6, 4, "the magazine seats"); Pulse(VR_OFFHAND, 0.6, 4, "the magazine seats"); break;
 	case ACT_RACK_BACK: Pulse(VR_OFFHAND, 0.5, 3, "slide back"); break;
-	case ACT_SLIDE_FORWARD: Pulse(VR_MAINHAND, 0.5, 3, "slide forward"); break;
+	case ACT_SLIDE_FORWARD: Pulse(VR_MAINHAND, 0.5, 3, "the slide closes"); break;
 	default: break;
 	}
 }
@@ -451,11 +612,43 @@ bool ColtHeldFingers(int side, VRHandPose::HeldState &held)
 bool ColtGripTaken(int role)
 {
 	if (role != VR_OFFHAND || !S.hands.vr || !Alive(S.gun)) return false;
-	return S.rig.magInHand || S.rig.racking || S.hands.offAtPouch || S.hands.offAtSlide || S.hands.offAtMagButton;
+	// (the catch only while not supporting: R9's own reload action lets the support go first, the next tic the catch's)
+	return S.rig.magInHand || S.rig.racking || S.hands.offAtPouch || S.hands.offAtSlide || (S.hands.offAtMagButton && !S.support.engaged);
+}
+
+bool ColtSupportHeld()
+{
+	return S.support.engaged && S.hands.vr && Alive(S.gun);
+}
+
+bool ColtSupportWouldTake()
+{
+	if (!S.hands.vr || !Alive(S.gun) || S.rig.magInHand || S.rig.racking || S.support.rearmRequired || vr_support_mode == 0) return false;
+	return S.support.engaged || (S.place.dist <= kSupportEnterM && S.place.deg <= kSupportEnterDeg);
+}
+
+bool ColtSupportFingers(VRHandPose::HeldState &held)
+{
+	if (!ColtSupportHeld()) return false;
+	const int k = SupportSide();
+	held = VRHandPose::HeldState();
+	held.subject = VRHandPose::GRIPSUBJ_Support;   // hold_support: the owner's fbx_twohand_support (SelectHold, VAP :587-654)
+	held.item = kColt;
+	for (int f = 0; f < 5; f++) { held.wrap[f] = kSupportWrap[k][f]; held.wrapBase[f] = kSupportWrapBase[k][f]; }
+	return true;
+}
+
+bool ColtTakesUseKey()
+{
+	if (!S.hands.vr || !Alive(S.gun)) return false;
+	VRFingerInput in;
+	return VRHandPose_Fingers(VR_MAINHAND, in) && in.faceLower;
 }
 
 void ColtEndLevel()
 {
+	SetSupportDrawn(false);
+	S.support.Reset();
 	if (S.gun != nullptr) VRHandPose_SetActorSeat(S.gun, nullptr);
 	if (S.heldMag != nullptr) VRHandPose_SetActorSeat(S.heldMag, nullptr);
 	S.gun = S.heldMag = nullptr;
@@ -467,6 +660,9 @@ void ColtGunGone()
 {
 	if (S.gun != nullptr) { VRHandPose_SetActorSeat(S.gun, nullptr); ModelDrawPose_ClearActor(S.gun); }
 	S.gun = nullptr;
+	if (S.support.engaged) Printf("[roth_colt] TWO HANDS: the off hand lets go -- the gun went away\n");
+	S.support.Reset();
+	SetSupportDrawn(false);
 }
 
 } // namespace roth
@@ -497,6 +693,9 @@ CCMD(roth_colt)
 			S.tune[0], S.tune[1], S.tune[2], S.tune[3], S.tune[4], S.tune[5], ActName(S.lastAct));
 		Printf("roth_colt: off hand at the release %d, at the pouch %d, at the slide %d, magazine at the well %d, grip %d\n",
 			(int)S.hands.offAtMagButton, (int)S.hands.offAtPouch, (int)S.hands.offAtSlide, (int)S.hands.magAtWell, (int)S.hands.offGrip);
+		Printf("roth_colt: TWO HANDS %s; the tracked off hand %.3f m and %.1f deg from the fitted place (takes within %.2f m / %.0f deg, keeps within %.2f m / %.0f deg)%s\n",
+			S.support.engaged ? "SUPPORTING (the off hand drawn on the grip)" : "no", S.place.dist, S.place.deg, kSupportEnterM, kSupportEnterDeg, kSupportExitM, kSupportExitDeg,
+			S.support.rearmRequired ? "; after a reload action: the hand must leave first" : "");
 		// the loose parts in the world: where each is, how high above its floor, landed or flying
 		if (S.level != nullptr)
 		{
@@ -538,10 +737,11 @@ CCMD(roth_colt)
 //
 // roth_colttest -- test-only, inert until typed; with roth_xrpose (the controller-pose test) driving the hands.
 //
-//   roth_colttest offhand <magbutton|pouch|well|slide> [dx dy dz]
+//   roth_colttest offhand <magbutton|pouch|well|slide|support> [dx dy dz]
 //                     move the off hand (its orientation kept) so that its index tip (magbutton) or its grip socket
 //                     (the rest) lands on that point of the drawn gun (the pouch: of the body), plus map units
 //   roth_colttest rack <metres>       move the off hand back along the drawn bore by that much (+ back, - forward)
+//   roth_colttest lookat <class> <file> [distance]   rothdiff_shot of the first landed part of the class, from that far
 //   roth_colttest off <grip|trigger> <0|1>
 //
 //===========================================================================
@@ -561,7 +761,7 @@ bool MoveOff(const DVector3 &want, bool tip, const char *what)
 		VRPoseTest_PublishAim(pmo);
 		if (tip) { VRPickHand o; if (!VRPickHandNow(VR_OFFHAND, o) || !o.havePoints) return false; out = o.tip; return true; }
 		DVector3 f, r, u;
-		return VRHandPose_MapFrame(VR_OFFHAND, out, f, r, u);
+		return VRHandPose_TrackedMapFrame(VR_OFFHAND, out, f, r, u);
 	};
 	const float p0[3] = { h.pos[0], h.pos[1], h.pos[2] };
 	DVector3 b, col[3];
@@ -585,6 +785,78 @@ bool MoveOff(const DVector3 &want, bool tip, const char *what)
 		got.X, got.Y, got.Z, want.X, want.Y, want.Z, (got - want).Length());
 	return true;
 }
+// THE OFF HAND TURNED so its TRACKED hand frame has the support seat's orientation on the main hand (R9's test): the
+// device's own path from the test's tracking-space quaternion to the hand frame is probed, not inverted by hand -- small
+// turns about the tracking axes, their effect on the frame measured, a Gauss-Newton step on the rotation's error, eight
+// times. Returns the error left, degrees (-1: no pose).
+void QMul(const float a[4], const float b[4], float o[4])
+{
+	const float x = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+	const float y = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
+	const float z = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
+	const float w = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+	o[0] = x; o[1] = y; o[2] = z; o[3] = w;
+}
+void QFromVec(const double v[3], float q[4])
+{
+	const double th = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+	const double k = th > 1e-12 ? sin(th * 0.5) / th : 0.5;
+	q[0] = (float)(v[0] * k); q[1] = (float)(v[1] * k); q[2] = (float)(v[2] * k); q[3] = (float)cos(th * 0.5);
+}
+// the rotation vector of a * b^T (the 3x3 parts of two column-major frames, orthonormal, of the same handedness)
+void RotErr(const double a[16], const double b[16], double v[3])
+{
+	double M[3][3];
+	for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) { double t = 0; for (int k = 0; k < 3; k++) t += a[k * 4 + i] * b[k * 4 + j]; M[i][j] = t; }
+	double c = (M[0][0] + M[1][1] + M[2][2] - 1) * 0.5; c = c > 1 ? 1 : (c < -1 ? -1 : c);
+	const double th = acos(c);
+	const double sn = sin(th);
+	if (th < 1e-9) { v[0] = v[1] = v[2] = 0; return; }
+	const double k = sn > 1e-6 ? th / (2 * sn) : 0.5;
+	v[0] = (M[2][1] - M[1][2]) * k; v[1] = (M[0][2] - M[2][0]) * k; v[2] = (M[1][0] - M[0][1]) * k;
+}
+double TurnOffToSeat(AActor *pmo)
+{
+	FVRPoseTestHand h;
+	if (!VRPoseTest_Hand(VR_OFFHAND, h) || !h.valid) return -1;
+	double mainF[16], want[16], cur[16];
+	if (!FrameOf(VR_MAINHAND, mainF)) return -1;
+	Mul4d(mainF, kSupportSeat[SupportSide()], want);
+	auto frameFor = [&](const float q[4], double out[16]) {
+		FVRPoseTestHand t = h;
+		for (int k = 0; k < 4; k++) t.quat[k] = q[k];
+		VRPoseTest_SetHand(VR_OFFHAND, t);
+		VRPoseTest_PublishAim(pmo);
+		return FrameOf(VR_OFFHAND, out);
+	};
+	float q[4] = { h.quat[0], h.quat[1], h.quat[2], h.quat[3] };
+	double e[3] = { 0, 0, 0 };
+	auto det = [](const double m[3][3]) { return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]); };
+	for (int it = 0; it < 8; it++)
+	{
+		if (!frameFor(q, cur)) return -1;
+		RotErr(want, cur, e);
+		double J[3][3];
+		for (int i = 0; i < 3; i++)
+		{
+			const double dv[3] = { i == 0 ? 0.01 : 0.0, i == 1 ? 0.01 : 0.0, i == 2 ? 0.01 : 0.0 };
+			float dq[4], qi[4]; QFromVec(dv, dq); QMul(q, dq, qi);
+			double ci[16], d[3];
+			if (!frameFor(qi, ci)) return -1;
+			RotErr(ci, cur, d);
+			for (int r = 0; r < 3; r++) J[r][i] = d[r] / 0.01;
+		}
+		const double D = det(J);
+		if (fabs(D) < 1e-12) break;
+		double x[3];
+		for (int c = 0; c < 3; c++) { double Mc[3][3]; memcpy(Mc, J, sizeof(Mc)); for (int r = 0; r < 3; r++) Mc[r][c] = e[r]; x[c] = det(Mc) / D; }
+		float dq[4], qn[4]; QFromVec(x, dq); QMul(q, dq, qn);
+		memcpy(q, qn, sizeof(q));
+	}
+	frameFor(q, cur);
+	RotErr(want, cur, e);
+	return sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]) * 180.0 / M_PI;
+}
 } }
 
 CCMD(roth_colttest)
@@ -602,11 +874,29 @@ CCMD(roth_colttest)
 		{
 			// the held magazine's centre onto the gun's magazine centre: the socket moved by (well - held centre)
 			DVector3 well, held, sock, f, r, u;
-			if (!GunPoint(kMagAt, well) || !Alive(S.heldMag) || !Model_ActorPointToWorld(S.heldMag, DVector3(0, 0, 0), held) || !VRHandPose_MapFrame(VR_OFFHAND, sock, f, r, u))
+			if (!GunPoint(kMagAt, well) || !Alive(S.heldMag) || !Model_ActorPointToWorld(S.heldMag, DVector3(0, 0, 0), held) || !VRHandPose_TrackedMapFrame(VR_OFFHAND, sock, f, r, u))
 			{ Printf("roth_colttest: no gun or no magazine in the off hand\n"); return; }
 			want = sock + (well - held);
 		}
 		else if (!stricmp(what, "slide")) { if (!GunPoint(kSerrations, want)) { Printf("roth_colttest: no gun drawn\n"); return; } }
+		else if (!stricmp(what, "support"))
+		{
+			// R9: the off hand's TRACKED frame onto the place support_fit measured on the main hand -- turned first (the
+			// device's path probed), then its grip socket moved there
+			if (!Alive(S.gun)) { Printf("roth_colttest: no gun drawn\n"); return; }
+			const double err = TurnOffToSeat(pmo);
+			double mainF[16], wantF[16];
+			if (err < 0 || !FrameOf(VR_MAINHAND, mainF)) { Printf("roth_colttest offhand support: no hand pose (roth_xrpose hand ... first)\n"); return; }
+			Mul4d(mainF, kSupportSeat[SupportSide()], wantF);
+			float wf[16];
+			for (int i = 0; i < 16; i++) wf[i] = (float)wantF[i];
+			VSMatrix wm;
+			wm.loadMatrix(wf);
+			DVector3 o, ff, rr, uu;
+			if (!VRPose_HandMapFrame(wm, VRHandPose_SideForRole(VR_OFFHAND) == VRHandPose::SIDE_RIGHT, o, ff, rr, uu)) { Printf("roth_colttest offhand support: no map frame\n"); return; }
+			want = o;
+			Printf("roth_colttest: the off hand turned to the support seat's orientation (%.2f deg left)\n", err);
+		}
 		else if (!stricmp(what, "pouch"))
 		{
 			const double yaw = pmo->Angles.Yaw.Radians(), upm = UPM();
@@ -614,7 +904,7 @@ CCMD(roth_colttest)
 			const DVector3 head(pmo->X(), pmo->Y(), pmo->player != nullptr ? pmo->player->viewz : pmo->Z());
 			want = head + DVector3(cos(yaw), sin(yaw), 0) * (kPouchF * upm) + DVector3(-sin(yaw), cos(yaw), 0) * (side * kPouchSide * upm) + DVector3(0, 0, kPouchU * upm / PS());
 		}
-		else { Printf("roth_colttest offhand <magbutton|pouch|well|slide>\n"); return; }
+		else { Printf("roth_colttest offhand <magbutton|pouch|well|slide|support>\n"); return; }
 		if (argv.argc() >= 6) want += DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
 		MoveOff(want, tip, what);
 		return;
@@ -652,6 +942,9 @@ CCMD(roth_colttest)
 	// in the study's corridor; the log shows both).
 	if (!stricmp(argv[1], "lookat") && argv.argc() >= 4)
 	{
+		// [distance]: map units from the part (default 146: the original's steepest pitch, -126, then centres it; nearer, it
+		// sits low in the frame but larger -- the original's frame is 320 x 200)
+		const double away = argv.argc() >= 5 ? atof(argv[4]) : 146.0;
 		PClassActor *pc = PClass::FindActor(argv[2]);
 		if (pc == nullptr || S.level == nullptr) { Printf("roth_colttest lookat: no class %s\n", argv[2]); return; }
 		auto it = S.level->GetThinkerIterator<AActor>();
@@ -672,7 +965,7 @@ CCMD(roth_colttest)
 			ok = true;
 			for (int q = 1; q <= 6 && ok; q++)
 			{
-				const DVector2 p = found->Pos().XY() + d * (146.0 * q / 6);
+				const DVector2 p = found->Pos().XY() + d * (away * q / 6);
 				sector_t *sec = S.level->PointInSector(p);
 				if (sec == nullptr) { ok = false; break; }
 				const double fz = sec->floorplane.ZatPoint(p), cz = sec->ceilingplane.ZatPoint(p);
@@ -684,7 +977,7 @@ CCMD(roth_colttest)
 			// two-sided with an opening on the part's floor tall enough for the eye.
 			if (ok)
 			{
-				const DVector2 from = found->Pos().XY(), to = from + d * (146.0 + 24.0);
+				const DVector2 from = found->Pos().XY(), to = from + d * (away + 24.0);
 				FPathTraverse trav(S.level, from.X, from.Y, to.X, to.Y, PT_ADDLINES);
 				while (intercept_t *in = trav.Next())
 				{
@@ -698,8 +991,8 @@ CCMD(roth_colttest)
 			}
 			if (!ok) Printf("roth_colttest lookat: not from yaw %.0f (a wall, a step or a low ceiling on the way)\n", atan2(-d.Y, -d.X) * 180.0 / M_PI);
 		}
-		if (!ok) { d = d0; Printf("roth_colttest lookat: no clear spot 146 units from it on its floor; looking from toward the player\n"); }
-		const DVector2 at = found->Pos().XY() + d * 146.0;
+		if (!ok) { d = d0; Printf("roth_colttest lookat: no clear spot that far from it on its floor; looking from toward the player\n"); }
+		const DVector2 at = found->Pos().XY() + d * away;
 		const double yaw = atan2(-d.Y, -d.X) * 180.0 / M_PI;
 		const int ang = (int)lround((yaw - 90.0) * 512.0 / 360.0) & 511;
 		Printf("roth_colttest lookat: %s landed at (%.1f %.1f %.1f); the camera at (%.0f %.0f) angle %d (yaw %.1f), pitch -126\n",
@@ -710,7 +1003,7 @@ CCMD(roth_colttest)
 	if (!stricmp(argv[1], "rack"))
 	{
 		DVector3 muz, rear, sock, f, r, u;
-		if (!GunPoint(kMuzzle, muz) || !GunPoint(kBoreRear, rear) || !VRHandPose_MapFrame(VR_OFFHAND, sock, f, r, u)) { Printf("roth_colttest: no gun or no off hand\n"); return; }
+		if (!GunPoint(kMuzzle, muz) || !GunPoint(kBoreRear, rear) || !VRHandPose_TrackedMapFrame(VR_OFFHAND, sock, f, r, u)) { Printf("roth_colttest: no gun or no off hand\n"); return; }
 		const DVector3 back = (rear - muz).Unit();
 		const double m = atof(argv[2]);
 		// metres along the bore -> map units (the vertical through the pixel stretch)

@@ -278,6 +278,7 @@ struct State
 	// no model: (picture, frame, vr) -> sprite bound to a card mesh.
 	AActor *held = nullptr;
 	int noPictureSaid = -1;   // the item last logged as drawn with no picture in VR (PresentHeld)
+	bool awayKeptWas = false; // the Colt kept drawn through the original's Away (PresentHeld), for its log line
 	std::map<std::pair<std::pair<int32_t, int>, std::pair<bool, const PClass *>>, int> cards;
 	int lastPull = -1, lastShot = -1, lastAmmo = -1, lastReload = -1, lastNoAmmo = -1, lastEquip = -1, lastCycleEnd = -1;
 };
@@ -874,7 +875,16 @@ void PresentHeld()
 			pr.item == adamItem ? "the hands are the fists" : "its mesh did not load -- nothing is drawn rather than the picture");
 	}
 	if (!noPictureInVr) g_actors.noPictureSaid = -1;
-	const bool hidden = pr.state == ActorWorld::WS_AWAY || pr.item == 0 || pr.sprite == 0 || pmo->health <= 0 || noPictureInVr;
+	// THE COLT'S MESH IN VR IS NEVER HIDDEN BY AWAY (owner 2026-11-23: "a gun in your hand must never vanish"). The
+	// original's Away (player.c:463-501: the weapon lowered off its 320 x 200 screen after 0x578 ticks without firing,
+	// until the next pull raises it) is a state of the flat picture; its logic -- the 25-tick Raise on the next pull, the
+	// timings -- still runs and is not touched; only the VR drawing keeps the gun in the hand. Flat keeps it 1:1.
+	const bool awayKept = coltCls != nullptr && pr.item == colt::kColt;
+	const bool hidden = (pr.state == ActorWorld::WS_AWAY && !awayKept) || pr.item == 0 || (pr.sprite == 0 && !awayKept) || pmo->health <= 0 || noPictureInVr;
+	const bool awayNow = awayKept && pr.state == ActorWorld::WS_AWAY;
+	if (awayNow && !g_actors.awayKeptWas)
+		Printf("[roth_colt] the original's weapon is Away (lowered after 0x578 ticks without a shot): the Colt stays drawn in the VR hand; the original's next pull raises it (its logic unchanged)\n");
+	g_actors.awayKeptWas = awayNow;
 	if (hidden) { mo->renderflags |= RF_INVISIBLE; if (coltCls != nullptr) ColtGunGone(); return; }
 	mo->renderflags &= ~RF_INVISIBLE;
 	if (coltCls != nullptr) { ColtPresent(mo, ColtGame(ev)); return; }

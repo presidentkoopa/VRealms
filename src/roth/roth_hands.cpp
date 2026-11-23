@@ -150,6 +150,9 @@ static void PublishHeld()
 	// The held objects' poses (roth_held.h): the match pinched, the lamp by its bail, both hands round the Book --
 	// never over a drawn weapon.
 	for (int r = 0; r < 2; r++) if (!held[r].weapon) HeldPose(r, held[r]);
+	// THE COLT IN TWO HANDS (roth_coltvr.h R9): the supporting off hand's fingers, the owner's fbx_twohand_support as
+	// tools/colt_test/support_fit measured it on the gun and the shooting hand
+	ColtSupportFingers(held[VR_OFFHAND]);
 	VRHandPose_SetHeld(VR_MAINHAND, held[VR_MAINHAND]);
 	VRHandPose_SetHeld(VR_OFFHAND, held[VR_OFFHAND]);
 }

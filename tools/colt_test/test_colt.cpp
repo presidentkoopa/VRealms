@@ -271,6 +271,74 @@ int main(int argc, char **argv)
 		Check(!p.magShown, "parts: the magazine out of the grip is not drawn in it");
 	}
 
+	// ==== 5. R8: the shooting hand's button through a whole reload (the original's numbers throughout) ====
+	{
+		ActorWorld w; Host h; setup(w, h, 12, 3);
+		Sim s(w, h);
+		Hands hd = vr;
+		hd.mainButton = true; const Event b1 = s.Tic(false, hd); hd.mainButton = false;
+		Check(b1.act == ACT_REFUSE_DROP && s.rig.magIn && s.Qty() == 12, "R8/R1: the button on a full magazine, slide forward: the release, refused (%s); the magazine stays", b1.why);
+		for (int i = 0; i < 12; i++) s.Shoot(hd);
+		Check(s.rig.slideLocked && s.Qty() == 0, "R8: 12 shots, the slide locked back on the empty magazine");
+		hd.mainButton = true; const Event b2 = s.Tic(false, hd); hd.mainButton = false;
+		Check(b2.act == ACT_DROP_MAG && !s.rig.magIn && s.rig.slideLocked && s.Qty() == 0 && s.Mags() == 3,
+			"R8: the button with the slide locked on the EMPTY magazine is the release: dropped (%s), the slide stays back, word 0, i51 3", b2.why);
+		hd.mainButton = true; const Event b3 = s.Tic(false, hd); hd.mainButton = false;
+		Check(b3.act == ACT_BUTTON_NONE && s.rig.slideLocked, "R8: the button with no magazine in does nothing (%s)", b3.why);
+		hd.offAtPouch = true; hd.offGrip = true; s.Tic(false, hd); hd.offAtPouch = false;
+		hd.magAtWell = true; const Event b4 = s.Tic(false, hd); hd.magAtWell = false;
+		s.Tic(false, hd); hd.offGrip = false; s.Tic(false, hd);
+		Check(b4.act == ACT_SEAT && s.Qty() == 12 && s.Mags() == 2 && s.rig.slideLocked, "R8: a magazine seated: the original's reload (word 12, i51 2), the slide still back");
+		const int p0 = s.pulls; s.Tic(true, hd);
+		Check(s.pulls == p0, "R6: a pull before the slide closes is a dry click");
+		for (int i = 0; i < 200 && w.weapon.lock != 0; i++) s.Tic(false, hd);
+		hd.mainButton = true; const Event b5 = s.Tic(false, hd); hd.mainButton = false;
+		Check(b5.act == ACT_SLIDE_FORWARD && !s.rig.slideLocked && s.rig.chambered && s.Qty() == 12 && s.Mags() == 2,
+			"R8: the button with the slide locked on a magazine WITH rounds is the slide stop: forward, chambered (%s); the game untouched", b5.why);
+		s.Shoot(hd);
+		Check(s.Qty() == 11 && h.removed51 == 1, "R8: the next pull fires (word 12 -> %d), one i51 consumed in all, as the original's one reload", s.Qty());
+		hd.mainButton = true; const Event b6 = s.Tic(false, hd); hd.mainButton = false;
+		Check(b6.act == ACT_REFUSE_DROP && s.rig.magIn && s.Qty() == 11, "R8/R1: the button on 11 rounds, slide forward: refused, nothing moves (word 11)");
+		Check(MainButton(true, false, 0) == BUTTON_MAG_RELEASE && MainButton(true, true, 0) == BUTTON_MAG_RELEASE && MainButton(true, true, 7) == BUTTON_SLIDE_STOP
+			&& MainButton(false, true, 0) == BUTTON_NOTHING && MainButton(false, false, 5) == BUTTON_NOTHING, "R8: the button's table (slide stop only on a locked slide with rounds)");
+	}
+
+	// ==== 6. R9: the off hand on the grip (the latch) ====
+	{
+		const double want[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.02, 0.0, 0.03, 1 };
+		auto at = [&](double off, double deg) {   // the hand `off` metres from the place, turned `deg` about Z
+			const double r = deg * 3.14159265358979323846 / 180;
+			double m[16] = { cos(r), sin(r), 0, 0, -sin(r), cos(r), 0, 0, 0, 0, 1, 0, 0.02 + off, 0.0, 0.03, 1 };
+			return SupportPlaceOf(want, m);
+		};
+		const SupportPlace p0 = at(0, 0), p1 = at(0.04, 30), p2 = at(0.08, 0), p3 = at(0.12, 0), p4 = at(0.0, 60), p5 = at(0, 80);
+		Check(fabs(p0.dist) < 1e-12 && fabs(p0.deg) < 1e-6 && fabs(p1.dist - 0.04) < 1e-12 && fabs(p1.deg - 30) < 1e-6, "R9: the place: distance and turn from the fitted frame (%.3f m %.1f deg)", p1.dist, p1.deg);
+		SupportGrip g;
+		Check(g.Feed(p0, false, 3, false, true) == 0 && !g.engaged, "R9 hold mode: at the grip with the grip open: not taken");
+		{ const int ev = g.Feed(p1, true, 3, false, true); Check(ev == 1 && g.engaged, "R9 hold mode: 4 cm and 30 deg off with the grip closed: taken (%s)", g.why); }
+		Check(g.Feed(p2, true, 3, false, true) == 0 && g.engaged, "R9: 8 cm off (inside the exit): kept");
+		Check(g.Feed(p4, true, 3, false, true) == 0 && g.engaged, "R9: turned 60 deg (inside the exit): kept");
+		{ const int ev = g.Feed(p3, true, 3, false, true); Check(ev == -1 && !g.engaged, "R9: 12 cm off: let go (%s)", g.why); }
+		Check(g.Feed(p2, true, 3, false, true) == 0 && !g.engaged, "R9: back to 8 cm (outside the entry): not taken again");
+		Check(g.Feed(p0, true, 3, false, true) == 1, "R9: at the place again, the grip still closed: taken");
+		{ const int ev = g.Feed(p0, false, 3, false, true); Check(ev == -1 && !g.engaged, "R9 hold mode: the grip opens: let go (%s)", g.why); }
+		g.Feed(p0, true, 3, false, true);
+		{ const int ev = g.Feed(p0, true, 3, true, true); Check(ev == -1 && !g.engaged && g.rearmRequired, "R9: a reload action lets go AT ONCE (%s)", g.why); }
+		Check(g.Feed(p0, true, 3, false, true) == 0 && !g.engaged, "R9: after a reload action, not retaken while the hand stays at the grip");
+		g.Feed(p3, true, 3, false, true);
+		Check(g.Feed(p0, true, 3, false, true) == 1, "R9: the hand left and came back: taken again");
+		{ const int ev = g.Feed(p5, true, 3, false, true); Check(ev == -1, "R9: turned 80 deg: let go (%s)", g.why); }
+		g.Reset(); g.Feed(p0, true, 3, false, true);
+		{ const int ev = g.Feed(p0, true, 3, false, false); Check(ev == -1 && !g.engaged, "R9: the gun or the hand no longer free (a magazine in it, the gun put away): let go (%s)", g.why); }
+		SupportGrip t;
+		t.Feed(p0, false, 4, false, true);
+		Check(t.Feed(p0, true, 4, false, true) == 1 && t.Feed(p0, false, 4, false, true) == 0 && t.Feed(p0, true, 4, false, true) == -1, "R9 toggle mode (vr_support_mode 4): press takes, release keeps, press lets go");
+		SupportGrip z;
+		Check(z.Feed(p0, true, 0, false, true) == 0 && !z.engaged, "R9: vr_support_mode 0: never taken");
+		SupportGrip a1;
+		Check(a1.Feed(p0, false, 1, false, true) == 1 && a1.Feed(p3, false, 1, false, true) == -1, "R9 auto mode (1): taken at the place with no grip, let go away from it");
+	}
+
 	printf("\n%s: %d passed, %d failed\n", gFails ? "FAIL" : "PASS", gPass, gFails);
 	return gFails ? 1 : 0;
 }

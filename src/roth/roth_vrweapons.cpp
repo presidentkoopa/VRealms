@@ -214,6 +214,7 @@ bool VRWeaponsGripTaken(int role)
 	const int held = HeldItem();
 	if (role == VR_OFFHAND)
 	{
+		if (ColtSupportWouldTake()) return true;   // the Colt in two hands (roth_coltvr.h R9): the off hand at its grip
 		if (!IsTwoHanded(held)) return false;
 		if (S.latch.engaged) return true;
 		SupportLatch probe = S.latch;
@@ -230,6 +231,7 @@ bool VRWeaponsGripTaken(int role)
 
 bool VRWeaponsSupportHeld()
 {
+	if (ColtSupportHeld()) return true;   // the Colt in two hands (roth_coltvr.h R9)
 	return HandsOn(Pawn()) && S.latch.engaged && IsTwoHanded(HeldItem());
 }
 

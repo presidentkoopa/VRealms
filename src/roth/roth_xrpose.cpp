@@ -28,6 +28,7 @@
 //                                     the same, the hand's fingers along yaw / pitch from the head's forward
 //                                     (the grip pitched +90: DefaultHandFit's fingers are -Y_grip), the wrist
 //                                     turned about the fingers by `wristroll`. Fingers default to the point pose.
+//   roth_xrpose button <main|off> <0|1>  the hand's lower face button (A right / X left: VRFingerInput::faceLower)
 //   roth_xrpose aim <main|off> <yaw> <pitch> <roll> | aim <main|off> grip
 //                                     the hand's AIM pose (what the device publishes on the pawn); `grip`: the
 //                                     default, the aim's -Z along the fingers
@@ -251,7 +252,7 @@ CCMD(roth_xrpose)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_xrpose on [headyaw] | off | hand <main|off> x y z yaw pitch roll [grip trig tt th] | point <main|off> x y z yaw pitch [wristroll] [grip trig tt th]\n"
-			"            | grip|trigger <main|off> <0..1> | handat <main|off> item|object s i [palm] [dx dy dz] | pointat <main|off> item|object s i|x y z\n"
+			"            | grip|trigger <main|off> <0..1> | button <main|off> <0|1> | handat <main|off> item|object s i [palm] [dx dy dz] | pointat <main|off> item|object s i|x y z\n"
 			"            | stand item|object s i <metres>\n"
 			"            | aim <main|off> yaw pitch roll | aim <main|off> grip | log | pin <main|off> <palm|tip> | pin off\n");
 		return;
@@ -335,6 +336,19 @@ CCMD(roth_xrpose)
 		else h.grip = (float)atof(argv[3]);
 		VRPoseTest_SetHand(role, h);
 		Printf("roth_xrpose: %s hand %s %.2f\n", roth::RoleName(role), verb, trig ? h.trigger : h.grip);
+		return;
+	}
+	// THE LOWER FACE BUTTON (A on the right controller, X on the left): VRFingerInput::faceLower, as the headset's. Its
+	// key event is not posted here (the device posts it in the headset; nothing the Colt reads comes from it).
+	if (!stricmp(verb, "button"))
+	{
+		const int role = argv.argc() >= 4 ? RoleArg(argv[2]) : -1;
+		if (role < 0) { Printf("roth_xrpose button <main|off> <0|1>\n"); return; }
+		FVRPoseTestHand h;
+		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose button: the %s hand has no pose (roth_xrpose hand/point first)\n", roth::RoleName(role)); return; }
+		h.faceLower = atoi(argv[3]) != 0;
+		VRPoseTest_SetHand(role, h);
+		Printf("roth_xrpose: %s hand's lower face button %s\n", roth::RoleName(role), h.faceLower ? "DOWN" : "up");
 		return;
 	}
 	if (!stricmp(verb, "aim"))

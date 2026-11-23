@@ -52,6 +52,17 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out);
 // in the playsim's stored convention, and three readers took its pitch with the wrong sign. False: no grip.
 bool VRHandPose_MapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &right, DVector3 &up);
 
+// RS FORK -- A HAND DRAWN WHERE IT HOLDS, not where it is tracked (src/roth/roth_coltvr.cpp: the off hand supporting the
+// Colt, owner 2026-11-23). While set, `role`'s hand frame -- the drawn hand, every reader of VRHandPose_HandFrame /
+// MapFrame -- is the OTHER role's hand frame times `rel` (that hand's frame -> this one's, metres, column-major), so it
+// stays on the held thing at draw rate. Null clears. Render-side only: nothing in the playsim reads it.
+void VRHandPose_SetHeldBy(int role, const float rel[16]);
+bool VRHandPose_HeldBy(int role);
+// The hand frame from the controller alone (no VRHandPose_SetHeldBy): what the player's real hand is doing, for the
+// one who set the override to tell when the hand leaves.
+bool VRHandPose_TrackedHandFrame(int role, VSMatrix &out);
+bool VRHandPose_TrackedMapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &right, DVector3 &up);
+
 // THE HANDS' INPUT DOOR: a role's grip transform and finger values from the injected controller pose
 // (roth_xrpose, below) when that is on, else the headset's (VRMode::GetGripTransform / GetFingerInput, only
 // while the VR mode is VR). Every game-layer reader of the controllers goes through these.
@@ -73,6 +84,7 @@ struct FVRPoseTestHand
 	float quat[4] = { 0, 0, 0, 1 };  // tracking space, the grip pose's orientation (x, y, z, w)
 	float trigger = 0.f, grip = 0.f;
 	bool triggerTouch = false, thumbTouch = false;
+	bool faceLower = false;          // the lower face button (A / X): VRFingerInput::faceLower
 };
 void VRPoseTest_Set(bool on, float hmdYawDeg, const float hmdPos[3]);
 void VRPoseTest_SetHand(int role, const FVRPoseTestHand &h);

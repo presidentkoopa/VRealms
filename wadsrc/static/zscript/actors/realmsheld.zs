@@ -135,6 +135,10 @@ class RealmsColtPart : Actor
 	double SpinYaw, SpinPitch, SpinRoll;
 	double LandPitch, LandRoll;   // how it lies
 	bool Landed;
+	vector3 ThrownFrom;           // where it left the gun (the log line at landing: how far it flew)
+	int Flew;                     // tics in the air
+	bool WallStopped;             // its sideways speed fell by 90 % in one tic while it flew: a wall
+	double PrevXY;                // last tic's sideways speed
 
 	Default
 	{
@@ -159,12 +163,20 @@ class RealmsColtPart : Actor
 		if (bDestroyed) return;
 		if (!Landed)
 		{
+			if (Flew == 0) ThrownFrom = pos;
+			Flew++;
+			double xy = vel.xy.Length();
+			if (Flew > 1 && PrevXY > 0.5 && xy < PrevXY * 0.1) WallStopped = true;
+			PrevXY = xy;
 			if (pos.z <= floorz + 0.05 && vel.z <= 0)
 			{
 				Landed = true;
 				vel = (0, 0, 0);
 				Pitch = LandPitch;
 				Roll = LandRoll;
+				Console.Printf("[roth_colt] %s LANDED at (%.1f %.1f %.1f) after %d tics, %.1f units from where it was thrown (%.1f %.1f %.1f)%s",
+					GetClassName(), pos.x, pos.y, pos.z, Flew, (pos.xy - ThrownFrom.xy).Length(), ThrownFrom.x, ThrownFrom.y, ThrownFrom.z,
+					WallStopped ? "; its sideways speed stopped in the air: a wall" : "");
 			}
 			else
 			{

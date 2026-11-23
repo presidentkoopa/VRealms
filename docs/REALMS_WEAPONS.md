@@ -129,3 +129,30 @@ tests `tools/colt_test/run.sh`; PC run `tools/claude_bridge/cfg/colt_flat.cfg`.
   carried it is the original's (message 6, the next weapon); the slide must be racked or released before a shot.
 - `roth_colt release` / `roth_colt sliderelease` are the reload inputs (bindable). The Colt lying in the world
   (ADEMO[99]) is the same mesh (roth_img3d.cpp), the picture kept for picking.
+- **The shooting hand's button (R8, 2026-11-23).** The main hand's lower face button (A on a right controller, X on a
+  left) is the 1911's magazine catch and slide stop, read as the trigger and grip are (VRFingerInput::faceLower), no
+  binding written. One press, by the gun's state:
+
+  | the gun | the button |
+  |---|---|
+  | slide forward, a magazine in | the magazine release: R1 decides (word 0 and no shot cycling: dropped; else refused, a double buzz on that hand, nothing moves) |
+  | slide locked back on the empty magazine (after the last shot) | the magazine release (dropped) |
+  | slide locked back on a magazine with rounds (a fresh one seated) | the slide stop: forward, chambered |
+  | no magazine in | nothing |
+
+  The off hand's fingertip on the catch plus its trigger still releases too. While the Colt is drawn in the VR hands the
+  button's own `+use` key does not use the world (p_map.cpp P_UseLines asks roth_coltvr.h ColtTakesUseKey).
+- **Two hands (R9, owner 2026-11-23: "does our hands allow for 'two handing' the pistol").** `tools/colt_test/support_fit`
+  fits the other hand (the owner's fbx_twohand_support) to the gun and to the posed shooting hand; the seat is in
+  `support_fit.txt` and baked in roth_coltvr.cpp. The off hand at that place (6 cm / 50 deg to take, 10 cm / 75 deg to
+  keep) takes the gun with its grip, in `vr_support_mode`'s own modes (3, hold, by default); it is then drawn there
+  (VRHandPose_SetHeldBy: the shooting hand's frame times the seat) and L2 counts it SUPPORTING. It lets go when it
+  leaves, when the grip opens, and at once on a reload action (the catch with its trigger, the pouch, the slide). Aim
+  stays the shooting hand's bore. A pulse on the off hand when it takes and lets go; recoil on both while it holds.
+  NOT met by the fit: the support palm stands 25 mm (right shooting) / 33 mm (left) out from the off grip panel; the
+  shooting fingers come round onto that panel (renders docs/images/colt/support_fit_*.png).
+- **Feel:** recoil on each shot (the main hand; the supporting hand too), a click on a dry pull, a pulse when the
+  magazine seats and when the slide closes, a double buzz on a refusal. One output: roth_coltvr.cpp Pulse
+  (VR_ScriptHaptic, as L2's feedback).
+- **Away:** the original's weapon goes Away after 20 s without a shot (lowered off its screen). In VR the Colt's mesh
+  stays drawn in the hand; the original's state and its Raise on the next pull run unchanged.

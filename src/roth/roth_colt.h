@@ -42,6 +42,21 @@
 //       magazine's follower); forward again by the rack (the off hand pulls it back past 90 % of its travel and lets
 //       go) or by the slide release. A rack with a round chambered ejects nothing: the original's word has no
 //       chambered round apart from the magazine (presentation only, written down).
+//   R8  THE SHOOTING HAND'S BUTTON (its lower face button: A on a right controller, X on a left; owner 2026-11-23: on a
+//       real 1911 the shooting thumb works the magazine catch and the slide stop). One press, by the gun's state
+//       (MainButton):
+//         the slide locked back on a magazine with rounds (a fresh one seated)  -> the slide stop: forward, chambering
+//         a magazine in, the slide forward                                      -> the magazine release (R1 decides)
+//         a magazine in, the slide locked back, the word 0 (after the last shot) -> the magazine release (R1 decides)
+//         no magazine in                                                        -> nothing
+//       The off hand's fingertip on the catch with its trigger, and the console's `roth_colt release`, stay the release.
+//   R9  TWO HANDS (owner 2026-11-23, "two handing" the pistol): the off hand at the main hand's grip, where
+//       tools/colt_test/support_fit put the support hand, takes the gun with its grip (SupportLatch, the engine's own
+//       vr_support_mode semantics, its place measured from the main hand's grip instead of along a barrel). While it
+//       holds, it is drawn there, fitted, and its tracked position no longer moves it. It lets go when it leaves that
+//       place, when its grip opens (hold mode), and AT ONCE when it starts a reload action: the magazine catch (its
+//       fingertip there and its trigger), the pouch, the slide. Presentation and feel only: the aim stays the shooting
+//       hand's bore (a pistol is aimed by the shooting hand), and the game's numbers are the original's.
 //   Flat play: none of this; the original's automatic reload on the pull and its own pictures (1:1).
 //
 //---------------------------------------------------------------------------
@@ -131,6 +146,7 @@ struct Hands
 	bool offAtSlide = false;      // the off hand on the slide's rear serrations
 	double slideAlong = 0;        // metres the off hand has moved back along the bore since it took the slide
 	bool slideRelease = false;    // the slide release input (an edge)
+	bool mainButton = false;      // R8: the shooting hand's lower face button (an edge)
 };
 
 enum Act
@@ -146,7 +162,17 @@ enum Act
 	ACT_RACK_BACK,      // the slide pulled to the back
 	ACT_SLIDE_FORWARD,  // the slide forward (rack let go, or the release): chambers when the word has rounds
 	ACT_DRY,            // a pull refused (R5/R6): the hammer's click, no game effect
+	ACT_BUTTON_NONE,    // R8: the button with no magazine in: nothing
 };
+
+// R8: what the shooting hand's button is this tic, by the gun's state.
+enum ButtonIs { BUTTON_NOTHING = 0, BUTTON_SLIDE_STOP, BUTTON_MAG_RELEASE };
+inline ButtonIs MainButton(bool magIn, bool slideLocked, int qty)
+{
+	if (!magIn) return BUTTON_NOTHING;
+	if (slideLocked && qty > 0) return BUTTON_SLIDE_STOP;
+	return BUTTON_MAG_RELEASE;
+}
 
 struct Event { Act act = ACT_NONE; const char *why = ""; };
 
@@ -170,6 +196,69 @@ struct Rig
 	{
 		magIn = true; magInHand = false; seatPending = false; racking = rackedBack = false; rack = 0;
 		slideLocked = g.qty == 0; chambered = g.qty > 0; lockAfterCycle = false; magButtonTics = 0;
+	}
+};
+
+// ---- R9: the off hand on the grip (two hands) ----
+// Where: the off hand's TRACKED hand frame against the support frame support_fit measured, both in the main hand's frame
+// (vr_handpose_math.h hand frames: metres; X fingers, Y back of the hand, Z thumb axis), column-major rigid 4x4.
+// [R] not from a source: the radii and angles a hand may be off the fitted place and still take / keep the gun.
+constexpr double kSupportEnterM = 0.06, kSupportExitM = 0.10;
+constexpr double kSupportEnterDeg = 50.0, kSupportExitDeg = 75.0;
+
+struct SupportPlace { double dist = 1e9, deg = 180.0; };
+inline SupportPlace SupportPlaceOf(const double want[16], const double have[16])
+{
+	SupportPlace p;
+	const double dx = have[12] - want[12], dy = have[13] - want[13], dz = have[14] - want[14];
+	p.dist = sqrt(dx * dx + dy * dy + dz * dz);
+	double tr = 0;   // trace(want^T have): the columns' dot products
+	for (int c = 0; c < 3; c++) tr += want[c * 4] * have[c * 4] + want[c * 4 + 1] * have[c * 4 + 1] + want[c * 4 + 2] * have[c * 4 + 2];
+	double cs = (tr - 1.0) * 0.5;
+	cs = cs > 1 ? 1 : (cs < -1 ? -1 : cs);
+	p.deg = acos(cs) * (180.0 / 3.14159265358979323846);
+	return p;
+}
+
+// The latch: vk_openxrdevice.cpp:4541-4582's modes (vr_support_mode: 0 off, 1 auto, 2 auto + the grip to let go, 3 hold
+// the grip (the default), 4 toggle) -- roth_vrweapon.h SupportLatch's own lines -- with "in the cone" replaced by "at the
+// fitted place" (enter / exit, hysteresis), and R9's one addition: a reload action lets go at once and the hand must
+// leave the place (past the exit) before it takes the gun again.
+struct SupportGrip
+{
+	bool engaged = false, rearmRequired = false, gripWas = false;
+	const char *why = "";
+	void Reset() { engaged = rearmRequired = gripWas = false; why = ""; }
+	// One tic. `allowed`: the gun drawn, the hands live, the off hand free for the weapon (L2) and carrying no magazine.
+	// Returns +1 when it took the gun this tic, -1 when it let go, 0 otherwise.
+	int Feed(const SupportPlace &p, bool gripNow, int mode, bool reloadAction, bool allowed)
+	{
+		const bool was = engaged;
+		const bool inEnter = p.dist <= kSupportEnterM && p.deg <= kSupportEnterDeg;
+		const bool inExit = p.dist <= kSupportExitM && p.deg <= kSupportExitDeg;
+		mode = mode < 0 ? 0 : (mode > 4 ? 4 : mode);
+		const bool gripEdge = gripNow && !gripWas;
+		gripWas = gripNow;
+		if (!allowed || mode == 0) { engaged = false; rearmRequired = false; why = !allowed ? "the gun or the hand is not free" : "vr_support_mode 0"; }
+		else if (engaged && reloadAction) { engaged = false; rearmRequired = true; why = "a reload action (the catch, the pouch, the slide)"; }
+		else if (engaged)
+		{
+			if (!inExit) { engaged = false; why = "the hand left the grip"; }
+			else if (mode == 3 && !gripNow) { engaged = false; why = "the grip opened"; }
+			else if (mode == 4 && gripEdge) { engaged = false; why = "the grip pressed again (toggle)"; }
+			else if (mode == 2 && gripEdge) { engaged = false; rearmRequired = true; why = "the grip pressed (auto + button)"; }
+		}
+		else
+		{
+			if (rearmRequired && !inExit) rearmRequired = false;
+			if (inEnter && !rearmRequired && !reloadAction)
+			{
+				if (mode == 1 || mode == 2) { engaged = true; why = "at the grip"; }
+				else if (mode == 3 && gripNow) { engaged = true; why = "at the grip, the grip closed"; }
+				else if (mode == 4 && gripEdge) { engaged = true; why = "at the grip, the grip pressed (toggle)"; }
+			}
+		}
+		return engaged == was ? 0 : (engaged ? 1 : -1);
 	}
 };
 
@@ -203,8 +292,22 @@ inline Event Step(Rig &r, const Game &g, const Hands &h, double travelMetres)
 		if (g.lock == 0) { r.seatPending = false; out.act = ACT_SEAT; out.why = "seated (the shot's lock cleared): the original's reload"; }
 		return out;
 	}
+	// R8: the shooting hand's button -- the slide stop on a locked slide with rounds, else the magazine release
+	bool mainRelease = false;
+	if (h.mainButton)
+	{
+		const ButtonIs b = MainButton(r.magIn, r.slideLocked, g.qty);
+		if (b == BUTTON_SLIDE_STOP)
+		{
+			r.slideLocked = false; r.chambered = true;
+			out.act = ACT_SLIDE_FORWARD; out.why = "the slide stop (the shooting hand's button): a round chambered";
+			return out;
+		}
+		if (b == BUTTON_NOTHING) { out.act = ACT_BUTTON_NONE; out.why = "no magazine in: the button does nothing"; return out; }
+		mainRelease = true;
+	}
 	// R1: the magazine release
-	if (r.magIn && ((h.offAtMagButton && h.magButtonPress) || h.reloadInput))
+	if (r.magIn && ((h.offAtMagButton && h.magButtonPress) || h.reloadInput || mainRelease))
 	{
 		r.magButtonTics = 10;
 		if (g.qty > 0) { out.act = ACT_REFUSE_DROP; out.why = "rounds in the magazine (the original has no partial magazines)"; return out; }

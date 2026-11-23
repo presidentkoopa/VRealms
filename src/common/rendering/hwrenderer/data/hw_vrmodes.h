@@ -82,6 +82,10 @@ struct VRFingerInput
 	float grip = 0.f;         // 0..1
 	bool  triggerTouch = false;
 	bool  thumbTouch = false;
+	// RS FORK -- the hand's LOWER face button (A on the right controller, X on the left), read by the game layer the way
+	// the trigger and grip are (src/roth/roth_coltvr.cpp: the shooting thumb's magazine catch and slide stop). Its key
+	// event (KEY_PAD_A / KEY_PAD_X) is posted as before; nothing is bound by this.
+	bool  faceLower = false;
 };
 
 struct HWDrawInfo;

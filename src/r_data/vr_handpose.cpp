@@ -562,6 +562,7 @@ bool VRHandPose_Fingers(int role, VRFingerInput &out)
 		out.grip = h.grip;
 		out.triggerTouch = h.triggerTouch;
 		out.thumbTouch = h.thumbTouch;
+		out.faceLower = h.faceLower;
 		return true;
 	}
 	const VRMode *vm = VRMode::GetVRModeCached(true);
@@ -582,7 +583,22 @@ bool VRHandPose_MapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &ri
 	return VRPose_HandMapFrame(m, VRHandPose_SideForRole(role) == SIDE_RIGHT, origin, fwd, right, up);
 }
 
-bool VRHandPose_HandFrame(int role, VSMatrix &out)
+namespace
+{
+	bool gHeldBySet[2] = { false, false };
+	float gHeldBy[2][16];
+}
+
+void VRHandPose_SetHeldBy(int role, const float rel[16])
+{
+	if (role < 0 || role > 1) return;
+	gHeldBySet[role] = rel != nullptr;
+	if (rel != nullptr) memcpy(gHeldBy[role], rel, sizeof(gHeldBy[role]));
+}
+
+bool VRHandPose_HeldBy(int role) { return role >= 0 && role <= 1 && gHeldBySet[role]; }
+
+bool VRHandPose_TrackedHandFrame(int role, VSMatrix &out)
 {
 	VSMatrix g;
 	bool got = TestGrip(role, g);
@@ -593,6 +609,25 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out)
 	out = g;
 	out.multMatrix(fit);
 	return true;
+}
+
+bool VRHandPose_TrackedMapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &right, DVector3 &up)
+{
+	VSMatrix m;
+	if (!VRHandPose_TrackedHandFrame(role, m)) return false;
+	return VRPose_HandMapFrame(m, VRHandPose_SideForRole(role) == SIDE_RIGHT, origin, fwd, right, up);
+}
+
+bool VRHandPose_HandFrame(int role, VSMatrix &out)
+{
+	// a hand drawn where it holds: the other hand's TRACKED frame times the seat (never itself overridden: one level)
+	if (role >= 0 && role <= 1 && gHeldBySet[role])
+	{
+		if (!VRHandPose_TrackedHandFrame(1 - role, out)) return false;
+		out.multMatrix(gHeldBy[role]);
+		return true;
+	}
+	return VRHandPose_TrackedHandFrame(role, out);
 }
 
 //===========================================================================

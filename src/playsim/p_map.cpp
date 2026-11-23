@@ -61,6 +61,9 @@
 #include "p_trace.h"
 #include "roth/roth_runtime.h"
 #include "roth/roth_interface.h"
+
+// src/roth/roth_coltvr.cpp (namespace roth, not anonymous): the Colt holds the shooting hand's button this tic
+namespace roth { bool ColtTakesUseKey(); }
 #include "r_sky.h"
 #include "r_utility.h"
 #include "shadowinlines.h"
@@ -6791,6 +6794,14 @@ void P_UseLines(player_t *player)
 	// choice menu, the inventory screen, a line waiting for a click. Inert
 	// unless a Realms game core is attached.
 	if (roth::InterfaceUse(player))
+	{
+		return;
+	}
+
+	// THE COLT'S BUTTON (src/roth/roth_coltvr.h, R8): while the Colt is drawn in the VR hands the shooting hand's lower
+	// face button is its magazine catch and slide stop. Its +use key (KEY_PAD_A / KEY_PAD_X) is still posted by the
+	// device; that press is the gun's, and uses nothing in the world. Inert in flat (no VR hands).
+	if (roth::ColtTakesUseKey())
 	{
 		return;
 	}

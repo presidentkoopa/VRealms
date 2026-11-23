@@ -4042,6 +4042,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		xrFingerInput[fh].grip         = handInput[fh].gripValue;
 		xrFingerInput[fh].triggerTouch = handInput[fh].triggerTouch;
 		xrFingerInput[fh].thumbTouch   = handInput[fh].thumbTouch;
+		xrFingerInput[fh].faceLower    = fh == 1 ? handInput[fh].a : handInput[fh].x;   // the controller index: 1 right (A), 0 left (X), as face1 below
 	}
 
 	// The grip pose: the same locate, at the same predicted display time, on the grip spaces that
