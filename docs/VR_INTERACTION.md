@@ -29,44 +29,94 @@ The patches it needed are the symptom:
 It is removed. The hands already pick the original's way (roth_vrpick: a finger ray through ClassifyPick, DoUse,
 DoExamine). This design makes that the only way.
 
-## 1. The owner's decisions (2026-11-23)
+## 1. What the original's internals say, and what each one means in VR
 
-1. **VRealms may now diverge from the flat port for VR.** "We are clear to engage VR Realms of the Haunting now, we
-   want to make a terrific VR experience for a game which has such an unusual interface." The original's game logic
-   still runs underneath: chains, pickups, keys, what a use does. VR changes how you reach, handle and see things.
-2. **Reach is measured from the body**, like the original. Your arm does not change what is in range.
-3. **Too far stays too far.** No pulling things from across the room. You walk up to it.
-4. **A picked-up item stays in the hand until stowed.** The game counts it carried from the moment of the use (the
-   original's give), so the inventory is right at all times.
-5. **Letting go of a held item anywhere stows it** into the inventory. Nothing is lost on the floor.
-6. **Examine three ways:** bring a held item to the eyes, hold a point on a thing, or press a button.
-7. **The hit test is the model's shape** once a thing is a 3D model (the original: a sprite's opaque texels).
-8. **Later, with a player model:** the trenchcoat. Open the coat to stow objects and weapons in it and on the body.
+The owner (2026-11-23): design it from the game's internals; his answers are wishes about the experience, not
+technical specifications. Each line below is a fact of the original (docs/GAME_inventory.md 1 and 4, GAME_core.md 4),
+then the VR design that follows from it.
 
-## 2. The designer's choices (mine; the owner may overrule any)
+1. **Two hands already.** The original has a weapon hand (0x81038, `activate_weapon_item`) and an item hand
+   (`g_selected_item_primary`, the selected item), each a slot on the inventory panel.
+   - **VR:** what a hand holds IS that hand's slot. The weapon in a hand is the equipped weapon. The item in a hand is
+     the selected item.
+   - Holding two items: the item of the hand that makes the use is selected for that use (roth_handuse.h, DoUse; this
+     exists).
+2. **The item in hand is used implicitly.** There is no item-versus-object hit test. A use runs the target's chain,
+   and the chain's 0x27 asks whether the right item is in hand (raw_commands.c:4785-4788).
+   - **VR:** hold the key and use the door. Nothing extra to aim; the key in your hand is what the game checks.
+3. **The auto-select.** With the item carried but not in hand, the chain selects it itself, interrupts, and that click
+   does nothing; the next succeeds (raw_commands.c:4747-4752).
+   - **VR:** the game's own logic, kept 1:1. In presentation: you use the door, the key comes out of your coat into
+     your free hand, and the next squeeze opens it.
+4. **There is no drop.** No code path returns an item to the world (GAME_inventory.md 4, Drop).
+   - **VR:** letting go of an item can only put it away. It goes back into the coat (the inventory). This is the
+     owner's wish (decision 5 below), and it is also the only thing the game can do.
+5. **A pickup flies to the camera and lands in a hand.** The sprite leaves the world and flies 0x1c ticks toward the
+   view (inventory.c:106-139). A weapon is equipped at once (:418-428). Anything else becomes the selected item
+   (:433-434).
+   - **VR:** the same flight, aimed at the hand that picked it up. It lands in that hand.
+   - A weapon goes to the main hand if it is free, otherwise to its body slot.
+6. **Use on yourself** (`use_item_on_self`, inventory.c:691-776: the item's OnUse block with target 0; potions, food).
+   - **VR:** bring the item to your mouth and squeeze. The world hands' drink gesture already does this for the vial.
+7. **Combine two items** (`combine_held_item_with_target`, inventory.c:787-928; the recipe decides the order).
+   - **VR:** an item in each hand, touch them together, squeeze.
+8. **Examine is a deliberate click,** and it can change the game. The original's examine (a right click) fires the
+   target's examine records, which can run chains (raw_commands.c:3102-3200), and plays Adam's comment. It reaches
+   2,467 units.
+   - **VR:** examine must never happen by accident. It is a button, or bringing a held item to your eyes.
+   - Holding a point on something (dwell) would fire examine chains and comments whenever you happen to point. Dwell is
+     therefore NOT recommended, although the owner asked for it (decision 6); that is his call.
+9. **Examining an item in hand opens the close-up:** the item's DBASE300 video, its name, Adam's comment, the
+   information topics and document pages (dialogue_ui.c:1299-1541).
+   - **VR:** bring it to your eyes and the original's close-up window opens in front of you, drawn from the install by
+     the original's own drawing code (CLAUDE.md: never design what the original already has).
+   - The documents-in-both-hands idea (chapter 2, Q22) is the later version of the same thing.
+10. **Examining an item in the world** plays only its OnInspect comment, no popup (input.c:995-1012). The VR button on
+    a pointed item does the same.
+11. **The cursor tells what a click would do.** classify_cursor_target_object (input.c:1111-1258) chooses the cursor
+    picture: usable in reach (0x248, 0x250, 0x278), too far (0x398, 0x3a0), nothing (0x240), blocked or keyed.
+    - **VR:** the marker where your finger points is the original's own cursor picture for that target, from the
+      install, on the surface itself.
+    - A thing your hand touches also gets a soft rim, because a cursor picture cannot sit on something inside your
+      palm.
+12. **Floors, ceilings and wall faces are usable,** not just objects: 0x18 wall-face records, 0x19 floor and
+    platform-top records, and painted wall buttons with no object (raw_commands.c:3018-3057).
+    - **VR:** pointing and squeezing works on any surface. A low floor spot can also be touched (crouch and press).
+13. **Reach is measured from the body, along your facing** (depth = 2z + 64; REMAROTH_MEASURED.md 13).
+    - **VR:** from the body (decision 2), as the horizontal distance to the point (D2 below).
+14. **Keyed objects never get picked up.** def+9&1 runs the key chain instead (input.c:1053-1069), and an object with a
+    use chain is used, not taken. The VR squeeze changes nothing here: the original decides whether a squeeze takes,
+    uses or is refused.
 
-- **D1:** each hand has its own target and acts on its own. Two hands can use two things.
-- **D2:** reach in VR is the HORIZONTAL DISTANCE from the player's position to the hit point.
-  - The original measures along the view yaw (depth = 2z + 64). For a ray off to the side of where you face, that
-    would give endless sideways reach.
+## 2. The owner's wishes (2026-11-23), as decisions
+
+1. VRealms may now diverge from the flat port for VR. "We are clear to engage VR Realms of the Haunting now, we want
+   to make a terrific VR experience for a game which has such an unusual interface." The game logic still runs
+   underneath.
+2. Reach is measured from the body.
+3. Too far stays too far; you walk up to it.
+4. A picked-up item stays in the hand until stowed.
+5. Letting go of a held item anywhere stows it.
+6. Examine by bringing to the eyes, by a button, and by holding a point. Dwell is not recommended (1.8).
+7. The hit test is the model's shape once a thing is a 3D model (the original: a sprite's opaque texels).
+8. Later, with a player model: the trenchcoat. Open the coat to stow objects and weapons in it and on the body.
+
+## 3. The designer's choices (the owner may overrule any)
+
+- **D1:** each hand has its own target and acts on its own.
+- **D2:** reach in VR is the horizontal distance from the player's position to the hit point.
+  - The original measures along the view yaw, which would give endless reach to the side.
   - Straight ahead the two are equal: 268 / 968 / 2467 units.
-- **D3:** a touch beats a point. When the palm or fingertip is on a thing (about 5 cm from the skin), that thing is
-  the target. Otherwise the target is what the extended index points at.
-- **D4:** the highlight is the original's cursor class drawn on the thing itself, not a laser or cursor sprite:
-  - usable: a soft white rim;
-  - too far: a dim grey rim;
-  - locked or blocked: a dull red rim.
-  - The pointing beam stays thin and short and appears only while the index is extended.
-- **D5:** the examine timings and button:
-  - dwell 0.8 s on a pointed thing;
-  - a held item within 20 cm of the eyes for 0.5 s;
-  - the button is the hand's upper face button (B on the right, Y on the left), acting on that hand's target.
-- **D6:** from Distance Grab only the pickup FLIGHT survives, as the presentation of the original's pickup: the item
-  flies the last stretch into the hand that used it. Its selection, reach, flick and catch are gone.
-- **D7:** stowing shows the item shrinking into the coat (toward the chest) over 0.2 s. A held item can be taken back
-  out from the inventory menu into the hand that opens it.
+- **D3:** a touch beats a point. When the palm or fingertip is on a thing (about 5 cm), that thing is the target.
+  Otherwise the target is what the extended index points at.
+- **D4:** the marker is the original's cursor picture (1.11). Touched things get a rim.
+- **D5:** the examine button is the hand's upper face button (B on the right, Y on the left). Bring-to-eyes needs
+  20 cm for 0.5 s. Dwell, if kept, takes 0.8 s and is off by default.
+- **D6:** from Distance Grab only the flight survives, as the original's pickup fly (1.5).
+- **D7:** stowing shows the item drawn into the coat over 0.2 s. The inventory panel's hand slots and cells take an
+  item out into the hand.
 
-## 3. The four layers
+## 4. The four layers
 
 ### L1. The rules (engine-free, the original's)
 One interface; nothing else in the game gives, opens or triggers anything:
@@ -102,11 +152,11 @@ This replaces the claim order (Lamp, package, weapons, world hands, picker) and 
     drink.
   - Every one calls Use once.
 - **Pickup:** Use on an item. The original gives it, the flight (D6) brings it to the hand, and the hand goes to
-  HOLDING (decision 4).
-- **Use with a held item:** a held key, match or the like brought onto a target and squeezed. That is Use(record,
-  heldItem), the original's use with the selected item.
-- **Examine:** the three ways of decision 6 and D5. Every one calls Examine once.
-- **Let go of a held item:** it is stowed (decision 5, D7).
+  HOLDING (1.5).
+- **Use with a held item:** use the target while holding the item (1.2, 1.3).
+- **Use on yourself:** the item to the mouth (1.6). **Combine:** an item in each hand, touched together (1.7).
+- **Examine:** the button, or a held item to the eyes (1.8-1.10, D5). Every one calls Examine once.
+- **Let go of a held item:** it is stowed (1.4, D7).
 - **Weapons:** body slots and the trigger, as now (docs/REALMS_WEAPONS.md).
 
 ### L4. What you see
@@ -115,7 +165,7 @@ This replaces the claim order (Lamp, package, weapons, world hands, picker) and 
 - **Stow:** D7.
 - **The original's own results stay:** sounds, messages, the examine popup, dialogue, the door swing.
 
-## 4. What is removed or folded
+## 5. What is removed or folded
 
 - **Removed:**
   - the RSQ Distance Grab copy (wadsrc/static/filter/vrealms, its CVARINFO entries);
@@ -129,7 +179,7 @@ This replaces the claim order (Lamp, package, weapons, world hands, picker) and 
   - the Colt;
   - one actor per object (ActorsBindLoadedObjects), which is not Distance Grab's.
 
-## 5. Proof (CLAUDE.md: named evidence)
+## 6. Proof (CLAUDE.md: named evidence)
 
 1. **L1 against the original.** With the same eye rays, the original (tools rangeprobe: render_world_view,
    classify_cursor_target_object, activate_targeted_object, examine_object_under_cursor) and L1 must give the same
@@ -138,7 +188,7 @@ This replaces the claim order (Lamp, package, weapons, world hands, picker) and 
 3. **On the PC.** Flat captures through `roth_xrpose` for each verb; the log lines of each Use and Examine.
 4. **In the headset.** The owner.
 
-## 6. Phases
+## 7. Phases
 
 - **P1:**
   - L1's entry;
@@ -151,6 +201,9 @@ This replaces the claim order (Lamp, package, weapons, world hands, picker) and 
   - the D4 highlight.
 - **P3:** the model-shape hit test (img3d models and MODELDEF meshes).
 - **P4:**
-  - use with a held item;
+  - use with a held item and the auto-select's presentation;
+  - use on yourself;
+  - combine;
+  - the close-up at the eyes;
   - taking an item out of the inventory into the hand.
 - **Later:** the trenchcoat (with the player model).
