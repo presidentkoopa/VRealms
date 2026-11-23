@@ -231,6 +231,14 @@ def main():
     check = ("import torch, custom_rasterizer, custom_rasterizer_kernel; "
              "from hy3dgen.texgen.differentiable_renderer import mesh_processor as m; "
              "print('native modules:', custom_rasterizer_kernel.__file__, m.__file__)")
+    # The build environment (also the self-test's, step 11): the compiler, CUDA, and nvcc's override for the fallback.
+    benv = model_env(vc)
+    benv["CUDA_HOME"] = cuda_home
+    benv["CUDA_PATH"] = cuda_home
+    benv["DISTUTILS_USE_SDK"] = "1"
+    benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
+    benv["NVCC_APPEND_FLAGS"] = (benv.get("NVCC_APPEND_FLAGS", "") +
+                                 " -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
     if subprocess.run([py, "-c", check], capture_output=True, env=model_env()).returncode == 0:
         print("  both already in place")
     else:
@@ -248,13 +256,6 @@ def main():
                      os.path.join(HY_CODE, "hy3dgen", "texgen", "differentiable_renderer", pyd))
         if run([py, "-c", check], env=model_env(), check=False) != 0:
             print("  the prebuilt modules did not load; compiling them instead", flush=True)
-            benv = model_env(vc)
-            benv["CUDA_HOME"] = cuda_home
-            benv["CUDA_PATH"] = cuda_home
-            benv["DISTUTILS_USE_SDK"] = "1"
-            benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
-            benv["NVCC_APPEND_FLAGS"] = (benv.get("NVCC_APPEND_FLAGS", "") +
-                                         " -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
             for sub in ("custom_rasterizer", "differentiable_renderer"):
                 run([py, "setup.py", "install"], env=benv, cwd=os.path.join(HY_CODE, "hy3dgen", "texgen", sub))
             run([py, "-c", check], env=benv)
