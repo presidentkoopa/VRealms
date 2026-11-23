@@ -41,6 +41,23 @@ WEIGHTS = ["hunyuan3d-dit-v2-0/*", "hunyuan3d-paint-v2-0-turbo/*", "hunyuan3d-pa
 STEPS = 11
 
 
+class _Tee:
+    """Everything printed also goes to IMG3D_ROOT\\setup_log.txt, so a stopped setup can be read without a screenshot."""
+    def __init__(self, stream, log):
+        self.stream, self.log = stream, log
+
+    def write(self, text):
+        self.stream.write(text)
+        try:
+            self.log.write(text)
+            self.log.flush()
+        except (OSError, ValueError):
+            pass
+
+    def flush(self):
+        self.stream.flush()
+
+
 def step(n, what):
     print("\n==== [%d/%d] %s" % (n, STEPS, what), flush=True)
 
@@ -52,10 +69,15 @@ def die(msg):
 
 def run(cmd, env=None, cwd=None, check=True):
     print("  > " + (cmd if isinstance(cmd, str) else " ".join('"%s"' % c if " " in c else c for c in cmd)), flush=True)
-    r = subprocess.run(cmd, env=env, cwd=cwd, shell=isinstance(cmd, str))
-    if check and r.returncode != 0:
-        die("the command above failed (exit %d)" % r.returncode)
-    return r.returncode
+    # streamed through print, so the command's own output lands in setup_log.txt too
+    p = subprocess.Popen(cmd, env=env, cwd=cwd, shell=isinstance(cmd, str), stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
+    for line in p.stdout:
+        sys.stdout.write(line)
+    rc = p.wait()
+    if check and rc != 0:
+        die("the command above failed (exit %d)" % rc)
+    return rc
 
 
 def venv_python():
@@ -111,6 +133,10 @@ def main():
     for d in (C.ROOT, C.MODELS_DIR, C.BIN_DIR, C.WORK_DIR):
         C.outside_repo(d)
         os.makedirs(d, exist_ok=True)
+    log = open(os.path.join(C.ROOT, "setup_log.txt"), "a", encoding="utf-8", errors="replace")
+    log.write("\n\n######## SETUP_IMG3D %s ########\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    sys.stdout = _Tee(sys.stdout, log)
+    sys.stderr = _Tee(sys.stderr, log)
     t0 = time.time()
 
     step(1, "the licence of the primary model (Tencent Hunyuan3D-2)")

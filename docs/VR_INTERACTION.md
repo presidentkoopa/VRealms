@@ -114,8 +114,21 @@ then the VR design that follows from it.
 - **D5:** the examine button is the hand's upper face button (B on the right, Y on the left). Bring-to-eyes needs
   20 cm for 0.5 s. Dwell, if kept, takes 0.8 s and is off by default.
 - **D6:** from Distance Grab only the flight survives, as the original's pickup fly (1.5).
-- **D7:** stowing shows the item drawn into the coat over 0.2 s. The inventory panel's hand slots and cells take an
+- **D7 (replaced by 3b, the backpack):** stowing shows the item drawn into the coat over 0.2 s. The inventory panel's hand slots and cells take an
   item out into the hand.
+
+## 3b. The backpack, until the trenchcoat (owner, 2026-11-23)
+
+"For now we will have to put item over our shoulder like a backpack system until I find a player model with an
+openable coat." This replaces D7's coat:
+- **To stow:** bring a held item over either shoulder (behind the head's plane, above the shoulder) and let go. It goes
+  into the backpack: the inventory, which already counts it. Feedback: a soft pulse and the original's inventory
+  sound, if it has one.
+- **Letting go anywhere else** also stows it. The original has no drop (1.4), so nothing can stay on the floor. The
+  item is shown flying back over the shoulder, so the backpack is where things always go.
+- **To take out:** reach over a shoulder and squeeze. The original's inventory panel (drawn from the install, CLAUDE.md)
+  opens in front of you. Choosing an item puts it in that hand. A weapon goes to the main hand, or to its body slot.
+- **Later:** the trenchcoat replaces the shoulder with the coat (decision 8).
 
 ## 4. The four layers
 
