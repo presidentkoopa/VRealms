@@ -224,6 +224,14 @@ def main():
     benv["CUDA_PATH"] = cuda_home
     benv["DISTUTILS_USE_SDK"] = "1"
     benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
+    # CUDA 12.4's nvcc accepts Visual Studio 2017-2022 only; the owner's PC has Visual Studio 2026 (MSVC 14.52), and
+    # setup_log.txt (2026-11-23) stopped here on host_config.h's version check. nvcc's own override flag lets it use
+    # the newer compiler, and the STL's matching check is waived the same way. CUDA 12.4 stays: torch is cu124, and
+    # an extension must be built with the toolkit torch was built with. NVCC_APPEND_FLAGS reaches every nvcc call.
+    benv["NVCC_APPEND_FLAGS"] = (benv.get("NVCC_APPEND_FLAGS", "") +
+                                 " -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
+    benv["CL"] = (benv.get("CL", "") + " /D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
+    print("  nvcc with Visual Studio 2026: NVCC_APPEND_FLAGS=%s" % benv["NVCC_APPEND_FLAGS"], flush=True)
     probe = subprocess.run([py, "-c", "import custom_rasterizer_kernel, mesh_processor"], capture_output=True, env=benv)
     if probe.returncode == 0:
         print("  both already built")
