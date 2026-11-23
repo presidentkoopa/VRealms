@@ -402,10 +402,7 @@ void DrawAndPresent(int ticks)
 				if (!PicturesOf(uid, o, probe, pv)) continue;       // a mesh, or no art: nothing to show
 				double dx = 0., dy = 0.;
 				SectorShift((int)s, dx, dy);
-				// An item's picture spawns as RealmsTakeable (roth_objects.h), as the loader spawns one shown at load.
-				const bool item = !creature && (o.renderType & 0x12) == 0 && TheDbase100().IsLoaded()
-					&& IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)));
-				mo = SpawnObjectActor(g_actors.level, (int)s, (int)i, o.x + dx, o.y + dy, (double)o.z, item);
+				mo = SpawnObjectActor(g_actors.level, (int)s, (int)i, o.x + dx, o.y + dy, (double)o.z);
 				if (mo == nullptr) { g_actors.host.counts["object actor could not be spawned"]++; continue; }
 				mo->Angles.Yaw = DAngle::fromDeg(ObjectActorYaw(mo, o.rotation));
 				const uint8_t L = o.light;

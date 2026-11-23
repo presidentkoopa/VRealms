@@ -45,7 +45,6 @@
 #include "roth_held.h"        // the held objects (chapter 1): presentation, and the forced turn's view snap
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
-#include "roth_grabglue.h"        // RSQ Distance Grab's Realms glue (GrabGlueTick)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
 #include "roth_candles.h"         // the candles' wicks, one by one (presentation)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
@@ -8745,8 +8744,6 @@ void TickLevelLogic(FLevelLocals *level)
 	// The VR hands' actors (roth_hands.h): before the menu and death returns
 	// below, so neither takes the hands away. Presentation only.
 	HandsTick(level);
-	// Which Realms objects RSQ Distance Grab may take (roth_grabglue.h): the original's pickup items only.
-	GrabGlueTick(level);
 
 	// THE INVENTORY SCREEN PAUSES THE WORLD, as the original's does (owner,
 	// 2026-11-13: "pause like the original"). With the panel up the original's

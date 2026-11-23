@@ -61,7 +61,6 @@
 #include "g_levellocals.h"
 
 void DrawLaserSightWorld(FRenderState& state);
-void RSLaser_Draw(HWDrawInfo* di, FRenderState& state);	// RS -- hw_rslaser.cpp (RemaSelaco's port, copied)
 void DrawHitscanTracers(FRenderState& state);
 
 EXTERN_CVAR(Float, r_visibility)
@@ -4335,7 +4334,6 @@ void HWDrawInfo::DrawScene(int drawmode)
 		}
 		DrawHitscanTracers(RenderState);
 		DrawLaserSightWorld(RenderState);
-		RSLaser_Draw(this, RenderState);	// RS -- the RS laser (hw_rslaser.cpp; RSQ Distance Grab's engine beam)
 		VRWheel_Draw(this, RenderState);
 		if (perfGroups) RenderState.PopGroup();	// RS FORK -- r_perflog: scene.vrextras
 	}

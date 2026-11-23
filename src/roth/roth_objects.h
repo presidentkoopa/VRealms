@@ -134,9 +134,7 @@ bool MoveLogicSpriteActor(AActor *mo, uint16_t textureWord, double x, double y, 
 // hidden at load and later shown, a record a command or a shot created. The
 // actor is findable by (sector, index) like a loaded one -- FindObjectActor,
 // ObjectForActor, a restore -- and wears whatever sprite its caller gives it.
-// `item`: the record's picture is an item (Pending::plainPicture's test): spawned as RealmsTakeable, as at load, so
-// an item the level logic shows later (a Matchbox in a drawer) is offered to RSQ Distance Grab like one shown at load.
-AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z, bool item = false);
+AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z);
 // A sprite definition of one frame, `views` 1 or 8 pictures (each 8-view
 // picture fills two of the sixteen rotation slots, as for directional props);
 // `flip` may be null. -1 when the sprite table is full. The table is rebuilt

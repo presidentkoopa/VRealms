@@ -15,8 +15,7 @@
 //        (VRHandPose_HandFrame, FollowHandMode 3/4), its fingers (the test's finger values)
 //     -> the picker's ray (roth_vrpick.h VRPickHandRay), the hand-locked billboards
 //        (g_levellocals.h BillboardHandBasis), the panels' pointer, the held objects
-//     -> and the aim fields the device publishes on the pawn (VRPose_AimAngles, VRPose_PublishedAim),
-//        which RSQ Distance Grab reads
+//     -> and the aim fields the device publishes on the pawn (VRPose_AimAngles, VRPose_PublishedAim)
 //
 //   roth_xrpose on [headyaw]          the test on: the head at the player's eye (its height is the view
 //                                     height in metres), facing `headyaw` in the tracking space (default 0)
@@ -58,9 +57,7 @@
 #include "c_dispatch.h"
 #include "c_cvars.h"
 #include "printf.h"
-#include "d_eventbase.h"   // D_PostEvent, event_t (the grip key)
-#include "keydef.h"
-#include "roth_grabglue.h"   // GrabGlueGripKey
+#include "roth_runtime.h"   // ObjectIsPickupItem (handat / pointat item)
 #include "hw_vrmodes.h"
 #include "r_utility.h"
 #include "r_data/models.h"
@@ -68,7 +65,6 @@
 #include "r_data/vr_posemath.h"
 #include <math.h>
 
-EXTERN_CVAR(Float, vr_weaponRotate)   // file scope, never inside a namespace
 
 namespace roth
 {
@@ -124,6 +120,24 @@ FBillboard *FindBB(FLevelLocals *level, int id)
 	return nullptr;
 }
 
+// The nearest Realms object actor whose use is the original's pickup (roth_runtime.h ObjectIsPickupItem).
+AActor *NearestPickupItem(AActor *pmo)
+{
+	if (pmo == nullptr || pmo->Level == nullptr) return nullptr;
+	AActor *best = nullptr;
+	double bestD = 1e18;
+	auto it = pmo->Level->GetThinkerIterator<AActor>();
+	AActor *mo;
+	while ((mo = it.Next()) != nullptr)
+	{
+		int rs = -1, ri = -1;
+		if (mo == pmo || (mo->ObjectFlags & OF_EuthanizeMe) || !ObjectForActor(mo, rs, ri) || !ObjectIsPickupItem(mo)) continue;
+		const double d = (mo->Pos() - pmo->Pos()).Length();
+		if (d < bestD) { bestD = d; best = mo; }
+	}
+	return best;
+}
+
 void Report()
 {
 	AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
@@ -155,7 +169,7 @@ void Report()
 				AngleBetween(d, f), (palm - o).Length());
 		}
 		else Printf("[roth_xrpose] %s hand: ray vs the hand's forward %.2f deg\n", RoleName(role), AngleBetween(d, f));
-		// The aim pose as the device publishes it (what RSQ Distance Grab reads), as a direction.
+		// The aim pose as the device publishes it, as a direction.
 		const bool main = role == VR_MAINHAND;
 		const double ay = (main ? pmo->AttackAngle : pmo->OffhandAngle).Degrees() + 90.0;
 		const double ap = (main ? pmo->AttackPitch : pmo->OffhandPitch).Degrees();
@@ -202,8 +216,6 @@ void XRPoseTick(FLevelLocals *level)
 //
 //===========================================================================
 
-EXTERN_CVAR(Bool, vr_secondary_button_mappings)
-
 static int RoleArg(const char *s)
 {
 	if (!stricmp(s, "main")) return VR_MAINHAND;
@@ -224,7 +236,8 @@ CCMD(roth_xrpose)
 	if (argv.argc() < 2)
 	{
 		Printf("roth_xrpose on [headyaw] | off | hand <main|off> x y z yaw pitch roll [grip trig tt th] | point <main|off> x y z yaw pitch [wristroll] [grip trig tt th]\n"
-			"            | grip <main|off> <0..1> | handat <main|off> item [dx dy dz] | aim <main|off> yaw pitch roll | aim <main|off> grip | log | pin <main|off> <palm|tip> | pin off\n");
+			"            | grip|trigger <main|off> <0..1> | handat <main|off> item [palm] [dx dy dz] | pointat <main|off> item | x y z\n"
+			"            | aim <main|off> yaw pitch roll | aim <main|off> grip | log | pin <main|off> <palm|tip> | pin off\n");
 		return;
 	}
 	const char *verb = argv[1];
@@ -293,46 +306,19 @@ CCMD(roth_xrpose)
 			h.grip, h.trigger, (int)h.triggerTouch, (int)h.thumbTouch);
 		return;
 	}
-	// THE GRIP AS THE DEVICE SENDS IT: the hand's analog grip (what VRealms' own grip reads) and the grip's key
-	// (vk_openxrdevice.cpp: KEY_PAD_LSHOULDER + hand, 445 the right hand = the main hand right-handed, 444 the left;
-	// what RSQ Distance Grab's near.zs reads, rsqdg_keys_main / _off), together, as one press or release. The
-	// device's dominant grip under vr_secondary_button_mappings sends its key as a clean tap's pulse instead; this
-	// posts it at the press.
-	if (!stricmp(verb, "grip"))
+	// THE GRIP: the hand's analog grip, which is what VRealms' hands read (roth_vrpick.cpp ReadInputs). The device's
+	// grip key is not posted: nothing in the Realms reads it.
+	if (!stricmp(verb, "grip") || !stricmp(verb, "trigger"))
 	{
+		const bool trig = !stricmp(verb, "trigger");
 		const int role = argv.argc() >= 4 ? RoleArg(argv[2]) : -1;
-		if (role < 0) { Printf("roth_xrpose grip <main|off> <0..1>\n"); return; }
+		if (role < 0) { Printf("roth_xrpose %s <main|off> <0..1>\n", verb); return; }
 		FVRPoseTestHand h;
-		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose grip: the %s hand has no pose (roth_xrpose hand/point first)\n", roth::RoleName(role)); return; }
-		const float was = h.grip;
-		h.grip = (float)atof(argv[3]);
+		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose %s: the %s hand has no pose (roth_xrpose hand/point first)\n", verb, roth::RoleName(role)); return; }
+		if (trig) { h.trigger = (float)atof(argv[3]); h.triggerTouch = h.trigger > 0.f; }
+		else h.grip = (float)atof(argv[3]);
 		VRPoseTest_SetHand(role, h);
-		const bool down = h.grip >= 0.5f, wasDown = was >= 0.5f;
-		const int key = roth::GrabGlueGripKey(role);
-		// AS THE DEVICE SENDS IT (vk_openxrdevice.cpp): the main (dominant) grip under vr_secondary_button_mappings is the
-		// shift layer while held and sends its key only as a clean tap's one-frame pulse, down and up, at the RELEASE;
-		// every other grip sends its key down at the press and up at the release.
-		const bool tapPulse = role == VR_MAINHAND && vr_secondary_button_mappings;
-		FString said = " (no key: the grip did not cross 0.5)";
-		if (down != wasDown)
-		{
-			event_t ev{};
-			ev.data1 = (int16_t)key;
-			if (!tapPulse)
-			{
-				ev.type = down ? EV_KeyDown : EV_KeyUp;
-				D_PostEvent(&ev);
-				said.Format(", key %d %s posted", key, down ? "down" : "up");
-			}
-			else if (!down)
-			{
-				ev.type = EV_KeyDown; D_PostEvent(&ev);
-				ev.type = EV_KeyUp;   D_PostEvent(&ev);
-				said.Format(", key %d posted as the tap's pulse at the release (down and up: vr_secondary_button_mappings)", key);
-			}
-			else said.Format(", no key at the press (key %d comes as a tap's pulse at the release: vr_secondary_button_mappings)", key);
-		}
-		Printf("roth_xrpose: %s hand grip %.2f%s\n", roth::RoleName(role), h.grip, said.GetChars());
+		Printf("roth_xrpose: %s hand %s %.2f\n", roth::RoleName(role), verb, trig ? h.trigger : h.grip);
 		return;
 	}
 	if (!stricmp(verb, "aim"))
@@ -349,37 +335,39 @@ CCMD(roth_xrpose)
 		Printf("roth_xrpose: %s hand aim yaw %s pitch %s roll %s\n", roth::RoleName(role), argv[3], argv[4], argv[5]);
 		return;
 	}
-	// THE HAND ON A THING: `handat <main|off> item [dx dy dz]` moves the hand (tracking space, its orientation kept) so
-	// that its published position -- the palm RSQ Distance Grab reads (AttackPos / OffhandPos) and the drawn hand
-	// frame's origin -- lands on the middle of the nearest Realms object the grab may take, plus (dx dy dz) map units.
-	// The device's map from the hand's tracking position to that point is affine (vr_posemath.h VRPose_OffsetToWorld:
-	// the origin does not depend on the rotation), so it is solved exactly from four probes through the same
-	// publishing path the playsim calls (VRPoseTest_PublishAim).
+	// THE HAND ON A THING (docs/VR_INTERACTION.md P1: a pickup by touch).
+	//   handat <main|off> item [palm] [dx dy dz]
+	// moves the hand (tracking space, its orientation kept) so that its published position (AttackPos / OffhandPos,
+	// the drawn hand frame's origin) -- or, with `palm`, its DRAWN PALM as last drawn -- lands on the middle of the
+	// nearest Realms object whose use is the original's pickup (roth_runtime.h ObjectIsPickupItem), plus (dx dy dz)
+	// map units. The device's map from the hand's tracking position to that point is affine (vr_posemath.h
+	// VRPose_OffsetToWorld: the origin does not depend on the rotation), so it is solved exactly from four probes
+	// through the same publishing path the playsim calls (VRPoseTest_PublishAim). `palm` adds the drawn palm's offset
+	// from the frame origin, which the rotation does not change: give the hand its pose first, and a tic to be drawn.
 	if (!stricmp(verb, "handat"))
 	{
 		using namespace roth;
 		const int role = argv.argc() >= 4 ? RoleArg(argv[2]) : -1;
 		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
 		FVRPoseTestHand h;
-		if (role < 0 || pmo == nullptr || stricmp(argv[3], "item")) { Printf("roth_xrpose handat <main|off> item [dx dy dz]\n"); return; }
+		if (role < 0 || pmo == nullptr || stricmp(argv[3], "item")) { Printf("roth_xrpose handat <main|off> item [palm] [dx dy dz]\n"); return; }
 		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose handat: the %s hand has no pose (roth_xrpose hand first)\n", RoleName(role)); return; }
-		PClassActor *cls = PClass::FindActor("RealmsTakeable");
-		AActor *best = nullptr;
-		double bestD = 1e18;
-		if (cls != nullptr && pmo->Level != nullptr)
-		{
-			auto it = pmo->Level->GetThinkerIterator<AActor>(cls->TypeName);
-			AActor *mo;
-			while ((mo = it.Next()) != nullptr)
-			{
-				if (mo->flags5 & MF5_NOINTERACTION) continue;   // not offered to the grab
-				const double d = (mo->Pos() - pmo->Pos()).Length();
-				if (d < bestD) { bestD = d; best = mo; }
-			}
-		}
-		if (best == nullptr) { Printf("roth_xrpose handat: no Realms object the grab may take on this map\n"); return; }
+		int a = 4;
+		const bool palm = argv.argc() > a && !stricmp(argv[a], "palm");
+		if (palm) a++;
+		AActor *best = NearestPickupItem(pmo);
+		if (best == nullptr) { Printf("roth_xrpose handat: no Realms object the original's use picks up on this map\n"); return; }
 		DVector3 want = best->PosPlusZ(best->Height * 0.5);
-		if (argv.argc() >= 7) want += DVector3(atof(argv[4]), atof(argv[5]), atof(argv[6]));
+		if (argv.argc() >= a + 3) want += DVector3(atof(argv[a]), atof(argv[a + 1]), atof(argv[a + 2]));
+		DVector3 palmOff(0, 0, 0);
+		if (palm)
+		{
+			DVector3 tip, base, dp;
+			DVector3 o, f, r, u;
+			if (!DrawnPoints(role, tip, base, dp) || !VRHandPose_MapFrame(role, o, f, r, u)) { Printf("roth_xrpose handat palm: no drawn %s hand yet\n", RoleName(role)); return; }
+			palmOff = dp - (role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos);
+			want -= palmOff;
+		}
 		auto publish = [&](const float p[3]) -> DVector3
 		{
 			FVRPoseTestHand t = h;
@@ -397,113 +385,63 @@ CCMD(roth_xrpose)
 			pi[i] += 1.f;
 			col[i] = publish(pi) - b;
 		}
-		// solve [col0 col1 col2] x = want - b (Cramer)
-		const DVector3 r = want - b;
-		auto det3 = [](const DVector3 &a, const DVector3 &c1, const DVector3 &c2) { return a | (c1 ^ c2); };
+		const DVector3 rr = want - b;
+		auto det3 = [](const DVector3 &x, const DVector3 &c1, const DVector3 &c2) { return x | (c1 ^ c2); };
 		const double D = det3(col[0], col[1], col[2]);
 		if (fabs(D) < 1e-9) { publish(p0); Printf("roth_xrpose handat: the device's map is singular here\n"); return; }
-		const double x0 = det3(r, col[1], col[2]) / D, x1 = det3(col[0], r, col[2]) / D, x2 = det3(col[0], col[1], r) / D;
+		const double x0 = det3(rr, col[1], col[2]) / D, x1 = det3(col[0], rr, col[2]) / D, x2 = det3(col[0], col[1], rr) / D;
 		const float pf[3] = { (float)(p0[0] + x0), (float)(p0[1] + x1), (float)(p0[2] + x2) };
 		const DVector3 got = publish(pf);
 		int rs = -1, ri = -1;
 		ObjectForActor(best, rs, ri);
-		float head[3]; float headYaw = 0.f;
-		VRPoseTest_Head(head, headYaw);
-		Printf("roth_xrpose handat: the %s hand on Realms object %d/%d: published at (%.1f %.1f %.1f), wanted (%.1f %.1f %.1f), %.2f units off;"
-			" the hand %.2f %.2f %.2f m from the head (tracking axes)\n", RoleName(role), rs, ri, got.X, got.Y, got.Z, want.X, want.Y, want.Z,
-			(got - want).Length(), pf[0] - head[0], pf[1] - head[1], pf[2] - head[2]);
+		Printf("roth_xrpose handat: the %s hand%s on Realms object %d/%d (a pickup item) at (%.1f %.1f %.1f): published at (%.1f %.1f %.1f)%s,"
+			" %.2f units off\n", RoleName(role), palm ? "'s palm" : "", rs, ri, want.X + palmOff.X, want.Y + palmOff.Y, want.Z + palmOff.Z,
+			got.X, got.Y, got.Z, palm ? FStringf(", the palm %.1f units from it", palmOff.Length()).GetChars() : "",
+			(got - want).Length());
 		return;
 	}
-	if (!stricmp(verb, "aimat") || !stricmp(verb, "aimturn"))
+	// THE FINGER AT A THING (docs/VR_INTERACTION.md P1: a pickup by point).
+	//   pointat <main|off> item | pointat <main|off> <x> <y> <z>
+	// keeps the hand where it is and turns it, in the point pose, so its drawn index finger points at the middle of the
+	// nearest pickup item (as handat) or at a map point: the yaw and pitch of `point`, from the drawn fingertip (the
+	// picker's ray start, VRPickHandRay) to the target, relative to the body's yaw. Give it twice a tic apart to settle
+	// (the fingertip moves a little as the hand turns).
+	if (!stricmp(verb, "pointat"))
 	{
-		// THE AIM THAT THE PUBLISHED FIELDS POINT AT A THING. What a script reads (AttackAngle + 90, AttackPitch,
-		// AttackRoll) is the aim pose through the device's arithmetic (vr_posemath.h VRPose_AimAngles,
-		// VRPose_PublishedAim): published yaw = body yaw + (aim yaw - head yaw); published pitch = aim pitch + 40
-		// (the device's bias) + 2 x vr_weaponRotate; published roll = -aim roll. Inverted here, so
-		//   aimat <main|off> item [roll]       the published aim points at the middle of the nearest Realms object
-		//                                      RSQ Distance Grab may take, wrist rolled `roll` (published; 90 = palm out)
-		//   aimat <main|off> <x> <y> <z> [roll]  at a map point
-		//   aimturn <main|off> <dpitch> <roll>   the last aimat's aim tipped up by dpitch, the wrist at `roll` (a flick
-		//                                      is a big dpitch in one tic; roll 0 turns the palm back)
 		using namespace roth;
-		const int role = argv.argc() >= 3 ? RoleArg(argv[2]) : -1;
+		const int role = argv.argc() >= 4 ? RoleArg(argv[2]) : -1;
 		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
-		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose %s <main|off> ...\n", verb); return; }
-		static double sYaw[2] = { 0, 0 }, sPitch[2] = { 0, 0 };
-		double wantYaw = 0, wantPitch = 0, roll = 90;
-		const bool turn = !stricmp(verb, "aimturn");
-		if (turn)
+		FVRPoseTestHand h;
+		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose pointat <main|off> item | x y z\n"); return; }
+		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose pointat: the %s hand has no pose\n", RoleName(role)); return; }
+		DVector3 at;
+		if (!stricmp(argv[3], "item"))
 		{
-			if (argv.argc() < 5) { Printf("roth_xrpose aimturn <main|off> <dpitch> <roll>\n"); return; }
-			wantYaw = sYaw[role];
-			wantPitch = sPitch[role] + atof(argv[3]);
-			roll = atof(argv[4]);
+			AActor *best = NearestPickupItem(pmo);
+			if (best == nullptr) { Printf("roth_xrpose pointat: no pickup item on this map\n"); return; }
+			at = best->PosPlusZ(best->Height * 0.5);
 		}
-		else
-		{
-			const DVector3 from = role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos;
-			DVector3 at;
-			int ra = 4;
-			if (argv.argc() >= 4 && !stricmp(argv[3], "item"))
-			{
-				PClassActor *cls = PClass::FindActor("RealmsTakeable");
-				AActor *best = nullptr;
-				double bestD = 1e18;
-				if (cls != nullptr && pmo->Level != nullptr)
-				{
-					auto it = pmo->Level->GetThinkerIterator<AActor>(cls->TypeName);
-					AActor *mo;
-					while ((mo = it.Next()) != nullptr)
-					{
-						if (mo->flags5 & MF5_NOINTERACTION) continue;   // not offered to the grab
-						const double d = (mo->Pos() - pmo->Pos()).Length();
-						if (d < bestD) { bestD = d; best = mo; }
-					}
-				}
-				if (best == nullptr) { Printf("roth_xrpose aimat: no Realms object the grab may take on this map\n"); return; }
-				at = best->PosPlusZ(best->Height * 0.5);
-				int rs = -1, ri = -1;
-				ObjectForActor(best, rs, ri);
-				Printf("roth_xrpose aimat: the nearest takeable Realms object is %d/%d at (%.1f %.1f %.1f), %.1f units from the %s hand\n",
-					rs, ri, at.X, at.Y, at.Z, (at - from).Length(), RoleName(role));
-			}
-			else
-			{
-				if (argv.argc() < 6) { Printf("roth_xrpose aimat <main|off> item [roll] | x y z [roll]\n"); return; }
-				at = DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
-				ra = 6;
-			}
-			if (argv.argc() > ra) roll = atof(argv[ra]);
-			const DVector3 d = at - from;
-			wantYaw = atan2(d.Y, d.X) * (180.0 / M_PI);
-			wantPitch = atan2(d.Z, sqrt(d.X * d.X + d.Y * d.Y)) * (180.0 / M_PI);
-		}
-		if (!turn) { sYaw[role] = wantYaw; sPitch[role] = wantPitch; }   // aimturn is always from the last aimat
+		else if (argv.argc() >= 6) at = DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
+		else { Printf("roth_xrpose pointat <main|off> item | x y z\n"); return; }
+		DVector3 s, d;
+		if (!VRPickHandRay(role, s, d)) s = role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos;
+		const DVector3 v = at - s;
+		const double wantYaw = atan2(v.Y, v.X) * (180.0 / M_PI);
+		const double wantPitch = atan2(v.Z, sqrt(v.X * v.X + v.Y * v.Y)) * (180.0 / M_PI);
+		double yaw = wantYaw - r_viewpoint.Angles.Yaw.Degrees();
+		while (yaw > 180.0) yaw -= 360.0;
+		while (yaw < -180.0) yaw += 360.0;
 		float head[3]; float headYaw = 0.f;
 		VRPoseTest_Head(head, headYaw);
-		const double bodyYaw = r_viewpoint.Angles.Yaw.Degrees();
-		const double qYaw = wantYaw - bodyYaw + headYaw;
-		const double qPitch = wantPitch - 40.0 - 2.0 * (double)vr_weaponRotate;
-		float q[4];
-		VRPose_QuatFromYPR(qYaw, qPitch, -roll, q);
-		VRPoseTest_SetAim(role, q);
-		Printf("roth_xrpose: %s hand aim published as yaw %.1f pitch %.1f (up +) roll %.1f\n", RoleName(role), wantYaw, wantPitch, roll);
-		// RSQ Distance Grab's palm gate on these numbers (its reach.zs PalmPose: |roll| within rsqdg_palm_tol of
-		// rsqdg_palm_roll, and pitch ABOVE rsqdg_palm_pitch), with the package's own cvars -- so a run says at once
-		// whether the test's aim can arm the reach. Without RSQ_Accessibility (no Gesture Ease), as here.
-		{
-			FBaseCVar *cr = FindCVar("rsqdg_palm_roll", nullptr), *ct = FindCVar("rsqdg_palm_tol", nullptr), *cp = FindCVar("rsqdg_palm_pitch", nullptr);
-			if (cr != nullptr && ct != nullptr && cp != nullptr)
-			{
-				const double tgt = cr->GetGenericRep(CVAR_Float).Float, tol = ct->GetGenericRep(CVAR_Float).Float;
-				const double minP = cp->GetGenericRep(CVAR_Float).Float;
-				double rl = fmod(fabs(roll), 360.0);
-				if (rl > 180.0) rl = 360.0 - rl;
-				const bool rollOk = fabs(rl - tgt) <= tol, pitchOk = minP <= -180.0 || wantPitch >= minP;
-				Printf("roth_xrpose: RSQ Distance Grab's palm gate here: |roll| %.1f vs %.0f +- %.0f %s, pitch %.1f vs above %.0f %s -> the reach %s\n",
-					rl, tgt, tol, rollOk ? "ok" : "OUT", wantPitch, minP, pitchOk ? "ok" : "TOO LOW", rollOk && pitchOk ? "ARMS" : "does not arm");
-			}
-		}
+		float qy[4], qp[4], t[4];
+		VRPose_QuatFromYPR(headYaw + yaw, 0, 0, qy);
+		VRPose_QuatFromYPR(0, 90.0 + wantPitch, 0, qp);
+		QMul(qy, qp, t);
+		for (int k = 0; k < 4; k++) h.quat[k] = t[k];
+		h.trigger = 0.f; h.triggerTouch = false; h.thumbTouch = true;   // the point pose: the index off the trigger
+		VRPoseTest_SetHand(role, h);
+		Printf("roth_xrpose pointat: the %s hand points from (%.1f %.1f %.1f) at (%.1f %.1f %.1f), %.1f units: yaw %.1f off the body, pitch %.1f\n",
+			RoleName(role), s.X, s.Y, s.Z, at.X, at.Y, at.Z, v.Length(), yaw, wantPitch);
 		return;
 	}
 	if (!stricmp(verb, "log")) { roth::Report(); return; }

@@ -1,3 +1,9 @@
+> **REMOVED (2026-11-23, docs/VR_INTERACTION.md P1).** The RSQ Distance Grab copy (wadsrc/static/filter/vrealms),
+> its glue (roth_grabglue.cpp, realmsgrab.zs), the RS laser copied for it (hw_rslaser.cpp, rs_laser.zs), its test
+> (tools/dgrab_test) and its bridge cfgs are gone from VRealms. Every VR use now goes through the rules entry (L1,
+> roth_vrrules.h); only the pickup's flight survives, as the original's own fly-in aimed at the hand. This folder is
+> kept as the record of what was ported and why.
+
 # RSQ Distance Grab
 ### Doom Arcade VR · turn your palm out, pull the barrel across the room, and throw it back at them
 

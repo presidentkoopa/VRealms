@@ -23,12 +23,8 @@
 //                                                                          secondary click); an item goes
 //                                                                          through give_item_by_dbase_id
 //   GRIP squeezed while pointing at it         Activate(Use)             the same, at range (depth < 600,
-//     (nothing in reach)                                                   planar 268) -- NOT an item the
-//                                                                          original's use picks up
-//                                                                          (ObjectIsPickupItem): at range
-//                                                                          that is RSQ Distance Grab's,
-//                                                                          taken at the hand by the original's
-//                                                                          use (VRPickTakeCaught, 2026-11-16)
+//     (nothing in reach)                                                   z < 268 by D2, roth_vrrules.h); an
+//                                                                          item flies to the hand
 //   presses it with the fingertip (the point   Activate(Use)             the same
 //     pose with the grip held, as before)
 //
@@ -148,7 +144,6 @@
 #include "roth_candles.h"
 #include "roth_gestures.h"
 #include "roth_held.h"
-#include "roth_grabglue.h"
 #include "roth_worldhands.h"
 #include "roth_worldhandslogic.h"
 #include "actor.h"
@@ -854,29 +849,8 @@ void TickHand(int role, AActor *pmo)
 	bool gripEdge = false, trigEdge = false;
 	const bool gripWasClosed = h.gripClosed;
 	ReadButtons(h, gripEdge, trigEdge);
-	// The main grip opened: the release of a press RSQ Distance Grab was handed at the squeeze (roth_grabglue.h).
-	if (gripWasClosed && !h.gripClosed) GrabGlueGripRelease(P.level, role);
 	// A grip closing at the Lamp's bail takes the lamp (roth_held.h, owner Q2): it is not a use.
 	if (gripEdge && HeldGripTaken(role)) gripEdge = false;
-	// THE PACKAGE'S GRIP FIRST (owner 2026-11-16, "map to VRealms grips"; roth_grabglue.h GrabGlueTakesGrip): a hand on
-	// an item RSQ Distance Grab takes (its walk-up grab) or carrying what its palm caught -- that press is the package's,
-	// which eats the grip key and takes the item through the original's pickup (its catch path). VRealms' grip keeps
-	// everything else: doors, switches, levers, wall faces, and every object that is not an offered item.
-	if (gripEdge && GrabGlueTakesGrip(P.level, role))
-	{
-		if (Logging())
-			Printf("[roth_vrpick] %s hand grip: RSQ Distance Grab's grip takes this press (its walk-up grab or its carry) -- not also a use\n",
-				RoleName(role));
-		// The main grip's key comes only at its release under secondary mappings: the package gets the press now.
-		GrabGlueGripPress(P.level, role);
-		gripEdge = false;
-		// ONE ACT PER PRESS covers the fingertip too: a pointing hand whose grip closes has its fingertip press ready
-		// (pressReady), and its tip on the same item would use it this very tic -- before the package's press, sent
-		// as a network event, lands on the next. Owner's PC, 60540638, dgrab_walkup_main_flat: "fingertip press: USE
-		// object at depth 1" took the Book at the squeeze and the package found nothing. Disarmed as a grip that
-		// acted disarms it (re-armed when the tip backs off).
-		h.pokeArmed = false;
-	}
 	// A WEAPON'S GRIP (roth_vrweapons.h): the off hand on the Shotgun's fore-end, the main hand in a body slot.
 	if (gripEdge && VRWeaponsGripTaken(role))
 	{
@@ -986,18 +960,9 @@ void TickHand(int role, AActor *pmo)
 		// THE TALL WICKS (owner, Q13): the flame hand pointing at a wick in reach -- the wick nearest its ray --
 		// and the grip: that wick's flame (CandlesPointGrip, the same route as a flame brought to it).
 		if (!gripActed && h.pointing && CandlesPointGrip(role, h.tip, h.dir)) gripActed = true;
-		// A TAKEABLE ITEM AT RANGE IS RSQ DISTANCE GRAB'S (owner, "far things: Pointer fine", and the lead,
-		// 2026-11-16): the pointer still uses switches, casements and doors beyond reach, but an item the
-		// original's use would pick up (ObjectIsPickupItem) is reached by the grab's palm-out pull and taken at
-		// the hand (VRPickTakeCaught) -- not picked up across the room by a grip.
-		const bool grabsIt = h.pointing && h.havePick && h.pick.kind == Pick::Prop && ObjectIsPickupItem(h.pick.actor);
-		if (!gripActed && grabsIt)
-		{
-			if (Logging())
-				Printf("[roth_vrpick] %s hand grip while pointing: a takeable item at range -- RSQ Distance Grab takes it (palm out, flick), not the pointer\n",
-					RoleName(role));
-		}
-		else if (!gripActed && h.pointing && h.havePick && h.cls.CanUse())
+		// POINTED AT, IN REACH (L1: the body's reach, D2): the use there -- an item the original's use picks up flies
+		// to this hand (docs/VR_INTERACTION.md 1.5).
+		if (!gripActed && h.pointing && h.havePick && h.cls.CanUse())
 		{
 			DoUse(role, h.pick, h.cls, pmo, "grip while pointing");
 			gripActed = true;
@@ -1352,29 +1317,6 @@ bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm)
 	return true;
 }
 
-
-bool VRPickTakeCaught(int role, AActor *item)
-{
-	if (item == nullptr || role < 0 || role > 1) return false;
-	AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
-	if (pmo == nullptr) return false;
-	// The palm the item arrived at (as drawn), else the item itself: the original's cursor on it from there.
-	HandState tmp;
-	const DVector3 at = item->PosPlusZ(item->Height * 0.5);
-	const DVector3 from = FingerRay(role, tmp, pmo) ? tmp.palm : at;
-	Pick p;
-	p.kind = Pick::Prop;
-	p.actor = item;
-	p.hitPos = at;
-	p.dist = (at - from).Length();
-	const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
-	if (!c.CanUse())
-	{
-		Printf("[roth_vrpick] %s hand: distance grab catch -- %s\n", RoleName(role), WhyNotUse(c).GetChars());
-		return false;
-	}
-	return DoUse(role, p, c, pmo, "distance grab catch", true);
-}
 
 double VRPickUnitsPerMetre() { return UPM(); }
 

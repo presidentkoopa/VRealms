@@ -86,8 +86,8 @@ void VRPoseTest_SetAim(int role, const float quat[4]);
 // WHAT THE DEVICE PUBLISHES ON THE PAWN, from the test's poses (vr_posemath.h VRPose_AimAngles,
 // VRPose_PublishedAim, OffsetToWorld's origin for the position): AttackPos / AttackAngle / AttackPitch /
 // AttackRoll / MainHandRoll and the Offhand* five. Called by the playsim (p_user.cpp
-// UpdateCanonicalMainHandPose) after its own canonical writes, so scripts that read those fields -- RSQ
-// Distance Grab -- see the test's hands as they see a headset's. Single player only.
+// UpdateCanonicalMainHandPose) after its own canonical writes, so whatever reads those fields sees the
+// test's hands as it sees a headset's. Single player only.
 void VRPoseTest_PublishAim(AActor *mo);
 
 // The model's seat in that hand frame (vr_handpose_math.h ModelSeat), measured once per model from
