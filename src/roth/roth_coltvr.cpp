@@ -825,30 +825,40 @@ double TurnOffToSeat(AActor *pmo)
 {
 	FVRPoseTestHand h;
 	if (!VRPoseTest_Hand(VR_OFFHAND, h) || !h.valid) return -1;
-	double mainF[16], want[16], cur[16];
+	double mainF[16], inv[16];
 	if (!FrameOf(VR_MAINHAND, mainF)) return -1;
-	Mul4d(mainF, kSupportSeat[SupportSide()], want);
-	auto frameFor = [&](const float q[4], double out[16]) {
+	Inv4(mainF, inv);
+	// MEASURED AS THE LATCH MEASURES IT (PC run zzzzj10: world frames compared as A B^T read 0.00 deg on frames that are not
+	// orthonormal, and the hand was never turned): the off hand's frame in the shooting hand's frame, against the seat
+	auto relFor = [&](const float q[4], double rel[16]) {
 		FVRPoseTestHand t = h;
 		for (int k = 0; k < 4; k++) t.quat[k] = q[k];
 		VRPoseTest_SetHand(VR_OFFHAND, t);
 		VRPoseTest_PublishAim(pmo);
-		return FrameOf(VR_OFFHAND, out);
+		double off[16];
+		if (!FrameOf(VR_OFFHAND, off)) return false;
+		Mul4d(inv, off, rel);
+		return true;
 	};
-	float q[4] = { h.quat[0], h.quat[1], h.quat[2], h.quat[3] };
-	double e[3] = { 0, 0, 0 };
-	auto det = [](const double m[3][3]) { return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]); };
-	for (int it = 0; it < 8; it++)
 	{
-		if (!frameFor(q, cur)) return -1;
-		RotErr(want, cur, e);
+		auto len = [](const double *m, int c) { return sqrt(m[c * 4] * m[c * 4] + m[c * 4 + 1] * m[c * 4 + 1] + m[c * 4 + 2] * m[c * 4 + 2]); };
+		Printf("roth_colttest: the main hand's frame, column lengths %.4f %.4f %.4f (1 = metres, orthonormal)\n", len(mainF, 0), len(mainF, 1), len(mainF, 2));
+	}
+	const double *seat = kSupportSeat[SupportSide()];
+	float q[4] = { h.quat[0], h.quat[1], h.quat[2], h.quat[3] };
+	double cur[16], e[3] = { 0, 0, 0 };
+	auto det = [](const double m[3][3]) { return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]); };
+	for (int it = 0; it < 10; it++)
+	{
+		if (!relFor(q, cur)) return -1;
+		RotErr(seat, cur, e);
 		double J[3][3];
 		for (int i = 0; i < 3; i++)
 		{
 			const double dv[3] = { i == 0 ? 0.01 : 0.0, i == 1 ? 0.01 : 0.0, i == 2 ? 0.01 : 0.0 };
 			float dq[4], qi[4]; QFromVec(dv, dq); QMul(q, dq, qi);
 			double ci[16], d[3];
-			if (!frameFor(qi, ci)) return -1;
+			if (!relFor(qi, ci)) return -1;
 			RotErr(ci, cur, d);
 			for (int r = 0; r < 3; r++) J[r][i] = d[r] / 0.01;
 		}
@@ -859,9 +869,8 @@ double TurnOffToSeat(AActor *pmo)
 		float dq[4], qn[4]; QFromVec(x, dq); QMul(q, dq, qn);
 		memcpy(q, qn, sizeof(q));
 	}
-	frameFor(q, cur);
-	RotErr(want, cur, e);
-	return sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]) * 180.0 / M_PI;
+	relFor(q, cur);
+	return SupportPlaceOf(seat, cur).deg;
 }
 } }
 
