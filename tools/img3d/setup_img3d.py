@@ -107,7 +107,16 @@ def find_python():
     return None, None
 
 
-def vcvars_env():
+def msvc_v143(vs):
+    """The newest VS 2022 toolset (MSVC 14.3x / 14.4x, v143) inside a Visual Studio install, or None. CUDA 12.4's nvcc
+    accepts only these; Visual Studio 2026's own 14.5x is refused, and forced it crashes cudafe++."""
+    root = os.path.join(vs, "VC", "Tools", "MSVC")
+    vers = sorted((d for d in (os.listdir(root) if os.path.isdir(root) else []) if d.startswith(("14.3", "14.4"))),
+                  key=lambda d: [int(x) for x in d.split(".") if x.isdigit()])
+    return vers[-1] if vers else None
+
+
+def vcvars_env(toolset=None):
     vswhere = os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Microsoft Visual Studio", "Installer", "vswhere.exe")
     if not os.path.exists(vswhere):
         return None
@@ -116,7 +125,13 @@ def vcvars_env():
     bat = os.path.join(vs, "VC", "Auxiliary", "Build", "vcvars64.bat")
     if not vs or not os.path.exists(bat):
         return None
-    out = subprocess.run('"%s" >nul 2>&1 && set' % bat, capture_output=True, text=True, shell=True).stdout
+    if toolset == "v143":
+        ver = msvc_v143(vs)
+        if ver is None:
+            return None
+        out = subprocess.run('"%s" -vcvars_ver=%s >nul 2>&1 && set' % (bat, ver), capture_output=True, text=True, shell=True).stdout
+    else:
+        out = subprocess.run('"%s" >nul 2>&1 && set' % bat, capture_output=True, text=True, shell=True).stdout
     env = {}
     for line in out.splitlines():
         if "=" in line:
@@ -238,45 +253,58 @@ def main():
     run([py, "-c", "import torch, transformers, diffusers; from transformers import Dinov2Model; "
                    "print('torch', torch.__version__, 'transformers', transformers.__version__, 'diffusers', diffusers.__version__)"])
 
-    step(7, "the texture stage's native modules (custom_rasterizer, mesh_processor)")
-    # PREBUILT FIRST (2026-11-23). CUDA 12.4's nvcc cannot compile with Visual Studio 2026: its version check refuses
-    # it, and with -allow-unsupported-compiler its front end crashes (setup_log.txt: "'cudafe++' died with status
-    # 0xC0000409"). torch is 2.5.1+cu124, and an extension must match it. kijai's ComfyUI-Hunyuan3DWrapper ships both
-    # modules prebuilt for Windows, Python 3.12, with torch built on cu124 ("custom_rasterizer-0.1-cp312"; its readme:
-    # compiled with cu126, works with torch built on 124): the wheel, and mesh_processor's .pyd beside
-    # hy3dgen's own mesh_processor.py (an extension module wins over the .py in the same folder). Same Hunyuan3D-2
-    # community licence, already accepted in step 1. Pinned commit; compiling is the fallback.
+    step(7, "the texture stage's native modules (custom_rasterizer for this GPU, mesh_processor)")
+    # custom_rasterizer is CUDA code and must contain this GPU's kernels. The only prebuilt Windows copy (kijai's
+    # ComfyUI-Hunyuan3DWrapper) holds sm_89 alone (RTX 40); on an RTX 30 (sm_86) it fails with "no kernel image is
+    # available" (setup_log.txt 2026-11-23). So it is compiled here, for this GPU only, with CUDA 12.4's nvcc and
+    # Visual Studio 2022's toolset (v143) -- CUDA 12.4 refuses Visual Studio 2026's own 14.5x. mesh_processor is plain
+    # C++ (no GPU code): kijai's prebuilt .pyd is used, beside hy3dgen's own mesh_processor.py.
+    cap = subprocess.run([py, "-c", "import torch;print('%d.%d' % torch.cuda.get_device_capability(0))"],
+                         capture_output=True, text=True).stdout.strip()
+    print("  this GPU: compute capability " + cap)
+    stamp = os.path.join(C.MODELS_DIR, "custom_rasterizer_built_for.txt")
+    built_for = open(stamp).read().strip() if os.path.exists(stamp) else ""
     check = ("import torch, custom_rasterizer, custom_rasterizer_kernel; "
              "from hy3dgen.texgen.differentiable_renderer import mesh_processor as m; "
              "print('native modules:', custom_rasterizer_kernel.__file__, m.__file__)")
-    # The build environment (also the self-test's, step 11): the compiler, CUDA, and nvcc's override for the fallback.
-    benv = model_env(vc)
-    benv["CUDA_HOME"] = cuda_home
-    benv["CUDA_PATH"] = cuda_home
-    benv["DISTUTILS_USE_SDK"] = "1"
-    benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
-    benv["NVCC_APPEND_FLAGS"] = (benv.get("NVCC_APPEND_FLAGS", "") +
-                                 " -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH").strip()
-    if subprocess.run([py, "-c", check], capture_output=True, env=model_env()).returncode == 0:
-        print("  both already in place")
+    wrap = os.path.join(C.MODELS_DIR, "ComfyUI-Hunyuan3DWrapper")
+    if not os.path.exists(os.path.join(wrap, ".git")):
+        run(["git", "clone", "--depth", "1", KIJAI_GIT, wrap])
+    have = subprocess.run(["git", "-C", wrap, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    if have != KIJAI_COMMIT:
+        run(["git", "-C", wrap, "fetch", "--depth", "1", "origin", KIJAI_COMMIT])
+        run(["git", "-C", wrap, "checkout", "--detach", KIJAI_COMMIT])
+    pyd = "mesh_processor.cp312-win_amd64.pyd"
+    dst = os.path.join(HY_CODE, "hy3dgen", "texgen", "differentiable_renderer", pyd)
+    if not os.path.exists(dst):
+        shutil.copy2(os.path.join(wrap, "hy3dgen", "texgen", "differentiable_renderer", pyd), dst)
+    if built_for == cap and subprocess.run([py, "-c", check], capture_output=True, env=model_env()).returncode == 0:
+        print("  custom_rasterizer already built for " + cap)
     else:
-        wrap = os.path.join(C.MODELS_DIR, "ComfyUI-Hunyuan3DWrapper")
-        if not os.path.exists(os.path.join(wrap, ".git")):
-            run(["git", "clone", "--depth", "1", KIJAI_GIT, wrap])
-        have = subprocess.run(["git", "-C", wrap, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        if have != KIJAI_COMMIT:
-            run(["git", "-C", wrap, "fetch", "--depth", "1", "origin", KIJAI_COMMIT])
-            run(["git", "-C", wrap, "checkout", "--detach", KIJAI_COMMIT])
-        run([py, "-m", "pip", "install", "--no-deps", "--force-reinstall",
-             os.path.join(wrap, "wheels", "custom_rasterizer-0.1-cp312-cp312-win_amd64.whl")])
-        pyd = "mesh_processor.cp312-win_amd64.pyd"
-        shutil.copy2(os.path.join(wrap, "hy3dgen", "texgen", "differentiable_renderer", pyd),
-                     os.path.join(HY_CODE, "hy3dgen", "texgen", "differentiable_renderer", pyd))
-        if run([py, "-c", check], env=model_env(), check=False) != 0:
-            print("  the prebuilt modules did not load; compiling them instead", flush=True)
-            for sub in ("custom_rasterizer", "differentiable_renderer"):
-                run([py, "setup.py", "install"], env=benv, cwd=os.path.join(HY_CODE, "hy3dgen", "texgen", sub))
-            run([py, "-c", check], env=benv)
+        vc143 = vcvars_env("v143")
+        if vc143 is None:
+            die("Visual Studio 2022's compiler (v143) is needed to build the texture rasterizer for this GPU, and it is\n"
+                "  not installed. CUDA 12.4 refuses Visual Studio 2026's own compiler. Add it to your Visual Studio:\n"
+                "    1. Start menu -> 'Visual Studio Installer'\n"
+                "    2. on 'Visual Studio Community 2026' click 'Modify'\n"
+                "    3. the 'Individual components' tab -> search 'v143'\n"
+                "    4. tick 'MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)' -> 'Modify' (about 2 GB on C:)\n"
+                "  then run this setup again. It goes on from here.")
+        benv = model_env(vc143)
+        benv["CUDA_HOME"] = cuda_home
+        benv["CUDA_PATH"] = cuda_home
+        benv["DISTUTILS_USE_SDK"] = "1"
+        benv["TORCH_CUDA_ARCH_LIST"] = cap
+        benv["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + benv.get("PATH", "")
+        print("  building with " + (shutil.which("cl", path=benv.get("PATH", "")) or "cl"), flush=True)
+        run([py, "-m", "pip", "uninstall", "-y", "custom_rasterizer"], check=False)
+        src = os.path.join(HY_CODE, "hy3dgen", "texgen", "custom_rasterizer")
+        shutil.rmtree(os.path.join(src, "build"), ignore_errors=True)
+        run([py, "setup.py", "install"], env=benv, cwd=src)
+        run([py, "-c", check], env=model_env())
+        with open(stamp, "w") as f:
+            f.write(cap + "\n")
+    benv = model_env(vc)   # the self-test's environment (step 11)
 
     step(8, "the upscaler (Real-ESRGAN x4plus through spandrel)")
     run([py, "-m", "pip", "install", "spandrel", "pillow", "numpy"])
