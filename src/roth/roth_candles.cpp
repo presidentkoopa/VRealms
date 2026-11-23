@@ -413,8 +413,8 @@ void CandlesTick(FLevelLocals *level)
 // it", for seated and shorter players). The FLAME is whatever CandlesTick takes for one now (FlameHand: the hand
 // holding the original's right-hand item when the candle's chain tests that item -- the Matchbox -- or any hand
 // when it tests none); the real match is another lane's, and slots in there. The wick is the one nearest the
-// pointing ray within kPointWick of it, in reach by the original's own use band (z < 268 along the ray's yaw,
-// PickPlanarZ). Then the same route as a flame brought to it: an unlit candle -> the original's use with that wick
+// pointing ray within kPointWick of it, in reach by the original's own use band (z < 268 by L1's reach, D2:
+// the horizontal distance from the player). Then the same route as a flame brought to it: an unlit candle -> the original's use with that wick
 // as the first (VRPickUseObject, g_forceWick); a candle being lit -> that wick lights (WickLighting::Flames).
 //==========================================================================
 
@@ -469,10 +469,10 @@ bool CandlesPointGrip(int role, const DVector3 &tip, const DVector3 &dir)
 			if (t <= 0) continue;
 			const double perp = (v - dir * t).Length();
 			if (perp > kPointWick * upm || t >= bestT) continue;
-			// IN REACH: the original's use range, the reach every hand use has (CursorClass::CanUse: depth 2z + 64 < 0x258,
-			// z the planar distance from the player along the ray's yaw, under 268 units)
-			const double z = PickPlanarZ(pmo, W, dir);
-			if (PickDepthOfZ(z) >= 0x258) { if (farC == nullptr) { farC = &c; farK = k; farZ = z; } continue; }
+			// IN REACH: the original's use range, the reach every hand use has (L1, roth_vrrules.h D2: depth 2z + 64 < 0x258,
+			// z the horizontal distance from the player's position to the wick, under 268 units)
+			const double z = rules::ReachZ(pmo->X(), pmo->Y(), W.X, W.Y);
+			if (rules::DepthOfZ(z) >= rules::kUseDepth) { if (farC == nullptr) { farC = &c; farK = k; farZ = z; } continue; }
 			best = &c; bestMo = mo; bestK = k; bestT = t; bestPerp = perp; bestW = W; bestZ = z;
 		}
 	}

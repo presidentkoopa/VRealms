@@ -133,6 +133,8 @@
 //
 
 #include "roth_vrpick.h"
+#include "roth_dbase100.h"   // roth_l1diff: the item an object is
+#include "roth_raw.h"        // roth_l1diff: the object record
 #include "roth_vrweapons.h"
 #include "roth_runtime.h"
 #include "roth_interface.h"
@@ -504,17 +506,54 @@ bool FingerRay(int role, HandState &h, AActor *pmo)
 	return h.haveRay;
 }
 
-// The pick record's depth for a pick made along `dir` (roth_runtime.h).
-double DepthOf(AActor *pmo, const Pick &p, const DVector3 &dir) { return PickDepthOfZ(PickPlanarZ(pmo, p.hitPos, dir)); }
+// L1's REACH (roth_vrrules.h, D2): the pick record's depth for `p`, from the horizontal distance between the
+// player's position and the hit point -- the body's reach, whichever hand and whichever way it points.
+double BodyDepth(AActor *pmo, const Pick &p)
+{
+	return pmo != nullptr ? rules::BodyDepth(pmo->X(), pmo->Y(), p.hitPos.X, p.hitPos.Y) : 0.0;
+}
 
 //--------------------------------------------------------------------------
 // Acting
 //--------------------------------------------------------------------------
 
-void Haptic(int role, double amp, double ms)
+// THE HAND FEELS IT (docs/VR_INTERACTION.md 4b), through the engine's one live haptic call (VR_ScriptHaptic ->
+// the OpenXR haptic output). With no headset -- the controller-pose test, the flat test -- nothing is sent and a line
+// says what would have been, so a flat run shows the feedback.
+void Haptic(int role, double amp, double ms, const char *why = nullptr)
 {
-	if (P.test || !HeadsetOn()) return;
+	if (role < 0 || role > 1) return;
+	if (P.test || VRPoseTest_Active())
+	{
+		if (why != nullptr) Printf("[roth_vrpick] %s hand haptic %.2f for %.0f ms (%s; no headset: not sent)\n", RoleName(role), amp, ms, why);
+		return;
+	}
+	if (!HeadsetOn()) return;
 	VR_ScriptHaptic(role, amp, ms);
+}
+
+// THE FEEDBACK TABLE'S PULSES (docs/VR_INTERACTION.md 4b), one place for their strengths.
+constexpr double kTickAmp = 0.12, kTickMs = 12;       // the hand touches something usable: a light tick
+constexpr double kUseAmp = 0.45, kUseMs = 35;         // a squeeze uses it: a firm pulse
+constexpr double kRefuseAmp = 0.30, kRefuseMs = 12;   // a squeeze refused: a double buzz, the second 3 tics on
+constexpr int    kRefuseGapTics = 3;
+int gSecondBuzz[2] = { -1, -1 };                      // the refusal's second buzz, at this maptime
+
+void Refused(int role, const char *how)
+{
+	if (role < 0 || role > 1) return;
+	Haptic(role, kRefuseAmp, kRefuseMs, FStringf("refused: %s, the first buzz", how ? how : "a use").GetChars());
+	gSecondBuzz[role] = P.level != nullptr ? P.level->maptime + kRefuseGapTics : -1;
+}
+
+void SecondBuzzes()
+{
+	for (int role = 0; role < 2; role++)
+		if (gSecondBuzz[role] >= 0 && P.level != nullptr && P.level->maptime >= gSecondBuzz[role])
+		{
+			gSecondBuzz[role] = -1;
+			Haptic(role, kRefuseAmp, kRefuseMs, "refused, the second buzz");
+		}
 }
 
 // The right-hand item's id (sign-extended, as the hands read it), 0 for none.
@@ -533,7 +572,7 @@ int RightHandItem(const Inventory *inv)
 // unchanged.
 bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const char *how, bool inReach = false)
 {
-	if (!c.CanUse()) { ExplainSurfaceBox(p); return false; }
+	if (!c.CanUse()) { ExplainSurfaceBox(p); Refused(role, how); return false; }
 	const bool itemHand = VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT;
 	Inventory *inv = InterfaceInventory();
 	const int before = RightHandItem(inv);
@@ -560,7 +599,8 @@ bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const cha
 		acted ? "acted" : "nothing happened");
 	if (during != before || now != before || after != HandUseAfter::ItemHand)
 		Printf("[roth_vrpick]   the right hand: %d before, %d after the use, %d now (%s)\n", before, during, now, HandUseAfterName(after));
-	Haptic(role, acted ? 0.45 : 0.15, acted ? 35 : 12);
+	if (acted) Haptic(role, kUseAmp, kUseMs, FStringf("a use acted: %s", how).GetChars());
+	else Refused(role, how);
 	return acted;
 }
 
@@ -570,7 +610,7 @@ bool DoExamine(int role, const Pick &p, const CursorClass &c, AActor *pmo, const
 	const bool acted = ExaminePick(p, pmo);
 	Printf("[roth_vrpick] %s hand %s: EXAMINE %s at depth %.0f (cursor type %d shape 0x%x) -> %s\n", RoleName(role), how,
 		PickKindName(p), c.depth, (int)c.type, (unsigned)c.shape, acted ? "examined" : "nothing happened");
-	Haptic(role, acted ? 0.35 : 0.12, acted ? 30 : 12);
+	Haptic(role, acted ? 0.35 : 0.12, acted ? 30 : 12, acted ? "an examine acted" : "an examine did nothing");
 	return acted;
 }
 
@@ -587,7 +627,7 @@ bool DiscPick(int role, AActor *pmo, Pick &p, CursorClass &c, double radiusM, bo
 	if (!WorldHandsContactDisc(p, radiusM, use, d)) return false;
 	DVector3 dir = d.hitPos - from;
 	if (dir.Length() < 1e-6) dir = d.hitPos - pmo->Pos();
-	const CursorClass dc = ClassifyPick(d, pmo, DepthOf(pmo, d, dir));
+	const CursorClass dc = ClassifyPick(d, pmo, BodyDepth(pmo, d));
 	if (use ? !dc.CanUse() : !dc.CanExamine()) return false;
 	Printf("[roth_vrpick] %s hand: the contact's disc (%.0f mm) finds a record %.1f units from the point, on %s -- the click goes there\n",
 		RoleName(role), radiusM * 1000.0, (d.hitPos - p.hitPos).Length(), PickKindName(d));
@@ -644,7 +684,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 		p.actor = n.second;
 		p.hitPos = n.second->PosPlusZ(n.second->Height * 0.5);
 		p.dist = n.first;
-		const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, p.hitPos - h.palm));
+		const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
 		if (Logging())
 			Printf("[roth_vrpick]   object %.1f units from the palm: cursor type %d shape 0x%x -> %s\n",
 				n.first, (int)c.type, (unsigned)c.shape, why(c).GetChars());
@@ -666,10 +706,10 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	Pick rayPick;
 	CursorClass rayCls;
 	bool haveRay = false;
-	if (PickFrom(pmo, rayFrom, h.handFwd, back + kGrabReach * upm, rayPick))
+	if (RulesPick(rayFrom, h.handFwd, rayPick, back + kGrabReach * upm))
 	{
 		rayPick.dist -= back;   // from the palm; negative: just behind it
-		rayCls = ClassifyPick(rayPick, pmo, DepthOf(pmo, rayPick, h.handFwd));
+		rayCls = ClassifyPick(rayPick, pmo, BodyDepth(pmo, rayPick));
 		if (!can(rayCls)) DiscPick(role, pmo, rayPick, rayCls, wh::kPalmDiscM, use, h.palm);
 		haveRay = can(rayCls);
 		if (Logging())
@@ -690,7 +730,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 	bool haveTouch = false;
 	if (PickTouchSurface(pmo, h.palm, kTouchRadius * upm, touchPick))
 	{
-		touchCls = ClassifyPick(touchPick, pmo, DepthOf(pmo, touchPick, touchPick.hitPos - h.palm));
+		touchCls = ClassifyPick(touchPick, pmo, BodyDepth(pmo, touchPick));
 		if (!can(touchCls)) DiscPick(role, pmo, touchPick, touchCls, wh::kPalmDiscM, use, h.palm);
 		haveTouch = can(touchCls);
 		if (Logging())
@@ -713,7 +753,7 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use)
 		const double ps = P.level != nullptr && P.level->pixelstretch > 0.1 ? P.level->pixelstretch : 1.2;
 		if (WorldHandsFlatUnder(h.palm, r / ps, 0.02 * upm / ps, flat))
 		{
-			CursorClass fc = ClassifyPick(flat, pmo, DepthOf(pmo, flat, flat.hitPos - h.palm));
+			CursorClass fc = ClassifyPick(flat, pmo, BodyDepth(pmo, flat));
 			if (!can(fc)) DiscPick(role, pmo, flat, fc, wh::kPalmDiscM, use, h.palm);
 			if (Logging())
 				Printf("[roth_vrpick]   the flat under the palm: %s at (%.1f %.1f %.1f): cursor type %d shape 0x%x -> %s\n", PickKindName(flat), flat.hitPos.X,
@@ -884,8 +924,8 @@ void TickHand(int role, AActor *pmo)
 	const bool hadPick = h.havePick;
 	if (h.pointing || h.pressReady)
 	{
-		h.havePick = PickFrom(pmo, h.tip, h.dir, PickTraceRange(h.dir), h.pick);
-		h.cls = h.havePick ? ClassifyPick(h.pick, pmo, DepthOf(pmo, h.pick, h.dir)) : CursorClass{};
+		h.havePick = RulesPick(h.tip, h.dir, h.pick, PickTraceRange(h.dir));
+		h.cls = h.havePick ? ClassifyPick(h.pick, pmo, BodyDepth(pmo, h.pick)) : CursorClass{};
 	}
 	else
 	{
@@ -987,11 +1027,11 @@ void TickHand(int role, AActor *pmo)
 			Pick p;
 			bool have = false;
 			DVector3 along = h.dir;
-			if (h.aimHeld && h.aimHave) { have = PickFrom(pmo, h.aimTip, h.aimDir, PickTraceRange(h.aimDir), p); along = h.aimDir; }
+			if (h.aimHeld && h.aimHave) { have = RulesPick(h.aimTip, h.aimDir, p, PickTraceRange(h.aimDir)); along = h.aimDir; }
 			else if (h.pointing && h.havePick) { p = h.pick; have = true; }
 			if (have)
 			{
-				const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, along));
+				const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
 				if (c.CanExamine()) DoExamine(role, p, c, pmo, "trigger");
 				else
 				{
@@ -1029,7 +1069,7 @@ void TickHand(int role, AActor *pmo)
 			&& ((before.hitPos - h.tip) | h.lastDir) <= kPokeIn * upm)
 		{
 			h.pokeArmed = false;
-			CursorClass c = ClassifyPick(before, pmo, DepthOf(pmo, before, h.lastDir));
+			CursorClass c = ClassifyPick(before, pmo, BodyDepth(pmo, before));
 			Pick tp = before;
 			DiscPick(role, pmo, tp, c, wh::kTipDiscM, true, h.tip);   // Q21: the fingertip's disc
 			DoUse(role, tp, c, pmo, "fingertip press (through)");
@@ -1312,29 +1352,6 @@ bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm)
 	return true;
 }
 
-bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
-{
-	if (target == nullptr || P.level == nullptr) return false;
-	player_t *player = P.level->GetConsolePlayer();
-	AActor *pmo = player != nullptr ? player->mo : nullptr;
-	if (pmo == nullptr) return false;
-	DVector3 tip, palm;
-	if (!VRPickFlamePoints(role, tip, palm)) return false;
-	Pick p;
-	p.kind = Pick::Prop;
-	p.actor = target;
-	p.hitPos = at;
-	p.dist = (at - tip).Length();
-	const CursorClass c = ClassifyPick(p, pmo, DepthOf(pmo, p, at - tip));
-	if (!c.CanUse())
-	{
-		Printf("[roth_vrpick] %s hand: a flame at a wick -- %s\n", RoleName(role), WhyNotUse(c).GetChars());
-		return false;
-	}
-	return DoUse(role, p, c, pmo, "a flame at a wick", true);
-}
-
-static CursorClass ClassifyFrom(AActor *pmo, const Pick &p, const DVector3 &from);
 
 bool VRPickTakeCaught(int role, AActor *item)
 {
@@ -1350,7 +1367,7 @@ bool VRPickTakeCaught(int role, AActor *item)
 	p.actor = item;
 	p.hitPos = at;
 	p.dist = (at - from).Length();
-	const CursorClass c = ClassifyFrom(pmo, p, from);
+	const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
 	if (!c.CanUse())
 	{
 		Printf("[roth_vrpick] %s hand: distance grab catch -- %s\n", RoleName(role), WhyNotUse(c).GetChars());
@@ -1401,52 +1418,78 @@ bool VRPickHandRay(int role, DVector3 &start, DVector3 &dir, bool *fromFinger)
 	return true;
 }
 
-// The cursor the original would show for `p` from where the hand is (its depth from the player along the
-// hand's line to it), as every hand click classifies (DepthOf).
-static CursorClass ClassifyFrom(AActor *pmo, const Pick &p, const DVector3 &from)
+//--------------------------------------------------------------------------
+// L1, THE RULES ENTRY (roth_vrrules.h). Every VR interaction ends here.
+//--------------------------------------------------------------------------
+
+static AActor *ConsolePawn()
 {
-	DVector3 d = p.hitPos - from;
-	if (d.Length() < 1e-6) d = p.hitPos - pmo->Pos();
-	return ClassifyPick(p, pmo, DepthOf(pmo, p, d));
+	if (P.level != nullptr)
+	{
+		player_t *player = P.level->GetConsolePlayer();
+		if (player != nullptr) return player->mo;
+	}
+	return (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
 }
 
-int VRPickCursorType(int role, const Pick &p, const DVector3 &from)
+bool RulesPick(const DVector3 &origin, const DVector3 &dir, Pick &out, double range)
 {
-	if (P.level == nullptr || role < 0 || role > 1) return 1;
-	player_t *player = P.level->GetConsolePlayer();
-	AActor *pmo = player != nullptr ? player->mo : nullptr;
-	if (pmo == nullptr) return 1;
-	return ClassifyFrom(pmo, p, from).type;
-}
-
-bool VRPickUseAt(int role, const Pick &p, const DVector3 &from, const char *how)
-{
-	if (P.level == nullptr || role < 0 || role > 1) return false;
-	player_t *player = P.level->GetConsolePlayer();
-	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	AActor *pmo = ConsolePawn();
+	out = Pick{};
 	if (pmo == nullptr) return false;
-	const CursorClass c = ClassifyFrom(pmo, p, from);
+	return PickFrom(pmo, origin, dir, range > 0 ? range : PickTraceRange(dir), out);
+}
+
+CursorClass RulesClassify(const Pick &p)
+{
+	AActor *pmo = ConsolePawn();
+	if (pmo == nullptr) return CursorClass{};
+	return ClassifyPick(p, pmo, BodyDepth(pmo, p));
+}
+
+rules::Class RulesClassOf(const CursorClass &c) { return rules::ClassOf(c.type, c.shape, c.depth); }
+
+bool RulesUse(int role, const Pick &p, const char *how)
+{
+	if (role < 0 || role > 1) return false;
+	AActor *pmo = ConsolePawn();
+	if (pmo == nullptr) return false;
+	const CursorClass c = RulesClassify(p);
 	if (!c.CanUse())
 	{
 		Printf("[roth_vrpick] %s hand %s on %s: %s\n", RoleName(role), how, PickKindName(p), WhyNotUse(c).GetChars());
+		ExplainSurfaceBox(p);
+		Refused(role, how);
 		return false;
 	}
 	return DoUse(role, p, c, pmo, how, true);
 }
 
-bool VRPickExamineAt(int role, const Pick &p, const DVector3 &from, const char *how)
+bool RulesExamine(int role, const Pick &p, const char *how)
 {
-	if (P.level == nullptr || role < 0 || role > 1) return false;
-	player_t *player = P.level->GetConsolePlayer();
-	AActor *pmo = player != nullptr ? player->mo : nullptr;
+	if (role < 0 || role > 1) return false;
+	AActor *pmo = ConsolePawn();
 	if (pmo == nullptr) return false;
-	const CursorClass c = ClassifyFrom(pmo, p, from);
+	const CursorClass c = RulesClassify(p);
 	if (!c.CanExamine())
 	{
 		Printf("[roth_vrpick] %s hand %s on %s: %s\n", RoleName(role), how, PickKindName(p), WhyNotExamine(c).GetChars());
 		return false;
 	}
 	return DoExamine(role, p, c, pmo, how);
+}
+
+bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
+{
+	if (target == nullptr) return false;
+	DVector3 tip, palm;
+	if (!VRPickFlamePoints(role, tip, palm)) return false;
+	Pick p;
+	p.kind = Pick::Prop;
+	p.actor = target;
+	p.hitPos = at;
+	p.dist = (at - tip).Length();
+	return RulesUse(role, p, "a flame at a wick");
 }
 
 bool VRPickTesting() { return P.test; }
@@ -1514,6 +1557,7 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		}
 	}
 	const uint64_t t0 = I_nsTime();
+	SecondBuzzes();
 
 	if (panel != P.panelWhich)
 	{
@@ -1896,4 +1940,83 @@ CCMD(roth_vrpicktest)
 		return;
 	}
 	Printf("roth_vrpicktest: unknown '%s'\n", argv[1]);
+}
+
+//===========================================================================
+//
+// roth_l1diff <oracle log> <out file> -- L1 AGAINST THE ORIGINAL (docs/VR_INTERACTION.md 6.1). Test-only, inert until
+// typed. Reads the original's eye rays from a rangeprobe log (tools/userange_test/rangeprobe.c: "PK label px py pz pa
+// pitch dx dy ..." -- the player's pose and the cursor's offset from the view centre) and puts each, at pitch 0, through
+// L1: the player stood at (px, py), the ray from the original's eye (pz + 144) through that pixel of the original's
+// measured camera (REMAROTH_MEASURED.md 1: FX 309.77, FY 355.06, centre 320.48, 240.54; angle 512 a turn, counter-
+// clockwise from +Y), RulesPick, the record (PickRecord), the class by D2 AND by the original's own measure (z along
+// the view yaw), and what a use and an examine there would reach (read only: the record each dispatcher matches, an
+// object's pickup). One "L1" line each; tools/userange_test/userange.py l1diff compares them with the original's.
+//
+//===========================================================================
+
+CCMD(roth_l1diff)
+{
+	using namespace roth;
+	if (argv.argc() < 3) { Printf("usage: roth_l1diff <rangeprobe log> <out file>\n"); return; }
+	AActor *pmo = players[consoleplayer].mo;
+	if (pmo == nullptr || pmo->Level == nullptr) { Printf("roth_l1diff: no level\n"); return; }
+	FILE *in = fopen(argv[1], "r");
+	if (in == nullptr) { Printf("roth_l1diff: cannot read %s\n", argv[1]); return; }
+	FILE *out = fopen(argv[2], "w");
+	const DVector3 home = pmo->Pos();
+	const DAngle homeYaw = pmo->Angles.Yaw;
+	constexpr double FX = 309.77, FY = 355.06, X0 = 320.48, Y0 = 240.54, kEye = 144.0;
+	char line[512];
+	int n = 0, skipped = 0;
+	while (fgets(line, sizeof line, in))
+	{
+		if (strncmp(line, "PK ", 3) != 0) continue;
+		char label[64];
+		int px, py, pz, pa, pitch, dx, dy;
+		if (sscanf(line + 3, "%63s %d %d %d %d %d %d %d", label, &px, &py, &pz, &pa, &pitch, &dx, &dy) != 8) continue;
+		if (pitch != 0) { skipped++; continue; }
+		const double t = pa * (2.0 * M_PI / 512.0);
+		const DVector3 fwd(-sin(t), cos(t), 0.0), right(cos(t), sin(t), 0.0), up(0, 0, 1);
+		const double sx = (320 + dx + 0.5 - X0) / FX, sy = (240 + dy + 0.5 - Y0) / FY;
+		DVector3 dir = fwd + right * sx - up * sy;
+		dir /= dir.Length();
+		pmo->SetOrigin(DVector3(px, py, pz), false);
+		const DVector3 eye(px, py, pz + kEye);
+		Pick p;
+		const bool hit = PickFrom(pmo, eye, dir, 16384.0, p);
+		rules::Record r;
+		if (hit) PickRecord(p, r);
+		const CursorClass c2 = hit ? ClassifyPick(p, pmo, rules::BodyDepth(px, py, p.hitPos.X, p.hitPos.Y)) : CursorClass{};
+		const double zYaw = hit ? (p.hitPos.X - px) * fwd.X + (p.hitPos.Y - py) * fwd.Y : 0.0;
+		const CursorClass cy = hit ? ClassifyPick(p, pmo, rules::DepthOfZ(zYaw)) : CursorClass{};
+		uint16_t ur = hit ? UseRecordOf(p) : 0, er = hit ? ExamineRecordOf(p) : 0, uk = 0, ek = 0;
+		uint8_t uo = 0, eo = 0;
+		if (ur) RecordKey(ur, uo, uk);
+		if (er) RecordKey(er, eo, ek);
+		int ox = 0, oy = 0, oz = 0, item = 0, pickup = 0;
+		if (hit && r.type == 4)
+		{
+			if (const Object *o = RuntimeObject(r.objSector, r.objIndex))
+			{
+				ox = o->x; oy = o->y; oz = o->z;
+				if (TheDbase100().IsLoaded()) item = TheDbase100().FindItemByRenderId((uint16_t)(o->textureIndex | (o->textureSource << 8)));
+			}
+			pickup = p.actor != nullptr && ObjectIsPickupItem(p.actor) ? 1 : 0;
+		}
+		FString s = FStringf("L1 %s %d %d %d %d %d type=%u face=%d sec=%d obj=%d.%d door=%d hit=%.1f,%.1f,%.1f objxyz=%d,%d,%d "
+			"d2=%.0f c2=%u/%x/%s ex2=%d yaw=%.0f cy=%u/%x/%s use=%u:%02x:%u exa=%u:%02x:%u item=%d pickup=%d\n",
+			label, px, py, pa, dx, dy, (unsigned)r.type, r.face, r.sector, r.objSector, r.objIndex, r.door, r.x, r.y, r.z, ox, oy, oz,
+			c2.depth, (unsigned)c2.type, (unsigned)c2.shape, rules::ClassName(RulesClassOf(c2)), c2.examinable,
+			cy.depth, (unsigned)cy.type, (unsigned)cy.shape, rules::ClassName(RulesClassOf(cy)),
+			(unsigned)ur, (unsigned)uo, (unsigned)uk, (unsigned)er, (unsigned)eo, (unsigned)ek, item, pickup);
+		if (out != nullptr) fputs(s.GetChars(), out);
+		n++;
+	}
+	fclose(in);
+	if (out != nullptr) fclose(out);
+	pmo->SetOrigin(home, false);
+	pmo->Angles.Yaw = homeYaw;
+	pmo->ClearInterpolation();
+	Printf("roth_l1diff: %d eye rays through L1 (%d at another pitch skipped) -> %s\n", n, skipped, argv[2]);
 }

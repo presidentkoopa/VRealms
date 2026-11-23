@@ -36,6 +36,7 @@
 #include "vectors.h"   // DVector3, for ActivateLine's hit point
 #include "roth_surface.h"   // WallFace, for RegisterWallFace
 #include "roth_playermove_engine.h"   // the original's player movement, wired to the engine
+#include "roth_vrrules.h"   // L1's record (PickRecord)
 
 struct line_t;
 struct sector_t;
@@ -387,14 +388,8 @@ bool Activate(const Pick &p, AActor *who, TrigEvent want);
 // about that asymmetry was visible from outside the engine.
 bool ActivateObject(AActor *mo, TrigEvent want);
 
-// Pick from a player's main hand, then from the off hand, and act on the first
-// that finds something. The hand pose is AttackPos/AttackPitch/AttackAngle and
-// its offhand pair, which is where the VR backend writes the controller every
-// frame. Inert unless a Realms level is loaded and roth_pick is set.
-bool UseByHand(player_t *player, TrigEvent want);
-
 // Is this object actor's use the original's pickup (no command chain, and the type-4 branch would take it,
-// read only)? RSQ Distance Grab is offered only these (roth_grabglue.cpp).
+// read only)? The VR pickup (roth_vrpick.cpp) reads it to know an item will fly to the hand.
 bool ObjectIsPickupItem(AActor *mo);
 
 //==========================================================================
@@ -456,6 +451,10 @@ double PickTraceRange(const DVector3 &rayDir);
 // classify_cursor_target_object on a pick (its decision is roth_cursor.h, engine-free and
 // tested against the original's own text by tools/vrpick_test). `depth` is 2z + 64 (above).
 CursorClass ClassifyPick(const Pick &p, AActor *who, double depth);
+
+// L1's record for a pick (roth_vrrules.h Record): its type, the .RAW face, sector, object or door. False: no
+// Realms thing (the record's type 0).
+bool PickRecord(const Pick &p, rules::Record &out);
 
 // examine_object_under_cursor (E/input.c:979-1015): the right-click. The
 // examine trigger the pick matches (dispatch_entry_command_trigger_b) has its

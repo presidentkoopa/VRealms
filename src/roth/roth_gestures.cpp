@@ -434,7 +434,7 @@ bool ClearPath(AActor *pmo, const DVector3 &from, const Thing &t)
 	const double dist = d.Length();
 	if (dist < 1.0) return true;
 	Pick p;
-	if (!PickFrom(pmo, from, d / dist, dist, p)) return true;
+	if (!RulesPick(from, d / dist, p, dist)) return true;
 	return p.kind == Pick::Prop || p.dist >= dist - 1.0;
 }
 
@@ -470,7 +470,7 @@ bool Strike(int role, PunchReader &rd, const char *blow, const Pick &p, const DV
 	}
 	if (v == SECONDARY_USE)
 	{
-		const bool acted = VRPickUseAt(role, p, palm, blow);
+		const bool acted = RulesUse(role, p, blow);
 		Printf("[roth_gestures] %s hand %s (%.2f m/s average) meets %s: cursor type %d -> the original's use: %s\n", RoleName(role),
 			blow, rd.avgMps, what, type, acted ? "acted" : "nothing happened");
 		if (!acted) return false;
@@ -503,7 +503,7 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 		pk.actor = t.mo;
 		pk.hitPos = BoxClosest(at, t.lo, t.hi);
 		pk.dist = (pk.hitPos - a).Length();
-		const int type = VRPickCursorType(role, pk, b);
+		const int type = RulesClassify(pk).type;
 		if (SecondaryClick(type) == SECONDARY_NOTHING) continue;                   // the original's click does nothing there
 		if (!ClearPath(pmo, at, t))                                                // 18
 		{
@@ -532,7 +532,7 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 	const DVector3 mv = b - a;
 	const double len = mv.Length();
 	Pick p;
-	if (len < 1e-6 || !PickFrom(pmo, a, mv / len, len + gr, p))
+	if (len < 1e-6 || !RulesPick(a, mv / len, p, len + gr))
 	{
 		if (Logging()) Printf("[roth_gestures] %s hand punch (%.2f m/s average): meets nothing\n", RoleName(role), g.punch.avgMps);
 		return;
@@ -547,7 +547,7 @@ void PunchContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 					g.punch.avgMps, t.sector, t.index);
 				return;
 			}
-	const int type = VRPickCursorType(role, p, b);
+	const int type = RulesClassify(p).type;
 	const SecondaryVerb v = SecondaryClick(type);
 	if (v == SECONDARY_NOTHING)
 	{
@@ -590,7 +590,7 @@ void BladeContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 		pk.actor = t.mo;
 		pk.hitPos = BoxClosest(at, t.lo, t.hi);
 		pk.dist = (pk.hitPos - grip1).Length();
-		const int type = VRPickCursorType(role, pk, grip1);
+		const int type = RulesClassify(pk).type;
 		if (SecondaryClick(type) == SECONDARY_NOTHING) continue;
 		if (!ClearPath(pmo, at, t))
 		{
@@ -620,10 +620,10 @@ void BladeContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 	Pick p;
 	bool have = false;
 	const DVector3 mv = tip1 - tip0;
-	if (mv.Length() > 1e-6 && PickFrom(pmo, tip0, mv / mv.Length(), mv.Length() + gr, p)) have = true;
+	if (mv.Length() > 1e-6 && RulesPick(tip0, mv / mv.Length(), p, mv.Length() + gr)) have = true;
 	const DVector3 bl = tip1 - grip1;
 	Pick q;
-	if (bl.Length() > 1e-6 && PickFrom(pmo, grip1, bl / bl.Length(), bl.Length() + gr, q) && (!have || q.dist < p.dist)) { p = q; have = true; }
+	if (bl.Length() > 1e-6 && RulesPick(grip1, bl / bl.Length(), q, bl.Length() + gr) && (!have || q.dist < p.dist)) { p = q; have = true; }
 	if (!have)
 	{
 		if (Logging()) Printf("[roth_gestures] %s hand %s (%.2f m/s average): meets nothing\n", RoleName(role), blow, g.blade.avgMps);
@@ -636,7 +636,7 @@ void BladeContact(int role, HandG &g, AActor *pmo, const std::vector<Thing> &thi
 				if (Logging()) Printf("[roth_gestures] %s hand %s passes creature %d/%d's picture, not its body\n", RoleName(role), blow, t.sector, t.index);
 				return;
 			}
-	const int type = VRPickCursorType(role, p, grip1);
+	const int type = RulesClassify(p).type;
 	const SecondaryVerb v = SecondaryClick(type);
 	if (v == SECONDARY_NOTHING)
 	{
@@ -811,7 +811,7 @@ AttemptSample SampleZone(const Zone &z, const DVector3 &palm, const DVector3 &ti
 		const DVector3 from(bestAt.X + bestN.X * 8.0, bestAt.Y + bestN.Y * 8.0, bestAt.Z);
 		// a door leaf standing in front of its room face is what the hand meets there (AELF's Shrive door, the PC run of
 		// 5b4c3979: the try was made and never fired, the pick wanting the room face's own line)
-		if (pmo != nullptr && PickFrom(pmo, from, DVector3(-bestN.X, -bestN.Y, 0), 16.0, p)
+		if (pmo != nullptr && RulesPick(from, DVector3(-bestN.X, -bestN.Y, 0), p, 16.0)
 			&& ((p.kind == Pick::WallFace && p.line == bestSide->linedef) || p.kind == Pick::DoorLeaf))
 			pick = p;
 		return s;
@@ -846,14 +846,14 @@ void AttemptedQ32(int role, const Pick &p, const DVector3 &from, const char *wha
 	if (u != 0)
 	{
 		Printf("[roth_gestures] %s hand %s: the original's use there is record #%u -- the try is that use (Q32)\n", RoleName(role), how.GetChars(), u);
-		const bool acted = VRPickUseAt(role, p, from, how.GetChars());
+		const bool acted = RulesUse(role, p, how.GetChars());
 		Buzz(role, acted ? 0.25 : 0.10, acted ? 25 : 10, "an attempt");
 		return;
 	}
 	if (e != 0)
 	{
 		Printf("[roth_gestures] %s hand %s: no use there; the original's examine is record #%u -- the try is that examine (Q32)\n", RoleName(role), how.GetChars(), e);
-		const bool acted = VRPickExamineAt(role, p, from, how.GetChars());
+		const bool acted = RulesExamine(role, p, how.GetChars());
 		Buzz(role, acted ? 0.25 : 0.10, acted ? 25 : 10, "an attempt");
 		return;
 	}
@@ -870,7 +870,7 @@ void Attempted(int role, const Pick &p, const DVector3 &from, const char *what, 
 	Printf("[roth_gestures] %s hand %s: the original's examine there is %s%s\n", RoleName(role), how.GetChars(),
 		matched ? FStringf("record #%u", matched).GetChars() : "no record", record && matched != record ? FStringf(", NOT the zone's #%u: nothing fired", record).GetChars() : "");
 	if (record != 0 && matched != record) { Buzz(role, 0.10, 10, "an attempt, not fired"); return; }
-	const bool acted = VRPickExamineAt(role, p, from, how.GetChars());
+	const bool acted = RulesExamine(role, p, how.GetChars());
 	Buzz(role, acted ? 0.25 : 0.10, acted ? 25 : 10, "an attempt");
 }
 
@@ -980,7 +980,7 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 		else if (r == 2)
 		{
 			Printf("[roth_gestures] %s hand: a second rap on %s (%.2f m/s) -- the knock: the original's examine\n", RoleName(role), PickKindName(target), g.rap.closing);
-			const bool acted = VRPickExamineAt(role, target, h.palm, "knock (two raps)");
+			const bool acted = RulesExamine(role, target, "knock (two raps)");
 			Buzz(role, acted ? 0.2 : 0.1, 15, "the knock");
 		}
 	}
@@ -1029,7 +1029,7 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 			{
 				const double back = 0.08 * upm;
 				Pick along;
-				if (PickFrom(pmo, h.palm - h.handFwd * back, h.handFwd, back + r, along) && along.kind == Pick::DoorLeaf)
+				if (RulesPick(h.palm - h.handFwd * back, h.handFwd, along, back + r) && along.kind == Pick::DoorLeaf)
 				{
 					door = along;
 					onDoor = true;
@@ -1039,7 +1039,7 @@ void TickHand(int role, AActor *pmo, const std::vector<Thing> &things)
 				{
 					// what IS there, within 15 cm along the hand, on each change (the door search's diagnostic)
 					Pick near;
-					const bool any = PickFrom(pmo, h.palm - h.handFwd * back, h.handFwd, back + 0.15 * upm, near);
+					const bool any = RulesPick(h.palm - h.handFwd * back, h.handFwd, near, back + 0.15 * upm);
 					const long nk = any ? (long)near.kind * 100000 + (near.line != nullptr ? near.line->Index() : 0) : -1;
 					if (nk != g.loggedNear)
 					{
@@ -1470,7 +1470,7 @@ CCMD(roth_gesturetest)
 				p.kind = Pick::Prop;
 				p.actor = c.mo;
 				p.hitPos = (c.lo + c.hi) * 0.5;
-				if (VRPickCursorType(role, p, pmo->Pos()) != 5) continue;
+				if (RulesClassify(p).type != 5) continue;
 				const double d = (c.mo->Pos() - pmo->Pos()).Length();
 				if (d < best) { best = d; t = &c; }
 			}

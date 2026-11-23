@@ -646,7 +646,7 @@ void Release(int role, const HandNow &h, AActor *pmo, int item)
 		ExplainSurfaceBox(q);
 		return;
 	}
-	const bool acted = VRPickUseAt(role, q, pt, "release (set down)");
+	const bool acted = RulesUse(role, q, "release (set down)");
 	Printf("[roth_worldhands] %s hand releases %s on %s at (%.1f %.1f %.1f)%s: the original's use, record #%u -> %s; the right hand now holds %d\n",
 		RoleName(role), r->what, PickKindName(q), q.hitPos.X, q.hitPos.Y, q.hitPos.Z, moved ? " (its disc's nearest point in a box)" : "", rec,
 		acted ? "acted" : "nothing happened", RightItem());
@@ -749,7 +749,7 @@ bool TryPull(int role, const HandNow &h, AActor *pmo)
 		p.actor = FindObjectActor(best->sector, best->index);
 		p.hitPos = BoxClosest(h.palm, bestLo, bestHi);
 		p.dist = bestD * upm;
-		if (VRPickCursorType(role, p, h.palm) != 3)
+		if (RulesClassify(p).type != 3)
 		{
 			if (Logging()) Printf("[roth_worldhands] %s hand grips %s: the original's cursor offers no use there now -- the picker's\n", RoleName(role), best->rec->what);
 			return false;
@@ -773,7 +773,7 @@ bool TryPull(int role, const HandNow &h, AActor *pmo)
 	if (!have)
 	{
 		const double back = 0.08 * upm;
-		have = PickFrom(pmo, h.palm - h.handFwd * back, h.handFwd, back + 0.20 * upm, p) && (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf);
+		have = RulesPick(h.palm - h.handFwd * back, h.handFwd, p, back + 0.20 * upm) && (p.kind == Pick::WallFace || p.kind == Pick::DoorLeaf);
 	}
 	if (!have) return false;
 	uint16_t rec = UseRecordOf(p);
@@ -797,7 +797,7 @@ bool TryPull(int role, const HandNow &h, AActor *pmo)
 			return true;
 		}
 	}
-	if (VRPickCursorType(role, p, h.palm) != 3)
+	if (RulesClassify(p).type != 3)
 	{
 		if (Logging()) Printf("[roth_worldhands] %s hand grips %s: the original's cursor offers no use there now -- the picker's\n", RoleName(role), pr->what);
 		return false;
@@ -860,7 +860,7 @@ void TickHand(int role, AActor *pmo)
 				int s = -1, i = -1;
 				if (ObjectForActor(w.pullPick.actor, s, i)) w.pullPick.actor = FindObjectActor(s, i);
 			}
-			const bool acted = w.pullPick.actor != nullptr || w.pullPick.kind != Pick::Prop ? VRPickUseAt(role, w.pullPick, w.pullFrom, "pull") : false;
+			const bool acted = w.pullPick.actor != nullptr || w.pullPick.kind != Pick::Prop ? RulesUse(role, w.pullPick, "pull") : false;
 			Printf("[roth_worldhands] %s hand pulled %s %.3f m (%.2f asked): the original's use -> %s\n", RoleName(role), pr->what, travel, pr->metres,
 				acted ? "acted" : "nothing happened");
 			Buzz(role, acted ? 0.5 : 0.15, acted ? 40 : 12);
@@ -888,7 +888,7 @@ void TickHand(int role, AActor *pmo)
 				int s = -1, i = -1;
 				if (ObjectForActor(w.socket.actor, s, i)) w.socket.actor = FindObjectActor(s, i);
 			}
-			const bool acted = VRPickUseAt(role, w.socket, h.palm, "twist");
+			const bool acted = RulesUse(role, w.socket, "twist");
 			Printf("[roth_worldhands] %s hand turned %s %.0f degrees in %s: the original's use -> %s; the right hand now holds %d\n", RoleName(role), t->what,
 				w.twist.turned, PickKindName(w.socket), acted ? "acted" : "nothing happened", RightItem());
 			Buzz(role, acted ? 0.5 : 0.15, acted ? 40 : 12);
@@ -922,7 +922,7 @@ void TickHand(int role, AActor *pmo)
 			DVector3 lo, hi;
 			ObjectPickBox(mo, lo, hi);
 			pk.hitPos = BoxClosest(h.palm, lo, hi);
-			const bool acted = VRPickUseAt(role, pk, h.palm, "palm pressed into the print");
+			const bool acted = RulesUse(role, pk, "palm pressed into the print");
 			Printf("[roth_worldhands] %s hand: the palm pressed %.3f m into %s: the original's click -> %s\n", RoleName(role), depth, p.rec->what,
 				acted ? "acted" : "nothing happened");
 			Buzz(role, acted ? 0.4 : 0.15, acted ? 30 : 12);
@@ -949,7 +949,7 @@ void TickHand(int role, AActor *pmo)
 		{
 			Pick fp;
 			bool acted = false;
-			if (FacePickAt(d.side, d.centre, fp)) acted = VRPickUseAt(role, fp, h.tip, "turning the clock's hour hand");
+			if (FacePickAt(d.side, d.centre, fp)) acted = RulesUse(role, fp, "turning the clock's hour hand");
 			uint16_t after = 0;
 			RecordWord(d.rec->countRecord, 0x0a, after);
 			Printf("[roth_worldhands] %s hand pushed %s past %d o'clock: the original's use of #%u -> %s; the count %u -> %u\n", RoleName(role), d.rec->what,
@@ -1037,7 +1037,7 @@ void TickSit(AActor *pmo)
 			Printf("[roth_worldhands] sat on %s: no floor under (%.0f %.0f) -- nothing\n", st.rec->what, at.X, at.Y);
 			continue;
 		}
-		const bool acted = VRPickUseAt(ItemRole(), p, eye, "sat down");
+		const bool acted = RulesUse(ItemRole(), p, "sat down");
 		Printf("[roth_worldhands] sat on %s (the head %.2f m below standing, %.2f m from it): the original's use on %s at (%.1f %.1f %.1f) -> %s\n",
 			st.rec->what, drop, nearM, PickKindName(p), p.hitPos.X, p.hitPos.Y, p.hitPos.Z, acted ? "acted" : "nothing happened");
 		break;

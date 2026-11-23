@@ -15,6 +15,7 @@
 //
 
 #include "vectors.h"
+#include "roth_vrrules.h"
 
 struct FLevelLocals;
 class AActor;
@@ -32,8 +33,7 @@ void VRPickEndLevel();
 // FOR THE CANDLES (roth_candles.h). While the hands are live (a headset, or roth_vrpicktest): a hand's index
 // fingertip and palm in the world, as drawn this tic (FingerRay). False when that hand has none.
 bool VRPickFlamePoints(int role, DVector3 &tip, DVector3 &palm);
-// The original's use of a Realms object's actor from that hand, at `at`, through the hands' own use path
-// (DoUse: the item the hand holds, the original's cursor gate). True when the use acted.
+// The original's use of a Realms object's actor from that hand, at `at`: RulesUse on it. True when the use acted.
 bool VRPickUseObject(int role, AActor *target, const DVector3 &at);
 // The hands' metres to map units (VR_UnitsPerMeter; 34 in flat).
 double VRPickUnitsPerMetre();
@@ -49,13 +49,23 @@ struct VRPickHand
 	DVector3 tip, dir, palm, handFwd;
 };
 bool VRPickHandNow(int role, VRPickHand &out);
-// The original's click on `p` from that hand, gated by the original's cursor on it as seen from `from` (the
-// hand's point): use (DoUse: the item the hand holds) or examine (DoExamine). True when it acted.
+// L1, THE RULES ENTRY (roth_vrrules.h; docs/VR_INTERACTION.md 4). Every VR interaction goes through these four, and
+// nothing else gives an item, opens a door or fires a chain from a VR hand:
+//   RulesPick      the first Realms thing on the ray from `origin` along `dir` (to `range`, default: the examine
+//                  band's edge); false: nothing
+//   RulesClassify  the original's cursor on `p` (classify_cursor_target_object), its depth by D2: the horizontal
+//                  distance from the player's position to the hit point
+//   RulesUse       the original's use (activate_targeted_object) of `p` from that hand, with the item that hand holds
+//                  selected (roth_handuse.h), behind the original's click gate; true when it acted. A refusal buzzes
+//                  the hand twice.
+//   RulesExamine   the original's examine (examine_object_under_cursor) of `p`, behind its gate; true when it acted.
 struct Pick;
-bool VRPickUseAt(int role, const Pick &p, const DVector3 &from, const char *how);
-bool VRPickExamineAt(int role, const Pick &p, const DVector3 &from, const char *how);
-// The original's cursor type on `p` (1 nothing, 3 usable, 5 blocked / attack target), seen from `from`.
-int VRPickCursorType(int role, const Pick &p, const DVector3 &from);
+struct CursorClass;
+bool RulesPick(const DVector3 &origin, const DVector3 &dir, Pick &out, double range = 0);
+CursorClass RulesClassify(const Pick &p);
+rules::Class RulesClassOf(const CursorClass &c);
+bool RulesUse(int role, const Pick &p, const char *how);
+bool RulesExamine(int role, const Pick &p, const char *how);
 // Under roth_vrpicktest (the flat test).
 bool VRPickTesting();
 

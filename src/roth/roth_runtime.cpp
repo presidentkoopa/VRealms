@@ -45,7 +45,6 @@
 #include "roth_held.h"        // the held objects (chapter 1): presentation, and the forced turn's view snap
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
-#include "r_data/vr_handpose.h"   // VRHandPose_InputLive: live hands (UseByHand)
 #include "roth_grabglue.h"        // RSQ Distance Grab's Realms glue (GrabGlueTick)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
 #include "roth_candles.h"         // the candles' wicks, one by one (presentation)
@@ -7386,7 +7385,7 @@ bool ActivateObject(AActor *mo, TrigEvent want)
 	return any;
 }
 
-// IS THIS OBJECT AN ITEM THE ORIGINAL'S USE PICKS UP? (RSQ Distance Grab's set, roth_grabglue.cpp.) The
+// IS THIS OBJECT AN ITEM THE ORIGINAL'S USE PICKS UP? (The VR pickup's flight to the hand, roth_vrpick.cpp.) The
 // original's left click on an object (activate_targeted_object, ROTH.C input.c:1026-1066, type 4): +9 bits
 // 0x12 refuse it; a matching left-click record runs its chain (run_leftclick_object_trigger); with none, a
 // non-keyed object without bit 0x10 goes to give_item_by_dbase_id(its render id). So an object is taken by
@@ -7429,40 +7428,6 @@ bool ObjectIsPickupItem(AActor *mo)
 			if (c->opcode == 0x29 && (c->key == 0 || (int)c->key == item)) return true;
 			k = c->nextIndex;
 		}
-	}
-	return false;
-}
-
-bool UseByHand(player_t *player, TrigEvent want)
-{
-	if (!g.active || player == nullptr || player->mo == nullptr) return false;
-
-	// NOT without live hands (a headset, or the controller-pose test): with no
-	// device the ray would be a confusing duplicate of the eye probe.
-	if (!VRHandPose_InputLive()) return false;
-
-	AActor *const mo = player->mo;
-
-	// THE HAND'S OWN RANGE, not the weapon's 48 units. A press is meant to
-	// reach what the beam is visibly touching, and the beam crosses rooms.
-	// UseRange on the pawn is the player's configured reach and is what the eye
-	// probe already uses, so the two agree about how far a press carries.
-	const double range = mo->FloatVar(NAME_UseRange);
-
-	// THE HANDS' OWN RAYS (roth_vrpick.h VRPickHandRay: the drawn index finger,
-	// else the hand's frame), 2026-11-16. This read the aim pose's angles and
-	// took AttackPitch -- already positive UP -- as Doom's down-positive pitch,
-	// so a raised hand's press went down.
-	const char *const names[2] = { "main", "off" };
-	for (int role = 0; role < 2; role++)
-	{
-		DVector3 pos, dir;
-		if (!VRPickHandRay(role, pos, dir)) continue;
-		Pick p;
-		if (!PickFrom(mo, pos, dir, range, p)) continue;
-		if (roth_useray_debug)
-			Printf("roth_pick: %s hand -> ", names[role]);
-		if (Activate(p, mo, want)) return true;
 	}
 	return false;
 }
@@ -8099,6 +8064,27 @@ CursorClass ClassifyPick(const Pick &p, AActor *who, double depth)
 	c.examinable = res.count;
 	c.outOfRange = res.outOfRange != 0;
 	return c;
+}
+
+// L1's record (roth_vrrules.h Record): the pick record's fields in the .RAW's own indices.
+bool PickRecord(const Pick &p, rules::Record &out)
+{
+	out = rules::Record{};
+	out.x = p.hitPos.X; out.y = p.hitPos.Y; out.z = p.hitPos.Z;
+	ResolvedPick r;
+	if (!g.active || !ResolvePick(p, r)) return false;
+	out.type = r.type;
+	if (r.type == 3)
+	{
+		auto f = g.sideToFace.find(r.sideIdx);
+		out.face = f != g.sideToFace.end() ? f->second : -1;
+	}
+	if (r.sector != nullptr) out.sector = r.sector->Index();
+	if (r.type == 4) { out.objSector = r.objSector; out.objIndex = r.objIndex; }
+	if (r.type == 6)
+		for (const auto &kv : g.doorTag)
+			if (kv.second == p.leafTag) { out.door = kv.first; out.sector = kv.first; break; }
+	return true;
 }
 
 void ExplainSurfaceBox(const Pick &p)
