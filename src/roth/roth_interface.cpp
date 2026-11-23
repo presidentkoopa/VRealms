@@ -1826,6 +1826,8 @@ void RuntimeInvSink::PickupFlyStarted(int32_t x, int32_t y, int32_t z, uint16_t 
 	const DVector3 from = U.havePendingFly ? U.pendingFlyFrom : DVector3(x, y, z);
 	U.havePendingFly = false;
 	StartFly(from, renderId);
+	if (!U.fly.active || U.fly.count == 0 || U.fly.from != from)
+		Printf("[roth_ui] the pickup's fly-in (render id 0x%04x) has no picture to fly: given at once\n", (unsigned)renderId);
 }
 
 //==========================================================================

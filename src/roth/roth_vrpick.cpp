@@ -588,6 +588,20 @@ int RightHandItem(const Inventory *inv)
 	return (int16_t)inv->Slot(inv->RightHand()).id;
 }
 
+// The inventory's signature: it changes when anything is given or removed (a slot's id or quantity, the count).
+uint64_t InvSignature(const Inventory *inv)
+{
+	if (inv == nullptr) return 0;
+	uint64_t h = (uint64_t)inv->Count();
+	for (int i = 0; i < Inventory::SLOT_COUNT; i++)
+	{
+		const InventorySlot &sl = inv->Slot(i);
+		if (sl.id == 0) continue;
+		h = h * 1000003u + ((uint64_t)i << 32) + ((uint64_t)sl.id << 16) + sl.quantity;
+	}
+	return h;
+}
+
 int SelectedItem()
 {
 	return RightHandItem(InterfaceInventory());
@@ -625,9 +639,12 @@ void AfterPickup(int role, int weapon0, bool mainFree)
 	gItemSlot = slot;
 	gItemId = inv->Slot(slot).id;
 	const bool squeezed = P.hand[role].gripClosed;
+	const bool flying = InterfaceFlyingTo(role);
 	if (squeezed) gL2[role].BeginPickup();
-	Printf("[roth_vrpick] PICKUP: the original gave item %d and selected it (give_item); it flies to the %s hand (the original's fly-in, 0x1c ticks)%s\n",
-		item, RoleName(role), squeezed ? " and stays in it while the grip is closed: HOLDING" : ": the grip is open, it is carried in that hand");
+	Printf("[roth_vrpick] PICKUP: the original gave item %d and selected it (give_item); %s the %s hand%s\n", item,
+		flying ? "it flies to" : "no fly-in (the give had no picture to fly) -- straight into", RoleName(role),
+		squeezed ? ", and stays in it while the grip is closed: HOLDING" : ": the grip is open, it is carried in that hand");
+	if (!flying) VRPickPickupLanded(role);
 }
 
 // D7: THE STOW. The original's own calls put the selection away: the right hand's cell taken onto the cursor
@@ -681,6 +698,7 @@ bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const cha
 	Inventory *inv = InterfaceInventory();
 	const int before = RightHandItem(inv);
 	const int fly0 = InterfaceFlyCount(), weapon0 = VRWeaponsHeldItem();
+	const uint64_t sig0 = InvSignature(inv);
 	const bool mainFree = MainHandFree();
 	HandUse scope;
 	if (inv != nullptr) scope = HandUseBegin(*inv, itemHand);
@@ -707,7 +725,9 @@ bool DoUse(int role, const Pick &p, const CursorClass &c, AActor *pmo, const cha
 		acted ? "acted" : "nothing happened");
 	if (during != before || now != before || after != HandUseAfter::ItemHand)
 		Printf("[roth_vrpick]   the right hand: %d before, %d after the use, %d now (%s)\n", before, during, now, HandUseAfterName(after));
-	if (InterfaceFlyCount() != fly0) AfterPickup(role, weapon0, mainFree);
+	// A PICKUP: the original gave something with this use (give_item: the inventory changed) and selected or equipped it.
+	const bool gave = InvSignature(inv) != sig0 && (InterfaceFlyCount() != fly0 || now != before || VRWeaponsHeldItem() != weapon0);
+	if (gave) AfterPickup(role, weapon0, mainFree);
 	if (acted) Haptic(role, kUseAmp, kUseMs, FStringf("a use acted: %s", how).GetChars());
 	else Refused(role, how);
 	return acted;
@@ -914,7 +934,8 @@ int NearAct(int role, HandState &h, AActor *pmo, bool use, const Reach &R = kZon
 	bool isObject = false;
 	if (!NearFind(role, h, pmo, use, R, p, c, isObject)) return 0;
 	const bool touch = &R != &kZone;
-	if (use) DoUse(role, p, c, pmo, isObject ? (touch ? "grip, touching an object" : "grip on an object") : (touch ? "grip, touching a surface" : "grip on a surface"), isObject);
+	const bool obj = p.kind == Pick::Prop;
+	if (use) DoUse(role, p, c, pmo, obj ? (touch ? "grip, touching an object" : "grip on an object") : (touch ? "grip, touching a surface" : "grip on a surface"), isObject);
 	else DoExamine(role, p, c, pmo, isObject ? "trigger, the palm on an object" : "trigger, the palm on a surface");
 	return 1;
 }

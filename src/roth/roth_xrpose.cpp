@@ -436,18 +436,31 @@ CCMD(roth_xrpose)
 		else if (argv.argc() >= 6 && stricmp(argv[3], "item") && stricmp(argv[3], "object")) at = DVector3(atof(argv[3]), atof(argv[4]), atof(argv[5]));
 		else { Printf("roth_xrpose pointat <main|off> item | object <s> <i> | x y z: no such target\n"); return; }
 		DVector3 s, d;
-		if (!VRPickHandRay(role, s, d)) s = role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos;
+		const bool haveRay = VRPickHandRay(role, s, d);
+		if (!haveRay) s = role == VR_MAINHAND ? pmo->AttackPos : pmo->OffhandPos;
 		const DVector3 v = at - s;
 		const double wantYaw = atan2(v.Y, v.X) * (180.0 / M_PI);
 		const double wantPitch = atan2(v.Z, sqrt(v.X * v.X + v.Y * v.Y)) * (180.0 / M_PI);
-		double yaw = wantYaw - r_viewpoint.Angles.Yaw.Degrees();
-		while (yaw > 180.0) yaw -= 360.0;
-		while (yaw < -180.0) yaw += 360.0;
+		auto norm = [](double a) { while (a > 180.0) a -= 360.0; while (a < -180.0) a += 360.0; return a; };
+		// THE DRAWN FINGER IS NOT THE GRIP'S AXIS (about 24 degrees off it on the FBX hands): the second and later calls
+		// correct the command by what the drawn finger did with the last one (the ray as the picker reads it).
+		static double sYaw[2] = { 0, 0 }, sPitch[2] = { 0, 0 };
+		static bool sHave[2] = { false, false };
+		double yaw = norm(wantYaw - r_viewpoint.Angles.Yaw.Degrees()), cmdPitch = wantPitch;
+		if (sHave[role] && haveRay)
+		{
+			const double gotYaw = atan2(d.Y, d.X) * (180.0 / M_PI), gotPitch = atan2(d.Z, sqrt(d.X * d.X + d.Y * d.Y)) * (180.0 / M_PI);
+			yaw = norm(sYaw[role] + norm(wantYaw - gotYaw));
+			cmdPitch = sPitch[role] + (wantPitch - gotPitch);
+			Printf("roth_xrpose pointat: the drawn finger went yaw %.1f pitch %.1f for the last command; correcting by %.1f / %.1f\n",
+				gotYaw, gotPitch, norm(wantYaw - gotYaw), wantPitch - gotPitch);
+		}
+		sYaw[role] = yaw; sPitch[role] = cmdPitch; sHave[role] = true;
 		float head[3]; float headYaw = 0.f;
 		VRPoseTest_Head(head, headYaw);
 		float qy[4], qp[4], t[4];
 		VRPose_QuatFromYPR(headYaw + yaw, 0, 0, qy);
-		VRPose_QuatFromYPR(0, 90.0 + wantPitch, 0, qp);
+		VRPose_QuatFromYPR(0, 90.0 + cmdPitch, 0, qp);
 		QMul(qy, qp, t);
 		for (int k = 0; k < 4; k++) h.quat[k] = t[k];
 		h.trigger = 0.f; h.triggerTouch = false; h.thumbTouch = true;   // the point pose: the index off the trigger
@@ -480,6 +493,21 @@ CCMD(roth_xrpose)
 		ObjectForActor(t, rs, ri);
 		Printf("roth_xrpose stand: the player %.0f units (%s m) from Realms object %d/%d%s, at (%.0f %.0f %.0f), facing it\n", m, argv[a], rs, ri,
 			ObjectIsPickupItem(t) ? " (a pickup item)" : "", pmo->X(), pmo->Y(), pmo->Z());
+		return;
+	}
+	// `standat <x> <y> <angle512>`: the player on the floor at map (x, y), facing the original's angle (512 a turn,
+	// counter-clockwise from +Y, as the rangeprobe's and rothdiff_shot's poses), the view level.
+	if (!stricmp(verb, "standat") && argv.argc() >= 5)
+	{
+		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+		if (pmo == nullptr) return;
+		pmo->SetOrigin(DVector3(atof(argv[2]), atof(argv[3]), pmo->Z()), false);
+		pmo->SetZ(pmo->floorz);
+		pmo->Vel.Zero();
+		pmo->Angles.Yaw = DAngle::fromDeg(90.0 + atof(argv[4]) * 360.0 / 512.0);
+		pmo->Angles.Pitch = nullAngle;
+		pmo->ClearInterpolation();
+		Printf("roth_xrpose standat: the player at (%.0f %.0f %.0f), yaw %.1f\n", pmo->X(), pmo->Y(), pmo->Z(), pmo->Angles.Yaw.Degrees());
 		return;
 	}
 	if (!stricmp(verb, "log")) { roth::Report(); return; }

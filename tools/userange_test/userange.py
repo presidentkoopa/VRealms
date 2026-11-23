@@ -189,8 +189,10 @@ def parse_l1(log):
         p = ln.split()
         if not p or p[0] != 'L1': continue
         r = dict(label=p[1], px=int(p[2]), py=int(p[3]), pa=int(p[4]), dx=int(p[5]), dy=int(p[6]))
+        last = None
         for kv in p[7:]:
-            k, v = kv.split('=', 1); r[k] = v
+            if '=' not in kv and last: r[last] += ' ' + kv; continue   # a class name with a space ("too far")
+            k, v = kv.split('=', 1); r[k] = v; last = k
         rows[(r['label'], r['dx'], r['dy'])] = r
     return rows
 
