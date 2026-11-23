@@ -178,6 +178,17 @@ Still unseen (test placement, not the game): the Orb taken back (#24, the apertu
 - Verified, PC (bridge): build exit 0; the log shows both hands loaded with 52 of 52 poses; colt_flat reload log lines as before; hands_pose / hold captures show the same pose families.
 - Not seen: any of it in a headset; the Colt side view in-engine (the capture's roll was missed); whether the baked wraps apply in the engine (no log line yet). The skin draws without its normal and ORM maps (cosmetic, waits for the owner).
 
+**VR interaction redesigned; Distance Grab dropped (owner 2026-11-23; design only, docs/VR_INTERACTION.md):**
+- The owner decided VR design is open. The game logic stays the original's; reach, handling and what you see may change.
+- His decisions:
+  - reach is measured from the body;
+  - "too far" stays too far;
+  - a picked-up item stays in the hand until stowed, and letting go anywhere stows it;
+  - examine three ways (bring it to the eyes, hold a point on it, a button);
+  - the hit test is the model's shape;
+  - later, the trenchcoat stow.
+- My choices D1-D7 are in the doc, and he may overrule any. Nothing is built yet: phases P1-P4.
+
 ## Decided, LATER
 
 | change | owner decision |
