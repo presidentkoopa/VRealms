@@ -6859,6 +6859,27 @@ bool UseFlatAt(AActor *who, const FTraceResults &res, TrigEvent want)
 // +0x06 names, taken from the tracer's own classification instead of being
 // re-derived from a hit height. TIER_FFloor is a 3D floor's side, which is a
 // mid-platform here and answers as the mid band.
+// THE BAND OF A FACE AT A HIT, as the original's pick record has it (+0x1a, dir_mask {1,4,2,1}): below its sister
+// sector's floor the lower band, above its ceiling the upper, between them the mid. From the engine line's back sector
+// (WallPartBit) when it has one; else from the .RAW face's own sister, live heights -- the engine may build a face the
+// original gives a sister as a one-sided line (STUDY1 face 1361: the original's band at z 283 is upper, its sister's
+// ceiling 218; l1diff 2026-11-23). One-sided in the .RAW too: mid.
+static uint8_t FaceBandAt(int sideIdx, line_t *line, const DVector3 &hit)
+{
+	if (line != nullptr && line->EffectiveBackSector() != nullptr) return WallPartBit(line, hit.Z);
+	auto f = g.sideToFace.find(sideIdx);
+	if (f == g.sideToFace.end() || f->second < 0 || f->second >= (int)g.map.faces.size() || g.level == nullptr) return 0x01;
+	const Face &face = g.map.faces[f->second];
+	if (face.sister < 0 || face.sister >= (int)g.map.faces.size()) return 0x01;
+	const int ss = g.map.faces[face.sister].sector;
+	if (ss < 0 || ss >= (int)g.level->sectors.Size()) return 0x01;
+	const sector_t &back = g.level->sectors[ss];
+	const double bf = back.floorplane.ZatPoint(hit.XY()), bc = back.ceilingplane.ZatPoint(hit.XY());
+	if (hit.Z <= bf) return 0x02;
+	if (hit.Z >= bc) return 0x04;
+	return 0x01;
+}
+
 static uint8_t BandFromTier(uint8_t tier)
 {
 	switch (tier)
@@ -6918,15 +6939,15 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 		// through an interior wall's mid band to whatever lay behind it (tools/userange_test l1diff, 2026-11-23: 102 of
 		// 1378 of the original's wall picks matched). Opaque here: a one-sided line, an upper or lower band, or a mid band
 		// that draws a texture -- not its texels one by one (a grate's holes stop the pick; decision 7 is P3's).
-		// THE BAND is the face's geometry at the hit (WallPartBit, as ActivateLine's use takes it), not the tracer's
-		// Tier: a face the portal plan cut is a one-sided line with a linked portal, which the tracer calls the middle
-		// tier, where the original's pick record says upper or lower (+0x1a; l1diff 2026-11-23: STUDY1 faces 1361 and
-		// 1527 hit above the neighbour's ceiling, the original band 1 = upper, the port's "mid" admitted a mid-only 0x18).
+		// THE BAND is the face's geometry at the hit (FaceBandAt), not the tracer's Tier: the original's pick record says
+		// upper or lower where the tracer says middle (+0x1a; l1diff 2026-11-23: STUDY1 faces 1361 and 1527 hit above the
+		// neighbour's ceiling, the original band 1 = upper, the port's "mid" admitted a mid-only 0x18). What ends the pick
+		// stays the tracer's view of the line (a one-sided line, an upper or lower tier, a drawn mid).
 		const bool bound = g.bySide.count(idx) != 0;
-		const uint8_t band = WallPartBit(res.Line, res.HitPos.Z);
-		const bool opening = res.Line->EffectiveBackSector() != nullptr && band == 0x01;
+		const uint8_t band = FaceBandAt(idx, res.Line, res.HitPos);
+		const bool twoSided = res.Line->sidedef[0] != nullptr && res.Line->sidedef[1] != nullptr;
 		const bool midDrawn = sd->GetTexture(side_t::mid).isValid();
-		const bool opaque = !opening || midDrawn;
+		const bool opaque = !twoSided || res.Tier == TIER_Upper || res.Tier == TIER_Lower || (res.Tier == TIER_Middle && midDrawn);
 		if (bound || (opaque && g.sideToFace.count(idx)))
 		{
 			s.best = Pick{};
