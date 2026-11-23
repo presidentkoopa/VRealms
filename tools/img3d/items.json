@@ -236,15 +236,15 @@
   "37": {
    "name": "Crystal",
    "metres": 0.06,
-   "hold": "fist",
+   "hold": "palm",
    "grip_frac": [
     0.5,
-    0.5,
+    0.0,
     0.5
    ],
    "grip_offset": [
     0,
-    0,
+    -0.025,
     0
    ],
    "film": {
@@ -265,15 +265,15 @@
   "103": {
    "name": "Jewel",
    "metres": 0.06,
-   "hold": "fist",
+   "hold": "palm",
    "grip_frac": [
     0.5,
-    0.5,
+    0.0,
     0.5
    ],
    "grip_offset": [
     0,
-    0,
+    -0.025,
     0
    ],
    "film": {
@@ -295,15 +295,15 @@
   "35": {
    "name": "Crystal",
    "metres": 0.12,
-   "hold": "fist",
+   "hold": "palm",
    "grip_frac": [
     0.5,
-    0.5,
+    0.0,
     0.5
    ],
    "grip_offset": [
     0,
-    0,
+    -0.025,
     0
    ],
    "film": {
