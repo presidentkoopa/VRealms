@@ -226,7 +226,13 @@ def main():
     pins = os.path.join(C.ROOT, "constraints.txt")   # the pins as a pip constraints file: nothing in -r may pass them
     with open(pins, "w") as f:
         f.write("\n".join(HF_PINS) + "\n")
-    run([py, "-m", "pip", "install", "-r", os.path.join(HY_CODE, "requirements.txt"), "-c", pins])
+    # Its "Demo only" web UI (gradio, fastapi, uvicorn) is not used here; left out, it cannot fight the pins.
+    req = os.path.join(C.ROOT, "requirements_used.txt")
+    with open(os.path.join(HY_CODE, "requirements.txt"), encoding="utf-8") as f, open(req, "w") as o:
+        for line in f:
+            if line.strip().split("=")[0].split("<")[0].split(">")[0].lower() not in ("gradio", "fastapi", "uvicorn"):
+                o.write(line)
+    run([py, "-m", "pip", "install", "-r", req, "-c", pins])
     run([py, "-m", "pip", "install"] + HF_PINS)
     run([py, "-m", "pip", "install", "-e", HY_CODE, "--no-deps"])
     run([py, "-c", "import torch, transformers, diffusers; from transformers import Dinov2Model; "
