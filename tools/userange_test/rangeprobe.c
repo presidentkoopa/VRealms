@@ -30,7 +30,7 @@
  *   W n                                               -- let n gameplay frames pass
  *   Q                                                 -- quit
  * Log (RP_OUT): ENV (view geometry), then per sample
- *   PK label px py pz pa pitch sx sy kind type w2 w4 w6 w8 wa de w1c depth cursor itype flags cnt latch
+ *   PK label px py pz pa pitch sx sy kind type w2 w4 w6 w8 wa de w1c depth cursor itype flags cnt latch obj ox oy oz band1a <+0x1a>
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -106,11 +106,11 @@ static void pick(const struct step *s, int dx, int dy, int classify)
     int ox = 0, oy = 0, oz = 0; uint32_t def = *(uint32_t *)(r + 0xe);
     if (r[1] == 4 && def) { ox = (int16_t)U16(def); oy = (int16_t)U16(def + 2); oz = (int16_t)U16(def + 10); }
     log_on();
-    fprintf(out, "PK %s %d %d %d %d %d %d %d %u %u %04x %04x %04x %04x %04x %08x %04x %d %x %u %02x %d %d obj %d %d %d\n",
+    fprintf(out, "PK %s %d %d %d %d %d %d %d %u %u %04x %04x %04x %04x %04x %08x %04x %d %x %u %02x %d %d obj %d %d %d band1a %04x\n",
         s->label, (int16_t)g->u16(0x90a8e), (int16_t)g->u16(0x90a96), (int16_t)g->u16(0x90a92), g->u16(0x90a8a), (int32_t)g->u32(0x90a74),
         dx, dy, r[0], r[1], *(uint16_t *)(r + 2), *(uint16_t *)(r + 4), *(uint16_t *)(r + 6), *(uint16_t *)(r + 8), *(uint16_t *)(r + 0xa),
         *(uint32_t *)(r + 0xe), *(uint16_t *)(r + 0x1c), *(int32_t *)(r + 0x20),
-        cursor, g->u8(0x7e932), g->u8(0x7fdac), (int32_t)g->u32(0x7fdb0), (int32_t)g->u32(0x7fdb4), ox, oy, oz);
+        cursor, g->u8(0x7e932), g->u8(0x7fdac), (int32_t)g->u32(0x7fdb0), (int32_t)g->u32(0x7fdb4), ox, oy, oz, *(uint16_t *)(r + 0x1a));
     fflush(out);
     log_off();
     g->set_u32(0x707b3, (uint32_t)mx0); g->set_u32(0x707b7, (uint32_t)my0);

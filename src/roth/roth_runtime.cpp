@@ -6918,10 +6918,15 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 		// through an interior wall's mid band to whatever lay behind it (tools/userange_test l1diff, 2026-11-23: 102 of
 		// 1378 of the original's wall picks matched). Opaque here: a one-sided line, an upper or lower band, or a mid band
 		// that draws a texture -- not its texels one by one (a grate's holes stop the pick; decision 7 is P3's).
+		// THE BAND is the face's geometry at the hit (WallPartBit, as ActivateLine's use takes it), not the tracer's
+		// Tier: a face the portal plan cut is a one-sided line with a linked portal, which the tracer calls the middle
+		// tier, where the original's pick record says upper or lower (+0x1a; l1diff 2026-11-23: STUDY1 faces 1361 and
+		// 1527 hit above the neighbour's ceiling, the original band 1 = upper, the port's "mid" admitted a mid-only 0x18).
 		const bool bound = g.bySide.count(idx) != 0;
-		const bool twoSided = res.Line->sidedef[0] != nullptr && res.Line->sidedef[1] != nullptr;
+		const uint8_t band = WallPartBit(res.Line, res.HitPos.Z);
+		const bool opening = res.Line->EffectiveBackSector() != nullptr && band == 0x01;
 		const bool midDrawn = sd->GetTexture(side_t::mid).isValid();
-		const bool opaque = !twoSided || res.Tier == TIER_Upper || res.Tier == TIER_Lower || (res.Tier == TIER_Middle && midDrawn);
+		const bool opaque = !opening || midDrawn;
 		if (bound || (opaque && g.sideToFace.count(idx)))
 		{
 			s.best = Pick{};
@@ -6929,7 +6934,7 @@ static ETraceStatus PickScanCallback(FTraceResults &res, void *data)
 			s.best.line   = res.Line;
 			s.best.side   = res.Side;
 			s.best.hitPos = res.HitPos;
-			s.best.band   = BandFromTier(res.Tier);
+			s.best.band   = band;
 			s.best.dist   = res.Distance;
 			s.found = true;
 			return TRACE_Stop;
