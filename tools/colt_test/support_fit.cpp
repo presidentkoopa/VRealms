@@ -142,6 +142,7 @@ struct HandModel
 
 // the previous pairing's fit (the right hand shooting first): its support hand's rotation and parameters, mirrored as a
 // start for the other pairing (the hands are mirror images, the Colt nearly so: gun x and the hand frame's Z flip)
+static double mainPadToTrigger[2] = { 1, 1 };
 static M3 gPrevR;
 static double gPrevPrm[16];
 static bool gHavePrev = false;
@@ -207,6 +208,25 @@ int main(int argc, char **argv)
 		auto handToGun = [&](V3 h) { return Rt * (h - mf.t) * (1.0 / s); };    // shooting hand metres -> gun file units
 		for (MeshV &v : mainM.v) { v.p = handToGun(v.p); v.n = Unit(Rt * v.n); }
 		// the reach (64 units, 17 mm) covers a hand's half-thickness: a point deeper than the reach would read OUTSIDE (+reach)
+		// THE SHOOTING INDEX STAYS ON THE TRIGGER in the two-hand pose (the same amounts as colt_fit): its distal segment's
+		// skin against the trigger blade (Trig), and its pad (the distal segment's most palmward point) to the face
+		{
+			const int jTrig = gj.at("Trig");
+			double ty = -1e30, tz0 = 1e30, tz1 = -1e30;
+			for (const MeshV &v : gun.v) if (v.bone == jTrig) { tz0 = fmin(tz0, v.p.z); tz1 = fmax(tz1, v.p.z); }
+			for (const MeshV &v : gun.v) if (v.bone == jTrig && fabs(v.p.x) < 6 && fabs(v.p.z - 0.5 * (tz0 + tz1)) < 8) ty = fmax(ty, v.p.y);
+			double best = 1e30; V3 bp;
+			for (const MeshV &v : mainM.v)
+			{
+				if (M.FingerOf(v.bone) != 1 || M.SegOf(v.bone) < 2) continue;
+				const double zc = v.p.z < tz0 ? tz0 : (v.p.z > tz1 ? tz1 : v.p.z);
+				const double d = Len(v.p - V3(0, ty, zc));
+				if (d < best) { best = d; bp = v.p; }
+			}
+			mainPadToTrigger[pair] = best * s;
+			printf("  the shooting index in this pose: its end segment's nearest skin %.1f mm from the trigger face's front edge (at (%.1f %.1f %.1f); the face y %.1f, z %.1f..%.1f)\n",
+				best * s * 1000, bp.x, bp.y, bp.z, ty, tz0, tz1);
+		}
 		GunSDF mainSdf; mainSdf.kReach = 64.0; mainSdf.kGrid = 4.0; mainSdf.Build(mainM); mainSdf.Fill();
 		// the shooting hand's landmarks: its thumb tip; its middle, ring, little finger backs
 		const V3 mThumbTip = handToGun(M.ToHand(Pos(mG[M.tips[0]].data())));
@@ -610,6 +630,8 @@ int main(int argc, char **argv)
 		Check(nearMain[4] < 0.003, line);
 		snprintf(line, sizeof line, "%s: the support thumb along the bore within 25 deg (%.1f), on the frame or the shooting fingers there within 3 mm (%.1f), between the guard and the shooting thumb (z %.1f in %.1f..%.1f)", tag, thumbAng, thumbAny * 1000, c2.z, zLo, zHi);
 		Check(thumbAng < 25 && thumbAny < 0.003 && c2.z > zLo - 3 && c2.z < zHi + 3, line);
+		snprintf(line, sizeof line, "%s: the shooting index's end on the trigger face within 6 mm in the two-hand pose (%.1f)", tag, mainPadToTrigger[pair] * 1000);
+		Check(mainPadToTrigger[pair] < 0.006, line, true);
 		snprintf(line, sizeof line, "%s: no support skin more than 2 mm in the gun (%d)", tag, nGun); Check(nGun == 0, line, true);
 		snprintf(line, sizeof line, "%s: no skin of either hand more than 2 mm in the other (%d support, %d shooting)", tag, nMain, nMainInSup); Check(nMain == 0 && nMainInSup == 0, line, true);
 
