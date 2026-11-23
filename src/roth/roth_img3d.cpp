@@ -94,6 +94,8 @@ public:
 
 // A companion (THE PARTS below): a RealmsItemModel drawing one more part of the model its master wears.
 constexpr int kCompanionTag = 0x1A3D;
+// A flight (Img3dFlyShow): a RealmsItemModel flying an item's model on its own.
+constexpr int kFlightTag = 0x1A3E;
 
 constexpr double kDeg = 3.14159265358979323846 / 180.0;
 
@@ -126,6 +128,9 @@ struct State
 	std::map<AActor *, Worn> worn;
 	AActor *held[kImg3dHeldSlots] = {};
 	bool shown[kImg3dHeldSlots] = {};
+	AActor *flight[kImg3dFlights] = {};
+	bool flown[kImg3dFlights] = {};
+	int loggedFlight[kImg3dFlights] = {};
 	int loggedSlot[kImg3dHeldSlots] = {};
 	FLevelLocals *sweptLevel = nullptr;
 };
@@ -695,6 +700,57 @@ static void PartsTick(FLevelLocals *level)
 	}
 }
 
+double Img3dWornMetres(const AActor *mo)
+{
+	auto it = S.worn.find(const_cast<AActor *>(mo));
+	if (mo == nullptr || it == S.worn.end() || it->second.key != mo->special2 || mo->sprite != it->second.modelSprite) return 0.0;
+	ItemModel *m = FindModelFor(it->second.item);
+	return m != nullptr ? m->mesh.Longest() * mo->Scale.X / UnitsPerMetre() : 0.0;
+}
+
+double Img3dHandMetres(int item, double cardMetres)
+{
+	ItemModel *m = FindModelFor(item);
+	if (m == nullptr) return cardMetres;
+	return m->entry.sizeFromTable ? m->mesh.Longest() : (cardMetres > 0 ? cardMetres : m->mesh.Longest());
+}
+
+bool Img3dFlyShow(FLevelLocals *level, int flight, int item, const DVector3 &centre, double yawDeg, double metres)
+{
+	if (level == nullptr || flight < 0 || flight >= kImg3dFlights || metres <= 0) return false;
+	ItemModel *m = FindModelFor(item);
+	PClassActor *cls = HeldClass();
+	if (m == nullptr || cls == nullptr) return false;
+	const int sn = SpriteFor(item, *m, KIND_WORLD, cls);
+	if (sn < 0) return false;
+	AActor *&mo = S.flight[flight];
+	if (mo != nullptr && ((mo->ObjectFlags & OF_EuthanizeMe) || mo->Level != level)) mo = nullptr;
+	const bool fresh = mo == nullptr || (mo->renderflags & RF_INVISIBLE) || mo->sprite != sn;
+	if (mo == nullptr) mo = AActor::StaticSpawn(level, cls, centre, NO_REPLACE);
+	if (mo == nullptr) return false;
+	mo->special1 = kFlightTag;
+	mo->flags5 |= MF5_NOTIMEFREEZE;   // the inventory pauses the world; a pickup still lands
+	mo->FollowHandMode = 0;
+	mo->sprite = sn;
+	mo->frame = 0;
+	mo->renderflags &= ~RF_INVISIBLE;
+	ApplyStyle(mo, m->mesh.parts[m->mesh.Primary()]);
+	const double upm = UnitsPerMetre(), ps = Stretch(level);
+	const double k = upm * metres / m->mesh.Longest();
+	mo->Scale = DVector2(k, k / ps);
+	mo->Angles.Yaw = DAngle::fromDeg(yawDeg);
+	const double z = centre.Z - 0.5 * (m->mesh.lo[1] + m->mesh.hi[1]) * k / ps;
+	mo->SetOrigin(DVector3(centre.X, centre.Y, z), true);
+	if (fresh) { mo->PrevScale = mo->Scale; mo->ClearInterpolation(); }
+	S.flown[flight] = true;
+	if (S.loggedFlight[flight] != item)
+	{
+		Printf("[roth_img3d] flight %d: item %d's model flies (%.3f m now)\n", flight, item, metres);
+		S.loggedFlight[flight] = item;
+	}
+	return true;
+}
+
 void Img3dHeldEndTick(FLevelLocals *level)
 {
 	// Once a level: the held models a loaded save brought back are not this tic's; they go (roth_hands.cpp Adopt).
@@ -710,6 +766,7 @@ void Img3dHeldEndTick(FLevelLocals *level)
 			{
 				bool ours = mo->special1 == kCompanionTag;   // a companion (PartsTick) keeps itself or goes on its own
 				for (AActor *h : S.held) if (h == mo) ours = true;
+				for (AActor *f : S.flight) if (f == mo) ours = true;
 				if (!ours && !(mo->ObjectFlags & OF_EuthanizeMe)) stray.Push(mo);
 			}
 			for (AActor *x : stray) x->Destroy();
@@ -726,6 +783,17 @@ void Img3dHeldEndTick(FLevelLocals *level)
 		}
 		S.shown[s] = false;
 	}
+	for (int f = 0; f < kImg3dFlights; f++)
+	{
+		AActor *&mo = S.flight[f];
+		if (mo != nullptr && ((mo->ObjectFlags & OF_EuthanizeMe) || mo->Level != level)) mo = nullptr;
+		if (!S.flown[f] && mo != nullptr && !(mo->renderflags & RF_INVISIBLE))
+		{
+			mo->renderflags |= RF_INVISIBLE;
+			if (S.loggedFlight[f] != 0) { Printf("[roth_img3d] flight %d: landed (hidden)\n", f); S.loggedFlight[f] = 0; }
+		}
+		S.flown[f] = false;
+	}
 	PartsTick(level);
 }
 
@@ -739,6 +807,7 @@ void Img3dEndLevel()
 		S.shown[s] = false;
 		S.loggedSlot[s] = 0;
 	}
+	for (int f = 0; f < kImg3dFlights; f++) { S.flight[f] = nullptr; S.flown[f] = false; S.loggedFlight[f] = 0; }
 	S.worn.clear();
 }
 

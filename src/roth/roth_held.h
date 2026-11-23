@@ -60,5 +60,9 @@ void HeldMovieOver();
 // The item card's drawn height in the hand (metres), as the item hand shows `item` (the card's longest side is the
 // object's own size, kRealSize, its aspect the icon's): where its base is, under the palm (roth_worldhands.cpp).
 double HeldItemCardHeightM(int item);
+// An item's size in the hand when its real size is not known (its card's longest side, metres), and its inventory
+// picture (DBASE200's icon) as a texture index (-1: none) -- for the pickup's fly-in and the stow (roth_interface.cpp).
+double HeldCardMetres(int item);
+int HeldIconTexture(int item, int &w, int &h);
 
 } // namespace roth

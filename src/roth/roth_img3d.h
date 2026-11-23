@@ -53,6 +53,17 @@ constexpr int kImg3dHeldSlots = 6;
 bool Img3dShowHeld(FLevelLocals *level, int slot, int item, const DVector3 &at, int role, double fallbackMetres, double faceYawDeg);
 // Once a tic after the cards: the slots not shown this tic are hidden.
 void Img3dHeldEndTick(FLevelLocals *level);
+
+// THE FLIGHTS (roth_interface.cpp: the pickup's fly-in to the hand, the stow over the shoulder): an item's model flying
+// on its own, upright, its middle at `centre`, its front toward `yawDeg`, its longest side `metres`. Presentation only;
+// nothing in the game reads it. Flight `flight` (0 .. kImg3dFlights - 1) is shown while it is placed each tic and
+// hidden when it is not (Img3dHeldEndTick). False: no model for the item (draw its picture).
+constexpr int kImg3dFlights = 2;
+bool Img3dFlyShow(FLevelLocals *level, int flight, int item, const DVector3 &centre, double yawDeg, double metres);
+// The longest side, in metres, of the model `mo` wears now as it lies (0: it wears none) -- where a fly-in starts.
+double Img3dWornMetres(const AActor *mo);
+// The longest side, in metres, the hand shows `item`'s model at (its real size, else `cardMetres`) -- where it lands.
+double Img3dHandMetres(int item, double cardMetres);
 void Img3dEndLevel();
 
 } // namespace roth

@@ -65,6 +65,8 @@ EXTERN_CVAR(Float, r_view_vstretch) // the flat projection's FY/FX (hw_entrypoin
 EXTERN_CVAR(Bool, gl_custompost)   // file scope: inside the namespace it would name another variable
 #include "roth_hands.h"
 #include "roth_vrpick.h"            // VRPickHandRay: the hands' rays (PointerRays)
+#include "roth_img3d.h"             // the fly-in and the stow fly the item's model where it has one
+#include "roth_held.h"              // HeldCardMetres, HeldIconTexture: the size and picture of an item in the hand
 
 
 EXTERN_CVAR(Float, bb_scale)
@@ -177,6 +179,11 @@ struct Fly
 	int bb = 0;
 	int hand = -1;          // VR: the hand it flies to (docs/VR_INTERACTION.md 1.5, D6); -1 the original's spot
 	int count = 0;          // fly-ins started, ever (a use asks whether it started one)
+	// THE MODEL (roth_img3d.h THE FLIGHTS): an item with a model flies as that model, from its size and facing as it
+	// lay to its size in the hand, turning to face the player; no billboard then.
+	int item = 0;
+	bool model = false;
+	double fromMetres = 0, toMetres = 0, fromYaw = 0;
 };
 
 // THE STOW (docs/VR_INTERACTION.md D7): an item put away is drawn from the hand into the coat. Presentation only.
@@ -186,7 +193,13 @@ struct Stow
 	DVector3 from, to;
 	int tics = 0, total = 7;
 	int bb = 0;
+	int item = 0;
+	bool model = false;     // the item's model flies (roth_img3d.h THE FLIGHTS), not its picture
+	double metres = 0;
 };
+
+// The stow's flight over the shoulder (3b): long enough to see it go [R: a tuning number, D7 had 0.2 s for the coat].
+constexpr double kStowSeconds = 0.35;
 
 struct Ui
 {
@@ -288,6 +301,8 @@ struct Ui
 	bool havePendingFly = false;
 	int pendingFlyHand = -1;        // InterfacePickupHand: the hand a use is made from
 	FTextureID pendingFlyTex = FNullTextureID();   // the picked object's own picture, when the render id finds none
+	double pendingFlyMetres = 0;    // the model the picked object wore: its size and facing as it lay (0: none)
+	double pendingFlyYaw = 0;
 
 	std::vector<std::vector<std::string>> queue;    // test commands, drained per tic
 	RealmsMenus *menus = nullptr;                   // roth_menus, owned by the runtime
@@ -1741,7 +1756,7 @@ void TickFly(player_t *player)
 	FBillboard *bb = nullptr;
 	for (FBillboard &b : U.level->Billboards) if (b.id == U.fly.bb) { bb = &b; break; }
 	U.fly.ticks += 2;
-	if (U.fly.ticks >= 0x1c || bb == nullptr || player == nullptr || player->mo == nullptr)
+	if (U.fly.ticks >= 0x1c || (bb == nullptr && !U.fly.model) || player == nullptr || player->mo == nullptr)
 	{
 		if (bb != nullptr)
 			for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
@@ -1755,7 +1770,18 @@ void TickFly(player_t *player)
 	DVector3 target;
 	FlyTarget(player, target);
 	const double f = kFlyFrac[U.fly.ticks] / 128.0;
-	bb->pos = target + (U.fly.from - target) * f;
+	const DVector3 pos = target + (U.fly.from - target) * f;
+	if (U.fly.model)
+	{
+		// The original's flight and fractions; the model shrinks or grows to its size in the hand and turns its front
+		// to the player as it comes.
+		const double toYaw = player->mo->Angles.Yaw.Degrees() + 180.0;
+		const double turn = remainder(toYaw - U.fly.fromYaw, 360.0);
+		const double metres = U.fly.toMetres + (U.fly.fromMetres - U.fly.toMetres) * f;
+		if (!Img3dFlyShow(U.level, 0, U.fly.item, pos, U.fly.fromYaw + turn * (1.0 - f), metres)) U.fly.model = false;
+		return;
+	}
+	if (bb != nullptr) bb->pos = pos;
 }
 
 // D7: the item's picture from the hand into the coat, shrinking, over kStowTics; then gone.
@@ -1764,7 +1790,7 @@ void TickStow()
 	if (!U.stow.active || U.level == nullptr) return;
 	FBillboard *bb = nullptr;
 	for (FBillboard &b : U.level->Billboards) if (b.id == U.stow.bb) { bb = &b; break; }
-	if (++U.stow.tics >= U.stow.total || bb == nullptr)
+	if (++U.stow.tics >= U.stow.total || (bb == nullptr && !U.stow.model))
 	{
 		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
 			if (U.level->Billboards[i].id == U.stow.bb) { U.level->Billboards.Delete(i); break; }
@@ -1772,22 +1798,62 @@ void TickStow()
 		return;
 	}
 	const double t = (double)U.stow.tics / U.stow.total;
-	bb->pos = U.stow.from + (U.stow.to - U.stow.from) * t;
+	const DVector3 pos = U.stow.from + (U.stow.to - U.stow.from) * t;
+	if (U.stow.model)
+	{
+		// 3b: over the shoulder into the backpack, shrinking as it goes behind the head.
+		AActor *pmo = U.level->GetConsolePlayer() != nullptr ? U.level->GetConsolePlayer()->mo : nullptr;
+		const double yaw = pmo != nullptr ? pmo->Angles.Yaw.Degrees() + 180.0 : 0.0;
+		if (!Img3dFlyShow(U.level, 1, U.stow.item, pos, yaw, U.stow.metres * (1.0 - 0.6 * t))) U.stow.model = false;
+		return;
+	}
+	if (bb == nullptr) return;
+	bb->pos = pos;
 	bb->width = bb->height = 12.0 * (1.0 - 0.8 * t);
 }
 
 void StartFly(const DVector3 &from, uint16_t renderId)
 {
 	if (U.level == nullptr) return;
+	if (U.fly.active)
+		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
+			if (U.level->Billboards[i].id == U.fly.bb) { U.level->Billboards.Delete(i); break; }
+	// The item's own model, where the owner's PC made one (roth_img3d.h): it leaves where it lay as it lay.
+	const int item = U.db != nullptr ? U.db->FindItemByRenderId(renderId) : 0;
+	if (item > 0 && Img3dHas(item))
+	{
+		AActor *pmo = U.level->GetConsolePlayer() != nullptr ? U.level->GetConsolePlayer()->mo : nullptr;
+		U.fly.active = true;
+		U.fly.from = from;
+		U.fly.ticks = 0;
+		U.fly.bb = 0;
+		U.fly.hand = U.pendingFlyHand;
+		U.fly.count++;
+		U.fly.item = item;
+		U.fly.model = true;
+		U.fly.toMetres = Img3dHandMetres(item, HeldCardMetres(item));
+		U.fly.fromMetres = U.pendingFlyMetres > 0 ? U.pendingFlyMetres : U.fly.toMetres;
+		U.fly.fromYaw = U.pendingFlyMetres > 0 ? U.pendingFlyYaw : (pmo != nullptr ? pmo->Angles.Yaw.Degrees() + 180.0 : 0.0);
+		Img3dFlyShow(U.level, 0, item, from, U.fly.fromYaw, U.fly.fromMetres);
+		Printf("[roth_ui] the pickup flies to the %s as item %d's model (0x1c ticks, the original's fractions): %.2f m as it lay -> %.2f m in the hand\n",
+			U.fly.hand == 0 ? "main hand" : U.fly.hand == 1 ? "off hand" : "original's spot", item, U.fly.fromMetres, U.fly.toMetres);
+		return;
+	}
+	U.fly.model = false;
+	U.fly.item = item;
 	FTextureID tex = FNullTextureID();
 	const int sn = FindLogicSprite(renderId);
 	if (sn >= 0 && sn < (int)sprites.Size() && sprites[sn].numframes > 0)
 		tex = SpriteFrames[sprites[sn].spriteframes].Texture[0];
 	if (!tex.isValid()) tex = U.pendingFlyTex;   // the object as the world drew it (a type-4 pickup)
+	if (!tex.isValid() && item > 0)
+	{
+		// the item's inventory picture (DBASE200), which every item has
+		int w = 0, h = 0;
+		const int icon = HeldIconTexture(item, w, h);
+		if (icon >= 0) tex = FSetTextureID(icon);
+	}
 	if (!tex.isValid()) return;
-	if (U.fly.active)
-		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
-			if (U.level->Billboards[i].id == U.fly.bb) { U.level->Billboards.Delete(i); break; }
 	FBillboard bb;
 	bb.id = U.level->NextBillboardID++;
 	bb.pos = from;
@@ -1806,7 +1872,7 @@ void StartFly(const DVector3 &from, uint16_t renderId)
 	U.fly.bb = bb.id;
 	U.fly.hand = U.pendingFlyHand;
 	U.fly.count++;
-	if (U.fly.hand >= 0) Printf("[roth_ui] the pickup flies to the %s hand (0x1c ticks, the original's fly-in aimed at its palm)\n", U.fly.hand == 0 ? "main" : "off");
+	if (U.fly.hand >= 0) Printf("[roth_ui] the pickup flies to the %s hand as its picture (0x1c ticks, the original's fly-in aimed at its palm)\n", U.fly.hand == 0 ? "main" : "off");
 }
 
 // The item's picture (as the fly-in finds it), for the stow.
@@ -2361,11 +2427,24 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 	U.havePendingFly = true;
 	// The picture the object is drawn with, for the fly-in when its render id names no logic sprite (presentation).
 	U.pendingFlyTex = mo->picnum;
-	if (!U.pendingFlyTex.isValid() && mo->sprite >= 0 && mo->sprite < (int)sprites.Size() && mo->frame < sprites[mo->sprite].numframes)
-		U.pendingFlyTex = SpriteFrames[sprites[mo->sprite].spriteframes + mo->frame].Texture[0];
+	{
+		// An object wearing an item's model: its picture is the kept one (Img3dPickPicture), and the model's size
+		// and facing are where the flight starts.
+		int picSprite = mo->sprite;
+		DVector2 picScale;
+		double picZ = 0;
+		if (Img3dPickPicture(mo, picSprite, picScale, picZ))
+		{
+			U.pendingFlyMetres = Img3dWornMetres(mo);
+			U.pendingFlyYaw = mo->Angles.Yaw.Degrees();
+		}
+		if (!U.pendingFlyTex.isValid() && picSprite >= 0 && picSprite < (int)sprites.Size() && sprites[picSprite].numframes > 0)
+			U.pendingFlyTex = SpriteFrames[sprites[picSprite].spriteframes + (picSprite == mo->sprite && mo->frame < sprites[picSprite].numframes ? mo->frame : 0)].Texture[0];
+	}
 	const int32_t r = U.core->Items().GiveItemByRenderId(*U.db, renderId, &ctx, U.core->InvSink());   // :1077
 	U.havePendingFly = false;
 	U.pendingFlyTex = FNullTextureID();
+	U.pendingFlyMetres = 0;
 	if (r == 0) return false;                                // not an item: nothing happens (:1078)
 	Printf("[roth_ui] picked up item %d (%s)\n", (int)r, U.dialogue.LineText(U.db->Item(r) ? U.db->Item(r)->name : 0, 0x61).c_str());
 	mo->Destroy();                                           // destroy_dynamic_entity, :1085
@@ -2411,7 +2490,30 @@ void InterfaceRetargetFly(int role) { if (U.fly.active) U.fly.hand = role; }
 void InterfaceStowPicture(int item, const DVector3 &from, const DVector3 &to)
 {
 	if (U.level == nullptr) return;
-	const FTextureID tex = ItemPicture(item);
+	if (Img3dHas(item))
+	{
+		// 3b: the item's model from the hand over the shoulder (roth_img3d.h THE FLIGHTS)
+		if (U.stow.active)
+			for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
+				if (U.level->Billboards[i].id == U.stow.bb) { U.level->Billboards.Delete(i); break; }
+		U.stow = Stow();
+		U.stow.active = true;
+		U.stow.from = from;
+		U.stow.to = to;
+		U.stow.total = std::max(1, (int)(kStowSeconds * TICRATE + 0.5));
+		U.stow.item = item;
+		U.stow.model = true;
+		U.stow.metres = Img3dHandMetres(item, HeldCardMetres(item));
+		Img3dFlyShow(U.level, 1, item, from, 0.0, U.stow.metres);
+		return;
+	}
+	FTextureID tex = ItemPicture(item);
+	if (!tex.isValid())
+	{
+		int w = 0, h = 0;
+		const int icon = HeldIconTexture(item, w, h);
+		if (icon >= 0) tex = FSetTextureID(icon);
+	}
 	if (!tex.isValid()) return;
 	if (U.stow.active)
 		for (unsigned i = 0; i < U.level->Billboards.Size(); i++)
@@ -2431,7 +2533,7 @@ void InterfaceStowPicture(int item, const DVector3 &from, const DVector3 &to)
 	U.stow.active = true;
 	U.stow.from = from;
 	U.stow.to = to;
-	U.stow.total = std::max(1, (int)(0.2 * TICRATE + 0.5));   // D7: 0.2 s
+	U.stow.total = std::max(1, (int)(kStowSeconds * TICRATE + 0.5));
 	U.stow.bb = bb.id;
 }
 

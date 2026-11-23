@@ -667,8 +667,13 @@ void Stow(int role)
 	DVector3 from = h.palm, to = from;
 	if (pmo != nullptr)
 	{
+		// 3b (owner, 2026-11-23: "put item over our shoulder like a backpack"): it flies from the hand over the shoulder
+		// on that hand's side, 20 cm behind the head and 15 cm below the eyes [R: tuning numbers].
 		const double vh = pmo->player != nullptr ? pmo->player->viewheight : 41.0;
-		to = pmo->Pos() + DVector3(pmo->Angles.Yaw.Cos(), pmo->Angles.Yaw.Sin(), 0) * 4.0 + DVector3(0, 0, vh * 0.6);
+		const double upm = VRPickUnitsPerMetre();
+		const DVector3 fwd(pmo->Angles.Yaw.Cos(), pmo->Angles.Yaw.Sin(), 0), left(-fwd.Y, fwd.X, 0);
+		const double side = VRHandPose_SideForRole(role) == VRHandPose::SIDE_RIGHT ? -1.0 : 1.0;
+		to = pmo->Pos() + DVector3(0, 0, vh - 0.15 * upm) - fwd * (0.20 * upm) + left * (side * 0.18 * upm);
 		if (!h.haveRay) from = to;
 	}
 	inv->PickUpToCursor(slot, sink);
@@ -677,7 +682,7 @@ void Stow(int role)
 	gItemId = 0;
 	InterfaceStowPicture(item, from, to);
 	Haptic(role, kStowAmp, kStowMs, "stowed: a soft pulse");
-	Printf("[roth_vrpick] %s hand let go of item %d: STOWED into the coat -- the original's own calls: its cell onto the cursor"
+	Printf("[roth_vrpick] %s hand let go of item %d: STOWED over the shoulder into the backpack -- the original's own calls: its cell onto the cursor"
 		" (dialogue_ui.c:1782-1787, g_selected_item_primary = 0) and put back (:1744); carried, not selected (right hand slot now %d)\n",
 		RoleName(role), item, inv->RightHand());
 }

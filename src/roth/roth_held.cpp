@@ -439,6 +439,9 @@ void Light(const DVector3 &at, const float colour[3], double intensity, double r
 
 } // namespace (anonymous)
 
+double HeldCardMetres(int item) { return CardMetres(item); }
+int HeldIconTexture(int item, int &w, int &h) { return IconTexture(item, w, h); }
+
 double HeldItemCardHeightM(int item)
 {
 	// As ShowCard draws it: the longest side CardMetres, the stored rows at the 320x200 screen's aspect.
@@ -685,7 +688,8 @@ void HeldTick(FLevelLocals *level, bool worldTicks)
 		for (int r = 0; r < 2; r++)
 		{
 			if (!hand[r].ok) continue;
-			if (shows[r].item > 0) ShowCard(H.card[r], r, shows[r].item, hand[r].palm, r);
+			// a pickup still flying to this hand shows in the air (roth_interface.cpp TickFly), not yet in the hand
+			if (shows[r].item > 0 && !InterfaceFlyingTo(r)) ShowCard(H.card[r], r, shows[r].item, hand[r].palm, r);
 			if (shows[r].palm > 0) ShowCard(H.palmBB, 2, shows[r].palm, hand[r].palm, r);
 			if (shows[r].match && H.haveFlame)
 			{
