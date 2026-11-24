@@ -58,6 +58,12 @@ bool VRHandPose_MapFrame(int role, DVector3 &origin, DVector3 &fwd, DVector3 &ri
 // stays on the held thing at draw rate. Null clears. Render-side only: nothing in the playsim reads it.
 void VRHandPose_SetHeldBy(int role, const float rel[16]);
 bool VRHandPose_HeldBy(int role);
+// VREALMS -- A HAND STOPPED BY WHAT IS SOLID (src/roth/roth_physics.cpp, docs/VR_PHYSICS.md): while set, `role`'s hand
+// frame is `world` (a rigid move of the world: render axes, map units, column-major) applied to the tracked frame, so
+// the drawn hand, what it holds and every reader stay on the desk or the wall the physics hand stopped at, at draw
+// rate. Null clears. Render-side and game layer only: nothing in the playsim reads it.
+void VRHandPose_SetBlocked(int role, const float world[16]);
+bool VRHandPose_Blocked(int role);
 // The hand frame from the controller alone (no VRHandPose_SetHeldBy): what the player's real hand is doing, for the
 // one who set the override to tell when the hand leaves.
 bool VRHandPose_TrackedHandFrame(int role, VSMatrix &out);

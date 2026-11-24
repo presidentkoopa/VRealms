@@ -436,6 +436,7 @@ add_subdirectory( libraries/webp )
 
 # RS FORK -- ufbx: the FBX model loader's reader (src/common/models/fbx_skinned.cpp).
 add_subdirectory( libraries/ufbx )
+add_subdirectory( libraries/JoltPhysics )	# VRealms -- physical hands and objects (src/roth/roth_physics_core.cpp)
 
 if( HAVE_VM_JIT AND UNIX )
 	check_symbol_exists( "backtrace" "execinfo.h" HAVE_BACKTRACE )

@@ -101,7 +101,7 @@ int FindLogicSprite(uint16_t textureWord);
 // Returns the sprite index to put in AActor::sprite (frame 0), or -1. Must be
 // called after PrepareObjects in the same load, because that is where the
 // sprite table and the added model frames are reset; `data` is consumed.
-int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log);
+int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log, int extraFlags = 0);   // extraFlags: MDL_ flags added (MDL_USEACTORPITCH | MDL_USEACTORROLL for a loose item, roth_physics)
 // A model FILE (path + "<file>[:selector]") bound to `cls` on a runtime sprite of this load, with its skin and a
 // MODELDEF block's angle offsets (degrees): the Colt's own mesh lying in the world (roth_img3d.cpp). -1: not bound.
 int BindModelFile(const char *key, const char *path, const char *file, const char *skin, PClassActor *cls, float angle, float pitch, float roll, Log *log);

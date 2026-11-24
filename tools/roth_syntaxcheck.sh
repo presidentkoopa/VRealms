@@ -13,8 +13,8 @@ INC=$(find src -type d -not -path '*msinttypes*' -not -path '*/win32*' \
 	-not -path '*thirdparty/rapidjson*' | sed 's/^/-I/' | tr '\n' ' ')
 INC="$INC -Isrc/common/thirdparty -Ilibraries/ZMusic/include -Ilibraries/ZVulkan/include"
 INC="$INC -Ilibraries/ZWidget/include -Ilibraries/miniz -Ilibraries/bzip2 -Ilibraries/lzma/C"
-INC="$INC -Ilibraries/asmjit -Ilibraries/webp/include -Ilibraries/abseil"
-DEF="-D__unix__ -Dstricmp=strcasecmp -Dstrnicmp=strncasecmp -D__forceinline=inline"
+INC="$INC -Ilibraries/asmjit -Ilibraries/webp/include -Ilibraries/abseil -Ilibraries/JoltPhysics"
+DEF="-D__unix__ -Dstricmp=strcasecmp -Dstrnicmp=strncasecmp -D__forceinline=inline -DJPH_NO_FORCE_INLINE"
 if [ $# -gt 0 ]; then FILES=""; for n in "$@"; do FILES="$FILES src/roth/$n.cpp"; done
 else FILES=$(ls src/roth/*.cpp); fi
 bad=0

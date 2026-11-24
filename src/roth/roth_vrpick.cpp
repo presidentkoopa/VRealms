@@ -137,6 +137,7 @@
 //
 
 #include "roth_vrpick.h"
+#include "roth_physics.h"          // a let go drops the item; a free palm takes a loose one
 #include "roth_dbase100.h"   // roth_l1diff: the item an object is
 #include "roth_raw.h"        // roth_l1diff: the object record
 #include "roth_vrweapons.h"
@@ -662,6 +663,20 @@ void Stow(int role)
 		return;
 	}
 	const int item = (int16_t)inv->Slot(slot).id;
+	// LET GO ANYWHERE BUT OVER THE SHOULDER (docs/VR_PHYSICS.md; owner 2026-11-24: "stays where it lands"): it falls,
+	// or flies with the hand's swing, and lies where it comes to rest. The game puts it away by the same calls as a
+	// stow -- carried, not selected -- and keeps it in the pack; only the hands know where it lies.
+	if (PhysicsLetGo(role, item))
+	{
+		inv->PickUpToCursor(slot, sink);
+		inv->DropHeld();
+		gItemRole = gItemSlot = -1;
+		gItemId = 0;
+		Haptic(role, kStowAmp, kStowMs, "let go: a soft pulse");
+		Printf("[roth_vrpick] %s hand let go of item %d: LOOSE in the world -- the game puts it away as a stow (its cell onto the cursor and"
+			" back, dialogue_ui.c:1782-1787, :1744); carried, not selected (right hand slot now %d)\n", RoleName(role), item, inv->RightHand());
+		return;
+	}
 	AActor *pmo = P.level != nullptr && P.level->GetConsolePlayer() != nullptr ? P.level->GetConsolePlayer()->mo : nullptr;
 	const HandState &h = P.hand[role];
 	DVector3 from = h.palm, to = from;
@@ -1042,8 +1057,39 @@ void UpdateTouch(int role, HandState &h, AActor *pmo, bool haveRay)
 // THE PICKER'S SQUEEZE (L2's last claim): D3 -- the touch (5 cm, the palm or the fingertip), else the point (the
 // extended index's ray; the tall wicks first), else the in-reach zone. Every one is L1's use (RulesUse's body: DoUse
 // behind the original's gate). 1: it went to a target (acted, or the original refused it: a double buzz); 0: nothing.
+// A LOOSE ITEM IN REACH OF A FREE PALM (roth_physics.h): taken where it was touched, and selected into this hand by
+// the original's own calls -- its cell onto the cursor, the cursor into the right hand (dialogue_ui.c:1768-1788,
+// 1722-1730) -- as the inventory panel would. While another item is in a hand the original selects only one: refused.
+bool TakeLoose(int role, HandState &h)
+{
+	Inventory *inv = InterfaceInventory();
+	InventorySink *sink = InterfaceInventorySink();
+	if (inv == nullptr || HandHoldsWeapon(role) || gL2[role].itemHeld) return false;
+	if (SelectedItem() > 0 && ItemHandRole() != role)
+	{
+		Printf("[roth_vrpick] %s hand: a loose item in reach, but item %d is in the other hand (the original holds one item at a time): refused\n",
+			RoleName(role), SelectedItem());
+		return false;
+	}
+	const int item = PhysicsGrabLoose(role);
+	if (item <= 0) return false;
+	const int slot = inv->FindSlotHolding(item);
+	if (slot < 0) { Printf("[roth_vrpick] %s hand took loose item %d, but the game no longer carries it\n", RoleName(role), item); return true; }
+	inv->PickUpToCursor(slot, sink);
+	inv->HeldToRightHand(sink);
+	gItemRole = role;
+	gItemSlot = inv->RightHand();
+	gItemId = gItemSlot >= 0 ? inv->Slot(gItemSlot).id : 0;
+	if (h.gripClosed) gL2[role].BeginPickup();
+	Printf("[roth_vrpick] %s hand TAKES loose item %d: selected by the original's calls (right hand slot %d)%s\n", RoleName(role), item,
+		inv->RightHand(), h.gripClosed ? ", HOLDING while the grip is closed" : "");
+	VRPickPickupLanded(role);
+	return true;
+}
+
 int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
 {
+	if (TakeLoose(role, h)) return 1;
 	if (!haveRay) return 0;
 	if (NearAct(role, h, pmo, true, kTouch)) return 1;
 	if (h.pointing)
@@ -1647,8 +1693,18 @@ void VRPickPickupLanded(int role)
 		gL2[role].itemHeld ? " -- HOLDING (let go to stow it)" : gStowPending[role] ? " -- the grip opened in flight: stowed now" : "");
 }
 
+int VRPickHeldItem(int role)
+{
+	if (role < 0 || role > 1 || HandHoldsWeapon(role)) return 0;
+	const int item = SelectedItem();
+	return item > 0 && ItemHandRole() == role ? item : 0;
+}
+
+void VRPickHaptic(int role, double amp, double ms, const char *why) { Haptic(role, amp, ms, why); }
+
 void VRPickEndLevel()
 {
+	PhysicsEndLevel();
 	ForgetLevel();
 	GesturesEndLevel();
 	WorldHandsEndLevel();

@@ -99,7 +99,7 @@ constexpr int kFlightTag = 0x1A3E;
 
 constexpr double kDeg = 3.14159265358979323846 / 180.0;
 
-enum Kind { KIND_WORLD = 0, KIND_HAND_RIGHT = 1, KIND_HAND_LEFT = 2 };
+enum Kind { KIND_WORLD = 0, KIND_HAND_RIGHT = 1, KIND_HAND_LEFT = 2, KIND_LOOSE = 3 };   // LOOSE: the world's mesh, turned by the actor's pitch and roll (roth_physics)
 
 struct ItemModel
 {
@@ -129,6 +129,10 @@ struct State
 	AActor *held[kImg3dHeldSlots] = {};
 	bool shown[kImg3dHeldSlots] = {};
 	AActor *flight[kImg3dFlights] = {};
+	AActor *loose[kImg3dLoose] = {};
+	bool looseShown[kImg3dLoose] = {};
+	bool heldRelSet[2] = { false, false };
+	double heldRel[2][12] = {};   // body frame -> hand frame: rotation (3 x 3, rows) then translation, metres
 	bool flown[kImg3dFlights] = {};
 	int loggedFlight[kImg3dFlights] = {};
 	int loggedSlot[kImg3dHeldSlots] = {};
@@ -301,13 +305,13 @@ FMemoryMeshData Build(ItemModel &m, int kind, FTextureID tex, int part)
 	{
 		float o[3];
 		const float *g = &me.pos[v * 3];
-		if (kind == KIND_WORLD) img3d::WorldPoint(g, 1.0, 1.0, o);
+		if (kind == KIND_WORLD || kind == KIND_LOOSE) img3d::WorldPoint(g, 1.0, 1.0, o);
 		else img3d::HandPoint(m.entry, kind == KIND_HAND_RIGHT, g, o);
 		d.vertices[(unsigned)v] = FVector3(o[0], o[1], o[2]);
 		if (!normals.empty())
 		{
 			const float *n = &me.nrm[v * 3];
-			if (kind == KIND_WORLD) img3d::WorldDirection(n, o);
+			if (kind == KIND_WORLD || kind == KIND_LOOSE) img3d::WorldDirection(n, o);
 			else img3d::HandDirection(m.entry, kind == KIND_HAND_RIGHT, n, o);
 			normals[v] = FVector3(o[0], o[1], o[2]);
 		}
@@ -344,9 +348,9 @@ int SpriteFor(int item, ItemModel &m, int kind, PClassActor *cls, int part = -1)
 	auto it = S.sprites.find(key);
 	if (it != S.sprites.end()) return it->second;
 	const FTextureID tex = ModelTexture(item, m, part);
-	const char *kn = kind == KIND_WORLD ? "world" : kind == KIND_HAND_RIGHT ? "handR" : "handL";
+	const char *kn = kind == KIND_WORLD ? "world" : kind == KIND_LOOSE ? "loose" : kind == KIND_HAND_RIGHT ? "handR" : "handL";
 	const FString mkey = part == 0 ? FStringf("img3d/g%d/%d/%s", S.generation, item, kn) : FStringf("img3d/g%d/%d/%s/p%d", S.generation, item, kn, part);
-	const int sn = BindMemoryMesh(mkey.GetChars(), Build(m, kind, tex, part), cls, nullptr);
+	const int sn = BindMemoryMesh(mkey.GetChars(), Build(m, kind, tex, part), cls, nullptr, kind == KIND_LOOSE ? (MDL_USEACTORPITCH | MDL_USEACTORROLL) : 0);
 	if (sn < 0) Printf(TEXTCOLOR_RED "[roth_img3d] item %d: the %s model (part %d) could not be bound to %s -- its picture is kept\n", item, kn, part, cls->TypeName.GetChars());
 	S.sprites[key] = sn;
 	if (sn >= 0 && part == primary && m.mesh.parts.size() > 1) S.multi[sn] = State::Multi{ item, kind };
@@ -570,6 +574,84 @@ bool Img3dPickPicture(const AActor *mo, int &sprite, DVector2 &scale, double &z)
 	return true;
 }
 
+namespace
+{
+// An affine map, rows: m[r][0..2] the linear part, m[r][3] the translation.
+struct Aff
+{
+	double m[3][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 } };
+	void Apply(const double in[3], double out[3]) const
+	{
+		for (int r = 0; r < 3; r++) out[r] = m[r][0] * in[0] + m[r][1] * in[1] + m[r][2] * in[2] + m[r][3];
+	}
+	Aff operator*(const Aff &o) const   // this after o
+	{
+		Aff a;
+		for (int r = 0; r < 3; r++)
+			for (int c = 0; c < 4; c++)
+			{
+				double v = (c == 3) ? m[r][3] : 0.0;
+				for (int k = 0; k < 3; k++) v += m[r][k] * o.m[k][c];
+				a.m[r][c] = v;
+			}
+		return a;
+	}
+	bool Inverse(Aff &out) const
+	{
+		const double (&a)[3][4] = m;
+		const double det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+			+ a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+		if (fabs(det) < 1e-12) return false;
+		const double id = 1.0 / det;
+		double inv[3][3];
+		inv[0][0] = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) * id;
+		inv[0][1] = (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * id;
+		inv[0][2] = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * id;
+		inv[1][0] = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) * id;
+		inv[1][1] = (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * id;
+		inv[1][2] = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * id;
+		inv[2][0] = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) * id;
+		inv[2][1] = (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * id;
+		inv[2][2] = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * id;
+		for (int r = 0; r < 3; r++)
+		{
+			for (int c = 0; c < 3; c++) out.m[r][c] = inv[r][c];
+			out.m[r][3] = -(inv[r][0] * a[0][3] + inv[r][1] * a[1][3] + inv[r][2] * a[2][3]);
+		}
+		return true;
+	}
+	static Aff Scale(double s) { Aff a; for (int r = 0; r < 3; r++) a.m[r][r] = s; return a; }
+	static Aff From12(const double *v) { Aff a; for (int r = 0; r < 3; r++) { for (int c = 0; c < 3; c++) a.m[r][c] = v[r * 3 + c]; a.m[r][3] = v[9 + r]; } return a; }
+};
+
+// glTF -> the body frame (metres per mesh metre sigma)
+Aff GltfToBody(double sigma)
+{
+	Aff a;
+	for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) a.m[r][c] = 0.0;
+	a.m[0][2] = sigma;   // x = g.z
+	a.m[1][0] = sigma;   // y = g.x
+	a.m[2][1] = sigma;   // z = g.y
+	return a;
+}
+
+// glTF -> the hand frame by the manifest's grip (img3d_core.h HandPoint), read off as an affine map
+Aff GltfToHand(const img3d::Entry &e, bool right)
+{
+	float o[3], x[3], y[3], z[3];
+	const float g0[3] = { 0, 0, 0 }, gx[3] = { 1, 0, 0 }, gy[3] = { 0, 1, 0 }, gz[3] = { 0, 0, 1 };
+	img3d::HandPoint(e, right, g0, o);
+	img3d::HandPoint(e, right, gx, x);
+	img3d::HandPoint(e, right, gy, y);
+	img3d::HandPoint(e, right, gz, z);
+	Aff a;
+	for (int r = 0; r < 3; r++) { a.m[r][0] = x[r] - o[r]; a.m[r][1] = y[r] - o[r]; a.m[r][2] = z[r] - o[r]; a.m[r][3] = o[r]; }
+	return a;
+}
+
+double Sigma(const ItemModel &m, double metres) { const double L = m.mesh.Longest(); return L > 0 ? metres / L : 1.0; }
+} // namespace
+
 bool Img3dShowHeld(FLevelLocals *level, int slot, int item, const DVector3 &at, int role, double fallbackMetres, double faceYawDeg)
 {
 	if (level == nullptr || slot < 0 || slot >= kImg3dHeldSlots) return false;
@@ -600,6 +682,23 @@ bool Img3dShowHeld(FLevelLocals *level, int slot, int item, const DVector3 &at, 
 		mo->FollowHandMode = (role == VR_MAINHAND) ? FOLLOWHAND_GRIP_MAIN : FOLLOWHAND_GRIP_OFF;
 		mo->Scale = DVector2(s, s);
 		mo->SetOrigin(at, true);
+		// GRABBED WHERE IT WAS TOUCHED (roth_physics.h): its own place in the hand, not the manifest's grip. The mesh
+		// is the manifest grip's (KIND_HAND); the seat turns it from there to `rel` (the body frame in the hand frame),
+		// before the actor's scale s: seat = scale(1/s) o rel o body(g) o (s o grip)^-1 ... applied to grip(g).
+		if (S.heldRelSet[role])
+		{
+			Aff gripInv, bodyAff = GltfToBody(Sigma(*m, metres));
+			const Aff grip = GltfToHand(m->entry, right);
+			if (grip.Inverse(gripInv))
+			{
+				const Aff seatA = Aff::Scale(1.0 / s) * Aff::From12(S.heldRel[role]) * bodyAff * gripInv;
+				float seat[16] = {};
+				for (int r = 0; r < 3; r++) { for (int c = 0; c < 3; c++) seat[c * 4 + r] = (float)seatA.m[r][c]; seat[12 + r] = (float)seatA.m[r][3]; }
+				seat[15] = 1.f;
+				VRHandPose_SetActorSeat(mo, seat);
+			}
+		}
+		else VRHandPose_SetActorSeat(mo, nullptr);
 	}
 	else
 	{
@@ -624,6 +723,103 @@ bool Img3dShowHeld(FLevelLocals *level, int slot, int item, const DVector3 &at, 
 		S.loggedSlot[slot] = item * 4 + kind;
 	}
 	return true;
+}
+
+// ---------------------------------------------------------------------------------------------------- THE LOOSE ITEMS
+// roth_physics.h: an item's model lying free and turned any way. Its BODY FRAME is the model's own as it is drawn at
+// yaw 0 in the world (KIND_WORLD), in the map's axes and metres: b(g) = (g.z, g.x, g.y) * sigma, sigma the metres per
+// mesh metre (img3d_core.h WorldPoint maps glTF to the model's render axes (z, y, x), which are the map's with y and z
+// swapped). The actor's origin is the body's origin.
+
+
+bool Img3dItemHull(int item, double metres, std::vector<DVector3> &out)
+{
+	out.clear();
+	ItemModel *m = FindModelFor(item);
+	if (m == nullptr || metres <= 0) return false;
+	const Aff b = GltfToBody(Sigma(*m, metres));
+	const size_t nv = m->mesh.Vertices();
+	const size_t stride = nv > 400 ? nv / 400 : 1;
+	for (size_t v = 0; v < nv; v += stride)
+	{
+		const double g[3] = { m->mesh.pos[v * 3], m->mesh.pos[v * 3 + 1], m->mesh.pos[v * 3 + 2] };
+		double o[3];
+		b.Apply(g, o);
+		out.push_back(DVector3(o[0], o[1], o[2]));
+	}
+	// the extremes, so the stride does not shave a corner off
+	const double lo[3] = { m->mesh.lo[0], m->mesh.lo[1], m->mesh.lo[2] }, hi[3] = { m->mesh.hi[0], m->mesh.hi[1], m->mesh.hi[2] };
+	for (size_t v = 0; v < nv; v++)
+	{
+		const float *p = &m->mesh.pos[v * 3];
+		bool ext = false;
+		for (int k = 0; k < 3; k++) if (p[k] == (float)lo[k] || p[k] == (float)hi[k]) ext = true;
+		if (!ext) continue;
+		const double g[3] = { p[0], p[1], p[2] };
+		double o[3];
+		b.Apply(g, o);
+		out.push_back(DVector3(o[0], o[1], o[2]));
+	}
+	return !out.empty();
+}
+
+bool Img3dGripRel(int item, bool rightHand, double metres, double rel[12])
+{
+	ItemModel *m = FindModelFor(item);
+	if (m == nullptr || metres <= 0) return false;
+	const double sigma = Sigma(*m, metres);
+	// hand(u) = sigma-scaled manifest grip of g; body(g) = GltfToBody; rel = hand o body^-1 (rigid: sigma cancels)
+	Aff bodyInv;
+	if (!GltfToBody(sigma).Inverse(bodyInv)) return false;
+	const Aff r = Aff::Scale(sigma) * GltfToHand(m->entry, rightHand) * bodyInv;
+	for (int a = 0; a < 3; a++) { for (int c = 0; c < 3; c++) rel[a * 3 + c] = r.m[a][c]; rel[9 + a] = r.m[a][3]; }
+	return true;
+}
+
+void Img3dHeldRel(int role, const double *rel12)
+{
+	if (role < 0 || role > 1) return;
+	S.heldRelSet[role] = rel12 != nullptr;
+	if (rel12 != nullptr) memcpy(S.heldRel[role], rel12, sizeof(S.heldRel[role]));
+}
+
+bool Img3dLooseShow(FLevelLocals *level, int slot, int item, const DVector3 &origin, double yaw, double pitch, double roll, double metres)
+{
+	if (level == nullptr || slot < 0 || slot >= kImg3dLoose || metres <= 0) return false;
+	ItemModel *m = FindModelFor(item);
+	PClassActor *cls = HeldClass();
+	if (m == nullptr || cls == nullptr) return false;
+	const int sn = SpriteFor(item, *m, KIND_LOOSE, cls);
+	if (sn < 0) return false;
+	AActor *&mo = S.loose[slot];
+	if (mo != nullptr && ((mo->ObjectFlags & OF_EuthanizeMe) || mo->Level != level)) mo = nullptr;
+	const bool fresh = mo == nullptr || (mo->renderflags & RF_INVISIBLE) || mo->sprite != sn;
+	if (mo == nullptr) mo = AActor::StaticSpawn(level, cls, origin, NO_REPLACE);
+	if (mo == nullptr) return false;
+	mo->special1 = kFlightTag;   // not stray (the sweep), not a companion
+	mo->flags5 |= MF5_NOTIMEFREEZE;
+	mo->FollowHandMode = 0;
+	mo->sprite = sn;
+	mo->frame = 0;
+	mo->renderflags &= ~RF_INVISIBLE;
+	ApplyStyle(mo, m->mesh.parts[m->mesh.Primary()]);
+	const double k = UnitsPerMetre() * Sigma(*m, metres);
+	mo->Scale = DVector2(k, k / Stretch(level));
+	mo->Angles.Yaw = DAngle::fromDeg(yaw);
+	mo->Angles.Pitch = DAngle::fromDeg(pitch);
+	mo->Angles.Roll = DAngle::fromDeg(roll);
+	mo->renderradius = std::max(16.0, k * m->mesh.Longest());
+	mo->SetOrigin(origin, true);
+	if (fresh) { mo->PrevScale = mo->Scale; mo->ClearInterpolation(); }
+	S.looseShown[slot] = true;
+	return true;
+}
+
+AActor *Img3dLooseActor(int slot)
+{
+	if (slot < 0 || slot >= kImg3dLoose) return nullptr;
+	AActor *mo = S.loose[slot];
+	return mo != nullptr && !(mo->ObjectFlags & OF_EuthanizeMe) && !(mo->renderflags & RF_INVISIBLE) ? mo : nullptr;
 }
 
 // THE PARTS (roth_img3d_core.h): a model of several parts -- a vial's glass, its glowing liquid, its cork -- is drawn by
@@ -767,6 +963,7 @@ void Img3dHeldEndTick(FLevelLocals *level)
 				bool ours = mo->special1 == kCompanionTag;   // a companion (PartsTick) keeps itself or goes on its own
 				for (AActor *h : S.held) if (h == mo) ours = true;
 				for (AActor *f : S.flight) if (f == mo) ours = true;
+				for (AActor *f : S.loose) if (f == mo) ours = true;
 				if (!ours && !(mo->ObjectFlags & OF_EuthanizeMe)) stray.Push(mo);
 			}
 			for (AActor *x : stray) x->Destroy();
@@ -794,6 +991,13 @@ void Img3dHeldEndTick(FLevelLocals *level)
 		}
 		S.flown[f] = false;
 	}
+	for (int f = 0; f < kImg3dLoose; f++)
+	{
+		AActor *&mo = S.loose[f];
+		if (mo != nullptr && ((mo->ObjectFlags & OF_EuthanizeMe) || mo->Level != level)) mo = nullptr;
+		if (!S.looseShown[f] && mo != nullptr) mo->renderflags |= RF_INVISIBLE;
+		S.looseShown[f] = false;
+	}
 	PartsTick(level);
 }
 
@@ -808,6 +1012,8 @@ void Img3dEndLevel()
 		S.loggedSlot[s] = 0;
 	}
 	for (int f = 0; f < kImg3dFlights; f++) { S.flight[f] = nullptr; S.flown[f] = false; S.loggedFlight[f] = 0; }
+	for (int f = 0; f < kImg3dLoose; f++) { S.loose[f] = nullptr; S.looseShown[f] = false; }
+	S.heldRelSet[0] = S.heldRelSet[1] = false;
 	S.worn.clear();
 }
 

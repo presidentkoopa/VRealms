@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 //
 // roth_img3d.h -- THE ITEM MODELS IN THE ENGINE (the owner's decision of 2026-11-16: "sprites are a no-go").
 //
@@ -64,6 +65,19 @@ bool Img3dFlyShow(FLevelLocals *level, int flight, int item, const DVector3 &cen
 double Img3dWornMetres(const AActor *mo);
 // The longest side, in metres, the hand shows `item`'s model at (its real size, else `cardMetres`) -- where it lands.
 double Img3dHandMetres(int item, double cardMetres);
+
+// THE LOOSE ITEMS (roth_physics.h): an item's model lying free, any way up. Its body frame: the model as drawn at yaw
+// 0 in the world, map axes, metres, origin the model's (roth_img3d.cpp). `metres` its longest side.
+constexpr int kImg3dLoose = 16;
+bool Img3dLooseShow(FLevelLocals *level, int slot, int item, const DVector3 &origin, double yaw, double pitch, double roll, double metres);
+AActor *Img3dLooseActor(int slot);   // shown this tic, else null
+// The item's shape for the physics: points of its model in the body frame (a sample and its extremes). False: no model.
+bool Img3dItemHull(int item, double metres, std::vector<DVector3> &out);
+// Where the manifest's grip puts the body frame in the hand frame (roth_physics_core.h): rotation rows, then translation.
+bool Img3dGripRel(int item, bool rightHand, double metres, double rel[12]);
+// A held item's own place in the hand (grabbed where it was touched): the body frame in the hand frame, as above.
+// Null: the manifest's grip.
+void Img3dHeldRel(int role, const double *rel12);
 void Img3dEndLevel();
 
 } // namespace roth

@@ -618,6 +618,21 @@ bool VRHandPose_TrackedMapFrame(int role, DVector3 &origin, DVector3 &fwd, DVect
 	return VRPose_HandMapFrame(m, VRHandPose_SideForRole(role) == SIDE_RIGHT, origin, fwd, right, up);
 }
 
+namespace
+{
+	bool gBlockedSet[2] = { false, false };
+	float gBlocked[2][16];
+}
+
+void VRHandPose_SetBlocked(int role, const float world[16])
+{
+	if (role < 0 || role > 1) return;
+	gBlockedSet[role] = world != nullptr;
+	if (world != nullptr) memcpy(gBlocked[role], world, sizeof(gBlocked[role]));
+}
+
+bool VRHandPose_Blocked(int role) { return role >= 0 && role <= 1 && gBlockedSet[role]; }
+
 bool VRHandPose_HandFrame(int role, VSMatrix &out)
 {
 	// a hand drawn where it holds: the other hand's TRACKED frame times the seat (never itself overridden: one level)
@@ -625,6 +640,15 @@ bool VRHandPose_HandFrame(int role, VSMatrix &out)
 	{
 		if (!VRHandPose_TrackedHandFrame(1 - role, out)) return false;
 		out.multMatrix(gHeldBy[role]);
+		return true;
+	}
+	if (role >= 0 && role <= 1 && gBlockedSet[role])
+	{
+		// a hand stopped by the physics: the world's move, then the tracked frame
+		VSMatrix tracked;
+		if (!VRHandPose_TrackedHandFrame(role, tracked)) return false;
+		out.loadMatrix(gBlocked[role]);
+		out.multMatrix(tracked);
 		return true;
 	}
 	return VRHandPose_TrackedHandFrame(role, out);

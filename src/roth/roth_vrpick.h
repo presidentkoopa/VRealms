@@ -39,6 +39,11 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at);
 // The hands' metres to map units (VR_UnitsPerMeter; 34 in flat).
 double VRPickUnitsPerMetre();
 
+// roth_physics.h: the item the game has in `role`'s hand now (the original's selected item, carried in that hand, no
+// weapon drawn in it), 0 none; and a buzz on that hand's controller (`why` logged under roth_vrpick_debug).
+int VRPickHeldItem(int role);
+void VRPickHaptic(int role, double amp, double ms, const char *why);
+
 // FOR THE GESTURES (roth_gestures.h). A hand this tic: its inputs as the picker read them, and its points
 // (fingertip, finger direction, palm, the hand's own axis) as drawn (FingerRay). False when the hands are not
 // live or that hand has no controller; `havePoints` false when it has no drawn hand.

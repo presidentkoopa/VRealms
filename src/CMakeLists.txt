@@ -312,6 +312,7 @@ endif()
 list( APPEND PROJECT_LIBRARIES "zwidget" )
 list( APPEND PROJECT_LIBRARIES "webp" )
 list( APPEND PROJECT_LIBRARIES "ufbx" )	# RS FORK -- the FBX model loader (common/models/fbx_skinned.cpp)
+list( APPEND PROJECT_LIBRARIES "Jolt" )	# VRealms -- Jolt Physics: physical hands and objects (roth/roth_physics_core.cpp)
 
 message("Building for target architecture: ${TARGET_ARCHITECTURE}")
 
@@ -999,6 +1000,8 @@ set (PCH_SOURCES
 	# and where they replace the item pictures.
 	roth/roth_img3d_core.cpp
 	roth/roth_img3d.cpp
+	roth/roth_physics_core.cpp
+	roth/roth_physics.cpp
 	roth/roth_menudraw.cpp
 	roth/roth_huddraw.cpp
 	roth/roth_dlgdraw.cpp

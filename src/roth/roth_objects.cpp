@@ -566,7 +566,7 @@ static const MeshBinding *EnsureMesh(const std::string &packName, int index,
 
 static std::map<std::string, unsigned> gBoundModels;   // pseudo name -> Models index
 
-int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log)
+int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Log *log, int extraFlags)
 {
 	if (key == nullptr || cls == nullptr || data.faces.Size() == 0) return -1;
 	if (!gSpriteMarkValid) return -1;       // PrepareObjects has not run this load
@@ -604,7 +604,7 @@ int BindMemoryMesh(const char *key, FMemoryMeshData &&data, PClassActor *cls, Lo
 	for (unsigned i = 0; i < smf.surfaceskinIDs.Size(); i++)
 		smf.surfaceskinIDs[i] = FNullTextureID();
 	smf.xscale = smf.yscale = smf.zscale = 1.f;
-	smf.setFlags(MDL_NOPIXELSTRETCH);       // stretched with the world, as the props above
+	smf.setFlags(MDL_NOPIXELSTRETCH | extraFlags);   // stretched with the world, as the props above
 	smf.type = cls;
 	smf.sprite = (short)spriteNum;
 	smf.frame = 0;

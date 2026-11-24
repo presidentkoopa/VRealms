@@ -46,6 +46,7 @@
 #include "roth_actors_engine.h"   // objects, creatures, bullets, player damage (roth_actors.h)
 #include "roth_hands.h"           // the VR hands' actors (r_data/vr_handpose.h draws them)
 #include "roth_vrpick.h"          // the VR hands point and touch (phase 1 of the VR interaction)
+#include "roth_physics.h"         // the hands' bodies and the loose items (docs/VR_PHYSICS.md)
 #include "roth_candles.h"         // the candles' wicks, one by one (presentation)
 #include "roth_cursor.h"          // classify_cursor_target_object, engine-free (tools/vrpick_test)
 #include "roth_touchgeom.h"       // a palm touching a wall (tools/vrpick_test)
@@ -8847,6 +8848,7 @@ void TickLevelLogic(FLevelLocals *level)
 	if (g_menus.IsOpen() || g_flow.Dying())
 	{
 		InterfaceTick(level);
+		PhysicsTick(level, false);   // the world holds: the hands go where the controllers go
 		VRPickTick(level, true);     // modal: no beam, no gestures
 		HeldTick(level, false);      // the held objects stand still (the match does not burn)
 		SoundTick(level);
@@ -8859,6 +8861,7 @@ void TickLevelLogic(FLevelLocals *level)
 		// Mode 3 (see above): the panel, its mouse (the hands), the speech.
 		DrainTimedCommands(level);   // tests drive the inventory with roth_at
 		InterfaceTick(level);
+		PhysicsTick(level, false);
 		VRPickTick(level, false);
 		HeldTick(level, false);      // the Book in both hands, the popup beside it; the match does not burn while paused
 		SoundPauseTick(level);
@@ -8924,6 +8927,8 @@ void TickLevelLogic(FLevelLocals *level)
 	// The VR hands' pointer and gestures (roth_vrpick.h): after the panels, so
 	// a panel that just opened owns the pointer this same tic. What a gesture
 	// fires runs its chain now; the effects it registers tick from the next.
+	// The hands' bodies and the loose items first (roth_physics.h): the picker then reads the hands where they stopped.
+	PhysicsTick(level, true);
 	VRPickTick(level, false);
 
 	// The candles' wicks (roth_candles.h): after every chain of the tic and the hands' uses, so the picture a

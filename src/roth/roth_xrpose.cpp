@@ -50,6 +50,7 @@
 
 #include "roth_hands.h"
 #include "roth_vrpick.h"
+#include "roth_physics.h"
 #include "roth_objects.h"
 #include "actor.h"
 #include "actorinlines.h"
@@ -145,6 +146,7 @@ AActor *TargetActor(AActor *pmo, FCommandLine &argv, int &a)
 {
 	if (a >= argv.argc()) return nullptr;
 	if (!stricmp(argv[a], "item")) { a++; return NearestPickupItem(pmo); }
+	if (!stricmp(argv[a], "loose")) { a++; return PhysicsLooseActor(0); }   // the first loose item (roth_physics.h)
 	if (!stricmp(argv[a], "object") && a + 2 < argv.argc())
 	{
 		const int rs = atoi(argv[a + 1]), ri = atoi(argv[a + 2]);
@@ -380,7 +382,7 @@ CCMD(roth_xrpose)
 		const int role = argv.argc() >= 4 ? RoleArg(argv[2]) : -1;
 		AActor *pmo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
 		FVRPoseTestHand h;
-		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose handat <main|off> item|object <s> <i> [palm] [dx dy dz]\n"); return; }
+		if (role < 0 || pmo == nullptr) { Printf("roth_xrpose handat <main|off> item|loose|object <s> <i> [palm] [dx dy dz]\n"); return; }
 		if (!VRPoseTest_Hand(role, h) || !h.valid) { Printf("roth_xrpose handat: the %s hand has no pose (roth_xrpose hand first)\n", RoleName(role)); return; }
 		int a = 3;
 		AActor *best = TargetActor(pmo, argv, a);
