@@ -172,6 +172,22 @@ class Contacts final : public ContactListener
 {
 public:
 	std::mutex lock;
+	struct Grace { BodyID item; int hand; int steps; };
+	std::vector<Grace> grace;   // a hand and the item it just let go of: no contact between them for a few steps
+
+	ValidateResult OnContactValidate(const Body &a, const Body &b, RVec3Arg, const CollideShapeResult &) override
+	{
+		std::lock_guard<std::mutex> g(lock);
+		for (const Grace &gr : grace)
+			for (int k = 0; k < 2; k++)
+			{
+				const Body &it = k ? b : a, &hd = k ? a : b;
+				const uint64 u = hd.GetUserData();
+				if (it.GetID() == gr.item && (u & (0xffull << 56)) == kUserHand && (int)(u & 1) == gr.hand)
+					return ValidateResult::RejectAllContactsForThisBodyPair;
+			}
+		return ValidateResult::AcceptAllContactsForThisBodyPair;
+	}
 	double hit[2] = { 0, 0 };
 	int touching[2] = { 0, 0 };   // contacts added minus removed is unknowable here; counted per step instead
 	bool touchedThisStep[2] = { false, false };
@@ -371,7 +387,7 @@ size_t World::StaticTriangles() const
 	return n;
 }
 
-Id World::AddItem(const ItemShape &shape, const Pose &at, const V3 &vel, const V3 &angVel)
+Id World::AddItem(const ItemShape &shape, const Pose &at, const V3 &vel, const V3 &angVel, int graceHand, int graceSteps)
 {
 	RefConst<Shape> s = ItemShapeOf(shape.hull);
 	BodyCreationSettings bs(s, RVec3(J(at.p)), J(at.q), EMotionType::Dynamic, Layer::Item);
@@ -380,14 +396,19 @@ Id World::AddItem(const ItemShape &shape, const Pose &at, const V3 &vel, const V
 	bs.mMotionQuality = EMotionQuality::LinearCast;
 	bs.mFriction = (float)shape.friction;
 	bs.mRestitution = (float)shape.restitution;
-	bs.mLinearDamping = 0.05f;
-	bs.mAngularDamping = 0.15f;
+	bs.mLinearDamping = 0.1f;
+	bs.mAngularDamping = 0.5f;    // round things (a helm, an orb) settle instead of rolling on for ever: Jolt has no rolling friction
 	bs.mLinearVelocity = J(vel);
 	bs.mAngularVelocity = J(angVel);
 	bs.mUserData = kUserItem;
 	const BodyID id = I->BI().CreateAndAddBody(bs, EActivation::Activate);
 	if (id.IsInvalid()) return kNone;
 	I->items.push_back(id);
+	if (graceHand >= 0 && graceSteps > 0)
+	{
+		std::lock_guard<std::mutex> g(I->contacts.lock);
+		I->contacts.grace.push_back({ id, graceHand & 1, graceSteps });
+	}
 	return id.GetIndexAndSequenceNumber();
 }
 
@@ -548,6 +569,12 @@ void World::Step(double dt, int collisionSteps)
 		I->contacts.touchedThisStep[0] = I->contacts.touchedThisStep[1] = false;
 	}
 	I->sys.Update((float)dt, std::max(1, collisionSteps), I->temp.get(), I->jobs.get());
+	{
+		std::lock_guard<std::mutex> g(I->contacts.lock);
+		auto &gr = I->contacts.grace;
+		for (auto &x : gr) x.steps--;
+		gr.erase(std::remove_if(gr.begin(), gr.end(), [](const Contacts::Grace &x) { return x.steps <= 0; }), gr.end());
+	}
 	for (size_t k = 0; k < I->hands.size() && k < 2; k++)
 	{
 		I->hands[k].hit = I->contacts.hit[k];

@@ -381,7 +381,9 @@ void AfterStep()
 		h.hist[h.histN % 4] = now;
 		h.histN++;
 		const double off = (now.p - target.p).Length(), turn = AngleDeg(now.q, target.q);
-		const bool blocked = off > kBlockedM || turn > kBlockedDeg;
+		// stopped: away from the controller AND against something (a hand only lagging behind a fast swing, its speed
+		// capped, is drawn on the controller: lag is worse than a hand that never stops)
+		const bool blocked = (off > kBlockedM || turn > kBlockedDeg) && S.world->HandTouching(h.body);
 		if (blocked)
 		{
 			float m[16];
@@ -510,7 +512,7 @@ bool PhysicsLetGo(int role, int item)
 	l.item = item;
 	l.metres = metres;
 	l.slot = slot >= 0 ? slot : FreeSlot();
-	l.body = S.world->AddItem(shape, body, lin, ang);
+	l.body = S.world->AddItem(shape, body, lin, ang, (int)h.body, 9);   // the palm it leaves does not knock it for a quarter second
 	if (l.body == phys::kNone) return false;
 	S.loose.push_back(l);
 	const DVector3 at = U(body.p);

@@ -137,6 +137,25 @@ int main()
 		Check(std::fabs(hp.p.x - 0.9) < 0.01, "let go of it, the hand goes on to its target", hp.p.x);
 	}
 	{
+		// LET GO INSIDE THE PALM: the item leaves the hand it overlaps without being knocked aside
+		for (int grace : { 0, 9 })
+		{
+			World w;
+			Room(w);
+			HandShape palm;
+			const Id h = w.AddHand(palm, Pose{ V3(0, 0, 1.5), Q() });
+			ItemShape s;
+			s.hull = Box(0.05, 0.05, 0.05);
+			const Id it = w.AddItem(s, Pose{ V3(0.04, 0, 1.5), Q() }, V3(), V3(), grace ? (int)h : -1, grace);
+			for (int i = 0; i < 8; i++) { w.DriveHand(h, Pose{ V3(0, 0, 1.5), Q() }, dt); w.Step(dt); }
+			Pose p;
+			w.PoseOf(it, p);
+			const double side = std::sqrt((p.p.x - 0.04) * (p.p.x - 0.04) + p.p.y * p.p.y);
+			if (grace) Check(side < 0.01, "let go inside the palm, with the grace: it falls straight, not knocked aside", side);
+			else Check(side > 0.01 || p.p.z > 1.3, "without it, the palm it overlaps shoves it (why the grace exists)", side);
+		}
+	}
+	{
 		// THE MODEL ANGLES: R = Rz(yaw) Ry(-pitch) Rx(roll) in the map, back to the same three.
 		bool all = true;
 		double worst = 0;

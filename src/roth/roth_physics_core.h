@@ -108,8 +108,9 @@ public:
 	void ClearStatic();
 	size_t StaticTriangles() const;
 
-	// LOOSE ITEMS.
-	Id AddItem(const ItemShape &shape, const Pose &at, const V3 &vel, const V3 &angVel);
+	// LOOSE ITEMS. `graceHand` (0 or 1, -1 none): the hand that just let go of it does not touch it for `graceSteps`
+	// steps, so an item leaving the palm is not knocked by the palm it overlaps.
+	Id AddItem(const ItemShape &shape, const Pose &at, const V3 &vel, const V3 &angVel, int graceHand = -1, int graceSteps = 0);
 	void Remove(Id id);
 	bool PoseOf(Id id, Pose &out) const;
 	bool VelocityOf(Id id, V3 &lin, V3 &ang) const;
