@@ -51,6 +51,8 @@ constexpr double kReturnM = 10.0;             // a loose item this far from the 
 const V3 kPalmPoint(0.045, 0.0, 0.0);         // where the palm grabs, in the hand frame
 constexpr double kStuckM = 0.25;              // a hand held this far from its controller (a forearm's depth into a wall) ...
 constexpr int kStuckTics = 18;                // ... this long (half a second) slips through: the player means to reach there
+constexpr double kJumpM = 0.6;                // a controller this far from where it was a tic ago: the PLAYER was moved (a
+                                              // script, a teleport, a level's own jump), the hand goes with him
 
 struct Loose
 {
@@ -74,6 +76,10 @@ struct HandRec
 	bool haveTarget = false;
 	int stuckTics = 0;         // blocked far from its controller this many tics running
 	bool ghost = false;        // slipping through: it meets nothing until it fits again
+	bool pinned = false;       // ON A TRACK (PhysicsHandPin): held at `pin`, its grip on the thing it works
+	DVector3 pin;
+	bool haveLast = false;     // the tracked pose a tic ago (kJumpM)
+	Pose last;
 };
 
 struct State
@@ -370,6 +376,35 @@ void TickHands(FLevelLocals *level, bool world)
 			Printf("[roth_physics] the %s hand is a body now: it stops at what is solid\n", RoleName(role));
 		}
 		FollowHeld(role);
+		// THE PLAYER MOVED, not the hand: no hand travels 0.6 m in a tic (21 m/s). It goes with him, through whatever is
+		// between (the M1 rule "never put back through the level" is for a hand pushed into a wall, not for this).
+		if (h.haveLast && (target.p - h.last.p).Length() > kJumpM)
+		{
+			S.world->TeleportHand(h.body, target);
+			if (h.blocked) { VRHandPose_SetBlocked(role, nullptr); h.blocked = false; }
+			h.stuckTics = 0;
+			h.histN = 0;
+			Printf("[roth_physics] %s hand: its controller jumped %.2f m in a tic (the player was moved): the hand goes with it\n", RoleName(role),
+				(target.p - h.last.p).Length());
+		}
+		h.last = target;
+		h.haveLast = true;
+		if (h.pinned)
+		{
+			// ON A TRACK: the hand is where its grip holds the thing (a door's handle, a lever, a key in its lock), turned
+			// as the controller is; it meets nothing meanwhile (it is the thing's), and is drawn there.
+			Pose at = target;
+			at.p = M(h.pin);
+			S.world->SetHandGhost(h.body, true);
+			h.ghost = true;
+			S.world->TeleportHand(h.body, at);
+			float m[16];
+			BlockedMatrix(at, target, m);
+			VRHandPose_SetBlocked(role, m);
+			h.blocked = true;
+			h.stuckTics = 0;
+			continue;
+		}
 		if (h.ghost && S.world->HandFitsAt(h.body, target))
 		{
 			S.world->SetHandGhost(h.body, false);
@@ -385,7 +420,7 @@ void AfterStep()
 	for (int role = 0; role < 2; role++)
 	{
 		HandRec &h = S.hand[role];
-		if (h.body == phys::kNone || !h.haveTarget) continue;
+		if (h.body == phys::kNone || !h.haveTarget || h.pinned) continue;
 		Pose target, now;
 		if (!TrackedPose(role, target) || !S.world->HandPose(h.body, now)) continue;
 		h.hist[h.histN % 4] = now;
@@ -462,6 +497,23 @@ void TickLoose(FLevelLocals *level)
 } // namespace
 
 bool PhysicsOn() { return roth_physics && S.world != nullptr; }
+
+bool PhysicsHandPinned(int role) { return role >= 0 && role <= 1 && S.hand[role].pinned; }
+
+void PhysicsHandPin(int role, const DVector3 *at)
+{
+	if (role < 0 || role > 1) return;
+	HandRec &h = S.hand[role];
+	const bool was = h.pinned;
+	h.pinned = at != nullptr;
+	if (at != nullptr) h.pin = *at;
+	if (was && !h.pinned)
+	{
+		// let go of the track: back to chasing its controller; a ghost until it fits (TickHands)
+		if (h.blocked) { VRHandPose_SetBlocked(role, nullptr); h.blocked = false; }
+		h.histN = 0;
+	}
+}
 
 void PhysicsTick(FLevelLocals *level, bool world)
 {

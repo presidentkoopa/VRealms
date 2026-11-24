@@ -50,6 +50,9 @@
 #include "roth_held.h"
 #include "roth_raw.h"
 #include "roth_gestures.h"
+#include "roth_handworks.h"
+#include "roth_track.h"
+#include "roth_physics.h"
 
 #include "actor.h"
 #include "actorinlines.h"
@@ -122,10 +125,17 @@ const ReleaseItem kReleases[] = { { 4, true, "the Statuette (its base)" }, { 18,
 
 struct TwistItem { int item; double degrees; const char *what; };
 const TwistItem kTwists[] = { { 14, wh::kShriveTwistDeg, "the Shrive" }, { 22, wh::kKeyTurnDeg, "Key i22" } };
+// ANY OTHER KEY IN ITS LOCK (milestone 2, docs/VR_HANDWORKS.md): an item the use there tests in hand (its chain's 0x27,
+// raw_commands.c:4760) is a key for that lock, turned the owner's key turn (Q16). The 15 KEY doors (their handle
+// plate is the lock, WORLD_DESIGN.md 1.3), the locked cupboards (OPENABLES.md A4, A6), every socket that tests an item.
+const TwistItem kAnyKey = { 0, wh::kKeyTurnDeg, "the key it tests" };
 
 const int kVials[] = { 143, 206, 170, 199 };
 
 constexpr double kPullGripM = 0.10;   // a grip within this of a lever's box takes it [R]
+constexpr double kLeverBreakM = 0.30; // the controller this far from its hold on a lever (or a key from its lock) lets go [R]
+constexpr double kLeverArmM = 0.20;   // a lever's arm, its handle to its pivot [R: no model yet]
+constexpr double kDt = 1.0 / 35.0;
 
 //===========================================================================
 // State
@@ -173,7 +183,19 @@ struct HandW
 	Pick socket;
 	DVector3 socketAt;
 	const TwistItem *twistItem = nullptr;
+	int twistItemId = 0;          // the item being turned (the table's, or any key its lock tests)
+	DVector3 twistPin;            // where the hand was drawn when the key was set: the hand stays there turning
+	DVector3 twistCtrl;           // the controller then (the key leaves its lock when the controller moves off)
 	int twistLogged = 0;
+	// A LEVER ON ITS HINGE (milestone 2): the lever's own track (roth_track.h Hinge, VRLeverComponent), thrown the
+	// owner's 8 cm along its arc (Q17).
+	bool lever = false;
+	track::Hinge leverHinge;
+	DVector3 leverPivot, leverX, leverY, leverZ;   // its frame (map-unit directions): X up, Y toward the player, Z along the wall
+	track::V3 leverGrip;                            // the hand's hold, in the lever's frame at rest (metres)
+	DVector3 leverHand0, leverCtrl0;                // the drawn hand and the controller when it took hold (handworks' Interactor)
+	bool leverFired = false;
+	int leverLoggedDeg = -1;
 	wh::Drink drink;
 	bool claimed = false;
 	int loggedDrink = -1;
@@ -650,6 +672,24 @@ bool Release(int role, const HandNow &h, AActor *pmo, int item)
 // The twist (Q15, Q16)
 //===========================================================================
 
+// Does the use at `p` test `item` in hand (its record's chain: a 0x27 keyed to it)? Then `item` is that lock's key.
+bool LockTests(const Pick &p, int item)
+{
+	if (item <= 0) return false;
+	const uint16_t rec = UseRecordOf(p);
+	std::vector<ChainStep> chain;
+	if (rec == 0 || !RecordChain(rec, chain)) return false;
+	for (const ChainStep &c : chain) if (c.opcode == 0x27 && c.key == (uint16_t)item) return true;
+	return false;
+}
+
+// The controller's grip point (the real hand, not the drawn one: the tracks read the player's hand).
+bool ControllerAt(int role, DVector3 &o)
+{
+	DVector3 f, r, u;
+	return VRHandPose_TrackedMapFrame(role, o, f, r, u);
+}
+
 // What the item at the palm is set in: the nearest thing within kSocketM whose use the original's dispatcher matches.
 bool SocketAt(AActor *pmo, const DVector3 &palm, Pick &out, double &distM)
 {
@@ -683,19 +723,32 @@ bool TryTwist(int role, const HandNow &h, AActor *pmo, const char *how)
 {
 	HandW &w = S.hand[role];
 	if (role != ItemRole() || w.twist.engaged || w.pull.engaged || !h.frame) return false;
-	const TwistItem *t = TwistOf(RightItem());
-	if (t == nullptr) return false;
+	const int heldItem = RightItem();
+	const TwistItem *t = TwistOf(heldItem);
 	Pick p;
 	double d = 0;
-	if (!SocketAt(pmo, h.palm, p, d)) return false;
+	if (heldItem <= 0 || !SocketAt(pmo, h.palm, p, d)) return false;
+	if (t == nullptr)
+	{
+		// an item SET DOWN where it is tested (the Statuette on the dais plates, the Orb in its door: THE RELEASE) is no key
+		if (ReleaseOf(heldItem) != nullptr || !LockTests(p, heldItem)) return false;
+		t = &kAnyKey;
+	}
+	DVector3 o;
+	if (!ControllerAt(role, o)) o = h.palm;
+	DVector3 drawn, df, dr, du;
+	if (!VRHandPose_MapFrame(role, drawn, df, dr, du)) drawn = o;
+	w.twistCtrl = o;
 	w.twist.Engage(h.up);
 	w.socket = p;
 	w.socketAt = p.hitPos;
 	w.twistItem = t;
+	w.twistItemId = heldItem;
+	w.twistPin = drawn;
 	w.twistLogged = 0;
 	w.claimed = true;
-	Printf("[roth_worldhands] %s hand: %s set in %s at (%.1f %.1f %.1f), %.3f m from the hand (%s): turn it %.0f degrees\n", RoleName(role), t->what,
-		PickKindName(p), p.hitPos.X, p.hitPos.Y, p.hitPos.Z, d, how, t->degrees);
+	Printf("[roth_worldhands] %s hand: %s (item %d) set in %s at (%.1f %.1f %.1f), %.3f m from the hand (%s): turn it %.0f degrees\n", RoleName(role),
+		t->what, heldItem, PickKindName(p), p.hitPos.X, p.hitPos.Y, p.hitPos.Z, d, how, t->degrees);
 	Buzz(role, 0.15, 12);
 	return true;
 }
@@ -707,7 +760,7 @@ bool TryTwist(int role, const HandNow &h, AActor *pmo, const char *how)
 bool TryPull(int role, const HandNow &h, AActor *pmo)
 {
 	HandW &w = S.hand[role];
-	if (w.pull.engaged || w.twist.engaged) return false;
+	if (w.pull.engaged || w.twist.engaged || w.lever) return false;
 	const double upm = UPM();
 	// a lever object within reach of the palm
 	// looked up at each grip, shown objects only: a lever a chain shows later has no actor until then (MAS6 #20's,
@@ -747,16 +800,47 @@ bool TryPull(int role, const HandNow &h, AActor *pmo)
 			if (Logging()) Printf("[roth_worldhands] %s hand grips %s: the original's cursor offers no use there now -- the picker's\n", RoleName(role), best->rec->what);
 			return false;
 		}
+		// THE LEVER ON ITS HINGE: an arm out from the wall to the hand, pivoted kLeverArmM behind the hand (toward the wall,
+		// at its height), thrown DOWN (WORLD_DESIGN.md 3.3: "pull down ... along the picture's lever direction"; the
+		// owner's Q17: 8 cm). Its picture is the original's (a flat picture: the thrown one is its 0x0d swap); the arm's
+		// length waits for its model [R]. The 8 cm is measured along the arc.
 		const DVector3 c = (bestLo + bestHi) * 0.5;
-		DVector3 in(c.X - h.palm.X, c.Y - h.palm.Y, 0.0);
-		w.pull.Engage(M(h.palm), V3(in.X, in.Y, 0), best->rec->metres);
+		DVector3 o;
+		if (!ControllerAt(role, o)) o = h.palm;
+		w.leverCtrl0 = o;
+		{
+			DVector3 drawn, df, dr, du;
+			w.leverHand0 = VRHandPose_MapFrame(role, drawn, df, dr, du) ? drawn : o;
+		}
+		o = w.leverHand0;
+		DVector2 toward = pmo->Pos().XY() - c.XY();
+		if (toward.LengthSquared() < 1e-6) toward = DVector2(-h.handFwd.X, -h.handFwd.Y);
+		toward = toward.Unit();
+		w.lever = true;
+		w.leverFired = false;
+		w.leverLoggedDeg = -1;
+		w.leverX = DVector3(toward.X, toward.Y, 0);     // the arm, out toward the player
+		w.leverY = DVector3(0, 0, -1);                  // down: the throw
+		w.leverZ = DVector3(toward.Y, -toward.X, 0) * -1.0;   // X x Y, along the wall
+		w.leverPivot = o - w.leverX * (kLeverArmM * UPM());
+		const DVector3 r = o - w.leverPivot;
+		w.leverGrip = track::V3((r | w.leverX) / UPM(), -r.Z * PS() / UPM(), (r | w.leverZ) / UPM());
+		const double rM = std::max(0.05, sqrt(w.leverGrip.x * w.leverGrip.x + w.leverGrip.y * w.leverGrip.y));
+		const double needDeg = std::min(85.0, best->rec->metres / rM * (180.0 / M_PI));
+		w.leverHinge = track::Hinge();
+		w.leverHinge.limitPositive = 90.0;
+		w.leverHinge.limitNegative = 0.0;
+		w.leverHinge.togglePercentage = needDeg / 90.0;
+		w.leverHinge.returnType = track::Return::LerpToMaxIfOverThreshold;
+		w.leverHinge.breakDistance = kLeverBreakM;
+		w.leverHinge.Grip(w.leverGrip);
 		w.pullPick = p;
 		w.pullFrom = h.palm;
 		w.pullRec = best->rec;
 		w.pullLoggedCm = -1;
 		w.claimed = true;
-		Printf("[roth_worldhands] %s hand grips %s (object %d/%d, %.3f m from its box): pull it %.2f m\n", RoleName(role), best->rec->what, best->sector,
-			best->index, bestD, best->rec->metres);
+		Printf("[roth_worldhands] %s hand grips %s (object %d/%d, %.3f m from its box) %.2f m from its pivot: throw it %.2f m along its arc (%.0f degrees)\n",
+			RoleName(role), best->rec->what, best->sector, best->index, bestD, rM, best->rec->metres, needDeg);
 		Buzz(role, 0.15, 12);
 		return true;
 	}
@@ -815,6 +899,9 @@ bool TryPull(int role, const HandNow &h, AActor *pmo)
 
 void Forget(HandW &w)
 {
+	const int role = (int)(&w - S.hand);
+	if (w.lever || w.twist.engaged) PhysicsHandPin(role, nullptr);
+	w.lever = false;
 	w.release.Reset();
 	w.pull.Reset();
 	w.twist.Reset();
@@ -870,14 +957,67 @@ void TickHand(int role, AActor *pmo)
 		}
 	}
 
+	// ---- THE LEVER ON ITS HINGE ----
+	if (w.lever)
+	{
+		DVector3 o;
+		const bool have = ControllerAt(role, o);
+		const PullRecord *pr = w.pullRec;
+		if (!have || !h.grip)
+		{
+			Printf("[roth_worldhands] %s hand let go of %s at %.1f degrees%s\n", RoleName(role), pr->what, w.leverHinge.angle,
+				w.leverFired ? "" : FStringf(" (%.1f asked): nothing", w.leverHinge.togglePercentage * 90.0).GetChars());
+			PhysicsHandPin(role, nullptr);
+			w.lever = false;
+		}
+		else
+		{
+			const DVector3 r = (w.leverHand0 + (o - w.leverCtrl0)) - w.leverPivot;
+			const track::V3 local((r | w.leverX) / UPM(), -r.Z * PS() / UPM(), (r | w.leverZ) / UPM());
+			const track::Hinge::Events ev = w.leverHinge.TickGrip(local, kDt);
+			if (ev.toggled && ev.newState && !w.leverFired)
+			{
+				w.leverFired = true;
+				if (w.pullPick.kind == Pick::Prop)
+				{
+					int s = -1, i = -1;
+					if (ObjectForActor(w.pullPick.actor, s, i)) w.pullPick.actor = FindObjectActor(s, i);
+				}
+				const bool acted = w.pullPick.actor != nullptr ? RulesUse(role, w.pullPick, "lever thrown") : false;
+				Printf("[roth_worldhands] %s hand threw %s %.1f degrees on its hinge: the original's use -> %s\n", RoleName(role), pr->what,
+					w.leverHinge.angle, acted ? "acted" : "nothing happened");
+				Buzz(role, acted ? 0.5 : 0.15, acted ? 40 : 12);
+			}
+			else if (Logging() && (int)(w.leverHinge.angle / 5.0) != w.leverLoggedDeg)
+			{
+				w.leverLoggedDeg = (int)(w.leverHinge.angle / 5.0);
+				Printf("[roth_worldhands] %s hand on %s: %.1f degrees on its hinge\n", RoleName(role), pr->what, w.leverHinge.angle);
+			}
+			// the hand stays on the lever's handle, on its arc
+			const track::V3 g = w.leverGrip;
+			const double a = w.leverHinge.angle * (M_PI / 180.0), ca = cos(a), sa = sin(a);
+			const track::V3 q(g.x * ca - g.y * sa, g.x * sa + g.y * ca, g.z);
+			const DVector3 pin = w.leverPivot + w.leverX * (q.x * UPM()) + w.leverY * (q.y * UPM() / PS()) + w.leverZ * (q.z * UPM());
+			PhysicsHandPin(role, &pin);
+			if (ev.drop)
+			{
+				Printf("[roth_worldhands] %s hand pulled %.2f m off %s: let go\n", RoleName(role), kLeverBreakM, pr->what);
+				PhysicsHandPin(role, nullptr);
+				w.lever = false;
+			}
+		}
+	}
+
 	// ---- THE TWIST ----
 	// The held item's own gesture: the hand holding it, or a hand nobody owns (L2).
 	const bool twistMay = HandMayAct(role, hands::Owner::Gesture) || HandOwnerNow(role) == hands::Owner::Item;
 	if (!w.twist.engaged && h.grip && itemHand && twistMay) TryTwist(role, h, pmo, "moved in with the grip closed");
 	if (w.twist.engaged && w.twistItem != nullptr)
 	{
-		const double off = M(h.palm - w.socketAt).Length();
-		const bool still = h.grip && h.frame && item == w.twistItem->item && off <= wh::kSocketHoldM;
+		// the controller's own distance from where it set the key: the drawn hand is pinned there meanwhile
+		DVector3 o;
+		const double off = ControllerAt(role, o) ? M(o - w.twistCtrl).Length() : M(h.palm - w.socketAt).Length();
+		const bool still = h.grip && h.frame && item == w.twistItemId && off <= kLeverBreakM;
 		const TwistItem *t = w.twistItem;
 		if (w.twist.Feed(still, h.up, h.fwd, t->degrees))
 		{
@@ -893,12 +1033,14 @@ void TickHand(int role, AActor *pmo)
 		}
 		else if (!w.twist.engaged)
 			Printf("[roth_worldhands] %s hand: %s out of its socket (%s, %.3f m from it) -- nothing\n", RoleName(role), t->what, !h.grip ? "the grip opened"
-				: item != t->item ? "the item changed" : "moved away", off);
+				: item != w.twistItemId ? "the item changed" : "moved away", off);
 		else if (Logging() && (int)(fabs(w.twist.turned) / 15.0) != w.twistLogged)
 		{
 			w.twistLogged = (int)(fabs(w.twist.turned) / 15.0);
 			Printf("[roth_worldhands] %s hand turning %s: %.0f degrees\n", RoleName(role), t->what, w.twist.turned);
 		}
+		if (w.twist.engaged) PhysicsHandPin(role, &w.twistPin);   // the key stays in its lock, turning with the hand
+		else PhysicsHandPin(role, nullptr);
 	}
 
 	// ---- THE PRESS ----
@@ -1061,15 +1203,18 @@ void WorldHandsTick(FLevelLocals *level, bool live)
 	if (!live || pmo == nullptr || pmo->player == nullptr)
 	{
 		for (HandW &w : S.hand) Forget(w);
+		HandworksTick(level, pmo, false);
 		return;
 	}
 	if (!S.built) Build(pmo);
 	for (int role = 0; role < 2; role++) TickHand(role, pmo);
+	HandworksTick(level, pmo, true);
 	TickSit(pmo);
 }
 
 void WorldHandsEndLevel()
 {
+	HandworksEndLevel();
 	S.level = nullptr;
 	S.built = false;
 	S.pullObjs.clear();
@@ -1090,6 +1235,7 @@ bool WorldHandsGripTaken(int role)
 	if (!S.built) Build(pmo);
 	HandNow h;
 	if (!ReadHand(role, h)) return false;
+	if (HandworksGripTaken(role, pmo)) return true;   // a door's handle or leaf (roth_handworks.cpp)
 	if (TryTwist(role, h, pmo, "the grip closed in it")) return true;
 	return TryPull(role, h, pmo);
 }
@@ -1099,7 +1245,14 @@ bool WorldHandsHolding(int role)
 	if (role < 0 || role > 1 || S.level == nullptr) return false;
 	const HandW &w = S.hand[role];
 	for (const Dial &d : S.dials) if (d.hand[role].engaged) return true;   // pushing the hour hand presses nothing
-	return w.claimed || w.pull.engaged || w.twist.engaged;
+	return w.claimed || w.pull.engaged || w.twist.engaged || w.lever || HandworksHolding(role);
+}
+
+bool WorldHandsPullRecord(uint16_t record)
+{
+	if (S.level == nullptr || record == 0) return false;
+	for (const PullRecord &r : kPulls) if (MapIs(r.map) && r.record == record) return true;
+	return false;
 }
 
 bool WorldHandsReleasedThisTic(int role)
@@ -1216,6 +1369,10 @@ bool TestPoint(int role, int what, DVector3 &out)
 		const ReleaseItem *r = ReleaseOf(RightItem());
 		out.Z -= HeldItemCardHeightM(r != nullptr ? r->item : RightItem()) * 0.5 * UPM() / PS();
 	}
+	// A HAND ON A TRACK is drawn where its grip holds the thing (PhysicsHandPin), not where its controller is: the test
+	// drives the controller, as a player's hand moves, so it measures the controller's point (the pin only moves it)
+	DVector3 o, f, r, u, to;
+	if (PhysicsHandPinned(role) && VRHandPose_MapFrame(role, o, f, r, u) && VRHandPose_TrackedMapFrame(role, to, f, r, u)) out -= o - to;
 	return true;
 }
 
@@ -1466,6 +1623,23 @@ CCMD(roth_worldtest)
 	if (S.level == nullptr || pmo == nullptr) { Printf("roth_worldtest: no level yet\n"); return; }
 	const double upm = UPM(), ps = PS();
 	const char *verb = argv[1];
+		// `spot door <tag> [far]`: door <tag>'s handle (WORLD_DESIGN.md 1.1: 15 units in from the latch edge, 43% of its
+		// height up), 4 units out on the side its opening turns toward (`far`: the other side); its normal out that side
+		if (!stricmp(verb, "spot") && argv.argc() >= 4 && !stricmp(argv[2], "door"))
+		{
+			DoorHinge d;
+			const int tag = atoi(argv[3]);
+			if (!DoorHingeOf(tag, pmo, d)) { Printf("roth_worldtest spot door: no swinging door %d here\n", tag); return; }
+			const bool far = argv.argc() >= 5 && !stricmp(argv[4], "far");
+			DVector2 nrm = DVector2(-d.closedDir.Y, d.closedDir.X) * (double)d.sense;
+			if (far) nrm = -nrm;
+			const DVector2 h2 = d.pivot + d.closedDir * (d.length - 15.0) + nrm * 4.0;
+			T.spot = DVector3(h2.X, h2.Y, d.zBottom + 0.43 * (d.zTop - d.zBottom));
+			T.haveSpot = true; T.haveNormal = true; T.normal = nrm; T.along = DVector2(-nrm.Y, nrm.X);
+			Printf("[roth_worldtest] spot: door %d's handle on its %s side -> (%.1f %.1f %.1f), out (%.2f %.2f)\n", tag,
+				far ? "far (it swings away)" : "near (it swings toward)", T.spot.X, T.spot.Y, T.spot.Z, nrm.X, nrm.Y);
+			return;
+		}
 	if (!stricmp(verb, "spot") && argv.argc() >= 3 && stricmp(argv[2], "mouth"))
 	{
 		DVector3 at;
@@ -1479,6 +1653,40 @@ CCMD(roth_worldtest)
 			T.normal = nrm; T.along = DVector2(-nrm.Y, nrm.X);
 			// `out <units>`: just past the matching points' extent in +x, at the spot's y (a contact beside a tiny box)
 			if (argv.argc() >= 5 && !stricmp(argv[3], "out")) { T.spot.X = T.lastHi.X + atof(argv[4]); how.AppendFormat("; moved out to x %.1f", T.spot.X); }
+				// `handle`: a door's face record: the spot moved to that door's handle (WORLD_DESIGN.md 1.1: 15 units in from
+				// the latch edge, 43% of its height up), on the spot's side; its `along` then runs from the hinge to the latch
+				if (argv.argc() >= 4 && !stricmp(argv[3], "handle"))
+				{
+					std::vector<int> sides;
+					RecordSides((uint16_t)rec, sides);
+					// the door of the record's faces whose leaf middle is nearest the record's spot
+					int tag = 0;
+					double bestD = 1e18;
+					for (int si : sides)
+					{
+						if (si < 0 || si >= (int)S.level->sides.Size()) continue;
+						Pick fp;
+						fp.kind = Pick::WallFace;
+						fp.line = S.level->sides[si].linedef;
+						int t2 = 0;
+						DoorHinge d2;
+						if (fp.line == nullptr || !DoorTagOfPick(fp, t2) || !DoorHingeOf(t2, pmo, d2)) continue;
+						const double dd = ((d2.pivot + d2.closedDir * (d2.length * 0.5)) - T.spot.XY()).LengthSquared();
+						if (dd < bestD) { bestD = dd; tag = t2; }
+					}
+					DoorHinge d;
+					if (tag != 0 && DoorHingeOf(tag, pmo, d))
+					{
+						const DVector2 h2 = d.pivot + d.closedDir * (d.length - 15.0);
+						// `handle far`: the same door's handle on its other side (the spot's normal turned round)
+						if (hn && argv.argc() >= 5 && !stricmp(argv[4], "far")) { nrm = -nrm; T.normal = nrm; T.along = DVector2(-nrm.Y, nrm.X); how += "; its far side"; }
+						const DVector2 side = hn ? nrm : DVector2(0, 0);
+						T.spot = DVector3(h2.X + side.X * 4.0, h2.Y + side.Y * 4.0, d.zBottom + 0.43 * (d.zTop - d.zBottom));
+						how.AppendFormat("; door %d's handle (hinge (%.0f %.0f), %.0f long, %.0f..%.0f high, opens %s)", tag, d.pivot.X, d.pivot.Y,
+							d.length, d.zBottom, d.zTop, d.sense > 0 ? "anticlockwise" : "clockwise");
+					}
+					else how += "; NOT a door's face: no handle";
+				}
 		}
 		Printf("[roth_worldtest] spot of record #%d in %s: %s%s\n", rec, S.level->MapName.GetChars(), how.GetChars(),
 			T.haveSpot ? FStringf(" -> the spot (%.1f %.1f %.1f)", T.spot.X, T.spot.Y, T.spot.Z).GetChars() : "");

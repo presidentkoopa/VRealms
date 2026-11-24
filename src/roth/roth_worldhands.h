@@ -40,6 +40,7 @@
 
 struct FLevelLocals;
 #include "vectors.h"
+#include <stdint.h>
 
 namespace roth
 {
@@ -62,6 +63,10 @@ bool WorldHandsHolding(int role);
 // L2 (roth_vrpick.cpp): this tic, a held item's release set it down somewhere (the original's use there ran), so the
 // hold's end does not stow it.
 bool WorldHandsReleasedThisTic(int role);
+
+// roth_handworks.cpp: `record` is one of the owner's pull records on this map (THE PULL's table: the bookcase leaves
+// opened from their edge, Q30; the pit's chains): its faces keep that rule, the general door rule leaves them alone.
+bool WorldHandsPullRecord(uint16_t record);
 
 // roth_held.cpp: the item hand's vial is being drunk (at the mouth and leaning): the eyes' examine waits.
 bool WorldHandsItemTipping(int role);

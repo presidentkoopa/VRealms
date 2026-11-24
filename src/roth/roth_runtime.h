@@ -481,6 +481,34 @@ bool RecordWord(uint16_t record, int offset, uint16_t &value);
 // A Realms sector's command id (its commandID), 0 for none.
 uint16_t RuntimeSectorId(int rothSector);
 
+// THINGS WORKED BY HAND (roth_handworks.cpp, docs/VR_HANDWORKS.md). Read only, except DoorHold / DoorTurnHeld.
+// A trigger record's chain as it runs (its links to the next trigger): each step's record, base opcode and key.
+// False: not a trigger record of this level. The hands read it to know a lock (a 0x27 testing an item in hand).
+struct ChainStep { uint16_t record = 0; uint8_t opcode = 0; uint16_t key = 0; };
+bool RecordChain(uint16_t record, std::vector<ChainStep> &out);
+// The door (its polyobject tag) a pick belongs to: its leaf, or the doorway's room face (a closed door, WORLD_DESIGN
+// 1.1). False: not a door.
+bool DoorTagOfPick(const Pick &p, int &tag);
+// A door's hinge as SwingDoor would turn it for `who`'s room (map units): the pivot, the closed leaf's direction from
+// the pivot to its latch end and its length, its sense (+1: opening turns it anticlockwise), how far it is open now
+// (degrees, 0..90 along its sense), its heights, and its swing's state.
+struct DoorHinge
+{
+	int tag = 0;
+	DVector2 pivot = DVector2(0, 0), closedDir = DVector2(1, 0);
+	double length = 0, zBottom = 0, zTop = 0;
+	int sense = 1;
+	double angleDeg = 0;
+	bool swinging = false, settledOpen = false, held = false, closing = false;
+	int swingSense = 0;
+	double remainingDeg = 0;
+};
+bool DoorHingeOf(int tag, AActor *who, DoorHinge &out);
+// Hold a door's leaf for a hand (its swing waits) or let it go (its swing finishes the arc from there); turn a held
+// leaf by `deltaDeg` (anticlockwise positive). po_man.h EV_HoldPoly / EV_TurnHeldPoly. False: no such door, or blocked.
+bool DoorHold(int tag, bool hold);
+bool DoorTurnHeld(int tag, double deltaDeg);
+
 // Debug only (roth_trigger_debug): print the surface-box decision a click at this pick would meet -- the hit
 // texel, each boxed record of the face's or the flat's use and examine channels inside or outside, and the
 // record each match walk stops at. Read-only; the VR hands call it when a press is refused, so a refused

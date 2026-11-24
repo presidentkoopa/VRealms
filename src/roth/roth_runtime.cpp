@@ -8242,6 +8242,120 @@ uint16_t RuntimeSectorId(int rothSector)
 
 //==========================================================================
 //
+// THINGS WORKED BY HAND (roth_handworks.cpp, docs/VR_HANDWORKS.md): what the hands need to know of a door's hinge and
+// of a record's chain. Read only; outside the anonymous namespaces (CLAUDE.md's build trap).
+//
+//==========================================================================
+
+bool RecordChain(uint16_t record, std::vector<ChainStep> &out)
+{
+	out.clear();
+	const Command *t = g.active ? Rec(record) : nullptr;
+	if (t == nullptr || !t->isTrigger) return false;
+	int guard = 0;
+	for (uint16_t k = t->chainStart; k != 0 && guard < 64; guard++)
+	{
+		const Command *c = Rec(k);
+		if (c == nullptr || c->isTrigger) break;
+		ChainStep st;
+		st.record = k;
+		st.opcode = c->opcode & 0x7f;
+		st.key = c->key;
+		out.push_back(st);
+		k = c->nextIndex;
+	}
+	return true;
+}
+
+bool DoorTagOfPick(const Pick &p, int &tag)
+{
+	tag = 0;
+	if (!g.active || g.level == nullptr) return false;
+	if (p.kind == Pick::DoorLeaf && p.leafTag != 0) { tag = p.leafTag; return true; }
+	if (p.kind != Pick::WallFace || p.line == nullptr) return false;
+	// a closed door is the doorway's room face (WORLD_DESIGN 1.1): the doorway sector is across it
+	for (sector_t *sec : { p.line->frontsector, p.line->backsector })
+	{
+		if (sec == nullptr) continue;
+		auto it = g.doorTag.find(sec->Index());
+		if (it != g.doorTag.end()) { tag = it->second; return true; }
+	}
+	return false;
+}
+
+bool DoorHingeOf(int tag, AActor *who, DoorHinge &out)
+{
+	out = DoorHinge();
+	if (!g.active || g.level == nullptr) return false;
+	FPolyObj *po = g.level->GetPolyobj(tag);
+	if (po == nullptr || po->OriginalPts.Size() < 3) return false;
+	auto sw = g.doorSwing.find(tag);
+	bool mirrored = false;
+	DVector2 pivot = po->StartSpot.pos;
+	if (sw != g.doorSwing.end())
+	{
+		// SwingDoor's own decision (doors.c:523-531), for the room the hand's player stands in
+		const Runtime::DoorSwing &d = sw->second;
+		const int from = (who != nullptr && who->Sector != nullptr) ? who->Sector->Index() : -1;
+		if (d.marker == 0xFFFD) mirrored = true;
+		else if (d.marker == 0xFFFE) mirrored = false;
+		else
+		{
+			// an open 0xFFFF door keeps the sense it was opened with: the pivot SwingDoor moved it to
+			const bool atRest = po->specialdata == nullptr && !po->bBlocked && po->Angle == nullAngle;
+			if (atRest) { mirrored = from >= 0 && from == d.secC3; pivot = mirrored ? d.v2 : d.v1; }
+			else mirrored = (po->StartSpot.pos - d.v2).LengthSquared() < (po->StartSpot.pos - d.v1).LengthSquared();
+		}
+	}
+	// the leaf closed (angle 0): every vertex is StartSpot + OriginalPts; the latch end is the end furthest from the
+	// pivot (its two corners' middle)
+	double far1 = -1, far2 = -1;
+	DVector2 c1, c2;
+	for (unsigned i = 0; i < po->OriginalPts.Size(); i++)
+	{
+		const DVector2 v = po->StartSpot.pos + po->OriginalPts[i].pos;
+		const double d = (v - pivot).LengthSquared();
+		if (d > far1) { far2 = far1; c2 = c1; far1 = d; c1 = v; }
+		else if (d > far2) { far2 = d; c2 = v; }
+	}
+	const DVector2 latch = (c1 + c2) * 0.5;
+	const DVector2 along = latch - pivot;
+	out.length = along.Length();
+	if (out.length < 1.0) return false;
+	out.tag = tag;
+	out.pivot = pivot;
+	out.closedDir = along / out.length;
+	out.sense = mirrored ? 1 : -1;   // SwingDoor: speed (mirrored ? +16 : -16) * M; RotatePolyobj's positive is anticlockwise
+	out.angleDeg = po->Angle.Normalized180().Degrees() * out.sense;
+	out.swinging = po->specialdata != nullptr;
+	out.settledOpen = po->bBlocked;
+	out.held = po->bHeldByDriver;
+	sector_t *sec = g.level->PointInSector(pivot + out.closedDir * (out.length * 0.5));
+	if (sec != nullptr)
+	{
+		const DVector2 mid = pivot + out.closedDir * (out.length * 0.5);
+		out.zBottom = sec->floorplane.ZatPoint(mid);
+		out.zTop = sec->ceilingplane.ZatPoint(mid);
+	}
+	int sense = 0;
+	double rem = 0;
+	bool closing = false;
+	if (EV_PolySwingState(g.level, tag, sense, rem, closing)) { out.closing = closing; out.swingSense = sense; out.remainingDeg = rem; }
+	return true;
+}
+
+bool DoorHold(int tag, bool hold)
+{
+	return g.active && g.level != nullptr && EV_HoldPoly(g.level, tag, hold);
+}
+
+bool DoorTurnHeld(int tag, double deltaDeg)
+{
+	return g.active && g.level != nullptr && EV_TurnHeldPoly(g.level, tag, DAngle::fromDeg(deltaDeg));
+}
+
+//==========================================================================
+//
 // PickTestTarget -- a test instrument for roth_vrpicktest (roth_vrpick.cpp).
 // Not a rule of the game: it only chooses something to aim a test at.
 //

@@ -42,6 +42,18 @@ rig checks only at milestones.
   the metres per mesh metre). The loose actor's origin is the body's origin; its angles come from the body's rotation
   by `phys::ModelAngles` (GZDoom's model turn: Rz(yaw) Ry(-pitch) Rx(roll) in the map).
 
+## Things worked by hand (milestone 2, 2026-11-24): docs/VR_HANDWORKS.md
+
+- **Doors** (every swinging door, cupboards and wardrobes included) are taken by their latch half. Shut, the leaf holds
+  still until the hand draws it 4 cm along its swing: the original's use on its face, once per grip (the chain decides:
+  it opens, or says "Locked."). Open, the leaf follows the hand about its hinge (0..90 degrees); let go, it carries the
+  hand's swing on and the original's swing finishes its arc. The hand is drawn on the leaf where it holds it.
+- **Levers** (the owner's table) turn on a hinge in the hand and are thrown by the owner's 8 cm of arc.
+- **Any key in any lock**: an item the use there tests in hand (0x27) is turned 30 degrees in it, the hand held there.
+- The track maths is VRExpansionPlugin's VRLever / VRDial / VRSlider / VRButton, ported engine-free (`roth_track.h`,
+  `tools/track_test`); the engine gained a general "polyobject held by an outside driver" (`po_man.h` EV_HoldPoly).
+- A controller that jumps 0.6 m in a tic (the player moved by the game) takes its hand with it.
+
 ## Limits now
 
 - One item in the hands at a time: the original selects one item. A free hand reaching for a loose item while the
@@ -54,8 +66,9 @@ rig checks only at milestones.
 
 ## Next
 
-1. Doors, drawers, levers, switches, wheels: grabbed and moved along their track by hand (UltimateXR's translation
-   and rotation constraints are the reference), firing the original's use at the original's threshold.
+1. (Built, milestone 2: doors, levers, keys; docs/VR_HANDWORKS.md.) Left: closing a door by hand (the original's close
+   is not ported), a refusal seen through the hand, light switches and SALVAT's buttons on the ported Button, levers'
+   own models. The game has no drawers or wheels that open (docs/OPENABLES.md).
 2. Sockets: an item brought to its lock, slot or keyhole is the original's use with that item (UltimateXR anchors).
 3. Two hands on one object; two items held at once (the item in the hand that makes a use is selected at that use).
 4. The level's own lying items as bodies (knocked, pushed), kept in step with the original's objects.

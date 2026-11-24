@@ -18,6 +18,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //---------------------------------------------------------------------------
 //
+#include "vectors.h"
 struct FLevelLocals;
 class AActor;
 
@@ -37,6 +38,13 @@ bool PhysicsLetGo(int role, int item);
 // A FREE HAND'S GRIP (roth_vrpick.cpp GripUse): the loose item within reach of `role`'s palm, taken out of the world
 // with its place in the hand kept; its item id, or 0.
 int PhysicsGrabLoose(int role);
+
+// A HAND ON A TRACK (roth_handworks.cpp, docs/VR_HANDWORKS.md): while `at` is set, `role`'s hand is held with its grip
+// at `at` (map units: the door's handle as the leaf turns, the point on a lever's arc, a key in its lock), turned as its
+// controller is, drawn there, meeting nothing; null lets it go back to its controller. Called each tic while held.
+// With roth_physics off nothing is drawn differently (the tracks still work).
+void PhysicsHandPin(int role, const DVector3 *at);
+bool PhysicsHandPinned(int role);
 
 // Tests (roth_xrpose handat loose): the actor drawing loose item `index` (0 = the first), or null.
 AActor *PhysicsLooseActor(int index);

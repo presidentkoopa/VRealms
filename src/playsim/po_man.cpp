@@ -96,6 +96,11 @@ protected:
 	bool m_Close;
 
 	friend bool EV_OpenPolyDoor(FLevelLocals *Level, line_t *line, int polyNum, double speed, DAngle angle, int delay, double distance, podoortype_t type);
+	friend bool EV_TurnHeldPoly(FLevelLocals *Level, int polyNum, DAngle delta);
+	// An outside driver turned this swing part of its arc (EV_TurnHeldPoly): what is left need not be a whole number of
+	// steps, so its last step is cut to land on its stop. Not saved; false for every swing nothing has driven.
+	bool m_Driven = false;
+	friend bool EV_PolySwingState(FLevelLocals *Level, int polyNum, int &sense, double &remainingDeg, bool &closing);
 };
 
 class FPolyMirrorIterator
@@ -527,6 +532,7 @@ bool EV_MovePolyTo(FLevelLocals *Level, line_t *line, int polyNum, double speed,
 void DPolyDoor::Tick ()
 {
 	if (m_PolyObj == nullptr) return;
+	if (m_PolyObj->bHeldByDriver) return;   // an outside driver turns it meanwhile (EV_HoldPoly)
 
 	if (m_Tics)
 	{
@@ -582,9 +588,12 @@ void DPolyDoor::Tick ()
 		break;
 
 	case PODOOR_SWING:
-		if (m_Dist <= 0 || m_PolyObj->RotatePolyobj(DAngle::fromDeg(m_Speed)))
+	{
+		// a driven swing's last step lands on its stop (m_Driven); every other swing steps as it always has
+		const double step = (m_Driven && m_Dist > 0 && m_Dist < fabs(m_Speed)) ? (m_Speed > 0 ? m_Dist : -m_Dist) : m_Speed;
+		if (m_Dist <= 0 || m_PolyObj->RotatePolyobj(DAngle::fromDeg(step)))
 		{
-			double absSpeed = fabs (m_Speed);
+			double absSpeed = fabs (step);
 			m_Dist -= absSpeed;
 			if (m_Dist <= 0)
 			{
@@ -618,6 +627,7 @@ void DPolyDoor::Tick ()
 			}
 		}
 		break;
+	}
 
 	default:
 		break;
@@ -700,6 +710,47 @@ bool EV_StopPoly(FLevelLocals *Level, int polynum)
 		return true;
 	}
 	return false;
+}
+
+//==========================================================================
+//
+// EV_HoldPoly, EV_TurnHeldPoly, EV_PolySwingState: a polyobject turned by an outside driver (po_man.h).
+//
+//==========================================================================
+
+bool EV_HoldPoly(FLevelLocals *Level, int polyNum, bool hold)
+{
+	FPolyObj *poly = Level->GetPolyobj(polyNum);
+	if (poly == nullptr) return false;
+	poly->bHeldByDriver = hold;
+	return true;
+}
+
+bool EV_TurnHeldPoly(FLevelLocals *Level, int polyNum, DAngle delta)
+{
+	FPolyObj *poly = Level->GetPolyobj(polyNum);
+	if (poly == nullptr || !poly->bHeldByDriver || poly->bHasPortals == 2) return false;
+	if (!poly->RotatePolyobj(delta)) return false;
+	DPolyDoor *pd = dyn_cast<DPolyDoor>(poly->specialdata.Get());
+	if (pd != nullptr && pd->m_Type == PODOOR_SWING && pd->m_Speed != 0)
+	{
+		pd->m_Dist -= delta.Degrees() * (pd->m_Speed > 0 ? 1. : -1.);
+		pd->m_Driven = true;
+	}
+	poly->UpdateLinks();
+	return true;
+}
+
+bool EV_PolySwingState(FLevelLocals *Level, int polyNum, int &sense, double &remainingDeg, bool &closing)
+{
+	FPolyObj *poly = Level->GetPolyobj(polyNum);
+	if (poly == nullptr) return false;
+	DPolyDoor *pd = dyn_cast<DPolyDoor>(poly->specialdata.Get());
+	if (pd == nullptr || pd->m_Type != PODOOR_SWING) return false;
+	sense = pd->m_Speed > 0 ? 1 : -1;
+	remainingDeg = pd->m_Dist;
+	closing = pd->m_Close;
+	return true;
 }
 
 // ===== Higher Level Poly Interface code =====

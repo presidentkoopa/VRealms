@@ -105,6 +105,9 @@ struct FPolyObj
 	int			crush; 			// should the polyobj attempt to crush mobjs?
 	bool		bHurtOnTouch;	// should the polyobj hurt anything it touches?
 	bool		bBlocked;
+	// HELD BY AN OUTSIDE DRIVER (EV_HoldPoly below): its own action thinker waits while something else turns it.
+	// Default off; not saved (a hold lasts while a hand is on it).
+	bool		bHeldByDriver = false;
 	uint8_t		bHasPortals;	// 1 for any portal, 2 for a linked portal (2 must block rotations.)
 	int			seqType;
 	double		Size;			// polyobj size (area of POLY_AREAUNIT == size of FRACUNIT)
@@ -163,6 +166,19 @@ bool EV_MovePoly (FLevelLocals *Level, line_t *line, int polyNum, double speed, 
 bool EV_MovePolyTo (FLevelLocals *Level, line_t *line, int polyNum, double speed, const DVector2 &pos, bool overRide);
 bool EV_OpenPolyDoor (FLevelLocals *Level, line_t *line, int polyNum, double speed, DAngle angle, int delay, double distance, podoortype_t type);
 bool EV_StopPoly (FLevelLocals *Level, int polyNum);
+
+// A POLYOBJECT TURNED BY AN OUTSIDE DRIVER. Made for VRealms' hands moving a door leaf about its hinge
+// (src/roth/roth_handworks.cpp, docs/VR_HANDWORKS.md), and for any caller that turns a polyobject by something other
+// than its own thinker. Inert until called: nothing else sets the hold.
+// - EV_HoldPoly: while held, the polyobject's action thinker (a door's swing) does not advance.
+// - EV_TurnHeldPoly: turn a held polyobject by `delta`. What it turns along its swing's own direction is taken off
+//   the swing's remaining arc (and what it turns back is added), so when the hold ends the swing finishes its arc from
+//   where the driver left the leaf, at its own speed. False: something in the way stopped it (RotatePolyobj's test).
+// - EV_PolySwingState: the swing action under way, if any: its sense (+1 turning to positive degrees, -1 negative),
+//   the arc it still has to turn, and whether it is a door's closing half.
+bool EV_HoldPoly (FLevelLocals *Level, int polyNum, bool hold);
+bool EV_TurnHeldPoly (FLevelLocals *Level, int polyNum, DAngle delta);
+bool EV_PolySwingState (FLevelLocals *Level, int polyNum, int &sense, double &remainingDeg, bool &closing);
 
 bool PO_Busy (FLevelLocals *Level, int polyobj);
 
