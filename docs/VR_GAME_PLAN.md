@@ -116,7 +116,7 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
   corpse timer turns it into a prop (`GAME_combat.md` 4.3). Damage, timing and the corpse rule unchanged.
 - **Reload by hand** on placeholder shapes (the magazine out of the pouch into the Colt; the Shotgun's pump), the
   original's reload rule underneath (one magazine item per reload, ledger W2). The models come with the asset pass.
-- Owner decisions first (section 6): shield block, thrown items.
+- The Shield blocks monsters' shots; thrown items stun, and a hard throw hurts a little (section 6, decided).
 
 ### M5: the adventure by hand, complete for the slice
 - **Sockets** (`VR_PHYSICS.md` next 2): every "place" and "key" unit of chapters 1-2 accepts the item brought to its
@@ -144,13 +144,20 @@ owner decision 2026-11-13; the mirrors ch 16; dials ch 17), a bridge run per map
 
 ---
 
-## 6. Decisions only the owner can make (asked once, in plain words, when their milestone starts)
+## 6. The owner's decisions
 
-1. **M4: should the Shield block monsters' shots?** In the original it only satisfies "shield in hand" checks
-   (ledger row 39). Blocking would be new game logic.
-2. **M4: should thrown things hurt monsters?** The original has no throwing. A thrown item could count as Adam's
-   fists' blow (as the Staff's swing borrows it, row 42), or do nothing.
-3. **Any time: "main" branch.** The work is on `lane/gamelayer`; the repo has no `main`.
+Answered 2026-11-24 (owner: "yes, hurt a little or stun for a momoent, and yes"):
+1. **The Shield blocks monsters' shots: YES.** A monster's projectile that meets the Shield on the forearm is stopped
+   there and does no damage. New game logic, by the owner's decision; the Shield's original effect (the "shield in
+   hand" checks, ledger row 39) is unchanged. M4.
+2. **Thrown things: "hurt a little or stun for a moment".** A thrown item that strikes a creature fast enough stuns
+   it for the original's pain time (24 ticks, `GAME_combat.md` 4.3); a hard throw also does a little damage (a
+   fraction of Adam's fists' blow, row 42's borrowed numbers; the exact speed thresholds and amount are tuned in the
+   headset). M4.
+3. **A `main` branch: YES.** Created at the lane's tip; `lane/gamelayer` stays the working branch and `main` is
+   moved up to it at each milestone.
+
+New questions go here, asked once, in plain words, when their milestone starts.
 
 ---
 

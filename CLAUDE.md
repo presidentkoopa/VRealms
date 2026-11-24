@@ -13,7 +13,7 @@ Start a session by reading the newest `HANDOFF_*.md` at the repo root (today `HA
 - The owner's `doomxr.ini` is shared with his hands build: never set or write archived settings from the engine or from tests.
 - Never use screen control (computer use) on the owner's PC. Test through the REMAROTH bridge's hidden desktop.
 - Never use `git stash`: all worktrees share one stash list.
-- Branch `lane/gamelayer`. Do not create branches unless the owner asks.
+- Branch `lane/gamelayer` (the working branch). `main` (owner, 2026-11-24) is moved up to it at each milestone. Do not create other branches unless the owner asks.
 
 ## Never claim what you have not checked
 1. **Look before you assume or build.** List what already exists before deciding: the owner's folders (`E:\DOOMWork`, the Steam install), this repo's docs and tools, the owner's other repos. Hours were lost on 2026-11-12 because `E:\DOOMWork\_oracle`, the original engine already running, went unnoticed.
