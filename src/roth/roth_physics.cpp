@@ -49,6 +49,8 @@ constexpr double kHitFelt = 0.35;             // m/s: a hit the hand feels
 constexpr double kGrabRadiusM = 0.08;         // the palm reaches a loose item this far from its surface
 constexpr double kReturnM = 10.0;             // a loose item this far from the player goes back into the pack
 const V3 kPalmPoint(0.045, 0.0, 0.0);         // where the palm grabs, in the hand frame
+constexpr double kStuckM = 0.12;              // a hand held this far from its controller ...
+constexpr int kStuckTics = 10;                // ... this long (0.3 s) slips through: the player means to reach there
 
 struct Loose
 {
@@ -70,6 +72,8 @@ struct HandRec
 	int histN = 0;
 	bool blocked = false;
 	bool haveTarget = false;
+	int stuckTics = 0;         // blocked far from its controller this many tics running
+	bool ghost = false;        // slipping through: it meets nothing until it fits again
 };
 
 struct State
@@ -366,6 +370,12 @@ void TickHands(FLevelLocals *level, bool world)
 			Printf("[roth_physics] the %s hand is a body now: it stops at what is solid\n", RoleName(role));
 		}
 		FollowHeld(role);
+		if (h.ghost && S.world->HandFitsAt(h.body, target))
+		{
+			S.world->SetHandGhost(h.body, false);
+			h.ghost = false;
+			if (Debug()) Printf("[roth_physics] %s hand is clear of the level again: solid\n", RoleName(role));
+		}
 		S.world->DriveHand(h.body, target, kDt);
 	}
 }
@@ -383,7 +393,20 @@ void AfterStep()
 		const double off = (now.p - target.p).Length(), turn = AngleDeg(now.q, target.q);
 		// stopped: away from the controller AND against something (a hand only lagging behind a fast swing, its speed
 		// capped, is drawn on the controller: lag is worse than a hand that never stops)
-		const bool blocked = (off > kBlockedM || turn > kBlockedDeg) && S.world->HandTouching(h.body);
+		bool blocked = !h.ghost && (off > kBlockedM || turn > kBlockedDeg) && S.world->HandTouching(h.body);
+		// STUCK: held well away from where the player's hand is, for a moment -- he means to reach past it (an item
+		// in an alcove, behind a lip the original never had). The hand lets go of the level and goes where he is,
+		// and is solid again once it is clear (TickHands).
+		h.stuckTics = blocked && off > kStuckM ? h.stuckTics + 1 : 0;
+		if (h.stuckTics >= kStuckTics)
+		{
+			S.world->SetHandGhost(h.body, true);
+			S.world->TeleportHand(h.body, target);
+			h.ghost = true;
+			h.stuckTics = 0;
+			blocked = false;
+			Printf("[roth_physics] %s hand held %.0f cm from the controller for %d tics: it slips through to it\n", RoleName(role), off * 100.0, kStuckTics);
+		}
 		if (blocked)
 		{
 			float m[16];
@@ -563,7 +586,7 @@ CCMD(roth_physics_status)
 		Pose p;
 		if (h.body == phys::kNone || !S.world->HandPose(h.body, p)) { Printf("  %s hand: no body\n", RoleName(r)); continue; }
 		const DVector3 at = U(p.p);
-		Printf("  %s hand at (%.1f %.1f %.1f)%s, holding item %d\n", RoleName(r), at.X, at.Y, at.Z, h.blocked ? ", STOPPED" : "", h.heldItem);
+		Printf("  %s hand at (%.1f %.1f %.1f)%s, holding item %d\n", RoleName(r), at.X, at.Y, at.Z, h.ghost ? ", slipping through" : h.blocked ? ", STOPPED" : "", h.heldItem);
 	}
 	for (const Loose &l : S.loose)
 	{

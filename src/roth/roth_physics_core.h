@@ -126,6 +126,11 @@ public:
 	void DriveHand(Id hand, const Pose &target, double dt);
 	void TeleportHand(Id hand, const Pose &target);
 	bool HandPose(Id hand, Pose &out) const;
+	// A GHOST HAND meets nothing (it slips through what held it: roth_physics.cpp lets a hand stuck a moment go);
+	// HandFitsAt: the hand's shape at `at` overlaps nothing of the level (where a ghost can be solid again).
+	void SetHandGhost(Id hand, bool ghost);
+	bool HandGhost(Id hand) const;
+	bool HandFitsAt(Id hand, const Pose &at) const;
 	// Something of the level between two points (a ray against the static triangles).
 	bool StaticBetween(const V3 &a, const V3 &b) const;
 	// The hardest hit the hand (or what it holds) took in the last step: the closing speed along the contact's normal,

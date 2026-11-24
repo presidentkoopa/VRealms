@@ -19,8 +19,10 @@ rig checks only at milestones.
   40 rad/s. Free, it is where the controller is. Against a wall or a desk it stops, and the drawn hand stops with it:
   `VRHandPose_SetBlocked` puts a correction in front of the tracked frame, so the drawn hand, what it holds, the
   picker's ray and the touch all stay on the surface at draw rate. A hit is felt (a buzz scaled by the closing speed).
-  More than 0.6 m from its controller (the player walked off, or the hand went through to the other side of a wall),
-  it is put back on the controller.
+  More than 0.6 m from its controller it is put back on the controller, but never through the level (unless 1.5 m
+  off: the player has gone elsewhere). A hand a reach does not shove loose items away: it meets them only above
+  2.5 m/s (a swipe knocks them over). Held 12 cm or more from the controller for 0.3 s, the hand slips through (the
+  player means to reach there: an item behind a lip the original never had) and is solid again once it fits.
 - **What a hand holds is part of the hand's body** (a compound shape), so a held item meets the world as the hand does.
 - **Letting go anywhere but over the shoulder drops the item** (owner: "stays where it lands"). It leaves with the
   hand's velocity over the last three tics (the wrist's spin carries its far end), falls, tumbles, rests, and is drawn

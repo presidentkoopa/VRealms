@@ -27,6 +27,8 @@
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 
 #include <algorithm>
 #include <cmath>
@@ -133,7 +135,8 @@ namespace Layer
 	constexpr ObjectLayer Static = 0;
 	constexpr ObjectLayer Item = 1;
 	constexpr ObjectLayer Hand = 2;
-	constexpr ObjectLayer Count = 3;
+	constexpr ObjectLayer Ghost = 3;   // a hand slipping through: it meets nothing
+	constexpr ObjectLayer Count = 4;
 }
 namespace BPLayer
 {
@@ -147,6 +150,7 @@ class PairFilter final : public ObjectLayerPairFilter
 public:
 	bool ShouldCollide(ObjectLayer a, ObjectLayer b) const override
 	{
+		if (a == Layer::Ghost || b == Layer::Ghost) return false;
 		if (a == Layer::Static) return b != Layer::Static;
 		if (a == Layer::Hand) return b != Layer::Hand;   // the hands pass through each other
 		return true;
@@ -166,7 +170,7 @@ public:
 class ObjVsBP final : public ObjectVsBroadPhaseLayerFilter
 {
 public:
-	bool ShouldCollide(ObjectLayer a, BroadPhaseLayer b) const override { return a != Layer::Static || b == BPLayer::Moving; }
+	bool ShouldCollide(ObjectLayer a, BroadPhaseLayer b) const override { return a != Layer::Ghost && (a != Layer::Static || b == BPLayer::Moving); }
 };
 
 // Body user data: kind in the top byte, the hand's index below.
@@ -553,6 +557,32 @@ void World::DriveHand(Id hand, const Pose &target, double dt)
 		if (wl > MaxHandSpin) w = w * (MaxHandSpin / wl);
 	}
 	I->BI().SetLinearAndAngularVelocity(h.body, J(v), J(w));
+}
+
+void World::SetHandGhost(Id hand, bool ghost)
+{
+	if (hand >= I->hands.size()) return;
+	I->BI().SetObjectLayer(I->hands[hand].body, ghost ? Layer::Ghost : Layer::Hand);
+}
+
+bool World::HandGhost(Id hand) const
+{
+	return hand < I->hands.size() && I->BI().GetObjectLayer(I->hands[hand].body) == Layer::Ghost;
+}
+
+bool World::HandFitsAt(Id hand, const Pose &at) const
+{
+	if (hand >= I->hands.size()) return true;
+	RefConst<Shape> shape = I->BI().GetShape(I->hands[hand].body);
+	if (shape == nullptr) return true;
+	const Quat q = J(at.q);
+	const RMat44 com = RMat44::sRotationTranslation(q, RVec3(J(at.p)) + q * shape->GetCenterOfMass());
+	CollideShapeSettings cs;
+	AnyHitCollisionCollector<CollideShapeCollector> hit;
+	SpecifiedBroadPhaseLayerFilter bpf(BPLayer::Still);
+	SpecifiedObjectLayerFilter olf(Layer::Static);
+	I->sys.GetNarrowPhaseQuery().CollideShape(shape, Vec3::sReplicate(1.0f), com, cs, RVec3::sZero(), hit, bpf, olf);
+	return !hit.HadHit();
 }
 
 bool World::StaticBetween(const V3 &a, const V3 &b) const

@@ -93,6 +93,13 @@ int main()
 		w.HandPose(h, hp);
 		Check(hp.p.x + palm.centre.x + palm.half.x <= 1.01, "a target 1 m away behind the wall: the hand stays this side", hp.p.x);
 		Check(w.StaticBetween(V3(0.5, 0, 1), V3(1.5, 0, 1)) && !w.StaticBetween(V3(0.5, 0, 1), V3(0.9, 0, 1)), "the ray finds the wall and only the wall");
+		Check(!w.HandFitsAt(h, Pose{ V3(1.0, 0, 1), Q() }) && w.HandFitsAt(h, Pose{ V3(0.7, 0, 1), Q() }), "the hand does not fit across the wall's face, and fits short of it");
+		w.SetHandGhost(h, true);
+		for (int i = 0; i < 6; i++) { w.DriveHand(h, Pose{ V3(1.2, 0, 1), Q() }, dt); w.Step(dt); }
+		w.HandPose(h, hp);
+		Check(w.HandGhost(h) && std::fabs(hp.p.x - 1.2) < 0.01, "a ghost hand slips through the wall to its controller", hp.p.x);
+		w.TeleportHand(h, Pose{ V3(0.6, 0, 1), Q() });
+		w.SetHandGhost(h, false);
 		// 0.6 m beyond: it is put on the target, as Godot XR Tools' collision hand at its teleport distance
 		w.DriveHand(h, Pose{ V3(-0.5, 0, 1), Q() }, dt);
 		w.Step(dt);
