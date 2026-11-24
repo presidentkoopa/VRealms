@@ -508,6 +508,8 @@ bool DoorHingeOf(int tag, AActor *who, DoorHinge &out);
 // leaf by `deltaDeg` (anticlockwise positive). po_man.h EV_HoldPoly / EV_TurnHeldPoly. False: no such door, or blocked.
 bool DoorHold(int tag, bool hold);
 bool DoorTurnHeld(int tag, double deltaDeg);
+// toggle_door_open_state on door `tag` (roth_runtime.cpp ToggleDoor): opening or open -> closing; closing -> opening.
+bool DoorToggle(int tag);
 
 // Debug only (roth_trigger_debug): print the surface-box decision a click at this pick would meet -- the hit
 // texel, each boxed record of the face's or the flat's use and examine channels inside or outside, and the

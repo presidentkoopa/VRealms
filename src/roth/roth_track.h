@@ -124,6 +124,38 @@ inline V3 UnturnZ(const V3 &p, double deg)
 }
 
 //==========================================================================
+// THE SLACK (ours, not VRExpansion's: its hands are never stopped by the world). Our hands are: a hand closing on a
+// thing may be drawn on its face while the controller has gone on into it. The hold reads the controller's motion from
+// the drawn hand's place, and the controller's offset from that place at the grip is SLACK: the controller must come
+// back through it before it moves the thing along that line (a rope taken up), while motion across it counts at once.
+// The slack only shrinks. Units are the caller's.
+//==========================================================================
+
+struct Slack
+{
+	V3 hand, dir;          // the drawn hand at the grip; the slack's direction (controller minus hand, unit)
+	V3 ctrlAtGrab;
+	double left = 0.0;     // what is left of it
+
+	void Grab(const V3 &handAt, const V3 &ctrlAt)
+	{
+		hand = handAt;
+		ctrlAtGrab = ctrlAt;
+		const V3 d = ctrlAt - handAt;
+		left = d.Length();
+		dir = left > 1e-12 ? d * (1.0 / left) : V3();
+	}
+	// The point the hold reads for the controller at `ctrl`.
+	V3 Point(const V3 &ctrl)
+	{
+		const V3 c = ctrl - hand;
+		const double along = c.Dot(dir);
+		left = std::clamp(along, 0.0, left);
+		return hand + c - dir * left;
+	}
+};
+
+//==========================================================================
 // THE HINGE: VRLeverComponent with one axis (its Axis_X / Y / Z are one case here: the caller's frame puts the hinge
 // on +Z). A door leaf, a lever, a lid. `angle` is the thing's turn from where it rests, degrees.
 //==========================================================================

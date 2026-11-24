@@ -66,8 +66,8 @@ rig checks only at milestones.
 
 ## Next
 
-1. (Built, milestone 2: doors, levers, keys; docs/VR_HANDWORKS.md.) Left: closing a door by hand (the original's close
-   is not ported), a refusal seen through the hand, light switches and SALVAT's buttons on the ported Button, levers'
+1. (Built, milestone 2: doors, levers, keys; docs/VR_HANDWORKS.md.) The original's close is ported and doors close by
+   hand too. Left: light switches and SALVAT's buttons on the ported Button, levers'
    own models. The game has no drawers or wheels that open (docs/OPENABLES.md).
 2. Sockets: an item brought to its lock, slot or keyhole is the original's use with that item (UltimateXR anchors).
 3. Two hands on one object; two items held at once (the item in the hand that makes a use is selected at that use).

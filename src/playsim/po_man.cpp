@@ -100,6 +100,10 @@ protected:
 	// An outside driver turned this swing part of its arc (EV_TurnHeldPoly): what is left need not be a whole number of
 	// steps, so its last step is cut to land on its stop. Not saved; false for every swing nothing has driven.
 	bool m_Driven = false;
+	// EV_PolySwingWaits: blocked, it waits instead of turning back (the original's doors). Not saved.
+	bool m_WaitIfBlocked = false;
+	friend bool EV_TogglePolySwing(FLevelLocals *Level, int polyNum, double speedDegPerTic, bool &closing);
+	friend bool EV_PolySwingWaits(FLevelLocals *Level, int polyNum);
 	friend bool EV_PolySwingState(FLevelLocals *Level, int polyNum, int &sense, double &remainingDeg, bool &closing);
 };
 
@@ -614,8 +618,8 @@ void DPolyDoor::Tick ()
 		}
 		else
 		{
-			if(m_PolyObj->crush || !m_Close)
-			{ // continue moving if the poly is a crusher, or is opening
+			if(m_PolyObj->crush || !m_Close || m_WaitIfBlocked)
+			{ // continue moving if the poly is a crusher, or is opening, or waits when blocked (EV_PolySwingWaits)
 				return;
 			}
 			else
@@ -750,6 +754,74 @@ bool EV_PolySwingState(FLevelLocals *Level, int polyNum, int &sense, double &rem
 	sense = pd->m_Speed > 0 ? 1 : -1;
 	remainingDeg = pd->m_Dist;
 	closing = pd->m_Close;
+	return true;
+}
+
+//==========================================================================
+//
+// EV_TogglePolySwing, EV_PolySwingWaits (po_man.h)
+//
+//==========================================================================
+
+bool EV_TogglePolySwing(FLevelLocals *Level, int polyNum, double speedDegPerTic, bool &closing)
+{
+	FPolyObj *poly = Level->GetPolyobj(polyNum);
+	if (poly == nullptr || poly->bHasPortals == 2) return false;
+	DPolyDoor *pd = dyn_cast<DPolyDoor>(poly->specialdata.Get());
+	if (pd != nullptr)
+	{
+		if (pd->m_Type != PODOOR_SWING) return false;
+		if (!pd->m_Close)
+		{
+			// opening -> closing from where it is: back the arc it has turned
+			pd->m_Dist = pd->m_TotalDist - pd->m_Dist;
+			pd->m_Speed = -pd->m_Speed;
+			pd->m_Close = true;
+			pd->m_Tics = 0;
+		}
+		else if (pd->m_Tics > 0)
+		{
+			// standing open, waiting to close: close now
+			pd->m_Tics = 0;
+		}
+		else
+		{
+			// closing -> opening again
+			pd->m_Dist = pd->m_TotalDist - pd->m_Dist;
+			pd->m_Speed = -pd->m_Speed;
+			pd->m_Close = false;
+		}
+		pd->m_Driven = true;   // its arc left need not be whole steps any more
+		closing = pd->m_Close;
+		SN_StartSequence(poly, poly->seqType, SEQ_DOOR, closing);
+		return true;
+	}
+	// no thinker: standing open for good (bBlocked), or nothing
+	const double open = poly->Angle.Normalized180().Degrees();
+	if (fabs(open) < 0.01 || speedDegPerTic <= 0) return false;
+	pd = Level->CreateThinker<DPolyDoor>(poly, PODOOR_SWING);
+	poly->specialdata = pd;
+	poly->bBlocked = false;
+	pd->m_WaitTics = -1;
+	pd->m_Direction = DAngle::fromDeg(1.);
+	pd->m_Speed = open > 0 ? -speedDegPerTic : speedDegPerTic;   // back toward 0
+	pd->m_TotalDist = fabs(open);
+	pd->m_Dist = fabs(open);
+	pd->m_Close = true;
+	pd->m_Tics = 0;
+	pd->m_Driven = true;
+	closing = true;
+	SN_StartSequence(poly, poly->seqType, SEQ_DOOR, 1);
+	return true;
+}
+
+bool EV_PolySwingWaits(FLevelLocals *Level, int polyNum)
+{
+	FPolyObj *poly = Level->GetPolyobj(polyNum);
+	if (poly == nullptr) return false;
+	DPolyDoor *pd = dyn_cast<DPolyDoor>(poly->specialdata.Get());
+	if (pd == nullptr) return false;
+	pd->m_WaitIfBlocked = true;
 	return true;
 }
 

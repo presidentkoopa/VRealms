@@ -1235,8 +1235,9 @@ bool WorldHandsGripTaken(int role)
 	if (!S.built) Build(pmo);
 	HandNow h;
 	if (!ReadHand(role, h)) return false;
-	if (HandworksGripTaken(role, pmo)) return true;   // a door's handle or leaf (roth_handworks.cpp)
+	// a key in its lock first (only an item the use there tests, or the table's), then a door's handle or leaf
 	if (TryTwist(role, h, pmo, "the grip closed in it")) return true;
+	if (HandworksGripTaken(role, pmo)) return true;   // roth_handworks.cpp
 	return TryPull(role, h, pmo);
 }
 
@@ -1679,9 +1680,31 @@ CCMD(roth_worldtest)
 					{
 						const DVector2 h2 = d.pivot + d.closedDir * (d.length - 15.0);
 						// `handle far`: the same door's handle on its other side (the spot's normal turned round)
-						if (hn && argv.argc() >= 5 && !stricmp(argv[4], "far")) { nrm = -nrm; T.normal = nrm; T.along = DVector2(-nrm.Y, nrm.X); how += "; its far side"; }
+						const bool far = hn && argv.argc() >= 5 && !stricmp(argv[4], "far");
+						if (far) { nrm = -nrm; T.normal = nrm; T.along = DVector2(-nrm.Y, nrm.X); how += "; its far side"; }
 						const DVector2 side = hn ? nrm : DVector2(0, 0);
-						T.spot = DVector3(h2.X + side.X * 4.0, h2.Y + side.Y * 4.0, d.zBottom + 0.43 * (d.zTop - d.zBottom));
+						// on the record's own face (the hinge line may be the leaf's other face: a leaf is up to 12 units
+						// thick), then 4 units out from it; `far`: on the face the other side of the leaf's thickness
+						DVector2 onFace = h2;
+						if (hn)
+						{
+							const double toFace = (at.XY() - h2) | (far ? -nrm : nrm);
+							onFace = h2 + (far ? -nrm : nrm) * toFace;
+							if (far)
+							{
+								// the far face: the leaf's other broad side, its thickness across from the record's face
+								double thick = 0;
+								for (unsigned i = 0; i < S.level->Polyobjects.Size(); i++)
+									if (S.level->Polyobjects[i].tag == tag)
+										for (auto &pt : S.level->Polyobjects[i].OriginalPts)
+										{
+											const DVector2 v = S.level->Polyobjects[i].StartSpot.pos + pt.pos;
+											thick = std::max(thick, (onFace - v) | (-nrm));
+										}
+								onFace = onFace + nrm * thick;
+							}
+						}
+						T.spot = DVector3(onFace.X + side.X * 4.0, onFace.Y + side.Y * 4.0, d.zBottom + 0.43 * (d.zTop - d.zBottom));
 						how.AppendFormat("; door %d's handle (hinge (%.0f %.0f), %.0f long, %.0f..%.0f high, opens %s)", tag, d.pivot.X, d.pivot.Y,
 							d.length, d.zBottom, d.zTop, d.sense > 0 ? "anticlockwise" : "clockwise");
 					}

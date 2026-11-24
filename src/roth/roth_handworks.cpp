@@ -19,6 +19,7 @@
 #include "actor.h"
 #include "d_player.h"
 #include "g_levellocals.h"
+#include "playsim/po_man.h"
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "printf.h"
@@ -63,6 +64,7 @@ struct Hold
 	// hand's grip point when it took hold (a hand stopped on the door's face, its controller a few cm inside it), then
 	// moved by the controller's motion since.
 	DVector3 handAtGrab, ctrlAtGrab;
+	track::Slack slack;      // the controller gone on past the hand at the grip (roth_track.h THE SLACK)
 };
 
 struct State
@@ -117,7 +119,11 @@ DVector3 PalmOffset(int role, const VRPickHand &v)
 }
 
 // The point the hold reads this tic (see Hold::handAtGrab).
-DVector3 Interactor(const Hold &h, const DVector3 &ctrl) { return h.handAtGrab + (ctrl - h.ctrlAtGrab); }
+DVector3 Interactor(Hold &h, const DVector3 &ctrl)
+{
+	const track::V3 p = h.slack.Point(track::V3(ctrl.X, ctrl.Y, ctrl.Z));
+	return DVector3(p.x, p.y, p.z);
+}
 
 double LeafAngle(int tag, AActor *pmo)
 {
@@ -134,10 +140,33 @@ bool TurnTo(const Hold &h, AActor *pmo, double want)
 	return DoorTurnHeld(h.tag, delta * h.door.sense);
 }
 
-void Unhold(Hold &h, const char *why)
+// THE CLOSE BY HAND: a leaf the hand leaves within its latch of shut (the same 4 cm of arc that opens it) is the
+// original's use on the open door's leaf -- toggle_door_open_state (roth_runtime.cpp ToggleDoor): it closes, from
+// there. A door already closing by itself is left to it.
+void ShutIfNearlyShut(int role, Hold &h, AActor *pmo)
+{
+	DoorHinge d;
+	if (role < 0 || !h.opened || S.level == nullptr || !DoorHingeOf(h.tag, pmo, d) || d.closing) return;
+	if (d.angleDeg > std::max(h.latchDeg, 1.0)) return;
+	FPolyObj *po = S.level->GetPolyobj(h.tag);
+	if (po == nullptr || po->Linedefs.Size() == 0) return;
+	Pick p;
+	p.kind = Pick::DoorLeaf;
+	p.leafTag = h.tag;
+	p.line = po->Linedefs[0];
+	p.side = 0;
+	p.hitPos = LeafPoint(h, d.angleDeg);
+	const bool acted = RulesUse(role, p, "a door's leaf brought back to shut");
+	Printf("[roth_handworks] %s hand brings door %d back to %.1f degrees (its latch is %.1f): the original's use on the leaf -> %s\n",
+		RoleName(role), h.tag, d.angleDeg, h.latchDeg, acted ? "it closes" : "nothing happened");
+	if (acted) VRPickHaptic(role, 0.5, 40, Logging() ? "the door shuts" : nullptr);
+}
+
+void Unhold(Hold &h, const char *why, int role = -1, AActor *pmo = nullptr)
 {
 	if (h.driving)
 	{
+		ShutIfNearlyShut(role, h, pmo);
 		DoorHold(h.tag, false);
 		Printf("[roth_handworks] door %d: the hand lets the leaf go at %.1f degrees (%s) -- its own swing takes it from there\n", h.tag,
 			LeafAngle(h.tag, nullptr), why);
@@ -164,7 +193,7 @@ void Release(int role, AActor *pmo, const char *why)
 			return;
 		}
 		Printf("[roth_handworks] %s hand lets go of door %d (%s) at %.1f degrees\n", RoleName(role), h.tag, why, h.hinge.angle);
-		Unhold(h, "let go");
+		Unhold(h, "let go", role, pmo);
 		return;
 	}
 	if (Logging() || !h.used)
@@ -191,7 +220,13 @@ void TickHold(int role, AActor *pmo)
 	DVector3 o;
 	if (!VRPickHandNow(role, v) || !Controller(role, o)) { Release(role, pmo, "the hand is lost"); return; }
 	if (!v.gripClosed) { Release(role, pmo, "the grip opened"); return; }
-	const track::V3 local = Local(h.door, Interactor(h, o));
+	// the controller's palm: the drawn palm less the drawn hand's offset from the controller (the pin, the physics stop)
+	DVector3 ctrlPalm = o;
+	{
+		DVector3 d0, f, r, u;
+		if (VRHandPose_MapFrame(role, d0, f, r, u)) ctrlPalm = v.palm - (d0 - o);
+	}
+	const track::V3 local = Local(h.door, Interactor(h, ctrlPalm));
 
 	if (!h.opened)
 	{
@@ -200,8 +235,9 @@ void TickHold(int role, AActor *pmo)
 		if (Logging() && (int)(h.hinge.angle * 2.0) != h.loggedDeg)
 		{
 			h.loggedDeg = (int)(h.hinge.angle * 2.0);
-			Printf("[roth_handworks] %s hand on door %d's handle: %.1f of the %.1f degrees its latch needs (the hand at %.3f %.3f in the door's frame)\n",
-				RoleName(role), h.tag, h.hinge.angle, h.latchDeg, local.x, local.y);
+			Printf("[roth_handworks] %s hand on door %d's handle: %.1f of the %.1f degrees its latch needs (the hand at %.3f %.3f in the door's frame;"
+				" controller (%.1f %.1f), drawn palm (%.1f %.1f))\n", RoleName(role), h.tag, h.hinge.angle, h.latchDeg, local.x, local.y, o.X, o.Y,
+				v.palm.X, v.palm.Y);
 		}
 		if (!h.used && h.hinge.angle >= h.latchDeg)
 		{
@@ -251,10 +287,10 @@ void TickCoast(int role, AActor *pmo)
 {
 	Hold &h = S.hand[role];
 	if (!h.coasting) return;
-	if (!h.hinge.lerping || fabs(h.hinge.momentum) <= kSwingDegPerSec) { Unhold(h, "its momentum spent"); return; }
+	if (!h.hinge.lerping || fabs(h.hinge.momentum) <= kSwingDegPerSec) { Unhold(h, "its momentum spent", role, pmo); return; }
 	h.hinge.Tick(kDt);
-	if (!TurnTo(h, pmo, h.hinge.angle)) { Unhold(h, "stopped by something in its way"); return; }
-	if (!h.hinge.lerping) Unhold(h, h.hinge.angle >= kOpenDeg - 0.01 ? "at its stop" : "at rest");
+	if (!TurnTo(h, pmo, h.hinge.angle)) { Unhold(h, "stopped by something in its way", role, pmo); return; }
+	if (!h.hinge.lerping) Unhold(h, h.hinge.angle >= kOpenDeg - 0.01 ? "at its stop" : "at rest", role, pmo);
 }
 
 } // namespace (anonymous)
@@ -350,6 +386,13 @@ bool HandworksGripTaken(int role, AActor *pmo)
 	h.hinge.angle = std::clamp(d.angleDeg, 0.0, kOpenDeg);
 	h.ctrlAtGrab = o;
 	h.handAtGrab = v.palm;   // the palm the grab was tested at (the drawn hand's: on the door's face)
+	{
+		// the controller's palm: the drawn palm moved by the drawn hand's offset from the controller
+		DVector3 d0, f, r, u;
+		const DVector3 ctrlPalm = VRHandPose_MapFrame(role, d0, f, r, u) ? v.palm - (d0 - o) : o;
+		h.slack.Grab(track::V3(v.palm.X, v.palm.Y, v.palm.Z), track::V3(ctrlPalm.X, ctrlPalm.Y, ctrlPalm.Z));
+		h.ctrlAtGrab = ctrlPalm;
+	}
 	o = h.handAtGrab;
 	const track::V3 local = Local(d, o);
 	h.hinge.Grip(local);
@@ -369,6 +412,32 @@ bool HandworksGripTaken(int role, AActor *pmo)
 bool HandworksHolding(int role)
 {
 	return role >= 0 && role <= 1 && S.hand[role].active;
+}
+
+// A HAND'S USE ON A DOOR'S LEAF (a test instrument, inert until typed): `roth_handworks_leafuse <tag> [main|off]`
+// makes that hand's L1 use (RulesUse, the reach and the click gate included) on door <tag>'s leaf at its middle, as a
+// squeeze on it would. An open door's leaf: toggle_door_open_state (roth_runtime.cpp ToggleDoor).
+CCMD(roth_handworks_leafuse)
+{
+	FLevelLocals *level = S.level;
+	if (level == nullptr || argv.argc() < 2) { Printf("roth_handworks_leafuse <tag> [main|off]\n"); return; }
+	const int tag = atoi(argv[1]);
+	const int role = argv.argc() >= 3 && !stricmp(argv[2], "off") ? VR_OFFHAND : VR_MAINHAND;
+	AActor *pmo = level->GetConsolePlayer() != nullptr ? level->GetConsolePlayer()->mo : nullptr;
+	FPolyObj *po = level->GetPolyobj(tag);
+	DoorHinge d;
+	if (po == nullptr || po->Linedefs.Size() == 0 || !DoorHingeOf(tag, pmo, d)) { Printf("roth_handworks_leafuse: no swinging door %d\n", tag); return; }
+	DVector2 along, out;
+	LeafAxes(d, std::clamp(d.angleDeg, 0.0, kOpenDeg), along, out);
+	Pick p;
+	p.kind = Pick::DoorLeaf;
+	p.leafTag = tag;
+	p.line = po->Linedefs[0];
+	const DVector2 mid = d.pivot + along * (d.length * 0.5);
+	p.hitPos = DVector3(mid.X, mid.Y, d.zBottom + 0.43 * (d.zTop - d.zBottom));
+	const bool acted = RulesUse(role, p, "test: a use on a door's leaf");
+	Printf("[roth_handworks] test: %s hand's use on door %d's leaf at %.1f degrees open -> %s\n", RoleName(role), tag, d.angleDeg,
+		acted ? "acted" : "nothing happened");
 }
 
 // THE DOOR CENSUS (a test instrument, inert until typed): every swinging door of the level -- its tag, hinge, length,

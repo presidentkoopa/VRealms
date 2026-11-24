@@ -87,6 +87,8 @@ void SoundMoverExit(int node, bool wasStarted, uint16_t endSoundPlusOne, bool as
 // it has shut (doors.c:1049-1063, 1087-1091, 1140-1145). `polyTag` is the
 // polyobject the loader built for the leaf; the swing is followed on it.
 void SoundDoorOpened(int polyTag, uint16_t openPlusOne, uint16_t closePlusOne, uint16_t shutPlusOne);
+// toggle_door_open_state's sound (restart_door_open_sound): `closing` the way the door goes now.
+void SoundDoorToggled(int polyTag, bool closing);
 
 // ---- music (DBASE100 ops 0x1a / 0x1b) ---------------------------------------
 

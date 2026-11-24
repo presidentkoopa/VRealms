@@ -217,8 +217,32 @@ static void TestButton()
 	CHECK(!p.buttonState, "and off once back out");
 }
 
+static void TestSlack()
+{
+	// the drawn hand on a door's face at y 0; the controller 0.30 m on into the door (y -0.30)
+	Slack s;
+	s.Grab(V3(0, 0, 0), V3(0, -0.30, 0));
+	V3 p = s.Point(V3(0, -0.30, 0));
+	CHECK(Near(p.y, 0) && Near(s.left, 0.30), "at the grip: the hand's place, all the slack left");
+	p = s.Point(V3(0, -0.35, 0));
+	CHECK(Near(p.y, -0.05), "on 5 cm further in: 5 cm of motion (%.3f)", p.y);
+	p = s.Point(V3(0, -0.10, 0));
+	CHECK(Near(p.y, 0) && Near(s.left, 0.10), "coming back toward the hand: the slack taken up, no motion (%.3f, left %.3f)", p.y, s.left);
+	p = s.Point(V3(0.04, -0.10, 0));
+	CHECK(Near(p.x, 0.04) && Near(p.y, 0), "across the slack: counts at once");
+	p = s.Point(V3(0, 0.08, 0));
+	CHECK(Near(p.y, 0.08) && Near(s.left, 0), "back past the hand: the controller itself (%.3f)", p.y);
+	p = s.Point(V3(0, -0.05, 0));
+	CHECK(Near(p.y, -0.05), "and in again: no slack any more (%.3f)", p.y);
+	Slack z;
+	z.Grab(V3(1, 2, 3), V3(1, 2, 3));
+	p = z.Point(V3(1.1, 2, 3));
+	CHECK(Near(p.x, 1.1), "no slack: the controller's motion as is");
+}
+
 int main()
 {
+	TestSlack();
 	TestHelpers();
 	TestHingeDoor();
 	TestHingeReturn();

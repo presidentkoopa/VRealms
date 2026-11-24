@@ -20,7 +20,12 @@ the original, docs/WORLD_DESIGN.md 1.1, docs/OPENABLES.md 2):
 - **Let go:** a leaf swung harder than the original's swing (98 degrees a second) carries the hand's swing on and slows
   (VRLever's RetainMomentum); then the original's own swing finishes its arc from where the leaf is, at its speed, with
   its dwell and its close as before. Driven swings land on exactly 90 degrees.
+- **Close by hand:** a leaf brought back within its latch of shut (the same 4 cm of arc) and let go there is the
+  original's use on the open door's leaf: toggle_door_open_state (below). It closes from there.
 - **Too far from the controller:** 30 cm off its hold on the leaf, the hand lets go [R: the number].
+- **Slack** (roth_track.h Slack, ours): a hand closing on a door may be drawn on its face while its controller has gone
+  on into it. The controller must come back to the drawn hand before it moves the door along that line; motion across
+  counts at once. Without it, a player leaning into a door and relaxing reads as a pull.
 - Which way a door opens from where the player stands is SwingDoor's own decision (the hinge marker, doors.c:523-531).
 
 **Levers** (the owner's table: MAS4 #3, MAUSO1EA #18 #30 #101, MAS6 #20): the lever is an arm 20 cm long [R: no model
@@ -34,6 +39,16 @@ raw_commands.c:4760) is a key for that spot. The owner's Q15/Q16 table had two (
 every lock: the 15 KEY doors (their handle plate is the lock), the locked cupboards, any socket that tests an item. Set it
 there with the grip closed and turn it 30 degrees (the owner's key turn, Q16) either way: the original's use from that
 hand. The hand is drawn in the lock while it turns. The Statuette and the Orb are set down, not turned (THE RELEASE).
+
+**The original's close, ported** (`roth_runtime.cpp` ToggleDoor, from E/doors.c:905-912 toggle_door_open_state,
+E/audio.c:956-970 restart_door_open_sound, E/doors.c:1031-1195 tick_swinging_doors; source
+`E:\DOOMWork\VRealms\tools\ROTH.C\roth_c\src\engine`). A use on an OPEN door's leaf (the original's door object,
+pick type 6, E/input.c:1087-1098) toggles it: opening or standing open -> closing from where it is; closing -> opening
+again. Its sound is restarted as the original's (the door's +0x26 sound). The port had never had it: a second click on
+an open door used to re-fire the room face's chain. And a blocked swing now WAITS and tries again, opening or closing,
+as the original's tick reverts its step (doors.c:1094-1099, 1166-1173); the engine's Hexen door turned a blocked closing
+swing back open. Engine: `po_man.h` EV_TogglePolySwing, EV_PolySwingWaits (DPolyDoor::m_WaitIfBlocked), inert until
+called. A door standing open for good (dwell 0, no swing left) gets a new closing swing at the speed it was opened with.
 
 **Bookcases and the pit's chains** keep the owner's own rules (Q30: a leaf pulled 4 cm from its edge; the chains 8 cm):
 the general door rule leaves the owner's pull table alone.
@@ -174,16 +189,25 @@ events, momentum; buttons toggle and press). `tools/worldhands_test` 87 / 0 (unc
   lay, thrown at 3.91 m/s, stowed over the shoulder; touch and point pickups, the too-far refusal, the keyed object.
 - [V: handworks_doors_census] STUDY1: 30 swinging doors found, each with its hinge and its faces' uses.
 
+- [V: log-handworks_key_flat.txt] A LOCKED door through the hand: door 2 (record #408), the handle drawn 3.8 degrees ->
+  the original's use, "Locked.", "the door stays shut" (0 degrees after). Key i21 then opens the Study door (door 4).
+- [V: log-handworks_close_flat.txt] THE CLOSE. Door 6 open at 90, a use on its leaf (`roth_handworks_leafuse 6`, the
+  hand's RulesUse): "toggle_door_open_state -> toggled", "now CLOSING"; censuses at 1, 2, 5, 10, 16, 26 tics: 87, 84, 76,
+  62, 45, 17 degrees, at 46 tics 0 with no swing left -- 90 less 2.8125 a tic, the original's step at M 1 (one 1.40625
+  degree unit per 70 Hz tick, doors.c:1043-1045, 1113-1125), exactly. Door 5 pushed open by the hand to about 20
+  degrees, brought back to shut and let go: "brings door 5 back to 0.0 degrees ... the original's use on the leaf -> it
+  closes"; then 0, no swing.
+
 **Not seen, or not yet working:**
-- **A locked door refused through the hand** (handworks_key_flat B1, door 2, record #408 "Locked."): the test rig jerks
-  the controller 18 cm on the first held tic and the push never reached the latch. The original's "Locked." at that door
-  was seen by a squeeze (the first run). The hand's "the door stays shut" branch has not run.
+- The close is checked against the original's arithmetic (above), not diffed against the running original (no ROTH.C
+  oracle run was made: that needs a probe mod in the headless build). The closing sound is the port's door-sound tracker's
+  (roth_sound.cpp TickDoors), not listened to.
 - The statuette's own "set down" line in worldhands_study1 says "nothing within 0.05 m" although the plates fire; the
   code it runs was not touched here, and whether it predates this work was not checked (no pre-change build was run).
-- A hand-swung door's leaf pushed by the hand BACK toward shut is released at that angle and the original's swing opens it
-  again (the door is open in the game). Closing a door by hand needs the original's close (toggle_door_open_state,
-  input.c:1086-1098), which the port has never had (roth_runtime.cpp: "the outstanding closing, blocking, the second use").
-- A settled open door (dwell 0: it stays open) moved by the hand stays where it is let go (no swing to finish it).
+- A door let go of within its latch of shut is closed; let go anywhere else, an opening door finishes
+  opening (the game's state is "open"); a door standing open for good stays where the hand leaves it (no swing to finish).
+- The test hands (roth_worldtest) jerk the controller when a hand starts being held on a track; the door numbers above are
+  the doors' own lines.
 - Nothing in the headset. Haptics are logged, not felt. The test hands are driven by roth_worldtest, which fights a
   hand held on a track (its correction reads the controller then); the numbers above are the doors' own lines.
 - Sounds: the original's door sound plays as before (the use's own 0x2f); nothing new while the hand swings it.

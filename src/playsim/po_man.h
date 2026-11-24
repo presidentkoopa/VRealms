@@ -180,6 +180,16 @@ bool EV_HoldPoly (FLevelLocals *Level, int polyNum, bool hold);
 bool EV_TurnHeldPoly (FLevelLocals *Level, int polyNum, DAngle delta);
 bool EV_PolySwingState (FLevelLocals *Level, int polyNum, int &sense, double &remainingDeg, bool &closing);
 
+// A SWINGING POLYOBJECT DOOR TURNED ROUND, and one that WAITS when blocked. Made for VRealms' doors (src/roth/
+// roth_runtime.cpp ToggleDoor: the original's toggle_door_open_state, which a use on an open door leaf runs; and its
+// tick_swinging_doors, whose blocked swing waits instead of reversing), for any caller wanting the same.
+// - EV_TogglePolySwing: opening or standing open -> closing (from where it is, now); closing -> opening again. A door
+//   whose swing thinker is gone (it stays open) gets a new closing swing at `speedDegPerTic`, the arc it is open.
+//   `closing` says which way it goes now. False: not an open or moving swing door.
+// - EV_PolySwingWaits: the current swing of the polyobject, blocked, waits and tries again (Hexen's doors reverse).
+bool EV_TogglePolySwing (FLevelLocals *Level, int polyNum, double speedDegPerTic, bool &closing);
+bool EV_PolySwingWaits (FLevelLocals *Level, int polyNum);
+
 bool PO_Busy (FLevelLocals *Level, int polyobj);
 
 

@@ -629,6 +629,9 @@ struct Runtime
 	{
 		int marker = 0xFFFE;
 		int secC1 = -1, secC3 = -1;
+		// the swing's speed, degrees a 35 Hz tic, as SwingDoor last started it (the original keeps it in the door
+		// record's +0x0c for the whole life of the swing; toggle_door_open_state's close runs at it)
+		double speedDegPerTic = 2.8125;
 		DVector2 v1 = { 0., 0. }, v2 = { 0., 0. };
 	};
 	std::map<int, DoorSwing> doorSwing;
@@ -1109,8 +1112,37 @@ int SwingDoor(int tag, int speedMul, int dwellTicks, int fromSector)
 
 	// The arc is always 90 degrees: 64 angle units of 1.40625 degrees, settled
 	// from the sincos table's own bytes. See HANDOFF_REMAROTH.md section 12.
-	return EV_OpenPolyDoor(g.level, nullptr, tag, speed, DAngle::fromDeg(90.),
-		delay, 0., PODOOR_SWING) ? CMD_ACTED : CMD_NOTHING;
+	if (!EV_OpenPolyDoor(g.level, nullptr, tag, speed, DAngle::fromDeg(90.), delay, 0., PODOOR_SWING)) return CMD_NOTHING;
+	// BLOCKED, THE ORIGINAL'S SWING WAITS: tick_swinging_doors reverts the step and tries again next frame, opening or
+	// closing alike (doors.c:1094-1099, :1166-1173); Hexen's door turned a blocked closing swing back open.
+	EV_PolySwingWaits(g.level, tag);
+	if (sw != g.doorSwing.end()) sw->second.speedDegPerTic = fabs(speed) * (90. / 64) / 8;   // EV_OpenPolyDoor's m_Speed
+	return CMD_ACTED;
+}
+
+//==========================================================================
+//
+// ToggleDoor -- toggle_door_open_state (E/doors.c:905-912, with restart_door_open_sound E/audio.c:956-970), what a
+// use on an OPEN door leaf runs (E/input.c:1087-1098: a type-6 pick, no trigger, no chain). The door record's state
+// byte +2: bit 2 "standing open" (dwell), bit 4 "closing". restart_door_open_sound clears bit 2 and sets bit 4; a
+// door that had bit 4 already has it taken off again (`sub byte[eax+2],4`). So: opening or standing open -> closing,
+// from where it is; closing -> opening. The sound: the door's latched sound stopped, its +0x26 sound (the one
+// tick_swinging_doors plays when a dwell ends, doors.c:1057-1061) played -- roth_sound.cpp SoundDoorToggled.
+// The swing is the engine's polyobject door (po_man.h EV_TogglePolySwing) at the speed it was opened with.
+//
+//==========================================================================
+
+int ToggleDoor(int tag)
+{
+	if (g.level == nullptr) return CMD_NOTHING;
+	auto sw = g.doorSwing.find(tag);
+	const double speed = sw != g.doorSwing.end() ? sw->second.speedDegPerTic : 2.8125;
+	bool closing = false;
+	if (!EV_TogglePolySwing(g.level, tag, speed, closing)) return CMD_NOTHING;
+	EV_PolySwingWaits(g.level, tag);
+	SoundDoorToggled(tag, closing);
+	if (roth_trigger_debug) Printf("roth_trigger: door %d toggled: now %s\n", tag, closing ? "CLOSING" : "OPENING again");
+	return CMD_ACTED;
 }
 
 //==========================================================================
@@ -6314,6 +6346,20 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 	// broad leaf side is handed on to the room face behind it, and the normal
 	// path below fires it. Only where that face carries no chain of its own
 	// does the leaf fall back to swinging by itself.
+	// AN OPEN DOOR'S LEAF IS THE ORIGINAL'S DOOR OBJECT (pick type 6): its use is toggle_door_open_state, no trigger, no
+	// chain (E/input.c:1087-1098). Only a SHUT door is its room face (the original has no door object then).
+	if (leaf != g.doorLeafSide.end() && isUse)
+	{
+		FPolyObj *po = g.level->GetPolyobj(leaf->second);
+		if (po != nullptr && (po->specialdata != nullptr || po->bBlocked || fabs(po->Angle.Normalized180().Degrees()) > 0.01))
+		{
+			const int toggled = ToggleDoor(leaf->second);
+			if (roth_trigger_debug)
+				Printf("roth_trigger: line %d is the leaf of OPEN door %d: toggle_door_open_state -> %s\n", line->Index(), leaf->second,
+					toggled == CMD_ACTED ? "toggled" : "nothing");
+			return true;
+		}
+	}
 	if (leaf != g.doorLeafSide.end() && isUse)
 	{
 		side_t *hitSd = line->sidedef[0];
@@ -8347,6 +8393,11 @@ bool DoorHingeOf(int tag, AActor *who, DoorHinge &out)
 bool DoorHold(int tag, bool hold)
 {
 	return g.active && g.level != nullptr && EV_HoldPoly(g.level, tag, hold);
+}
+
+bool DoorToggle(int tag)
+{
+	return g.active && ToggleDoor(tag) == CMD_ACTED;
 }
 
 bool DoorTurnHeld(int tag, double deltaDeg)

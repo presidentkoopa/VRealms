@@ -40,18 +40,24 @@ Logs beside the exe (`build-dxr\RelWithDebInfo\log-<name>.txt`), captures in the
   link ASan/UBSan, which the PC's 32-bit MinGW lacks; physics_test needs a 64-bit compiler for Jolt's SSE. None of them
   compiles a file this milestone changed (physics_test covers roth_physics_core.cpp, untouched).
 
+## 3b. Added the same day (after the milestone)
+- **The original's close, ported** (`roth_runtime.cpp` ToggleDoor; po_man EV_TogglePolySwing / EV_PolySwingWaits): a use
+  on an open door's leaf toggles it, as the original; blocked swings wait. Closing by hand: a leaf let go within its
+  latch of shut closes. Seen: door 6 closing from 90 at exactly the original's 2.8125 degrees a tic, door 5 closed by the
+  hand (log-handworks_close_flat). ROTH.C source: `E:\DOOMWork\VRealms\tools\ROTH.C\roth_c\src\engine`.
+- **A locked door refused through the hand: seen** (door 2, "Locked.", stays shut).
+- **Slack** (roth_track.h): a controller pushed past the drawn hand must come back before it moves the thing.
+- The grip tries a key in its lock before the door rule (a hand holding the key a door tests turns it there).
+- Instruments: `roth_handworks_leafuse <tag>`; `roth_worldtest spot <record> handle [far]` now on the record's face.
+
 ## 4. Left undone
-1. **A locked door refused through the hand is not seen.** handworks_key_flat B1 (door 2, record #408): the test rig
-   jerks the controller 18 cm on the first held tic and the push never reached the latch. Look at roth_worldtest's
-   correction (TestPoint's pinned branch) against PhysicsHandPin before blaming the door code.
-2. **Closing a door by hand.** The original's close (toggle_door_open_state, input.c:1086-1098) was never ported; a leaf
-   pushed back toward shut is released there and the original's swing opens it again. Port the close (with a
-   differential test) and give the hinge a shut threshold.
-3. Statuette release in worldhands_study1 logs "nothing within 0.05 m -- not set down" while the plates still fire by the
+1. The close is checked against the original's arithmetic, not diffed against the running original (a ROTH.C probe mod
+   run); its sound not listened to.
+2. Statuette release in worldhands_study1 logs "nothing within 0.05 m -- not set down" while the plates still fire by the
    squeeze; untouched code, not checked against a pre-change build.
-4. Levers have no models (their arm length, 20 cm, is a guess); light switches and SALVAT's buttons could use the
+3. Levers have no models (their arm length, 20 cm, is a guess); light switches and SALVAT's buttons could use the
    ported Button; the clock could use the ported Dial.
-5. Nothing tried in the headset.
+4. Nothing tried in the headset.
 
 ## 5. Next (from docs/VR_PHYSICS.md)
 Sockets (an item brought to its lock or slot as the original's use: the key rule above is half of it), two hands,

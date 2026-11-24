@@ -155,6 +155,7 @@ struct State
 	SfxSection section;
 	Handle handles[16];
 	std::vector<DoorSound> doors;
+	std::vector<DoorSound> known;               // every door swung this level: its sounds and its shut angle
 	uint16_t rng = 0;                           // the word at 0x85328
 	int rngTicks = 0;
 
@@ -1092,9 +1093,47 @@ void SoundMoverExit(int node, bool wasStarted, uint16_t endSoundPlusOne, bool as
 //
 //==========================================================================
 
+// restart_door_open_sound (E/audio.c:956-970) for toggle_door_open_state: the latched sound stopped, the door's +0x26
+// sound (its close sound: the one a dwell's end plays) played and latched; the tracker then follows the new way.
+void SoundDoorToggled(int polyTag, bool closing)
+{
+	if (S.level == nullptr) return;
+	DoorSound *d = nullptr;
+	for (DoorSound &e : S.doors) if (e.tag == polyTag) d = &e;
+	if (d == nullptr)
+	{
+		const DoorSound *k = nullptr;
+		for (const DoorSound &e : S.known) if (e.tag == polyTag) k = &e;
+		if (k == nullptr) return;   // never swung by the original's open this level: no sounds known
+		S.doors.push_back(*k);
+		d = &S.doors.back();
+		FPolyObj *po = S.level->GetPolyobj(polyTag);
+		d->lastSwing = po != nullptr ? DoorSwing(*d, po) : 0.;
+	}
+	if (d->marker) StopEmitter(EMIT_DOOR, d->tag);
+	d->marker = false;
+	if (d->closePlusOne != 0) { d->marker = true; PlayDoorUnique(*d, (int)d->closePlusOne - 1); }
+	d->phase = closing ? 2 : 0;
+}
+
 void SoundDoorOpened(int polyTag, uint16_t openPlusOne, uint16_t closePlusOne, uint16_t shutPlusOne)
 {
 	if (S.level == nullptr) return;
+	{
+		// what the door's swing record keeps for its whole life (its +0x26 / +0x28), for a toggle after the tracker
+		// has let it go (a door standing open for good)
+		FPolyObj *p0 = S.level->GetPolyobj(polyTag);
+		DoorSound k;
+		k.tag = polyTag;
+		k.closePlusOne = closePlusOne;
+		k.shutPlusOne = shutPlusOne;
+		k.startAngle = p0 != nullptr ? p0->Angle.Degrees() : 0.;
+		k.x = p0 != nullptr ? (int)floor(p0->StartSpot.pos.X) : 0;
+		k.y = p0 != nullptr ? (int)floor(p0->StartSpot.pos.Y) : 0;
+		bool have = false;
+		for (DoorSound &e : S.known) if (e.tag == polyTag) { have = true; break; }
+		if (!have) S.known.push_back(k);
+	}
 	FPolyObj *po = S.level->GetPolyobj(polyTag);
 	if (po == nullptr) return;
 	for (const DoorSound &d : S.doors) if (d.tag == polyTag) return;    // already swinging
