@@ -21,7 +21,7 @@ rig checks only at milestones.
   picker's ray and the touch all stay on the surface at draw rate. A hit is felt (a buzz scaled by the closing speed).
   More than 0.6 m from its controller it is put back on the controller, but never through the level (unless 1.5 m
   off: the player has gone elsewhere). A hand a reach does not shove loose items away: it meets them only above
-  2.5 m/s (a swipe knocks them over). Held 12 cm or more from the controller for 0.3 s, the hand slips through (the
+  2.5 m/s (a swipe knocks them over). Held 25 cm or more from the controller for half a second, the hand slips through (the
   player means to reach there: an item behind a lip the original never had) and is solid again once it fits.
 - **What a hand holds is part of the hand's body** (a compound shape), so a held item meets the world as the hand does.
 - **Letting go anywhere but over the shoulder drops the item** (owner: "stays where it lands"). It leaves with the

@@ -49,8 +49,8 @@ constexpr double kHitFelt = 0.35;             // m/s: a hit the hand feels
 constexpr double kGrabRadiusM = 0.08;         // the palm reaches a loose item this far from its surface
 constexpr double kReturnM = 10.0;             // a loose item this far from the player goes back into the pack
 const V3 kPalmPoint(0.045, 0.0, 0.0);         // where the palm grabs, in the hand frame
-constexpr double kStuckM = 0.12;              // a hand held this far from its controller ...
-constexpr int kStuckTics = 10;                // ... this long (0.3 s) slips through: the player means to reach there
+constexpr double kStuckM = 0.25;              // a hand held this far from its controller (a forearm's depth into a wall) ...
+constexpr int kStuckTics = 18;                // ... this long (half a second) slips through: the player means to reach there
 
 struct Loose
 {
