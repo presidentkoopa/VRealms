@@ -177,6 +177,15 @@ public:
 
 	ValidateResult OnContactValidate(const Body &a, const Body &b, RVec3Arg, const CollideShapeResult &) override
 	{
+		// A HAND REACHING FOR AN ITEM DOES NOT SHOVE IT AWAY: a hand meets loose items only when it moves faster than
+		// a reach (a swipe knocks them over); slower, it passes into them and the grip takes them.
+		for (int k = 0; k < 2; k++)
+		{
+			const Body &hd = k ? b : a, &it = k ? a : b;
+			if ((hd.GetUserData() & (0xffull << 56)) == kUserHand && (it.GetUserData() & (0xffull << 56)) == kUserItem
+				&& hd.GetLinearVelocity().Length() < World::KnockSpeed)
+				return ValidateResult::RejectAllContactsForThisBodyPair;
+		}
 		std::lock_guard<std::mutex> g(lock);
 		for (const Grace &gr : grace)
 			for (int k = 0; k < 2; k++)

@@ -138,6 +138,7 @@ public:
 	static constexpr double TeleportM = 0.6;
 	static constexpr double MaxHandSpeed = 12.0;      // m/s
 	static constexpr double MaxHandSpin = 40.0;       // rad/s
+	static constexpr double KnockSpeed = 2.5;         // m/s: a hand slower than this passes into loose items (a reach)
 
 private:
 	struct Impl;

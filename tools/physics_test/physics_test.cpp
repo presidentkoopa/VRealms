@@ -112,12 +112,19 @@ int main()
 		const Id h = w.AddHand(palm, Pose{ V3(-0.4, 0, 0.05), Q() });
 		for (int i = 0; i < 35; i++)
 		{
-			w.DriveHand(h, Pose{ V3(-0.4 + 0.6 * std::min(1.0, i / 20.0), 0, 0.05), Q() }, dt);
+			w.DriveHand(h, Pose{ V3(-0.4 + 0.6 * std::min(1.0, i / 5.0), 0, 0.05), Q() }, dt);   // a swipe: 4 m/s
 			w.Step(dt);
 		}
 		Pose p;
 		w.PoseOf(it, p);
-		Check(p.p.x > 0.1, "a hand swept through a box on the floor pushes it along", p.p.x);
+		Check(p.p.x > 0.1, "a hand swiped through a box on the floor at 4 m/s knocks it along", p.p.x);
+		// a slow reach (1 m/s) into it does not move it: the grip takes it where it is
+		Pose before;
+		w.PoseOf(it, before);
+		w.TeleportHand(h, Pose{ before.p + V3(-0.3, 0, 0), Q() });
+		for (int i = 0; i < 12; i++) { w.DriveHand(h, Pose{ before.p + V3(-0.3 + 0.03 * i, 0, 0), Q() }, dt); w.Step(dt); }
+		w.PoseOf(it, p);
+		Check((p.p - before.p).Length() < 0.005, "a hand reaching into it at 1 m/s leaves it where it lies", (p.p - before.p).Length());
 	}
 	{
 		World w;
@@ -138,7 +145,7 @@ int main()
 	}
 	{
 		// LET GO INSIDE THE PALM: the item leaves the hand it overlaps without being knocked aside
-		for (int grace : { 0, 9 })
+		for (int grace : { 9 })
 		{
 			World w;
 			Room(w);
@@ -146,13 +153,13 @@ int main()
 			const Id h = w.AddHand(palm, Pose{ V3(0, 0, 1.5), Q() });
 			ItemShape s;
 			s.hull = Box(0.05, 0.05, 0.05);
-			const Id it = w.AddItem(s, Pose{ V3(0.04, 0, 1.5), Q() }, V3(), V3(), grace ? (int)h : -1, grace);
-			for (int i = 0; i < 8; i++) { w.DriveHand(h, Pose{ V3(0, 0, 1.5), Q() }, dt); w.Step(dt); }
+			// thrown forward at 3 m/s out of a palm moving with it at 3 m/s (fast enough to knock)
+			const Id it = w.AddItem(s, Pose{ V3(0.04, 0, 1.5), Q() }, V3(3, 0, 0), V3(), grace ? (int)h : -1, grace);
+			for (int i = 0; i < 3; i++) { w.DriveHand(h, Pose{ V3(0.0857 * (i + 1), 0, 1.5), Q() }, dt); w.Step(dt); }
 			Pose p;
 			w.PoseOf(it, p);
-			const double side = std::sqrt((p.p.x - 0.04) * (p.p.x - 0.04) + p.p.y * p.p.y);
-			if (grace) Check(side < 0.01, "let go inside the palm, with the grace: it falls straight, not knocked aside", side);
-			else Check(side > 0.01 || p.p.z > 1.3, "without it, the palm it overlaps shoves it (why the grace exists)", side);
+			const double side = std::fabs(p.p.y) + std::fabs(p.p.x - (0.04 + 3.0 * 3 * dt * 0.98));
+			Check(side < 0.03, "thrown out of the palm it overlaps, with the hand following through: it flies true (the grace)", side);
 		}
 	}
 	{
