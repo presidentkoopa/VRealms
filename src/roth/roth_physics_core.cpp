@@ -22,6 +22,11 @@
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
+#include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
+#include <Jolt/Physics/Collision/ObjectLayer.h>
 
 #include <algorithm>
 #include <cmath>
@@ -524,7 +529,10 @@ void World::DriveHand(Id hand, const Pose &target, double dt)
 	Quat q;
 	I->BI().GetPositionAndRotation(h.body, p, q);
 	const V3 cur = P(Vec3(p));
-	if ((target.p - cur).Length() > TeleportM) { TeleportHand(hand, target); return; }
+	const double far = (target.p - cur).Length();
+	// Put back on the controller when far from it -- but never through a wall: across something solid it stays and
+	// strains toward it, until it is so far that the player has plainly gone elsewhere.
+	if (far > TeleportM && (far > TeleportFarM || !StaticBetween(cur, target.p))) { TeleportHand(hand, target); return; }
 	// Jolt moves the centre of mass and turns about it: aim the centre of mass at where it will be on the target
 	const V3 com = P(Vec3(I->BI().GetCenterOfMassPosition(h.body)));
 	const V3 comLocal = P(Quat(q).Conjugated() * (Vec3(I->BI().GetCenterOfMassPosition(h.body)) - Vec3(p)));
@@ -545,6 +553,17 @@ void World::DriveHand(Id hand, const Pose &target, double dt)
 		if (wl > MaxHandSpin) w = w * (MaxHandSpin / wl);
 	}
 	I->BI().SetLinearAndAngularVelocity(h.body, J(v), J(w));
+}
+
+bool World::StaticBetween(const V3 &a, const V3 &b) const
+{
+	const Vec3 d = J(b - a);
+	if (d.LengthSq() < 1e-10f) return false;
+	RRayCast ray(RVec3(J(a)), d);
+	RayCastResult hit;
+	SpecifiedBroadPhaseLayerFilter bpf(BPLayer::Still);
+	SpecifiedObjectLayerFilter olf(Layer::Static);
+	return I->sys.GetNarrowPhaseQuery().CastRay(ray, hit, bpf, olf);
 }
 
 void World::TeleportHand(Id hand, const Pose &target)

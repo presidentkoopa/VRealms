@@ -87,6 +87,12 @@ int main()
 		Check(front <= 1.01 && front > 0.95, "the hand pushed at a wall 30 cm past it stops on the wall's face", front);
 		Check(w.HandTouching(h), "and touches it");
 		Check(hitMax > 0.3, "the hit on the way in is felt (closing speed)", hitMax);
+		// a target 1 m away on the far side of the wall: it is NOT put through the wall
+		w.DriveHand(h, Pose{ V3(1.9, 0, 1), Q() }, dt);
+		w.Step(dt);
+		w.HandPose(h, hp);
+		Check(hp.p.x + palm.centre.x + palm.half.x <= 1.01, "a target 1 m away behind the wall: the hand stays this side", hp.p.x);
+		Check(w.StaticBetween(V3(0.5, 0, 1), V3(1.5, 0, 1)) && !w.StaticBetween(V3(0.5, 0, 1), V3(0.9, 0, 1)), "the ray finds the wall and only the wall");
 		// 0.6 m beyond: it is put on the target, as Godot XR Tools' collision hand at its teleport distance
 		w.DriveHand(h, Pose{ V3(-0.5, 0, 1), Q() }, dt);
 		w.Step(dt);

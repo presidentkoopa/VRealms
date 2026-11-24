@@ -126,6 +126,8 @@ public:
 	void DriveHand(Id hand, const Pose &target, double dt);
 	void TeleportHand(Id hand, const Pose &target);
 	bool HandPose(Id hand, Pose &out) const;
+	// Something of the level between two points (a ray against the static triangles).
+	bool StaticBetween(const V3 &a, const V3 &b) const;
 	// The hardest hit the hand (or what it holds) took in the last step: the closing speed along the contact's normal,
 	// m/s (0: none); and whether it touches anything now.
 	double HandHit(Id hand) const;
@@ -135,7 +137,8 @@ public:
 
 	size_t Bodies() const;
 
-	static constexpr double TeleportM = 0.6;
+	static constexpr double TeleportM = 0.6;          // further from its controller than this, a hand is put back on it ...
+	static constexpr double TeleportFarM = 1.5;       // ... unless the level is between them; this far, it is put back anyway
 	static constexpr double MaxHandSpeed = 12.0;      // m/s
 	static constexpr double MaxHandSpin = 40.0;       // rad/s
 	static constexpr double KnockSpeed = 2.5;         // m/s: a hand slower than this passes into loose items (a reach)
