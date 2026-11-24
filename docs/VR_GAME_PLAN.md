@@ -102,6 +102,11 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
   what should happen.
 - Audit every grab and gesture path against the L2 owner; route the ones that bypass it through it. Evidence: a test
   that drives both hands through every claim pair (`handstate_test` extended).
+- **Candles up close (owner, 2026-11-24: "ideally i would be able to get super close to it and light each candle").**
+  The candelabras are flat pictures that turn to face the eye, so their wicks (`roth_candles.cpp` WickAt: five
+  points across the picture, `OPENABLES.md` 6) swing with the head when it is close. Hold a candle's facing still
+  while a flame is within reach of it; judge the 3 cm wick reach (`kWickReach`) in the headset. A real candelabra
+  model with fixed arms belongs to the asset pass (M7).
 - Fix what the owner's session finds, before anything new.
 - Done when: the owner has played the route and his list is fixed or scheduled.
 
