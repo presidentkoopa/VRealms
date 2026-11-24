@@ -66,5 +66,10 @@ rig checks only at milestones.
 
 - `tools/physics_test/build.sh`: 18 checks, engine-free (a box rests 5 cm up, a hand stops on a wall's face, a held
   rod stops at its tip, a sweep pushes a box, a throw lands, the model angles come back exactly).
-- `tools/claude_bridge/cfg/physics_flat.cfg` on the owner's PC: the hand stopped by a wall, the Helm let go and
-  resting, taken again, thrown, stowed over the shoulder.
+- `tools/claude_bridge/cfg/physics_flat.cfg` on the owner's PC (2026-11-24, after five fixing runs): the level
+  solid (552 sectors, 8466 triangles in STUDY1), the hand stopped on the east wall's face (945 against 948), the Helm
+  let go LOOSE, resting on the floor, taken again where it lay, thrown at 3.9 m/s and landed by the coat stand, taken
+  again and stowed over the shoulder. Captures logs/phys6_*.png.
+- `interact_flat.cfg` beside it (the P1 regression): touch pickup of the Helm, point pickup of item 51, too far,
+  the carried Statuette now let go LOOSE, the Colt equipped into the free main hand.
+- Not seen: any of it in the headset; a loose item's "comes to rest" line (still settling when the run looked).
