@@ -5661,8 +5661,14 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 			// 23, which s306 AND s315 carry; the boot prints' #241 to id 26: s31 and s257). The original's channel 3
 			// (dispatch_entry_command_trigger_b, E/raw_commands.c:3155-3170) compares the record's key with the picked
 			// CELL's own id (geom + 0x14 + cell), so every sector carrying the id answers; c.sector is only the first.
-			// The other sector events keep their one sector [R: the enter and use channels not re-read here].
-			if (ev == TrigEvent::Examine && c.key != 0)
+			// The use channel keeps its one sector [R: not re-read here].
+			// THE WALK-IN TOO (owner in the headset, 2026-11-24: "why does the typewriter not start typing when we get
+			// near it?"). twe_link_state (E/raw_commands.c:3202-3270, read whole) fires the record found by the PLAYER'S
+			// SECTOR's own id (find_object_record_by_id(word[sector + 0x14]), :3262-3266), on any sector marked by
+			// mark_geometry_records_by_id -- every sector carrying the id. The typewriter's #112 is keyed to id 5: s42,
+			// s43, s54 and s55 (docs/VR_CHAPTER01_SHADOWS.md 17); bound to s42 alone, the lounge's middle only started it
+			// from one of its four sectors.
+			if ((ev == TrigEvent::Examine || ev == TrigEvent::SectorEnter) && c.key != 0)
 			{
 				for (int s = 0; s < (int)g.map.sectors.size(); s++)
 					if (g.map.sectors[s].commandID == c.key) g.bySector[s].push_back(b);
