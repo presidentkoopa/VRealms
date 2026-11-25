@@ -100,6 +100,8 @@ void InterfaceEndLevel();
 // A use press (P_UseLines, before anything else looks at it). True when the
 // press belonged to a panel or to the dialogue and must go no further.
 bool InterfaceUse(player_t *player);
+// VR: the hand `role` (0 main, 1 off) clicks the menu box it points at (its trigger or grip). False: no menu box up.
+bool InterfaceMenuHandClick(int role);
 
 // True while a panel owns the pointer -- a menu box, the inspect popup, the
 // inventory screen, or the dialogue waiting on a click or a choice -- so the

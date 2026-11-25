@@ -63,7 +63,7 @@
 #include "roth/roth_interface.h"
 
 // src/roth/roth_coltvr.cpp (namespace roth, not anonymous): the Colt holds the shooting hand's button this tic
-namespace roth { bool ColtTakesUseKey(); }
+namespace roth { bool ColtTakesUseKey(); bool VRPickHandsOwnTheWorld(); }
 #include "r_sky.h"
 #include "r_utility.h"
 #include "shadowinlines.h"
@@ -6802,6 +6802,15 @@ void P_UseLines(player_t *player)
 	// face button is its magazine catch and slide stop. Its +use key (KEY_PAD_A / KEY_PAD_X) is still posted by the
 	// device; that press is the gun's, and uses nothing in the world. Inert in flat (no VR hands).
 	if (roth::ColtTakesUseKey())
+	{
+		return;
+	}
+
+	// VR FIRST (owner in the headset, 2026-11-24: "if we are going vr first then we should disable or i will unbind the
+	// use key so i have to use the gestures and world"): with the VR hands live the use key uses nothing in the world
+	// -- the hands and their gestures do. A panel, the inventory or a line waiting for a click (InterfaceUse above)
+	// still takes it. Flat play: the original's click, unchanged.
+	if (roth::VRPickHandsOwnTheWorld())
 	{
 		return;
 	}

@@ -72,6 +72,12 @@ struct MoveInput
 	uint32_t held = 0;          // 1 << MoveKey for each key held this tick
 	bool     shift = false;     // g_key_modifier_flags & 0x40 (the run key inverts the toggle)
 	int32_t  mouseDx = 0, mouseDy = 0;   // g_mouse_dx / g_mouse_dy (the mouse-steer path only)
+	// NOT THE ORIGINAL'S: THE ANALOG STICK (owner in the headset, 2026-11-24: "there is no analog movement i have to be
+	// completely holding the joystick"). In VR the keyboard path takes the stick's own direction (any angle, not the
+	// table's eight) and scales its push by how far the stick is pushed. `fwd` / `side` in -1..1 (side + = right).
+	// Flat play leaves it off: the original's keys, 1:1.
+	bool     analog = false;
+	double   fwd = 0., side = 0.;
 };
 
 // The original's movement tables (the data image; tools/move_test compares them with the
@@ -147,6 +153,7 @@ public:
 	uint16_t turnAccum = 0;      // 0x90bd8
 	uint16_t turnMirror = 0;     // 0x7e8f4 (0x7e8e8 + 0xc), the turn tail's mirror
 	uint16_t inputBits = 0;      // 0x7e920
+	MoveInput analogIn;          // NOT THE ORIGINAL'S: this tick's analog stick (MoveInput::analog)
 	uint32_t runToggle = 0;      // 0x7e8dc
 	int32_t  runActive = 0;      // 0x7e8e0
 	uint16_t queueSelect = 0;    // 0x90bd6
@@ -206,6 +213,8 @@ public:
 
 	PlayerMoveHost *host = nullptr;
 	const MoveTables *tables = &MoveTables::Original();
+	// The eye without the walk bob (VR: the headset is the eye, a bobbing camera is not the player's own head moving).
+	uint16_t EyeNoBob() const { return height; }
 
 private:
 	// collision scratch, the original's globals

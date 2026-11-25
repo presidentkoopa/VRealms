@@ -1685,7 +1685,13 @@ void UpdateHover(player_t *player)
 	if (U.menus != nullptr && U.menus->IsOpen())
 	{
 		if (U.menus->Current() != RealmsMenus::DEATH)   // the death wait has no pointer (game_core.c:986-1000)
-			U.menus->PointerAt(n > 0 ? MenuHit(rays[0], e) : 0);   // every frame, as the loop does (:1591-1607)
+		{
+			// Every frame, as the loop does (:1591-1607). In VR either hand's ray (InterfaceMenuHandClick): the first
+			// that is on the box.
+			int hit = 0;
+			for (int i = 0; i < n && hit == 0; i++) hit = MenuHit(rays[i], i == 0 ? e : HitElement(rays[i]));
+			U.menus->PointerAt(hit);
+		}
 		U.hoverBb = bb;
 		return;
 	}
@@ -2302,6 +2308,24 @@ void InterfaceTick(FLevelLocals *level)
 	UpdatePictureBillboards();
 	TickMount();
 	TickLowHealthCue();
+}
+
+// THE VR HANDS ON A MENU BOX (owner in the headset, 2026-11-24: "i cant touch the main menu buttons"): a menu box
+// took its click only from the use key (Press above), with the hands standing down. Now the trigger or the grip of
+// the hand pointing at the box is the original's click there, as the hands already are on the inventory screen.
+// The click is the box loop's own (PointerClick at that hand's hit, menu_hud_ui.c:1626-1638). True: a menu took it.
+bool InterfaceMenuHandClick(int role)
+{
+	if (!U.attached || U.menus == nullptr || !U.menus->IsOpen() || U.menus->Current() == RealmsMenus::DEATH) return false;
+	DVector3 s, d;
+	if (!VRPickHandRay(role, s, d)) return false;
+	const Ray r{ s, d };
+	const int hit = MenuHit(r, HitElement(r));
+	U.menus->PointerAt(hit);
+	U.menus->PointerClick(hit);
+	Printf("[roth_menu] the %s hand clicks, hit %d: %s\n", role == 0 ? "main" : "off", hit,
+		U.menus->IsOpen() ? U.menus->Describe().c_str() : "closed");
+	return true;
 }
 
 bool InterfaceUse(player_t *player)

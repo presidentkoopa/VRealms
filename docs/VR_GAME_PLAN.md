@@ -107,6 +107,26 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
   points across the picture, `OPENABLES.md` 6) swing with the head when it is close. Hold a candle's facing still
   while a flame is within reach of it; judge the 3 cm wick reach (`kWickReach`) in the headset. A real candelabra
   model with fixed arms belongs to the asset pass (M7).
+- **The owner's first headset session (2026-11-24), fixed or scheduled:**
+  - "the interaction indicator is jumping all over ... some dotted thing": the dotted beam replaced by Godot XR Tools'
+    pointer target (a marker held in the world at the hit, shown only where the hand can act; `roth_vrpick.cpp`
+    THE DRAWING). Built, not yet seen.
+  - "massive headbobbing": the original's walk bob kept off the VR eye (`roth_playermove_engine.cpp` WritePawn). Built.
+  - "no analog movement": the stick reached the game as four exclusive keys (`commonbinds.txt` axis1/axis2,
+    `vk_openxrdevice.cpp` cardinal zones). In VR the original's key path now takes the device's analog movement stick
+    (direction and push; `MoveInput::analog`). Built; `move_test` vs the original still 14 scenarios, 0 differ (flat).
+  - "i cant touch the main menu buttons": a menu box took clicks only from the use key; now the trigger or grip of the
+    hand pointing at it clicks (`roth_interface.cpp` InterfaceMenuHandClick). Built. If the menu he meant is the
+    engine's own start menu, that is a different path: ask.
+  - "no clue what the controls are": an in-game controls card (to build: on the off wrist, beside the mount, or the
+    first time the game starts); until then the controls in chat and `PLAYTEST_CH1-2.md`.
+  - "disable the use key": with the VR hands live the use key uses nothing in the world (`p_map.cpp` P_UseLines). Built.
+- **Locomotion from a proven source (owner: "are we looking at available open source movement-solutions ... have we
+  considered roomscale"; CLAUDE.md, existing solutions first).** Port Godot XR Tools' movement (MIT, on hand:
+  `movement_direct.gd` 107 lines, `movement_turn.gd` 128 (snap or smooth), `movement_crouch.gd`, `movement_sprint.gd`,
+  `movement_jog.gd` (arm-swing), `effects/vignette.gd` (comfort), and `player/player_body.gd` 1,093 (the body that
+  follows the headset through the world for roomscale)), with the original's collision underneath (each move goes
+  through `PlayerMove`, as the roomscale step already does, `PLAYER_MOVEMENT_PORT.md` row 70). Porting checklist first.
 - Fix what the owner's session finds, before anything new.
 - Done when: the owner has played the route and his list is fixed or scheduled.
 

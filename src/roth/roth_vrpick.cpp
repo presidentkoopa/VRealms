@@ -92,12 +92,18 @@
 // sees. With no hand model (no hand actor this tic) it falls back to the
 // controller's aim pose, which is what roth_pick and the panels use.
 //
-// THE DRAWING is billboards, as every Realms panel is: twelve small dots along
-// the ray and a ring marker at the hit, tinted by the original's cursor family --
+// THE DRAWING in the world is ONE TARGET MARKER, no beam (owner in the headset, 2026-11-24: "the interaction
+// indicator is jumping all over ... and it looks like shit some dotted thing"; the twelve dots along the ray are gone).
+// The design is Godot XR Tools' pointer (MIT, addons/godot-xr-tools/functions/function_pointer.gd, 6c6189b), set as
+// show_laser = HIDE, show_target = true: _visible_hit / _visible_move put the target at the collision point in WORLD
+// space (global_position), _visible_miss hides it. Here the collision is the original's pick and "a hit" is a pick
+// the hand could act on, tinted by the original's cursor family:
 //   usable in reach (shapes 0x248, 0x250, 0x278)   candle white
-//   too far        (0x398, 0x3a0)                  dim grey
 //   blocked / keyed / an attack target (0x258, 0x260)  dull red
-//   nothing        (0x240)                         a fainter beam, no ring
+//   too far (0x398, 0x3a0) and nothing (0x240)      a miss: no marker
+// Not taken from it: its laser, its events (the original's clicks are the events), its suppress area (D3's touch
+// already beats the point). The marker was hand-locked before: a tic-old hit point carried on the hand's lever.
+// The panel's laser (the inventory screen) is unchanged.
 // In VR they are welded to the controller (BBFL_HANDMAIN / BBFL_HANDOFF), so
 // they move at the display's rate, not the tic's. Subtle on purpose.
 //
@@ -197,8 +203,7 @@ constexpr double kNoHitBeam   = 0.60;    // the beam's length with nothing at it
 constexpr float  kPointGrip   = 0.50f;   // the fingertip press's point pose holds the grip this far
 constexpr float  kGripClose   = 0.70f, kGripOpen = 0.35f;   // a button pressed / let go: the grip AND the trigger
 static_assert(kGripClose == invhand::kPressOn && kGripOpen == invhand::kPressOff, "the panel's buttons are the world's");
-constexpr int    kDots        = 12;
-constexpr double kDotM = 0.004, kMarkerM = 0.014;
+constexpr double kMarkerM = 0.014;
 
 struct HandState
 {
@@ -248,8 +253,8 @@ struct HandState
 	int         rim = 0;
 
 	// billboards
-	int dot[kDots] = {};
 	int marker = 0;
+	bool     markHave = false;   // the world marker is shown (see THE DRAWING)
 	bool shown = false;      // any of them visible (so an idle hand touches none)
 
 	// on a panel (the inventory screen, the popup): the original's mouse (roth_invhand.h)
@@ -372,7 +377,7 @@ void HideHand(HandState &h)
 {
 	if (!h.shown) return;
 	h.shown = false;
-	for (int &d : h.dot) HideBB(d);
+	h.markHave = false;
 	HideBB(h.marker);
 	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
 	h.lineShown = 0;
@@ -972,28 +977,21 @@ void ResetGestures(HandState &h)
 	h.hover = Pick{};
 }
 
-// The beam: twelve dots from the fingertip to `end`, and the marker there when
-// the original's cursor family has one (FamilyColour).
-void DrawBeam(int role, HandState &h, AActor *pmo, const DVector3 &end, bool hit, uint16_t shape)
+// THE MARKER (see THE DRAWING in the header): XR Tools' _visible_hit / _visible_move when `hit`, _visible_miss when
+// not. `at` the hit point, `shape` the original's cursor shape there.
+void DrawMarker(HandState &h, bool hit, const DVector3 &at, uint16_t shape)
 {
+	double alpha = 0.0;
+	const PalEntry col = hit ? FamilyColour(shape, alpha) : PalEntry(0);
+	if (!hit || alpha <= 0.0) { HideHand(h); return; }
 	const double upm = UPM();
+	// Pulled back a little toward the hand so the surface does not cut it.
+	DVector3 back = h.tip - at;
+	const double bl = back.Length();
+	back = bl > 1e-6 ? back / bl : -h.dir;
+	PlaceBB(h.marker, BB_RING, HandLock{}, at + back * (0.006 * upm), kMarkerM * upm, col, alpha);
+	h.markHave = true;
 	h.shown = true;
-	const HandLock L = LockFor(role, pmo);
-	double markAlpha = 0.0;
-	const PalEntry col = hit ? FamilyColour(shape, markAlpha) : PalEntry(255, 200, 200, 200);
-	const bool marked = hit && markAlpha > 0.0;
-	const double beamAlpha = marked ? 0.30 : 0.12;
-	const DVector3 span = end - h.tip;
-	const double len = span.Length();
-	const DVector3 dir = len > 1e-6 ? span / len : h.dir;
-	for (int i = 0; i < kDots; i++)
-		PlaceBB(h.dot[i], BB_PANEL, L, h.tip + dir * (len * (i + 0.5) / kDots), kDotM * upm, marked ? col : PalEntry(255, 200, 200, 200), beamAlpha);
-	if (marked)
-		// Pulled back a little toward the hand so the surface does not cut it.
-		PlaceBB(h.marker, BB_RING, L, h.tip + dir * std::max(0.0, len - 0.006 * upm), kMarkerM * upm, col, markAlpha);
-	else HideBB(h.marker);
-	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
-	h.lineShown = 0;
 }
 
 // The two buttons' press edges (pressed at 0.70, let go at 0.35, for both). A
@@ -1424,14 +1422,13 @@ void TickHand(int role, AActor *pmo)
 	if (actionable && !SamePickTarget(h.pick, h.hover)) { h.hover = h.pick; Haptic(role, 0.12, 12); }
 	else if (!actionable) h.hover = Pick{};
 
-	// ---- THE BEAM ----
-	// The beam only ON SOMETHING (owner, 2026-11-23): a pick the original's cursor would mark (usable, too far, keyed or
-	// blocked). Pointing at nothing draws nothing, instead of a line swinging out into the room.
-	if ((h.pointing || h.pressReady) && h.havePick && RulesClassOf(h.cls) != rules::Class::Nothing)
-		DrawBeam(role, h, pmo, h.pick.hitPos, true, h.cls.shape);
-	else if (h.aimHeld && h.aimHave)
-		DrawBeam(role, h, pmo, h.aimHit, true, h.aimShape);
-	else HideHand(h);
+	// ---- THE MARKER ---- (see THE DRAWING in the header): only on what the hand could act on, held in the world.
+	{
+		const rules::Class k = h.havePick ? RulesClassOf(h.cls) : rules::Class::Nothing;
+		const bool actOn = k == rules::Class::Usable || k == rules::Class::Blocked;
+		if (h.aimHeld && h.aimHave) DrawMarker(h, true, h.aimHit, h.aimShape);   // the aim kept as the index curls
+		else DrawMarker(h, (h.pointing || h.pressReady) && actOn, h.pick.hitPos, h.cls.shape);
+	}
 }
 
 //--------------------------------------------------------------------------
@@ -1472,7 +1469,7 @@ void DrawPanelLaser(int role, HandState &h, AActor *pmo, const PanelPlane &plane
 {
 	const InvHandOutput &o = h.pout;
 	h.shown = true;
-	for (int &d : h.dot) HideBB(d);
+	h.markHave = false;   // the world marker gives way to the panel's (h.marker, hand-locked below)
 	const HandLock L = LockFor(role, pmo);
 	const double lineK = tan(kPanelLineDeg * (M_PI / 180.0)), dotK = tan(kPanelDotDeg * (M_PI / 180.0));
 	const PalEntry col(255, 250, 238, 200);
@@ -1649,7 +1646,7 @@ void ForgetLevel()
 	P.level = nullptr;
 	for (HandState &h : P.hand)
 	{
-		for (int &d : h.dot) d = 0;
+		h.markHave = false;
 		h.line.clear();
 		h.lineShown = 0;
 		h.marker = 0;
@@ -1844,6 +1841,10 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
 
 bool VRPickTesting() { return P.test; }
 
+// VR FIRST (owner in the headset, 2026-11-24: "if we are going vr first then we should disable or i will unbind the
+// use key so i have to use the gestures and world"): with the hands live, only the hands use the world.
+bool VRPickHandsOwnTheWorld() { return roth_vrpick && (P.test ? P.testHands != 0 : HeadsetOn()); }
+
 void VRPickTick(FLevelLocals *level, bool modal)
 {
 	if (level == nullptr) return;
@@ -1935,6 +1936,19 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		if (stand)
 		{
 			HandState &h = P.hand[role];
+			// A MENU BOX (InterfaceMenuHandClick): the hand pointing at it clicks it with its trigger or its grip.
+			if (on && player->health > 0 && owner != nullptr && !strcmp(owner, "menu"))
+			{
+				ReadInputs(role, h);
+				bool gripEdge = false, trigEdge = false;
+				ReadButtons(h, gripEdge, trigEdge);
+				if (gripEdge || trigEdge) InterfaceMenuHandClick(role);
+				h.havePick = false;
+				h.touchHave = false;
+				HideBB(h.rim);
+				HideHand(h);
+				continue;
+			}
 			h.havePick = false;
 			h.pointing = false;
 			h.primed = false;

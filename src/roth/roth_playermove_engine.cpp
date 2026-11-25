@@ -39,8 +39,10 @@
 #include <math.h>
 #include <map>
 #include <utility>
+#include <algorithm>
 
 EXTERN_CVAR(Bool, cl_run)
+extern float remote_movementForward, remote_movementSideways;   // the VR movement stick (vk_openxrdevice.cpp), -1..1
 
 // NOT ARCHIVED, any of them (CLAUDE.md: the ini is shared with the hands build).
 // roth_move_log 1: one line a tic with the original's position, angle, sector, heights, health.
@@ -95,6 +97,8 @@ struct State
 	// the command, taken in P_PlayerThink
 	uint32_t held = 0;
 	bool shift = false, crouchToggle = false;
+	bool analog = false;            // VR: the stick's push and direction (MoveInput::analog)
+	double fwd = 0., side = 0.;
 	// the yaw the engine applied that the original's angle has not taken yet (512ths of a turn)
 	double yawFrac = 0.;
 	DAngle lastYaw = nullAngle;
@@ -261,10 +265,12 @@ void WritePawn(AActor *mo, bool teleported)
 	mo->Angles.Yaw = DAngle::fromDeg(90. + ((int16_t)pm.angle + g_move.yawFrac) * 360. / 512.);
 	if (player_t *p = mo->player)
 	{
-		// the eye: player_z + 0x8c112 (update_view_transform_params, player.c:80-81)
-		p->viewheight = pm.camHeight;
+		// the eye: player_z + 0x8c112 (update_view_transform_params, player.c:80-81). In VR without the walk bob
+		// (owner in the headset, 2026-11-24: "movement has massive headbobbing"): the headset is the eye.
+		const uint16_t eye = VRMode::GetVRModeCached(true)->IsVR() ? pm.EyeNoBob() : pm.camHeight;
+		p->viewheight = eye;
 		p->deltaviewheight = 0;
-		p->viewz = pos.Z + pm.camHeight;
+		p->viewz = pos.Z + eye;
 	}
 	g_move.lastPos = mo->Pos();
 	g_move.lastYaw = mo->Angles.Yaw;
@@ -342,6 +348,20 @@ void PlayerMoveTakeCmd(player_t *player)
 		if (stand > 0.f && now > 0.f && now < stand * roth_vr_crouch_fraction) crouch = true;
 	}
 	if (crouch) h |= 1u << MK_CROUCH;
+	// THE ANALOG STICK in VR (MoveInput::analog; owner in the headset, 2026-11-24: "no analog movement"). The device's
+	// own movement-stick values (vk_openxrdevice.cpp: the movement hand's stick, its dead zone and curve, zero while
+	// the grip modifier suppresses locomotion), not the command: the stick also reaches the bindings as four
+	// exclusive virtual keys (+forward ... on axis1/axis2, no diagonals), which made it a 4-way switch. In VR the
+	// move keys are replaced by the stick: one held bit while it is pushed (the original's key path runs, its
+	// dialogue freeze included), its direction and push from the stick.
+	g_move.analog = VRMode::GetVRModeCached(true)->IsVR();
+	if (g_move.analog)
+	{
+		g_move.fwd = std::clamp((double)remote_movementForward, -1., 1.);
+		g_move.side = std::clamp((double)remote_movementSideways, -1., 1.);
+		h &= ~((1u << MK_FORWARD) | (1u << MK_BACK) | (1u << MK_STRAFE_LEFT) | (1u << MK_STRAFE_RIGHT));
+		if (g_move.fwd != 0. || g_move.side != 0.) h |= 1u << MK_FORWARD;
+	}
 	g_move.held = h;
 	g_move.shift = (cmd.buttons & BT_SPEED) != 0;
 
@@ -460,6 +480,9 @@ void PlayerMoveTick(FLevelLocals *level)
 	MoveInput in;
 	in.held = g_move.held;
 	in.shift = g_move.shift;
+	in.analog = g_move.analog;
+	in.fwd = g_move.fwd;
+	in.side = g_move.side;
 	pm.Tick(in);
 	pm.Tick(in);
 	if (g_move.roomX != 0. || g_move.roomY != 0.)

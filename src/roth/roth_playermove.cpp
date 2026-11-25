@@ -12,6 +12,8 @@
 
 #include "roth_playermove.h"
 #include <string.h>
+#include <algorithm>
+#include <cmath>
 
 namespace roth
 {
@@ -288,6 +290,7 @@ void PlayerMove::Tick(const MoveInput &in)
 
 	// the mouse-steer path reads these
 	mouseDxIn = in.mouseDx; mouseDyIn = in.mouseDy;
+	analogIn = in;
 	ApplyMovementInput();
 
 	const int32_t eax = velX, edx = velY;
@@ -367,7 +370,21 @@ void PlayerMove::ApplyMovementInput()
 		if (!(speedAccum >= 0x10)) speedAccum += 1;
 		rateCounter = (uint16_t)(rateCounter - 1);
 		uint16_t bx = tables->dir[inputBits & 0xf];
-		if (bx != 0xffff)
+		const double push = analogIn.analog ? std::min(1.0, std::sqrt(analogIn.fwd * analogIn.fwd + analogIn.side * analogIn.side)) : 0.;
+		if (analogIn.analog && push > 0.)
+		{
+			// NOT THE ORIGINAL'S (MoveInput::analog): the stick's own direction in the table's units (512 a turn, + to
+			// the left: forward 0, left 0x80, back 0x100, right 0x180) and its push scaling the original's 6.
+			const double off = std::atan2(-analogIn.side, analogIn.fwd) * (512.0 / (2.0 * 3.14159265358979323846));
+			bx = (uint16_t)((int32_t)std::lround(off) & 0x1ff);
+			bx = (uint16_t)(bx + angle);
+			bx = (uint16_t)(-(int32_t)bx);
+			bx = (uint16_t)(bx + bx);
+			velX += (int32_t)std::lround(ActorSin(bx) * 6 * push);
+			bx = (uint16_t)(bx + 0x100);
+			velY += (int32_t)std::lround(ActorSin(bx) * 6 * push);
+		}
+		else if (bx != 0xffff)
 		{
 			bx = (uint16_t)(bx + angle);
 			bx = (uint16_t)(-(int32_t)bx);

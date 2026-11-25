@@ -91,6 +91,9 @@ void VRPickPickupLanded(int role);
 
 // Under roth_vrpicktest (the flat test).
 bool VRPickTesting();
+// VR first: the hands are live (a headset, or the flat test's hands), so the use key uses nothing in the world
+// (p_map.cpp P_UseLines); the panels and dialogue still take it.
+bool VRPickHandsOwnTheWorld();
 
 // THE HAND'S POINTING RAY, the one every reader uses (2026-11-16): from the drawn index fingertip along the
 // drawn finger (FingerRay), else -- no drawn hand -- along the hand's own frame from its grip socket
