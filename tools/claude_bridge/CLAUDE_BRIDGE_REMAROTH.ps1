@@ -18,7 +18,7 @@
 #   selftest   src\roth\build_selftest.cmd "<retail folder>"   (engine-free reader checks)
 #   dbtest     tools\dbase100_test\build.cmd "<retail folder>" (DBASE100 + inventory tests, dump)
 #   run        doomxr.exe -iwad vrealms.pk3 -rothpath "<retail folder>" -config <bridge ini> +map <map>
-#              lines: -Map <name>|NONE (default STUDY1) | -Exec <cfg under this repo> | -TimeoutSec N (default 60,
+#              lines: -Map <name>|NONE (default STUDY1) | -Exec <cfg under this repo> | -Sound (default: -nosound) | -TimeoutSec N (default 60,
 #                     max 900) | -Config RelWithDebInfo|Debug|Release | -Foreground | -Minimized
 #              The game is killed at the timeout if it has not quit by itself. Returns the engine log
 #              tail. Starts minimised unless -Foreground: a minimised window keeps ticking but does not
@@ -142,9 +142,10 @@ function Run-Action($lines) {
 			return $code
 		}
 		'^run$' {
-			$cfg = 'RelWithDebInfo'; $map = 'STUDY1'; $exec = $null; $timeout = 60; $fg = $false; $min = $false
+			$cfg = 'RelWithDebInfo'; $map = 'STUDY1'; $exec = $null; $timeout = 60; $fg = $false; $min = $false; $sound = $false
 			foreach ($a in $args_) {
 				if ($a -match '^-Config\s+(\S+)$' -and $configs -contains $Matches[1]) { $cfg = $Matches[1] }
+				elseif ($a -match '^-Sound$') { $sound = $true }
 				elseif ($a -match '^-Map\s+([A-Za-z0-9_]+)$') { $map = $Matches[1] }
 				elseif ($a -match '^-TimeoutSec\s+(\d+)$') { $timeout = [Math]::Min([int]$Matches[1], 900) }
 				elseif ($a -match '^-Foreground$') { $fg = $true }
@@ -169,6 +170,9 @@ function Run-Action($lines) {
 			# -Map NONE: no +map at all, so the engine's own start path runs (the
 			# ROTH.RES start map and the game flow's boot and new game).
 			$al = "-iwad vrealms.pk3 -rothpath `"$roth`" -config `"$ini`" +logfile `"$log`""
+			# SILENT unless asked (owner, 2026-11-25: test runs' sound is distracting). -nosound is a command-line switch,
+			# not a cvar, so nothing is written to any ini. A '-Sound' line in the request turns it back on.
+			if (-not $sound) { $al += " -nosound" }
 			if ($map -ne 'NONE') { $al += " +map $map" }
 			if ($exec) { $al += " +exec `"" + ($exec -replace '\\', '/') + "`"" }
 			"doomxr.exe $al"
