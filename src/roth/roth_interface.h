@@ -102,6 +102,8 @@ void InterfaceEndLevel();
 bool InterfaceUse(player_t *player);
 // VR: the hand `role` (0 main, 1 off) clicks the menu box it points at (its trigger or grip). False: no menu box up.
 bool InterfaceMenuHandClick(int role);
+// VR: the backpack (a hand squeezing over the shoulder) opens the inventory as the 'I' key does. False: not now.
+bool InterfaceOpenInventory();
 
 // True while a panel owns the pointer -- a menu box, the inspect popup, the
 // inventory screen, or the dialogue waiting on a click or a choice -- so the

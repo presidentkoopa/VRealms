@@ -2310,6 +2310,17 @@ void InterfaceTick(FLevelLocals *level)
 	TickLowHealthCue();
 }
 
+// THE BACKPACK, TAKING OUT (docs/VR_INTERACTION.md 3b): the inventory opened as the 'I' key opens it (roth_invpanel),
+// for the VR hand that reached over its shoulder (roth_vrpick.cpp BackpackGrip). False: not now (no game, a panel or a
+// line already owns the pointer, or it is open).
+bool InterfaceOpenInventory()
+{
+	if (!U.attached || U.screen.IsOpen() || U.screen.PopupUp() || InterfacePointerBusy()) return false;
+	U.screen.Open();
+	Printf("[roth_ui] inventory opened (a hand over the shoulder: the backpack)\n");
+	return true;
+}
+
 // THE VR HANDS ON A MENU BOX (owner in the headset, 2026-11-24: "i cant touch the main menu buttons"): a menu box
 // took its click only from the use key (Press above), with the hands standing down. Now the trigger or the grip of
 // the hand pointing at the box is the original's click there, as the hands already are on the inventory screen.

@@ -1085,8 +1085,30 @@ bool TakeLoose(int role, HandState &h)
 	return true;
 }
 
+// THE BACKPACK, TAKING OUT (docs/VR_INTERACTION.md 3b, owner 2026-11-23: "reach over a shoulder and squeeze. The
+// original's inventory panel ... opens in front of you"; in the headset 2026-11-24 there was no way to open it). A
+// closing grip with the palm in the stow's zone -- behind the face, above the chest, within half a metre
+// (roth_physics.cpp PhysicsLetGo's numbers) -- opens the inventory as the 'I' key does. Choosing in it is the
+// inventory by hand (ledger row 11). A weapon's body slot on that shoulder claims the grip first (L2's order).
+bool BackpackGrip(int role, HandState &h, AActor *pmo)
+{
+	if (pmo == nullptr || pmo->player == nullptr || !h.valid) return false;
+	const double upm = UPM();
+	const DVector3 head = pmo->Pos() + DVector3(0, 0, pmo->player->viewheight);
+	const DVector3 rel = h.palm - head;
+	const DVector3 fwd(pmo->Angles.Yaw.Cos(), pmo->Angles.Yaw.Sin(), 0);
+	const double ahead = (rel | fwd) / upm, below = -rel.Z / upm, wide = DVector2(rel.X, rel.Y).Length() / upm;
+	if (!(ahead < 0.10 && below < 0.35 && wide < 0.50)) return false;
+	if (!InterfaceOpenInventory()) return false;
+	Printf("[roth_vrpick] %s hand squeezes over the shoulder (%.2f m ahead of the eyes, %.2f m below): the backpack -- the inventory opens\n",
+		RoleName(role), ahead, below);
+	Haptic(role, 0.3, 30);
+	return true;
+}
+
 int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
 {
+	if (BackpackGrip(role, h, pmo)) return 1;
 	if (TakeLoose(role, h)) return 1;
 	if (!haveRay) return 0;
 	if (NearAct(role, h, pmo, true, kTouch)) return 1;

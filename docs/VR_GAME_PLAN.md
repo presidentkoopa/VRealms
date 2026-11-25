@@ -121,6 +121,9 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
   - "no clue what the controls are": an in-game controls card (to build: on the off wrist, beside the mount, or the
     first time the game starts); until then the controls in chat and `PLAYTEST_CH1-2.md`.
   - "disable the use key": with the VR hands live the use key uses nothing in the world (`p_map.cpp` P_UseLines). Built.
+  - No way to open the inventory in the headset (no controller button carries the 'I' key): the backpack's "take
+    out" (`VR_INTERACTION.md` 3b, decided 2026-11-23, not built until now): an empty hand squeezing over a shoulder
+    opens the inventory (`roth_vrpick.cpp` BackpackGrip). Built.
 - **Locomotion from a proven source (owner: "are we looking at available open source movement-solutions ... have we
   considered roomscale"; CLAUDE.md, existing solutions first).** Port Godot XR Tools' movement (MIT, on hand:
   `movement_direct.gd` 107 lines, `movement_turn.gd` 128 (snap or smooth), `movement_crouch.gd`, `movement_sprint.gd`,
