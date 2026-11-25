@@ -639,6 +639,7 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 		std::string packFile = roth::TheInstall().PackFile(map->rothPack.GetChars());
 		log.Line("  pack file      %s", packFile.c_str());
 		haveArt = art.Open(map->rothPack.GetChars(), packFile, &log);
+		art.SetLevelPack();
 		// The dialogue and inventory panels draw in this map's palette.
 		if (haveArt) roth::InterfaceSetPalette(art);
 		if (!haveArt)

@@ -98,6 +98,10 @@ public:
 	// icons index (roth_interface).
 	const std::vector<Colour> *PackPalette() const;
 	const std::string &Name() const { return mName; }
+	// This is the MAP's own pack, whose indices are the DAS entry ids the texture-animation trigger (0x25) keys on
+	// (texture_anim_command_hook, raw_commands.c:1341); the shared pack's are not, so its pictures are not registered.
+	void SetLevelPack() { mLevelPack = true; }
+	bool IsLevelPack() const { return mLevelPack; }
 	const std::string &Error() const { return mError; }
 
 	// The map's sky picture, from the MAP metadata's `skyTexture` (+0x18) --
@@ -315,6 +319,7 @@ private:
 public:
 	// Stored indices that are neither a picture nor a colour we can derive.
 	int OutOfRange() const { return mOutOfRange; }
+	bool mLevelPack = false;
 };
 
 // ROTH.C gates a surface texture id to the picture table with

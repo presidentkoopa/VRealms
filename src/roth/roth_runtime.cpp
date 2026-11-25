@@ -6125,16 +6125,16 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 		{
 			const Command *c = Rec(idx);
 			if (c == nullptr) continue;
+			// every key is watched; frames stays 0 (never fires) until the picture is built animated
 			auto fc = g.animFrameCount.find((int)c->key);
-			if (fc == g.animFrameCount.end()) { unknown++; continue; }
 			Runtime::AnimWatch aw;
-			aw.frames = fc->second;
+			aw.frames = fc != g.animFrameCount.end() ? fc->second : 0;
 			g.animWatch[(int)c->key] = aw;
-			watched++;
+			if (aw.frames > 0) watched++; else unknown++;
 		}
-		g_animTriggerWatching = watched > 0 ? 1 : 0;
+		g_animTriggerWatching = g.animWatch.empty() ? 0 : 1;
 		if (log != nullptr && (watched || unknown))
-			log->Line("  anim triggers    %d 0x25 picture(s) watched, %d name a picture this map's walls and flats do not animate", watched, unknown);
+			log->Line("  anim triggers    %d 0x25 picture(s) watched, %d name a picture not built animated at load (still or RLE: never fires; or a sprite built later)", watched, unknown);
 	}
 	InitChangeHeightAtLoad(log);
 
@@ -6576,6 +6576,8 @@ void RegisterAnimFrames(int rothIndex, FTextureID base, int frames)
 	if (rothIndex < 0 || !base.isValid() || frames < 2) return;
 	for (int f = 0; f < frames; f++) g.animTexOf[base.GetIndex() + f] = std::make_pair(rothIndex, f);
 	g.animFrameCount[rothIndex] = frames;
+	auto w = g.animWatch.find(rothIndex);   // a picture first built after the watch was (a sprite spawned later)
+	if (w != g.animWatch.end() && w->second.frames == 0) w->second.frames = frames;
 }
 
 // texture_anim_command_hook's frame tracking (raw_commands.c:1362-1381), run where the renderer draws a picture: the
@@ -6589,6 +6591,7 @@ void AnimTriggerDrawnSlow(int textureIndex)
 	auto w = g.animWatch.find(it->second.first);
 	if (w == g.animWatch.end()) return;
 	Runtime::AnimWatch &aw = w->second;
+	if (aw.frames < 2) return;
 	const int frm = it->second.second;
 	if (frm == aw.tracker) return;
 	aw.tracker = frm;

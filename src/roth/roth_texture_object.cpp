@@ -26,6 +26,7 @@
 */
 
 #include "roth_texture.h"
+#include "roth_runtime.h"   // RegisterAnimFrames (the 0x25 trigger)
 #include "roth_das.h"
 #include "roth_log.h"
 #include <math.h>
@@ -204,6 +205,7 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 
 		if (existing.isValid())
 		{
+			if (mLevelPack && img.frames.size() > 1 && !img.rle) RegisterAnimFrames(index, existing, (int)img.frames.size());   // 0x25
 			mByIndexSprite[index] = existing;
 			mSpriteInfo[index] = *info;
 			return existing;
@@ -254,6 +256,9 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 				mSpritesRegistered++;
 			}
 			TexAnim.AddSimpleAnim(id, frames, img.rle ? (uint32_t)OBJECT_ANIM_FRAME_MS : ObjectAnimFrameMs(img.rate));
+			// The texture-animation trigger (0x25, roth_runtime.h): the rwss resolver's sprite driver reaches the hook too
+			// (renderer.c:13213). Not the RLE variant (roth_texture.cpp says why), nor the shared pack (IsLevelPack).
+			if (mLevelPack && !img.rle) RegisterAnimFrames(index, id, frames);
 			if (log) log->Count("objects: animated art");
 		}
 	}
