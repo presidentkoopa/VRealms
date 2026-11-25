@@ -17,6 +17,17 @@
   the frame; which caller does so for a wall is not read) and the candles' composed pictures.
 - Tools: tools/port_audit/audit.py writes docs/PORT_AUDIT.md, every ROTH.C function against the port.
 
+- Realms pictures animate at all (8cb087d2). AddSimpleAnim refused every animation on a texture added at map load
+  (AreTexturesCompatible found it past the last file block), so no wall, flat or object picture of any map ever
+  stepped a frame. Seen: STUDY1's hearth ash, still in four captures before, moves after.
+- 0x25, the texture-animation trigger (41ffba40, 950b4b3a): texture_anim_command_hook, raw_commands.c:1341-1399, fed
+  by the renderer's wall, flat and sprite binds. Seen (animtrig_flat.cfg, STUDY1): walking into the study runs
+  #40 -> delay -> #42-44 put the flaring fire (762) in the hearth; it reaches its last frame on screen, #64 fires
+  #65/#369/#370 and the steady fire (678) takes over, the sequence the original shows from the same spot
+  (oracle_shot STUDY1 -950 2690 128, frames 60 / 400 / 700+). Not ported, stated in the code: the DAS-cache-tick skip
+  (:1370), and one tracker per picture rather than per record. STUDY1's keys 96 and 116 name still pictures: they
+  never fire in the original either (the hook needs block +0xa & 0x100). Not yet seen: DOMINION, MAS3, RAQUIA5, STUDY3.
+
 - Contact triggers (cd05bec8): fire_trigger_on_contact's latches and one-shot; walking into an object; the landing
   thud plays. Movement differential against the original: 0 differ.
 
@@ -26,8 +37,6 @@
 - savegame.c: 25 of 33 not named. The original's save files (SAVE<n>.SAV) are read (roth_gameflow); writing them is
   this port's own format.
 - gdv_cutscene.c 46, audio.c 52, input.c 42, menu_hud_ui.c 17, doors.c 13, map_load.c 19 not named: each to be read.
-- 0x25 (a texture animation's frame fires a chain; 11 records, 5 maps): needs whether the picture is drawn this frame,
-  which the engine does not report per texture.
 - Sliding sectors (0x09, 32 records, 5 maps) are behind roth_platforms, off by default.
 
 ## The whole game (all 44 maps, read from the retail .RAW files with roth_raw; 2026-11-24)
@@ -39,7 +48,7 @@ it. What is NOT ported game-wide:
 | Trigger channel | Records | Maps | What it is |
 |---|---|---|---|
 | 0x1b | 95 | 27 | a shot hitting an OBJECT: was ported (creature death, a creature's shot); cd05bec8 adds the original's latches and one-shot, and the +0x24 list. Not checked: that every player weapon of VRealms reaches it |
-| 0x25 | 11 | 5 | a texture animation's frame (DOMINION MAS3 RAQUIA5 STUDY1 STUDY3) |
+| ~~0x25~~ | 11 | 5 | a texture animation's frame: PORTED 41ffba40 (seen on STUDY1's hearth) |
 | ~~0x3d~~ | 15 | 11 | a timer: PORTED 778ab873 |
 | ~~0x39~~ | 1 | 1 | walking into an object (RAQUIA5): PORTED cd05bec8 (fire_tracked_object_trigger, from the movement's bump) |
 | 0x09 instructions | 32 | 5 | sideways-sliding sectors, only with roth_platforms 1 (OPTEMP1 RAQUIA2 RAQUIA3 RAQUIA5 SALVAT) |
