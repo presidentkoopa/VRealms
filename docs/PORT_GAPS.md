@@ -1,5 +1,32 @@
 # What of ROTH.C's game logic is not ported (2026-11-24)
 
+## Done since this list was written (2026-11-24, evidence: flat bridge runs on the owner's PC)
+
+- 1, 2: 0x03's load-time snapshot and move and its ascending sweep; a resized mid band redrawn (3350933f). Seen: the
+  lounge typewriter's page rises after the walk-in (typewriter_flat.cfg), beside the original's frames.
+- 3, 4, 5, 6: walk-in triggers ported from twe_link_state / fire_sector_trigger (f9db8a30, 838135e3), searching the
+  original's own list (the command section's category slot 3). Seen: #112 fires once on entering s54, not again on
+  re-entry (walkin_flat.cfg). Not yet seen: the leave edge, the height links, the "moving" gate, on a map that uses them.
+
+## The whole game (all 44 maps, read from the retail .RAW files with roth_raw; 2026-11-24)
+
+Every INSTRUCTION opcode the 44 maps use is dispatched by the port (roth_runtime RunCommand / RunCommandWithChain, the
+command core). Whether each does what the original does is a separate question, answered only where a suite covers
+it. What is NOT ported game-wide:
+
+| Trigger channel | Records | Maps | What it is |
+|---|---|---|---|
+| 0x1b | 95 | 27 | an attack or shot hitting an OBJECT |
+| 0x25 | 11 | 5 | a texture animation's frame (DOMINION MAS3 RAQUIA5 STUDY1 STUDY3) |
+| 0x3d | 15 | 11 | a timer |
+| 0x39 | 1 | 1 | walking into an object (RAQUIA5) |
+| 0x09 instructions | 32 | 5 | sideways-sliding sectors, only with roth_platforms 1 (OPTEMP1 RAQUIA2 RAQUIA3 RAQUIA5 SALVAT) |
+| 0x16 / 0x3a / 0x3c | 481 | 28 | creature spawn / id / spawn-adv: dispatched only while the actors system is active |
+
+This census covers the level logic only. The creatures' behaviour, combat, the weapons, the cutscenes and the
+interface have their own ports and their own suites (CLAUDE.md); they are not audited here.
+
+
 Gathered from the port's own code: the gaps it records in its comments, and every place that counts a record into
 `g.unhandledOps` (src/roth/roth_runtime.cpp). The load report's "instruction records by opcode" table in
 `roth_<MAP>.log` is STALE: it lists 0x15 0x16 0x1e 0x1f 0x20 0x27 0x29 0x2a 0x2b 0x2d 0x2e 0x33 0x35 0x3a 0x3c 0x3f
