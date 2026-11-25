@@ -289,6 +289,9 @@ struct MapLogicState
 	std::vector<int32_t> movers;                // (sector, dx, dy) triples
 	std::vector<int32_t> lastSectorByPlayer;    // (player, sector) pairs
 	uint8_t dialogueLatch = 0;
+	// Written after dialogueLatch, so a save made before them still reads (they then start as at a fresh load).
+	int32_t walkBuf = 0, walkWordA = 0, walkWordB = 0, walkObj = 0;   // the walk-in link state (roth_runtime WalkLink)
+	std::vector<int32_t> timers;                                       // (countdown, record) pairs: the 0x3d timer queue
 
 	void Save(SaveWriter &w) const;
 	bool Load(SaveReader &r);

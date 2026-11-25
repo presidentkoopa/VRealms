@@ -66,9 +66,16 @@ static const uint8_t *KeepObjectPixels(const std::vector<uint8_t> &src)
 	return block->data();
 }
 
-// Matches roth_texture.cpp's ANIM_FRAME_MS, and carries the same caveat: the
-// rate came from the Python pipeline looking right, not from ROTH.C.
+// An object's animated picture steps at its own rate, as a wall's does (roth_texture.cpp AnimFrameMs;
+// advance_das_sprite_animation_frame, das_assets.c:1451-1490): (rate & 0x1f) + 1 ticks of 70 Hz a frame, 0xff every
+// frame. 229 ms (a guess from the Python pipeline) stays only where no rate is at hand: the RLE variant, whose
+// frames its caller chooses, and the candles' per-wick pictures composed in roth_candles.
 static const int OBJECT_ANIM_FRAME_MS = 229;
+static uint32_t ObjectAnimFrameMs(uint8_t rate)
+{
+	const uint32_t ticks = rate == 0xff ? 1u : (uint32_t)(rate & 0x1f) + 1u;
+	return (ticks * 1000u + 35u) / 70u;
+}
 
 //==========================================================================
 //
@@ -246,7 +253,7 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 				addFrame(img.frames[f], ObjectFrameName(mName, index, f).GetChars());
 				mSpritesRegistered++;
 			}
-			TexAnim.AddSimpleAnim(id, frames, OBJECT_ANIM_FRAME_MS);
+			TexAnim.AddSimpleAnim(id, frames, img.rle ? (uint32_t)OBJECT_ANIM_FRAME_MS : ObjectAnimFrameMs(img.rate));
 			if (log) log->Count("objects: animated art");
 		}
 	}

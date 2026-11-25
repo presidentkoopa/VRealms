@@ -678,6 +678,11 @@ struct Runtime
 	// cmd_delay_timer's countdowns, and the queue their expiry feeds.
 	std::vector<PendingDelay> delays;
 	std::vector<Deferred> deferred;
+	// THE TIMER QUEUE (g_timed_effects 0x89fc0, at most 0x20, count g_timed_effect_count 0x89fbc): {countdown in frame
+	// ticks, record}. Filled at load by every 0x3d record (tick_register_timed_effect, raw_commands.c:5381-5393), stepped
+	// each frame (tick_command_timer_queue, :1841-1864). See TickTimerQueue.
+	struct Timed { int32_t countdown = 0; uint16_t record = 0; };
+	std::vector<Timed> timers;
 
 	// cmd_map_transition's latch: g_warp_dest_a/b + g_map_first_load_flag.
 	std::string warpMap;
@@ -4544,6 +4549,118 @@ static void InitModifySectorAtLoad(Log *log)
 			records, moved, g.overrideRefreshes);
 }
 
+// init_command_timer_countdown (raw_commands.c:5429-5440): word[+6], scaled by the command generator when +0x02 & 2,
+// plus one.
+static int32_t TimerCountdown(const Command *rec)
+{
+	uint32_t v = rec->Word(0x06);
+	if (rec->modifier & 0x02)
+	{
+		g.rng = g.rng * 0x5e5u + 0x29u;
+		v = (v * (g.rng & 0xffffu)) >> 16;
+	}
+	return (int32_t)((v & 0xffffu) + 1);
+}
+
+// tick_register_timed_effect for every 0x3d record at load (the type-0x3d init handler, map_load.c:1089 table entry
+// 61, run in the records' order for every record, disabled or not).
+static void InitTimersAtLoad(Log *log)
+{
+	int records = 0;
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		const Command *rec = &g.map.commands[i];
+		if ((rec->opcode & 0x7f) != 0x3d) continue;
+		records++;
+		if (g.timers.size() >= 0x20) continue;
+		Runtime::Timed t;
+		t.record = (uint16_t)(i + 1);
+		t.countdown = TimerCountdown(rec);
+		g.timers.push_back(t);
+	}
+	if (log != nullptr) log->Line("  timers           %d 0x3d record(s), %d in the queue", records, (int)g.timers.size());
+}
+
+// THE REST OF init_loaded_object_table's PASS 2 (map_load.c:1178-1197, the per-type table at 0x30998, map_load.c:
+// 1088-1097), for the types the passes above and beside it do not take:
+//   0x0a 0x0b (FUN_000340b6), 0x0d 0x0e 0x0f 0x11 0x23 (tick_rerun_command_execute, raw_commands.c:5276-5295): an ARMED
+//     record (+0x02 & 1) has 0x21 cleared and, unless disabled (& 8), is run once through the command table and armed
+//     again -- a scroll, a flicker, a texture or a height already going when the player arrives;
+//   0x0c (tick_resolve_state_and_rerun, :5308-5319): with +0x02 & 2 and not disabled, its linked pair swapped at once
+//     (the swap the 0x0c tick makes), then the same rerun. Its key's two-hop resolution is ChangeFaceTextureAdv's;
+//   0x15 (tick_cache_effect_base, :5414-5421): word[+0x0c] seeded from word[+8] when 0;
+//   0x24 (tick_register_object_state, :5365-5377 with register_object_state_effect :5347-5363): an armed record
+//     registers the continuous object rotation (TickRotateObject).
+// 0x02, 0x03, 0x07, 0x09, 0x13, 0x3d have their own passes (InitLightSwitchesAtLoad, InitModifySectorAtLoad,
+// InitChangeHeightAtLoad, InitMovingSectorsAtLoad, BuildLinkMarks, InitTimersAtLoad); 0x18 0x19 0x1a 0x1b 0x30 0x31
+// 0x32 0x39 mark geometry and objects (the bindings and roth_actors' MarkTriggerLinks); 0x35 is roth_actors' emitters.
+// DIFFERENCE, stated: the original runs ONE pass in record order across every type; these passes run type by type.
+static bool TickChangeFaceTextureAdv(Effect &e);
+static void InitRestOfObjectTableAtLoad(Log *log)
+{
+	int rerun = 0, swapped = 0, cached = 0, rotating = 0;
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		Command *rec = &g.map.commands[i];
+		const uint8_t t = rec->opcode & 0x7f;
+		const int index = (int)i + 1;
+		if (t == 0x15)
+		{
+			if (rec->Word(0x0C) == 0) { rec->SetWord(0x0C, rec->Word(0x08)); cached++; }
+			continue;
+		}
+		if (t == 0x24)
+		{
+			if (!(rec->modifier & 0x21)) continue;
+			rec->modifier &= 0xde;
+			SyncDisabled(rec);
+			if (rec->modifier & 0x08) continue;
+			// register_object_state_effect: unarmed now, so it registers when the key names any object
+			Effect e;
+			e.tick = 0x24;
+			e.record = (uint16_t)index;
+			e.objects = ResolveCommandObjects(rec->key);
+			if (!e.objects.empty())
+			{
+				g.effects.push_back(e);
+				rec->modifier |= 0x20;
+				rotating++;
+			}
+			rec->modifier |= 0x01;
+			SyncDisabled(rec);
+			continue;
+		}
+		const bool rerunType = t == 0x0a || t == 0x0b || t == 0x0c || t == 0x0d || t == 0x0e || t == 0x0f || t == 0x11 || t == 0x23;
+		if (!rerunType) continue;
+		if (t == 0x0c && (rec->modifier & 0x02) && !(rec->modifier & 0x08))
+		{
+			// swap_cell_state_linked_pair at once: the 0x0c tick's own swap, through a throwaway effect
+			Effect tmp;
+			tmp.tick = 0x0c;
+			tmp.record = (uint16_t)index;
+			const uint8_t keep = rec->modifier;
+			TickChangeFaceTextureAdv(tmp);
+			rec->modifier = keep;            // the tick's finalize does not belong to the load-time swap
+			SyncDisabled(rec);
+			swapped++;
+		}
+		if (!(rec->modifier & 0x01)) continue;                 // :5280
+		rec->modifier &= 0xde;                                 // :5281
+		SyncDisabled(rec);
+		if (rec->modifier & 0x08) continue;                    // :5282, not armed again
+		Handlers h;
+		Handlers *hp = &h;
+		h.Run = [hp](const Map &m, const Command &c, int idx) { return RunCommandWithChain(m, c, idx, *hp); };
+		RunCommandWithChain(g.map, *rec, index, h);            // :5283-5290
+		rec->modifier |= 0x01;                                 // :5292
+		SyncDisabled(rec);
+		rerun++;
+	}
+	if (log != nullptr)
+		log->Line("  object table     %d armed record(s) run at load (0x0a-0x0f 0x11 0x23), %d 0x0c pair(s) swapped, %d 0x15"
+			" base(s) cached, %d 0x24 rotation(s) registered", rerun, swapped, cached, rotating);
+}
+
 static void InitChangeHeightAtLoad(Log *log)
 {
 	int records = 0, armed = 0, started = 0;
@@ -4645,6 +4762,35 @@ static void DrivePlatforms()
 //
 //==========================================================================
 
+// tick_rotate_object (raw_commands.c:2283-2330, read whole): the continuous turn an armed 0x24 registers at load. The
+// step is the frame step times byte[+0x0a]. +0x06 & 2: each object turned toward the player by at most the step (the
+// original's asymmetric clamp kept); else the step's low byte added to each object's rotation. No objects: the record's
+// 0x21 cleared, done. The member list is re-collected when the object table changes (generation); here every tic,
+// which gives the same list.
+static bool TickRotateObject(Effect &e)
+{
+	Command *rec = Rec(e.record);
+	if (rec == nullptr) return true;
+	e.objects = ResolveCommandObjects(rec->key);
+	const int32_t step = ROTH_FRAME_TICKS_PER_TIC * (int32_t)rec->Byte(0x0A);
+	if (e.objects.empty()) { rec->modifier &= 0xde; SyncDisabled(rec); return true; }
+	for (const ObjectRef &r : e.objects)
+	{
+		if (r.sector < 0 || (size_t)r.sector >= g.map.objects.size() || r.index < 0 || (size_t)r.index >= g.map.objects[r.sector].size()) continue;
+		const uint8_t cur = g.map.objects[r.sector][r.index].rotation;
+		if (rec->fireFlags & 0x02)
+		{
+			int32_t v = (int32_t)(int8_t)(uint8_t)(PlayerObjectBearing(r) - cur);
+			if (!(v < step)) v = step;
+			v = -v;
+			if (!(v < step)) v = step;
+			ApplyObjectRotation(r, (uint8_t)(cur - (uint8_t)v));
+		}
+		else ApplyObjectRotation(r, (uint8_t)(cur + (uint8_t)step));
+	}
+	return false;
+}
+
 static void TickEffects()
 {
 	for (size_t i = 0; i < g.effects.size(); i++)
@@ -4667,6 +4813,7 @@ static void TickEffects()
 		case 0x0C: done = TickChangeFaceTextureAdv(g.effects[i]); break;
 		case 0x03: done = TickModifySector(g.effects[i]); break;
 		case 0x09: done = TickMovingSector(g.effects[i]); break;
+		case 0x24: done = TickRotateObject(g.effects[i]); break;
 		default:
 			// A registrar put this here but its tick is not written yet. Dropping
 			// it is the honest outcome: left in the pool it would be walked every
@@ -5218,6 +5365,30 @@ int32_t HostRunObjectCommandsById(uint16_t id)
 //
 //==========================================================================
 
+// tick_command_timer_queue (raw_commands.c:1841-1864) and fire_queued_command (:5219-5236), read whole. Each timer
+// whose record is not disabled counts down by the frame step; below zero its chain (word[+4]) goes through the flow
+// pre-pass and onto the deferred queue, and the countdown starts again; a gated chain or a full queue sets it to 0x20.
+void TickTimerQueue()
+{
+	for (Runtime::Timed &t : g.timers)
+	{
+		Command *rec = Rec(t.record);
+		if (rec == nullptr || (rec->modifier & 0x08)) continue;
+		t.countdown -= ROTH_FRAME_TICKS_PER_TIC;
+		if (t.countdown >= 0) continue;
+		g.activeFace = -1;
+		g.activeObjectSector = g.activeObjectIndex = -1;
+		StageChainSound(0);
+		const uint16_t idx = rec->linkIndex;
+		if (WalkChainFlow(g.map, idx) != 0 || g.deferred.size() >= 0x10) { t.countdown = 0x20; continue; }
+		Deferred d; d.chain = idx; d.context = 0;
+		if (idx != 0) g.deferred.push_back(d);
+		t.countdown = TimerCountdown(rec);
+		if (roth_trigger_debug)
+			Printf("roth_trigger: timer record #%u fires chain #%u; again in %d frame ticks\n", (unsigned)t.record, (unsigned)idx, t.countdown);
+	}
+}
+
 void DrainDeferred()
 {
 	if (g.deferred.empty()) return;
@@ -5668,6 +5839,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	g.pendingRecord = 0;
 	g.delays.clear();
 	g.deferred.clear();
+	g.timers.clear();
 	g.warpPending = false;
 	g.fired = 0;
 	g.unhandledOps.clear();
@@ -5887,6 +6059,8 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 
 	InitLightSwitchesAtLoad(log);
 	InitModifySectorAtLoad(log);
+	InitTimersAtLoad(log);
+	InitRestOfObjectTableAtLoad(log);
 	InitChangeHeightAtLoad(log);
 
 	// roth_platforms. The loader has already described its platform pieces by
@@ -9412,6 +9586,8 @@ void TickLevelLogic(FLevelLocals *level)
 
 	// The active-effect pool: the per-frame half of every registrar opcode.
 	TickEffects();
+	// tick_command_timer_queue after the pool, before the deferred queue (tick_world_effects, raw_commands.c:3327-3335)
+	TickTimerQueue();
 
 	// roth_platforms: tell the platform actors where the effects just put
 	// their sectors. After the pool, so an actor is never a frame behind it.
@@ -9655,11 +9831,8 @@ void CaptureMapLogic(MapLogicState &out)
 	s.activeObjectSector = g.activeObjectSector; s.activeObjectIndex = g.activeObjectIndex;
 	for (const auto &kv : g.movers) { s.movers.push_back(kv.first); s.movers.push_back(kv.second.first); s.movers.push_back(kv.second.second); }
 	for (const auto &kv : g.lastSectorByPlayer) { s.lastSectorByPlayer.push_back(kv.first); s.lastSectorByPlayer.push_back(kv.second); }
-	// the walk-in link state, as (negative key, value) pairs after the players' (no player is numbered below 0)
-	s.lastSectorByPlayer.push_back(-1); s.lastSectorByPlayer.push_back(g.walk.buf);
-	s.lastSectorByPlayer.push_back(-2); s.lastSectorByPlayer.push_back(g.walk.wordA);
-	s.lastSectorByPlayer.push_back(-3); s.lastSectorByPlayer.push_back(g.walk.wordB);
-	s.lastSectorByPlayer.push_back(-4); s.lastSectorByPlayer.push_back((int32_t)g.walk.obj);
+	s.walkBuf = g.walk.buf; s.walkWordA = g.walk.wordA; s.walkWordB = g.walk.wordB; s.walkObj = g.walk.obj;
+	for (const Runtime::Timed &t : g.timers) { s.timers.push_back(t.countdown); s.timers.push_back(t.record); }
 	s.dialogueLatch = g_dialogueLatch ? 1 : 0;
 	out = s;
 }
@@ -9705,15 +9878,17 @@ bool RestoreMapLogic(const MapLogicState &s)
 	g.movers.clear();
 	for (size_t k = 0; k + 2 < s.movers.size(); k += 3) g.movers[s.movers[k]] = { s.movers[k + 1], s.movers[k + 2] };
 	g.lastSectorByPlayer.clear();
-	g.walk = Runtime::WalkLink();
-	for (size_t k = 0; k + 1 < s.lastSectorByPlayer.size(); k += 2)
+	for (size_t k = 0; k + 1 < s.lastSectorByPlayer.size(); k += 2) g.lastSectorByPlayer[s.lastSectorByPlayer[k]] = s.lastSectorByPlayer[k + 1];
+	g.walk.buf = s.walkBuf; g.walk.wordA = s.walkWordA; g.walk.wordB = s.walkWordB; g.walk.obj = (uint16_t)s.walkObj;
+	// the timer queue: a save from before it existed keeps the one this load built (InitTimersAtLoad)
+	if (!s.timers.empty())
 	{
-		const int32_t key = s.lastSectorByPlayer[k], v = s.lastSectorByPlayer[k + 1];
-		if (key == -1) g.walk.buf = v;
-		else if (key == -2) g.walk.wordA = v;
-		else if (key == -3) g.walk.wordB = v;
-		else if (key == -4) g.walk.obj = (uint16_t)v;
-		else g.lastSectorByPlayer[key] = v;
+		g.timers.clear();
+		for (size_t k = 0; k + 1 < s.timers.size(); k += 2)
+		{
+			Runtime::Timed t; t.countdown = s.timers[k]; t.record = (uint16_t)s.timers[k + 1];
+			g.timers.push_back(t);
+		}
 	}
 	g_dialogueLatch = s.dialogueLatch != 0;
 	return true;

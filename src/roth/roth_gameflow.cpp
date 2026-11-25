@@ -323,6 +323,9 @@ void MapLogicState::Save(SaveWriter &w) const
 	w.U32((uint32_t)lastSectorByPlayer.size());
 	for (int32_t m : lastSectorByPlayer) w.I32(m);
 	w.U8(dialogueLatch);
+	w.I32(walkBuf); w.I32(walkWordA); w.I32(walkWordB); w.I32(walkObj);
+	w.U32((uint32_t)timers.size());
+	for (int32_t m : timers) w.I32(m);
 }
 
 // A count read from a stream is believed only as far as the bytes left can
@@ -392,6 +395,15 @@ bool MapLogicState::Load(SaveReader &r)
 	for (int32_t &m : t.lastSectorByPlayer) m = r.I32();
 	t.dialogueLatch = r.U8();
 	if (!r.Ok()) return false;
+	if (!r.AtEnd())
+	{
+		t.walkBuf = r.I32(); t.walkWordA = r.I32(); t.walkWordB = r.I32(); t.walkObj = r.I32();
+		n = r.U32();
+		if (!CountFits(r, n, 4)) return false;
+		t.timers.resize(n);
+		for (int32_t &m : t.timers) m = r.I32();
+		if (!r.Ok()) return false;
+	}
 	*this = t;
 	return true;
 }
@@ -422,7 +434,8 @@ bool MapLogicState::operator==(const MapLogicState &o) const
 	}
 	return pendingRecord == o.pendingRecord && activeFace == o.activeFace && activeSector == o.activeSector
 		&& activeObjectSector == o.activeObjectSector && activeObjectIndex == o.activeObjectIndex
-		&& movers == o.movers && lastSectorByPlayer == o.lastSectorByPlayer && dialogueLatch == o.dialogueLatch;
+		&& movers == o.movers && lastSectorByPlayer == o.lastSectorByPlayer && dialogueLatch == o.dialogueLatch
+		&& walkBuf == o.walkBuf && walkWordA == o.walkWordA && walkWordB == o.walkWordB && walkObj == o.walkObj && timers == o.timers;
 }
 
 //==========================================================================

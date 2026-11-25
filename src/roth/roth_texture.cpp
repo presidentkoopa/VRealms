@@ -66,16 +66,22 @@ static const uint8_t *KeepPixels(const std::vector<uint8_t> &src)
 
 //==========================================================================
 //
-// How long one frame of an animated Realms image is shown.
-//
-// UNVERIFIED. The Python pipeline used 8 tics (~229 ms) and looked right, and
-// that is the only evidence for this number -- it was not read out of ROTH.C.
-// Treat it as a placeholder: the rate is a single constant here so that
-// correcting it is a one-line change.
+// How long one frame of an animated Realms image is shown: ITS OWN RATE, as the original steps it
+// (advance_das_sprite_animation_frame, das_assets.c:1451-1490, read whole). Each frame the block's timer (+0x1a)
+// drops by the frame step, in the 70 Hz ticks of g_frame_tick_counter (render_world.c:73-80); under 0x10 the frame
+// advances and the timer gains (rate & 0x1f) + 1 (+0x1b). So a frame shows for (rate & 0x1f) + 1 ticks; a rate of 0xff
+// advances every drawn frame (one tick here). Was one 229 ms for every picture, a guess.
+// NOT PORTED, stated: the original advances a picture only while it is being drawn; the engine's animation runs
+// whether or not it is on screen. What is on screen moves at the same speed; only the phase of an unseen picture
+// differs.
 //
 //==========================================================================
 
-static const int ANIM_FRAME_MS = 229;
+static uint32_t AnimFrameMs(uint8_t rate)
+{
+	const uint32_t ticks = rate == 0xff ? 1u : (uint32_t)(rate & 0x1f) + 1u;
+	return (ticks * 1000u + 35u) / 70u;
+}
 
 //==========================================================================
 //
@@ -573,7 +579,9 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped, con
 			addFrame(img.frames[f], fn.GetChars());
 			mRegistered++;
 		}
-		TexAnim.AddSimpleAnim(base, frames, ANIM_FRAME_MS);
+		// The RLE variant (0xFFFE) has its frame chosen by its caller (decode_das_anim_frame), not by this timer; which
+		// caller steps a wall or flat of that kind is not read yet, so it keeps the old 229 ms (docs/PORT_GAPS.md).
+		TexAnim.AddSimpleAnim(base, frames, img.rle ? 229u : AnimFrameMs(img.rate));
 		mAnimated++;
 		if (log) log->Count("artwork: animated images");
 	}
