@@ -249,6 +249,12 @@ struct HandState
 	Pick        touchTicked;        // the touch last ticked (a new one ticks again)
 	int         rim = 0;
 
+	// THE PICKUP (XR Tools' function_pickup.gd, see THE PICKUP below): the closest pickable thing this tic, and whether
+	// it was found by the ranged cone rather than the grab sphere
+	AActor     *xrPick = nullptr;
+	bool        xrRanged = false;
+	AActor     *xrLogged = nullptr;
+
 	// billboards
 	int marker = 0;
 	bool shown = false;      // any of them visible (so an idle hand touches none)
@@ -1054,7 +1060,8 @@ void GlowTick(FLevelLocals *level, AActor *pmo, bool live)
 	{
 		const HandState &h = P.hand[role];
 		if (!h.valid) continue;
-		if (h.touchHave && h.touch.kind == Pick::Prop) want[role] = h.touch.actor;
+		if (h.xrPick != nullptr) want[role] = h.xrPick;   // XR Tools' closest pickup is what is highlighted
+		else if (h.touchHave && h.touch.kind == Pick::Prop) want[role] = h.touch.actor;
 		else if ((h.pointing || h.pressReady) && h.havePick && h.pick.kind == Pick::Prop)
 		{
 			const rules::Class k = RulesClassOf(h.cls);
@@ -1146,6 +1153,100 @@ bool TakeLoose(int role, HandState &h)
 	return true;
 }
 
+// THE PICKUP (owner in the headset, 2026-11-24: "i can't pickup the matchbook because your grab system IS FUCKING
+// INDECIPHERABLE ... DID YOU ... LOOK AT REAL VR GAMES OR OPEN SOURCE PROJECTS"). Godot XR Tools' function_pickup.gd
+// (MIT, 6c6189b), read whole: every tic each free hand finds its CLOSEST pickable thing (_update_closest_object,
+// :507-529) -- first in the grab sphere, `grab_distance` 0.3 m round the pickup point, by squared distance to the
+// thing's middle (_get_closest_grab, :310-329); with none there and ranged grab on, the thing nearest the hand's forward
+// inside a `ranged_angle` 5-degree cone (_get_closest_ranged, :332-353). That thing is highlighted (request_highlight:
+// THE GLOW); the grip pressing picks it up (_on_grip_pressed, :376-381). Ours: the pickup point is the palm; "pickable"
+// is the original's own pickup (ObjectIsPickupItem: an item whose use is the type-4 pickup, read only); the pick up is
+// the original's use on it from this hand (DoUse), so the item flies in as before. Not XR Tools': the cone reaches as
+// far as the original's use does (planar 268 units, L1: reach stays the original's), not 5 m, and the thing must be
+// in the hand's sight (the original's pick from the palm meets nothing nearer); its middle is the pick box's.
+constexpr double kXRGrabM = 0.3, kXRRangedDeg = 5.0;
+
+DVector3 PickBoxMiddle(AActor *mo)
+{
+	DVector3 lo, hi;
+	ObjectPickBox(mo, lo, hi);
+	return (lo + hi) * 0.5;
+}
+
+void UpdatePickup(int role, HandState &h, AActor *pmo, bool haveRay)
+{
+	h.xrPick = nullptr;
+	h.xrRanged = false;
+	if (!haveRay || pmo == nullptr || P.level == nullptr || !gL2[role].MayAct(hands::Owner::Picker) || HandHoldsWeapon(role)
+		|| gL2[role].itemHeld || HeldHandCarries(role))
+		return;
+	static PClassActor *prop = PClass::FindActor("LoaderProp");
+	if (prop == nullptr) return;
+	const double upm = UPM(), grab2 = (kXRGrabM * upm) * (kXRGrabM * upm), cosCone = cos(kXRRangedDeg * (M_PI / 180.0));
+	DVector3 fwd = h.handFwd;
+	if (fwd.Length() < 1e-6) fwd = h.dir;
+	AActor *bestGrab = nullptr, *bestRanged = nullptr;
+	double bestGrab2 = grab2, bestDot = cosCone;
+	auto it = P.level->GetThinkerIterator<AActor>(prop->TypeName);
+	AActor *mo;
+	while ((mo = it.Next()) != nullptr)
+	{
+		if ((mo->renderflags & RF_INVISIBLE) || mo->sprite <= 0 || !ObjectIsPickupItem(mo)) continue;
+		const DVector3 mid = PickBoxMiddle(mo);
+		const DVector3 d = mid - h.palm;
+		const double d2 = d | d;
+		if (d2 < bestGrab2) { bestGrab2 = d2; bestGrab = mo; continue; }
+		if (bestGrab != nullptr) continue;
+		if (rules::BodyDepth(pmo->X(), pmo->Y(), mid.X, mid.Y) >= rules::kUseDepth) continue;   // beyond the original's use
+		const double l = sqrt(d2);
+		if (l < 1e-6) continue;
+		const double dp = (d / l) | fwd;
+		if (dp > bestDot) { bestDot = dp; bestRanged = mo; }
+	}
+	if (bestGrab != nullptr) { h.xrPick = bestGrab; h.xrRanged = false; }
+	else if (bestRanged != nullptr)
+	{
+		// In the hand's sight: the original's pick from the palm toward it meets it, or nothing nearer.
+		const DVector3 mid = PickBoxMiddle(bestRanged);
+		DVector3 dir = mid - h.palm;
+		const double l = dir.Length();
+		dir /= l;
+		Pick p;
+		const bool hit = RulesPick(h.palm, dir, p, l + 8.0);
+		if (!hit || (p.kind == Pick::Prop && p.actor == bestRanged) || (p.hitPos - h.palm).Length() >= l - 8.0)
+		{
+			h.xrPick = bestRanged;
+			h.xrRanged = true;
+		}
+	}
+	if (h.xrPick != h.xrLogged)
+	{
+		if (h.xrPick != nullptr)
+		{
+			Printf("[roth_vrpick] %s hand's closest pickup (XR Tools): %s at %.2f m from the palm -- it glows; the grip takes it\n",
+				RoleName(role), h.xrRanged ? "in the 5-degree cone" : "in the 0.3 m grab sphere", (PickBoxMiddle(h.xrPick) - h.palm).Length() / upm);
+			Haptic(role, kTickAmp, kTickMs, "a pickup in reach: the light tick");
+		}
+		h.xrLogged = h.xrPick;
+	}
+}
+
+// The grip on the closest pickup (XR Tools' _on_grip_pressed): the original's use on it from this hand.
+bool PickupGrip(int role, HandState &h, AActor *pmo)
+{
+	AActor *mo = h.xrPick;
+	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || pmo == nullptr) return false;
+	Pick p;
+	p.kind = Pick::Prop;
+	p.actor = mo;
+	p.hitPos = PickBoxMiddle(mo);
+	p.dist = (p.hitPos - h.palm).Length();
+	const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
+	DoUse(role, p, c, pmo, h.xrRanged ? "the grip on the closest pickup (XR Tools: the ranged cone)" : "the grip on the closest pickup (XR Tools: the grab sphere)", !h.xrRanged);
+	h.xrPick = nullptr;
+	return true;
+}
+
 // THE BACKPACK, TAKING OUT (docs/VR_INTERACTION.md 3b, owner 2026-11-23: "reach over a shoulder and squeeze. The
 // original's inventory panel ... opens in front of you"; in the headset 2026-11-24 there was no way to open it). A
 // closing grip with the palm in the stow's zone -- behind the face, above the chest, within half a metre
@@ -1171,6 +1272,7 @@ int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
 {
 	if (BackpackGrip(role, h, pmo)) return 1;
 	if (TakeLoose(role, h)) return 1;
+	if (PickupGrip(role, h, pmo)) return 1;   // XR Tools' pickup: the closest pickable thing
 	if (!haveRay) return 0;
 	if (NearAct(role, h, pmo, true, kTouch)) return 1;
 	if (h.pointing)
@@ -1347,6 +1449,8 @@ void TickHand(int role, AActor *pmo)
 
 	// ---- TARGETING BY TOUCH (D3): what the palm or the fingertip is on, within 5 cm: the rim and the light tick ----
 	UpdateTouch(role, h, pmo, haveRay);
+	// ---- THE PICKUP (XR Tools): this hand's closest pickable thing, highlighted, the grip's ----
+	UpdatePickup(role, h, pmo, haveRay);
 
 	const double upm = UPM();
 

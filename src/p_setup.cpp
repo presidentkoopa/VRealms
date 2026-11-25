@@ -638,6 +638,7 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 	VR_SetUnitsPerMeterOverride(0.f);
 	VR_SetEyeHeightAnchor(0.f, 1.f);
 	VR_SetSnapTurnOverride(0.f);
+	VR_SetTurnOverride(VRTurnOverride());
 
 	// This is motivated as follows:
 

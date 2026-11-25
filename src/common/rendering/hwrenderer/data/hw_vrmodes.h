@@ -465,3 +465,11 @@ float VR_CurrentHeadHeight();                                       // the last 
 // load with the units-per-metre override. VR_SnapTurnDegrees(cvar) is what the device turns by.
 void  VR_SetSnapTurnOverride(float degrees);
 float VR_SnapTurnDegrees(float cvarDegrees);
+
+// RS FORK -- A GAME'S TURN, Godot XR Tools' movement_turn.gd (MIT, 6c6189b, :85-117). mode 0: the device's own turn
+// (above). mode 1 SNAP: past a 0.25 dead zone (xr_tools.gd:203-212) one step of `snapDegrees` at once, then another
+// every `repeatSeconds` while held, the wait shortened by the push (_turn_step -= |x| * delta). mode 2 SMOOTH: past a
+// 0.1 dead zone, (|x| - 0.1) * `smoothDegPerSec` a second. Cleared at every level load with the snap override.
+struct VRTurnOverride { int mode = 0; float snapDegrees = 0.f, repeatSeconds = 0.2f, smoothDegPerSec = 114.59f; };
+void VR_SetTurnOverride(const VRTurnOverride &t);
+const VRTurnOverride &VR_GetTurnOverride();

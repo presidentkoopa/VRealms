@@ -22,6 +22,16 @@ HardwareShader PostProcess scene
 	Uniform float uStrength
 }
 
+// VRealms: the comfort vignette (Godot XR Tools' vignette, roth_playermove_engine.cpp VignetteTick). Off until the
+// movement turns it on; uRadius and uFade set every tic.
+HardwareShader PostProcess scene
+{
+	Name "RothVignette"
+	Shader "shaders/glsl/rothvignette.fp" 330
+	Uniform float uRadius
+	Uniform float uFade
+}
+
 // VRealms TEST ONLY: the same edge with no uniform (roth_lowedge_test 3).
 HardwareShader PostProcess scene
 {

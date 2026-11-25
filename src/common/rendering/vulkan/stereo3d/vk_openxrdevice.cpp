@@ -3832,7 +3832,38 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 				// A game may state its own snap angle (VR_SetSnapTurnOverride, hw_vrmodes.h): Realms of the
 				// Haunting turns 45 degrees a snap (owner, 2026-11-13). The cvar is read, never written.
 				const float snapDegrees = VR_SnapTurnDegrees(*vr_snapTurn);
-				if (snapDegrees <= 10.0f)
+				// A GAME'S TURN (VR_SetTurnOverride): Godot XR Tools' movement_turn.gd, :85-117.
+				const VRTurnOverride &xt = VR_GetTurnOverride();
+				static float xtTurnStep = 0.0f;   // _turn_step
+				if (xt.mode != 0)
+				{
+					analogTurnRateDegPerSec = 0.0f;
+					turnRightLatched[mainHand] = false;
+					turnLeftLatched[mainHand] = false;
+					const bool snap = xt.mode == 1;
+					const float deadzone = snap ? 0.25f : 0.1f;   // XRTools.get_snap_turning_deadzone() / 0.1
+					float lr = turnX;
+					if (fabsf(lr) <= deadzone)
+					{
+						xtTurnStep = 0.0f;   // not turning
+					}
+					else if (!snap)
+					{
+						lr -= deadzone * (lr > 0.f ? 1.f : -1.f);
+						snapTurn -= xt.smoothDegPerSec * deltaSeconds * lr;   // rotate_player(speed * delta * x): + is right here
+					}
+					else if (!(xt.repeatSeconds == 0.0f && xtTurnStep < 0.0f))
+					{
+						xtTurnStep -= fabsf(lr) * deltaSeconds;
+						if (xtTurnStep < 0.0f)
+						{
+							if (xt.repeatSeconds != 0.0f) xtTurnStep = xt.repeatSeconds;
+							snapTurn -= xt.snapDegrees * (lr > 0.f ? 1.f : -1.f);
+							resetDoomYaw = true;
+						}
+					}
+				}
+				else if (snapDegrees <= 10.0f)
 				{
 					snapTurn += VR_ApplyAnalogSmoothTurn(turnX, 210.0f, deltaSeconds, VR_GetAnalogTurnResponseScale(snapDegrees), analogTurnRateDegPerSec);
 					if (fabsf(turnX) > 0.05f)

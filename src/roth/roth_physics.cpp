@@ -17,6 +17,7 @@
 #include "actorinlines.h"
 #include "d_player.h"
 #include "g_levellocals.h"
+#include "p_3dfloors.h"   // the Realms mid-platforms (tables, ledges): solid 3D floors
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "printf.h"
@@ -157,6 +158,33 @@ std::vector<float> SectorTris(FLevelLocals *level, int si)
 		Strip(t, v1, v2, std::min(ff1, bf1), std::max(ff1, bf1), std::min(ff2, bf2), std::max(ff2, bf2));
 		Strip(t, v1, v2, std::min(fc1, bc1), std::max(fc1, bc1), std::min(fc2, bc2), std::max(fc2, bc2));
 	}
+	// THE MID-PLATFORMS (owner in the headset, 2026-11-24: "picked up a book from a table, set it down on the table, and
+	// it falls through the table"): a Realms mid-platform -- a table top, a ledge, a shelf -- is a solid 3D floor in
+	// this sector. Its top and its underside over the sector's subsectors, and its sides up every line of the sector.
+	for (F3DFloor *ff : sec->e->XFloor.ffloors)
+	{
+		if (ff == nullptr || !(ff->flags & FF_EXISTS) || !(ff->flags & FF_SOLID) || ff->top.plane == nullptr || ff->bottom.plane == nullptr) continue;
+		const secplane_t &top = *ff->top.plane, &bot = *ff->bottom.plane;
+		for (int ss : S.subsOf[si])
+		{
+			subsector_t &sub = level->subsectors[ss];
+			if (sub.numlines < 3) continue;
+			std::vector<DVector2> poly;
+			for (uint32_t k = 0; k < sub.numlines; k++) poly.push_back(sub.firstline[k].v1->fPos());
+			for (size_t k = 1; k + 1 < poly.size(); k++)
+			{
+				const DVector2 &a = poly[0], &b = poly[k], &c = poly[k + 1];
+				Tri(t, DVector3(a, top.ZatPoint(a)), DVector3(b, top.ZatPoint(b)), DVector3(c, top.ZatPoint(c)));
+				Tri(t, DVector3(a, bot.ZatPoint(a)), DVector3(b, bot.ZatPoint(b)), DVector3(c, bot.ZatPoint(c)));
+			}
+		}
+		for (line_t *ln : sec->Lines)
+		{
+			if (ln == nullptr) continue;
+			const DVector2 v1 = ln->v1->fPos(), v2 = ln->v2->fPos();
+			Strip(t, v1, v2, bot.ZatPoint(v1), top.ZatPoint(v1), bot.ZatPoint(v2), top.ZatPoint(v2));
+		}
+	}
 	return t;
 }
 
@@ -189,7 +217,12 @@ void BuildLevel(FLevelLocals *level)
 	}
 	for (int r = 0; r < 2; r++) S.hand[r] = HandRec();
 	S.loose.clear();
-	Printf("[roth_physics] the level is solid: %d sectors, %d triangles (%.1f units a metre)\n", ns, (int)S.world->StaticTriangles(), S.upm);
+	int platforms = 0;
+	for (int si = 0; si < ns; si++)
+		for (F3DFloor *ff : level->sectors[si].e->XFloor.ffloors)
+			if (ff != nullptr && (ff->flags & FF_EXISTS) && (ff->flags & FF_SOLID)) platforms++;
+	Printf("[roth_physics] the level is solid: %d sectors, %d triangles, %d mid-platform pieces (tables, ledges) (%.1f units a metre)\n", ns,
+		(int)S.world->StaticTriangles(), platforms, S.upm);
 }
 
 // Sectors that moved since the last tic (a door, a lift, a crusher) are rebuilt, with their neighbours, whose walls

@@ -708,6 +708,9 @@ void VR_RemeasureHeadHeight() { gVRRemeasure = true; }
 float VR_MeasuredHeadHeight() { return gVRHeadMetres; }
 float VR_CurrentHeadHeight() { return gVRHeadNowMetres; }
 void VR_SetSnapTurnOverride(float degrees) { gVRSnapTurnOverride = degrees > 0.f ? degrees : 0.f; }
+static VRTurnOverride gVRTurnOverride;
+void VR_SetTurnOverride(const VRTurnOverride &t) { gVRTurnOverride = t; }
+const VRTurnOverride &VR_GetTurnOverride() { return gVRTurnOverride; }
 float VR_SnapTurnDegrees(float cvarDegrees) { return gVRSnapTurnOverride > 0.f ? gVRSnapTurnOverride : cvarDegrees; }
 CVAR(Float, vr_height_adjust, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // METERS
 CVAR(Float, vr_openxr_fov_adjust_deg, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) // DEGREES PER SIDE
