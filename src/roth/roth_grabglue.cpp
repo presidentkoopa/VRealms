@@ -46,6 +46,7 @@
 #include "d_eventbase.h"   // event_t, EV_KeyDown / EV_KeyUp
 #include "keydef.h"
 #include "i_time.h"
+#include "r_utility.h"   // r_viewpoint (the pull trace)
 #include "hw_vrmodes.h"     // VR_MAINHAND
 #include "r_data/vr_handpose.h"   // VRHandPose_InputLive, VRHandPose_SideForRole
 #include "r_data/vr_handpose_math.h"   // SIDE_RIGHT
@@ -98,10 +99,53 @@ void MakeInert(AActor *mo)
 
 } // namespace (anonymous)
 
+// THE PULL, AS IT HAPPENS (owner in the headset, 2026-11-24: "why does everything rocket up into the stratosphere
+// when i try to distance grab it"). Every 4th tic while a Realms item moves under RSQ Distance Grab: where it is
+// against its floor and ceiling, where the package's palm is (AttackPos / OffhandPos, what it flies to), and where
+// the hand VRealms draws is. Log only; nothing here moves anything. At most 80 lines a level.
+static void TracePulls(FLevelLocals *level)
+{
+	static FLevelLocals *lvl = nullptr;
+	static int lines = 0;
+	static TMap<AActor *, DVector3> last;
+	if (lvl != level) { lvl = level; lines = 0; last.Clear(); }
+	if (lines >= 80 || (level->maptime & 3) != 0) return;
+	PClassActor *cls = PClass::FindActor("RealmsTakeable");
+	if (cls == nullptr) return;
+	AActor *pmo = level->GetConsolePlayer() != nullptr ? level->GetConsolePlayer()->mo : nullptr;
+	if (pmo == nullptr) return;
+	const double upm = VRPickUnitsPerMetre() > 1.0 ? VRPickUnitsPerMetre() : 34.0;
+	auto it = level->GetThinkerIterator<AActor>(cls->TypeName);
+	AActor *mo;
+	while ((mo = it.Next()) != nullptr && lines < 80)
+	{
+		if ((mo->ObjectFlags & OF_EuthanizeMe) || (mo->flags5 & MF5_NOINTERACTION)) continue;
+		DVector3 *was = last.CheckKey(mo);
+		const DVector3 now = mo->Pos();
+		if (was == nullptr) { last[mo] = now; continue; }
+		if ((now - *was).Length() < 0.5) continue;
+		*was = now;
+		VRPickHand h[2];
+		FString hands;
+		for (int r = 0; r < 2; r++)
+			if (VRPickHandNow(r, h[r]) && h[r].havePoints)
+				hands.AppendFormat("  %s drawn palm (%.0f %.0f %.0f) %.2f m away", r == 0 ? "main" : "off", h[r].palm.X, h[r].palm.Y,
+					h[r].palm.Z, (h[r].palm - mo->PosPlusZ(mo->Height * 0.5)).Length() / upm);
+		const double viewz = pmo->player != nullptr ? pmo->player->viewz : 0.0;
+		Printf("[roth_grab] pull: %s at (%.0f %.0f %.0f), %.2f m over its floor, %.2f m under its ceiling, vel (%.1f %.1f %.1f);"
+			" the package's palms: main (%.0f %.0f %.0f) off (%.0f %.0f %.0f); viewz %.0f, the last frame's eye %.0f, %.0f units a metre%s\n",
+			mo->GetClass()->TypeName.GetChars(), now.X, now.Y, now.Z, (now.Z - mo->floorz) / upm, (mo->ceilingz - now.Z - mo->Height) / upm,
+			mo->Vel.X, mo->Vel.Y, mo->Vel.Z, pmo->AttackPos.X, pmo->AttackPos.Y, pmo->AttackPos.Z,
+			pmo->OffhandPos.X, pmo->OffhandPos.Y, pmo->OffhandPos.Z, viewz, r_viewpoint.CenterEyePos.Z, upm, hands.GetChars());
+		lines++;
+	}
+}
+
 void GrabGlueTick(FLevelLocals *level)
 {
 	if (level == nullptr) return;
 	if (gLevel != level) { gLevel = level; gNextCheck = 0; gTakeable = gNotItems = -1; }
+	TracePulls(level);
 	// Once a second: objects become items or stop being them only through the level logic, which is rare.
 	if (level->maptime < gNextCheck) return;
 	gNextCheck = level->maptime + 35;
