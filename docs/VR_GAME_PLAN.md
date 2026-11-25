@@ -108,16 +108,18 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
   while a flame is within reach of it; judge the 3 cm wick reach (`kWickReach`) in the headset. A real candelabra
   model with fixed arms belongs to the asset pass (M7).
 - **The owner's first headset session (2026-11-24), fixed or scheduled:**
-  - "the interaction indicator is jumping all over ... some dotted thing": the dotted beam replaced by Godot XR Tools'
-    pointer target (a marker held in the world at the hit, shown only where the hand can act; `roth_vrpick.cpp`
-    THE DRAWING). Built, not yet seen.
+  - "the interaction indicator is jumping all over ... some dotted thing", then the ring that replaced it ("garbage";
+    "it isn't about porting one or the other, but what you are reading in them is the ideas we can use to make ours"):
+    THE GLOW (`roth_vrpick.cpp`), ours, from the ideas of the owner's proven systems -- RSQ DistanceGrab's glow twin
+    and its could / have strengths (glow.zs, tell.zs), kept by REMA's VRGrab (RAB_Look): the thing the hand touches or
+    points at lights up in its own silhouette, picture or 3D model; green while the hand works it. No beam, no ring.
+    Walls, floors and door leaves: no glow yet (the haptic tick only).
+  - "i should be able to touch the menu options": the menu box is now a hand panel like the inventory
+    (HANDPANEL_MENU): laser, trigger, fingertip touch, the box loop's own hover and click.
   - "massive headbobbing": the original's walk bob kept off the VR eye (`roth_playermove_engine.cpp` WritePawn). Built.
   - "no analog movement": the stick reached the game as four exclusive keys (`commonbinds.txt` axis1/axis2,
     `vk_openxrdevice.cpp` cardinal zones). In VR the original's key path now takes the device's analog movement stick
     (direction and push; `MoveInput::analog`). Built; `move_test` vs the original still 14 scenarios, 0 differ (flat).
-  - "i cant touch the main menu buttons": a menu box took clicks only from the use key; now the trigger or grip of the
-    hand pointing at it clicks (`roth_interface.cpp` InterfaceMenuHandClick). Built. If the menu he meant is the
-    engine's own start menu, that is a different path: ask.
   - "no clue what the controls are": an in-game controls card (to build: on the off wrist, beside the mount, or the
     first time the game starts); until then the controls in chat and `PLAYTEST_CH1-2.md`.
   - "disable the use key": with the VR hands live the use key uses nothing in the world (`p_map.cpp` P_UseLines). Built.

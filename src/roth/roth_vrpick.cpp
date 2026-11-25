@@ -92,17 +92,14 @@
 // sees. With no hand model (no hand actor this tic) it falls back to the
 // controller's aim pose, which is what roth_pick and the panels use.
 //
-// THE DRAWING in the world is ONE TARGET MARKER, no beam (owner in the headset, 2026-11-24: "the interaction
-// indicator is jumping all over ... and it looks like shit some dotted thing"; the twelve dots along the ray are gone).
-// The design is Godot XR Tools' pointer (MIT, addons/godot-xr-tools/functions/function_pointer.gd, 6c6189b), set as
-// show_laser = HIDE, show_target = true: _visible_hit / _visible_move put the target at the collision point in WORLD
-// space (global_position), _visible_miss hides it. Here the collision is the original's pick and "a hit" is a pick
-// the hand could act on, tinted by the original's cursor family:
-//   usable in reach (shapes 0x248, 0x250, 0x278)   candle white
-//   blocked / keyed / an attack target (0x258, 0x260)  dull red
-//   too far (0x398, 0x3a0) and nothing (0x240)      a miss: no marker
-// Not taken from it: its laser, its events (the original's clicks are the events), its suppress area (D3's touch
-// already beats the point). The marker was hand-locked before: a tic-old hit point carried on the hand's lever.
+// THE DRAWING in the world is THE GLOW, no beam and no ring (owner in the headset, 2026-11-24: the dotted beam
+// "looks like shit", the ring that replaced it "is fucking garbage"; "it isn't about porting one or the other, but what
+// you are reading in them is the ideas we can use to make ours"). The ideas, from the owner's proven systems: RSQ
+// DistanceGrab's glow twin (glow.zs, after UBQS_GripGlow: a second actor wearing the target's own picture or model in
+// one flat colour, a hair larger, a hair toward the eye) and its two strengths (tell.zs: "could" amber, dim, a slow
+// breath; "have" green, brighter, twice as fast); REMA's VRGrab keeps the same pair (RAB_Look). Ours, in the engine:
+// see THE GLOW below. The thing itself lights up in its own silhouette -- a Realms picture or its 3D model alike.
+// Walls, floors and door leaves do not glow yet (no actor to wear); the light tick (haptic) still marks them.
 // The panel's laser (the inventory screen) is unchanged.
 // In VR they are welded to the controller (BBFL_HANDMAIN / BBFL_HANDOFF), so
 // they move at the display's rate, not the tic's. Subtle on purpose.
@@ -254,7 +251,6 @@ struct HandState
 
 	// billboards
 	int marker = 0;
-	bool     markHave = false;   // the world marker is shown (see THE DRAWING)
 	bool shown = false;      // any of them visible (so an idle hand touches none)
 
 	// on a panel (the inventory screen, the popup): the original's mouse (roth_invhand.h)
@@ -377,7 +373,6 @@ void HideHand(HandState &h)
 {
 	if (!h.shown) return;
 	h.shown = false;
-	h.markHave = false;
 	HideBB(h.marker);
 	for (int i = 0; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
 	h.lineShown = 0;
@@ -977,21 +972,103 @@ void ResetGestures(HandState &h)
 	h.hover = Pick{};
 }
 
-// THE MARKER (see THE DRAWING in the header): XR Tools' _visible_hit / _visible_move when `hit`, _visible_miss when
-// not. `at` the hit point, `shape` the original's cursor shape there.
-void DrawMarker(HandState &h, bool hit, const DVector3 &at, uint16_t shape)
+// THE GLOW (see THE DRAWING in the header). One twin per hand: an actor of the host's own class (so it finds the
+// host's model too -- a model is found by class, sprite and frame), wearing the host's sprite, frame, angles, flips
+// and offset, 1.06 times its size, 1.5 units toward the eye, drawn AddStencil in one colour: the host's silhouette
+// as light. Nothing on the host is touched. Strengths and colours are DistanceGrab's (tell.zs GlowLook, 35 tics a
+// second, cos in degrees): could = (0.15 + 0.35 * (0.5 - 0.5 cos(6t))) * 0.55 amber, have = 0.12 + 0.20 * (0.5 - 0.5
+// cos(12t)) green. Presentation only.
+constexpr uint32_t kGlowCould = 0xFFB030, kGlowHave = 0x40FF70;
+constexpr double kGlowRim = 1.06, kGlowToEye = 1.5;
+struct Glow { AActor *twin = nullptr; AActor *host = nullptr; };
+Glow gGlow[2];
+
+void GlowHide(Glow &g)
 {
-	double alpha = 0.0;
-	const PalEntry col = hit ? FamilyColour(shape, alpha) : PalEntry(0);
-	if (!hit || alpha <= 0.0) { HideHand(h); return; }
-	const double upm = UPM();
-	// Pulled back a little toward the hand so the surface does not cut it.
-	DVector3 back = h.tip - at;
-	const double bl = back.Length();
-	back = bl > 1e-6 ? back / bl : -h.dir;
-	PlaceBB(h.marker, BB_RING, HandLock{}, at + back * (0.006 * upm), kMarkerM * upm, col, alpha);
-	h.markHave = true;
-	h.shown = true;
+	if (g.twin != nullptr && !(g.twin->ObjectFlags & OF_EuthanizeMe)) { g.twin->renderflags |= RF_INVISIBLE; g.twin->Alpha = 0.0; }
+	g.host = nullptr;
+}
+
+void GlowForget()
+{
+	for (Glow &g : gGlow) { g.twin = nullptr; g.host = nullptr; }
+}
+
+void GlowFollow(Glow &g, FLevelLocals *level, AActor *host, const DVector3 &eye, bool have)
+{
+	if (host == nullptr || (host->ObjectFlags & OF_EuthanizeMe) || (host->renderflags & RF_INVISIBLE) || host->sprite <= 0)
+	{
+		GlowHide(g);
+		return;
+	}
+	if (g.twin != nullptr && ((g.twin->ObjectFlags & OF_EuthanizeMe) || g.twin->Level != level || g.twin->GetClass() != host->GetClass()))
+	{
+		if (!(g.twin->ObjectFlags & OF_EuthanizeMe) && g.twin->Level == level) g.twin->Destroy();
+		g.twin = nullptr;
+	}
+	if (g.twin == nullptr)
+	{
+		g.twin = AActor::StaticSpawn(level, host->GetClass(), host->Pos(), NO_REPLACE);
+		if (g.twin == nullptr) return;
+		g.twin->UnlinkFromWorld(nullptr);
+		g.twin->flags &= ~(MF_SOLID | MF_SHOOTABLE | MF_SPECIAL | MF_PICKUP);
+		g.twin->flags |= MF_NOBLOCKMAP | MF_NOGRAVITY;
+		g.twin->flags5 |= MF5_NOINTERACTION;
+		g.twin->LinkToWorld(nullptr);
+	}
+	const bool fresh = g.host != host || (g.twin->renderflags & RF_INVISIBLE);
+	g.host = host;
+	AActor *t = g.twin;
+	t->sprite = host->sprite;
+	t->frame = host->frame;
+	t->Angles = host->Angles;
+	t->renderflags = (host->renderflags & (RF_XFLIP | RF_YFLIP)) | RF_FULLBRIGHT;
+	t->SpriteOffset = host->SpriteOffset;
+	t->Scale = host->Scale * kGlowRim;
+	t->RenderStyle = LegacyRenderStyles[STYLE_AddStencil];
+	const double tt = (double)level->maptime;
+	const double alpha = have ? 0.12 + 0.20 * (0.5 - 0.5 * cos(tt * 12.0 * (M_PI / 180.0)))
+	                          : (0.15 + 0.35 * (0.5 - 0.5 * cos(tt * 6.0 * (M_PI / 180.0)))) * 0.55;
+	t->SetShade(have ? kGlowHave : kGlowCould);
+	t->Alpha = alpha;
+	DVector2 d = eye.XY() - host->Pos().XY();
+	const double l = d.Length();
+	const DVector3 off = l > 0.01 ? DVector3(d.X / l * kGlowToEye, d.Y / l * kGlowToEye, 0) : DVector3(0, 0, 0);
+	t->SetOrigin(host->Pos() + off, true);
+	if (fresh) t->ClearInterpolation();
+}
+
+// What each hand's glow is about this tic: the thing it touches (D3), else the thing its finger points at, while the
+// hand could act on it (usable in reach, or keyed / blocked -- the original's cursor says so). "Have" while that
+// hand's grip or trigger is down on it. Both hands on one thing: one glow, the stronger.
+void GlowTick(FLevelLocals *level, AActor *pmo, bool live)
+{
+	if (!live || level == nullptr || pmo == nullptr || pmo->player == nullptr)
+	{
+		for (Glow &g : gGlow) GlowHide(g);
+		return;
+	}
+	AActor *want[2] = { nullptr, nullptr };
+	bool have[2] = { false, false };
+	for (int role = 0; role < 2; role++)
+	{
+		const HandState &h = P.hand[role];
+		if (!h.valid) continue;
+		if (h.touchHave && h.touch.kind == Pick::Prop) want[role] = h.touch.actor;
+		else if ((h.pointing || h.pressReady) && h.havePick && h.pick.kind == Pick::Prop)
+		{
+			const rules::Class k = RulesClassOf(h.cls);
+			if (k == rules::Class::Usable || k == rules::Class::Blocked) want[role] = h.pick.actor;
+		}
+		have[role] = want[role] != nullptr && (h.gripClosed || h.trigDown);
+	}
+	if (want[0] != nullptr && want[0] == want[1]) { have[0] = have[0] || have[1]; want[1] = nullptr; }
+	const DVector3 eye(pmo->X(), pmo->Y(), pmo->player->viewz);
+	for (int role = 0; role < 2; role++)
+	{
+		if (want[role] != nullptr) GlowFollow(gGlow[role], level, want[role], eye, have[role]);
+		else GlowHide(gGlow[role]);
+	}
 }
 
 // The two buttons' press edges (pressed at 0.70, let go at 0.35, for both). A
@@ -1012,22 +1089,6 @@ void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
 	h.primed = h.valid;
 }
 
-// THE RIM on a touched usable thing (docs/VR_INTERACTION.md 4b, D4): a soft ring round it, in the world -- its box
-// for an object, a hand's width at the point for a surface. Presentation; the cursor picture at the pointed point is P2's.
-void DrawRim(HandState &h)
-{
-	const double upm = UPM();
-	DVector3 at = h.touch.hitPos;
-	double size = 0.06 * upm;
-	if (h.touch.kind == Pick::Prop && h.touch.actor != nullptr)
-	{
-		DVector3 lo, hi;
-		ObjectPickBox(h.touch.actor, lo, hi);
-		at = (lo + hi) * 0.5;
-		size = std::max(0.03 * upm, std::max(hi.X - lo.X, std::max(hi.Y - lo.Y, hi.Z - lo.Z)) * 1.15);
-	}
-	PlaceBB(h.rim, BB_RING, HandLock{}, at, size, PalEntry(255, 236, 214, 170), 0.35);
-}
 
 // D3, EVERY TIC: the usable thing the palm or the fingertip is on, within 5 cm (NearFind with the touch's reach, quiet).
 // A new one ticks the hand lightly (4b) and gets the rim; none hides it. Only for a hand the picker may act with.
@@ -1049,7 +1110,7 @@ void UpdateTouch(int role, HandState &h, AActor *pmo, bool haveRay)
 			rules::ClassName(RulesClassOf(h.touchCls)));
 		Haptic(role, kTickAmp, kTickMs, "a touch: the light tick");
 	}
-	DrawRim(h);
+	HideBB(h.rim);   // no ring: the touched thing glows (THE GLOW)
 }
 
 // THE PICKER'S SQUEEZE (L2's last claim): D3 -- the touch (5 cm, the palm or the fingertip), else the point (the
@@ -1444,13 +1505,8 @@ void TickHand(int role, AActor *pmo)
 	if (actionable && !SamePickTarget(h.pick, h.hover)) { h.hover = h.pick; Haptic(role, 0.12, 12); }
 	else if (!actionable) h.hover = Pick{};
 
-	// ---- THE MARKER ---- (see THE DRAWING in the header): only on what the hand could act on, held in the world.
-	{
-		const rules::Class k = h.havePick ? RulesClassOf(h.cls) : rules::Class::Nothing;
-		const bool actOn = k == rules::Class::Usable || k == rules::Class::Blocked;
-		if (h.aimHeld && h.aimHave) DrawMarker(h, true, h.aimHit, h.aimShape);   // the aim kept as the index curls
-		else DrawMarker(h, (h.pointing || h.pressReady) && actOn, h.pick.hitPos, h.cls.shape);
-	}
+	// ---- THE GLOW ---- (see THE DRAWING in the header): GlowTick, once for both hands after them. Nothing drawn here.
+	HideHand(h);
 }
 
 //--------------------------------------------------------------------------
@@ -1460,7 +1516,7 @@ void TickHand(int role, AActor *pmo)
 PanelV3 PV(const DVector3 &v) { return PanelV3(v.X, v.Y, v.Z); }
 DVector3 DV(const PanelV3 &v) { return DVector3(v.x, v.y, v.z); }
 
-const char *PanelName(int which) { return which == HANDPANEL_POPUP ? "examine popup" : "inventory"; }
+const char *PanelName(int which) { return which == HANDPANEL_POPUP ? "examine popup" : which == HANDPANEL_MENU ? "menu box" : "inventory"; }
 
 void ForgetPanel()
 {
@@ -1491,7 +1547,6 @@ void DrawPanelLaser(int role, HandState &h, AActor *pmo, const PanelPlane &plane
 {
 	const InvHandOutput &o = h.pout;
 	h.shown = true;
-	h.markHave = false;   // the world marker gives way to the panel's (h.marker, hand-locked below)
 	const HandLock L = LockFor(role, pmo);
 	const double lineK = tan(kPanelLineDeg * (M_PI / 180.0)), dotK = tan(kPanelDotDeg * (M_PI / 180.0));
 	const PalEntry col(255, 250, 238, 200);
@@ -1666,9 +1721,9 @@ void TickDialogueHand(int role, AActor *pmo)
 void ForgetLevel()
 {
 	P.level = nullptr;
+	GlowForget();
 	for (HandState &h : P.hand)
 	{
-		h.markHave = false;
 		h.line.clear();
 		h.lineShown = 0;
 		h.marker = 0;
@@ -1910,7 +1965,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 	// ON A PANEL (the inventory screen, the popup over it): the hands are its mouse.
 	PanelPlane plane;
 	int panel = HANDPANEL_NONE;
-	if (!modal && on && player->health > 0 && owner != nullptr)
+	const bool menuOwns = on && player->health > 0 && owner != nullptr && !strcmp(owner, "menu");
+	if ((!modal || menuOwns) && on && player->health > 0 && owner != nullptr)
 	{
 		const DVector3 eye = pmo->Pos() + DVector3(0, 0, player->viewheight);
 		panel = InterfaceHandPanel(PV(eye), plane);
@@ -1958,19 +2014,6 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		if (stand)
 		{
 			HandState &h = P.hand[role];
-			// A MENU BOX (InterfaceMenuHandClick): the hand pointing at it clicks it with its trigger or its grip.
-			if (on && player->health > 0 && owner != nullptr && !strcmp(owner, "menu"))
-			{
-				ReadInputs(role, h);
-				bool gripEdge = false, trigEdge = false;
-				ReadButtons(h, gripEdge, trigEdge);
-				if (gripEdge || trigEdge) InterfaceMenuHandClick(role);
-				h.havePick = false;
-				h.touchHave = false;
-				HideBB(h.rim);
-				HideHand(h);
-				continue;
-			}
 			h.havePick = false;
 			h.pointing = false;
 			h.primed = false;
@@ -1983,6 +2026,8 @@ void VRPickTick(FLevelLocals *level, bool modal)
 		}
 		TickHand(role, pmo);
 	}
+	// THE GLOW, after both hands have their targets (see THE DRAWING in the header).
+	GlowTick(level, pmo, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
 	// THE GESTURES (roth_gestures.h), after both hands, while the hands work the world.
 	GesturesTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);
 	WorldHandsTick(level, !stand && panel == HANDPANEL_NONE && !dialogueOwns);   // chapter 2's world by hand (roth_worldhands.h)

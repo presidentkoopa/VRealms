@@ -1686,11 +1686,14 @@ void UpdateHover(player_t *player)
 	{
 		if (U.menus->Current() != RealmsMenus::DEATH)   // the death wait has no pointer (game_core.c:986-1000)
 		{
-			// Every frame, as the loop does (:1591-1607). In VR either hand's ray (InterfaceMenuHandClick): the first
-			// that is on the box.
-			int hit = 0;
-			for (int i = 0; i < n && hit == 0; i++) hit = MenuHit(rays[i], i == 0 ? e : HitElement(rays[i]));
-			U.menus->PointerAt(hit);
+			// Every frame, as the loop does (:1591-1607): the first ray on the box. In VR the hands work the box as a
+			// panel (HANDPANEL_MENU) and set the pointer there.
+			if (!U.handsDrivePointer)   // the hands work the box as a panel (HANDPANEL_MENU): their pointer is set there
+			{
+				int hit = 0;
+				for (int i = 0; i < n && hit == 0; i++) hit = MenuHit(rays[i], i == 0 ? e : HitElement(rays[i]));
+				U.menus->PointerAt(hit);
+			}
 		}
 		U.hoverBb = bb;
 		return;
@@ -2321,24 +2324,6 @@ bool InterfaceOpenInventory()
 	return true;
 }
 
-// THE VR HANDS ON A MENU BOX (owner in the headset, 2026-11-24: "i cant touch the main menu buttons"): a menu box
-// took its click only from the use key (Press above), with the hands standing down. Now the trigger or the grip of
-// the hand pointing at the box is the original's click there, as the hands already are on the inventory screen.
-// The click is the box loop's own (PointerClick at that hand's hit, menu_hud_ui.c:1626-1638). True: a menu took it.
-bool InterfaceMenuHandClick(int role)
-{
-	if (!U.attached || U.menus == nullptr || !U.menus->IsOpen() || U.menus->Current() == RealmsMenus::DEATH) return false;
-	DVector3 s, d;
-	if (!VRPickHandRay(role, s, d)) return false;
-	const Ray r{ s, d };
-	const int hit = MenuHit(r, HitElement(r));
-	U.menus->PointerAt(hit);
-	U.menus->PointerClick(hit);
-	Printf("[roth_menu] the %s hand clicks, hit %d: %s\n", role == 0 ? "main" : "off", hit,
-		U.menus->IsOpen() ? U.menus->Describe().c_str() : "closed");
-	return true;
-}
-
 bool InterfaceUse(player_t *player)
 {
 	if (!U.attached) return false;
@@ -2375,6 +2360,8 @@ const Element *HandPanelElement(int &which)
 	int kind = -1;
 	if (!strcmp(owner, "inventory")) { kind = E_INVPANEL; which = HANDPANEL_INVENTORY; }
 	else if (!strcmp(owner, "popup") && U.popup.Active()) { kind = E_POPUP; which = HANDPANEL_POPUP; }
+	else if (!strcmp(owner, "menu") && U.menus != nullptr && U.menus->Current() != RealmsMenus::DEATH && U.boxOf[0] != RealmsMenus::NONE)
+	{ kind = E_MENUBOX; which = HANDPANEL_MENU; }
 	if (kind < 0) { which = HANDPANEL_NONE; return nullptr; }
 	for (const Element &e : U.elements) if (e.kind == kind && e.picture >= 0) return &e;
 	which = HANDPANEL_NONE;
@@ -2402,6 +2389,8 @@ uint16_t InterfaceHandPointer(int panel, int x, int y, bool onPicture)
 		if (onPicture) U.popup.SetPointer(x, y, 0);
 		else U.popup.SetPointer(-0x4000, -0x4000, 0);
 	}
+	if (panel == HANDPANEL_MENU && U.menus != nullptr && U.menus->IsOpen())
+		U.menus->PointerAt(onPicture ? U.boxes[0].LoopHit(x, y) : 0);   // the box loop's hover (menu_hud_ui.c:1591-1607)
 	return 0;
 }
 
@@ -2418,6 +2407,15 @@ int InterfaceHandClick(int panel, int x, int y, bool onPicture, int button)
 		// As Press does for the popup (input.c:1310-1347, taken by its next frame).
 		InterfaceHandPointer(panel, x, y, onPicture);
 		U.popup.Press(button);
+		return -1;
+	}
+	if (panel == HANDPANEL_MENU && U.menus != nullptr && U.menus->IsOpen())
+	{
+		// The box loop's click at the hand's pixel (menu_hud_ui.c:1626-1638); off the box, a click on nothing.
+		const int hit = onPicture ? U.boxes[0].LoopHit(x, y) : 0;
+		U.menus->PointerAt(hit);
+		U.menus->PointerClick(hit);
+		Printf("[roth_menu] a hand clicks the box at %d,%d, hit %d: %s\n", x, y, hit, U.menus->IsOpen() ? U.menus->Describe().c_str() : "closed");
 		return -1;
 	}
 	return -1;

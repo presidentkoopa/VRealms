@@ -100,8 +100,6 @@ void InterfaceEndLevel();
 // A use press (P_UseLines, before anything else looks at it). True when the
 // press belonged to a panel or to the dialogue and must go no further.
 bool InterfaceUse(player_t *player);
-// VR: the hand `role` (0 main, 1 off) clicks the menu box it points at (its trigger or grip). False: no menu box up.
-bool InterfaceMenuHandClick(int role);
 // VR: the backpack (a hand squeezing over the shoulder) opens the inventory as the 'I' key does. False: not now.
 bool InterfaceOpenInventory();
 
@@ -119,7 +117,9 @@ const char *InterfacePointerOwner();
 // the hands). The panel as a plane carrying the original's pixels
 // (roth_panelmap.h), its front on the side of `eye`: HANDPANEL_NONE when no
 // such panel is up.
-enum { HANDPANEL_NONE = 0, HANDPANEL_INVENTORY = 1, HANDPANEL_POPUP = 2 };
+// HANDPANEL_MENU (owner in the headset, 2026-11-24: "i should be able to touch the menu options"): the menu box on
+// top (New Game, Load, Save ...), worked by the hands exactly as the inventory is -- laser, trigger, fingertip touch.
+enum { HANDPANEL_NONE = 0, HANDPANEL_INVENTORY = 1, HANDPANEL_POPUP = 2, HANDPANEL_MENU = 3 };
 int InterfaceHandPanel(const PanelV3 &eye, PanelPlane &out);
 // The hand's mouse at pixel (x, y) of that panel (`onPicture`: on the picture
 // itself): the hover, as the original's handle_cursor_click with no button
