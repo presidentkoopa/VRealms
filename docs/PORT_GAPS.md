@@ -8,6 +8,15 @@
   original's own list (the command section's category slot 3). Seen: #112 fires once on entering s54, not again on
   re-entry (walkin_flat.cfg). Not yet seen: the leave edge, the height links, the "moving" gate, on a map that uses them.
 
+- The load-time object table pass, completed (778ab873): the armed rerun of 0x0a-0x0f 0x11 0x23, 0x0c's load-time
+  swap, 0x15's base, 0x24's continuous rotation (tick_rotate_object), the 0x3d timers (tick_command_timer_queue).
+  Seen: ANUBIS now runs 4 armed records at load (0 before); STUDY1 queues its 2 timers. Not yet seen: a timer firing,
+  a 0x24 rotation (no retail map arms one at load; chains start them).
+- Animated pictures (walls, objects) step at their own rate, (rate & 0x1f) + 1 ticks of 70 Hz, as
+  advance_das_sprite_animation_frame does; was one 229 ms guess. Still 229 ms: the RLE variant (its caller chooses
+  the frame; which caller does so for a wall is not read) and the candles' composed pictures.
+- Tools: tools/port_audit/audit.py writes docs/PORT_AUDIT.md, every ROTH.C function against the port.
+
 ## The whole game (all 44 maps, read from the retail .RAW files with roth_raw; 2026-11-24)
 
 Every INSTRUCTION opcode the 44 maps use is dispatched by the port (roth_runtime RunCommand / RunCommandWithChain, the
@@ -18,7 +27,7 @@ it. What is NOT ported game-wide:
 |---|---|---|---|
 | 0x1b | 95 | 27 | an attack or shot hitting an OBJECT |
 | 0x25 | 11 | 5 | a texture animation's frame (DOMINION MAS3 RAQUIA5 STUDY1 STUDY3) |
-| 0x3d | 15 | 11 | a timer |
+| ~~0x3d~~ | 15 | 11 | a timer: PORTED 778ab873 |
 | 0x39 | 1 | 1 | walking into an object (RAQUIA5) |
 | 0x09 instructions | 32 | 5 | sideways-sliding sectors, only with roth_platforms 1 (OPTEMP1 RAQUIA2 RAQUIA3 RAQUIA5 SALVAT) |
 | 0x16 / 0x3a / 0x3c | 481 | 28 | creature spawn / id / spawn-adv: dispatched only while the actors system is active |
