@@ -31,6 +31,10 @@
 - Contact triggers (cd05bec8): fire_trigger_on_contact's latches and one-shot; walking into an object; the landing
   thud plays. Movement differential against the original: 0 differ.
 
+- Seen while comparing RAQUIA3 (not yet read in ROTH.C): from the pit (floor -400) the original's sky shows a
+  purple-grey band where ours shows blue sky and clouds; same sky picture (400, DEMO1) as RAQUIA2, which matches from
+  floor -198. The sky's vertical placement against eye height is the first thing to read.
+
 ## Still open, beyond the logic (from docs/PORT_AUDIT.md; to be read function by function)
 
 - automap.c: 19 functions, none named in the port. The original's map screen.
@@ -40,9 +44,12 @@
 - Sliding sectors (0x09, 32 records, 5 maps) are behind roth_platforms, off by default. First runs with it on
   (2026-11-25, platforms_*.cfg): the engine starts, the platform actors spawn on OPTEMP1 (6), RAQUIA2 (45), RAQUIA5
   (6) and SALVAT, and OPTEMP1's plate slides in and out of its pedestal as the original's does from the same pose
-  (oracle_shot OPTEMP1 23014 -4560 256). Not yet compared in motion: RAQUIA2 (the test pose landed outside the map:
-  rothdiff_shot's handling of the wrapped coordinates to check), RAQUIA3, RAQUIA5, SALVAT. Not built at all: SALVAT's
-  four pocket records (they move a one-sided wall). Not ported: a trigger on a moved sector still fires at its load
+  (oracle_shot OPTEMP1 23014 -4560 256). Also seen in motion beside the original, from poses chosen by diffing the
+  original's own frames: RAQUIA2's floating slab (-7168 27980 256), RAQUIA3's (-416 31232 384), RAQUIA5's (-3700 16960
+  384) (platforms_<MAP>.cfg). RAQUIA2's test pose had landed outside the map: rothdiff poses now get the map's wrap shift
+  (6515b656). Not built at all: SALVAT's four pocket records. Read from the data: each pocket is the 8-deep end of a
+  64-wide crawlway (SALVAT 236/240), so moving its four vertices slides the crawlway's END WALL back and forth while the
+  side walls stretch; that is a sliding wall, not a platform. Not yet checked: the player riding a slab (the carry). Not ported: a trigger on a moved sector still fires at its load
   position. The original moves the sector's vertices (tick_moving_sector, raw_commands.c:5869); the actor is how this
   engine shows it.
 
