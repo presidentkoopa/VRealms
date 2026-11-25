@@ -37,7 +37,14 @@
 - savegame.c: 25 of 33 not named. The original's save files (SAVE<n>.SAV) are read (roth_gameflow); writing them is
   this port's own format.
 - gdv_cutscene.c 46, audio.c 52, input.c 42, menu_hud_ui.c 17, doors.c 13, map_load.c 19 not named: each to be read.
-- Sliding sectors (0x09, 32 records, 5 maps) are behind roth_platforms, off by default.
+- Sliding sectors (0x09, 32 records, 5 maps) are behind roth_platforms, off by default. First runs with it on
+  (2026-11-25, platforms_*.cfg): the engine starts, the platform actors spawn on OPTEMP1 (6), RAQUIA2 (45), RAQUIA5
+  (6) and SALVAT, and OPTEMP1's plate slides in and out of its pedestal as the original's does from the same pose
+  (oracle_shot OPTEMP1 23014 -4560 256). Not yet compared in motion: RAQUIA2 (the test pose landed outside the map:
+  rothdiff_shot's handling of the wrapped coordinates to check), RAQUIA3, RAQUIA5, SALVAT. Not built at all: SALVAT's
+  four pocket records (they move a one-sided wall). Not ported: a trigger on a moved sector still fires at its load
+  position. The original moves the sector's vertices (tick_moving_sector, raw_commands.c:5869); the actor is how this
+  engine shows it.
 
 ## The whole game (all 44 maps, read from the retail .RAW files with roth_raw; 2026-11-24)
 
