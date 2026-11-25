@@ -163,6 +163,7 @@
 EXTERN_CVAR(Int, vr_mode)   // file scope, never inside a namespace
 CVAR(Bool, roth_vrpick, true, 0)          // the VR hands' picker; not saved
 CVAR(Bool, roth_vrpick_debug, false, 0)   // a line per change of what each hand points at
+bool RSLaser_HandBeamActive(int hand);    // hw_rslaser.cpp: RSQ Distance Grab's beam rides that hand now
 // THE HEADSET'S LIVE METRE for RSQ Distance Grab's scripts (wadsrc/static/filter/vrealms/zscript/rsqdg/reach.zs
 // RSQDG_Reach.UnitsPerMetre): written every tic from the VR scale (VR_UnitsPerMeter). Not saved.
 CVAR(Float, roth_vr_metre_live, 0.f, 0)
@@ -883,6 +884,9 @@ void UpdateBeam(int role, HandState &h)
 		|| !gL2[role].MayAct(hands::Owner::Picker))
 		return;
 	if (h.xrPick != nullptr && !h.xrRanged) return;   // XR Tools' suppress_radius: near things are the hand's own
+	// One laser per hand (owner in the headset, 2026-11-24: "what ... is this white laser coming out of my hand in
+	// addition to the distancegrab cone?"): while RSQ Distance Grab's beam rides this hand, this one stands down.
+	if (RSLaser_HandBeamActive(role)) return;
 	DVector3 o, f, r, u;
 	if (!VRHandPose_MapFrame(role, o, f, r, u)) return;
 	h.beamDir = f;

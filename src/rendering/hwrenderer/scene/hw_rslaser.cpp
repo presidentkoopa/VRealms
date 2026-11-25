@@ -143,6 +143,15 @@ struct FRSLaserBeam
 static FRSLaserSight Sights[2];
 static FRSLaserBeam Beams[kMaxBeams];
 
+// Whether a script beam rides `hand` now (requested within its expiry): RSQ Distance Grab's cone beam on that hand.
+// VRealms' own pointer (roth_vrpick.cpp THE BEAM) stands down while it shows, so a hand never has two lasers.
+bool RSLaser_HandBeamActive(int hand)
+{
+	for (const FRSLaserBeam &b : Beams)
+		if (b.Hand == hand && gametic - b.Tic <= kExpireTics) return true;
+	return false;
+}
+
 // The hand as last drawn: what a beam's points are carried into the hand's frame with.
 struct FRSHandFrame
 {

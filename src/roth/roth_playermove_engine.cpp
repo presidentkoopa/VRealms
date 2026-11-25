@@ -57,7 +57,9 @@ CVAR(Float, roth_vr_crouch_fraction, 0.75f, 0)
 // Tools' defaults (0.2 s, 2 rad/s). Not archived (CLAUDE.md: the ini is shared).
 static void ApplyVRTurn();
 CUSTOM_CVAR(Float, roth_vr_snapturn, 45.f, CVAR_NOINITCALL) { ApplyVRTurn(); }
-CUSTOM_CVAR(Int, roth_vr_turn, 1, CVAR_NOINITCALL) { ApplyVRTurn(); }
+// Default 0, the device's own snap (owner in the headset, 2026-11-24: "why am i constantly jumping": XR Tools' snap
+// fires past a 0.25 push and repeats every 0.2 s while held, where the device's fires at 0.6 once per push).
+CUSTOM_CVAR(Int, roth_vr_turn, 0, CVAR_NOINITCALL) { ApplyVRTurn(); }
 CUSTOM_CVAR(Float, roth_vr_turn_repeat, 0.2f, CVAR_NOINITCALL) { ApplyVRTurn(); }
 CUSTOM_CVAR(Float, roth_vr_smoothturn, 114.59f, CVAR_NOINITCALL) { ApplyVRTurn(); }
 // THE COMFORT VIGNETTE (Godot XR Tools' effects/vignette.gd, MIT, 6c6189b, :55-119, read whole): the view closes in
