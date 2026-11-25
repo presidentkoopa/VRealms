@@ -1840,6 +1840,12 @@ static void ReapplyWallFace(int fi, bool texturesChanged, bool midBand = false)
 	if (g.level == nullptr || fi < 0 || (size_t)fi >= g.map.faces.size()) return;
 	auto wr = g.wallByFace.find(fi);
 	auto sdi = g.faceToSide.find(fi);
+	if (roth_chain_debug)
+		Printf("roth_chain:   face %d redrawn: wall %s, side %d, mapping %d (mid %u upper %u lower %u)\n", fi,
+			wr == g.wallByFace.end() ? "NOT REGISTERED" : "registered", sdi == g.faceToSide.end() ? -1 : sdi->second,
+			g.map.faces[fi].textureMap, g.map.faces[fi].textureMap >= 0 ? (unsigned)g.map.textureMaps[g.map.faces[fi].textureMap].midTexture : 0u,
+			g.map.faces[fi].textureMap >= 0 ? (unsigned)g.map.textureMaps[g.map.faces[fi].textureMap].upperTexture : 0u,
+			g.map.faces[fi].textureMap >= 0 ? (unsigned)g.map.textureMaps[g.map.faces[fi].textureMap].lowerTexture : 0u);
 	if (wr == g.wallByFace.end() || sdi == g.faceToSide.end()) return;
 	if (sdi->second < 0 || (size_t)sdi->second >= g.level->sides.Size()) return;
 	const int tmi = g.map.faces[fi].textureMap;
@@ -1889,6 +1895,8 @@ static void ReapplyWallFace(int fi, bool texturesChanged, bool midBand = false)
 		else if (texturesChanged)
 		{
 			auto plain = g.texByIndex.find(slotOfPart[part]);
+			if (roth_chain_debug && slotOfPart[part] != 0xffff && (plain == g.texByIndex.end() || !plain->second.isValid()))
+				Printf("roth_chain:   face %d part %d: picture %d has no engine texture\n", fi, part, slotOfPart[part]);
 			if (plain == g.texByIndex.end() || !plain->second.isValid()) continue;   // not this slot, or nothing registered
 			if (!tex.isValid() && part == side_t::mid && wf.twoSided) continue;      // never wall up an opening
 			FGameTexture *gt = TexMan.GetGameTexture(plain->second, false);
