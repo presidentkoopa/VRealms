@@ -158,6 +158,9 @@ bool SectorShift(int rothSector, double &dx, double &dy);
 // when given, picks the storey where rooms are stacked; without it the
 // sector that was not moved wins. Returns the Realms sector or -1.
 int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, double &ey);
+// The ORIGINAL's x,y (a pose file, oracle_shot, the original's memory) to this port's Realms x,y: the map's wrap shift
+// added back, 16-bit (Map::wrapShiftX/Y; RAQUIA2 alone, which straddles the wrap). The identity on every other map.
+void OriginalToRealmsXY(int &x, int &y);
 
 // The player's health 0x8a0f0, its cap 0x7fe44 and the armour factor 0x81e30
 // (DBASE100 op 0x37, the interpreter's) and the pain flash 0x89f3b, for the

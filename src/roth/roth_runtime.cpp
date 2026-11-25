@@ -6661,6 +6661,12 @@ void RegisterSectorShift(int rothSector, double dx, double dy)
 // one the sector that was NOT moved wins, which is where the camera stood
 // before there were portals. Returns the Realms sector, or -1 if no sector
 // holds the spot (the position is then returned unchanged).
+void OriginalToRealmsXY(int &x, int &y)
+{
+	x = (int16_t)(uint16_t)((x + g.map.wrapShiftX) & 0xFFFF);
+	y = (int16_t)(uint16_t)((y + g.map.wrapShiftY) & 0xFFFF);
+}
+
 int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, double &ey)
 {
 	ex = x; ey = y;

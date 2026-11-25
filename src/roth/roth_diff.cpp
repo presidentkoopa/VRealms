@@ -865,6 +865,9 @@ void StandOnFloor(AActor *cam, int px, int py)
 // with none given the camera goes to the room that stayed where it was.
 DVector2 PoseToEngine(int px, int py, int z)
 {
+	// A pose is the ORIGINAL's position (oracle_shot.sh takes the same numbers): on RAQUIA2, which straddles the 16-bit
+	// wrap, this port's map is shifted, so the shift is put in first. Without it a RAQUIA2 pose landed outside the map.
+	roth::OriginalToRealmsXY(px, py);
 	double ex = px, ey = py;
 	roth::RealmsToEngineXY(px, py, z != NO_POSE_Z, z, ex, ey);
 	return DVector2(ex, ey);
