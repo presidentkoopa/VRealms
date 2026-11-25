@@ -608,7 +608,30 @@ bool PhysicsLetGo(int role, int item)
 	if (!ItemShapeOf(item, metres, shape)) return false;
 	const int slot = FreeSlot();
 	if (slot < 0) RemoveLoose(0, "the oldest of too many on the floor: back in the pack");
-	const Pose body = hp * h.rel;
+	Pose body = hp * h.rel;
+	// NEVER UNDER THE FLOOR (owner in the headset, 2026-11-24: "I KEEP ... DROPPING THE ... MATCHBOOK IT GOES THROUGH
+	// THE ... FLOOR"; his PC's log: let go at z 119.4, never at rest, then "left behind" 10 m away -- it fell out of the
+	// level). The game's floor is 1.05 m under his eyes (the original's eye height), his real one further down: a hand
+	// reaching for it goes past the floor (it slips through when held there, AfterStep), and an item let go there
+	// starts under the level's solid floor and falls for ever. So it starts on the floor under it -- the floor (or the
+	// table top, a mid-platform) below the player's eyes at that spot -- if it would start below it.
+	if (pmo != nullptr && level != nullptr)
+	{
+		const DVector3 at0 = U(body.p);
+		const double eyeZ = pmo->player != nullptr ? pmo->player->viewz : pmo->Top();
+		sector_t *sec = level->PointInSector(at0.XY());
+		if (sec != nullptr)
+		{
+			const double floorZ = NextLowestFloorAt(sec, at0.X, at0.Y, std::max(eyeZ, at0.Z));
+			const double half = 0.5 * ItemMetres(item) * S.upm + 0.01 * S.upm;
+			if (at0.Z < floorZ + half)
+			{
+				body.p.z = (floorZ + half) / S.upm;
+				Printf("[roth_physics] %s hand lets go of item %d %.2f m under the floor: it starts on the floor there instead\n",
+					RoleName(role), item, (floorZ + half - at0.Z) / S.upm);
+			}
+		}
+	}
 	V3 lin, ang;
 	HandVelocity(h, lin, ang);
 	lin = lin + ang.Cross(body.p - hp.p);   // the wrist's flick carries the far end faster

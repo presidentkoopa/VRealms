@@ -42,7 +42,7 @@ namespace
 // The item a struck match comes from (roth_held.h): a candle whose chain tests it takes the match's flame.
 constexpr int kMatchboxItem = 16;
 // A flame this close to a wick lights it (docs/WORLD_DESIGN.md 2.3: "within 3 cm"), in metres.
-constexpr double kWickReach = 0.03;
+constexpr double kWickReach = 0.08;   // was 0.03 (WORLD_DESIGN 2.3): the owner could not light one in the headset (2026-11-24)
 // The first wick of a use made with the palm on the candle: the wick nearest the hand if within this.
 constexpr double kFirstWickNear = 0.12;
 // Past the catch, a holder whose original art never became the lit picture is handed back anyway.

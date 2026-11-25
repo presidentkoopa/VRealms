@@ -221,6 +221,13 @@ struct HandState
 
 	// THE BEAM (see THE BEAM below): on for a free hand; its ray, rigid with the hand
 
+	// THE POKE (see THE POKE in TickHand): the touching point last tic, and the thing it is pressed on now
+	bool        pokeHaveLast = false;
+	DVector3    pokeLast;
+	bool        pokeContact = false;
+	Pick        pokeOn;
+	DVector3    pokeAt;
+
 	// billboards
 	int marker = 0;
 	bool shown = false;      // any of them visible (so an idle hand touches none)
@@ -754,7 +761,7 @@ void ResetGestures(HandState &h)
 // second, cos in degrees): could = (0.15 + 0.35 * (0.5 - 0.5 cos(6t))) * 0.55 amber, have = 0.12 + 0.20 * (0.5 - 0.5
 // cos(12t)) green. Presentation only.
 constexpr uint32_t kGlowCould = 0xFFB030, kGlowHave = 0x40FF70;
-constexpr double kGlowRim = 1.06, kGlowToEye = 1.5;
+constexpr double kGlowRim = 1.12, kGlowToEye = 1.5;   // rim was 1.06: too thin to see (owner, 2026-11-24)
 struct Glow { AActor *twin = nullptr; AActor *host = nullptr; };
 Glow gGlow[2];
 
@@ -802,8 +809,11 @@ void GlowFollow(Glow &g, FLevelLocals *level, AActor *host, const DVector3 &eye,
 	t->Scale = host->Scale * kGlowRim;
 	t->RenderStyle = LegacyRenderStyles[STYLE_AddStencil];
 	const double tt = (double)level->maptime;
-	const double alpha = have ? 0.12 + 0.20 * (0.5 - 0.5 * cos(tt * 12.0 * (M_PI / 180.0)))
-	                          : (0.15 + 0.35 * (0.5 - 0.5 * cos(tt * 6.0 * (M_PI / 180.0)))) * 0.55;
+	// Owner in the headset, 2026-11-24: "WHY THE FUCK IS THIS ITEM HIGHLIGHT FUCKIMG IMPOSSIBLE TO SEE". Was Distance
+	// Grab's strengths (have 0.12..0.32, could 0.08..0.28): now 0.55..0.85 could, 0.85..1.0 have, plus a light on the
+	// thing (VRPickFrameLights).
+	const double alpha = have ? 0.85 + 0.15 * (0.5 - 0.5 * cos(tt * 12.0 * (M_PI / 180.0)))
+	                          : 0.55 + 0.30 * (0.5 - 0.5 * cos(tt * 6.0 * (M_PI / 180.0)));
 	t->SetShade(have ? kGlowHave : kGlowCould);
 	t->Alpha = alpha;
 	DVector2 d = eye.XY() - host->Pos().XY();
@@ -1223,6 +1233,50 @@ void TickHand(int role, AActor *pmo)
 	// THE REACH (see ReachProbe): what the hand is on now, for the haptic tick and the debug line
 	h.havePick = ReachProbe(role, h, pmo, h.pick, h.cls);
 	if (!h.havePick) h.cls = CursorClass{};
+
+	// ---- THE POKE (owner in the headset, 2026-11-24: "WHY CAN'T I JUST TOUCH A LIGHTSWITCH") ----
+	// Godot XR Tools' poke (player/poke/poke.gd + poke_body.gd, MIT, 6c6189b, read whole): a 5 mm sphere on the
+	// fingertip moved each physics frame from where it was toward where the finger is (move_and_slide); the first
+	// thing that stops it is a CONTACT START -- the pointer "pressed" on that body -- and the contact ends when the
+	// sphere no longer meets it ("released"). A move longer than teleport_distance, 0.1 m, is a jump: the sphere is
+	// put there, nothing pressed. Ours: the sweep is the original's pick along the fingertip's path this tic (from
+	// last tic's point to this one's, plus the 5 mm radius) -- for the hand carrying an item, the palm's path, the item
+	// being in the palm -- and "pressed" is the original's use of what it met, from this hand, once per contact: a
+	// light switch, a candle (with the Matchbox in that hand, the original's use with it), anything the original lets
+	// a hand use that is a thing in the world and not an item (items are the grip's and Distance Grab's; walls and
+	// doors stay the grip's). The contact ends once the point is 2 cm clear of where it pressed.
+	if (haveRay && h.fromFinger && !HandHoldsWeapon(role))
+	{
+		const double upm = UPM();
+		const DVector3 now = VRPickHeldItem(role) > 0 ? h.palm : h.tip;
+		if (h.pokeContact && (now - h.pokeAt).Length() > (0.005 + 0.02) * upm) h.pokeContact = false;   // released
+		if (h.pokeHaveLast && !h.pokeContact)
+		{
+			const DVector3 mv = now - h.pokeLast;
+			const double len = mv.Length();
+			if (len > 1e-3 && len <= 0.1 * upm)
+			{
+				Pick pk;
+				if (RulesPick(h.pokeLast, mv / len, pk, len + 0.005 * upm) && pk.kind == Pick::Prop && pk.actor != nullptr
+					&& !ObjectIsPickupItem(pk.actor))
+				{
+					const CursorClass pc = ClassifyPick(pk, pmo, BodyDepth(pmo, pk));
+					if (pc.CanUse())
+					{
+						h.pokeContact = true;
+						h.pokeOn = pk;
+						h.pokeAt = now;
+						if (Logging()) Printf("[roth_vrpick] %s hand POKE: the %s touches %s\n", RoleName(role),
+							VRPickHeldItem(role) > 0 ? "palm (with its item)" : "fingertip", PickKindName(pk));
+						DoUse(role, pk, pc, pmo, "a touch (the poke)", true);
+					}
+				}
+			}
+		}
+		h.pokeLast = now;
+		h.pokeHaveLast = true;
+	}
+	else { h.pokeHaveLast = false; h.pokeContact = false; }
 
 	// ---- L2: WHO OWNS THIS HAND THIS TIC (roth_handstate.h) ----
 	// The standing owners first, then a closing grip's claims in order -- the Lamp's bail, the Colt, the weapon (the
@@ -1734,6 +1788,7 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
 // there, 3 cm toward the hand. Distance Grab's "could" breath (tell.zs GlowLook: (0.15 + 0.35 * (0.5 - 0.5 cos 6t))
 // x 0.55, t in tics, 60 tics a breath) and its amber (0xFFB030), at the struck match's strength (roth_held.cpp: 0.45)
 // over 0.15 m. Presentation only.
+static void PickupLights(FLevelLocals *level, double t, double upm);
 void VRPickFrameLights(FLevelLocals *level, double ticFrac)
 {
 	if (level == nullptr || level != P.level) return;
@@ -1741,6 +1796,7 @@ void VRPickFrameLights(FLevelLocals *level, double ticFrac)
 	const double t = (double)level->maptime + ticFrac;
 	const double breath = (0.15 + 0.35 * (0.5 - 0.5 * cos(t * 6.0 * (M_PI / 180.0)))) * 0.55;   // 0.08 .. 0.28
 	static const float amber[3] = { 1.0f, 0.69f, 0.19f };
+	PickupLights(level, t, upm);
 	for (int role = 0; role < 2; role++)
 	{
 		const HandState &h = P.hand[role];
@@ -1755,6 +1811,34 @@ void VRPickFrameLights(FLevelLocals *level, double ticFrac)
 		f.B = f.A;
 		for (int ch = 0; ch < 3; ch++) f.Color[ch] = (float)(amber[ch] * intensity);
 		f.Radius = 0.15 * upm;
+		f.Flags = 0;
+		EffectLights::Get().AddFrameLight(f);
+	}
+}
+
+// THE PICKUP'S LIGHT (owner in the headset, 2026-11-24: the item highlight "IMPOSSIBLE TO SEE"): each hand's closest
+// pickup (THE PICKUP: an item the grip takes, or a loose one -- a model on the floor, which THE GLOW cannot outline)
+// gets a breathing light on it, amber, green while that hand's grip or trigger is down. 0.25 m round it, at twice the
+// match's strength.
+static void PickupLights(FLevelLocals *level, double t, double upm)
+{
+	for (int role = 0; role < 2; role++)
+	{
+		const HandState &h = P.hand[role];
+		if (!h.valid) continue;
+		DVector3 at;
+		if (h.xrLoose >= 0) { int item = 0; if (!PhysicsLooseAt(h.xrLoose, item, at)) continue; }
+		else if (h.xrPick != nullptr && !(h.xrPick->ObjectFlags & OF_EuthanizeMe)) at = PickBoxMiddle(h.xrPick);
+		else continue;
+		const bool have = h.gripClosed || h.trigDown;
+		const double k = have ? 1.0 : 0.6 + 0.4 * (0.5 - 0.5 * cos(t * 6.0 * (M_PI / 180.0)));
+		static const float amber[3] = { 1.0f, 0.69f, 0.19f }, green[3] = { 0.25f, 1.0f, 0.44f };
+		const float *col = have ? green : amber;
+		EffectLights::FrameLight f;
+		f.A = { at.X, at.Y, at.Z };
+		f.B = f.A;
+		for (int ch = 0; ch < 3; ch++) f.Color[ch] = (float)(col[ch] * 0.9 * k);
+		f.Radius = 0.25 * upm;
 		f.Flags = 0;
 		EffectLights::Get().AddFrameLight(f);
 	}
