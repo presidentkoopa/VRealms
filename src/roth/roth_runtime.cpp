@@ -1874,6 +1874,8 @@ static void ReapplyWallFace(int fi, bool texturesChanged, bool midBand = false)
 	const int slotOfPart[3] = { tm.upperTexture, tm.midTexture, tm.lowerTexture };   // side_t::top, mid, bottom
 	for (int part = 0; part < 3; part++)
 	{
+		if (roth_chain_debug && !midBand && !(!wf.twoSided && part != side_t::mid) && slotOfPart[part] != 0xffff)
+			Printf("roth_chain:   face %d part %d: picture %d, the side wears engine %d\n", fi, part, slotOfPart[part], side.GetTexture(part).GetIndex());
 		if (!wf.twoSided && part != side_t::mid) continue;
 		if (midBand && part != side_t::mid) continue;
 		WallPieceShape &shape = reg.piece[part];
@@ -1921,6 +1923,10 @@ static void ReapplyWallFace(int fi, bool texturesChanged, bool midBand = false)
 
 		const WallPiece wp = WallPieceRule(wf, (WallTier)part, shape.dimU, shape.dimV);
 		WallEngineSetup we = WallToEngine(wf, (WallTier)part, wp, shape.dimU, shape.dimV, reg.texelLength);
+		if (roth_chain_debug)
+			Printf("roth_chain:   face %d part %d: picture %d (engine %d, %dx%d) %s; own %d..%d nbr %d..%d two-sided %d\n", fi, part,
+				slotOfPart[part], tex.GetIndex(), shape.dimU, shape.dimV, we.drawn ? (we.baked ? "drawn, baked" : "drawn") : "NOT DRAWN",
+				wf.ownFloor, wf.ownCeil, wf.nbrFloor, wf.nbrCeil, (int)wf.twoSided);
 		if (!we.drawn) continue;
 		if (we.baked)
 		{
