@@ -6587,21 +6587,98 @@ int RealmsToEngineXY(double x, double y, bool haveZ, double z, double &ex, doubl
 	return best;
 }
 
+// object_table_search (renderer.c:11190-11204) over one category list: the first record not disabled whose key is
+// the id. 1-based; 0 none.
+static uint16_t FindInCategory(int slot, uint16_t key)
+{
+	if (slot < 0 || slot >= 15) return 0;
+	for (uint16_t idx : g.map.categories[slot])
+	{
+		const Command *c = Rec(idx);
+		if (c != nullptr && !(c->modifier & 0x08) && c->key == key) return idx;
+	}
+	return 0;
+}
+
+// fire_trigger_on_contact (raw_commands.c:1673-1681), register_command_save_link (:1646-1669) and the gated tail
+// (:1650-1662), read whole: the chain from word[+4] after the flow pre-pass, the walk-in link latches (+0x06 & 0x40 /
+// & 0x20, the same globals twe_link_state keeps) and the one-shot (+0x06 & 0x10). The chain's sound is word[+0x0a],
+// at the warp coordinates when the caller set them (an object: its position), else unplaced.
+static int FireTriggerOnContact(uint16_t recIndex, bool havePos, int x, int y)
+{
+	Command *rec = Rec(recIndex);
+	if (rec == nullptr) return 0;
+	AActor *mo = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+	const int ps1 = (mo != nullptr && mo->Sector != nullptr) ? mo->Sector->sectornum + 1 : 0;
+	const uint8_t f6 = rec->fireFlags;
+	if (WalkChainFlow(g.map, rec->linkIndex) != 0)
+	{
+		g.walk.wordB = 0;
+		if (f6 & 0x20) { g.walk.buf = 0; g.walk.obj = recIndex; g.walk.wordA = ps1; }
+		return 0;
+	}
+	if (havePos) StageChainSoundAt(rec->Word(0x0A), x, y);
+	else StageChainSound(rec->Word(0x0A));
+	const bool fired = Fire(rec->linkIndex);
+	g.walk.wordB = 0;
+	if (f6 & 0x40) { g.walk.obj = recIndex; g.walk.wordB = ps1; }
+	else if (f6 & 0x20) { g.walk.buf = 0; g.walk.obj = recIndex; g.walk.wordA = ps1; }
+	if (fired && (f6 & 0x10)) { rec->modifier |= 0x08; SyncDisabled(rec); }
+	return -1;
+}
+
+// begin_object_command_chain (raw_commands.c:1712-1729, read whole): the object is the command source, its position
+// the warp coordinates, and the first live record of the object table's +0x24 list (the 0x1b records, category 7)
+// keyed to its id fires through exec_object_trigger (:1697-1710: not while +0x02 & 0x29).
 bool FireObjectChain(int rothSector, int rothIndex)
 {
 	if (!g.active || rothSector < 0 || (size_t)rothSector >= g.map.objects.size()) return false;
 	if (rothIndex < 0 || (size_t)rothIndex >= g.map.objects[rothSector].size()) return false;
-	const uint16_t key = g.map.objects[rothSector][rothIndex].commandID;
+	const Object &o = g.map.objects[rothSector][rothIndex];
 	g.activeObjectSector = rothSector;
 	g.activeObjectIndex = rothIndex;
 	g.activeFace = g.activeSector = -1;                   // raw_commands.c:1721-1722
-	for (const Command &c : g.map.commands)               // find_object_list24: the first live one
+	const uint16_t r = FindInCategory(7, o.commandID);
+	if (r == 0) return false;
+	const Command *rec = Rec(r);
+	if (rec == nullptr || (rec->modifier & 0x29)) return false;
+	return FireTriggerOnContact(r, true, o.x, o.y) != 0;
+}
+
+// fire_tracked_object_trigger (raw_commands.c:2966-2996, read whole). The record: the object table's +0x40 list (the
+// 0x39 records, category 14). +0x06 & 2 clear: fired as it is. Set: the object is retagged 0xc200 for the chain, the
+// first object still wearing 0xc200 afterwards gets its id back, and when the chain produced a result its +0x07
+// takes bit 0x80. Through exec_object_trigger_no_source (:1697-1709): not while +0x02 & 0x29; the warp unplaced.
+void FireTrackedObjectTrigger(int rothSector, int rothIndex)
+{
+	if (!g.active || rothSector < 0 || (size_t)rothSector >= g.map.objects.size()) return;
+	if (rothIndex < 0 || (size_t)rothIndex >= g.map.objects[rothSector].size()) return;
+	g.activeObjectSector = rothSector;
+	g.activeObjectIndex = rothIndex;
+	g.activeFace = g.activeSector = -1;
+	const uint16_t id = g.map.objects[rothSector][rothIndex].commandID;
+	const uint16_t r = FindInCategory(14, id);
+	if (r == 0) return;
+	const Command *rec = Rec(r);
+	if (rec == nullptr) return;
+	if (roth_trigger_debug)
+		Printf("roth_trigger: walked into object %d/%d (id %u): record #%u%s\n", rothSector, rothIndex, (unsigned)id, (unsigned)r,
+			(rec->fireFlags & 2) ? " (tracked)" : "");
+	if (!(rec->fireFlags & 0x02))
 	{
-		if ((c.opcode & 0x7f) != 0x1B || c.disabled || c.key != key) continue;
-		if (c.modifier & 0x29) return false;              // raw_commands.c:1704
-		return Fire(c.chainStart);
+		if (!(rec->modifier & 0x29)) FireTriggerOnContact(r, false, 0, 0);
+		return;
 	}
-	return false;
+	g.map.objects[rothSector][rothIndex].commandID = 0xc200;
+	const int res = (rec->modifier & 0x29) ? 0 : FireTriggerOnContact(r, false, 0, 0);
+	for (size_t si = 0; si < g.map.objects.size(); si++)
+		for (Object &o : g.map.objects[si])
+			if (o.commandID == 0xc200)
+			{
+				o.commandID = id;
+				if (res != 0) o.flags |= 0x80;
+				return;
+			}
 }
 
 bool RealmsDoorOpen(int rothSector)

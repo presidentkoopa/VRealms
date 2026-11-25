@@ -168,6 +168,9 @@ void SetPlayerPainFlash(int32_t v);
 // trigger keyed to its command id runs (the "hit by an attack" channel). Used
 // when a creature dies and when a shot lands on a shootable object.
 bool FireObjectChain(int rothSector, int rothIndex);
+// fire_tracked_object_trigger (raw_commands.c:2966-2996): the player walked into object (sector, index); the first
+// live 0x39 keyed to its id (the object table's +0x40 list) fires, through fire_trigger_on_contact.
+void FireTrackedObjectTrigger(int rothSector, int rothIndex);
 // Whether a Realms door sector's leaf is away from its closed place (swinging
 // or open) -- what the original's door pool holds (find_record_by_id,
 // renderer.c:1394), which decides whether its renderer looks through it.

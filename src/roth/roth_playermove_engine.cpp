@@ -19,6 +19,7 @@
 //
 
 #include "roth_playermove_engine.h"
+#include "roth_sound.h"   // SoundPlayPersistent (the landing thud)
 #include "roth_playermove.h"
 #include "roth_actors_engine.h"
 #include "roth_runtime.h"
@@ -82,7 +83,7 @@ namespace
 
 struct Host : PlayerMoveHost
 {
-	std::vector<std::pair<int, int>> obRef;   // ob offset / 16 -> (sector, index), for the log
+	std::map<uint32_t, std::pair<int, int>> obAt;   // an object's offset in ob -> its (sector, index) in the live map
 	void DamageDirect(uint32_t damage) override
 	{
 		ActorsDamagePlayerDirect(damage);
@@ -90,16 +91,17 @@ struct Host : PlayerMoveHost
 	}
 	void LandingSound(uint32_t sound) override
 	{
-		// start_persistent_looping_sound (player.c:292-295): not wired. 0x7fe50 is 0 in STUDY1's new
-		// game (tools/move_test INIT thud=0000), so the original plays nothing there either.
-		Printf("[roth_move] landing thud %u (not wired)\n", sound);
+		// start_persistent_looping_sound (player.c:292-295 -> audio.c:765-771): the landing thud, the 0x27283 effect
+		// body that SoundPlayPersistent ports.
+		SoundPlayPersistent(sound, 0);
 	}
 	void ContactTrigger(uint32_t ob) override
 	{
-		// fire_tracked_object_trigger (raw_commands.c:2974): not ported yet.
-		static uint32_t last = 0xffffffffu;
-		if (ob != last) Printf("[roth_move] contact trigger of object at ob+%x (fire_tracked_object_trigger: not wired)\n", ob);
-		last = ob;
+		// fire_tracked_object_trigger (raw_commands.c:2966-2996): the object the player walked into, by its place in
+		// the objects buffer this tic was built from (SyncWorld).
+		auto it = obAt.find(ob);
+		if (it == obAt.end()) { Printf("[roth_move] contact trigger of object at ob+%x: no such object in the live map\n", ob); return; }
+		FireTrackedObjectTrigger(it->second.first, it->second.second);
 	}
 };
 
@@ -201,7 +203,7 @@ void SyncWorld()
 	// sector's list offset, 0 = none), then each list: a count byte, a pad byte, 16 bytes an object
 	std::vector<uint8_t> &ob = pm.ob;
 	ob.assign(2 + (size_t)n * 2, 0);
-	g_move.host.obRef.clear();
+	g_move.host.obAt.clear();
 	std::map<std::pair<int, int>, uint32_t> where;
 	for (int i = 0; i < n && (size_t)i < m.objects.size(); i++)
 	{
@@ -221,6 +223,7 @@ void SyncWorld()
 			r[4] = o.textureIndex; r[5] = o.textureSource; r[6] = o.rotation; r[7] = o.flags; r[8] = o.light; r[9] = o.renderType;
 			put(0xa, (uint16_t)o.z); put(0xc, o.unk0C); put(0xe, o.commandID);
 			where[std::make_pair(i, (int)k)] = (uint32_t)ob.size();
+			g_move.host.obAt[(uint32_t)ob.size()] = std::make_pair(i, (int)k);
 			ob.insert(ob.end(), r, r + 16);
 		}
 	}
