@@ -342,6 +342,7 @@ bool PlayerMoveOwns(const player_t *player)
 }
 
 bool PlayerMoveOwnsTurnKeys() { return g_move.active; }
+int PlayerMoveSpeedAccum() { return (int)g_move.pm.speedAccum; }   // g_move_speed_accum (0x7e8d8): walk-in triggers' +0x07 & 4
 
 void PlayerMoveTakeCmd(player_t *player)
 {

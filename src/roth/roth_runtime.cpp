@@ -615,6 +615,14 @@ struct Runtime
 	// callback, so a per-tic comparison is the faithful mechanism and not an
 	// approximation of one.
 	std::map<int, int> lastSectorByPlayer;
+	// THE WALK-IN LINK STATE (twe_link_state / fire_sector_trigger, raw_commands.c:2848-2915, 3202-3270): the cell the
+	// player was last inside (g_state_link_buf_ptr; a sector as index + 1, a linked mid-platform as -(index + 1), 0
+	// none), the sector a "fire again on re-entry" record was left on (word_a, +0x06 & 0x20) and the sector a "fire on
+	// leaving" record latched (word_b, +0x06 & 0x40; -1 = left through the link's exit), and that record (obj_ptr, 1-based).
+	struct WalkLink { int buf = 0, wordA = 0, wordB = 0; uint16_t obj = 0; } walk;
+	// Each sector's link marker: its +0x17 byte as the map stores it, OR-ed at load with mark_geometry_records_by_id's
+	// mask for every 0x13 record keyed to its id (raw_commands.c:4994-5005: 0x40 water, 0x80 plain, 0xc0 linked).
+	std::vector<uint8_t> linkMark;
 
 	// Engine sidedef -> the polyobject tag of the door leaf it belongs to.
 	//
@@ -6180,6 +6188,8 @@ void EndLevel()
 	g.doorLeafRoomFace.clear();
 	g.doorSwing.clear();
 	g.lastSectorByPlayer.clear();
+	g.walk = Runtime::WalkLink();
+	g.linkMark.clear();
 	// NOT gPendingDoors. EndLevel runs DURING a map load, before BeginLevel
 	// (rothmap.cpp:215, "drop the previous level's logic before anything
 	// registers against this one"), so clearing the queue here would throw away
@@ -6859,24 +6869,143 @@ bool ActivateLine(line_t *line, AActor *who, int side, int activationType,
 //
 //==========================================================================
 
+int PlayerMoveSpeedAccum();   // roth_playermove_engine.cpp: the original's g_move_speed_accum (0x7e8d8)
+
+// THE MARKERS, once per level (the type-0x13 init handler, mark_geometry_records_by_id, raw_commands.c:4994-5005).
+static void BuildLinkMarks()
+{
+	g.linkMark.assign(g.map.sectors.size(), 0);
+	for (size_t si = 0; si < g.map.sectors.size(); si++) g.linkMark[si] = (uint8_t)((g.map.sectors[si].flags2 >> 8) & 0xc0);
+	for (const Command &c : g.map.commands)
+	{
+		if ((c.opcode & 0x7f) != 0x13 || c.key == 0) continue;
+		uint8_t mask = 0x40;
+		if (c.subFlags & 3) { mask = 0xc0; if (c.subFlags & 1) mask = 0x80; }
+		for (size_t si = 0; si < g.map.sectors.size(); si++)
+			if (g.map.sectors[si].commandID == c.key) g.linkMark[si] |= mask;
+	}
+}
+
+// find_object_record_by_id (raw_commands.c:5398-5412): the first record, in the table's order, not disabled (+0x02 & 8)
+// whose word[+8] is the id. Any opcode. 1-based; 0 none.
+static uint16_t FindObjectRecordById(uint16_t id)
+{
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		const Command &c = g.map.commands[i];
+		if (!(c.modifier & 0x08) && c.key == id) return (uint16_t)(i + 1);
+	}
+	return 0;
+}
+
+// fire_sector_trigger (raw_commands.c:2848-2915, read whole). -1 fired, 0 early-out.
+static int FireSectorRecord(uint16_t recIndex, AActor *mo, int ps1)
+{
+	Command *rec = Rec(recIndex);
+	if (rec == nullptr) return 0;
+	const uint8_t f6 = rec->fireFlags;
+	const bool gate = !(rec->modifier & 0x29) && !((rec->subFlags & 4) && PlayerMoveSpeedAccum() == 0);
+	if (gate && FacingAllows(f6, mo))
+	{
+		g.activeSector = mo->Sector != nullptr ? mo->Sector->sectornum : -1;
+		g.activeFace = -1;
+		g.activeObjectSector = g.activeObjectIndex = -1;
+		const uint16_t sound = rec->Word(0x0A);
+		if (WalkChainFlow(g.map, rec->chainStart) == 0)
+		{
+			if (roth_trigger_debug)
+				Printf("roth_trigger: walk-in record #%u (0x%02x, +6 0x%02x, +7 0x%02x) -> firing chain #%u\n", (unsigned)recIndex,
+					(unsigned)(rec->opcode & 0x7f), (unsigned)f6, (unsigned)rec->subFlags, (unsigned)rec->chainStart);
+			// :2873-2876, the position latched only for +0x07 & 4 (the warp sentinel otherwise: no position)
+			if ((rec->subFlags & 4) && mo != nullptr) StageChainSoundAt(sound, (int)floor(mo->X()), (int)floor(mo->Y()));
+			else StageChainSound(sound);
+			const bool fired = Fire(rec->chainStart);
+			g.walk.wordB = 0;
+			if (f6 & 0x40) { g.walk.obj = recIndex; g.walk.wordB = ps1; }
+			else if (f6 & 0x20) { g.walk.buf = 0; g.walk.obj = recIndex; g.walk.wordA = ps1; }
+			if (fired && (f6 & 0x10)) { rec->modifier |= 0x08; SyncDisabled(rec); }   // one-shot
+			return -1;
+		}
+	}
+	else if (roth_trigger_debug)
+		Printf("roth_trigger: walk-in record #%u refused (%s)\n", (unsigned)recIndex,
+			!gate ? ((rec->modifier & 0x29) ? "disabled / spent / registered (+2 & 0x29)" : "the player is not moving (+7 & 4)") : "facing");
+	// the early-out tail (:2905-2912)
+	g.walk.wordB = 0;
+	if (f6 & 0x20) { g.walk.buf = 0; g.walk.obj = recIndex; g.walk.wordA = ps1; }
+	return 0;
+}
+
+// twe_link_state (raw_commands.c:3202-3270, read whole), once a tic from the player's think. Replaces the port's
+// "fire every 0x13 on the sector the player changed into": the original fires ONE record (the first by the sector's
+// id), from any sector its marker reaches, again on entering another cell of the link, also on the first tic (its
+// buffer starts empty), on leaving the cell a +0x06 & 0x40 record latched, and only while inside the link's height
+// (water: at or below the floor; linked: standing on the mid-platform's top).
 void NotifyPlayerSector(int playerNum, AActor *mo)
 {
-	if (!g.active || mo == nullptr || mo->Sector == nullptr) return;
-
-	const int now = mo->Sector->sectornum;
+	if (!g.active || mo == nullptr || mo->Sector == nullptr || playerNum != consoleplayer) return;
+	const int si = mo->Sector->sectornum;
+	if (si < 0 || (size_t)si >= g.map.sectors.size()) return;
+	if (g.linkMark.size() != g.map.sectors.size()) BuildLinkMarks();
+	const int ps1 = si + 1;
 	auto it = g.lastSectorByPlayer.find(playerNum);
-	if (it == g.lastSectorByPlayer.end())
+	if (it == g.lastSectorByPlayer.end() || it->second != si)
 	{
-		// First sighting: remember where the player is, fire nothing.
-		g.lastSectorByPlayer[playerNum] = now;
+		g.lastSectorByPlayer[playerNum] = si;
+		if (roth_trigger_debug) Printf("roth_trigger: player %d entered sector %d\n", playerNum, si);
+	}
+	// leaving the latched link sector (:3204-3213)
+	if (g.walk.wordB != 0 && g.walk.wordB != ps1)
+	{
+		const Command *lr = Rec(g.walk.obj);
+		if (g.walk.obj != 0 && lr != nullptr && (lr->opcode & 0x7f) == 0x13)
+		{
+			if (roth_trigger_debug) Printf("roth_trigger: left the link of record #%u: fired again\n", (unsigned)g.walk.obj);
+			FireSectorRecord(g.walk.obj, mo, ps1);
+		}
+		g.walk.wordB = 0;
+	}
+	const uint8_t fl = g.linkMark[si];
+	if ((fl & 0xc0) == 0) { g.walk.buf = 0; return; }
+	const double pz = mo->Z();
+	int cell;
+	bool exitLink;
+	if (!(fl & 0x80)) { cell = ps1; exitLink = pz > (double)g.map.sectors[si].floorHeight; }      // water
+	else if (!(fl & 0x40)) { cell = ps1; exitLink = false; }                                     // plain
+	else
+	{
+		const int pi = g.map.sectors[si].platformIndex;                                         // linked
+		if (pi < 0 || (size_t)pi >= g.map.platforms.size()) return;
+		cell = -(pi + 1);
+		const double topZ = (double)g.map.platforms[pi].topZ;
+		exitLink = (pz > topZ) || (pz + 2.0 < topZ);
+	}
+	if (exitLink)
+	{
+		if (g.walk.wordB != 0) g.walk.wordB = -1;
+		g.walk.buf = 0;
 		return;
 	}
-	if (it->second == now) return;
-
-	it->second = now;
-	if (roth_trigger_debug)
-		Printf("roth_trigger: player %d entered sector %d\n", playerNum, now);
-	FireSectorTriggers(mo->Sector, mo, TrigEvent::SectorEnter);
+	if (cell == g.walk.buf) return;
+	g.walk.buf = cell;
+	uint16_t fire = 0;
+	if (g.walk.wordA != 0)
+	{
+		if (g.walk.wordA != ps1) g.walk.wordA = 0;
+		else
+		{
+			const Command *ar = Rec(g.walk.obj);
+			if (g.walk.obj == 0 || ar == nullptr) g.walk.wordA = 0;
+			else if ((ar->opcode & 0x7f) != 0x13) { g.walk.obj = 0; g.walk.wordA = 0; }
+			else { g.walk.wordA = 0; fire = g.walk.obj; g.walk.obj = 0; }
+		}
+	}
+	if (fire == 0)
+	{
+		fire = FindObjectRecordById(g.map.sectors[si].commandID);
+		if (fire == 0) return;
+	}
+	FireSectorRecord(fire, mo, ps1);
 }
 
 //==========================================================================
@@ -9509,6 +9638,11 @@ void CaptureMapLogic(MapLogicState &out)
 	s.activeObjectSector = g.activeObjectSector; s.activeObjectIndex = g.activeObjectIndex;
 	for (const auto &kv : g.movers) { s.movers.push_back(kv.first); s.movers.push_back(kv.second.first); s.movers.push_back(kv.second.second); }
 	for (const auto &kv : g.lastSectorByPlayer) { s.lastSectorByPlayer.push_back(kv.first); s.lastSectorByPlayer.push_back(kv.second); }
+	// the walk-in link state, as (negative key, value) pairs after the players' (no player is numbered below 0)
+	s.lastSectorByPlayer.push_back(-1); s.lastSectorByPlayer.push_back(g.walk.buf);
+	s.lastSectorByPlayer.push_back(-2); s.lastSectorByPlayer.push_back(g.walk.wordA);
+	s.lastSectorByPlayer.push_back(-3); s.lastSectorByPlayer.push_back(g.walk.wordB);
+	s.lastSectorByPlayer.push_back(-4); s.lastSectorByPlayer.push_back((int32_t)g.walk.obj);
 	s.dialogueLatch = g_dialogueLatch ? 1 : 0;
 	out = s;
 }
@@ -9554,7 +9688,16 @@ bool RestoreMapLogic(const MapLogicState &s)
 	g.movers.clear();
 	for (size_t k = 0; k + 2 < s.movers.size(); k += 3) g.movers[s.movers[k]] = { s.movers[k + 1], s.movers[k + 2] };
 	g.lastSectorByPlayer.clear();
-	for (size_t k = 0; k + 1 < s.lastSectorByPlayer.size(); k += 2) g.lastSectorByPlayer[s.lastSectorByPlayer[k]] = s.lastSectorByPlayer[k + 1];
+	g.walk = Runtime::WalkLink();
+	for (size_t k = 0; k + 1 < s.lastSectorByPlayer.size(); k += 2)
+	{
+		const int32_t key = s.lastSectorByPlayer[k], v = s.lastSectorByPlayer[k + 1];
+		if (key == -1) g.walk.buf = v;
+		else if (key == -2) g.walk.wordA = v;
+		else if (key == -3) g.walk.wordB = v;
+		else if (key == -4) g.walk.obj = (uint16_t)v;
+		else g.lastSectorByPlayer[key] = v;
+	}
 	g_dialogueLatch = s.dialogueLatch != 0;
 	return true;
 }
