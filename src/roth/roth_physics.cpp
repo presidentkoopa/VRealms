@@ -47,7 +47,6 @@ constexpr double kDt = 1.0 / 35.0;            // a game tic
 constexpr double kBlockedM = 0.004;           // further than this from its controller, the hand is drawn where it stopped
 constexpr double kBlockedDeg = 2.0;
 constexpr double kHitFelt = 0.35;             // m/s: a hit the hand feels
-constexpr double kGrabRadiusM = 0.08;         // the palm reaches a loose item this far from its surface
 constexpr double kReturnM = 10.0;             // a loose item this far from the player goes back into the pack
 const V3 kPalmPoint(0.045, 0.0, 0.0);         // where the palm grabs, in the hand frame
 constexpr double kStuckM = 0.25;              // a hand held this far from its controller (a forearm's depth into a wall) ...
@@ -629,30 +628,32 @@ bool PhysicsLetGo(int role, int item)
 	return true;
 }
 
-int PhysicsGrabLoose(int role)
+int PhysicsLooseCount() { return (int)S.loose.size(); }
+
+bool PhysicsLooseAt(int index, int &item, DVector3 &centre)
 {
-	if (!PhysicsOn() || role < 0 || role > 1) return 0;
+	if (index < 0 || index >= (int)S.loose.size() || S.world == nullptr) return false;
+	Pose bp;
+	if (!S.world->PoseOf(S.loose[index].body, bp)) return false;
+	item = S.loose[index].item;
+	centre = U(bp.p);
+	return true;
+}
+
+int PhysicsTakeLooseAt(int role, int index, bool keepPlace)
+{
+	if (!PhysicsOn() || role < 0 || role > 1 || index < 0 || index >= (int)S.loose.size()) return 0;
 	HandRec &h = S.hand[role];
-	if (h.body == phys::kNone) return 0;
-	Pose hp;
-	if (!S.world->HandPose(h.body, hp)) return 0;
-	double d = -1;
-	const phys::Id id = S.world->ItemNear(hp.Apply(kPalmPoint), kGrabRadiusM, &d);
-	if (id == phys::kNone) return 0;
-	for (size_t i = 0; i < S.loose.size(); i++)
-	{
-		if (S.loose[i].body != id) continue;
-		Pose bp;
-		if (!S.world->PoseOf(id, bp)) return 0;
-		const int item = S.loose[i].item;
-		h.pendingItem = item;
-		h.pendingRel = hp.Inverse() * bp;   // where it lies, in the hand: kept
-		S.world->Remove(id);
-		S.loose.erase(S.loose.begin() + i);
-		Printf("[roth_physics] %s hand takes loose item %d where it touched it (%.1f cm from the palm)\n", RoleName(role), item, d * 100.0);
-		return item;
-	}
-	return 0;
+	const Loose l = S.loose[index];
+	Pose bp, hp;
+	const bool havePoses = S.world->PoseOf(l.body, bp) && h.body != phys::kNone && S.world->HandPose(h.body, hp);
+	h.pendingItem = l.item;
+	if (keepPlace && havePoses) h.pendingRel = hp.Inverse() * bp;   // where it lies, in the hand: kept
+	else h.pendingItem = 0;                                          // flown in: the held model's own seat
+	S.world->Remove(l.body);
+	S.loose.erase(S.loose.begin() + index);
+	Printf("[roth_physics] %s hand takes loose item %d (%s)\n", RoleName(role), l.item, keepPlace ? "in reach: where it touched it" : "from range: it flies in");
+	return l.item;
 }
 
 AActor *PhysicsLooseActor(int index)

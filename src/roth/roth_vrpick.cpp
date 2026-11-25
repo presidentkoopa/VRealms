@@ -119,7 +119,8 @@
 //
 
 #include "roth_vrpick.h"
-#include "roth_physics.h"          // a let go drops the item; a free palm takes a loose one
+#include "roth_physics.h"          // a let go drops the item; the pickup takes a loose one
+#include "roth_img3d.h"            // Img3dWornMetres: a loose item flown in from range
 #include "roth_dbase100.h"   // roth_l1diff: the item an object is
 #include "roth_raw.h"        // roth_l1diff: the object record
 #include "roth_vrweapons.h"
@@ -208,7 +209,9 @@ struct HandState
 	// it was found by the ranged cone rather than the grab sphere
 	AActor     *xrPick = nullptr;
 	bool        xrRanged = false;
+	int         xrLoose = -1;          // ... or the loose item (roth_physics.h), by index
 	AActor     *xrLogged = nullptr;
+	int         xrLooseLogged = -1;
 
 	// THE BEAM (see THE BEAM below): on for a free hand; its ray, rigid with the hand
 	bool        beamOn = false;
@@ -859,39 +862,6 @@ void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
 
 
 
-// THE PICKER'S SQUEEZE (L2's last claim): D3 -- the touch (5 cm, the palm or the fingertip), else the point (the
-// extended index's ray; the tall wicks first), else the in-reach zone. Every one is L1's use (RulesUse's body: DoUse
-// behind the original's gate). 1: it went to a target (acted, or the original refused it: a double buzz); 0: nothing.
-// A LOOSE ITEM IN REACH OF A FREE PALM (roth_physics.h): taken where it was touched, and selected into this hand by
-// the original's own calls -- its cell onto the cursor, the cursor into the right hand (dialogue_ui.c:1768-1788,
-// 1722-1730) -- as the inventory panel would. While another item is in a hand the original selects only one: refused.
-bool TakeLoose(int role, HandState &h)
-{
-	Inventory *inv = InterfaceInventory();
-	InventorySink *sink = InterfaceInventorySink();
-	if (inv == nullptr || HandHoldsWeapon(role) || gL2[role].itemHeld) return false;
-	if (SelectedItem() > 0 && ItemHandRole() != role)
-	{
-		Printf("[roth_vrpick] %s hand: a loose item in reach, but item %d is in the other hand (the original holds one item at a time): refused\n",
-			RoleName(role), SelectedItem());
-		return false;
-	}
-	const int item = PhysicsGrabLoose(role);
-	if (item <= 0) return false;
-	const int slot = inv->FindSlotHolding(item);
-	if (slot < 0) { Printf("[roth_vrpick] %s hand took loose item %d, but the game no longer carries it\n", RoleName(role), item); return true; }
-	inv->PickUpToCursor(slot, sink);
-	inv->HeldToRightHand(sink);
-	gItemRole = role;
-	gItemSlot = inv->RightHand();
-	gItemId = gItemSlot >= 0 ? inv->Slot(gItemSlot).id : 0;
-	if (h.gripClosed) gL2[role].BeginPickup();
-	Printf("[roth_vrpick] %s hand TAKES loose item %d: selected by the original's calls (right hand slot %d)%s\n", RoleName(role), item,
-		inv->RightHand(), h.gripClosed ? ", HOLDING while the grip is closed" : "");
-	VRPickPickupLanded(role);
-	return true;
-}
-
 // THE BEAM (owner in the headset, 2026-11-24: "PUT A FUCKIN BEAM ON MY GOD DAMN HAND"). Godot XR Tools'
 // function_pointer.gd as it ships with show_laser SHOW and laser_length COLLIDE (:509-553): a laser out of every free
 // hand, always, drawn to where it meets something (else its full length), the thing it meets highlighted (THE GLOW).
@@ -968,7 +938,10 @@ void DrawWorldBeam(int role, HandState &h, AActor *pmo)
 // the original's use on it from this hand (DoUse), so the item flies in as before. Not XR Tools': the cone reaches as
 // far as the original's use does (planar 268 units, L1: reach stays the original's), not 5 m, and the thing must be
 // in the hand's sight (the original's pick from the palm meets nothing nearer); its middle is the pick box's.
-constexpr double kXRGrabM = 0.3, kXRRangedDeg = 5.0;
+// A LOOSE ITEM (one the player let go of: roth_physics.h) is pickable the same way, and is ours, not the original's
+// (it is already carried): its cone reaches XR Tools' own `ranged_distance`, 5 m, and taken from range it flies to
+// the hand (the pickup's fly-in, InterfaceFlyItemToHand).
+constexpr double kXRGrabM = 0.3, kXRRangedDeg = 5.0, kXRRangedM = 5.0;
 
 DVector3 PickBoxMiddle(AActor *mo)
 {
@@ -977,69 +950,144 @@ DVector3 PickBoxMiddle(AActor *mo)
 	return (lo + hi) * 0.5;
 }
 
+// In the hand's sight: the original's pick from the palm toward `mid` meets `target` (when it is an object), or
+// nothing nearer than it.
+bool InSight(const DVector3 &palm, const DVector3 &mid, AActor *target)
+{
+	DVector3 dir = mid - palm;
+	const double l = dir.Length();
+	if (l < 1e-6) return true;
+	dir /= l;
+	Pick p;
+	const bool hit = RulesPick(palm, dir, p, l + 8.0);
+	return !hit || (target != nullptr && p.kind == Pick::Prop && p.actor == target) || (p.hitPos - palm).Length() >= l - 8.0;
+}
+
 void UpdatePickup(int role, HandState &h, AActor *pmo, bool haveRay)
 {
 	h.xrPick = nullptr;
 	h.xrRanged = false;
+	h.xrLoose = -1;
 	if (!haveRay || pmo == nullptr || P.level == nullptr || !gL2[role].MayAct(hands::Owner::Picker) || HandHoldsWeapon(role)
 		|| gL2[role].itemHeld || HeldHandCarries(role))
 		return;
 	static PClassActor *prop = PClass::FindActor("LoaderProp");
-	if (prop == nullptr) return;
 	const double upm = UPM(), grab2 = (kXRGrabM * upm) * (kXRGrabM * upm), cosCone = cos(kXRRangedDeg * (M_PI / 180.0));
-	DVector3 fwd = h.handFwd;
-	if (fwd.Length() < 1e-6) fwd = h.dir;
-	AActor *bestGrab = nullptr, *bestRanged = nullptr;
-	double bestGrab2 = grab2, bestDot = cosCone;
-	auto it = P.level->GetThinkerIterator<AActor>(prop->TypeName);
-	AActor *mo;
-	while ((mo = it.Next()) != nullptr)
+	// the cone points where the beam does: the hand's own frame (THE BEAM), else the hand's forward
+	DVector3 o, fwd, r, u;
+	if (!VRHandPose_MapFrame(role, o, fwd, r, u)) fwd = h.handFwd;
+	if (fwd.Length() < 1e-6) return;
+	// the candidates: the original's pickable objects, and the loose items
+	struct Cand { AActor *mo; int loose; DVector3 mid; bool far; };
+	std::vector<Cand> cands;
+	if (prop != nullptr)
 	{
-		if ((mo->renderflags & RF_INVISIBLE) || mo->sprite <= 0 || !ObjectIsPickupItem(mo)) continue;
-		const DVector3 mid = PickBoxMiddle(mo);
-		const DVector3 d = mid - h.palm;
+		auto it = P.level->GetThinkerIterator<AActor>(prop->TypeName);
+		AActor *mo;
+		while ((mo = it.Next()) != nullptr)
+			if (!(mo->renderflags & RF_INVISIBLE) && mo->sprite > 0 && ObjectIsPickupItem(mo))
+			{
+				const DVector3 mid = PickBoxMiddle(mo);
+				// from range, only as far as the original's use reaches (L1)
+				cands.push_back({ mo, -1, mid, rules::BodyDepth(pmo->X(), pmo->Y(), mid.X, mid.Y) >= rules::kUseDepth });
+			}
+	}
+	for (int i = 0; i < PhysicsLooseCount(); i++)
+	{
+		int item = 0;
+		DVector3 c;
+		if (PhysicsLooseAt(i, item, c)) cands.push_back({ nullptr, i, c, (c - h.palm).Length() > kXRRangedM * upm });
+	}
+	// _get_closest_grab: the nearest middle inside the sphere; else _get_closest_ranged: the smallest angle in the cone
+	const Cand *best = nullptr;
+	double best2 = grab2;
+	for (const Cand &c : cands)
+	{
+		const DVector3 d = c.mid - h.palm;
 		const double d2 = d | d;
-		if (d2 < bestGrab2) { bestGrab2 = d2; bestGrab = mo; continue; }
-		if (bestGrab != nullptr) continue;
-		if (rules::BodyDepth(pmo->X(), pmo->Y(), mid.X, mid.Y) >= rules::kUseDepth) continue;   // beyond the original's use
-		const double l = sqrt(d2);
-		if (l < 1e-6) continue;
-		const double dp = (d / l) | fwd;
-		if (dp > bestDot) { bestDot = dp; bestRanged = mo; }
+		if (d2 < best2) { best2 = d2; best = &c; }
 	}
-	if (bestGrab != nullptr) { h.xrPick = bestGrab; h.xrRanged = false; }
-	else if (bestRanged != nullptr)
+	bool ranged = false;
+	if (best == nullptr)
 	{
-		// In the hand's sight: the original's pick from the palm toward it meets it, or nothing nearer.
-		const DVector3 mid = PickBoxMiddle(bestRanged);
-		DVector3 dir = mid - h.palm;
-		const double l = dir.Length();
-		dir /= l;
-		Pick p;
-		const bool hit = RulesPick(h.palm, dir, p, l + 8.0);
-		if (!hit || (p.kind == Pick::Prop && p.actor == bestRanged) || (p.hitPos - h.palm).Length() >= l - 8.0)
+		double bestDot = cosCone;
+		for (const Cand &c : cands)
 		{
-			h.xrPick = bestRanged;
-			h.xrRanged = true;
+			if (c.far) continue;
+			const DVector3 d = c.mid - h.palm;
+			const double l = d.Length();
+			if (l < 1e-6) continue;
+			const double dp = (d / l) | fwd;
+			if (dp > bestDot && InSight(h.palm, c.mid, c.mo)) { bestDot = dp; best = &c; }
 		}
+		ranged = best != nullptr;
 	}
-	if (h.xrPick != h.xrLogged)
+	if (best != nullptr)
 	{
-		if (h.xrPick != nullptr)
+		h.xrRanged = ranged;
+		if (best->loose >= 0) { h.xrLoose = best->loose; h.xrPick = PhysicsLooseActor(best->loose); }
+		else h.xrPick = best->mo;
+	}
+	if (h.xrPick != h.xrLogged || h.xrLoose != h.xrLooseLogged)
+	{
+		if (best != nullptr)
 		{
-			Printf("[roth_vrpick] %s hand's closest pickup (XR Tools): %s at %.2f m from the palm -- it glows; the grip takes it\n",
-				RoleName(role), h.xrRanged ? "in the 5-degree cone" : "in the 0.3 m grab sphere", (PickBoxMiddle(h.xrPick) - h.palm).Length() / upm);
+			Printf("[roth_vrpick] %s hand's closest pickup (XR Tools): %s%s at %.2f m from the palm -- it glows; the grip takes it\n",
+				RoleName(role), best->loose >= 0 ? "a loose item, " : "", ranged ? "in the 5-degree cone" : "in the 0.3 m grab sphere",
+				(best->mid - h.palm).Length() / upm);
 			Haptic(role, kTickAmp, kTickMs, "a pickup in reach: the light tick");
 		}
 		h.xrLogged = h.xrPick;
+		h.xrLooseLogged = h.xrLoose;
 	}
 }
 
-// The grip on the closest pickup (XR Tools' _on_grip_pressed): the original's use on it from this hand.
+// The grip on the closest pickup (XR Tools' _on_grip_pressed). An object: the original's use on it from this hand (it
+// flies in as the original's pickup does). A loose item: taken out of the world and selected into this hand by the
+// original's own calls (its cell onto the cursor, the cursor into the right hand: dialogue_ui.c:1768-1788,
+// 1722-1730); from range it flies in first. The original holds one item at a time: with another item in the other
+// hand, refused.
 bool PickupGrip(int role, HandState &h, AActor *pmo)
 {
+	if (pmo == nullptr) return false;
+	if (h.xrLoose >= 0)
+	{
+		Inventory *inv = InterfaceInventory();
+		InventorySink *sink = InterfaceInventorySink();
+		if (inv == nullptr) return false;
+		if (SelectedItem() > 0 && ItemHandRole() != role)
+		{
+			Printf("[roth_vrpick] %s hand: a loose item to take, but item %d is in the other hand (the original holds one item at a time): refused\n",
+				RoleName(role), SelectedItem());
+			Refused(role, "a loose item while the other hand holds one");
+			return true;
+		}
+		int item = 0;
+		DVector3 from;
+		PhysicsLooseAt(h.xrLoose, item, from);
+		AActor *drawn = PhysicsLooseActor(h.xrLoose);
+		const double yaw = drawn != nullptr ? drawn->Angles.Yaw.Degrees() : 0.0;
+		const bool ranged = h.xrRanged;
+		item = PhysicsTakeLooseAt(role, h.xrLoose, !ranged);
+		h.xrLoose = -1;
+		h.xrPick = nullptr;
+		if (item <= 0) return false;
+		const int slot = inv->FindSlotHolding(item);
+		if (slot < 0) { Printf("[roth_vrpick] %s hand took loose item %d, but the game no longer carries it\n", RoleName(role), item); return true; }
+		inv->PickUpToCursor(slot, sink);
+		inv->HeldToRightHand(sink);
+		gItemRole = role;
+		gItemSlot = inv->RightHand();
+		gItemId = gItemSlot >= 0 ? inv->Slot(gItemSlot).id : 0;
+		if (h.gripClosed) gL2[role].BeginPickup();
+		Printf("[roth_vrpick] %s hand TAKES loose item %d %s: selected by the original's calls (right hand slot %d)\n", RoleName(role), item,
+			ranged ? "from range (it flies in)" : "in reach", inv->RightHand());
+		if (ranged) InterfaceFlyItemToHand(role, item, from, drawn != nullptr ? Img3dWornMetres(drawn) : 0.0, yaw);   // lands: VRPickPickupLanded
+		else VRPickPickupLanded(role);
+		return true;
+	}
 	AActor *mo = h.xrPick;
-	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe) || pmo == nullptr) return false;
+	if (mo == nullptr || (mo->ObjectFlags & OF_EuthanizeMe)) return false;
 	Pick p;
 	p.kind = Pick::Prop;
 	p.actor = mo;
@@ -1075,7 +1123,6 @@ bool BackpackGrip(int role, HandState &h, AActor *pmo)
 int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
 {
 	if (BackpackGrip(role, h, pmo)) return 1;
-	if (TakeLoose(role, h)) return 1;
 	if (PickupGrip(role, h, pmo)) return 1;   // XR Tools' pickup: the closest pickable thing
 	// THE TALL WICKS (owner, Q13): the hand with the struck match points its flame at a wick in reach and grips.
 	if (haveRay && HeldMatchIn(role) && CandlesPointGrip(role, h.tip, h.dir)) return 1;
@@ -1289,7 +1336,7 @@ void TickHand(int role, AActor *pmo)
 		{
 			Pick p;
 			bool have = false;
-			if (h.xrPick != nullptr && !(h.xrPick->ObjectFlags & OF_EuthanizeMe))
+			if (h.xrPick != nullptr && h.xrLoose < 0 && !(h.xrPick->ObjectFlags & OF_EuthanizeMe))
 			{
 				p.kind = Pick::Prop;
 				p.actor = h.xrPick;

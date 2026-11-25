@@ -162,6 +162,9 @@ bool InterfaceObjectTakeable(int rothSector, int rothIndex);
 // (roth_vrpick.h VRPickPickupLanded). InterfaceFlyCount: fly-ins started so far (a use compares it before and after).
 // InterfaceFlyingTo: one is in the air toward that hand. InterfaceRetargetFly: aim the one in the air at another hand.
 void InterfacePickupHand(int role);
+// A loose item taken from range (roth_vrpick.cpp THE PICKUP): it flies from `from` to `role`'s hand as a pickup's
+// fly-in does (its model at `metres` turned `yaw`, else its picture) and lands there (VRPickPickupLanded).
+void InterfaceFlyItemToHand(int role, int item, const DVector3 &from, double metres, double yaw);
 int InterfaceFlyCount();
 bool InterfaceFlyingTo(int role);
 void InterfaceRetargetFly(int role);

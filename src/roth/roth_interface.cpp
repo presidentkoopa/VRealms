@@ -2516,6 +2516,19 @@ bool InterfaceObjectTakeable(int rothSector, int rothIndex)
 }
 
 void InterfacePickupHand(int role) { U.pendingFlyHand = role; }
+
+void InterfaceFlyItemToHand(int role, int item, const DVector3 &from, double metres, double yaw)
+{
+	if (!U.attached || U.db == nullptr) return;
+	const DbItem *rec = U.db->Item(item);
+	if (rec == nullptr) return;
+	U.pendingFlyHand = role;
+	U.pendingFlyMetres = metres;
+	U.pendingFlyYaw = yaw;
+	StartFly(from, (uint16_t)rec->renderId);
+	U.pendingFlyHand = -1;
+	U.pendingFlyMetres = 0;
+}
 int InterfaceFlyCount() { return U.fly.count; }
 bool InterfaceFlyingTo(int role) { return U.fly.active && U.fly.hand == role; }
 void InterfaceRetargetFly(int role) { if (U.fly.active) U.fly.hand = role; }

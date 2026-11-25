@@ -35,9 +35,12 @@ bool PhysicsOn();
 // when it should be stowed (over the shoulder, physics off, no model, a weapon).
 bool PhysicsLetGo(int role, int item);
 
-// A FREE HAND'S GRIP (roth_vrpick.cpp GripUse): the loose item within reach of `role`'s palm, taken out of the world
-// with its place in the hand kept; its item id, or 0.
-int PhysicsGrabLoose(int role);
+// THE LOOSE ITEMS FOR THE PICKUP (roth_vrpick.cpp THE PICKUP, XR Tools'): how many lie loose, the item and the body's
+// centre (map units) of each, and taking one out of the world into `role`'s hand -- `keepPlace` (in the grab sphere)
+// keeps where it was in the hand, else (from range: it flies in) the held model's own seat. Its item id, or 0.
+int PhysicsLooseCount();
+bool PhysicsLooseAt(int index, int &item, DVector3 &centre);
+int PhysicsTakeLooseAt(int role, int index, bool keepPlace);
 
 // A HAND ON A TRACK (roth_handworks.cpp, docs/VR_HANDWORKS.md): while `at` is set, `role`'s hand is held with its grip
 // at `at` (map units: the door's handle as the leaf turns, the point on a lever's arc, a key in its lock), turned as its
