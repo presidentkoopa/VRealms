@@ -6890,10 +6890,11 @@ static void BuildLinkMarks()
 // whose word[+8] is the id. Any opcode. 1-based; 0 none.
 static uint16_t FindObjectRecordById(uint16_t id)
 {
-	for (size_t i = 0; i < g.map.commands.size(); i++)
+	// the list at the object table's +0x14 / +0x16: category slot 3 (roth_raw.cpp)
+	for (uint16_t idx : g.map.categories[3])
 	{
-		const Command &c = g.map.commands[i];
-		if (!(c.modifier & 0x08) && c.key == id) return (uint16_t)(i + 1);
+		const Command *c = Rec(idx);
+		if (c != nullptr && !(c->modifier & 0x08) && c->key == id) return idx;
 	}
 	return 0;
 }
@@ -6911,15 +6912,15 @@ static int FireSectorRecord(uint16_t recIndex, AActor *mo, int ps1)
 		g.activeFace = -1;
 		g.activeObjectSector = g.activeObjectIndex = -1;
 		const uint16_t sound = rec->Word(0x0A);
-		if (WalkChainFlow(g.map, rec->chainStart) == 0)
+		if (WalkChainFlow(g.map, rec->linkIndex) == 0)   // word[+4] (ax), whatever the record
 		{
 			if (roth_trigger_debug)
 				Printf("roth_trigger: walk-in record #%u (0x%02x, +6 0x%02x, +7 0x%02x) -> firing chain #%u\n", (unsigned)recIndex,
-					(unsigned)(rec->opcode & 0x7f), (unsigned)f6, (unsigned)rec->subFlags, (unsigned)rec->chainStart);
+					(unsigned)(rec->opcode & 0x7f), (unsigned)f6, (unsigned)rec->subFlags, (unsigned)rec->linkIndex);
 			// :2873-2876, the position latched only for +0x07 & 4 (the warp sentinel otherwise: no position)
 			if ((rec->subFlags & 4) && mo != nullptr) StageChainSoundAt(sound, (int)floor(mo->X()), (int)floor(mo->Y()));
 			else StageChainSound(sound);
-			const bool fired = Fire(rec->chainStart);
+			const bool fired = Fire(rec->linkIndex);
 			g.walk.wordB = 0;
 			if (f6 & 0x40) { g.walk.obj = recIndex; g.walk.wordB = ps1; }
 			else if (f6 & 0x20) { g.walk.buf = 0; g.walk.obj = recIndex; g.walk.wordA = ps1; }
@@ -9274,6 +9275,22 @@ void TickLevelLogic(FLevelLocals *level)
 	HandsTick(level);
 	// Which Realms objects RSQ Distance Grab may take (roth_grabglue.h): the original's pickup items only.
 	GrabGlueTick(level);
+
+	// WHAT THE LOGIC ASKED FOR AND THIS PORT COULD NOT DO (g.unhandledOps; docs/PORT_GAPS.md 13): a line each time a
+	// count grows, so a session's log says which opcodes the original ran that ours refused. Once a second.
+	if ((level->maptime % 35) == 0)
+	{
+		static std::map<uint8_t, int> reported;
+		static FLevelLocals *reportedLevel = nullptr;
+		if (reportedLevel != level) { reported.clear(); reportedLevel = level; }
+		for (const auto &kv : g.unhandledOps)
+			if (reported[kv.first] != kv.second)
+			{
+				Printf("[roth_logic] NOT DONE: opcode 0x%02x refused %d time(s) on this map so far (docs/PORT_GAPS.md)\n",
+					(unsigned)kv.first, kv.second);
+				reported[kv.first] = kv.second;
+			}
+	}
 
 	// THE INVENTORY SCREEN PAUSES THE WORLD, as the original's does (owner,
 	// 2026-11-13: "pause like the original"). With the panel up the original's

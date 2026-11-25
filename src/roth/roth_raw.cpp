@@ -339,7 +339,12 @@ Map ParseRaw(const uint8_t *data, size_t size)
 		r.U16();                               // unknown
 		r.U16();                               // commands offset
 		const uint16_t commandCount = r.U16();
-		for (int i = 0; i < 15; i++) { r.U16(); r.U16(); }   // category slots
+		// THE FIFTEEN CATEGORY SLOTS: (offset of a list of record offsets, count), both relative to this section --
+		// the object table header's +0x08 .. +0x44 (0x85c30). The original searches them, not the whole table: slot 0
+		// the left-click objects (run_leftclick_object_trigger, +0x08/+0x0a), slot 3 the records find_object_record_by_id
+		// scans (+0x14/+0x16, raw_commands.c:5398-5412: the walk-in channel). Read after the records, below.
+		uint16_t slotOff[15], slotCount[15];
+		for (int i = 0; i < 15; i++) { slotOff[i] = r.U16(); slotCount[i] = r.U16(); }
 
 		std::vector<uint16_t> entryOffsets;
 		entryOffsets.reserve(commandCount);
@@ -387,6 +392,21 @@ Map ParseRaw(const uint8_t *data, size_t size)
 			auto it = commandByOffset.find(off);
 			if (it != commandByOffset.end()) map.entryPoints.push_back(it->second);
 		}
+
+		const size_t afterRecords = r.Tell();
+		for (int k = 0; k < 15; k++)
+		{
+			map.categories[k].clear();
+			if (slotCount[k] == 0) continue;
+			r.Seek(commandsBase + slotOff[k]);
+			for (int i = 0; i < slotCount[k] && !r.Bad(); i++)
+			{
+				const uint16_t off = r.U16();
+				auto it = commandByOffset.find(off);
+				map.categories[k].push_back(it != commandByOffset.end() ? it->second : 0);
+			}
+		}
+		r.Seek(afterRecords);
 	}
 
 	// ---- sound nodes ------------------------------------------------------

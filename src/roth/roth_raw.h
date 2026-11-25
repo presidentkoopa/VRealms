@@ -272,6 +272,9 @@ struct Map
 	std::vector<Command> commands;
 	// Where the game starts executing: 1-based indices into commands.
 	std::vector<uint16_t> entryPoints;
+	// The command section's fifteen category lists (1-based record indices, 0 where an offset named no record), in
+	// the file's order: the subsets the original searches (see the slot note in roth_raw.cpp).
+	std::vector<uint16_t> categories[15];
 
 	// Face record file offset -> face index. Offsets in this format are absolute
 	// file positions used as foreign keys, and MOST commands name geometry by a
