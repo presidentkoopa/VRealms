@@ -255,7 +255,8 @@ FTextureID TextureSet::Sprite(int index, Log *log, SpriteInfo *info)
 				addFrame(img.frames[f], ObjectFrameName(mName, index, f).GetChars());
 				mSpritesRegistered++;
 			}
-			TexAnim.AddSimpleAnim(id, frames, img.rle ? (uint32_t)OBJECT_ANIM_FRAME_MS : ObjectAnimFrameMs(img.rate));
+			if (TexAnim.AddSimpleAnim(id, frames, img.rle ? (uint32_t)OBJECT_ANIM_FRAME_MS : ObjectAnimFrameMs(img.rate)) == nullptr && log)
+				log->Count("objects: animations the engine REFUSED (AreTexturesCompatible)");
 			// The texture-animation trigger (0x25, roth_runtime.h): the rwss resolver's sprite driver reaches the hook too
 			// (renderer.c:13213). Not the RLE variant (roth_texture.cpp says why), nor the shared pack (IsLevelPack).
 			if (mLevelPack && !img.rle) RegisterAnimFrames(index, id, frames);

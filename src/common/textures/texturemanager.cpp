@@ -565,6 +565,11 @@ bool FTextureManager::AreTexturesCompatible (FTextureID picnum1, FTextureID picn
 			return (index2 >= FirstTextureForFile[i] && index2 < FirstTextureForFile[i+1]);
 		}
 	}
+	// [ROTH] Textures added after Init (a Realms map's pictures, registered at map load) are past the last marker:
+	// one block of their own, as the custom textures are. Without this every AddSimpleAnim on them failed, so no
+	// Realms wall, flat or object picture ever animated.
+	if (FirstTextureForFile.Size() > 0 && index1 >= FirstTextureForFile.Last() && index2 >= FirstTextureForFile.Last())
+		return true;
 	return false;
 }
 
