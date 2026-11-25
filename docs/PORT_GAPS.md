@@ -1,0 +1,28 @@
+# What of ROTH.C's game logic is not ported (2026-11-24)
+
+Gathered from the port's own code: the gaps it records in its comments, and every place that counts a record into
+`g.unhandledOps` (src/roth/roth_runtime.cpp). The load report's "instruction records by opcode" table in
+`roth_<MAP>.log` is STALE: it lists 0x15 0x16 0x1e 0x1f 0x20 0x27 0x29 0x2a 0x2b 0x2d 0x2e 0x33 0x35 0x3a 0x3c 0x3f
+as "NOT IMPLEMENTED", but RunCommandWithChain dispatches every one of them now (the item opcodes, dialogue, the
+command core, the actor commands). Its `IsImplemented` flags were never updated. Fixing the report is item 0.
+
+None of the "dispatched" opcodes has been differential-tested against the original as a whole; the suites in
+CLAUDE.md cover parts of them.
+
+| # | What | Where it shows in the game | Source (ROTH.C) | Port (file:line) |
+|---|------|----------------------------|-----------------|------------------|
+| 0 | The load report's opcode table says 213 records are not implemented; it is stale | the log only | -- | roth_runtime.cpp IsImplemented |
+| 1 | 0x03 modify-sector, the ASCENDING sweep: its targets are a snapshot read through record +0x10 that the port never located | the lounge typewriter's page does not rise (#112); any floor that rises back | raw_commands.c:2590-2760 (tick_modify_sector, asc. branches) | roth_runtime.cpp TickModifySector |
+| 2 | A sector's TEXTURE_MAP_OVERRIDE (+0x0c) changed at run time is never redrawn: the loader bands the mid piece once | the typewriter page, any transparent mid an effect resizes | renderer.c:8201-8212 (via roth_surface.cpp:277) | rothmap.cpp makeSide; roth_runtime.cpp ReapplyWallFace does not read it |
+| 3 | Walk-in triggers: the LEAVE edge (re-fire of the latched record, bit 0x40 of +0x06) | chains meant to run on leaving a room | raw_commands.c:3204-3213 | roth_runtime.cpp NotifyPlayerSector |
+| 4 | Walk-in triggers: the "only while moving" gate (+0x07 & 4) and the +0x02 0x29 gate | a trigger firing while standing still / when armed-gated | fire_sector_trigger :2869-2871 | NotifyPlayerSector |
+| 5 | Walk-in triggers: the original fires ONE record per entry (the first for the sector's id); the port fires every 0x13 on the sector | STUDY1 s430 runs two | :3262-3266 | FireSectorTriggers |
+| 6 | Walk-in triggers: nothing fires on the first sighting (the spawn sector); the original's buffer starts empty, so it does | a chain on the starting sector | :3240-3266 | NotifyPlayerSector |
+| 7 | Wall-face click triggers (0x18/0x32): the direction mask dir_mask1 | a switch usable from a side the original refuses | raw_commands.c:3012, :3029 | roth_runtime.cpp:486-492 |
+| 8 | Floor click category-B twin: dir_mask2 | -- | :3100 | roth_runtime.cpp:499 |
+| 9 | The authored bounding box on click triggers (+0x0c..+0x12) | a use from outside its authored area | :3034-3038, :3075-3079 | roth_runtime.cpp:501 |
+| 10 | The transparency flip of a texture swap (face +0x0a bit 0) | a glass / grille that should turn solid or see-through | raw_commands.c (0x34) | roth_runtime.cpp:1777 |
+| 11 | The 0x40 / 0x20 state-link latches of the click channels | -- | RC:1635-1644 | roth_runtime.cpp:7630 |
+| 12 | 0x09 moving sector, only with `roth_platforms 1` (sliding sectors need moving vertices) | sliding floors / lifts sideways, 32 records game-wide | the 0x09 tick | roth_runtime.cpp:4786 |
+| 13 | Runtime refusals counted, each a case the port cannot draw: 0x34 / 0x0c on an index the loader never registered; 0x0a/0x0b with no flat registered; 0x0d / 0x02 with no sprite built for the word; 0x24 with no active-object latch; 0x23 deeper than 16 host chains | a texture or sprite change that does not show | -- | roth_runtime.cpp:1903, 3273, 3286, 2907, 7369, 2292, 4997 |
+| 14 | A baked wall piece keeps its load-time shift when the runtime scrolls or swaps it (no re-bake at run time) | a scrolled or swapped wall that does not move | -- | roth_runtime.cpp ReapplyWallFace (wallBakedKept) |
