@@ -5,18 +5,11 @@
 // hands (roth_vrpick.h VRPickHandNow) and what each one does. EVERY ONE ENDS IN ONE OF THE ORIGINAL'S CLICKS
 // through the picker's own paths, or in a haptic only:
 //
-//   THE PUNCH (Q6)        a closed fist that holds no weapon, swung at speed (RSQ Melee's reader) into
-//                         something: the ORIGINAL's secondary click on what it met (roth_handclick.h: the
-//                         cursor's type there) -- an attack target (a creature, breakable glass) gets the
-//                         original's attack aimed at the contact (ActorsRequestFireAt: the weapon tick's
-//                         trigger_weapon_fire, Adam's fists, the original's damage); a usable thing (a switch,
-//                         a door) the original's use (VRPickUseAt). Speed only decides whether it counts.
-//   THE KNOCK (Q3)        two light raps of an open, empty hand on one surface or object: the original's
-//                         examine of it (VRPickExamineAt: the same path as the trigger's), a light haptic.
-//   THE ATTEMPTS (Q4)     where the original has only an examine line for something a hand can try: the try
-//                         (push in, tug, press, wave) plays that examine (VRPickExamineAt) with a haptic and no
-//                         new outcome. Zones from the original's own objects, art and sectors (the table in
-//                         roth_gestures.cpp: chapter 1's cases), and the palm sweeping a door leaf.
+//   THE PUNCH (Q6)        a closed fist that holds no weapon, swung at speed (RSQ Melee's reader) into an
+//                         attack target (a creature, breakable glass): the original's attack aimed at the contact
+//                         (ActorsRequestFireAt: Adam's fists, the original's damage). Blows are combat only: using
+//                         and examining are the hands' one system (roth_vrpick.cpp, XR Tools' pickup and pointer;
+//                         owner 2026-11-24). The knock and the attempts are gone.
 //   THE WARD TINGLE (Q9)  a palm nearing a glowing ward (the pentagrams DEMO[4207] / DEMO[4208], the sigil
 //                         ADEMO[232]): a faint haptic that grows. Haptic only.
 //   THE TALL WICKS (Q13)  the picker's grip (roth_vrpick.cpp) -> CandlesPointGrip (roth_candles.h).
@@ -48,7 +41,7 @@ void GesturesEndLevel();
 void GesturesHoldReach(int role, bool tip, double wx, double wy, double wz, double lx, double ly, double lz);
 
 // A test instrument (roth_worldtest hold, roth_worldhands.cpp): the test is carrying hand `role` to its place this tic
-// (the controller pose corrected toward a target); for two tics nothing of its motion counts (no punch, knock or try),
+// (the controller pose corrected toward a target); for two tics nothing of its motion counts (no punch),
 // as a hand placed by roth_gesturetest. Not a rule of the game.
 void GesturesTestPlacing(int role);
 
