@@ -17,6 +17,19 @@
   the frame; which caller does so for a wall is not read) and the candles' composed pictures.
 - Tools: tools/port_audit/audit.py writes docs/PORT_AUDIT.md, every ROTH.C function against the port.
 
+- Contact triggers (cd05bec8): fire_trigger_on_contact's latches and one-shot; walking into an object; the landing
+  thud plays. Movement differential against the original: 0 differ.
+
+## Still open, beyond the logic (from docs/PORT_AUDIT.md; to be read function by function)
+
+- automap.c: 19 functions, none named in the port. The original's map screen.
+- savegame.c: 25 of 33 not named. The original's save files (SAVE<n>.SAV) are read (roth_gameflow); writing them is
+  this port's own format.
+- gdv_cutscene.c 46, audio.c 52, input.c 42, menu_hud_ui.c 17, doors.c 13, map_load.c 19 not named: each to be read.
+- 0x25 (a texture animation's frame fires a chain; 11 records, 5 maps): needs whether the picture is drawn this frame,
+  which the engine does not report per texture.
+- Sliding sectors (0x09, 32 records, 5 maps) are behind roth_platforms, off by default.
+
 ## The whole game (all 44 maps, read from the retail .RAW files with roth_raw; 2026-11-24)
 
 Every INSTRUCTION opcode the 44 maps use is dispatched by the port (roth_runtime RunCommand / RunCommandWithChain, the
@@ -25,10 +38,10 @@ it. What is NOT ported game-wide:
 
 | Trigger channel | Records | Maps | What it is |
 |---|---|---|---|
-| 0x1b | 95 | 27 | an attack or shot hitting an OBJECT |
+| 0x1b | 95 | 27 | a shot hitting an OBJECT: was ported (creature death, a creature's shot); cd05bec8 adds the original's latches and one-shot, and the +0x24 list. Not checked: that every player weapon of VRealms reaches it |
 | 0x25 | 11 | 5 | a texture animation's frame (DOMINION MAS3 RAQUIA5 STUDY1 STUDY3) |
 | ~~0x3d~~ | 15 | 11 | a timer: PORTED 778ab873 |
-| 0x39 | 1 | 1 | walking into an object (RAQUIA5) |
+| ~~0x39~~ | 1 | 1 | walking into an object (RAQUIA5): PORTED cd05bec8 (fire_tracked_object_trigger, from the movement's bump) |
 | 0x09 instructions | 32 | 5 | sideways-sliding sectors, only with roth_platforms 1 (OPTEMP1 RAQUIA2 RAQUIA3 RAQUIA5 SALVAT) |
 | 0x16 / 0x3a / 0x3c | 481 | 28 | creature spawn / id / spawn-adv: dispatched only while the actors system is active |
 
