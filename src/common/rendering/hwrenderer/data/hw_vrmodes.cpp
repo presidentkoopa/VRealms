@@ -1592,7 +1592,7 @@ void VRMode::SetUp() const
 			// published here every rendered frame as the device's are, not reset to the body below. The playsim
 			// publishes them each tic (p_user.cpp); without this, every frame drawn between tics put OffhandPos /
 			// AttackPos back at the body in flat, and whatever read them before the next player think -- a network
-			// event -- saw the body, not the hand.
+			// event (RSQ Distance Grab's walk-up grip, near.zs NetworkProcess) -- saw the body, not the hand.
 			const bool poseTest = VRPoseTest_Active();
 			player->mo->OverrideAttackPosDir = !puristmode && (IsVR() || vr_override_weap_pos || poseTest);
 			if (poseTest && !IsVR())

@@ -2489,8 +2489,8 @@ bool InterfaceObjectAction(AActor *mo, int rothSector, int rothIndex, bool use)
 // give_item_by_dbase_id's choice of item (roth_inventory.cpp GiveItemByRenderId, inventory.c:348-362: a render
 // id of at least 0x200, an item record wearing it, not marked unpickable, not an INFO entry). What it leaves
 // out is what can only be known by trying -- the pickup lock while an item still flies (:1055) and GiveItem's
-// own answer -- so a pickup still goes through the original's use (roth_vrpick.h RulesUse) and can be
-// refused there. Read by ObjectIsPickupItem (roth_runtime.h): the VR pickup's flight to the hand.
+// own answer -- so a catch still goes through the original's use (roth_vrpick.h VRPickTakeCaught) and can be
+// refused there. For RSQ Distance Grab: only such an object is offered to it (roth_grabglue.cpp).
 bool InterfaceObjectTakeable(int rothSector, int rothIndex)
 {
 	if (!U.attached || U.db == nullptr || U.core == nullptr) return false;

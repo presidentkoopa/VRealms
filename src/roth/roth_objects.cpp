@@ -38,7 +38,7 @@
 #include "roth_texture.h"
 #include "roth_log.h"
 #include "roth_img3d.h"
-#include "roth_dbase100.h"    // TheDbase100, loaded with the first map's objects
+#include "roth_dbase100.h"    // TheDbase100: which objects are items (Pending::plainPicture)
 #include "roth_inventory.h"   // IsItemIdPickable
 #include "roth_actors_engine.h"   // ActorsBindLoadedObjects
 
@@ -219,6 +219,13 @@ struct Pending
 	uint16_t renderId = 0;
 	uint8_t  rotation = 0;
 	bool     fixedAngle = false;
+	// A PICTURE OBJECT THAT IS AN ITEM: its render id is a pickable inventory record's (is_item_id_pickable), and
+	// +9 has neither type-4 refusal (0x12). Whatever its command id: most Realms items carry one, and their use
+	// record's chain gives them (0x29). Spawned as RealmsTakeable (wadsrc/static/zscript/actors/realmsgrab.zs),
+	// which draws and behaves exactly as LoaderProp until the runtime finds the original's use picks it up
+	// (roth_runtime.h ObjectIsPickupItem, roth_grabglue.cpp) -- then RSQ Distance Grab may take it. Meshes stay
+	// LoaderProp: their model frames are bound to that class.
+	bool   plainPicture = false;
 };
 
 std::vector<Pending> gPending;
@@ -258,11 +265,21 @@ PClassActor *PropClass()
 	return cls;
 }
 
-// Is this a Realms prop actor?
+// A picture object that is an item (Pending::plainPicture): realmsgrab.zs. Falls back to
+// LoaderProp if the class is missing, so a pk3 without it spawns exactly as before.
+PClassActor *TakeableClass()
+{
+	static PClassActor *cls = nullptr;
+	if (cls == nullptr) cls = PClass::FindActor("RealmsTakeable");
+	return cls != nullptr ? cls : PropClass();
+}
+
+// Is this a Realms prop actor (either class)?
 bool IsPropActor(const AActor *mo)
 {
-	PClassActor *a = PropClass();
-	return mo != nullptr && a != nullptr && mo->GetClass() == a;
+	if (mo == nullptr) return false;
+	PClassActor *a = PropClass(), *b = TakeableClass();
+	return (a != nullptr && mo->GetClass() == a) || (b != nullptr && mo->GetClass() == b);
 }
 
 } // namespace
@@ -682,8 +699,8 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 	ClearAddedSpriteModelFrames();
 	Img3dNewLoad();   // the item models' bindings went with the frames
 	// DBASE100 is game-global (ROTH.C loads it once at startup, game_core.c:1060); BeginLevel loads it on the first
-	// map, which is AFTER this. Loaded here first, the same call, so BeginLevel finds it loaded and every reader of
-	// it from here on (the item models, the objects' items) has it on the first map too.
+	// map, which is AFTER this. Which objects are items (Pending::plainPicture) needs it now: loaded here first, the
+	// same call, so BeginLevel finds it loaded. (STUDY1 is the first map: without this none of its items was one.)
 	if (!TheDbase100().IsLoaded())
 		LoadDbase100FromInstall(TheInstall(), TheDbase100(), log);
 
@@ -1201,6 +1218,8 @@ void PrepareObjects(const Map &rm, TextureSet &levelArt, Log *log)
 			}
 			}
 
+			p.plainPicture = !p.isMesh && (o.renderType & 0x12) == 0 && TheDbase100().IsLoaded()
+				&& IsItemIdPickable(TheDbase100(), (int32_t)(uint16_t)(o.textureIndex | (o.textureSource << 8)));
 			gPending.push_back(p);
 		}
 	}
@@ -1405,7 +1424,7 @@ void RebindObjectActors(FLevelLocals *Level)
 	int found = 0;
 	while ((mo = it.Next()) != nullptr)
 	{
-		if (!IsPropActor(mo) || mo->special2 == 0) continue;
+		if (!IsPropActor(mo) || mo->special2 == 0) continue;   // LoaderProp or RealmsTakeable
 		const uint32_t key = (uint32_t)(mo->special2 - 1);
 		gObjectActors[key] = mo;
 		gActorObjects[mo] = key;
@@ -1437,7 +1456,7 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 	int spawned = 0, failed = 0, wrongSector = 0, outsideSpan = 0, modelled = 0;
 	for (const Pending &p : gPending)
 	{
-		AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
+		AActor *mo = AActor::StaticSpawn(Level, (p.plainPicture && p.rothIndex >= 0) ? TakeableClass() : cls, DVector3(p.x, p.y, p.z), NO_REPLACE);
 		if (mo == nullptr) { failed++; continue; }
 
 		// So the level logic can find this prop again. See FindObjectActor. A
@@ -1536,10 +1555,10 @@ void SpawnPreparedObjects(FLevelLocals *Level)
 //
 //==========================================================================
 
-AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z)
+AActor *SpawnObjectActor(FLevelLocals *Level, int rothSector, int rothIndex, double x, double y, double z, bool item)
 {
 	if (Level == nullptr || rothSector < 0 || rothIndex < 0) return nullptr;
-	PClassActor *cls = PropClass();
+	PClassActor *cls = item ? TakeableClass() : PropClass();
 	if (cls == nullptr) return nullptr;
 	AActor *mo = AActor::StaticSpawn(Level, cls, DVector3(x, y, z), NO_REPLACE);
 	if (mo == nullptr) return nullptr;

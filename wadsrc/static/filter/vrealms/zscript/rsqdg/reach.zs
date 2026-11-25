@@ -1,0 +1,564 @@
+// WHERE A HAND IS AND WHERE IT POINTS, on stock QuestZDoom 17.3.
+//
+// Everything in this file is a read. Nothing here decides anything, nothing here
+// writes to the playsim, and that is deliberate: the geometry is asked the same
+// question by the cone, the lock, the carry and the visuals, and if any of them
+// derived it a second way they would disagree about where your hand is. That
+// disagreement reads in a headset as the aim being randomly off, which is
+// unfalsifiable from inside the game and cost the desktop build a night.
+//
+// STOCK, NOT THE FORK. The desktop original reads `level.HandPos`,
+// `pmo.MainHandRoll` and a palm bone through `TransformByNamedBone`. None of
+// those exist here. The replacements are not approximations -- QuestZDoom's
+// OpenXR layer writes the REAL controller pose into AttackPos/OffhandPos
+// (hw_openxrdevice.cpp:593-608, from weaponoffset/offhandoffset), so the stock
+// fields are the authoritative hand position rather than a fallback.
+class RSQDG_Reach
+{
+	// ---- the hand's own axes ------------------------------------------------
+	//
+	// Yaw is stored MINUS 90 DEGREES and pitch is stored NEGATED. Both are
+	// engine conventions, not ours, and both are visible in stock's own
+	// consumers -- weaponmace.zs:69-79 does exactly this conversion, and the
+	// base writer at hw_vrmodes.cpp:443-444 sets `AttackAngle = viewYaw - 90`
+	// and `AttackPitch = -viewPitch`, which fixes the convention beyond doubt:
+	// viewPitch is Doom's (positive DOWN), so AttackPitch is positive UP. Undo
+	// the yaw offset; take the pitch as it is for vectors, negate it only for
+	// engine calls that want Doom's sense (DoomPitch). (Negating it for vectors
+	// too was the 2026-10-26 upside-down bug -- see Pitch.)
+	//
+	// Getting either wrong puts the tested volume and the drawn ray on opposite
+	// sides of the hand, so the conversion lives HERE, once, and nothing else
+	// in the package touches the raw fields.
+	static double Yaw(PlayerPawn pmo, int hand)
+	{
+		return ((Ctrl(pmo, hand) == 0) ? pmo.AttackAngle : pmo.OffhandAngle) + 90;
+	}
+
+	// THE CONTROLLER PLAYING A HAND'S PART. RSQ_Accessibility's Off-Hand Modifier (One-Handed):
+	// while it is held the off hand's part -- its reach, its lock, its catch -- is played by the
+	// main controller, and the main hand's own part stands down (HandBusy), so one controller is
+	// never two hands at once. Without it (or off) a hand is its own controller.
+	static clearscope int Ctrl(PlayerPawn pmo, int hand) { return RSQDG_A11y.Ctrl(pmo, hand); }
+
+	// PITCH, POSITIVE UP -- the convention every vector in this file (Fwd, Up,
+	// Side) and every test above it (the palm gate's "not at the floor", the
+	// flick's "tipped up") was written for. AttackPitch IS that already: the
+	// engine stores it negated FROM DOOM'S down-positive view pitch. This used
+	// to negate it a second time, which turned the hand upside down in pitch:
+	// measured in the rig 2026-10-26, a hand aimed 9 deg DOWN at a floor barrel
+	// found nothing and one aimed 9 deg UP took it, while the pistol's own
+	// puffs and the drawn beam (a LineTrace, which takes Doom's down-positive
+	// pitch) went the right way. The headset-proven QuestSaber reads it the same
+	// way as here now (its fw.z = sin(AttackPitch)).
+	static double Pitch(PlayerPawn pmo, int hand)
+	{
+		return (Ctrl(pmo, hand) == 0) ? pmo.AttackPitch : pmo.OffhandPitch;
+	}
+
+	// Doom's own convention (positive DOWN), for engine calls that take it:
+	// LineTrace, AimLineAttack, LineAttack.
+	static double DoomPitch(PlayerPawn pmo, int hand) { return -Pitch(pmo, hand); }
+
+	// AttackRoll, not MainHandRoll. The fork renamed it; stock's name is the
+	// original and is what actor.zs:270 declares.
+	static double Roll(PlayerPawn pmo, int hand)
+	{
+		return ((Ctrl(pmo, hand) == 0) ? pmo.AttackRoll : pmo.OffhandRoll);
+	}
+
+	// Wrapped to -180..180, so a wrist a degree past the wrap is a degree away
+	// and not 359.
+	static double NormDeg(double d)
+	{
+		while (d > 180) d -= 360;
+		while (d < -180) d += 360;
+		return d;
+	}
+
+	// ---- THE PALM GATE ------------------------------------------------------
+	//
+	// WHERE THE HAND IS, not what it is doing. A button alone says "grab", but
+	// it cannot say "I meant to reach" -- so without this the hand pulls things
+	// across the room while held in a gun grip, and the only warning is that it
+	// happened.
+	//
+	// TURN YOUR PALM OUT AND THE REACH ARMS. That is the whole gesture, and
+	// pairing it with the button is what makes a stray press harmless rather
+	// than merely unlikely: a press needs the pose, and the pose on its own
+	// does nothing.
+	//
+	// AND THE POSE GATES, IT DOES NOT TRIGGER. A pose is LOCAL -- the VR fields
+	// are written for the camera player only -- so a pose-only trigger cannot
+	// be replicated, which is exactly the rule the owner's own DXR gesture table
+	// encodes as "gate 0 = pose-only = NOT multiplayer-safe". The netevent
+	// travels; the pose decides whether it meant anything.
+	//
+	// ROLL IS COMPARED AS A DISTANCE FROM A TARGET, USING THE ABSOLUTE ROLL, so
+	// one number covers both wrists: a right hand turning palm-out rolls one way
+	// and a left hand the other.
+	//
+	// ROLL ALONE IS NOT SAFE, and this is the part that is easy to miss. An idle
+	// hand rests within any useful tolerance of the roll target, so roll by
+	// itself arms the reach whenever you are not thinking about it. PITCH is
+	// what has no overlap: a hand hanging at your side sits around forty degrees
+	// below level, and a hand reaching at something does not.
+	static play bool PalmOk(PlayerPawn pmo, PlayerInfo p, int hand)
+	{
+		if (HandBusy(p, hand)) return false;
+		return PalmPose(pmo, p, hand);
+	}
+
+	// The pose half alone (palm turned out, hand raised), whoever else wants the hand: the refusal log
+	// asks it to tell "the palm was out but the hand stood down" from "the palm was not out".
+	static play bool PalmPose(PlayerPawn pmo, PlayerInfo p, int hand)
+	{
+		// PALM GATE OFF COUNTS ONLY WITH GRAB KEYS ON (11-09, README from the code): without the keys the palm IS the
+		// input -- turning it away is what launches a lock and lets a carry go. Gate off and keys off held the hand
+		// "armed" for ever: a lock could never be launched and a palm carry only dropped with the grip.
+		if (!Flag("rsqdg_palm", p, true) && Flag("rsqdg_button", p, false)) return true;
+
+		// RSQ_Accessibility's Gesture Ease: the roll tolerance x1..x2 (30 -> 60 degrees) and the
+		// pitch floor lowered by as much again (-30 -> -60); 0 / absent: exactly as tuned.
+		double rl  = abs(NormDeg(Roll(pmo, hand)));
+		double tgt = Num("rsqdg_palm_roll", p, 90.0);
+		double tol = RSQDG_A11y.Wide(Num("rsqdg_palm_tol",  p, 30.0));
+		if (abs(rl - tgt) > tol) return false;
+
+		// Not pointing at the floor. -180 or below disables the half.
+		double minPitch = Num("rsqdg_palm_pitch", p, -30.0);
+		if (minPitch > -180) minPitch -= RSQDG_A11y.Ease() * 30.0;
+		if (minPitch > -180 && Pitch(pmo, hand) < minPitch) return false;
+
+		return true;
+	}
+
+	// A HAND THAT IS ALREADY SOMEONE ELSE'S GESTURE STANDS DOWN.
+	//
+	// A saber or a shield is swung, and a swing is full of wrist roll and
+	// pitch -- palm out, tip up -- which is exactly this mechanic's gesture. In
+	// the rig, with RSQ_Saber in the right hand, the grab locked and
+	// pulled a barrel off an ordinary roll-and-flick. So a hand stands down while
+	// it holds:
+	//   - a MELEE weapon (the saber, a chainsaw, a fist): swung, never pointed;
+	//   - a hand the tactical rig is using (RSQ_TacticalRig answers "rig.busy");
+	//   - another mod's hand system, found BY NAME AT RUN TIME so nothing links
+	//     against it and an absent mod is just a string that never matches --
+	//     RS_ShieldSawQ (SSQ_) and RSQ_Saber's Force hand (UBQS_),
+	//     which has its own pull, push and grip on the same off hand.
+	// The empty-hand fillers (RSQ_Hands and the like) are not busy: an empty hand
+	// is exactly the hand that should reach. rsqdg_yield 0 turns this off.
+	static play bool HandBusy(PlayerInfo p, int hand)
+	{
+		return BusyWhy(p, hand) != "";
+	}
+
+	// WHY a hand stands down ("" = it may reach), for HandBusy and the refusal log (rsqdg_trace).
+	static play String BusyWhy(PlayerInfo p, int hand)
+	{
+		// THE OFF-HAND MODIFIER (One-Handed): held, the main controller is playing the off hand's
+		// part -- so the main hand's own part stands down, and the off hand's part asks nothing
+		// about what either hand holds: holding the modifier IS the intent to reach.
+		if (p && p.mo && RSQDG_A11y.Swapped(p.mo)) return hand == 0 ? "the Off-Hand Modifier has this controller" : "";
+		if (!p) return "";
+		// TWO-HANDING STANDS THE WHOLE GRAB DOWN (TwoHanding, below): both hands, whatever
+		// rsqdg_yield says. A hand already carrying something keeps its palm gate, so a held
+		// thing is not dropped because the other hand came near.
+		if (p.mo && TwoHanding(p))
+		{
+			let hd = RSQDG_Hold.Get();
+			if (!hd || !hd.HandIsFull(hand))
+			{
+				String tw = TwoHandWhy(p);
+				if (tw == "") tw = "the 0.5 s after it ended";
+				return "two-handing: " .. tw;
+			}
+		}
+		if (!Flag("rsqdg_yield", p, true)) return "";
+		// FIGHTING WITH THE HAND (the owner, 11-02: "punching in melee triggers distance grab, so when
+		// I'm in a bar fight I'm pulling all sorts of shit around me into the fight"): a hand wearing RSQ
+		// Melee's boxing gloves, or one that moved at punch speed in the last 0.75 s, does not arm the
+		// reach (MeleeHand, below). An idle empty hand turned palm out still reaches.
+		if (p.mo && MeleeHand(p, hand)) return Punching(p, hand) ? "moved at punch speed in the last 0.75 s" : "wearing RSQ Melee's gloves";
+		// RSQ_TacticalRig: a hand reaching into a holster or its radial, or holding a
+		// door, the cigarette or the Zippo, is the rig's. Asked by service name, so an
+		// absent rig gives no answer.
+		let rit = ServiceIterator.Find("RSQTR_RigService");
+		Service rs;
+		while (rs = rit.Next())
+			if (rs.GetInt("rig.busy", "", hand, 0, p.mo) == 1) return "the Tactical Rig is using this hand";
+		Weapon w = (hand == 0) ? p.ReadyWeapon : p.OffhandWeapon;
+		if (!w) return "";
+		// GetClassName can come back lower-cased (seen in the rig), so compare lower-cased.
+		String n = w.GetClassName();
+		n = n.MakeLower();
+		// BY EVIDENCE, NOT BY NAME ALONE (G1). RSQ_Saber answers "saber.lit"
+		// through its UBQS_SaberService: 0 means a hilt with the blade switched off, which
+		// is not being swung, so that hand may reach. Asked by service name, so an absent
+		// or older saber gives no answer and the hand stays busy as before. (The psprite
+		// frame was the first idea and does not work: with the world saber on, the
+		// default, the layer is blanked to frame 18 whatever the blade does -- rig, 10-26.)
+		if (n.IndexOf("ubqs_saber") == 0)
+		{
+			let it = ServiceIterator.Find("UBQS_SaberService");
+			Service sv;
+			while (sv = it.Next())
+				if (sv.GetInt("saber.lit", "", hand, 0, p.mo) == 0) return "";
+			return "a lit saber";
+		}
+		// THE BARE HAND IS AN EMPTY HAND, not a melee weapon to swing (the owner, 10-27: "I don't see
+		// distance grabbing working at all"): Brutal Doom's fists (Melee_Attacks, +MELEEWEAPON) are
+		// what the main hand holds once its gun is holstered, and the vanilla Fist the same. They reach.
+		if (n == "fist" || (w.bMELEEWEAPON && w.bCHEATNOTWEAPON)) return "";
+		// BD22 VR RELOADED'S AXE (owner 2026-11-12, its 2.0.4r axe pool: throw, Distance Grab it back, throw): after a throw
+		// the next axe is already in the hand, and that hand reaches for the one it threw. A swing still stands the reach
+		// down (the punch-speed rule above).
+		if (n == "brutalaxe" || n == "rsq_off_brutalaxe") return "";
+		if (w.bMELEEWEAPON) return "holding a melee weapon (" .. w.GetClassName() .. ")";
+		return (n.IndexOf("ssq_") == 0 || n.IndexOf("ubqs_") == 0) ? "another mod's hand (" .. w.GetClassName() .. ")" : "";
+	}
+
+	// ---- TWO-HANDING (the owner, 11-02: "when I two hand a weapon sometimes I like to tilt it at an
+	// angle ... and that causes the distance lasers to fire. can we disable the distance grab when I
+	// am two handing? usually when I two hand I am dedicated to killing.") ----------------------------
+	//
+	// While two-handing, Distance Grab stands down COMPLETELY: no reach, no lock, no beam, no cone,
+	// no walk-up grip (HandBusy, RSQDG_Grab.WorldTick, RSQDG_Laser.WorldTick, RSQDG_Near). Two-handing
+	// is any of:
+	//   - QuestZDoom's own two-hand latch: player.WeaponState & WF_TWOHANDSTABILIZED (p_pspr.cpp sets
+	//     it from the C++ weaponStabilised on every psprite state change: the off grip pressed with the
+	//     controllers inside 0.50 m while vr_two_handed_weapons is on; released by letting go);
+	//   - BD22 VR's own two-hand tokens, asked by class name so nothing links against it:
+	//     RSQ_TwoHandAimed (2.0.3k/l: its Two-Hand Aim, the off grip pressed on a gun's drawn support point),
+	//     RSQ_TwoHandRifle (the same in 2.0.3j and older) and RSVR_MeleeTwo (two hands on the axe or the
+	//     sword) -- what BD22 VR's RSVR_VRHand.TwoHands reads;
+	//   - THE OFF HAND ON THE GUN, by where it is (11-02, second pass): a gun (not melee, not the bare
+	//     hand) in the main hand and the off controller in FRONT of
+	//     the gun hand along the barrel (TWO_HAND_NEAR to TWO_HAND_FAR metres) and within rsqdg_twohand_r
+	//     (0.2 m) of the barrel line. That is where a support hand is: BD22 VR measures its guns' drawn
+	//     support points 20-46 cm ahead of the main controller and 0-23 cm off the bore (rsq/twohand.zs
+	//     table). Whatever the off hand holds (RSQ_Saber's second saber starts there, lit, and a saber hand
+	//     laid on the gun is still steadying it). Unless a hand is carrying something (Distance Grab's own
+	//     two-hand carry).
+	//     WHAT IT REPLACED, and why: "the hands within rsqdg_steady_m (0.5 m) of each other". An off hand
+	//     raised palm out BESIDE the gun to reach is 30-45 cm from the gun hand, so that test called it
+	//     two-handing: no grab, and its beam hidden while Laser Sight's stayed -- the owner's "the lasers
+	//     still don't show at the same time" and part of "sometimes I can't get weapons" (rig, 11-02:
+	//     gap 0.35 m -> two=1, grab beams 0, laser beam 1). The rig's stock poses held the hands exactly
+	//     0.50 m apart, one hair outside the old test, which is why the first pass saw nothing wrong.
+	// And it STAYS down TWO_HAND_HOLD tics (0.5 s) after the last of those ends, so the moment the hands
+	// part while the gun is still canted does not arm the grab. The time is kept per player on
+	// RSQDG_Grab (twoUntil).
+	const TWO_HAND_HOLD = 18;
+	const TWO_HAND_NEAR = 0.05;
+	const TWO_HAND_FAR  = 0.70;
+	const TWO_HAND_CLASP = 0.16;
+
+	static play bool TwoHandRaw(PlayerInfo p)
+	{
+		return TwoHandWhy(p) != "";
+	}
+
+	// Why the player counts as two-handing ("" = not), for the stand-down and its log line.
+	static play String TwoHandWhy(PlayerInfo p)
+	{
+		if (!p || !p.mo) return "";
+		if (p.WeaponState & WF_TWOHANDSTABILIZED) return "QuestZDoom's two-hand grip";
+		let gr = RSQDG_Grab.Get();
+		if (gr && gr.TwoHandToken(p.mo)) return "BD22 VR's two-hand hold";
+		let w = p.ReadyWeapon;
+		if (!w || w.bMELEEWEAPON) return "";
+		String n = w.GetClassName();
+		n = n.MakeLower();
+		if (n == "fist" || n.IndexOf("ubqs_") == 0 || n.IndexOf("ssq_") == 0) return "";
+		double r = Num("rsqdg_twohand_r", p, 0.2);
+		if (r <= 0) return "";
+		let hd = RSQDG_Hold.Get();
+		if (hd && (hd.HandIsFull(0) || hd.HandIsFull(1))) return "";
+		double along, side;
+		[along, side] = OnBarrel(p.mo);
+		// HANDS TOGETHER ON THE GRIP (owner 2026-11-12 14:11: "disable distance grabbing for either hand when two-handing a
+		// weapon"; his pose: "freeze, police"): a pistol held in both hands has the off hand cupped round the gun hand, level
+		// with it or a little behind, so it is not "ahead along the barrel" and the test below never saw it. The two
+		// controllers within TWO_HAND_CLASP (0.16 m) of each other is that hold; a hand reaching beside the gun is 30 cm
+		// or more away (see above), so it still reaches.
+		if (sqrt(along * along + side * side) <= TWO_HAND_CLASP)
+			return String.Format("hands together on the gun (%.2f m apart)", sqrt(along * along + side * side));
+		if (along >= TWO_HAND_NEAR && along <= TWO_HAND_FAR && side <= r)
+			return String.Format("off hand on the gun (%.2f m ahead, %.2f m off the barrel)", along, side);
+		return "";
+	}
+
+	// The off controller in the gun's frame, room metres: how far AHEAD of the main controller along its
+	// aim, and how far from that line. Raw controllers (AttackPos / OffhandPos and the main hand's own
+	// aim), not the One-Handed swap: this is about the gun the main hand holds.
+	static play double, double OnBarrel(PlayerPawn pmo)
+	{
+		Vector3 d = pmo.OffhandPos - pmo.AttackPos;
+		Vector3 m = (d.x, d.y, d.z * PIXELSTRETCH) / UnitsPerMetre();   // VREALMS: the live metre
+		Vector3 f = Fwd(pmo.AttackAngle + 90, pmo.AttackPitch, 0);
+		double along = m dot f;
+		double side = (m - f * along).Length();
+		return along, side;
+	}
+
+	static play bool TwoHanding(PlayerInfo p)
+	{
+		if (!p || !p.mo) return false;
+		let gr = RSQDG_Grab.Get();
+		int pn = p.mo.PlayerNumber();
+		bool raw = TwoHandRaw(p);
+		if (!gr || pn < 0 || pn >= MAXPLAYERS) return raw;
+		if (raw) gr.twoUntil[pn] = level.maptime + TWO_HAND_HOLD;
+		return raw || level.maptime < gr.twoUntil[pn];
+	}
+
+	// ---- A HAND THAT IS FIGHTING DOES NOT REACH (owner, 11-02) ----------------------------------------
+	//
+	// The rule, exactly:
+	//   1. a hand holding RSQ Melee's boxing gloves (its weapon's class name starts "RSQ_Glove": RSQ_Glove
+	//      in the main hand, RSQ_GloveOff in the off hand; matched by name, so nothing links against
+	//      RSQ Melee) never arms the reach;
+	//   2. a hand whose palm moved at PUNCH SPEED stands down for PUNCH_HOLD tics (0.75 s) after the
+	//      last such tic. Punch speed is RSQ Melee's own Punch Min Speed (rsqml_punch_min_speed, read
+	//      by name; 2.0 m/s, SuperPunchOut's spo_min_speed, without RSQ Melee). The speed is the palm's
+	//      own (RSQDG_Aim.PalmVelocity: the peak 2-tic speed over its short window, in the tracking frame,
+	//      so walking or turning is not a punch). This covers Brutal Doom's fists and any bare hand.
+	// Neither applies to a hand that already has something locked, in the air or in the hand: the
+	// flick, the catch and the throw are fast on purpose. rsqdg_yield ("Not With Melee") off turns both
+	// off. The time is kept per hand on RSQDG_Grab (punchUntil).
+	const PUNCH_HOLD = 26;
+
+	static play bool HandIdle(int hand)
+	{
+		let gr = RSQDG_Grab.Get();
+		let hd = RSQDG_Hold.Get();
+		let fl = RSQDG_Flight.Get();
+		return !(gr && gr.Locked(hand)) && !(hd && hd.HandIsFull(hand)) && !(fl && fl.Flying(hand));
+	}
+
+	static play bool Punching(PlayerInfo p, int hand)
+	{
+		let gr = RSQDG_Grab.Get();
+		let aim = RSQDG_Aim.Get();
+		if (!gr || !aim || (hand != 0 && hand != 1)) return false;
+		if (gr.punchSeen[hand] != level.maptime)
+		{
+			gr.punchSeen[hand] = level.maptime;
+			let cv = CVar.FindCVar("rsqml_punch_min_speed");
+			double need = cv ? cv.GetFloat() : 2.0;
+			if (need <= 0) need = 2.0;
+			double mps = Metres(aim.PalmVelocity(hand)) * TICRATE;
+			if (mps >= need)
+			{
+				if (level.maptime >= gr.punchUntil[hand] && Flag("rsqdg_debug", p, false))
+					Console.Printf("[RSQDG] t%d hand %d at punch speed (%.1f m/s >= %.1f): no reach for 0.75 s", level.maptime, hand, mps, need);
+				gr.punchUntil[hand] = level.maptime + PUNCH_HOLD;
+			}
+		}
+		return level.maptime < gr.punchUntil[hand];
+	}
+
+	static play bool MeleeHand(PlayerInfo p, int hand)
+	{
+		if (!HandIdle(hand)) return false;
+		Weapon w = (hand == 0) ? p.ReadyWeapon : p.OffhandWeapon;
+		if (w)
+		{
+			String n = w.GetClassName();
+			n = n.MakeLower();
+			// RSQ Melee's RSQ_Glove / RSQ_GloveOff are its HANDS (every look: bare, FBX or the boxing gloves), so the
+			// class alone is not "wearing gloves": only Boxing Gloves or Slappers Only is (rsqml_boxing / rsqml_slappers,
+			// read by name). Before this, every empty hand counted as gloved and Distance Grab never armed (owner 11-13).
+			if (n.IndexOf("rsq_glove") == 0 && (SVOn("rsqml_boxing") || SVOn("rsqml_slappers"))) return true;
+		}
+		return Punching(p, hand);
+	}
+
+	// ---- the basis ----------------------------------------------------------
+	//
+	// Three orthogonal axes from the three Euler angles, in the order the
+	// renderer applies them. Hand-rolled rather than taken from a native
+	// because there is no native that returns a hand's basis: AttackDir()
+	// exists but, from ZScript, RETURNS (yawDegrees, pitchDegrees, 0) and not a
+	// vector at all (p_actionfunctions.cpp:5694-5712 -- it converts the C++
+	// function's unit vector back into angles before returning it). Treating
+	// its result as a direction is a silent, plausible-looking bug, and stock
+	// uses it correctly as a pair of angles at attacks.zs:489-490.
+	//
+	// It also cannot be called from `ui` scope -- Actor methods are play -- so a
+	// visual layer needs this anyway.
+	static Vector3 Fwd(double yaw, double pit, double rol)
+	{
+		return (cos(pit) * cos(yaw), cos(pit) * sin(yaw), sin(pit));
+	}
+
+	static Vector3 Side(double yaw, double pit, double rol)
+	{
+		// The un-rolled sideways axis, then rolled about forward. Roll is the
+		// only wrist channel the engine gives us (actor.zs:274) and it is the
+		// difference between a palm-up and a palm-down grab, so it is not
+		// optional even though nothing else here consumes it yet.
+		Vector3 s = (sin(yaw), -cos(yaw), 0);
+		Vector3 u = (-sin(pit) * cos(yaw), -sin(pit) * sin(yaw), cos(pit));
+		return s * cos(rol) + u * sin(rol);
+	}
+
+	static Vector3 Up(double yaw, double pit, double rol)
+	{
+		Vector3 s = (sin(yaw), -cos(yaw), 0);
+		Vector3 u = (-sin(pit) * cos(yaw), -sin(pit) * sin(yaw), cos(pit));
+		return u * cos(rol) - s * sin(rol);
+	}
+
+	// The hand's forward axis, ready to dot against.
+	static Vector3 Dir(PlayerPawn pmo, int hand)
+	{
+		return Fwd(Yaw(pmo, hand), Pitch(pmo, hand), Roll(pmo, hand));
+	}
+
+	// ---- where the hand is -------------------------------------------------
+	//
+	// THE REAL CONTROLLER, and on stock that is simply AttackPos/OffhandPos.
+	//
+	// Worth being explicit about why, because the desktop comment next to this
+	// says the opposite and would mislead anyone porting it back. On the FORK,
+	// AttackPos is canonical playsim state rebuilt from the replicated usercmd,
+	// so in a netgame it is the pawn's SHOOTING POINT -- the middle of the body
+	// -- and reaching from there would have every co-op player grabbing things
+	// out of their own chest. That is why the fork added `level.HandPos`.
+	//
+	// On stock QuestZDoom the renderer writes the controller pose straight into
+	// these fields for the camera player (hw_openxrdevice.cpp:587-609), so they
+	// ARE the hand. The fork's problem does not exist here, and neither does its
+	// fix: `level.HandPos` is zero hits on this engine.
+	//
+	// THE CONSEQUENCE IS A NETPLAY ONE AND IT IS NOT OPTIONAL. Both writers key
+	// on `r_viewpoint.camera` (hw_vrmodes.cpp:434, hw_openxrdevice.cpp:551) and
+	// touch only that player's pawn, so for every OTHER player on this machine
+	// these fields hold class defaults. There is no path by which a peer's hand
+	// pose reaches us. So this is a LOCAL read for a LOCAL decision; what it
+	// decides travels afterwards as a command carrying a network ID, never as a
+	// position.
+	static Vector3 Palm(PlayerPawn pmo, int hand)
+	{
+		return (Ctrl(pmo, hand) == 0) ? pmo.AttackPos : pmo.OffhandPos;
+	}
+
+	// ---- STEADY HANDS (RSQ_Accessibility AC6, a11y.zs) ------------------------
+	//
+	// FOR THE CONE ONLY: what a hand POINTS at, and so what it locks. RSQ_Accessibility smooths both hands'
+	// poses (a 1-euro tremor filter) and offers them by service; a far item held under the hand keeps its
+	// lock instead of chattering between neighbours. NEVER for the throw (aim.zs PalmVelocity samples Palm),
+	// the catch, the carry or the palm gate's roll: those need the raw hand. The controller is the one
+	// playing the hand's part (Ctrl). Off, absent, or out of VR: exactly Palm / Dir.
+	static play bool SteadyOn(PlayerPawn pmo)
+	{
+		return pmo && pmo.player && pmo.OverrideAttackPosDir && RSQDG_A11y.SteadyOn(pmo);
+	}
+	static play Vector3 AimPalm(PlayerPawn pmo, int hand)
+	{
+		if (!SteadyOn(pmo)) return Palm(pmo, hand);
+		let s = RSQDG_A11y.Svc();
+		int pn = pmo.PlayerNumber(), c = Ctrl(pmo, hand);
+		// GetDouble (play) brings the filter up to this tic first
+		return (s.GetDouble("steady", "x", pn, c), s.GetDouble("steady", "y", pn, c), s.GetDouble("steady", "z", pn, c));
+	}
+	static play Vector3 AimDir(PlayerPawn pmo, int hand)
+	{
+		if (!SteadyOn(pmo)) return Dir(pmo, hand);
+		let s = RSQDG_A11y.Svc();
+		int pn = pmo.PlayerNumber(), c = Ctrl(pmo, hand);
+		// the engine's own numbers, filtered (yaw - 90, pitch up): Yaw / Pitch's sums
+		return Fwd(s.GetDouble("steady", "angle", pn, c) + 90, s.GetDouble("steady", "pitch", pn, c), 0);
+	}
+
+	// ---- units -------------------------------------------------------------
+	//
+	// 34 MAP UNITS PER METRE HORIZONTALLY, 28.333 VERTICALLY, and the asymmetry
+	// is real rather than a bug to work around.
+	//
+	// `vr_vunits_per_meter` is 34 (hw_vrmodes.cpp:94) and XY uses it bare, but Z
+	// is divided by `pixelstretch`, default 1.2 (g_mapinfo.cpp:314), because the
+	// renderer stretches the vertical axis by that factor when it builds the
+	// projection. Doom's map space is itself vertically compressed relative to
+	// the room you are standing in.
+	//
+	// Two things follow, and the desktop build gets both wrong by using a flat
+	// 34 on every axis:
+	//
+	//   - A speed or distance threshold taken from a raw vector length is
+	//     DIRECTION-DEPENDENT BY 20%. A hand moved a metre upward measures
+	//     differently from a metre forward.
+	//   - A physically spherical volume is an ELLIPSOID in map units.
+	//
+	// Sanity check against stock numbers: the player is 56 units tall and 32
+	// wide, giving 56 * 1.2 / 34 = 1.98 m and 32 / 34 = 0.94 m. Both correct.
+	// VREALMS (changed: owner 2026-11-16, "scale to Realms"): the package's metre made a real metre on a Realms map in
+	// the headset. Was 34.0 / 1.2 (Doom's). 107.4 Realms map units to the metre horizontally (the VR scale,
+	// docs/ITEM_DESIGN.md; the headset's live metre is the eye anchor, rothmap.cpp, which a const cannot read) and
+	// the headset's vertical stretch, Realms' FY/FX 355.06 / 309.77 = 1.1462 (rothmap.cpp ROTH_VIEW_VSTRETCH: the
+	// level's pixelstretch in the headset; flat keeps 1.0).
+	// VREALMS (2026-11-24, the package restored from RSQ_UBQSeries 6e1132e014): the metre is now the headset's LIVE
+	// one (the engine writes it to the noarchive cvar roth_vr_metre_live every tic, roth_vrpick.cpp), because the VR
+	// scale follows the measured head (137.7 units a metre in the owner's headset on 2026-11-24, 107.4 when this was
+	// first scaled); UNITS_PER_METRE_XY is the fallback before the first tic. PIXELSTRETCH: the Realms maps are 1.0
+	// now (vrealms_iwad/MAPINFO), was 1.1462.
+	const UNITS_PER_METRE_XY = 107.4;
+	const PIXELSTRETCH       = 1.0;
+
+	static double UnitsPerMetre()
+	{
+		let c = CVar.FindCVar("roth_vr_metre_live");
+		double v = c ? c.GetFloat() : 0.0;
+		return v > 1.0 ? v : UNITS_PER_METRE_XY;
+	}
+
+	// The true physical length of a map-space vector, in metres.
+	static double Metres(Vector3 v)
+	{
+		double z = v.z * PIXELSTRETCH;
+		return sqrt(v.x * v.x + v.y * v.y + z * z) / UnitsPerMetre();
+	}
+
+	static double MetresToUnits(double m)
+	{
+		return m * UnitsPerMetre();
+	}
+
+	// ---- cvar reads --------------------------------------------------------
+	//
+	// Through CVar.GetCVar(name, player) rather than FindCVar, so a `user` cvar
+	// resolves against THAT player. FindCVar reads whatever this client has set,
+	// which is a desync the moment it is used in play scope.
+	static double Num(String n, PlayerInfo p, double d)
+	{
+		let c = CVar.GetCVar(n, p);
+		return c ? c.GetFloat() : d;
+	}
+
+	// a server cvar of another mod, by name: nonzero = on (absent = off)
+	static bool SVOn(String n)
+	{
+		let c = CVar.FindCVar(n);
+		return c && c.GetInt() != 0;
+	}
+
+	static bool Flag(String n, PlayerInfo p, bool d)
+	{
+		let c = CVar.GetCVar(n, p);
+		return c ? c.GetBool() : d;
+	}
+
+	static int Opt(String n, PlayerInfo p, int d)
+	{
+		let c = CVar.GetCVar(n, p);
+		return c ? c.GetInt() : d;
+	}
+}
+
+
+// GUN BONSAI'S VR PATCH: THE GRAB HAS NO TREE (owner, 11-03: "Imagine if Half-Life Alyx made you level up the gravity
+// gloves"). The grab is its rows, with or without the patch. (RSQDG_Perks, the readers the 11-02 tree left behind -- Long
+// Arm, Iron Grip, Heavy Hitter, Air Catch, Dead Eye, Heavy Lift, Straight Pull, Body Shield -- always read 0 / x1 after
+// 11-03 and were removed in 0.99a, item 17: behaviour unchanged.)

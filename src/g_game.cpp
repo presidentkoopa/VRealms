@@ -20,6 +20,7 @@
 // HEADER FILES ------------------------------------------------------------
 
 #include "roth/roth_runtime.h"
+#include "roth/roth_grabglue.h"
 #include <memory>
 #include <stdio.h>
 #include <string.h>
@@ -1737,6 +1738,11 @@ bool G_Responder (event_t *ev)
 {
 	if (!CanChat())
 		CT_Stop();
+
+	// The main VR grip's late tap pulse, for a press RSQ Distance Grab was already handed at the squeeze
+	// (roth_grabglue.h GrabGlueResponder): eaten before the event handlers, so the package does not get it twice.
+	if (roth::GrabGlueResponder(ev))
+		return true;
 
 	// Realms of the Haunting's menus, death wait and quick keys (roth_runtime.h).
 	if (roth::FlowResponder(ev))

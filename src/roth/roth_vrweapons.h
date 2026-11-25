@@ -15,8 +15,8 @@
 //                      rules): a draw is the inventory's weapon click, a weapon put away is activate_weapon_item(0, 0).
 //   THE SHOTGUN (Q9)   the off hand on the fore-end (SupportLatch, the engine's own support hold) aims it: the shot leaves
 //                      along the rear hand -> fore hand line (VRWeaponsTwoHandAim, read by WeaponTick); while it holds,
-//                      the off hand's grip is the gun's (VRWeaponsGripTaken: no use, no punch -- the off hand is
-//                      SUPPORTING, roth_handstate.h).
+//                      the off hand's grip is the gun's (VRWeaponsGripTaken: no use, no punch, no distance grab --
+//                      WF_TWOHANDSTABILIZED, which RSQ Distance Grab reads as two-handing).
 //   THE STAFF (Q10)    its trigger is the original's projectile along the staff (row 33); it is ALSO swung (owner
 //                      2026-11-16): the same reader on its length, the blow Adam's fists' attack borrowed (the original's
 //                      Staff has no melee; roth_actors_engine.cpp ActorsRequestBorrowedBlowAt).

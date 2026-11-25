@@ -16,6 +16,7 @@
 #include "roth_interface.h"
 #include "roth_inventory.h"
 #include "roth_actors_engine.h"
+#include "roth_grabglue.h"
 #include "roth_dbase100.h"
 
 #include "actor.h"
@@ -309,8 +310,10 @@ void VRWeaponsTick(FLevelLocals *level, bool live)
 	{
 		VRPickHand off;
 		// L2 (roth_handstate.h): the off hand's grip is the weapon's only while nobody else holds that hand (an item, a
-		// held object, the Colt's reload)
-		const bool grip = VRPickHandNow(VR_OFFHAND, off) && off.gripClosed && HandMayAct(VR_OFFHAND, hands::Owner::Weapon);
+		// held object, the Colt's reload); and ONE MOD PER PRESS (roth_grabglue.h): a press RSQ Distance Grab takes (an
+		// offered item at that hand) is not the fore-end's
+		const bool grip = VRPickHandNow(VR_OFFHAND, off) && off.gripClosed && HandMayAct(VR_OFFHAND, hands::Owner::Weapon)
+			&& (S.latch.engaged || !GrabGlueTakesGrip(level, VR_OFFHAND));
 		engaged = S.latch.Feed(Barrel(pmo), Metres(pmo->OffhandPos - pmo->AttackPos), grip, Settings());
 	}
 	else S.latch.Reset();
@@ -323,8 +326,8 @@ void VRWeaponsTick(FLevelLocals *level, bool live)
 			aim ? FStringf(": the shot now leaves along the rear -> fore line, yaw %.1f, pitch %.1f up", y, p).GetChars() : "");
 		S.engagedWas = engaged;
 	}
-	// The engine's two-hand flag (d_player.h WF_TWOHANDSTABILIZED) says so while the off hand holds the fore-end. No Doom
-	// weapon runs in the Realms (p_pspr.cpp never sets or clears the bit here), so this layer owns it.
+	// RSQ Distance Grab stands down while two-handing (reach.zs TwoHanding: WF_TWOHANDSTABILIZED). No Doom weapon runs
+	// in the Realms (p_pspr.cpp never sets or clears the bit here), so this layer owns it.
 	if (pmo != nullptr && pmo->player != nullptr)
 	{
 		if (engaged) { pmo->player->WeaponState |= WF_TWOHANDSTABILIZED; S.setStabilized = true; }
@@ -337,7 +340,9 @@ void VRWeaponsTick(FLevelLocals *level, bool live)
 		double f, l, u;
 		BodyFrame(pmo, pmo->AttackPos, f, l, u);
 		VRPickHand mh;
-		const bool grip = VRPickHandNow(VR_MAINHAND, mh) && mh.gripClosed && HandMayAct(VR_MAINHAND, hands::Owner::Weapon);   // L2
+		// L2, and ONE MOD PER PRESS: a press RSQ Distance Grab takes (an offered item at the hand) is not a body slot's
+		const bool grip = VRPickHandNow(VR_MAINHAND, mh) && mh.gripClosed && HandMayAct(VR_MAINHAND, hands::Owner::Weapon)
+			&& !GrabGlueTakesGrip(level, VR_MAINHAND);
 		const HolsterEvent e = S.rig.Step(true, f, l, u, grip, World(held));
 		if (e.act != HOLSTER_NONE) Act(e, held);
 	}

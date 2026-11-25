@@ -1,8 +1,10 @@
-> **REMOVED (2026-11-23, docs/VR_INTERACTION.md P1).** The RSQ Distance Grab copy (wadsrc/static/filter/vrealms),
-> its glue (roth_grabglue.cpp, realmsgrab.zs), the RS laser copied for it (hw_rslaser.cpp, rs_laser.zs), its test
-> (tools/dgrab_test) and its bridge cfgs are gone from VRealms. Every VR use now goes through the rules entry (L1,
-> roth_vrrules.h); only the pickup's flight survives, as the original's own fly-in aimed at the hand. This folder is
-> kept as the record of what was ported and why.
+> **RESTORED (2026-11-24, the owner: "bring back distance grab and bring it back correctly from the actual code").**
+> The package is RSQ_UBQSeries `DistanceGrab/` at origin/main 6e1132e014, file for file, three-way merged with the
+> 2026-11-16 VRealms edits (each line marked `VREALMS`: every cvar `noarchive`; map-unit literals scaled x 107.4 / 34;
+> the grip keys). New on 2026-11-24: the package's metre is the headset's live metre (reach.zs UnitsPerMetre, the
+> noarchive cvar roth_vr_metre_live the engine writes every tic); the two map-unit literals the mod added since
+> (door.zs EASE_MIN, the door length 64) scaled as the rest. The glue (roth_grabglue.cpp, realmsgrab.zs), the RS laser
+> (hw_rslaser.cpp, rs_laser.zs) and the tests come back from the commit that removed them (6c926e59, reverted).
 
 # RSQ Distance Grab
 ### Doom Arcade VR · turn your palm out, pull the barrel across the room, and throw it back at them

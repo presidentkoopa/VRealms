@@ -837,6 +837,7 @@ set( FASTMATH_SOURCES
 	rendering/hwrenderer/scene/hw_walls.cpp
 	rendering/hwrenderer/scene/hw_walls_vertex.cpp
 	rendering/hwrenderer/scene/hw_weapon.cpp
+	rendering/hwrenderer/scene/hw_rslaser.cpp
 	common/utility/matrix.cpp
 )
 
@@ -988,6 +989,7 @@ set (PCH_SOURCES
 	roth/roth_darkness.cpp
 	roth/roth_vrpick.cpp
 	roth/roth_xrpose.cpp
+	roth/roth_grabglue.cpp
 	roth/roth_gestures.cpp
 	roth/roth_vrweapons.cpp
 	roth/roth_coltvr.cpp

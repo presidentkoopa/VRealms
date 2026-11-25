@@ -101,5 +101,10 @@ bool VRPickHandsOwnTheWorld();
 // (roth_runtime.cpp UseByHand) read this instead of the aim pose's angles. False: no hand this tic.
 bool VRPickHandRay(int role, DVector3 &start, DVector3 &dir, bool *fromFinger = nullptr);
 
+// THE DISTANCE GRAB'S CATCH (RSQ Distance Grab, wadsrc_dgrab; the glue in wadsrc/static/zscript/actors/
+// realmsgrab.zs): a Realms item that flew into hand `role` is taken by the original's pickup -- the hands' own
+// use path (DoUse -> Activate(Use) -> activate_targeted_object's type-4 branch, give_item_by_dbase_id), gated
+// by the original's cursor on it from the palm. True when the original took it (the actor is gone).
+bool VRPickTakeCaught(int role, AActor *item);
 
 } // namespace roth

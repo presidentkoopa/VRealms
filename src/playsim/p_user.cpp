@@ -146,7 +146,8 @@ static void UpdateCanonicalMainHandPose(player_t *player)
 	player->mo->AttackAngle = CmdAngleToDAngle(player->cmd.weaponyaw);
 	player->mo->AttackRoll = nullAngle;
 	// [RS FORK 2026-11-16] SINGLE-PLAYER VR KEEPS THE WRIST'S ROLL in AttackRoll, as stock QuestZDoom 17.3
-	// does, for scripts that read the main hand's roll from it (it was added for RSQ Distance Grab, since removed).
+	// does: RSQ Distance Grab (wadsrc_dgrab, reach.zs Roll) reads the main hand's roll from AttackRoll -- its
+	// palm gate is a quarter turn of it -- and a zero here every tic left the main hand unable ever to reach.
 	// The zero exists for netplay determinism (a peer cannot know this machine's wrist), which a single
 	// player does not have; MainHandRoll is the device's value, written every rendered frame.
 	if (!multiplayer && isLocalVr) player->mo->AttackRoll = player->mo->MainHandRoll;

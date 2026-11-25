@@ -33,10 +33,21 @@
 // NOT HERE: the masks (STUDY1 #351, #301, #171, 0x08 click-obj giving i25 / i24 / i26) are lifted by the picker's
 // grip in reach, unchanged; the attempts and the ward tingle are roth_gestures.cpp's.
 //
-// WHO OWNS A GRIP: the hand's state (roth_handstate.h, L2, docs/VR_INTERACTION.md 4). A grip closing is this file's when
-// WorldHandsGripTaken sets up a pull or a twist on what the hand touches; the hand is then ACTING for that gesture
-// until the grip opens, and the gesture ends in exactly one L1 use (RulesUse). An item HELD (the original's
-// right-hand item, drawn in the item hand) is no world object: the RELEASE, the TWIST and the DRINK act on it.
+// WHO OWNS A GRIP (with RSQ Distance Grab, roth_grabglue.h GrabGlueTakesGrip, 2026-11-16):
+//  - an item LYING in the world that the grab offers (ObjectIsPickupItem: the type-4 pickup, or a click chain whose
+//    0x29 gives that item) is the PACKAGE'S to take: its walk-up grip (the press) and its palm-out pull, its catch
+//    being the original's use of it (VRPickTakeCaught -> DoUse -> the object's own click chain). In chapter 2 that
+//    is every lying statuette (#23, #58, #74, #540, AELF #102), the statuettes standing on the plates (#121,
+//    #136-#141: the catch runs that click -- given back, the count stepped down, the plate re-enabled; Q3), the
+//    Orb on its ledge (#1) and the vials (tools/dgrab_test: STUDY1 28/28, MAS3 20/20, AELF 10/10 offered).
+//  - an item HELD (the original's right-hand item, drawn in the item hand) is no world object: only this file acts
+//    on it -- the RELEASE (a grip opening: the package takes on a close, and has no carry in the Realms, its catch
+//    being taken at once by the original's use), the TWIST and the DRINK.
+//  - a grip CLOSING is asked in this order (roth_vrpick.cpp TickHand): the Lamp's bail (HeldGripTaken), the package
+//    (GrabGlueTakesGrip: it would take an offered item with that press, or carries one), this file
+//    (WorldHandsGripTaken: a lever, a chain, a leaf's edge, the clock, a socket), then the picker's use. A press the
+//    package takes is not also a pull or a twist; the twist can still be set by the closed hand moving into the
+//    socket afterwards (no press), as by any closed hand.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -49,6 +60,7 @@
 #include "roth_inventory.h"
 #include "roth_held.h"
 #include "roth_raw.h"
+#include "roth_grabglue.h"
 #include "roth_gestures.h"
 #include "roth_handworks.h"
 #include "roth_track.h"
@@ -1235,6 +1247,7 @@ bool WorldHandsGripTaken(int role)
 	if (!S.built) Build(pmo);
 	HandNow h;
 	if (!ReadHand(role, h)) return false;
+	if (GrabGlueTakesGrip(S.level, role)) return false;   // the package's (roth_vrpick.cpp asks it first; asked again for safety)
 	// a key in its lock first (only an item the use there tests, or the table's), then a door's handle or leaf
 	if (TryTwist(role, h, pmo, "the grip closed in it")) return true;
 	if (HandworksGripTaken(role, pmo)) return true;   // roth_handworks.cpp
