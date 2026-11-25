@@ -13,10 +13,11 @@
 //   ITEMS: RSQ Distance Grab (the owner's package, wadsrc/static/filter/vrealms, glued by roth_grabglue.cpp): the
 //     palm turned out aims its cone, the flick pulls, the open palm catches; the grip on an item at the hand takes it.
 //     A catch is the original's pickup from that hand (VRPickTakeCaught -> DoUse).
-//   the index pointed: its laser (THE BEAM)               ClassifyPick           classify_cursor_target_object
-//   GRIP, the beam on a usable thing (not an item: those  Activate(Use)          activate_targeted_object
+//   the hand on a usable thing, within 0.3 m in front of  ClassifyPick           classify_cursor_target_object
+//     it (THE REACH): GRIP uses it (not an item: those    Activate(Use)          activate_targeted_object
 //     are the grab's)
-//   TRIGGER, the beam on something                        ExaminePick            examine_object_under_cursor
+//   TRIGGER on what the hand is on                        ExaminePick            examine_object_under_cursor
+//   No laser of VRealms' own: the one laser is Distance Grab's (owner, 2026-11-24).
 //
 // Reach is the original's (L1, roth_vrrules.h: depth < 600 from the body). Who owns each hand is L2's (L2Tick): the
 // Colt's reload parts, a world gesture (a lever, a key in its lock, a door's handle), the fore-end, the Lamp or the
@@ -163,7 +164,6 @@
 EXTERN_CVAR(Int, vr_mode)   // file scope, never inside a namespace
 CVAR(Bool, roth_vrpick, true, 0)          // the VR hands' picker; not saved
 CVAR(Bool, roth_vrpick_debug, false, 0)   // a line per change of what each hand points at
-bool RSLaser_HandBeamActive(int hand);    // hw_rslaser.cpp: RSQ Distance Grab's beam rides that hand now
 // THE HEADSET'S LIVE METRE for RSQ Distance Grab's scripts (wadsrc/static/filter/vrealms/zscript/rsqdg/reach.zs
 // RSQDG_Reach.UnitsPerMetre): written every tic from the VR scale (VR_UnitsPerMeter). Not saved.
 CVAR(Float, roth_vr_metre_live, 0.f, 0)
@@ -219,8 +219,6 @@ struct HandState
 	int         xrLooseLogged = -1;
 
 	// THE BEAM (see THE BEAM below): on for a free hand; its ray, rigid with the hand
-	bool        beamOn = false;
-	DVector3    beamFrom, beamDir;
 
 	// billboards
 	int marker = 0;
@@ -814,9 +812,9 @@ void GlowFollow(Glow &g, FLevelLocals *level, AActor *host, const DVector3 &eye,
 	if (fresh) t->ClearInterpolation();
 }
 
-// What each hand's glow is about this tic: its closest pickup (XR Tools' request_highlight), else what its beam meets while
-// the hand could act on it (usable in reach, or keyed / blocked -- the original's cursor says so). "Have" while that
-// hand's grip or trigger is down on it. Both hands on one thing: one glow, the stronger.
+// What each hand's glow is about this tic: its closest dropped item (XR Tools' request_highlight); the original's items
+// glow as Distance Grab's own. "Have" while that hand's grip or trigger is down on it. Both hands on one thing: one
+// glow, the stronger.
 void GlowTick(FLevelLocals *level, AActor *pmo, bool live)
 {
 	if (!live || level == nullptr || pmo == nullptr || pmo->player == nullptr)
@@ -830,12 +828,7 @@ void GlowTick(FLevelLocals *level, AActor *pmo, bool live)
 	{
 		const HandState &h = P.hand[role];
 		if (!h.valid) continue;
-		if (h.xrPick != nullptr) want[role] = h.xrPick;   // XR Tools' closest pickup is what is highlighted
-		else if (h.beamOn && h.havePick && h.pick.kind == Pick::Prop && !ObjectIsPickupItem(h.pick.actor))   // items glow as Distance Grab's
-		{
-			const rules::Class k = RulesClassOf(h.cls);
-			if (k == rules::Class::Usable || k == rules::Class::Blocked) want[role] = h.pick.actor;
-		}
+		if (h.xrPick != nullptr) want[role] = h.xrPick;   // a dropped item in reach (the original's items glow as Distance Grab's)
 		have[role] = want[role] != nullptr && (h.gripClosed || h.trigDown);
 	}
 	if (want[0] != nullptr && want[0] == want[1]) { have[0] = have[0] || have[1]; want[1] = nullptr; }
@@ -866,74 +859,6 @@ void ReadButtons(HandState &h, bool &gripEdge, bool &trigEdge)
 }
 
 
-
-// THE BEAM (owner in the headset, 2026-11-24: "PUT A FUCKIN BEAM ON MY GOD DAMN HAND"). Godot XR Tools'
-// function_pointer.gd as it ships with show_laser SHOW and laser_length COLLIDE (:509-553): a laser out of every free
-// hand, always, drawn to where it meets something (else its full length), the thing it meets highlighted (THE GLOW).
-// Its ray is the hand's OWN frame (VRHandPose_MapFrame, the frame the hand model is seated in, the same one the
-// hand-locked billboards ride), not the finger: so the drawn laser is rigid with the hand in the hand's own space
-// and cannot swing, lag or jump (the dotted beam's fault: a tic-old world hit pinned to a moving hand). The trigger
-// examines what it meets, the grip uses or takes it (the original's clicks, L1). Suppressed, as XR Tools'
-// suppress_radius does, while something is in the hand's own reach (a touch, the 0.3 m pickup).
-constexpr double kBeamStartM = 0.12, kBeamMaxM = 5.0;
-
-void UpdateBeam(int role, HandState &h)
-{
-	h.beamOn = false;
-	if (!h.valid || !h.pointing || P.test || HandHoldsWeapon(role) || gL2[role].itemHeld || HeldHandCarries(role) || HeldMatchIn(role)
-		|| !gL2[role].MayAct(hands::Owner::Picker))
-		return;
-	if (h.xrPick != nullptr && !h.xrRanged) return;   // XR Tools' suppress_radius: near things are the hand's own
-	// One laser per hand (owner in the headset, 2026-11-24: "what ... is this white laser coming out of my hand in
-	// addition to the distancegrab cone?"): while RSQ Distance Grab's beam rides this hand, this one stands down.
-	if (RSLaser_HandBeamActive(role)) return;
-	DVector3 o, f, r, u;
-	if (!VRHandPose_MapFrame(role, o, f, r, u)) return;
-	h.beamDir = f;
-	h.beamFrom = o + f * (kBeamStartM * UPM());
-	h.beamOn = true;
-}
-
-void DrawWorldBeam(int role, HandState &h, AActor *pmo)
-{
-	if (!h.beamOn || pmo == nullptr || pmo->player == nullptr || P.level == nullptr) { HideHand(h); return; }
-	h.shown = true;
-	const double upm = UPM();
-	const HandLock L = LockFor(role, pmo);
-	const DVector3 eye(pmo->X(), pmo->Y(), pmo->player->viewz);
-	const rules::Class k = h.havePick ? RulesClassOf(h.cls) : rules::Class::Nothing;
-	const double len = h.havePick ? std::min((h.pick.hitPos - h.beamFrom).Length(), kBeamMaxM * upm) : kBeamMaxM * upm;
-	PalEntry col(255, 210, 214, 222);
-	double alpha = 0.30;
-	if (k == rules::Class::Usable) { col = PalEntry(255, 250, 238, 200); alpha = 0.90; }
-	else if (k == rules::Class::Blocked) { col = PalEntry(255, 220, 60, 50); alpha = 0.80; }
-	const double lineK = tan(0.35 * (M_PI / 180.0));
-	std::vector<std::pair<DVector3, double>> at;
-	for (double t = 0; t < len && (int)at.size() < 320;)
-	{
-		const DVector3 p = h.beamFrom + h.beamDir * t;
-		const double size = std::max(1e-3, (p - eye).Length() * lineK);
-		at.push_back({ p + h.beamDir * (size * 0.5 < len - t ? size * 0.5 : 0.0), size });
-		t += size;
-	}
-	const int n = (int)at.size();
-	if ((int)h.line.size() < n) h.line.resize(n, 0);
-	for (int i = 0; i < n; i++) EnsureBB(h.line[i], BB_PANEL);
-	for (FBillboard &b : P.level->Billboards)
-		for (int i = 0; i < n; i++)
-		{
-			if (b.id != h.line[i]) continue;
-			b.flags = (b.flags & ~BBFL_HANDANY) | (L.on ? L.flag : 0);
-			b.pos = L.on ? L.Local(at[i].first) : at[i].first;
-			b.width = b.height = at[i].second;
-			b.color = col;
-			b.alpha = alpha;
-			break;
-		}
-	for (int i = n; i < h.lineShown && i < (int)h.line.size(); i++) HideBB(h.line[i]);
-	h.lineShown = n;
-	HideBB(h.marker);
-}
 
 // THE PICKUP (owner in the headset, 2026-11-24: "i can't pickup the matchbook because your grab system IS FUCKING
 // INDECIPHERABLE ... DID YOU ... LOOK AT REAL VR GAMES OR OPEN SOURCE PROJECTS"). Godot XR Tools' function_pickup.gd
@@ -980,7 +905,7 @@ void UpdatePickup(int role, HandState &h, AActor *pmo, bool haveRay)
 		|| gL2[role].itemHeld || HeldHandCarries(role))
 		return;
 	const double upm = UPM(), grab2 = (kXRGrabM * upm) * (kXRGrabM * upm), cosCone = cos(kXRRangedDeg * (M_PI / 180.0));
-	// the cone points where the beam does: the hand's own frame (THE BEAM), else the hand's forward
+	// the cone points along the hand's own frame (the frame the hand model is seated in), else the hand's forward
 	DVector3 o, fwd, r, u;
 	if (!VRHandPose_MapFrame(role, o, fwd, r, u)) fwd = h.handFwd;
 	if (fwd.Length() < 1e-6) return;
@@ -1115,6 +1040,19 @@ bool BackpackGrip(int role, HandState &h, AActor *pmo)
 	return true;
 }
 
+// THE REACH (owner, 2026-11-24: one laser only -- Distance Grab's; no second pointer): the thing the hand is on, the
+// original's pick from the palm along the hand's own frame (the frame the hand model is seated in), as far as XR Tools'
+// grab_distance, 0.3 m. Read by the grip (use) and the trigger (examine).
+constexpr double kReachM = 0.3;
+bool ReachProbe(int role, const HandState &h, AActor *pmo, Pick &p, CursorClass &c)
+{
+	DVector3 o, f, r, u;
+	if (pmo == nullptr || !h.valid || !VRHandPose_MapFrame(role, o, f, r, u)) return false;
+	if (!RulesPick(h.palm, f, p, kReachM * UPM())) return false;
+	c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
+	return true;
+}
+
 int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
 {
 	// RSQ DISTANCE GRAB'S GRIP FIRST (owner 2026-11-24: "bring back distance grab"; roth_grabglue.h GrabGlueTakesGrip): a
@@ -1131,34 +1069,17 @@ int GripUse(int role, HandState &h, AActor *pmo, bool haveRay)
 	if (PickupGrip(role, h, pmo)) return 1;   // XR Tools' pickup: the closest pickable thing
 	// THE TALL WICKS (owner, Q13): the hand with the struck match points its flame at a wick in reach and grips.
 	if (haveRay && HeldMatchIn(role) && CandlesPointGrip(role, h.tip, h.dir)) return 1;
-	// XR Tools' pointer: what the beam meets
-	if (h.beamOn && h.havePick)
+	// WHAT THE HAND IS ON (THE REACH): a usable thing within reach in front of the hand -- a switch, a wall's use, a
+	// door -- is the original's use from this hand. Items are Distance Grab's.
+	Pick p;
+	CursorClass c;
+	if (ReachProbe(role, h, pmo, p, c))
 	{
-		const rules::Class k = RulesClassOf(h.cls);
-		// AN ITEM IS RSQ DISTANCE GRAB'S (2026-11-16): the beam uses switches, doors and the rest, but an item the original's
-		// use would pick up (ObjectIsPickupItem) is reached by the grab's palm-out pull and taken at the hand.
-		if (h.pick.kind == Pick::Prop && ObjectIsPickupItem(h.pick.actor))
-		{
-			if (Logging())
-				Printf("[roth_vrpick] %s hand grip on the beam: an item -- RSQ Distance Grab takes it (palm out, flick), not the beam\n", RoleName(role));
-			return 0;
-		}
-		if (k == rules::Class::Usable)
-		{
-			DoUse(role, h.pick, h.cls, pmo, "the grip on what the beam meets");
-			return 1;
-		}
-		if (k != rules::Class::Nothing)
-		{
-			ExplainSurfaceBox(h.pick);
-			Printf("[roth_vrpick] %s hand grip on what the beam meets (%s): refused -- %s (%s)\n", RoleName(role), PickKindName(h.pick),
-				WhyNotUse(h.cls).GetChars(), rules::ClassName(k));
-			Refused(role, "grip on the beam");
-			return 1;
-		}
+		if (p.kind == Pick::Prop && ObjectIsPickupItem(p.actor)) return 0;
+		if (c.CanUse()) { DoUse(role, p, c, pmo, "the grip on what the hand is on", true); return 1; }
 	}
 	if (Logging())
-		Printf("[roth_vrpick] %s hand grip: no pickup near and nothing usable on the beam -- nothing\n", RoleName(role));
+		Printf("[roth_vrpick] %s hand grip: no pickup near and nothing usable the hand is on -- nothing\n", RoleName(role));
 	return 0;
 }
 
@@ -1199,7 +1120,7 @@ Step2 L2Tick(int role, HandState &h, AActor *pmo, bool haveRay, bool gripEdge, b
 	f.gripClosed = h.gripClosed;
 	f.gripEdge = gripEdge;
 	f.releaseEdge = releaseEdge;
-	f.target = (h.xrPick != nullptr) || (h.beamOn && h.havePick && RulesClassOf(h.cls) != rules::Class::Nothing);
+	f.target = h.xrPick != nullptr;
 	f.coltAction = ColtGripTaken(role);
 	f.gestureHeld = WorldHandsHolding(role);
 	f.supportHeld = role == VR_OFFHAND && VRWeaponsSupportHeld();
@@ -1265,8 +1186,7 @@ void TickHand(int role, AActor *pmo)
 {
 	HandState &h = P.hand[role];
 	ReadInputs(role, h);
-	// POINTING: the index straight, as the hand's pose shows it (PoseRule: off the trigger, not touching it). The beam
-	// shows only then, so the palm turned out is Distance Grab's aim alone.
+	// POINTING: the index straight, as the hand's pose shows it (PoseRule: off the trigger, not touching it).
 	h.pointing = h.valid && InvHandIndexStraight(h.triggerTouch, h.trigger);
 	bool gripEdge = false, trigEdge = false;
 	const bool gripWasClosed = h.gripClosed;
@@ -1299,17 +1219,9 @@ void TickHand(int role, AActor *pmo)
 	// touch rule, the in-reach zone, the fingertip press and the held aim are gone. The original's rules decide every
 	// use underneath (L1).
 	UpdatePickup(role, h, pmo, haveRay);
-	UpdateBeam(role, h);
-	if (h.beamOn)
-	{
-		h.havePick = RulesPick(h.beamFrom, h.beamDir, h.pick, PickTraceRange(h.beamDir));
-		h.cls = h.havePick ? ClassifyPick(h.pick, pmo, BodyDepth(pmo, h.pick)) : CursorClass{};
-	}
-	else
-	{
-		h.havePick = false;
-		h.cls = CursorClass{};
-	}
+	// THE REACH (see ReachProbe): what the hand is on now, for the haptic tick and the debug line
+	h.havePick = ReachProbe(role, h, pmo, h.pick, h.cls);
+	if (!h.havePick) h.cls = CursorClass{};
 
 	// ---- L2: WHO OWNS THIS HAND THIS TIC (roth_handstate.h) ----
 	// The standing owners first, then a closing grip's claims in order -- the Lamp's bail, the Colt, the weapon (the
@@ -1324,18 +1236,18 @@ void TickHand(int role, AActor *pmo)
 		if (changed)
 		{
 			if (h.havePick)
-				Printf("[roth_vrpick] %s hand's beam meets %s at planar %.0f (depth %.0f), %.0f along it: cursor type %d shape 0x%x"
+				Printf("[roth_vrpick] %s hand is on %s at planar %.0f (depth %.0f), %.0f along it: cursor type %d shape 0x%x"
 					" (record type %d, examinable %d%s)\n", RoleName(role), PickKindName(h.pick), (h.cls.depth - 64.0) / 2.0, h.cls.depth,
 					h.pick.dist, (int)h.cls.type, (unsigned)h.cls.shape, (int)h.cls.recType, h.cls.examinable,
 					h.cls.outOfRange ? ", out of range" : "");
 			else
-				Printf("[roth_vrpick] %s hand's beam meets nothing\n", RoleName(role));
+				Printf("[roth_vrpick] %s hand is on nothing\n", RoleName(role));
 			h.logged = h.havePick ? h.pick : Pick{};
 			h.loggedShape = h.havePick ? h.cls.shape : 0;
 		}
 	}
 
-	// ---- THE TRIGGER (the original's primary: examine): the closest pickup, else what the beam meets ----
+	// ---- THE TRIGGER (the original's primary: examine): the closest pickup, else what the hand is on ----
 	// Not on the hand holding a weapon: its trigger fires it (the binding's +attack, WeaponTick), as before.
 	if (trigEdge)
 	{
@@ -1360,7 +1272,7 @@ void TickHand(int role, AActor *pmo)
 				p.hitPos = PickBoxMiddle(h.xrPick);
 				have = true;
 			}
-			else if (h.beamOn && h.havePick) { p = h.pick; have = true; }
+			else if (h.havePick) { p = h.pick; have = true; }   // what the hand is on (THE REACH)
 			if (have)
 			{
 				const CursorClass c = ClassifyPick(p, pmo, BodyDepth(pmo, p));
@@ -1372,17 +1284,17 @@ void TickHand(int role, AActor *pmo)
 				}
 			}
 			else if (Logging())
-				Printf("[roth_vrpick] %s hand trigger: no pickup near and nothing on the beam\n", RoleName(role));
+				Printf("[roth_vrpick] %s hand trigger: no pickup near and nothing the hand is on\n", RoleName(role));
 		}
 	}
 
-	// ---- HAPTIC TICK on the beam coming onto something actionable ----
-	const bool actionable = h.beamOn && h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
+	// ---- HAPTIC TICK on the hand coming onto something actionable ----
+	const bool actionable = h.havePick && (h.cls.CanUse() || h.cls.CanExamine());
 	if (actionable && !SamePickTarget(h.pick, h.hover)) { h.hover = h.pick; Haptic(role, 0.12, 12); }
 	else if (!actionable) h.hover = Pick{};
 
-	// ---- THE BEAM drawn (XR Tools' laser); THE GLOW is GlowTick's, once for both hands after them ----
-	DrawWorldBeam(role, h, pmo);
+	// Nothing is drawn from the hand: the one laser is RSQ Distance Grab's. THE GLOW is GlowTick's.
+	HideHand(h);
 }
 
 //--------------------------------------------------------------------------
