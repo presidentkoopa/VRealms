@@ -342,7 +342,35 @@ bool PlayerMoveOwns(const player_t *player)
 }
 
 bool PlayerMoveOwnsTurnKeys() { return g_move.active; }
-int PlayerMoveSpeedAccum() { return (int)g_move.pm.speedAccum; }   // g_move_speed_accum (0x7e8d8): walk-in triggers' +0x07 & 4
+int PlayerMoveSpeedAccum() { return (int)g_move.pm.speedAccum; }
+
+void PlayerMoveFaceChanged(int faceIndex)
+{
+	if (g_move.map == nullptr) return;
+	const Map &m = *g_move.map;
+	if (faceIndex < 0 || (size_t)faceIndex >= m.faces.size()) return;
+	static const Map *built = nullptr;
+	static std::vector<uint32_t> faceOffset;
+	if (built != &m || faceOffset.size() != m.faces.size())
+	{
+		faceOffset.assign(m.faces.size(), 0);
+		for (const auto &kv : m.faceByOffset) if (kv.second >= 0 && (size_t)kv.second < faceOffset.size()) faceOffset[kv.second] = kv.first;
+		built = &m;
+	}
+	const Face &f = m.faces[faceIndex];
+	const uint32_t fo = faceOffset[faceIndex];
+	if (fo != 0) g_move.pm.SetImageByte(fo + 0x0a, (uint8_t)(f.collisionFlags & 0xff));
+	if (f.textureMap >= 0 && (size_t)f.textureMap < m.textureMaps.size() && f.textureMapOffset != 0)
+	{
+		const TextureMap &tm = m.textureMaps[f.textureMap];
+		const uint32_t to = f.textureMapOffset;
+		g_move.pm.SetImageWord(to + 2, tm.midTexture);
+		g_move.pm.SetImageWord(to + 4, tm.upperTexture);
+		g_move.pm.SetImageWord(to + 6, tm.lowerTexture);
+		g_move.pm.SetImageByte(to + 8, tm.flags);
+		if (tm.extended) g_move.pm.SetImageWord(to + 0x0a, (uint16_t)(tm.shiftX | (tm.shiftY << 8)));
+	}
+}   // g_move_speed_accum (0x7e8d8): walk-in triggers' +0x07 & 4
 
 void PlayerMoveTakeCmd(player_t *player)
 {

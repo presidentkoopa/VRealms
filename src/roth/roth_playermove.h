@@ -133,6 +133,10 @@ public:
 	void SetSectorHeights(int index, int16_t ceiling, int16_t floor);
 	void SetPlatformHeights(int index, int16_t undersideZ, int16_t topZ);   // via the sector's +0x18
 	void SetSectorDoorFlag(int index, bool on);
+	// A byte of the geometry image at a RAW offset (a face's +0x0a, a mapping record's +0x08): what a command changed
+	// in the live map, so the collision reads it as the original's one memory would.
+	void SetImageByte(uint32_t offset, uint8_t v) { if (offset < es.size()) es[offset] = v; }
+	void SetImageWord(uint32_t offset, uint16_t v) { if (offset + 1 < es.size()) { es[offset] = (uint8_t)v; es[offset + 1] = (uint8_t)(v >> 8); } }
 	void SetSectorTextureOverride(int index, int8_t v);   // byte +0x0c (the stacked-sector alt-Z reads it, CP:722-726)  // byte +0x16 bit 0 (setup_door_swing_geometry, doors.c:464)
 
 	// ---- the map's tuning (init_movement_tuning_from_first_map, map_load.c:197-209) ----

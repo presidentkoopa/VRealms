@@ -30,6 +30,9 @@ void PlayerMoveSetRaw(const std::vector<uint8_t> &bytes);
 // After the actors (their tables give the collision dimensions). `map` is the live map.
 void PlayerMoveBeginLevel(const Map &map, FLevelLocals *level, Log *log);
 void PlayerMoveEndLevel();
+// A command changed face `faceIndex`'s flags (+0x0a) or the mapping record it points at (0x0c, 0x34): the
+// collision's image of the geometry takes the live values (the original has one memory; this port has two).
+void PlayerMoveFaceChanged(int faceIndex);
 // Does the port move this player? (a Realms level is up and this is its player)
 bool PlayerMoveOwns(const player_t *player);
 // Flat keyboard turning is the original's turn ramp, so the engine must not turn as well.

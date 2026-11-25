@@ -490,19 +490,18 @@ const char *VariantName(LinkVariant v)
 //       dir_mask1[4] = { 0x01, 0x04, 0x02, 0x01 } (:3012). The index comes from
 //       the PICK, not from the player's angle, and a SET bit ALLOWS -- the
 //       opposite sense. Index 3 repeats index 0, so it is three directions, not
-//       four. NOT IMPLEMENTED.
+//       four. PORTED in roth_surfbox.h SurfFlagsAdmit (the "band": the wall span kind, see below).
 //
 //   0x19/0x31, a floor      (dispatch_entry_command_trigger:3068)
 //       NO direction mask at all. Bit 0 instead selects WHICH SURFACE:
 //       `(record[+6] & 1) ? (type == 8) : (type == 2)`, the mid-platform top
 //       versus the sector floor. Implemented in UseFlat.
 //       The category-B twin (:3100) uses a third table, dir_mask2 = { 1, 2, 4,
-//       8 }, with four distinct bits. NOT IMPLEMENTED.
+//       8 }, with four distinct bits. PORTED in roth_surfbox.h SurfFlagsAdmit.
 //
-// Also unimplemented on both click channels: the AUTHORED BOUNDING BOX. A
-// record whose +0x0c is non-zero additionally requires the player's x/z inside
-// [+0x0c..+0x0e] x [+0x10..+0x12] (:3034-3038, :3075-3079). Records with it
-// unset fire from anywhere, which is most of them.
+// The AUTHORED BOX on the click channels (+0x0c..+0x12, :3034-3038, :3075-3079): PORTED, roth_surfbox.h
+// (SurfFirstMatch; it is the hit TEXEL the box bounds, the pick record's +4/+6, not the player's position as ROTH.C's
+// own comment says). (Corrected 2026-11-24: this note said both were not implemented after they were.)
 //
 //==========================================================================
 
@@ -1956,6 +1955,27 @@ int ChangeFaceTexture(const Command &c)
 	{
 		if (fi < 0 || (size_t)fi >= g.map.faces.size()) continue;
 
+		// THE TRANSPARENCY FLIP (raw_commands.c:407-418, read whole): bit 0 of +0x0a of the FIRST face that uses this
+		// mapping record (find_face_record, :64-74: faces in file order), whether or not the slot changed. Target =
+		// cur ^ 1; unless +0x06 & 4, forced on, and off again with & 8. The collision reads it (PlayerMoveFaceChanged).
+		const int tmi0 = g.map.faces[fi].textureMap;
+		if (tmi0 >= 0)
+			for (size_t pf = 0; pf < g.map.faces.size(); pf++)
+			{
+				if (g.map.faces[pf].textureMap != tmi0) continue;
+				Face &paired = g.map.faces[pf];
+				const uint8_t cur = (uint8_t)(paired.collisionFlags & 0xff);
+				uint8_t al = (uint8_t)(cur ^ 1);
+				if (!(c.fireFlags & 4)) { al |= 1; if (c.fireFlags & 8) al &= 0xfe; }
+				if ((al ^ cur) & 1)
+				{
+					paired.collisionFlags ^= 1;
+					PlayerMoveFaceChanged((int)pf);
+					changed++;
+				}
+				break;
+			}
+
 		// Keep the map's own copy in step, because it is the game's state: a
 		// later 0x34 on the same wall compares against it, and the original
 		// reports "no change" when the slot already holds the index.
@@ -1968,6 +1988,7 @@ int ChangeFaceTexture(const Command &c)
 			                                    : tm.upperTexture;
 			if (field == c.aux) continue;                 // already there
 			field = c.aux;
+			PlayerMoveFaceChanged(fi);
 		}
 
 		// The new picture goes through the wall rule like any other: a FLIP_X
@@ -3972,6 +3993,7 @@ static bool TickChangeFaceTextureAdv(Effect &e)
 	rec->SetWord(0x0C, shift);
 
 	ApplyTexmapFull(tmi);
+	PlayerMoveFaceChanged(faceIdx);                  // the collision reads the face's +0x0a and the mapping's +0x08
 	return TickFinalize(e, rec, rec->Word(0x0E));
 }
 

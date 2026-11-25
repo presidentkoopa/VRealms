@@ -54,10 +54,10 @@ CLAUDE.md cover parts of them.
 | 4 | Walk-in triggers: the "only while moving" gate (+0x07 & 4) and the +0x02 0x29 gate | a trigger firing while standing still / when armed-gated | fire_sector_trigger :2869-2871 | NotifyPlayerSector |
 | 5 | Walk-in triggers: the original fires ONE record per entry (the first for the sector's id); the port fires every 0x13 on the sector | STUDY1 s430 runs two | :3262-3266 | FireSectorTriggers |
 | 6 | Walk-in triggers: nothing fires on the first sighting (the spawn sector); the original's buffer starts empty, so it does | a chain on the starting sector | :3240-3266 | NotifyPlayerSector |
-| 7 | Wall-face click triggers (0x18/0x32): the direction mask dir_mask1 | a switch usable from a side the original refuses | raw_commands.c:3012, :3029 | roth_runtime.cpp:486-492 |
-| 8 | Floor click category-B twin: dir_mask2 | -- | :3100 | roth_runtime.cpp:499 |
-| 9 | The authored bounding box on click triggers (+0x0c..+0x12) | a use from outside its authored area | :3034-3038, :3075-3079 | roth_runtime.cpp:501 |
-| 10 | The transparency flip of a texture swap (face +0x0a bit 0) | a glass / grille that should turn solid or see-through | raw_commands.c (0x34) | roth_runtime.cpp:1777 |
+| 7 | ~~Wall-face click triggers (0x18/0x32): the direction mask dir_mask1~~ WAS ALREADY PORTED (roth_surfbox.h SurfFlagsAdmit); the note in the code was stale | a switch usable from a side the original refuses | raw_commands.c:3012, :3029 | roth_runtime.cpp:486-492 |
+| 8 | ~~Floor click category-B twin: dir_mask2~~ WAS ALREADY PORTED (SurfFlagsAdmit) | -- | :3100 | roth_runtime.cpp:499 |
+| 9 | ~~The authored bounding box on click triggers~~ WAS ALREADY PORTED (roth_surfbox.h SurfFirstMatch) | a use from outside its authored area | :3034-3038, :3075-3079 | roth_runtime.cpp:501 |
+| 10 | The transparency flip of a texture swap (face +0x0a bit 0): PORTED into the live map and the collision's image (0x34, and 0x0c's swap); what the RENDERER does with that bit is not read yet | a glass / grille that should turn solid or see-through | raw_commands.c (0x34) | roth_runtime.cpp:1777 |
 | 11 | The 0x40 / 0x20 state-link latches of the click channels | -- | RC:1635-1644 | roth_runtime.cpp:7630 |
 | 12 | 0x09 moving sector, only with `roth_platforms 1` (sliding sectors need moving vertices) | sliding floors / lifts sideways, 32 records game-wide | the 0x09 tick | roth_runtime.cpp:4786 |
 | 13 | Runtime refusals counted, each a case the port cannot draw: 0x34 / 0x0c on an index the loader never registered; 0x0a/0x0b with no flat registered; 0x0d / 0x02 with no sprite built for the word; 0x24 with no active-object latch; 0x23 deeper than 16 host chains | a texture or sprite change that does not show | -- | roth_runtime.cpp:1903, 3273, 3286, 2907, 7369, 2292, 4997 |
