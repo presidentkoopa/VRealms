@@ -127,7 +127,8 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
     out" (`VR_INTERACTION.md` 3b, decided 2026-11-23, not built until now): an empty hand squeezing over a shoulder
     opens the inventory (`roth_vrpick.cpp` BackpackGrip). Built.
 - **Locomotion from a proven source (owner: "are we looking at available open source movement-solutions ... have we
-  considered roomscale"; CLAUDE.md, existing solutions first).** Port Godot XR Tools' movement (MIT, on hand:
+  considered roomscale"; CLAUDE.md, existing solutions first). Started 2026-11-24: `docs/XRTOOLS_LOCOMOTION.md` (the
+  checklist).** Port Godot XR Tools' movement (MIT, on hand:
   `movement_direct.gd` 107 lines, `movement_turn.gd` 128 (snap or smooth), `movement_crouch.gd`, `movement_sprint.gd`,
   `movement_jog.gd` (arm-swing), `effects/vignette.gd` (comfort), and `player/player_body.gd` 1,093 (the body that
   follows the headset through the world for roomscale)), with the original's collision underneath (each move goes
