@@ -26,6 +26,7 @@
 #include "maploader/roth_portalplan.h"   // rothplan::SectorAt, for RealmsToEngineXY
 #include "actorinlines.h"                 // AActor::PosRelative
 #include "roth_runtime.h"
+#include <unordered_map>
 #include "roth_commands.h"
 #include "roth_cmdcore.h"     // counters, texture oddments, player effects, particles
 #include "roth_raw.h"
@@ -725,6 +726,13 @@ struct Runtime
 	// index its command records can name. See RegisterTexture.
 	std::map<int, FTextureID> texByIndex;
 	std::map<int, FTextureID> mirroredByIndex;   // RegisterMirroredTexture
+	// THE TEXTURE-ANIMATION TRIGGER (0x25). Engine texture index -> (Realms picture, frame); a picture's frame count;
+	// and per watched picture the original's two words on the record's entry: the period (+0x0a, frames - 1) and the
+	// frame last seen (+0x0c), and whether the drawn picture reached its period since the last tic.
+	std::unordered_map<int, std::pair<int, int>> animTexOf;
+	std::map<int, int> animFrameCount;
+	struct AnimWatch { int frames = 0; int tracker = 0; bool due = false; };
+	std::map<int, AnimWatch> animWatch;
 
 	// The wall rule's inputs per face. See RegisterWallFace and ReapplyWallFace.
 	struct WallReg { WallFace wf; int texelLength = 0; int own = -1, nbr = -1; WallPieceShape piece[3]; };
@@ -5390,6 +5398,33 @@ int32_t HostRunObjectCommandsById(uint16_t id)
 // tick_command_timer_queue (raw_commands.c:1841-1864) and fire_queued_command (:5219-5236), read whole. Each timer
 // whose record is not disabled counts down by the frame step; below zero its chain (word[+4]) goes through the flow
 // pre-pass and onto the deferred queue, and the countdown starts again; a gated chain or a full queue sets it to 0x20.
+// texture_anim_command_hook's fire (raw_commands.c:1383-1396): for each watched picture that reached its last frame
+// while drawn, the first live 0x25 record keyed to it (category 8) runs its chain (word[+4]) with the chain state
+// cleared; +0x06 & 0x10 makes it one-shot.
+void AnimTriggerTick()
+{
+	for (auto &kv : g.animWatch)
+	{
+		if (!kv.second.due) continue;
+		kv.second.due = false;
+		uint16_t r = 0;
+		for (uint16_t idx : g.map.categories[8])
+		{
+			const Command *c = Rec(idx);
+			if (c != nullptr && c->key == (uint16_t)kv.first && !(c->modifier & 0x08)) { r = idx; break; }
+		}
+		Command *rec = Rec(r);
+		if (rec == nullptr) continue;
+		g.activeFace = -1;
+		g.activeObjectSector = g.activeObjectIndex = -1;
+		StageChainSound(0);
+		if (roth_trigger_debug)
+			Printf("roth_trigger: picture %d came to its last frame on screen: record #%u fires chain #%u\n", kv.first, (unsigned)r, (unsigned)rec->linkIndex);
+		Fire(rec->linkIndex);
+		if (rec->fireFlags & 0x10) { rec->modifier |= 0x08; SyncDisabled(rec); }
+	}
+}
+
 void TickTimerQueue()
 {
 	for (Runtime::Timed &t : g.timers)
@@ -6083,6 +6118,24 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	InitModifySectorAtLoad(log);
 	InitTimersAtLoad(log);
 	InitRestOfObjectTableAtLoad(log);
+	// the 0x25 records' pictures (the object table's +0x28 list, category 8), watched where the renderer draws them
+	{
+		int watched = 0, unknown = 0;
+		for (uint16_t idx : g.map.categories[8])
+		{
+			const Command *c = Rec(idx);
+			if (c == nullptr) continue;
+			auto fc = g.animFrameCount.find((int)c->key);
+			if (fc == g.animFrameCount.end()) { unknown++; continue; }
+			Runtime::AnimWatch aw;
+			aw.frames = fc->second;
+			g.animWatch[(int)c->key] = aw;
+			watched++;
+		}
+		g_animTriggerWatching = watched > 0 ? 1 : 0;
+		if (log != nullptr && (watched || unknown))
+			log->Line("  anim triggers    %d 0x25 picture(s) watched, %d name a picture this map's walls and flats do not animate", watched, unknown);
+	}
 	InitChangeHeightAtLoad(log);
 
 	// roth_platforms. The loader has already described its platform pieces by
@@ -6366,6 +6419,10 @@ void EndLevel()
 	g.effects.clear();
 	g.texByIndex.clear();
 	g.mirroredByIndex.clear();
+	g.animTexOf.clear();
+	g.animFrameCount.clear();
+	g.animWatch.clear();
+	g_animTriggerWatching = 0;
 	g.wallByFace.clear();
 	g.modSnap.clear();
 	g.midTexByIndex.clear();
@@ -6510,6 +6567,32 @@ void RegisterFaceSide(int rothFace, int sideIndex)
 void RegisterTexture(int rothIndex, FTextureID tex)
 {
 	if (rothIndex >= 0 && tex.isValid()) g.texByIndex[rothIndex] = tex;
+}
+
+int g_animTriggerWatching = 0;
+
+void RegisterAnimFrames(int rothIndex, FTextureID base, int frames)
+{
+	if (rothIndex < 0 || !base.isValid() || frames < 2) return;
+	for (int f = 0; f < frames; f++) g.animTexOf[base.GetIndex() + f] = std::make_pair(rothIndex, f);
+	g.animFrameCount[rothIndex] = frames;
+}
+
+// texture_anim_command_hook's frame tracking (raw_commands.c:1362-1381), run where the renderer draws a picture: the
+// period armed on first sight (frames - 1), the frame tracked, and the boundary -- the picture coming to its last
+// frame -- noted for the tic (AnimTriggerTick fires it). NOT PORTED, stated: the hook's skip when the DAS cache tick
+// equals the frame number (:1370), which compares two unrelated counters and has no counterpart here.
+void AnimTriggerDrawnSlow(int textureIndex)
+{
+	auto it = g.animTexOf.find(textureIndex);
+	if (it == g.animTexOf.end()) return;
+	auto w = g.animWatch.find(it->second.first);
+	if (w == g.animWatch.end()) return;
+	Runtime::AnimWatch &aw = w->second;
+	const int frm = it->second.second;
+	if (frm == aw.tracker) return;
+	aw.tracker = frm;
+	if (frm == aw.frames - 1) aw.due = true;
 }
 
 void RegisterMidTexture(int rothIndex, FTextureID tex)
@@ -9687,6 +9770,7 @@ void TickLevelLogic(FLevelLocals *level)
 	TickEffects();
 	// tick_command_timer_queue after the pool, before the deferred queue (tick_world_effects, raw_commands.c:3327-3335)
 	TickTimerQueue();
+	AnimTriggerTick();
 
 	// roth_platforms: tell the platform actors where the effects just put
 	// their sectors. After the pool, so an actor is never a frame behind it.

@@ -56,6 +56,7 @@
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
 #include "quaternion.h"
 #include "hw_vrmodes.h"
+#include "roth/roth_animtrigger.h"	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 
 #include "p_visualthinker.h"
 
@@ -407,6 +408,7 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 
 	uint32_t spritetype = actor? uint32_t(actor->renderflags & RF_SPRITETYPEMASK) : 0;
 	if (texture) state.SetMaterial(texture, UF_Sprite, (spritetype == RF_FACESPRITE) ? CTF_Expand : 0, clampmode, translation, OverrideShader);
+	if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 	else if (!modelframe) state.EnableTexture(false);
 
 	//SetColor(lightlevel, rel, Colormap, trans);

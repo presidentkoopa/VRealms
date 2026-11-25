@@ -49,6 +49,7 @@ static thread_local TArray<FFlatLightCandidate> flatLightCandidates;
 #include "m_round.h"
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamageFlatKey
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
+#include "roth/roth_animtrigger.h"	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 
 CVAR(Int, gl_max_vertices, 0, CVAR_ARCHIVE)
 
@@ -306,6 +307,7 @@ void HWFlat::DrawSubsectors(HWDrawInfo *di, FRenderState &state)
 void HWFlat::DrawOtherPlanes(HWDrawInfo *di, FRenderState &state)
 {
 	state.SetMaterial(texture, UF_Texture, 0, CLAMP_NONE, NO_TRANSLATION, -1);
+	if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 
 	// Draw the subsectors assigned to it due to missing textures
 	auto pNode = (renderflags&SSRF_RENDERFLOOR) ?
@@ -339,6 +341,7 @@ void HWFlat::DrawFloodPlanes(HWDrawInfo *di, FRenderState &state)
 	// the depth buffer
 
 	state.SetMaterial(texture, UF_Texture, 0, CLAMP_NONE, NO_TRANSLATION, -1);
+	if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 
 	// Draw the subsectors assigned to it due to missing textures
 	auto pNode = (renderflags&SSRF_RENDERFLOOR) ?
@@ -508,6 +511,7 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 		if (sector->special != GLSector_Skybox)
 		{
 			state.SetMaterial(texture, UF_Texture, 0, CLAMP_NONE, NO_TRANSLATION, -1);
+			if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 			SetPlaneTextureRotation(state, &plane, texture);
 			DrawSubsectors(di, state);
 			state.EnableTextureMatrix(false);
@@ -515,6 +519,7 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 		else if (!hacktype)
 		{
 			state.SetMaterial(texture, UF_Texture, 0, CLAMP_XY, NO_TRANSLATION, -1);
+			if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 			state.SetLightIndex(dynlightindex);
 			state.Draw(DT_TriangleStrip,iboindex, 4);
 			flatVerticesPerEye += 4;
@@ -537,6 +542,7 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 			if (!texture->GetTranslucency()) state.AlphaFunc(Alpha_GEqual, gl_mask_threshold);
 			else state.AlphaFunc(Alpha_GEqual, 0.f);
 			state.SetMaterial(texture, UF_Texture, 0, CLAMP_NONE, NO_TRANSLATION, -1);
+			if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 			SetPlaneTextureRotation(state, &plane, texture);
 			di->TranslateViewpointMatrices(0.0, zshift, 0.0);
 			di->ApplyViewpoint(state);

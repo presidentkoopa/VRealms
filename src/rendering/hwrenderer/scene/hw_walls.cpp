@@ -109,6 +109,7 @@ static thread_local TArray<FWallLightCandidate> wallLightCandidates;
 #include "m_round.h"
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamageWallKey
 #include "hw_effectlightbuffer.h"	// [EFFECTLIGHTS] EffectLightBuffer::Instance()->GetLiveCount(): the per-draw effect-light gate
+#include "roth/roth_animtrigger.h"	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 
 EXTERN_CVAR(Int, gl_max_vertices)
 
@@ -389,6 +390,7 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	if (effectLightMode != 0) state.SetEffectLightMode(effectLightMode);
 
 	state.SetMaterial(texture, UF_Texture, 0, flags & 3, NO_TRANSLATION, -1);
+	if (texture) roth::AnimTriggerDrawn(texture->GetID().GetIndex());	// [ROTH] the texture-animation trigger (0x25) sees the picture drawn
 #ifdef NPOT_EMULATION
 	// Test code, could be reactivated as a compatibility option in the unlikely event that some old vanilla map eve needs it.
 	if (hw_npottest)

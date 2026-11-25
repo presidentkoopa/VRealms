@@ -29,6 +29,7 @@
 #include "roth_install.h"
 #include "roth_log.h"
 #include "roth_palshade.h"
+#include "roth_runtime.h"   // RegisterAnimFrames (the 0x25 trigger)
 
 #include "colormatcher.h"
 #include "bitmap.h"
@@ -451,7 +452,11 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped, con
 		name += bakeSuffix;
 	}
 	FTextureID existing = TexMan.CheckForTexture(name.GetChars(), ETextureType::Override);
-	if (existing.isValid()) return existing;
+	if (existing.isValid())
+	{
+		if (img.frames.size() > 1 && !img.rle) RegisterAnimFrames(index, existing, (int)img.frames.size());   // 0x25 (roth_runtime.h)
+		return existing;
+	}
 
 	FRemapTable *remap = GPalette.GetTranslation(TRANSLATION_Standard,
 		blend == Blend::Translucent ? mTranslucentTranslation
@@ -582,6 +587,9 @@ FTextureID TextureSet::Build(int index, Log *log, bool masked, bool flipped, con
 		// The RLE variant (0xFFFE) has its frame chosen by its caller (decode_das_anim_frame), not by this timer; which
 		// caller steps a wall or flat of that kind is not read yet, so it keeps the old 229 ms (docs/PORT_GAPS.md).
 		TexAnim.AddSimpleAnim(base, frames, img.rle ? 229u : AnimFrameMs(img.rate));
+		// The texture-animation trigger (0x25, roth_runtime.h). Not the RLE variant: its block's frame count reads 0xfffe,
+		// so texture_anim_command_hook's period (+0x16 - 1, raw_commands.c:1373-1375) is 0xfffd and never comes round.
+		if (!img.rle) RegisterAnimFrames(index, base, frames);
 		mAnimated++;
 		if (log) log->Count("artwork: animated images");
 	}

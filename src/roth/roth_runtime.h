@@ -1,4 +1,5 @@
 #pragma once
+#include "roth_animtrigger.h"
 //
 // Realms of the Haunting's level logic, running.
 //
@@ -95,6 +96,12 @@ void RegisterTexture(int rothIndex, FTextureID tex);
 // The X-mirrored registration of the same index (TextureSet::World, flipped),
 // for a command that paints it onto a FLIP_X face. See RegisterWallFace.
 void RegisterMirroredTexture(int rothIndex, FTextureID tex);
+
+// THE TEXTURE-ANIMATION TRIGGER (0x25; texture_anim_command_hook, raw_commands.c:1341-1399). The loader names every
+// engine texture of an animated Realms picture, frame by frame (the frames are contiguous after `base`); the renderer
+// tells the runtime which watched picture it drew, at which frame (AnimTriggerDrawn); the runtime fires the record's
+// chain when a drawn picture comes to its last frame. g_animTriggerWatching is non-zero only on a map with a 0x25.
+void RegisterAnimFrames(int rothIndex, FTextureID base, int frames);
 
 // The plain (unbaked, masked) picture of a transparent mid piece whose band its sector's TEXTURE_MAP_OVERRIDE sets:
 // the runtime re-bands it when a 0x03 ramps the override (RefreshSectorOverride).
