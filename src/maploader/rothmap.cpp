@@ -1862,6 +1862,9 @@ void MapLoader::LoadRothMap(MapData *map, FMissingTextureTracker &missingtex)
 			// The mid piece of a two-sided wall is the see-through decal in the
 			// opening, so it is the one place a hole is definitely wanted.
 			if (wantMid && !setPart(side_t::mid, midIndex, twoSided)) midMissing++;
+			// A band its sector's override sets can be resized by the logic (0x03): its plain picture for the runtime.
+			if (wantMid && haveNbr && (tf & roth::FF_TRANSPARENT) && (tf & roth::FF_TRANS_UPLO) && haveArt)
+				roth::RegisterMidTexture(midIndex, art.World(midIndex, &log, true, (tf & roth::FF_FLIP_X) != 0));
 			if (twoSided)
 			{
 				if (setPart(side_t::top, tm->upperTexture, false)) hasUpper = true;

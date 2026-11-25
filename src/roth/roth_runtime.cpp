@@ -390,6 +390,7 @@ struct Effect
 	// and chunk[+6], which lighting uses as a ramp, is either a dwell countdown
 	// (while armed) or the low 6 fractional bits of a fixed-point step.
 	uint8_t flags5 = 0;
+	uint8_t byte7 = 0;            // chunk[+7]: 0x03's companion ramp carries its odd bit here (tick_modify_sector :2626, :2710)
 
 	// The sound node a height mover links (chunk[+0xc], with chunk[+5] bit
 	// 0x01 for "has one" and 0x02 for "started"; cmd_change_height,
@@ -716,6 +717,16 @@ struct Runtime
 	// The wall rule's inputs per face. See RegisterWallFace and ReapplyWallFace.
 	struct WallReg { WallFace wf; int texelLength = 0; int own = -1, nbr = -1; WallPieceShape piece[3]; };
 	std::map<int, WallReg> wallByFace;
+	// THE MODIFY-SECTOR SNAPSHOT (tick_move_floorceil, raw_commands.c:5933-5990, the type-3 init handler): per 0x03
+	// record, each member sector's floor, TEXTURE_MAP_OVERRIDE byte and linked mid-platform pair as they stood at load
+	// -- the targets the ascending sweep of tick_modify_sector climbs back to (its [[rec+0x10]]+8).
+	struct ModSnap { int16_t floor = 0; int8_t ovr = 0; int16_t top = 0, under = 0; };
+	std::map<uint16_t, std::vector<ModSnap>> modSnap;
+	// A transparent mid piece's plain (unbaked) picture, by Realms index, for a band the runtime resizes
+	// (RegisterMidTexture), and the faces each sector owns (for RefreshSectorOverride).
+	std::map<int, FTextureID> midTexByIndex;
+	std::map<int, std::vector<int>> facesByOwn;
+	int overrideRefreshes = 0;
 	int wallBakedKept = 0;      // a shift change on a baked piece: the picture is left as loaded
 	int wallBakedDropped = 0;   // a swap onto a piece that would need a baked image: drawn from the plain one
 
@@ -1803,7 +1814,7 @@ int RunIndexedCommand(const Command &rec, Handlers &h)
 //
 //==========================================================================
 
-static void ReapplyWallFace(int fi, bool texturesChanged)
+static void ReapplyWallFace(int fi, bool texturesChanged, bool midBand = false)
 {
 	if (g.level == nullptr || fi < 0 || (size_t)fi >= g.map.faces.size()) return;
 	auto wr = g.wallByFace.find(fi);
@@ -1819,6 +1830,8 @@ static void ReapplyWallFace(int fi, bool texturesChanged)
 	WallFace wf = reg.wf;
 	wf.shiftX = tm.extended ? (int)tm.shiftX : 0;
 	wf.shiftY = tm.extended ? (int)tm.shiftY : 0;
+	// The own sector's TEXTURE_MAP_OVERRIDE as it is NOW (0x03 ramps it; renderer.c:8201-8212 reads it every frame).
+	if (reg.own >= 0 && (size_t)reg.own < g.map.sectors.size()) wf.ownOverride = (int)g.map.sectors[reg.own].textureMapOverride;
 	auto planeZ = [&](int si, int plane) { return (int)floor(g.level->sectors[si].GetPlaneTexZ(plane) + 0.5); };
 	if (reg.own >= 0 && (unsigned)reg.own < g.level->sectors.Size())
 	{
@@ -1835,9 +1848,24 @@ static void ReapplyWallFace(int fi, bool texturesChanged)
 	for (int part = 0; part < 3; part++)
 	{
 		if (!wf.twoSided && part != side_t::mid) continue;
+		if (midBand && part != side_t::mid) continue;
 		WallPieceShape &shape = reg.piece[part];
 		FTextureID tex = side.GetTexture(part);
-		if (texturesChanged)
+		if (midBand)
+		{
+			// A RESIZED BAND (RefreshSectorOverride): the mid piece from its plain picture, through the same rule. A
+			// band the loader baked cannot be re-baked here; the plain picture (RegisterMidTexture) takes its place.
+			auto plain = g.midTexByIndex.find(slotOfPart[part]);
+			if (plain == g.midTexByIndex.end() || !plain->second.isValid()) continue;
+			FGameTexture *gt = TexMan.GetGameTexture(plain->second, false);
+			if (gt == nullptr) continue;
+			shape.dimU = (int)gt->GetTexelWidth();
+			shape.dimV = (int)gt->GetTexelHeight();
+			shape.baked = false;
+			tex = plain->second;
+			side.SetTexture(part, tex);
+		}
+		else if (texturesChanged)
 		{
 			auto plain = g.texByIndex.find(slotOfPart[part]);
 			if (plain == g.texByIndex.end() || !plain->second.isValid()) continue;   // not this slot, or nothing registered
@@ -4017,6 +4045,23 @@ static bool TmsStep(int16_t &field, int16_t lim, int16_t &bud, bool desc, bool d
 //
 //==========================================================================
 
+// A SECTOR'S TEXTURE_MAP_OVERRIDE CHANGED (0x03): its transparent mid pieces are re-banded from the live value
+// (ReapplyWallFace, midBand) -- ROTH.C re-derives them every frame from sector +0x0c (renderer.c:8201-8212).
+static void RefreshSectorOverride(int si)
+{
+	if (g.facesByOwn.empty())
+		for (const auto &kv : g.wallByFace) if (kv.second.own >= 0) g.facesByOwn[kv.second.own].push_back(kv.first);
+	auto it = g.facesByOwn.find(si);
+	if (it == g.facesByOwn.end()) return;
+	for (int fi : it->second)
+	{
+		const Runtime::WallReg &r = g.wallByFace[fi];
+		if (!(r.wf.flags & FF_TRANSPARENT) || !(r.wf.flags & FF_TRANS_UPLO) || !r.wf.twoSided) continue;
+		ReapplyWallFace(fi, false, true);
+		g.overrideRefreshes++;
+	}
+}
+
 int ModifySector(Command *rec, int index)
 {
 	const uint8_t base = (uint8_t)(rec->opcode & 0x7f);
@@ -4065,9 +4110,72 @@ static bool TickModifySector(Effect &e)
 
 	if (e.flags5 & 0x80)
 	{
-		// The ascending sweep. See the note above: its targets come from a
-		// snapshot this port cannot locate the source of.
-		g.unhandledOps[e.tick]++;
+		// THE ASCENDING SWEEP (raw_commands.c:2690-2750, read whole): every member climbs back to the targets
+		// tick_move_floorceil snapshotted at load (InitModifySectorAtLoad) -- its floor, its TEXTURE_MAP_OVERRIDE
+		// byte (complex, f6 & 2) and its linked mid-platform's top and underside (f6 & 1). The snapshot is in member
+		// order, as the original walks it (snap += 2 simple, += 8 complex).
+		auto sn = g.modSnap.find(e.record);
+		if (sn == g.modSnap.end()) { g.unhandledOps[e.tick]++; return false; }
+		const std::vector<Runtime::ModSnap> &snap = sn->second;
+		const uint8_t f6a = rec->fireFlags;
+		const int16_t masterA = (int16_t)delta;
+		int32_t companionA = 0;
+		if (f6a & 0x03)
+		{
+			const uint32_t ea = (uint32_t)delta + (uint32_t)(e.byte7 & 0x01);
+			e.byte7 = (uint8_t)ea;
+			companionA = (int32_t)(ea >> 1);                       // :2711, not negated
+		}
+		bool movedA = false;
+		for (size_t k = 0; k < e.sectors.size() && k < snap.size(); k++)
+		{
+			const int si = e.sectors[k];
+			if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+			Sector &rs = g.map.sectors[si];
+			const Runtime::ModSnap &t = snap[k];
+			int16_t bud = masterA;
+			int16_t floorH = rs.floorHeight;
+			const bool fm = TmsStep(floorH, t.floor, bud, false, true);
+			if (fm) { movedA = true; MoveSectorPlane(si, false, floorH); }
+			if ((f6a & 0x03) && (f6a & 0x02) && !(rs.flags & 0x01))
+			{
+				const int8_t bc = rs.textureMapOverride, tL = t.ovr;
+				if (bc < 0 && bc != tL)
+				{
+					// :2726-2733. The eax a move did NOT make carries the floor's high byte and the delta's high half
+					// into the compare (a register the original reused); with a byte-sized override both are zero for
+					// every retail record, so only the low byte is kept.
+					uint32_t eax = (uint8_t)(-bc);
+					eax += (uint32_t)companionA;
+					const uint32_t ecx = (uint8_t)(-tL);
+					if (!(eax < ecx)) eax = ecx;
+					rs.textureMapOverride = (int8_t)(uint8_t)(0u - (uint8_t)eax);
+					movedA = true;
+					RefreshSectorOverride(si);
+				}
+			}
+			if ((f6a & 0x03) && (f6a & 0x01))
+			{
+				const int pi = rs.platformIndex;
+				if (pi >= 0 && (size_t)pi < g.map.platforms.size())
+				{
+					MidPlatform &mp = g.map.platforms[pi];
+					int16_t rem = masterA;
+					int16_t top = mp.topZ;
+					if (TmsStep(top, t.top, rem, false, true)) { mp.topZ = top; movedA = true; }
+					int16_t rem2 = masterA;
+					int16_t und = mp.undersideZ;
+					if (TmsStep(und, t.under, rem2, false, false)) { mp.undersideZ = und; movedA = true; }
+					ApplyPlatform(si);
+				}
+			}
+		}
+		if (!movedA)
+		{
+			MoverSoundExit(e, rec->Word(0x0C), true);              // :3399c
+			return TickHeightExit(e, rec);
+		}
+		MoverSoundFinalize(e);                                     // :32e2f
 		return false;
 	}
 
@@ -4080,7 +4188,9 @@ static bool TickModifySector(Effect &e)
 	int32_t companion = 0;
 	if (f6 & 0x03)
 	{
-		const uint32_t acc = (uint32_t)delta + (uint32_t)(e.flags5 & 0x01 ? 1u : 0u);
+		// byte[esi+7] (:2624-2627), NOT chunk[+5] bit 0x01 -- that is the "has a sound node" bit.
+		const uint32_t acc = (uint32_t)delta + (uint32_t)(e.byte7 & 0x01);
+		e.byte7 = (uint8_t)acc;
 		companion = -(int32_t)(acc >> 1);
 	}
 
@@ -4107,6 +4217,7 @@ static bool TickModifySector(Effect &e)
 			if (!(ee > 1)) ee = 1;
 			rs.textureMapOverride = (int8_t)(-(int8_t)(uint8_t)ee);
 			moved = true;
+			RefreshSectorOverride(si);
 		}
 
 		if (f6 & 0x01)
@@ -4355,6 +4466,76 @@ static bool TickMovingSector(Effect &e)
 // the loader runs on the map before it builds anything, so the heights in
 // g.map and in the engine's planes already agree when this runs. Not behind
 // roth_platforms: a 0x07 moves planes, which the engine has always done.
+// THE TYPE-3 INIT HANDLER, tick_move_floorceil (raw_commands.c:5933-5990, read whole; map_load.c:1089 table entry 3):
+// for every 0x03 record at load, its sector group (connected flood with modifier & 4, else every sector with the key),
+// each member's floor -- and for the complex variant (+0x06 & 3) its TEXTURE_MAP_OVERRIDE byte and its linked
+// mid-platform's top and underside -- kept as the record's snapshot (the ascending sweep's targets); then, unless the
+// record's direction is negative (modifier & 2), it is paused (& 8) or this is a revisit (this port has none), the
+// group is driven down to 2 * word[+0x0a] at once: apply_floorceil_move_to_group (:3883-3915: a floor above the
+// target lowered to it; +0x06 & 2: an override below -1 set to -1; +0x06 & 1: the linked platform's underside set to
+// the target and its top lowered to it) or, simple, apply_floor_move_to_group (:5120-5135). This is how the lounge
+// typewriter's page starts sunk in the carriage and the walk-in's 0x03 (#112) raises it (docs/PORT_GAPS.md 1).
+static void InitModifySectorAtLoad(Log *log)
+{
+	int records = 0, moved = 0;
+	for (size_t i = 0; i < g.map.commands.size(); i++)
+	{
+		Command *rec = &g.map.commands[i];
+		if (rec->isTrigger || (rec->opcode & 0x7f) != 0x03) continue;
+		records++;
+		const std::vector<int> grp = CollectGeometryGroup(rec->key, (rec->modifier & 0x04) != 0);
+		if (grp.empty()) continue;
+		const bool complex = (rec->fireFlags & 0x03) != 0;
+		std::vector<Runtime::ModSnap> snap;
+		for (int si : grp)
+		{
+			Runtime::ModSnap t;
+			if (si >= 0 && (size_t)si < g.map.sectors.size())
+			{
+				const Sector &rs = g.map.sectors[si];
+				t.floor = rs.floorHeight;
+				if (complex)
+				{
+					t.ovr = rs.textureMapOverride;
+					if (rs.platformIndex >= 0 && (size_t)rs.platformIndex < g.map.platforms.size())
+					{
+						t.top = g.map.platforms[rs.platformIndex].topZ;
+						t.under = g.map.platforms[rs.platformIndex].undersideZ;
+					}
+				}
+			}
+			snap.push_back(t);
+		}
+		g.modSnap[(uint16_t)(i + 1)] = snap;
+		if (rec->modifier & 0x02) continue;                       // edx < 0
+		if (rec->modifier & 0x08) continue;                       // paused
+		const int16_t bx = (int16_t)(2 * (int32_t)(int16_t)rec->Word(0x0A));
+		for (int si : grp)
+		{
+			if (si < 0 || (size_t)si >= g.map.sectors.size()) continue;
+			Sector &rs = g.map.sectors[si];
+			if (rs.floorHeight > bx) MoveSectorPlane(si, false, bx);
+			if (!complex) continue;
+			if ((rec->fireFlags & 0x02) && !(rs.flags & 0x01) && rs.textureMapOverride < -1)
+			{
+				rs.textureMapOverride = -1;
+				RefreshSectorOverride(si);
+			}
+			if ((rec->fireFlags & 0x01) && rs.platformIndex >= 0 && (size_t)rs.platformIndex < g.map.platforms.size())
+			{
+				MidPlatform &mp = g.map.platforms[rs.platformIndex];
+				mp.undersideZ = bx;
+				if (mp.topZ > bx) mp.topZ = bx;
+				ApplyPlatform(si);
+			}
+		}
+		moved++;
+	}
+	if (log != nullptr)
+		log->Line("  modify-sector    %d 0x03 record(s), snapshot taken, %d driven to their load-time target, %d mid band(s) redrawn",
+			records, moved, g.overrideRefreshes);
+}
+
 static void InitChangeHeightAtLoad(Log *log)
 {
 	int records = 0, armed = 0, started = 0;
@@ -5697,6 +5878,7 @@ void BeginLevel(const Map &map, FLevelLocals *level, Log *log)
 	}
 
 	InitLightSwitchesAtLoad(log);
+	InitModifySectorAtLoad(log);
 	InitChangeHeightAtLoad(log);
 
 	// roth_platforms. The loader has already described its platform pieces by
@@ -5981,6 +6163,10 @@ void EndLevel()
 	g.texByIndex.clear();
 	g.mirroredByIndex.clear();
 	g.wallByFace.clear();
+	g.modSnap.clear();
+	g.midTexByIndex.clear();
+	g.facesByOwn.clear();
+	g.overrideRefreshes = 0;
 	g.wallBakedKept = g.wallBakedDropped = 0;
 	g.byFace.clear();
 	g.bySide.clear();
@@ -6118,6 +6304,11 @@ void RegisterFaceSide(int rothFace, int sideIndex)
 void RegisterTexture(int rothIndex, FTextureID tex)
 {
 	if (rothIndex >= 0 && tex.isValid()) g.texByIndex[rothIndex] = tex;
+}
+
+void RegisterMidTexture(int rothIndex, FTextureID tex)
+{
+	if (rothIndex >= 0 && tex.isValid()) g.midTexByIndex[rothIndex] = tex;
 }
 
 void RegisterMirroredTexture(int rothIndex, FTextureID tex)

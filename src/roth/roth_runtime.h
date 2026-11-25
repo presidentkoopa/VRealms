@@ -96,6 +96,10 @@ void RegisterTexture(int rothIndex, FTextureID tex);
 // for a command that paints it onto a FLIP_X face. See RegisterWallFace.
 void RegisterMirroredTexture(int rothIndex, FTextureID tex);
 
+// The plain (unbaked, masked) picture of a transparent mid piece whose band its sector's TEXTURE_MAP_OVERRIDE sets:
+// the runtime re-bands it when a 0x03 ramps the override (RefreshSectorOverride).
+void RegisterMidTexture(int rothIndex, FTextureID tex);
+
 // THE WALL RULE'S INPUTS for one face's sidedef, as the loader handed them to
 // roth_surface, and per piece (side_t::top / mid / bottom) the picture's shape in
 // the wall's terms and whether the loader drew it from a baked image.
