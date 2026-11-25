@@ -133,6 +133,13 @@ a **"try this" list for the owner's headset** written in plain words. The owner'
   `movement_jog.gd` (arm-swing), `effects/vignette.gd` (comfort), and `player/player_body.gd` 1,093 (the body that
   follows the headset through the world for roomscale)), with the original's collision underneath (each move goes
   through `PlayerMove`, as the roomscale step already does, `PLAYER_MOVEMENT_PORT.md` row 70). Porting checklist first.
+- **Doorknobs and light switches breathe when the hand can work them (owner, 2026-11-24: "i will eventually want voxel
+  doorknobs, and we can have them and the light switches gently breathe some life when hand is close enough to
+  interact").** The cue is Distance Grab's own "could" breath (tell.zs GlowLook: amber, 0.15-0.50 over 60 tics, x 0.55),
+  so it reads as the same language as the items: when the hand's reach (roth_vrpick.cpp ReachProbe) finds a door's
+  handle or a switch, a soft amber light breathes on it (the candles' frame light, roth_candles.cpp
+  CandlesFrameLights). The handles are painted on the door pictures today (WORLD_DESIGN.md 1.3); voxel doorknobs come
+  with the asset pass (M7) and then breathe in their own silhouette, as the items do.
 - Fix what the owner's session finds, before anything new.
 - Done when: the owner has played the route and his list is fixed or scheduled.
 
