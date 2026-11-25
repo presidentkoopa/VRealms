@@ -50,6 +50,7 @@
 #include "hw_surfacedamage.h"	// [SURFACEDAMAGE] SurfaceDamage::PrepareFrame
 #include "hw_effectlights.h"	// [EFFECTLIGHTS] EffectLights::BeginFrame, AssignShadowRows, PrepareFrame
 #include "roth/roth_candles.h"	// [ROTH] the candles' lights (roth::CandlesFrameLights)
+#include "roth/roth_vrpick.h"	// [ROTH] the breath on a door or switch in a hand's reach (roth::VRPickFrameLights)
 #include "roth/roth_held.h"		// [ROTH] the held objects' lights (roth::HeldFrameLights)
 #include "hw_emissivevolumes.h"	// [EMISSIVEVOLUMES] EmissiveVolumes::BeginFrame, PrepareFrame
 #include "hw_exposureimpulse.h"	// [EXPOSUREIMPULSE] ExposureImpulses::BeginFrame, PublishNone
@@ -311,6 +312,9 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	// [ROTH] The held objects' lights: the struck match, the Lamp, the niche's flash (roth_held.h).
 	if (mainview && toscreen)
 		roth::HeldFrameLights(camera->Level, mainvp.TicFrac);
+	// [ROTH] The breath: a soft amber light on the door or switch a VR hand's reach could use (roth_vrpick.h).
+	if (mainview && toscreen)
+		roth::VRPickFrameLights(camera->Level, mainvp.TicFrac);
 
 	// [EFFECTLIGHTS] This frame's effect lights, once, before the shadow map: the queue drained, every light at this frame's
 	// level time, the pool capped, and the point lights walls block put in row order (hw_effectlights.h). True when they want

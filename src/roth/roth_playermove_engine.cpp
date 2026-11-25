@@ -35,7 +35,6 @@
 #include "c_cvars.h"
 #include "hw_vrmodes.h"
 #include "d_event.h"
-#include "hwrenderer/postprocessing/hw_postprocessshader.h"   // the vignette (GLDEFS RothVignette)
 
 #include <math.h>
 #include <map>
@@ -62,12 +61,6 @@ CUSTOM_CVAR(Float, roth_vr_snapturn, 45.f, CVAR_NOINITCALL) { ApplyVRTurn(); }
 CUSTOM_CVAR(Int, roth_vr_turn, 0, CVAR_NOINITCALL) { ApplyVRTurn(); }
 CUSTOM_CVAR(Float, roth_vr_turn_repeat, 0.2f, CVAR_NOINITCALL) { ApplyVRTurn(); }
 CUSTOM_CVAR(Float, roth_vr_smoothturn, 114.59f, CVAR_NOINITCALL) { ApplyVRTurn(); }
-// THE COMFORT VIGNETTE (Godot XR Tools' effects/vignette.gd, MIT, 6c6189b, :55-119, read whole): the view closes in
-// while the player's body turns or moves -- not the head's own movement -- and opens again after it. Its defaults:
-// auto_inner_radius 0.35, auto_rotation_limit 20 degrees a second (the turn that closes it fully), auto_velocity_limit
-// 10 m/s, auto_fade_delay 1 s, auto_fade_out_factor 1.5 s (fully closed to fully open), fade 0.05. Here once a tic
-// (1/35 s) in VR; the turn is the controller's (VRTurnYaw), the speed the pawn's. 0 turns it off. Not archived.
-CVAR(Bool, roth_vr_vignette, true, 0)
 
 static void ApplyVRTurn()
 {
@@ -79,51 +72,6 @@ static void ApplyVRTurn()
 	t.repeatSeconds = roth_vr_turn_repeat >= 0.f ? (float)roth_vr_turn_repeat : 0.2f;
 	t.smoothDegPerSec = roth_vr_smoothturn > 0.f ? (float)roth_vr_smoothturn : 114.59f;
 	VR_SetTurnOverride(t);
-}
-
-static void SetVignette(bool on, double radius, double fade)
-{
-	for (unsigned i = 0; i < PostProcessShaders.Size(); i++)
-	{
-		PostProcessShader &sh = PostProcessShaders[i];
-		if (sh.Name.CompareNoCase("RothVignette") != 0) continue;
-		sh.Enabled = on;
-		sh.GameOwned = true;
-		double *r = sh.Uniforms["uRadius"].Values; r[0] = radius; r[1] = r[2] = 0.0; r[3] = 1.0;
-		double *f = sh.Uniforms["uFade"].Values; f[0] = fade; f[1] = f[2] = 0.0; f[3] = 1.0;
-	}
-}
-
-static void VignetteTick(AActor *mo, double upm)
-{
-	static bool first = true;
-	static double radius = 1.0, fadeDelay = 0.0, lastTurn = 0.0;
-	static DVector2 lastPos(0, 0);
-	static bool shown = false;
-	const double delta = 1.0 / TICRATE;
-	const bool vr = VRMode::GetVRModeCached(true)->IsVR();
-	if (mo == nullptr || !vr || !roth_vr_vignette)
-	{
-		first = true;
-		radius = 1.0;
-		if (shown) { SetVignette(false, 1.0, 0.05); shown = false; }
-		return;
-	}
-	if (first) { lastTurn = mo->VRTurnYaw; lastPos = mo->Pos().XY(); first = false; return; }
-	// the body's turn this tic (degrees a second) and its speed (metres a second)
-	double turn = fabs(remainder(mo->VRTurnYaw - lastTurn, 360.0)) / delta;
-	const double speed = (mo->Pos().XY() - lastPos).Length() / (upm > 0 ? upm : 1.0) / delta;
-	constexpr double kInner = 0.35, kRotLimit = 20.0, kVelLimit = 10.0, kDelay = 1.0, kOutFactor = 1.5;
-	double target = 1.0 - std::clamp(turn / kRotLimit, 0.0, 1.0) * (1.0 - kInner);
-	target = std::min(target, 1.0 - std::clamp(speed / kVelLimit, 0.0, 1.0) * (1.0 - kInner));
-	if (target < radius) { radius = target; fadeDelay = kDelay; }
-	else if (fadeDelay > 0.0) fadeDelay -= delta;
-	else radius = std::clamp(radius + delta / kOutFactor, 0.0, 1.0);
-	lastTurn = mo->VRTurnYaw;
-	lastPos = mo->Pos().XY();
-	const bool want = radius < 0.999;
-	if (want || shown) SetVignette(want, radius, 0.05);
-	shown = want;
 }
 
 namespace roth
@@ -566,7 +514,6 @@ void PlayerMoveTick(FLevelLocals *level)
 	pm.Frame(2);
 	pm.ClampViewPitch();
 	WritePawn(mo, teleported);
-	VignetteTick(mo, VR_UnitsPerMeter() > 1e-3 ? VR_UnitsPerMeter() : 34.0);
 	g_move.tics++;
 
 	if (roth_move_log)

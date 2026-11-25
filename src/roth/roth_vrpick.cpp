@@ -156,6 +156,7 @@
 #include "r_data/vr_handpose_math.h"
 #include "i_time.h"
 #include "hw_perflog.h"
+#include "hw_effectlights.h"   // THE BREATH: a soft light on the knob or switch the hand can work
 #include <math.h>
 #include <algorithm>
 #include <utility>
@@ -1605,7 +1606,10 @@ bool VRPickTakeCaught(int role, AActor *item)
 		Printf("[roth_vrpick] %s hand: distance grab catch -- %s\n", RoleName(role), WhyNotUse(c).GetChars());
 		return false;
 	}
-	return DoUse(role, p, c, pmo, "distance grab catch", true);
+	InterfacePickupArrived(true);   // Distance Grab flew it here: the original's fly-in does not fly it again
+	const bool took = DoUse(role, p, c, pmo, "distance grab catch", true);
+	InterfacePickupArrived(false);
+	return took;
 }
 
 double VRPickUnitsPerMetre() { return UPM(); }
@@ -1722,6 +1726,38 @@ bool VRPickUseObject(int role, AActor *target, const DVector3 &at)
 	p.hitPos = at;
 	p.dist = (at - tip).Length();
 	return RulesUse(role, p, "a flame at a wick");
+}
+
+// THE BREATH (owner, 2026-11-24: "we can have [doorknobs] and the light switches gently breathe some life when hand is
+// close enough to interact"). Each frame: where a hand's reach (ReachProbe) is on something it could use that is not an
+// item (a door, a switch, a wall's use: items are Distance Grab's and glow as its own), a small amber light breathes
+// there, 3 cm toward the hand. Distance Grab's "could" breath (tell.zs GlowLook: (0.15 + 0.35 * (0.5 - 0.5 cos 6t))
+// x 0.55, t in tics, 60 tics a breath) and its amber (0xFFB030), at the struck match's strength (roth_held.cpp: 0.45)
+// over 0.15 m. Presentation only.
+void VRPickFrameLights(FLevelLocals *level, double ticFrac)
+{
+	if (level == nullptr || level != P.level) return;
+	const double upm = UPM();
+	const double t = (double)level->maptime + ticFrac;
+	const double breath = (0.15 + 0.35 * (0.5 - 0.5 * cos(t * 6.0 * (M_PI / 180.0)))) * 0.55;   // 0.08 .. 0.28
+	static const float amber[3] = { 1.0f, 0.69f, 0.19f };
+	for (int role = 0; role < 2; role++)
+	{
+		const HandState &h = P.hand[role];
+		if (!h.valid || !h.havePick || !h.cls.CanUse()) continue;
+		if (h.pick.kind == Pick::Prop && (h.pick.actor == nullptr || ObjectIsPickupItem(h.pick.actor))) continue;
+		DVector3 toHand = h.palm - h.pick.hitPos;
+		const double l = toHand.Length();
+		const DVector3 at = l > 1e-6 ? h.pick.hitPos + toHand / l * (0.03 * upm) : h.pick.hitPos;
+		const double intensity = 0.45 * breath / 0.275;   // the match's 0.45 at the breath's top
+		EffectLights::FrameLight f;
+		f.A = { at.X, at.Y, at.Z };
+		f.B = f.A;
+		for (int ch = 0; ch < 3; ch++) f.Color[ch] = (float)(amber[ch] * intensity);
+		f.Radius = 0.15 * upm;
+		f.Flags = 0;
+		EffectLights::Get().AddFrameLight(f);
+	}
 }
 
 bool VRPickTesting() { return P.test; }

@@ -27,7 +27,7 @@ the running original). XR Tools decides how the player wants to move; the origin
 | 7 | The eye sits toward the front of the body: body origin 0.5 x radius behind the eye along the body's forward | player_body.gd:963-975 | none | to build with 5 |
 | 8 | Body forward = head forward, turned toward the hands' forward by 75 % (at most 60 degrees) | player_body.gd:768-808 | none (the original's angle) | to build with 5 (it decides 2 and 7) |
 | 9 | Height from the headset, grown toward a ceiling only as far as a head cast allows | player_body.gd:830-919 | the real crouch (ledger row 32) drives the original's crouch | built (crouch); the head cast: to check |
-| 10 | Comfort vignette while moving or turning | effects/vignette.gd:55-119 | roth_playermove_engine.cpp VignetteTick, GLDEFS RothVignette; roth_vr_vignette | BUILT 2026-11-24, VR only: not seen |
+| 10 | Comfort vignette while moving or turning | effects/vignette.gd:55-119 | not ported | REMOVED 2026-11-24 (owner: "WHO ASKED FOR A VIGINETTE I SAID MOVEMENT") |
 | 11 | Sprint, arm-swing jog, climb, world grab | movement_sprint / jog / climb / world_grab .gd | none | later, each read first |
 
 Not taken: Godot's scene nodes, signals, editor warnings, physics-server queries (Jolt or the original's collision do

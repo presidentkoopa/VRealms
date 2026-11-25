@@ -18,8 +18,7 @@ class RSQDG_CB
 
 	static clearscope int Mode()
 	{
-		CVar cv = null; { Name rsqaN = "RSQA_Menu"; class<Object> rsqaC = rsqaN; if (rsqaC) cv = CVar.FindCVar("rsqa_colorblind"); }  // only while RSQ_Accessibility is loaded: a value left in the ini must not act on its own
-		return cv ? clamp(cv.GetInt(), 0, 4) : 0;
+		return 0;   // VREALMS (2026-11-24, owner: "DISABLE ALL THIS ACCESSABILITY"): no colour-blind mode
 	}
 
 	// 0xRRGGBB for a role in a mode (1..4).

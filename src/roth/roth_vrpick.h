@@ -91,6 +91,9 @@ void VRPickPickupLanded(int role);
 
 // Under roth_vrpicktest (the flat test).
 bool VRPickTesting();
+// The renderer, once a frame before the effect lights take this frame's (hw_entrypoint.cpp): THE BREATH, a soft amber
+// light on the door or switch a hand's reach could use.
+void VRPickFrameLights(FLevelLocals *level, double ticFrac);
 // VR first: the hands are live (a headset, or the flat test's hands), so the use key uses nothing in the world
 // (p_map.cpp P_UseLines); the panels and dialogue still take it.
 bool VRPickHandsOwnTheWorld();

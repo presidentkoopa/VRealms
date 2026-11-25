@@ -406,7 +406,7 @@ OptionMenu "OptionsMenu" protected
 	Submenu "$OPTMNU_MISCELLANEOUS",	"MiscOptions"
 	Submenu "$OPTMNU_NETWORK",			"NetworkOptions"
 	Submenu "$OPTMNU_SOUND",			"SoundOptions"
-	Submenu "$OPTMNU_ACCESSIBILITY",	"AccessibilityOptions"
+	// VREALMS (2026-11-24, owner: "DISABLE ALL THIS ACCESSABILITY"): no Accessibility page.
 	Submenu "$OPTMNU_DISPLAY",			"VideoOptions"
 	Submenu "$OPTMNU_VIDEO",			"VideoModeMenu"
 	IfOption(Experimental)

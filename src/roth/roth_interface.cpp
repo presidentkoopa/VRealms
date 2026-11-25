@@ -303,6 +303,7 @@ struct Ui
 	FTextureID pendingFlyTex = FNullTextureID();   // the picked object's own picture, when the render id finds none
 	double pendingFlyMetres = 0;    // the model the picked object wore: its size and facing as it lay (0: none)
 	double pendingFlyYaw = 0;
+	bool pendingFlyArrived = false; // InterfacePickupArrived: the item is in the hand already (a Distance Grab catch)
 
 	std::vector<std::vector<std::string>> queue;    // test commands, drained per tic
 	RealmsMenus *menus = nullptr;                   // roth_menus, owned by the runtime
@@ -1843,7 +1844,8 @@ void StartFly(const DVector3 &from, uint16_t renderId)
 		U.fly.toMetres = Img3dHandMetres(item, HeldCardMetres(item));
 		U.fly.fromMetres = U.pendingFlyMetres > 0 ? U.pendingFlyMetres : U.fly.toMetres;
 		U.fly.fromYaw = U.pendingFlyMetres > 0 ? U.pendingFlyYaw : (pmo != nullptr ? pmo->Angles.Yaw.Degrees() + 180.0 : 0.0);
-		Img3dFlyShow(U.level, 0, item, from, U.fly.fromYaw, U.fly.fromMetres);
+		if (U.pendingFlyArrived) U.fly.ticks = 0x1c - 2;   // in the hand already: lands on the next tick (TickFly)
+		else Img3dFlyShow(U.level, 0, item, from, U.fly.fromYaw, U.fly.fromMetres);
 		Printf("[roth_ui] the pickup flies to the %s as item %d's model (0x1c ticks, the original's fractions): %.2f m as it lay -> %.2f m in the hand\n",
 			U.fly.hand == 0 ? "main hand" : U.fly.hand == 1 ? "off hand" : "original's spot", item, U.fly.fromMetres, U.fly.toMetres);
 		return;
@@ -1881,6 +1883,7 @@ void StartFly(const DVector3 &from, uint16_t renderId)
 	U.fly.bb = bb.id;
 	U.fly.hand = U.pendingFlyHand;
 	U.fly.count++;
+	if (U.pendingFlyArrived) { U.fly.ticks = 0x1c - 2; U.level->Billboards.Last().width = U.level->Billboards.Last().height = 0; }   // in the hand already (above)
 	if (U.fly.hand >= 0) Printf("[roth_ui] the pickup flies to the %s hand as its picture (0x1c ticks, the original's fly-in aimed at its palm)\n", U.fly.hand == 0 ? "main" : "off");
 }
 
@@ -2516,6 +2519,10 @@ bool InterfaceObjectTakeable(int rothSector, int rothIndex)
 }
 
 void InterfacePickupHand(int role) { U.pendingFlyHand = role; }
+// A DISTANCE GRAB CATCH (owner, 2026-11-24: "everything rocket[s] ... AND a sprite moves gently to my hand"): Distance
+// Grab has flown the item to the palm already, so the original's fly-in, which would fly it a second time, lands on
+// its next tick instead: the pickup itself, its sound and its landing in the hand are the original's, as before.
+void InterfacePickupArrived(bool on) { U.pendingFlyArrived = on; }
 
 void InterfaceFlyItemToHand(int role, int item, const DVector3 &from, double metres, double yaw)
 {

@@ -24,8 +24,9 @@ class RSQDG_A11y
 
 	static clearscope CVar Cv(Name n)
 	{
-		CVar cv = null; { Name rsqaN = "RSQA_Menu"; class<Object> rsqaC = rsqaN; if (rsqaC) cv = CVar.FindCVar(n); }  // only while RSQ_Accessibility is loaded: a value left in the ini must not act on its own
-		return cv;
+		// VREALMS (2026-11-24, owner: "DISABLE ALL THIS ACCESSABILITY"): RSQ_Accessibility is never read here. Every
+		// setting below reads as off, whatever is loaded or left in the ini.
+		return null;
 	}
 	static clearscope int I(Name n) { let cv = Cv(n); return cv ? cv.GetInt() : 0; }
 	static clearscope double F(Name n, double d) { let cv = Cv(n); return cv ? cv.GetFloat() : d; }
@@ -67,8 +68,7 @@ class RSQDG_A11y
 	// ---- RSQ_Accessibility's service, by name ----
 	static clearscope Service Svc()
 	{
-		let it = ServiceIterator.Find("RSQA_Service");
-		return it.Next();
+		return null;   // VREALMS (2026-11-24): accessibility off, see Cv
 	}
 	// the Off-Hand Modifier: this player's main hand plays the off hand's part now
 	static clearscope bool Swapped(Actor who)

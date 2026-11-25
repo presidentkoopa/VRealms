@@ -1396,7 +1396,12 @@ void DrawLaserSightWorld(FRenderState& state)
 	// those writes, and rewriting a player's saved settings to draw a line for four
 	// seconds would be wrong even if it did not.
 	const bool scriptLaser = VR_IsScriptLaserForced();
-	if (!scriptLaser && !vr_laser_sight && !vr_laser_beam && !vr_laser_other_players_beam && !vr_laser_other_players_pointer)
+	// VREALMS (2026-11-24): the owner, "WHY DO I STILL SEE THIS LASER OF YOURS?". This is UZDXREMA's laser
+	// sight, switched on by vr_laser_sight / vr_laser_beam in the doomxr.ini VRealms shares with his hands
+	// build (archived there, so VRealms cannot and must not write them). In VRealms the only hand laser is
+	// Distance Grab's own (hw_rslaser.cpp, slots 24/25), so the ini's laser sight is never drawn here; only a
+	// script that forces it (VR_IsScriptLaserForced) still gets one.
+	if (!scriptLaser)
 	{
 		return;
 	}
@@ -1510,10 +1515,10 @@ void DrawLaserSightWorld(FRenderState& state)
 
 	// Asked per hand, so the forced pointer lands on the hand wearing the menu
 	// and the other hand keeps whatever the player's own cvars say it should have.
-	drawHand(player, false, VR_IsScriptLaserForcedFor(false) || !!vr_laser_sight,
-	                        VR_IsScriptLaserForcedFor(false) || !!vr_laser_beam);
-	drawHand(player, true,  VR_IsScriptLaserForcedFor(true)  || !!vr_laser_sight,
-	                        VR_IsScriptLaserForcedFor(true)  || !!vr_laser_beam);
+	// VREALMS: forced hands only (see the top of this function).
+	if (VR_IsScriptLaserForcedFor(false)) drawHand(player, false, true, true);
+	if (VR_IsScriptLaserForcedFor(true))  drawHand(player, true,  true, true);
+	return;
 
 	if (multiplayer && (vr_laser_other_players_beam || vr_laser_other_players_pointer))
 	{
