@@ -107,6 +107,7 @@ namespace roth
 // Defined further down in namespace roth (beside ActivateLine); the 0x27
 // decision line in IfNotItem reads it first.
 EXTERN_CVAR(Bool, roth_trigger_debug)
+EXTERN_CVAR(Bool, roth_chain_debug)
 
 namespace
 {
@@ -5169,7 +5170,18 @@ int RunCommand(const Map &, const Command &cc, int index)
 
 // The handlers that need the chain's Handlers block go through here, because the
 // spine's own handler signature does not carry it. Same dispatch, one level out.
+static int RunCommandWithChainBody(const Map &m, const Command &cc, int index, Handlers &h);
+// roth_chain_debug: every record a chain runs, with what it answered (a test aid; not archived).
 int RunCommandWithChain(const Map &m, const Command &cc, int index, Handlers &h)
+{
+	const int r = RunCommandWithChainBody(m, cc, index, h);
+	if (roth_chain_debug)
+		Printf("roth_chain: #%d op 0x%02x key %u -> %d%s\n", index, (unsigned)(cc.opcode & 0x7f), (unsigned)cc.key, r,
+			h.interrupt != Interrupt::None ? " (interrupt)" : "");
+	return r;
+}
+
+static int RunCommandWithChainBody(const Map &m, const Command &cc, int index, Handlers &h)
 {
 	const uint8_t op = cc.opcode & 0x7f;
 	Command *rec = Rec((uint16_t)index);
@@ -6842,6 +6854,7 @@ void RegisterPlatformControl(int rothSector, int ctrlSector)
 // them carried a Realms chain. roth_trigger_debug 1 prints one line per side
 // looked at; it is off by default and costs nothing.
 CVAR(Bool, roth_trigger_debug, false, 0)
+CVAR(Bool, roth_chain_debug, false, 0)   // RunCommandWithChain: each record a chain runs
 
 
 // THE CLICK ON A FACE OR A FLOOR, as the original makes it: ONE record, the one
