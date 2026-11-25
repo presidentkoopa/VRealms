@@ -9040,7 +9040,7 @@ bool DoorHingeOf(int tag, AActor *who, DoorHinge &out)
 	// the leaf closed (angle 0): every vertex is StartSpot + OriginalPts; the latch end is the end furthest from the
 	// pivot (its two corners' middle)
 	double far1 = -1, far2 = -1;
-	DVector2 c1, c2;
+	DVector2 c1(0, 0), c2(0, 0);
 	for (unsigned i = 0; i < po->OriginalPts.Size(); i++)
 	{
 		const DVector2 v = po->StartSpot.pos + po->OriginalPts[i].pos;
