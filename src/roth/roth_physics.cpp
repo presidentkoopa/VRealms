@@ -61,6 +61,7 @@ struct Loose
 	double metres = 0;
 	int slot = -1;
 	bool restLogged = false;
+	int age = 0;               // tics since it was let go (the fall's trace, TickLoose)
 };
 
 struct HandRec
@@ -512,6 +513,17 @@ void TickLoose(FLevelLocals *level)
 		Pose p;
 		if (!S.world->PoseOf(l.body, p)) { RemoveLoose(i, "its body is gone"); continue; }
 		const DVector3 at = U(p.p);
+		// THE FALL, AS IT HAPPENS (owner, 2026-11-24: dropped items go "through the floor"): every 2nd tic of its first
+		// second, where it is against the floor under it.
+		if (l.age < 36 && (l.age & 1) == 0)
+		{
+			sector_t *sec = level->PointInSector(at.XY());
+			const double fz = sec != nullptr ? NextLowestFloorAt(sec, at.X, at.Y, at.Z + 1.0) : 0.0;
+			Printf("[roth_physics] loose item %d, tic %d: at (%.1f %.1f %.1f), %.3f m over the floor under it (z %.1f, sector %d)%s\n",
+				l.item, l.age, at.X, at.Y, at.Z, (at.Z - fz) / S.upm, fz, sec != nullptr ? sec->Index() : -1,
+				S.world->Resting(l.body) ? ", resting" : "");
+		}
+		l.age++;
 		if (pmo != nullptr && (at - pmo->Pos()).Length() > kReturnM * S.upm) { RemoveLoose(i, "left behind: back in the pack"); continue; }
 		if (p.p.z * S.upm < -32768.0) { RemoveLoose(i, "fell out of the level: back in the pack"); continue; }
 		double yaw, pitch, roll;
