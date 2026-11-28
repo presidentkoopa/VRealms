@@ -3,6 +3,8 @@
 <p align="center"><b>Realms of the Haunting (1996), reimagined for VR with full 6DoF, built from your own retail install.</b><br>
 You are Adam, in the house, with your own two hands. Everything you can see, you can reach for.</p>
 
+<p align="center"><img src="docs/images/readme/original_cover.jpg" alt="Realms of the Haunting, the 1996 cover" width="85%"></p>
+
 <p align="center"><img src="docs/images/readme/divider.gif" alt="" width="100%"></p>
 
 ## <img src="docs/images/readme/h_what.png" alt="What it is" height="44">
@@ -12,6 +14,19 @@ The engine opens your own copy of the game at load and builds it from there: the
 Underneath is a GZDoom fork with VR built into it, not bolted on: room-scale tracking, real hands and Jolt physics. Underneath that, the original game still runs. Its chains, pickups, keys, reach and damage numbers stay 1:1 with **ROTH.C**, the reconstructed original program, and they are proven by differential tests against it. VR changes how you do a thing, never what it does, unless the owner decides otherwise.
 
 > The plan, milestone by milestone: [`docs/VR_GAME_PLAN.md`](docs/VR_GAME_PLAN.md). Coders: [`CLAUDE.md`](CLAUDE.md) first, then the newest `HANDOFF_*.md`.
+
+<br>
+
+## <img src="docs/images/readme/h_original.png" alt="The original, 1996" height="44">
+
+Gremlin Interactive's *Realms of the Haunting* came out for DOS in 1996: Adam Randall, a house in Cornwall, and what lives under it. Its rooms were built in full 3D, with full-motion video between them. Every picture below is the original, and the original is the spec.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/readme/original_study.jpg" alt="A room in the house, 1996"><br><sub>The house, with the Colt in hand.</sub></td>
+<td width="50%"><img src="docs/images/readme/original_throne.png" alt="A throne room, 1996"><br><sub>Further down, the writing on the walls.</sub></td>
+</tr>
+</table>
 
 <br>
 
@@ -110,4 +125,4 @@ Third-party code, unmodified: `wadsrc/static/zscript/fishy/` is [3D Platform](ht
 
 <p align="center"><img src="docs/images/readme/divider.gif" alt="" width="100%"></p>
 
-<p align="center"><sub>A fan project. Realms of the Haunting belongs to its rights holders. No game data is included or distributed: you play it from your own install.</sub></p>
+<p align="center"><sub>A fan project. Realms of the Haunting belongs to its rights holders; the cover and the two 1996 screenshots are shown for reference. No game data is included or distributed: you play it from your own install.</sub></p>

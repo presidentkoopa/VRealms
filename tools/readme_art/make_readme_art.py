@@ -122,6 +122,6 @@ def crops():
 
 title(); divider(); crops()
 for t, n in (('What it is', 'h_what.png'), ('Your hands', 'h_hands.png'), ('In the house', 'h_house.png'),
-             ('Where it stands', 'h_status.png'), ('Running it', 'h_run.png'), ('Reading the code', 'h_code.png')):
+             ('Where it stands', 'h_status.png'), ('Running it', 'h_run.png'), ('Reading the code', 'h_code.png'), ('The original, 1996', 'h_original.png')):
     section(t, n)
 print('ok', sorted(os.listdir(OUT)))
